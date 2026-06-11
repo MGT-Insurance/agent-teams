@@ -11,7 +11,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
   | jq -r --arg wt "worktree: $PWD" \
-      '[.[] | select((.description // "") | split("\n") | any(. == $wt))][0].id // empty')
+      '[.[] | select((.description // "") | split("\n") | any(. == $wt))][0].id // empty' \
+  2>/dev/null || true)
 [ -n "$match_id" ] || exit 0
 
 echo "## agent-teams: initiative context (post-compaction recovery)"
