@@ -65,41 +65,31 @@ bd -C ~/.agent-teams dolt remote add origin <url>
 bd -C ~/.agent-teams dolt push
 ```
 
-## 4. Install the `at` launcher
+## 4. Allowlist the `at` script
 
-The `at` launcher is the single entry point all skills and agents use to access the workspace — a fixed tilde path that never needs `${…}` expansion and can be allowlisted once.
+Skills and agents invoke the workspace tool as a literal absolute path resolved from the plugin directory — no symlink, no install step. You need to allowlist that path once so future agent sessions can call it without a permission prompt.
+
+Resolve the absolute path now. This skill lives at `<plugin-root>/skills/setup-agent-teams/SKILL.md`, so the script is two levels up then `scripts/at`: `<plugin-root>/scripts/at`. For example, if the plugin repo is at `/Users/you/Code/agent-teams`, the path is `/Users/you/Code/agent-teams/plugins/agent-teams/scripts/at`.
+
+Tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`, substituting the real absolute path you resolved:
+
+```
+"Bash(/Users/you/Code/agent-teams/plugins/agent-teams/scripts/at:*)"
+```
+
+Note: this path changes if the plugin is reinstalled at a new location — re-allowlist then. (WS3 will ship `at` as a real CLI on PATH, removing this friction.)
+
+Verify the script works (using the resolved absolute path):
 
 ```bash
-mkdir -p ~/.agent-teams/bin
-```
-
-Symlink the bundled script to the launcher. The source path is the `scripts/at` file inside the installed plugin directory. Resolve it relative to this skill file's own location at runtime — this skill lives at `<plugin-root>/skills/setup-agent-teams/SKILL.md`, so the script is two directories up at `<plugin-root>/scripts/at`:
-
-```bash
-ln -sf <absolute-path-to-plugin-root>/scripts/at ~/.agent-teams/bin/at
-```
-
-To find `<absolute-path-to-plugin-root>` at runtime, resolve the real path of this skill file (`plugins/agent-teams/skills/setup-agent-teams/SKILL.md`) and go up two levels. For example, if the repo is at `/Users/you/Code/agent-teams`, the path is `/Users/you/Code/agent-teams/plugins/agent-teams/scripts/at`.
-
-Then tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`:
-
-```
-"Bash(~/.agent-teams/bin/at:*)"
-```
-
-This ensures all future agent sessions can call `~/.agent-teams/bin/at` without a permission prompt.
-
-Verify the launcher works:
-
-```bash
-~/.agent-teams/bin/at ws
+<plugin-root>/scripts/at ws
 ```
 
 Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`).
 
 ## 5. Smoke test
 
-Run on BOTH paths (clone or fresh) after step 4 completes:
+Run on BOTH paths (clone or fresh) after step 4 completes. Use the resolved absolute path to `<plugin-root>/scripts/at` (the same path you identified in step 4) for every `<at>` call below.
 
 1. Write a test memory to a temp file and record it:
    ```bash
@@ -110,27 +100,27 @@ Run on BOTH paths (clone or fresh) after step 4 completes:
 
    Then record it:
    ```bash
-   ~/.agent-teams/bin/at learn dri setup-smoke --file /tmp/at-smoke.txt
+   <plugin-root>/scripts/at learn dri setup-smoke --file /tmp/at-smoke.txt
    ```
 
 2. Verify it appears:
    ```bash
-   ~/.agent-teams/bin/at learnings dri
+   <plugin-root>/scripts/at learnings dri
    ```
    Expected: shows `dri:setup-smoke`.
 
 3. Sync roundtrip:
    ```bash
-   ~/.agent-teams/bin/at sync
+   <plugin-root>/scripts/at sync
    ```
    Expected: push succeeds.
 
 4. Clean up the smoke entry and push again to leave the store clean:
    ```bash
    bd -C ~/.agent-teams forget dri:setup-smoke
-   ~/.agent-teams/bin/at sync
+   <plugin-root>/scripts/at sync
    ```
 
 ## 6. Report
 
-Confirm to the human: workspace path, remote URL, launcher path and symlink target, smoke-test results, and that `/dri` is ready to use.
+Confirm to the human: workspace path, remote URL, resolved `at` script path, smoke-test results, and that `/dri` is ready to use.
