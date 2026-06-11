@@ -18,7 +18,7 @@ Many independent **DRI + agent-team** sessions run on a machine — one per feat
 | D2 | Framework home | **Own marketplace repo** (this repo). `claude-config` stays purely personal preferences. |
 | D3 | Learning loop in v1 | **Habit + store, no curation.** Every agent reads role learnings on spawn and contributes before finishing. Curation is workstream 1. |
 | D4 | Learning store | **Beads, in a global workspace.** A future CLI wraps the same workspace (interface layer over the same persistence — no migration). |
-| D5 | Workspace location | **Env var `AGENT_TEAMS_HOME`, default `~/.agent-teams`.** All references use `${AGENT_TEAMS_HOME:-$HOME/.agent-teams}`. Override once in `~/.claude/settings.json` `env` block. |
+| D5 | Workspace location | **Env var `AGENT_TEAMS_HOME`, default `~/.agent-teams` — resolved INSIDE the bundled `at` script (D14), never inline in command strings.** Live verification showed `${VAR:-default}` in a command string trips Claude Code's unsilenceable "Contains expansion" permission prompt in every fresh session, breaking hands-off operation. Override once in `~/.claude/settings.json` `env` block. |
 | D6 | Workspace durability | **Git-repo-backed.** The workspace is a git repo with a private remote (e.g. `erlloyd/agent-teams-memory`); beads syncs via the dolt data refs on that remote. Knowledge is cross-machine by construction. Separate repo from the framework (different lifecycles: shareable framework vs. personal knowledge). |
 | D7 | DRI packaging | **A skill, not an agent.** The DRI must be the human-facing main session (owns questions, approvals, interrupts). `/dri <problem>` converts the current session. |
 | D8 | Role packaging | **Four plugin agents** with model defaults in frontmatter: planner (opus), implementer (sonnet), tester (sonnet), reviewer (sonnet). Overridable at spawn. |
@@ -27,6 +27,7 @@ Many independent **DRI + agent-team** sessions run on a machine — one per feat
 | D11 | Needs-human signal | **`bd human` on the initiative issue** in the global workspace — the canonical machine-wide "waiting on a human" signal. Question text is a note on the initiative. |
 | D12 | Hooks vs prompts | **Hooks for deterministic must-happens; prompts for judgment.** v1 ships exactly one hook: compaction recovery. The dashboard is pull (`/initiatives`), never push — teammate sessions are real sessions and would receive any broadcast hook. |
 | D13 | Setup | **Dedicated `setup-agent-teams` skill** (one-time, multi-step: bd check, clone-or-init workspace, remote config, smoke test). The DRI skill keeps only a fast preflight. |
+| D14 | Workspace access | **A bundled script — `plugins/agent-teams/scripts/at`** — is the single way skills/agents touch the workspace (verbs: ws, list, list-json, human-list, resume-match, register, note, gate, clear-gate, learn, learnings, show, close, sync). Rationale: (1) command strings become fixed paths — no `${…}` for the safety matcher to flag, one narrow allowlist entry; (2) sequenced conventions (gate = note+flag) are implemented once instead of prompt-followed; (3) it is the embryonic WS3 `at` CLI, shipped early. Skills resolve the script's literal path from their injected base dir; the DRI passes the literal path to every teammate at spawn. |
 
 ## 3. Repo & plugin layout
 
