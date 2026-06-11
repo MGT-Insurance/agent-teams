@@ -285,6 +285,39 @@ for new-machine bootstrap to get a clean, correct setup.
 
 ---
 
+## 6. Concurrency & worktrees (verified 2026-06-11, bd 1.0.4)
+
+### Independent inserts — safe, zero loss
+
+12 concurrent `bd create` calls targeting 12 DISTINCT issues landed cleanly with zero errors.
+12 concurrent `bd remember` calls with 12 DISTINCT keys all landed.
+
+Embedded mode uses a file lock that makes every individual DB write atomic. Independent inserts never contend on the same record, so they serialize through the lock and all succeed.
+
+### Same-record read-modify-write — silent lost updates
+
+12 concurrent `bd note` calls on the SAME issue: only 8 landed. All 12 reported exit 0. Zero error output.
+
+`bd note` (and other field-update commands) are read-then-write at the application layer: read the current record, append/modify, write back. The file lock makes each DB write atomic, but it does NOT make the logical RMW atomic. Concurrent callers each read the same current value, compute independently, and the last writer silently wins — earlier writers' updates are discarded. The process exits 0 regardless, so there is no signal to detect the loss.
+
+Same-KEY `bd remember` is last-writer-wins by design (key upsert semantics) — that is fine and expected.
+
+### Worktrees share `.beads/` — independent clones do not
+
+Git WORKTREES automatically share the main repo's `.beads/` database via git-common-directory discovery. No per-worktree `bd init` is needed; agents in worktrees see the same project issue DB as the DRI.
+
+Independent CLONES each get their own separate `.beads/` — there is no shared state between them.
+
+`bd worktree create` is the blessed path (guarantees the shared-`.beads/` discovery). Plain `git worktree add` also works via the same git-common-dir mechanism.
+
+### Bottom-line facts
+
+- **Embedded mode is safe for agent-teams.** Every high-concurrency write targets a DISTINCT record: distinct learning keys, distinct beads. Every same-record write stream (a given initiative, a given bead) has a single sequential owner (the DRI or the assigned agent). The one lossy case — concurrent annotation of the same bead — does not occur by design; it is rare and always routed through the DRI.
+- **Server mode is not needed and was rejected.** It would add a daemon to keep running AND would not fix the app-layer RMW race anyway.
+- **Use worktrees, not clones.** Worktrees share the project's single `.beads/` issue DB. Clones fragment it into disconnected copies.
+
+---
+
 ## Summary of surprises
 
 1. **`bd -C` does not work for `bd init`** — flag requires an existing beads project. Use subshell pattern: `(cd <dir> && bd init ...)`.
@@ -293,3 +326,5 @@ for new-machine bootstrap to get a clean, correct setup.
 4. **Dolt remote ≠ git remote** — they are configured separately (`bd dolt remote add` vs `git remote add`), but can reference the same URL.
 5. **Git remote must have an initial commit** before `bd dolt push` — the bare repo must be non-empty.
 6. **Auto-bootstrap works**: `bd init` on a cloned repo auto-detects the git origin and pulls Dolt data — `--remote` flag is optional when cloned from the same URL.
+7. **Same-record concurrent writes silently lose updates** — `bd note`/field-RMW with exit 0, no error signal (§6). Distinct-record and distinct-key writes are safe.
+8. **Worktrees share `.beads/`; independent clones do not** — use `bd worktree create` or `git worktree add`, never separate clones (§6).

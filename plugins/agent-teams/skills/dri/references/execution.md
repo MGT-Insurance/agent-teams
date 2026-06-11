@@ -10,8 +10,10 @@
 
 ## Worktrees (parallel tracks)
 
-- One worktree per parallel track, branched at the FROZEN CONTRACT commit:
-  `git worktree add <path> -b <track-branch> <integration-branch>`
+- One **git worktree** (not an independent clone) per parallel track, branched at the FROZEN CONTRACT commit.
+  Preferred: `bd worktree create <path> -b <track-branch> <integration-branch>` (guarantees shared-`.beads/` discovery).
+  Also valid: `git worktree add <path> -b <track-branch> <integration-branch>` (git-common-dir discovery achieves the same result).
+  **Never use independent clones or copies.** Worktrees share the project's single `.beads/` issue DB via git-common-dir; clones each get a separate, fragmented beads workspace — agents in them would not see the project's issues.
 - If the contract advances before tracks start, advance the worktrees: `git -C <path> reset --hard <integration-branch>` (only safe while the worktree is clean — check first).
 - Fresh worktrees need dependency install; tell the implementer.
 
