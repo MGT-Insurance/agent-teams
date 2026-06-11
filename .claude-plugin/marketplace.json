@@ -1,0 +1,15 @@
+{
+  "name": "agent-teams",
+  "owner": { "name": "Eric Lloyd", "email": "erlloyd@gmail.com" },
+  "metadata": {
+    "description": "DRI-led multi-agent software delivery: role agents, the /dri playbook, and a shared learning workspace",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-teams",
+      "source": "./plugins/agent-teams",
+      "description": "Role agents (planner, implementer, tester, reviewer), the /dri skill, initiative registry, and learning-store conventions. Hard-requires beads (bd)."
+    }
+  ]
+}
