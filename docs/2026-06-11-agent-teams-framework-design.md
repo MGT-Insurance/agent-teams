@@ -57,7 +57,18 @@ agent-teams/                          ← this repo; a Claude plugin marketplace
 
 ## 4. The DRI skill (`/dri`)
 
-Converts the current session into the DRI for one initiative. Invocation forms:
+Converts the current session into the DRI for one initiative.
+
+### Prime directive
+
+**The DRI's job is to DELIVER: always driving to a PR that solves the problem.** The skill states the outcome hierarchy explicitly, because it governs every judgment call:
+
+1. **Perfect:** a PR opened that delivers the requested feature with **zero human interaction**.
+2. **Good:** a correct PR that needed the human only for genuinely load-bearing decisions.
+3. **Lesser failure:** asking the human anything the DRI could have figured out itself — by reading the code, or by spawning agents to investigate. Self-serve before asking, always.
+4. **Worst failure:** opening a PR that does not solve the problem. Asking beats delivering wrong; investigating beats asking.
+
+Invocation forms:
 
 - `/dri <problem statement>` — new initiative (interactive or via `claude --bg "/dri …"`).
 - `/dri` in a worktree with an open registered initiative — **resume**.
@@ -69,7 +80,7 @@ Converts the current session into the DRI for one initiative. Invocation forms:
 2. **Register or resume.** New: create the initiative issue in the global workspace ({repo, worktree, branch, team name, problem statement, spawn mode}). Resume: recover state — registry entry, bd plan in the project repo, branch/PR state — report "here's where this stands," clean/recreate the team (prior members are dead), spawn fresh. Either way: append a session note ("session N, date, interactive/bg"). Keep status current at every phase change.
 3. **Clarify.** Investigate first (delegate exploration; never spend the human's answers on grep-able questions). Ask only questions that change the design. **Gate protocol** (used at every human gate): note the question on the initiative issue → `bd human <initiative-id>` → ask and park. While parked, keep any work that doesn't depend on the answer moving; batch questions.
 4. **Plan.** Spawn **one or more planner agents** (persistent team members). The plan lands as beads in the *project* repo: loop-closing set first, enhancements dependency-gated, parallel tracks explicitly file-disjoint, a contract/interface bead first so tracks fan out against frozen interfaces. **Plan-approval gate** (gate protocol).
-5. **Execute.** `TeamCreate`; spawn role agents in background (team-joined, `run_in_background`). Implementers are **ephemeral**: spawned per work-package, one worktree per parallel track off the frozen contract, merged track-by-track into the integration branch by the DRI, shut down on verified completion. Tester runs suites and owns live/manual verification; Reviewer reviews independently and runs the CI gate.
+5. **Execute.** `TeamCreate`; spawn role agents in background (team-joined, `run_in_background`). Implementers are **ephemeral**: spawned per work-package, one worktree per parallel track off the frozen contract, merged track-by-track into the integration branch by the DRI, shut down on verified completion. Tester runs suites and owns live/manual verification; Reviewer reviews independently and runs the CI gate. **The discovery loop:** agents file `discovery`-labeled beads for anything they find that needs investigation outside their scope (implementers are the primary source); the DRI continuously triages these and spawns agents to investigate (often a planner) rather than letting findings die in reports — this triage loop, not just the planned beads, is how the team converges on a PR that actually solves the problem.
 6. **Verify, don't trust.** The DRI's defining discipline: check every agent claim against artifacts (`bd show`, `git log`, read the diff) before acting on it; proactively inspect in-progress foundational work (don't wait for completion reports); expect crossed messages (idle ≠ done; "fixed" ≠ landed — verify the commit).
 7. **Deliver.** Quality gates green — including a **real build**, not just typecheck (bundler-level errors like RSC boundary violations are invisible to tsc). Push branch, open PR, **never merge**. Registry → delivered, PR link recorded.
 8. **Teardown.** Shut down teammates; remove worktrees; sweep orphaned processes (watch-mode test runners are repeat offenders); close/annotate beads; push the project repo **and** the global workspace (dolt sync); contribute `dri:*` learnings.
@@ -84,7 +95,7 @@ Converts the current session into the DRI for one initiative. Invocation forms:
 
 ## 5. Agent definitions
 
-Common boilerplate, repeated per file (duplication over a wrong abstraction): beads-first (no harness task tools); learning hooks (read `bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" memories <role>` on spawn; contribute `<role>:<slug>` before finishing — only insights a different `<role>` on a different repo would benefit from); team comms (report to team-lead via SendMessage, idle awaiting follow-ups, honor shutdown requests).
+Common boilerplate, repeated per file (duplication over a wrong abstraction): beads-first (no harness task tools); learning hooks (read `bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" memories <role>` on spawn; contribute `<role>:<slug>` before finishing — only insights a different `<role>` on a different repo would benefit from); team comms (report to team-lead via SendMessage, idle awaiting follow-ups, honor shutdown requests); **discovery beads** (file a `discovery`-labeled bead in the project repo for anything found that needs investigation outside your scope — never let a finding die in a report).
 
 **planner.md (opus).** Investigates, designs, decomposes into beads; never writes feature code. Clarifications surfaced to the DRI before the plan is finalized. Loop-closing set first; enhancements gated; parallel tracks file-disjoint; contract bead first. Recovers context from `bd show` on spawn (plan-in-beads makes planner death a non-event). On design pivots: append/supersede notes, never erase history. Persistent.
 
@@ -123,6 +134,24 @@ Two kinds of state, two beads primitives:
 | **WS1 — Learning curation** | A curator that dedupes, synthesizes, promotes per-role digests, prunes noise | Role-scoped keys in a shared, synced workspace already accumulating data |
 | **WS2 — Overseer** | Sibling plugin: watches all initiatives, reports status, prioritizes for the human, attaches/talks to DRIs, water-cooler | The registry + `bd human` flags (its entire data feed), and the spawn recipe |
 | **WS3 — CLI** | `at spawn <repo> "<problem>"` (prepare worktree → `claude --bg "/dri …"`), `at status`, `at learn <role> "…"`, messaging | Everything underneath is bd + the claude CLI — the CLI is sugar; zero migration |
+
+### CLI codification candidates (WS3 scoping)
+
+Principle: the CLI should codify **sequenced multi-step conventions and schema-bearing writes** — the things most likely to be forgotten, done differently across sessions, or lost to compaction. Judgment stays in prompts. Each command replaces a paragraph of prompt instruction with one verb, which both shrinks the skill/agent prompts and makes the behavior uniform. v1 ships these as prompt conventions deliberately shaped like CLI calls (exact sequences, exact schemas) so WS3's lift is mechanical.
+
+Ranked by drift-risk × frequency:
+
+| Candidate | Today (prompt convention) | As CLI | Why codify |
+|---|---|---|---|
+| **Gate protocol** | note question on initiative → `bd human <id>` → park | `at gate "<question>"` / `at gates` | The visibility lifeline; three commands in exact order; if done differently once, an initiative waits invisibly |
+| **Registry lifecycle** | create with field schema; cwd→initiative resume match; phase notes; close with PR link | `at register` / `at resume` / `at phase <p>` / `at close <pr>` | Schema-bearing writes + matching logic that belongs in code, not re-derived from prose each session |
+| **Teardown** | shutdown teammates, remove worktrees, sweep orphaned processes, push project repo + workspace, contribute learnings | `at teardown` | Runs exactly when context is thinnest (end of long session); checklist-as-code |
+| **Preflight** | bd present, workspace present, cwd-is-dedicated-checkout, open-initiative match | `at preflight` (machine-readable output the skill consumes) | Deterministic checks; resume-matching in code |
+| **Workspace sync** | dolt push/pull of `$AGENT_TEAMS_HOME` at teardown/setup | `at sync` | Trivially forgettable; silent when skipped |
+| **Learning I/O** | `bd -C $ATH memories <role>` / `remember --key <role>:<slug>` | `at learnings <role>` / `at learn <role> "…"` | Enforces the key schema + quality bar in help text; removes env-var plumbing from every agent prompt |
+| **Track worktrees** | worktree-per-parallel-track at the frozen-contract tip; advance all tracks when the contract moves | `at track new <name>` / `at track sync` | Session evidence: worktrees were twice created/left at a stale contract commit — exactly the class of mechanical error code prevents |
+| **Spawn** | prepare worktree → `claude --bg "/dri …"` | `at spawn <repo> "<problem>"` | WS3's core; the overseer's hands |
+| Discovery beads | `bd create --label=discovery` | (`at discover "…"` — marginal) | Near-atomic already; lowest priority |
 
 ## 10. Build-time verifications (assumptions to confirm during implementation)
 
