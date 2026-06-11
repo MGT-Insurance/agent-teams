@@ -105,17 +105,32 @@ git -C "$AGENT_TEAMS_HOME" add -A
 git -C "$AGENT_TEAMS_HOME" commit -q -m "initial commit"
 git -C "$AGENT_TEAMS_HOME" push -q origin main
 bd -C "$AGENT_TEAMS_HOME" dolt remote add origin "$bare"
-sync_out=$("$SCRIPT" sync 2>&1)
-echo "$sync_out" | grep -qi "push" \
-  || { echo "FAIL case10: sync output did not mention push (got: '$sync_out')"; exit 1; }
+sync_ec=0; sync_out=$("$SCRIPT" sync 2>&1) || sync_ec=$?
+[ "$sync_ec" -eq 0 ] \
+  || { echo "FAIL case10: sync exited $sync_ec (output: '$sync_out')"; exit 1; }
+echo "$sync_out" | grep -qi "push complete" \
+  || { echo "FAIL case10: sync output did not contain 'push complete' (got: '$sync_out')"; exit 1; }
 
-# ── Case 11: unknown verb → exit 2 ────────────────────────────────────────────
+# ── Case 11: bare close (no --reason/--file) ─────────────────────────────────
+printf 'problem: bare-close-test\nrepo: %s\nworktree: %s/wt-bc\nbranch: feat/bc\nteam: alpha\nmode: interactive\n' \
+  "$T" "$T" > "$T/bare-close-body.md"
+bc_id=$("$SCRIPT" register --title "Bare Close Test" --file "$T/bare-close-body.md")
+[ -n "$bc_id" ] || { echo "FAIL case11a: register for bare-close returned empty id"; exit 1; }
+"$SCRIPT" close "$bc_id"
+remaining_bc=$("$SCRIPT" list-json | jq -r --arg id "$bc_id" '.[] | select(.id == $id) | .id')
+[ -z "$remaining_bc" ] || { echo "FAIL case11a: bare-closed issue '$bc_id' still in list-json"; exit 1; }
+
+# ── Case 11b: exit-4 guard (uninitialized workspace → read verb exits 4) ─────
+ec=0; AGENT_TEAMS_HOME="$T/nope" "$SCRIPT" list 2>/dev/null || ec=$?
+[ "$ec" -eq 4 ] || { echo "FAIL case11b: uninitialized workspace exit code $ec, want 4"; exit 1; }
+
+# ── Case 12: unknown verb → exit 2 ────────────────────────────────────────────
 # Use || to prevent set -e from aborting on the expected non-zero exit.
 ec=0; "$SCRIPT" bogus-verb 2>/dev/null || ec=$?
-[ "$ec" -eq 2 ] || { echo "FAIL case11: unknown verb exit code $ec, want 2"; exit 1; }
+[ "$ec" -eq 2 ] || { echo "FAIL case12: unknown verb exit code $ec, want 2"; exit 1; }
 
-# ── Case 12: ws prints path even when workspace is uninitialized ──────────────
+# ── Case 13: ws prints path even when workspace is uninitialized ──────────────
 uninit_out=$(AGENT_TEAMS_HOME="$T/nope" "$SCRIPT" ws)
-[ "$uninit_out" = "$T/nope" ] || { echo "FAIL case12: ws with uninit ws printed '$uninit_out'"; exit 1; }
+[ "$uninit_out" = "$T/nope" ] || { echo "FAIL case13: ws with uninit ws printed '$uninit_out'"; exit 1; }
 
 echo "PASS"
