@@ -20,11 +20,11 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 
 # Setup
 
-`ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"` — written out in full in every command below as needed.
+The global workspace is accessed exclusively via the `~/.agent-teams/bin/at` launcher (installed by `/setup-agent-teams`). No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 ## Phase 0 — Preflight
 
-- `bd` installed and the global workspace exists (`test -d` the workspace's `.beads`); if not: tell the human to run `/setup-agent-teams` and stop.
+- Verify the launcher is present and working: `~/.agent-teams/bin/at ws` should print the workspace path. If it fails or the command is not found, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
@@ -34,12 +34,10 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 Search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 
 ```bash
-bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" list --status=open --json \
-  | jq -r --arg wt "worktree: $PWD" \
-      '.[] | select((.description // "") | split("\n") | any(. == $wt)) | .id'
+~/.agent-teams/bin/at resume-match "$PWD"
 ```
 
-Use exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
+This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
 - **No match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases.
 - **Match found -> resume:** recover state — the initiative's notes, `bd human list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
@@ -68,7 +66,7 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 
 ## Phase 6 — Teardown
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (`bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" remember ...`).
+Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `~/.agent-teams/bin/at learn dri <slug> --file <tmpfile>`).
 
 # Role-division rules (state these to the team; enforce them)
 

@@ -15,18 +15,15 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
 
 Write the body to a temp file first (avoids the newline-# safety prompt), then:
 
-    bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" create \
-      --title="<problem statement, short>" --type=task --priority=2 \
-      --body-file=/tmp/initiative-body.txt
+    ~/.agent-teams/bin/at register --title "<problem statement, short>" --file /tmp/initiative-body.txt
 
-- Resume match: `bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" list --status=open --json` and select where description contains `worktree: $PWD` — use exact-line matching to avoid prefix collisions:
+This prints the new issue id on stdout.
 
-      jq -r --arg wt "worktree: $PWD" \
-        '.[] | select((.description // "") | split("\n") | any(. == $wt)) | .id'
+- Resume match: `~/.agent-teams/bin/at resume-match "$PWD"` — prints the id of the open initiative whose description contains an exact `worktree: <path>` line, or nothing on no match. Exact-line matching avoids prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`).
 
-  Note: `bd search "<text>"` does NOT search description body content — it only matches titles. Do not use it as a fallback; always use `list --json | jq`.
+  Note: `bd search "<text>"` does NOT search description body content — it only matches titles. Do not use it as a fallback.
 
-- Phase changes and session starts: `bd note <id> ...` (file-based for multi-line).
-- Close on delivery: `bd close <id> --reason="delivered: <PR URL>"`.
+- Phase changes and session starts: `~/.agent-teams/bin/at note <id> --file <file>`.
+- Close on delivery: `~/.agent-teams/bin/at close <id> --reason "delivered: <PR URL>"`.
 
 Project-repo beads may also be human-flagged for local detail, but the GLOBAL initiative flag is the canonical "waiting on a human" signal — always raise gates there.
