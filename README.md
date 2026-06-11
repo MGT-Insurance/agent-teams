@@ -30,8 +30,10 @@ Distilled from a real delivery session; the playbook's rules (verify-don't-trust
 ```bash
 git worktree add ../myrepo-featx -b feat/x main
 cd ../myrepo-featx
-claude --bg "/dri <problem statement>" --permission-mode acceptEdits
+claude --bg --dangerously-skip-permissions "/dri <problem statement>"
 ```
+
+`--dangerously-skip-permissions` is required for hands-off operation: the DRI session runs without permission prompts, and it spawns teammates with `mode: bypassPermissions` for the same reason. **Safety note:** bypass means agents run any command unprompted — the guardrails are worktree isolation and the role rules (teammates never push, never merge, never deploy — the DRI exclusively owns integration and only the human or overseer merges to main). The DRI skill enforces these.
 
 The session shows up in `claude agents`; attach to answer gates (`claude attach <id>`), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 

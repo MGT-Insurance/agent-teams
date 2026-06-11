@@ -65,13 +65,36 @@ bd -C ~/.agent-teams dolt remote add origin <url>
 bd -C ~/.agent-teams dolt push
 ```
 
-## 4. Allowlist the `ateam` script
+## 4. Enable team orchestration (REQUIRED)
 
-Skills and agents invoke the workspace tool as a literal absolute path resolved from the plugin directory — no symlink, no install step. You need to allowlist that path once so future agent sessions can call it without a permission prompt.
+The DRI's `TeamCreate` / team-join model requires the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var to be set. Without it, `TeamCreate` silently no-ops and the DRI cannot orchestrate a background team at Phase 4.
+
+Tell the human to add the following to the `env` block of `~/.claude/settings.json`:
+
+```json
+"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+```
+
+Example — the `env` block in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "AGENT_TEAMS_HOME": "~/.agent-teams"
+  }
+}
+```
+
+This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
+
+## 5. Allowlist the `ateam` script (OPTIONAL — interactive sessions only)
+
+For **interactive** DRI sessions, you may want to allowlist the `ateam` script path so it does not prompt for permission. This step is optional for **headless** (backgrounded) sessions: agents spawned with `mode: bypassPermissions` (which the DRI does in Phase 4) never receive permission prompts, so the allowlist is not needed for them.
 
 Resolve the absolute path now. This skill lives at `<plugin-root>/skills/setup-agent-teams/SKILL.md`, so the script is two levels up then `scripts/ateam`: `<plugin-root>/scripts/ateam`. For example, if the plugin repo is at `/Users/you/Code/agent-teams`, the path is `/Users/you/Code/agent-teams/plugins/agent-teams/scripts/ateam`.
 
-Tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`, substituting the real absolute path you resolved:
+To allowlist (interactive DRI sessions), tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`, substituting the real absolute path you resolved:
 
 ```
 "Bash(/Users/you/Code/agent-teams/plugins/agent-teams/scripts/ateam:*)"
@@ -87,15 +110,11 @@ Verify the script works (using the resolved absolute path):
 
 Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`).
 
-## 5. Smoke test
+## 6. Smoke test
 
-Run on BOTH paths (clone or fresh) after step 4 completes. Use the resolved absolute path to `<plugin-root>/scripts/ateam` (the same path you identified in step 4) for every `<ateam>` call below.
+Run on BOTH paths (clone or fresh) after step 5 completes. Use the resolved absolute path to `<plugin-root>/scripts/ateam` (the same path you identified in step 5) for every `<ateam>` call below.
 
-1. Write a test memory to a temp file and record it:
-   ```bash
-   # Write the content first (no inline string — avoids the newline-# prompt)
-   ```
-   Use the Write tool to create `/tmp/ateam-smoke.txt` with content:
+1. Write a test memory to a temp file and record it. Use the Write tool to create `/tmp/ateam-smoke.txt` with content:
    `setup smoke test. WHY: verify store. HOW TO APPLY: n/a.`
 
    Then record it:
@@ -121,6 +140,6 @@ Run on BOTH paths (clone or fresh) after step 4 completes. Use the resolved abso
    <plugin-root>/scripts/ateam sync
    ```
 
-## 6. Report
+## 7. Report
 
-Confirm to the human: workspace path, remote URL, resolved `ateam` script path, smoke-test results, and that `/dri` is ready to use.
+Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, resolved `ateam` script path (and whether allowlisted), smoke-test results, and that `/dri` is ready to use.

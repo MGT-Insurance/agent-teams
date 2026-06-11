@@ -20,7 +20,7 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 
 # Setup
 
-**The `ateam` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/dri/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Do NOT assign it to a shell variable (a `$VAR` re-introduces the unsilenceable expansion prompt) — write the literal path each time.
+**The `ateam` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/dri/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Use the literal path each time — do not assign it to a shell variable.
 
 No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
@@ -56,7 +56,8 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 4 — Execute
 
-- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN worktree branched at the contract tip), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Pass the resolved absolute path to `<ateam>` explicitly in each spawn instruction** so agents can invoke the workspace tool without needing to re-resolve it themselves.
+- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN worktree branched at the contract tip), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. **Pass the resolved absolute path to `<ateam>` explicitly in each spawn instruction** so agents can invoke the workspace tool without needing to re-resolve it themselves.
+- The behavioral guardrails that matter under bypass: role rules (never push, never merge, never deploy — the DRI exclusively owns integration) and worktree isolation (each implementer confined to its own worktree). These are enforced by the role agent definitions and by you; bypass removes permission prompts, not role discipline.
 - Implementers are EPHEMERAL: spawn per work-package; shut down (SendMessage shutdown_request) once their work is verified merged. Spawn fresh ones for fixes.
 - You own integration: merge each track into the integration branch as it completes; resolve conflicts yourself; advance worktrees when the contract moves.
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files; spawn agents to investigate (often a planner). This triage — not just the planned beads — is how the team converges on a PR that actually solves the problem.

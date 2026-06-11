@@ -3,7 +3,7 @@ name: initiatives
 description: Machine-wide dashboard of agent-teams initiatives. Shows every registered initiative (one line each) with phase and highlights the ones parked waiting on a human, with their questions. Use when asked "what's running", "what needs me", "initiative status", or /initiatives.
 ---
 
-**The `ateam` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/initiatives/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Do NOT assign it to a shell variable (a `$VAR` re-introduces the unsilenceable expansion prompt) — write the literal path each time.
+**The `ateam` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/initiatives/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Do not assign it to a shell variable — write the literal path each time.
 
 Render the initiative dashboard from the global workspace. If the `<ateam>` script is absent or `<ateam> ws` fails, say so and point at /setup-agent-teams.
 
