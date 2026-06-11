@@ -40,7 +40,7 @@ Search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
 - **No match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases.
-- **Match found -> resume:** recover state — the initiative's notes, `bd human list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
+- **Match found -> resume:** recover state — the initiative's notes, `~/.agent-teams/bin/at human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
 - **Match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one. Closed initiatives never match.
 - Either way: append a session note (`session N, <date>, interactive|bg`).
 

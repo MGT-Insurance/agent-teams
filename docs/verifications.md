@@ -275,12 +275,13 @@ for new-machine bootstrap to get a clean, correct setup.
 
 ---
 
-## Unverified mechanics (Task 13)
+## Live verifications (Task 13) — VERIFIED 2026-06-11
 
-| Tag | Mechanic | Why unverified |
-|-----|----------|----------------|
-| UNVERIFIED (Task 13) | V1: slash-command-in-bg — running a `/skill` from a background agent task context | Requires live Claude Code session dispatch; not testable in isolated workspace verification |
-| UNVERIFIED (Task 13) | V2: AskUserQuestion-detached — surfacing a question via the harness AskUserQuestion tool from a detached background agent | Requires harness integration; not testable in isolated workspace verification |
+**V1 — slash command in `claude --bg` + workspace access prompt behavior.** `claude --bg "/initiatives"` invokes the skill (confirmed: the spawned session ran `agent-teams:initiatives` and called the workspace). Critical finding on prompts: a workspace command written as `bd -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" …` triggers Claude Code's **unsilenceable "Contains expansion"** dialog and the `--bg` session freezes on it. Routing through the fixed launcher `~/.agent-teams/bin/at` instead produces only the **normal, silenceable** "command requires approval" prompt (with a "don't ask again" option) — and with `Bash(~/.agent-teams/bin/at:*)` in `permissions.allow` (installed by `/setup-agent-teams`) the `--bg` run executes **end-to-end with zero prompts**. This is why D14 exists: all workspace access goes through the launcher, never the `${…}` form.
+
+**V2 — AskUserQuestion from a detached `--bg` session.** A backgrounded session told to ask an AskUserQuestion renders the question + options (verified in the session log) and ends its turn awaiting input; the question text is recoverable from the log / on `claude attach`. Implication for the gate protocol: do NOT rely on AskUserQuestion alone in `--bg` mode — the gate protocol already records the question to the initiative AND flags it via `at gate` BEFORE asking, so the parked gate is durably visible in the registry (`at human-list` / `/initiatives`) regardless of how the widget replays on attach. Belt-and-suspenders by design.
+
+**V5 — SessionStart `matcher: "compact"`** is the correct, documented hook for post-compaction context re-injection (SessionStart stdout becomes context; `PostCompact` is side-effects-only). Confirmed against current Claude Code hooks docs. The hook's `hooks.json` as-built is correct.
 
 ---
 

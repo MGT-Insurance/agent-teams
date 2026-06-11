@@ -11,7 +11,7 @@ Render the initiative dashboard from the global workspace. If the launcher is ab
    ```
    Each element includes `id`, `title`, `description` (the full line-oriented registry schema), `labels`, and notes. The `description` field contains the `branch:`, `team:`, and latest phase state.
 
-2. Parked gates — `at human-list` is the canonical needs-human view:
+2. Parked gates — `~/.agent-teams/bin/at human-list` is the canonical needs-human view:
    ```bash
    ~/.agent-teams/bin/at human-list
    ```
