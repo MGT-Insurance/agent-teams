@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Tests for the `at` workspace-access script.
+# Tests for the `ateam` workspace-access script.
 # Mirrors tests/hook-compact-recovery.test.sh structure.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/plugins/agent-teams/scripts/at"
+SCRIPT="$ROOT/plugins/agent-teams/scripts/ateam"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export AGENT_TEAMS_HOME="$T/ws"
 mkdir -p "$AGENT_TEAMS_HOME"

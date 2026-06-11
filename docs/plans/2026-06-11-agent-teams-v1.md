@@ -817,7 +817,7 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 ## Roadmap
 
 - `plugins/overseer/` — a meta-orchestrator watching every initiative on the machine (feeds on the registry).
-- `cli/` — `at` CLI codifying the conventions (gate, register, teardown, spawn) so they can't drift.
+- `cli/` — `ateam` CLI codifying the conventions (gate, register, teardown, spawn) so they can't drift.
 - Learning curation — synthesis/dedup over the role memories.
 ```
 

@@ -20,13 +20,13 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 
 # Setup
 
-**The `at` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/at` (from a skill at `plugins/agent-teams/skills/dri/SKILL.md`, that's two levels up from the skill dir, then `scripts/at`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<at>` below. Do NOT assign it to a shell variable (a `$VAR` re-introduces the unsilenceable expansion prompt) — write the literal path each time.
+**The `ateam` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/dri/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Do NOT assign it to a shell variable (a `$VAR` re-introduces the unsilenceable expansion prompt) — write the literal path each time.
 
 No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 ## Phase 0 — Preflight
 
-- Resolve the absolute path to `<at>` from your plugin base directory (two levels up from this skill file, then `scripts/at`). Verify it works: `<at> ws` should print the workspace path. If the script is not found or fails, tell the human to run `/setup-agent-teams` and stop.
+- Resolve the absolute path to `<ateam>` from your plugin base directory (two levels up from this skill file, then `scripts/ateam`). Verify it works: `<ateam> ws` should print the workspace path. If the script is not found or fails, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
@@ -36,19 +36,19 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 Search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 
 ```bash
-<at> resume-match "$PWD"
+<ateam> resume-match "$PWD"
 ```
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
 - **No match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases.
-- **Match found -> resume:** recover state — the initiative's notes, `<at> human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
+- **Match found -> resume:** recover state — the initiative's notes, `<ateam> human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
 - **Match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one. Closed initiatives never match.
 - Either way: append a session note (`session N, <date>, interactive|bg`).
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `bd human` flag -> ask -> park. While parked, keep all non-dependent work moving; batch questions.
+Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `<ateam> gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions.
 
 ## Phase 3 — Plan
 
@@ -56,7 +56,7 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 4 — Execute
 
-- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN worktree branched at the contract tip), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Pass the resolved absolute path to `<at>` explicitly in each spawn instruction** so agents can invoke the workspace tool without needing to re-resolve it themselves.
+- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN worktree branched at the contract tip), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Pass the resolved absolute path to `<ateam>` explicitly in each spawn instruction** so agents can invoke the workspace tool without needing to re-resolve it themselves.
 - Implementers are EPHEMERAL: spawn per work-package; shut down (SendMessage shutdown_request) once their work is verified merged. Spawn fresh ones for fixes.
 - You own integration: merge each track into the integration branch as it completes; resolve conflicts yourself; advance worktrees when the contract moves.
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files; spawn agents to investigate (often a planner). This triage — not just the planned beads — is how the team converges on a PR that actually solves the problem.
@@ -68,7 +68,7 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 
 ## Phase 6 — Teardown
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `<at> learn dri <slug> --file <tmpfile>`).
+Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `<ateam> learn dri <slug> --file <tmpfile>`).
 
 # Role-division rules (state these to the team; enforce them)
 

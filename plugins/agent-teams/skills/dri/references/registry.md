@@ -15,15 +15,15 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
 
 Write the body to a temp file first (avoids the newline-# safety prompt), then:
 
-    <at> register --title "<problem statement, short>" --file /tmp/initiative-body.txt
+    <ateam> register --title "<problem statement, short>" --file /tmp/initiative-body.txt
 
 This prints the new issue id on stdout.
 
-- Resume match: `<at> resume-match "$PWD"` — prints the id of the open initiative whose description contains an exact `worktree: <path>` line, or nothing on no match. Exact-line matching avoids prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`).
+- Resume match: `<ateam> resume-match "$PWD"` — prints the id of the open initiative whose description contains an exact `worktree: <path>` line, or nothing on no match. Exact-line matching avoids prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`).
 
   Note: `bd search "<text>"` does NOT search description body content — it only matches titles. Do not use it as a fallback.
 
-- Phase changes and session starts: `<at> note <id> --file <file>`.
-- Close on delivery: `<at> close <id> --reason "delivered: <PR URL>"`.
+- Phase changes and session starts: `<ateam> note <id> --file <file>`.
+- Close on delivery: `<ateam> close <id> --reason "delivered: <PR URL>"`.
 
 Project-repo beads may also be human-flagged for local detail, but the GLOBAL initiative flag is the canonical "waiting on a human" signal — always raise gates there.
