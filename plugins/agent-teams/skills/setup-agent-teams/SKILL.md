@@ -52,6 +52,7 @@ gh repo create <user>/agent-teams-memory --private
 git -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" remote add origin <url>
 git -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" add -A
 git -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" commit -m "init agent-teams workspace"
+git -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" branch -M main
 git -C "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}" push -u origin main
 ```
 
