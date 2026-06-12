@@ -54,6 +54,9 @@ dolt-server.activity
 # Backup data (auto-exported JSONL, local-only)
 backup/
 
+# Passive JSONL export (disabled via export.auto=false; Dolt remote is source of truth)
+issues.jsonl
+
 # Per-project environment file (Dolt connection config, GH#2520)
 .env
 
