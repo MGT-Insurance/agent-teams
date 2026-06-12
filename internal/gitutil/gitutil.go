@@ -129,6 +129,21 @@ func (r *Runner) AddWorktree(repoRoot, wtPath, branch, base string) error {
 	return nil
 }
 
+// RemoveWorktree removes the worktree at wtPath from repoRoot with --force so
+// that it works even when the worktree has uncommitted changes.
+// Equivalent to: git -C <repoRoot> worktree remove <wtPath> --force
+func (r *Runner) RemoveWorktree(repoRoot, wtPath string) error {
+	_, errOut, err := r.exec("git", "-C", repoRoot, "worktree", "remove", wtPath, "--force")
+	if err != nil {
+		msg := strings.TrimSpace(string(errOut))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("git worktree remove: %s", msg)
+	}
+	return nil
+}
+
 // Slugify converts s to a kebab-case slug: lowercase, runs of non-alphanumeric
 // characters become a single "-", leading/trailing "-" are trimmed, and the
 // result is capped at 50 characters (on a word boundary where possible).
