@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "agent_teams",
+  "project_id": "390930e4-644f-4531-8ccc-a2a5f15e7725"
+}
