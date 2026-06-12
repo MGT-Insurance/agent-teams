@@ -669,6 +669,160 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	assertArgs(t, *calls, 4, []string{"label", "remove", "at-round1", "human"})
 }
 
+// ── stdout forwarding ─────────────────────────────────────────────────────────
+
+func TestNote_ForwardsBDStdout(t *testing.T) {
+	f := makeTempFile(t, "note content")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Note added to at-1"}})
+	if err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Note added to at-1") {
+		t.Errorf("stdout = %q, want it to contain bd output", got)
+	}
+}
+
+func TestNote_NoBlankLineWhenEmpty(t *testing.T) {
+	f := makeTempFile(t, "note content")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: ""}})
+	if err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdoutOf(ctx) != "" {
+		t.Errorf("stdout = %q, want empty when bd returns empty", stdoutOf(ctx))
+	}
+}
+
+func TestGate_ForwardsBothOutputs(t *testing.T) {
+	f := makeTempFile(t, "question")
+	ctx, _ := newCtx(t, []fakeResp{
+		{stdout: "✓ Note added to at-2"},
+		{stdout: "✓ Added label 'human'"},
+	})
+	if err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := stdoutOf(ctx)
+	if !strings.Contains(got, "✓ Note added to at-2") {
+		t.Errorf("stdout missing note output; got %q", got)
+	}
+	if !strings.Contains(got, "✓ Added label 'human'") {
+		t.Errorf("stdout missing label output; got %q", got)
+	}
+	// note output must appear before label output
+	noteIdx := strings.Index(got, "✓ Note added to at-2")
+	labelIdx := strings.Index(got, "✓ Added label 'human'")
+	if noteIdx > labelIdx {
+		t.Errorf("note output appeared after label output in stdout")
+	}
+}
+
+func TestClearGate_WithFile_ForwardsBothOutputs(t *testing.T) {
+	f := makeTempFile(t, "response")
+	ctx, _ := newCtx(t, []fakeResp{
+		{stdout: "✓ Comment added"},
+		{stdout: "✓ Removed label 'human'"},
+	})
+	if err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := stdoutOf(ctx)
+	if !strings.Contains(got, "✓ Comment added") {
+		t.Errorf("stdout missing comment output; got %q", got)
+	}
+	if !strings.Contains(got, "✓ Removed label 'human'") {
+		t.Errorf("stdout missing label-remove output; got %q", got)
+	}
+	commentIdx := strings.Index(got, "✓ Comment added")
+	labelIdx := strings.Index(got, "✓ Removed label 'human'")
+	if commentIdx > labelIdx {
+		t.Errorf("comment output appeared after label-remove output in stdout")
+	}
+}
+
+func TestClearGate_WithoutFile_ForwardsLabelOutput(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Removed label 'human'"}})
+	if err := (&clearGateCmd{}).Run(ctx, []string{"at-3"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Removed label 'human'") {
+		t.Errorf("stdout = %q, want label-remove output", got)
+	}
+}
+
+func TestLearn_ForwardsBDStdout(t *testing.T) {
+	f := makeTempFile(t, "learned content")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Stored planner:slug"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"planner", "slug", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Stored planner:slug") {
+		t.Errorf("stdout = %q, want bd remember output", got)
+	}
+}
+
+func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
+	if err := (&closeCmd{}).Run(ctx, []string{"at-5"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Closed at-5") {
+		t.Errorf("stdout = %q, want close confirmation", got)
+	}
+}
+
+func TestClose_WithReason_ForwardsBDStdout(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
+	if err := (&closeCmd{}).Run(ctx, []string{"at-5", "--reason", "shipped"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Closed at-5") {
+		t.Errorf("stdout = %q, want close confirmation", got)
+	}
+}
+
+func TestReopen_ForwardsBDStdout(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Reopened at-6"}})
+	if err := (&reopenCmd{}).Run(ctx, []string{"at-6"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Reopened at-6") {
+		t.Errorf("stdout = %q, want reopen confirmation", got)
+	}
+}
+
+func TestSync_ForwardsBDStdout(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "push complete"}})
+	if err := (&syncCmd{}).Run(ctx, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "push complete") {
+		t.Errorf("stdout = %q, want push confirmation", got)
+	}
+}
+
+func TestRegister_PrintsOnlyID(t *testing.T) {
+	bodyFile := makeTempFile(t, "body")
+	issue := bd.Issue{ID: "at-only", Title: "T"}
+	jsonOut, _ := json.Marshal(issue)
+	ctx, _ := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
+	if err := (&registerCmd{}).Run(ctx, []string{"--title", "T", "--file", bodyFile}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// register must print exactly the bare id, not the full JSON
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if got != "at-only" {
+		t.Errorf("register stdout = %q, want bare id %q", got, "at-only")
+	}
+}
+
 // ── assertion helpers ─────────────────────────────────────────────────────────
 
 func assertUsageError(t *testing.T, err error, wantSubstr string) {

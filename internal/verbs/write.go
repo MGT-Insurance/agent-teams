@@ -95,7 +95,10 @@ func (c *noteCmd) Run(ctx *cli.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, runErr := ctx.BD.Run("note", id, "--file="+file)
+	out, runErr := ctx.BD.Run("note", id, "--file="+file)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return runErr
 }
 
@@ -110,10 +113,17 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, runErr := ctx.BD.Run("note", id, "--file="+file); runErr != nil {
+	out, runErr := ctx.BD.Run("note", id, "--file="+file)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if runErr != nil {
 		return runErr
 	}
-	_, runErr := ctx.BD.Run("label", "add", id, "human")
+	out, runErr = ctx.BD.Run("label", "add", id, "human")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return runErr
 }
 
@@ -132,11 +142,18 @@ func (c *clearGateCmd) Run(ctx *cli.Context, args []string) error {
 		if _, statErr := os.Stat(file); statErr != nil {
 			return cli.Usagef("ateam clear-gate: file not found: %s", file)
 		}
-		if _, runErr := ctx.BD.Run("comment", id, "--file="+file); runErr != nil {
+		out, runErr := ctx.BD.Run("comment", id, "--file="+file)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+		if runErr != nil {
 			return runErr
 		}
 	}
-	_, runErr := ctx.BD.Run("label", "remove", id, "human")
+	out, runErr := ctx.BD.Run("label", "remove", id, "human")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return runErr
 }
 
@@ -172,7 +189,10 @@ func (c *learnCmd) Run(ctx *cli.Context, args []string) error {
 	if readErr != nil {
 		return cli.Usagef("ateam learn: file not found: %s", file)
 	}
-	_, runErr := ctx.BD.Run("remember", "--key="+role+":"+slug, string(data))
+	out, runErr := ctx.BD.Run("remember", "--key="+role+":"+slug, string(data))
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return runErr
 }
 
@@ -219,10 +239,16 @@ func (c *closeCmd) Run(ctx *cli.Context, args []string) error {
 		reason = string(data)
 	}
 	if reason != "" {
-		_, runErr := ctx.BD.Run("close", id, "--reason="+reason)
+		out, runErr := ctx.BD.Run("close", id, "--reason="+reason)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
 		return runErr
 	}
-	_, runErr := ctx.BD.Run("close", id)
+	out, runErr := ctx.BD.Run("close", id)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return runErr
 }
 
@@ -258,7 +284,10 @@ func (c *reopenCmd) Run(ctx *cli.Context, args []string) error {
 	if len(args) == 0 {
 		return cli.Usagef("ateam reopen: missing <id>")
 	}
-	_, err := ctx.BD.Run("reopen", args[0])
+	out, err := ctx.BD.Run("reopen", args[0])
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return err
 }
 
@@ -272,7 +301,10 @@ func (c *syncCmd) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
 	}
-	_, err := ctx.BD.Run("dolt", "push")
+	out, err := ctx.BD.Run("dolt", "push")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return err
 }
 
