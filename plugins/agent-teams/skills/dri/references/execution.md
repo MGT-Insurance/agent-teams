@@ -8,6 +8,14 @@
 - Models: planner=opus, others=sonnet (the agent defaults) unless the human directed otherwise.
 - Messages cross: an idle notification right after you assign work usually means the assignment hasn't been processed yet — verify against bd/git state before re-sending or escalating.
 
+## CWD discipline — the DRI never lets its cwd drift
+
+- **Never call `EnterWorktree` or `ExitWorktree`.** `EnterWorktree` re-pins the session cwd to the entered worktree; the harness re-applies that pin before every Bash call (`cd` cannot escape it). When that worktree is later removed at teardown, the pin dangles and the shell falls back to `$HOME`. The DRI's checkout under `${AGENT_TEAMS_HOME}-worktrees/<initiative>` IS its isolation — it is already isolated; there is nothing to "enter".
+- **Ignore the background-session bootstrap nudge.** If the session prompt says "use `EnterWorktree` to isolate your work — unless your cwd is already under `.claude/worktrees/`": IGNORE it. A DRI worktree lives under `${AGENT_TEAMS_HOME}-worktrees/`, which does not match that skip-condition, so the nudge misfires. You are isolated regardless.
+- **Stay cwd-immune.** Never depend on the shell cwd. Use `git -C <abs>` and `bd -C <abs>` and absolute paths for every command. This is already global policy; for the DRI it is load-bearing — a drifted or dangling pin silently miss-targets a sibling worktree with no error.
+- **Operate on track worktrees via `-C`/absolute paths.** Create them with `git worktree add` / `bd worktree create` and hand each implementer its absolute path. Never chdir or call `EnterWorktree` into a track worktree to operate in it.
+- Non-isolated team agents inherit the lead's cwd at spawn, so a drifted lead cascades miss-targeting to every agent it spawns — another reason the lead must never drift.
+
 ## Worktrees (parallel tracks)
 
 - **Canonical worktree root.** Create every track worktree under one machine-wide root: `${AGENT_TEAMS_HOME}-worktrees/<team>-<track>` (default `~/.agent-teams-worktrees/...`). This is deliberately OUTSIDE both the workspace and the project repo. Using one predictable root is what lets `/setup-agent-teams` pre-approve it once in `additionalDirectories` (step 5c) so the DRI's worktree git does not draw file-access prompts — ad-hoc sibling paths cannot be pre-approved. (`.beads/` discovery is unaffected by location: a git worktree resolves the project's single `.beads/` via git-common-dir, not by filesystem walk.)
