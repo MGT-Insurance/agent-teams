@@ -24,12 +24,15 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 
 No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
+**🚨 CARDINAL RULE — two beads databases, never confuse them.** The GLOBAL workspace (`~/.agent-teams`, reached ONLY via `<ateam>`) holds ONLY initiative-tracking beads (one per initiative, created by `<ateam> register`) and role memories. ALL work beads — the planner's decomposition, contract beads, feature/task beads, `--label=discovery` beads — live in the PROJECT repo's `.beads` (plain `bd create`, which targets the project via cwd). NEVER create a work bead in the global workspace; NEVER touch it with a raw `bd -C`. Tell every agent this, and enforce it: run `<ateam> audit` (it flags any leaked work bead in the global workspace) — the workspace must always audit clean.
+
 ## Phase 0 — Preflight
 
 - Resolve the absolute path to `<ateam>` from your plugin base directory (two levels up from this skill file, then `scripts/ateam`). Verify it works: `<ateam> ws` should print the workspace path. If the script is not found or fails, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
+- Run `<ateam> audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.
 
 ## Phase 1 — Register or resume
 

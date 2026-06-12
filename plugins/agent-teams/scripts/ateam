@@ -5,7 +5,7 @@
 # "Contains expansion" unsilenceable permission prompt).
 #
 # Usage: ateam <verb> [args…]
-# Verbs: ws | list | list-json | human-list | resume-match |
+# Verbs: ws | list | list-json | human-list | audit | resume-match |
 #        resume-match-closed | register | note | gate | clear-gate | learn |
 #        learnings | show | close | reopen | sync | new-initiative
 set -euo pipefail
@@ -41,6 +41,35 @@ case "$verb" in
 
   human-list)
     bd -C "$ATH" human list
+    ;;
+
+  audit)
+    # audit
+    # Guardrail: the global workspace holds ONLY initiative-tracking beads
+    # (the `register` schema, which always carries a "worktree:" line) plus role
+    # memories (`bd remember`, a SEPARATE store that never appears in `bd list`).
+    # Any issue here WITHOUT a "worktree:" line is a leaked feature/work/plan/
+    # discovery bead — those belong in the PROJECT repo, never here.
+    # Prints "clean" and exits 0 when only tracking beads exist; lists the
+    # offenders and exits 1 otherwise. Covers all statuses (open and closed).
+    offenders=$(bd -C "$ATH" list --all --json 2>/dev/null \
+      | jq -r '[.[] | select((.description // "")
+                  | split("\n")
+                  | (any(startswith("worktree:")) | not))]
+               | .[] | "  \(.id)\t\(.title)"' \
+      2>/dev/null || true)
+    if [ -z "$offenders" ]; then
+      echo "audit: clean — global workspace contains only initiative-tracking beads"
+      exit 0
+    fi
+    {
+      echo "audit: LEAKED work beads in the global workspace — these belong in the PROJECT repo, NOT here:"
+      printf '%s\n' "$offenders"
+      echo ""
+      echo "The global workspace holds ONLY initiative-tracking beads + role memories."
+      echo "Move each to its project repo's .beads and delete it here (bd -C <workspace> delete <id>)."
+    } >&2
+    exit 1
     ;;
 
   resume-match)
@@ -267,13 +296,13 @@ case "$verb" in
 
   "")
     echo "ateam: verb required" >&2
-    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | resume-match | resume-match-closed\n       register | note | gate | clear-gate | learn | learnings\n       show | close | reopen | sync | new-initiative\n' >&2
+    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | audit | resume-match | resume-match-closed\n       register | note | gate | clear-gate | learn | learnings\n       show | close | reopen | sync | new-initiative\n' >&2
     exit 2
     ;;
 
   *)
     echo "ateam: unknown verb '$verb'" >&2
-    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | resume-match | resume-match-closed\n       register | note | gate | clear-gate | learn | learnings\n       show | close | reopen | sync | new-initiative\n' >&2
+    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | audit | resume-match | resume-match-closed\n       register | note | gate | clear-gate | learn | learnings\n       show | close | reopen | sync | new-initiative\n' >&2
     exit 2
     ;;
 

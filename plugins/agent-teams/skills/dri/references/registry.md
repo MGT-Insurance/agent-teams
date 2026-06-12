@@ -2,6 +2,8 @@
 
 The registry lives in the global workspace: one bd ISSUE per initiative (not per session).
 
+**Invariant:** the global workspace contains ONLY initiative-tracking beads (every one carries a `worktree:` line, per the schema below) and role memories (`bd remember`, a separate store). It NEVER holds work beads — feature/plan/task/discovery beads all live in the PROJECT repo's `.beads`. `<ateam> audit` enforces this: it lists any global-workspace issue lacking the tracking schema and exits non-zero. Run it in Phase 0 and at teardown; it must always be clean.
+
 ## Description schema (line-oriented; the compaction hook greps `worktree:`)
 
     problem: <one-line problem statement>
