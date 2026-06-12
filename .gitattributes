@@ -1,0 +1,3 @@
+# Append-only audit log: order-independent JSONL, one event per line.
+# Union-merge so divergent appends across clones combine instead of conflicting.
+.beads/interactions.jsonl merge=union
