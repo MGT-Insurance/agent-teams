@@ -10,6 +10,10 @@ mkdir -p "$AGENT_TEAMS_HOME"
 git -C "$AGENT_TEAMS_HOME" init -q
 (cd "$AGENT_TEAMS_HOME" && bd init --prefix at --non-interactive >/dev/null)
 
+# Build the Go binary so the shim (which execs $AGENT_TEAMS_HOME/bin/ateam) can find it.
+mkdir -p "$AGENT_TEAMS_HOME/bin"
+go build -C "$ROOT" -o "$AGENT_TEAMS_HOME/bin/ateam" ./cmd/ateam
+
 # ── Case 1: ws verb prints the resolved workspace path ────────────────────────
 out=$("$SCRIPT" ws)
 [ "$out" = "$AGENT_TEAMS_HOME" ] || { echo "FAIL case1: ws printed '$out', want '$AGENT_TEAMS_HOME'"; exit 1; }
@@ -121,6 +125,11 @@ remaining_bc=$("$SCRIPT" list-json | jq -r --arg id "$bc_id" '.[] | select(.id =
 [ -z "$remaining_bc" ] || { echo "FAIL case11a: bare-closed issue '$bc_id' still in list-json"; exit 1; }
 
 # ── Case 11b: exit-4 guard (uninitialized workspace → read verb exits 4) ─────
+# The shim checks $AGENT_TEAMS_HOME/bin/ateam exists before execing; copy the
+# built binary there so the shim passes through and the Go binary's own
+# workspace-init guard (exit 4) fires.  No .beads/ → uninitialized.
+mkdir -p "$T/nope/bin"
+cp "$AGENT_TEAMS_HOME/bin/ateam" "$T/nope/bin/ateam"
 ec=0; AGENT_TEAMS_HOME="$T/nope" "$SCRIPT" list 2>/dev/null || ec=$?
 [ "$ec" -eq 4 ] || { echo "FAIL case11b: uninitialized workspace exit code $ec, want 4"; exit 1; }
 
@@ -132,5 +141,79 @@ ec=0; "$SCRIPT" bogus-verb 2>/dev/null || ec=$?
 # ── Case 13: ws prints path even when workspace is uninitialized ──────────────
 uninit_out=$(AGENT_TEAMS_HOME="$T/nope" "$SCRIPT" ws)
 [ "$uninit_out" = "$T/nope" ] || { echo "FAIL case13: ws with uninit ws printed '$uninit_out'"; exit 1; }
+
+# ── Case 14: dispatch happy path ─────────────────────────────────────────────
+# Set up a throwaway git repo to dispatch against.
+dispatch_repo="$T/dispatch-repo"
+mkdir -p "$dispatch_repo"
+git -C "$dispatch_repo" init -q
+git -C "$dispatch_repo" commit -q --allow-empty -m "initial"
+# Ensure a 'main' default branch exists (git default may be 'master').
+git -C "$dispatch_repo" checkout -q -b main 2>/dev/null || true
+
+dispatch_out=$("$SCRIPT" dispatch --problem "add an undo stack" --repo "$dispatch_repo" --no-launch 2>&1)
+# Expected output fields.
+echo "$dispatch_out" | grep -q "initiative_id: at-" \
+  || { echo "FAIL case14: dispatch did not print 'initiative_id: at-...' (got: '$dispatch_out')"; exit 1; }
+echo "$dispatch_out" | grep -q "worktree:" \
+  || { echo "FAIL case14: dispatch did not print 'worktree:' line"; exit 1; }
+echo "$dispatch_out" | grep -q "slug: add-an-undo-stack" \
+  || { echo "FAIL case14: dispatch slug line wrong (got: '$dispatch_out')"; exit 1; }
+echo "$dispatch_out" | grep -q "base_branch:" \
+  || { echo "FAIL case14: dispatch did not print 'base_branch:' line"; exit 1; }
+
+# Extract the id and worktree path from the output.
+dispatch_id=$(echo "$dispatch_out" | grep "^initiative_id: " | sed 's/^initiative_id: //')
+dispatch_wt=$(echo "$dispatch_out" | grep "^worktree: " | sed 's/^worktree: //')
+
+# Worktree directory must exist on disk.
+[ -d "$dispatch_wt" ] \
+  || { echo "FAIL case14: worktree dir '$dispatch_wt' was not created"; exit 1; }
+
+# Bead must appear in list-json.
+"$SCRIPT" list-json | jq -e --arg id "$dispatch_id" '.[] | select(.id == $id)' >/dev/null \
+  || { echo "FAIL case14: dispatch id '$dispatch_id' not found in list-json"; exit 1; }
+
+# resume-match must find the new id by worktree path.
+found14=$("$SCRIPT" resume-match "$dispatch_wt")
+[ "$found14" = "$dispatch_id" ] \
+  || { echo "FAIL case14: resume-match returned '$found14', want '$dispatch_id'"; exit 1; }
+
+# Clean up the worktree so case 16 collision test starts clean.
+git -C "$dispatch_repo" worktree remove --force "$dispatch_wt"
+
+# ── Case 15: dispatch fail-fast — not a git repo ─────────────────────────────
+ec15=0; "$SCRIPT" dispatch --problem "x" --repo "$T/not-a-repo" --no-launch 2>/dev/null || ec15=$?
+[ "$ec15" -ne 0 ] \
+  || { echo "FAIL case15: dispatch against non-repo exited 0, want non-zero"; exit 1; }
+# Also confirm no bead was registered (list-json count should be same as before).
+non_repo_match=$("$SCRIPT" list-json | jq -r '.[] | select(.id | startswith("at-")) | select((.id != "'"$dispatch_id"'")) | .id' | grep -v "^$" || true)
+# We just confirm the command fails; side-effect check is the non-zero exit above.
+
+# ── Case 16: dispatch fail-fast — collision (same slug twice) ─────────────────
+# Dispatch the same problem again to trigger the slug collision guard.
+ec16=0; "$SCRIPT" dispatch --problem "add an undo stack" --repo "$dispatch_repo" --no-launch 2>/dev/null || ec16=$?
+[ "$ec16" -ne 0 ] \
+  || { echo "FAIL case16: second dispatch with same slug exited 0, want non-zero (collision)"; exit 1; }
+
+# ── Case 17: dispatch --id-only ───────────────────────────────────────────────
+# Set up a second throwaway repo so this is a fresh dispatch.
+dispatch_repo2="$T/dispatch-repo2"
+mkdir -p "$dispatch_repo2"
+git -C "$dispatch_repo2" init -q
+git -C "$dispatch_repo2" commit -q --allow-empty -m "initial"
+git -C "$dispatch_repo2" checkout -q -b main 2>/dev/null || true
+
+id_only_out=$("$SCRIPT" dispatch --problem "add a redo stack" --repo "$dispatch_repo2" --no-launch --id-only 2>&1)
+# Must be exactly one line and start with at-.
+line_count=$(echo "$id_only_out" | wc -l | tr -d ' ')
+[ "$line_count" -eq 1 ] \
+  || { echo "FAIL case17: --id-only printed $line_count lines, want 1 (got: '$id_only_out')"; exit 1; }
+echo "$id_only_out" | grep -qE '^at-' \
+  || { echo "FAIL case17: --id-only output '$id_only_out' is not an at-<hash> id"; exit 1; }
+
+# Clean up the second dispatch worktree.
+dispatch_wt2="$AGENT_TEAMS_HOME-worktrees/add-a-redo-stack"
+[ -d "$dispatch_wt2" ] && git -C "$dispatch_repo2" worktree remove --force "$dispatch_wt2" || true
 
 echo "PASS"
