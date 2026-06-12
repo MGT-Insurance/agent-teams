@@ -62,6 +62,9 @@ func (c *registerCmd) Run(ctx *cli.Context, args []string) error {
 	if err := ctx.BD.RunJSON(&issue, "create", "--title="+title, "--type=task", "--priority=2", "--body-file="+file, "--json"); err != nil {
 		return err
 	}
+	if issue.ID == "" {
+		return cli.Depf("ateam register: bd create returned no id (does this bd support --json on create?)")
+	}
 	fmt.Fprintln(ctx.Stdout, issue.ID)
 	return nil
 }

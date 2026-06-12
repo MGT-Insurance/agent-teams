@@ -239,6 +239,25 @@ func TestRegister_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestRegister_EmptyID(t *testing.T) {
+	bodyFile := makeTempFile(t, "body")
+	// bd returns JSON with no id field → issue.ID will be ""
+	ctx, _ := newCtx(t, []fakeResp{{stdout: `{}`}})
+	err := (&registerCmd{}).Run(ctx, []string{"--title", "T", "--file", bodyFile})
+	if err == nil {
+		t.Fatal("expected error when bd returns empty id")
+	}
+	if _, ok := err.(*cli.DepError); !ok {
+		t.Errorf("expected *cli.DepError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "no id") {
+		t.Errorf("error %q does not contain 'no id'", err.Error())
+	}
+	if stdoutOf(ctx) != "" {
+		t.Errorf("stdout = %q, want empty on error", stdoutOf(ctx))
+	}
+}
+
 // ── note ──────────────────────────────────────────────────────────────────────
 
 func TestNote_CallsBDNote(t *testing.T) {
