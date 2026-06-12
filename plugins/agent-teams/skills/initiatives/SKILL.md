@@ -25,4 +25,6 @@ Render the initiative dashboard from the global workspace. If the `<ateam>` scri
 
 5. If nothing is open: say exactly that, one line.
 
-Read-only: this skill never modifies the registry.
+6. Workspace health: run `<ateam> audit`. The global workspace must contain ONLY initiative-tracking beads + role memories. If audit reports leaked work beads (feature/plan/discovery beads that belong in a project repo), surface them under a `⚠ leaked work beads` heading so they get cleaned up — this is a recurring drift worth catching every time the dashboard runs.
+
+Read-only: this skill never modifies the registry (the audit is read-only too — it reports, it does not delete).

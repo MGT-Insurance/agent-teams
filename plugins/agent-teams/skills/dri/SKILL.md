@@ -24,12 +24,15 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 
 No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
+**🚨 CARDINAL RULE — two beads databases, never confuse them.** The GLOBAL workspace (`~/.agent-teams`, reached ONLY via `<ateam>`) holds ONLY initiative-tracking beads (one per initiative, created by `<ateam> register`) and role memories. ALL work beads — the planner's decomposition, contract beads, feature/task beads, `--label=discovery` beads — live in the PROJECT repo's `.beads` (plain `bd create`, which targets the project via cwd). NEVER create a work bead in the global workspace; NEVER touch it with a raw `bd -C`. Tell every agent this, and enforce it: run `<ateam> audit` (it flags any leaked work bead in the global workspace) — the workspace must always audit clean.
+
 ## Phase 0 — Preflight
 
 - Resolve the absolute path to `<ateam>` from your plugin base directory (two levels up from this skill file, then `scripts/ateam`). Verify it works: `<ateam> ws` should print the workspace path. If the script is not found or fails, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
+- Run `<ateam> audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.
 
 ## Phase 1 — Register or resume
 
@@ -41,10 +44,18 @@ Search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
-- **No match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases.
-- **Match found -> resume:** recover state — the initiative's notes, `<ateam> human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
-- **Match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one. Closed initiatives never match.
-- Either way: append a session note (`session N, <date>, interactive|bg`).
+An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and stop unless the human asked for more work.
+
+- **Open match found -> resume:** recover state — the initiative's notes, `<ateam> human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
+- **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
+- **No open match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases. (A closed initiative for this cwd does NOT block registration — only the no-parameter path below surfaces it.)
+- **No open match + NO problem statement (no-parameter /dri) -> check for a closed match before giving up:**
+  ```bash
+  <ateam> resume-match-closed "$PWD"
+  ```
+  - **Closed match found -> surface and gate.** Do not silently ignore it and do not auto-resume. `<ateam> show <id>` to read its close reason / PR link, then run the GATE PROTOCOL: ask the human whether to **resume the existing initiative** (reopen it with `<ateam> reopen <id>` and recover state as above) or **start a new one** (register fresh). This is the common case for a no-param /dri in a delivered worktree.
+  - **No closed match either -> ask the human for a problem statement** (there is genuinely nothing to resume).
+- Either way (resume or register): append a session note (`session N, <date>, interactive|bg`).
 
 ## Phase 2 — Clarify
 
@@ -65,7 +76,7 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 5 — Deliver
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR (draft until the human says otherwise); NEVER merge. Registry: status note `delivered`, PR link, then close the initiative issue with the PR as reason.
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR (draft until the human says otherwise); NEVER merge. Registry: status note `delivered` with the PR link, and leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it. Opening a PR is not completion. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
 
 ## Phase 6 — Teardown
 
