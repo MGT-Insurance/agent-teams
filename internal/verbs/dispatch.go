@@ -41,7 +41,11 @@ func (c *newInitiativeCommand) Run(ctx *cli.Context, args []string) error {
 	if dir == "" {
 		return cli.Usagef("ateam new-initiative: missing <directory>")
 	}
-	if _, err := os.Stat(dir); err != nil {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return cli.Usagef("ateam new-initiative: not a directory: %s", dir)
+	}
+	if !fi.IsDir() {
 		return cli.Usagef("ateam new-initiative: not a directory: %s", dir)
 	}
 	if len(args) < 2 {
@@ -81,6 +85,7 @@ type gitRunner interface {
 	DefaultBranch(repoRoot string) string
 	WorktreeExists(repoRoot, wtPath string) bool
 	AddWorktree(repoRoot, wtPath, branch, base string) error
+	RemoveWorktree(repoRoot, wtPath string) error
 }
 
 type dispatchCommand struct {
@@ -106,7 +111,8 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 	noLaunch := fs.Bool("no-launch", false, "create worktree and register, but do not launch claude bg session")
 
 	if err := fs.Parse(args); err != nil {
-		return cli.Usagef("dispatch: %s", err)
+		// flag already wrote its error to ctx.Stderr; don't double-print.
+		return cli.Silent(2)
 	}
 
 	if *problem == "" {
@@ -195,7 +201,12 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 		"--body-file="+tmpPath,
 		"--json",
 	); err != nil {
-		return fmt.Errorf("dispatch: register initiative: %w", err)
+		// Registration failed — remove the worktree so dispatch is retryable.
+		regErr := fmt.Errorf("dispatch: register initiative: %w", err)
+		if rmErr := c.git.RemoveWorktree(repoRoot, wtPath); rmErr != nil {
+			return fmt.Errorf("%w; also failed to remove worktree %s (remove manually): %v", regErr, wtPath, rmErr)
+		}
+		return regErr
 	}
 
 	// 8. Launch background DRI unless --no-launch.

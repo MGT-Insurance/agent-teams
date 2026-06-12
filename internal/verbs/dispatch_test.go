@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/erlloyd/agent-teams/internal/bd"
 	"github.com/erlloyd/agent-teams/internal/cli"
 )
 
@@ -21,6 +23,7 @@ type fakeGit struct {
 	defaultBranchFn  func(repoRoot string) string
 	worktreeExistsFn func(repoRoot, wtPath string) bool
 	addWorktreeFn    func(repoRoot, wtPath, branch, base string) error
+	removeWorktreeFn func(repoRoot, wtPath string) error
 }
 
 func (f *fakeGit) RepoRoot(dir string) (string, error) {
@@ -44,6 +47,12 @@ func (f *fakeGit) WorktreeExists(repoRoot, wtPath string) bool {
 func (f *fakeGit) AddWorktree(repoRoot, wtPath, branch, base string) error {
 	if f.addWorktreeFn != nil {
 		return f.addWorktreeFn(repoRoot, wtPath, branch, base)
+	}
+	return nil
+}
+func (f *fakeGit) RemoveWorktree(repoRoot, wtPath string) error {
+	if f.removeWorktreeFn != nil {
+		return f.removeWorktreeFn(repoRoot, wtPath)
 	}
 	return nil
 }
@@ -100,18 +109,9 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 					capturedBodyFile = strings.TrimPrefix(a, "--body-file=")
 				}
 			}
-			// Populate the issue.
-			if issue, ok := dst.(interface{ setID(string) }); ok {
-				issue.setID("test-id-001")
-			}
-			// Use reflection-free approach: write via the bd.Issue type.
-			type issuePtr interface {
-				setFields(id, title string)
-			}
-			// Direct struct assignment via pointer.
-			// dst is *bd.Issue; set fields directly.
-			if p, ok := dst.(interface{ SetForTest(id string) }); ok {
-				p.SetForTest("test-id-001")
+			// Populate the issue by unmarshalling JSON into *bd.Issue.
+			if issue, ok := dst.(*bd.Issue); ok {
+				return json.Unmarshal([]byte(`{"id":"at-test1","title":"Add undo stack"}`), issue)
 			}
 			return nil
 		},
@@ -133,13 +133,19 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 		t.Fatalf("dispatch --no-launch: unexpected error: %v", err)
 	}
 
-	// Verify worktree path in stdout.
+	// Verify initiative_id, slug, base_branch, and worktree path in stdout.
 	out := stdout.String()
+	if !strings.Contains(out, "initiative_id: at-test1") {
+		t.Errorf("stdout missing 'initiative_id: at-test1':\n%s", out)
+	}
+	if !strings.Contains(out, "slug: "+expectedSlug) {
+		t.Errorf("stdout missing 'slug: %s':\n%s", expectedSlug, out)
+	}
+	if !strings.Contains(out, "base_branch: main") {
+		t.Errorf("stdout missing 'base_branch: main':\n%s", out)
+	}
 	if !strings.Contains(out, expectedWt) {
 		t.Errorf("stdout missing worktree path %q:\n%s", expectedWt, out)
-	}
-	if !strings.Contains(out, expectedSlug) {
-		t.Errorf("stdout missing slug %q:\n%s", expectedSlug, out)
 	}
 
 	// Verify the body file was written with the worktree line.
@@ -223,6 +229,57 @@ func TestDispatch_WorktreeCollision(t *testing.T) {
 	}
 	if !strings.Contains(msg, "pick a different --slug") {
 		t.Errorf("expected pick-a-different-slug hint, got: %s", msg)
+	}
+}
+
+// ---- dispatch: registration failure removes the worktree -------------------
+
+// TestDispatch_RegisterFailure_RemovesWorktree verifies FIX 2: when bd create
+// fails after the worktree was created, dispatch removes the worktree so the
+// command is cleanly retryable.
+func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var removedRepo, removedWt string
+	fg := &fakeGit{
+		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
+		removeWorktreeFn: func(repoRoot, wtPath string) error {
+			removedRepo = repoRoot
+			removedWt = wtPath
+			return nil
+		},
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			return fmt.Errorf("bd create: simulated failure")
+		},
+	}
+
+	ctx, _, _ := makeCtx(fbd, home)
+	cmd := &dispatchCommand{git: fg}
+
+	err := cmd.Run(ctx, []string{
+		"--problem", "Some feature",
+		"--slug", "some-feature",
+		"--repo", repoDir,
+		"--no-launch",
+	})
+	if err == nil {
+		t.Fatal("expected error from registration failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "register initiative") {
+		t.Errorf("error missing 'register initiative': %v", err)
+	}
+
+	// Worktree removal must have been invoked.
+	expectedWt := filepath.Join(home+"-worktrees", "some-feature")
+	if removedWt != expectedWt {
+		t.Errorf("RemoveWorktree called with wt=%q, want %q", removedWt, expectedWt)
+	}
+	if removedRepo != repoDir {
+		t.Errorf("RemoveWorktree called with repo=%q, want %q", removedRepo, repoDir)
 	}
 }
 
@@ -384,5 +441,29 @@ func TestNewInitiative_NonExistentDirectory(t *testing.T) {
 	}
 	if code := cli.ExitCode(err); code != 2 {
 		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+func TestNewInitiative_RegularFileNotDirectory(t *testing.T) {
+	// Create a real file (not a directory) and pass it as the <directory> arg.
+	f, err := os.CreateTemp(t.TempDir(), "not-a-dir-*.txt")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	f.Close()
+
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+	cmd := &newInitiativeCommand{}
+
+	runErr := cmd.Run(ctx, []string{f.Name(), "some-initiative"})
+	if runErr == nil {
+		t.Fatal("expected UsageError for regular file, got nil")
+	}
+	if code := cli.ExitCode(runErr); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+	if !strings.Contains(runErr.Error(), "not a directory") {
+		t.Errorf("expected 'not a directory' in error, got: %v", runErr)
 	}
 }
