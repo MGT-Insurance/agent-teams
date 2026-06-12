@@ -278,20 +278,30 @@ case "$verb" in
     ;;
 
   new-initiative)
-    # new-initiative <directory> <description…>
-    # Spawn a background DRI whose cwd is <directory>, passing the rest of the
-    # args as the /dri problem statement. claude has no working-directory flag,
-    # so cwd is set by launching from inside <directory> — doing it here keeps
-    # the caller's command fixed-form (no --cwd, no cd in the caller string).
+    # new-initiative <directory> [description…]
+    # Spawn a background DRI whose cwd is <directory>. claude has no
+    # working-directory flag, so cwd is set by launching from inside <directory>
+    # — doing it here keeps the caller's command fixed-form (no --cwd, no cd in
+    # the caller string).
+    #   WITH a description -> passes it as the /dri problem statement; the bg
+    #     DRI self-registers the initiative on first boot.
+    #   WITHOUT a description -> dispatches a bare /dri so the bg DRI RESUMES an
+    #     initiative already registered for this worktree (the dri-dispatch skill
+    #     registers first, then calls this). Passing a problem statement when a
+    #     match already exists would trip /dri's append-vs-new gate and park the
+    #     unattended session, so the two forms are deliberately distinct.
     ni_dir="${2:-}"
     [ -n "$ni_dir" ] || { echo "ateam new-initiative: missing <directory>" >&2; exit 2; }
     [ -d "$ni_dir" ] || { echo "ateam new-initiative: not a directory: $ni_dir" >&2; exit 2; }
     shift 2
     ni_desc="$*"
-    [ -n "$ni_desc" ] || { echo "ateam new-initiative: missing <description>" >&2; exit 2; }
     command -v claude >/dev/null 2>&1 || { echo "ateam new-initiative: 'claude' not found in PATH" >&2; exit 3; }
     ni_name=$(basename "$ni_dir")
-    cd "$ni_dir" && claude --bg -n "$ni_name" --permission-mode bypassPermissions "/dri $ni_desc"
+    if [ -n "$ni_desc" ]; then
+      cd "$ni_dir" && claude --bg -n "$ni_name" --permission-mode bypassPermissions "/dri $ni_desc"
+    else
+      cd "$ni_dir" && claude --bg -n "$ni_name" --permission-mode bypassPermissions "/dri"
+    fi
     ;;
 
   "")
