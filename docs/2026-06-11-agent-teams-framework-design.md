@@ -1,5 +1,7 @@
 # Agent Teams — Framework Design
 
+> **Historical snapshot.** Records the approved pre-implementation design; on PR/lifecycle specifics the shipped behavior is authoritative in the `/dri` skill (`plugins/agent-teams/skills/dri/`).
+
 **Date:** 2026-06-11
 **Status:** Approved design, pre-implementation
 **Origin:** Distilled from a live DRI-led multi-agent feature delivery session (midgard `specialty-products-v2`, PR #3499), where the roles, the DRI playbook, and the failure modes documented here were developed and battle-tested.

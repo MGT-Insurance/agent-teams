@@ -1,5 +1,7 @@
 # Agent Teams v1 Implementation Plan
 
+> **Historical snapshot.** Records the v1 plan as written; on PR/lifecycle specifics the shipped behavior is authoritative in the `/dri` skill (`plugins/agent-teams/skills/dri/`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the agent-teams Claude plugin marketplace: four role agents, the `/dri` playbook skill, `/setup-agent-teams`, `/initiatives`, and the compaction-recovery hook — per the approved spec at `docs/2026-06-11-agent-teams-framework-design.md`.
