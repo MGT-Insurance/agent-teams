@@ -83,8 +83,10 @@ Tell the human:
 claude agents          # list background sessions
 claude logs <id>       # recent output without attaching
 claude attach <id>     # open it in this terminal
-claude stop <id>       # stop it
+claude stop <id>       # abort it early (the DRI self-stops when done — you only need this to cancel)
 ```
+
+The background DRI self-stops its own session when it finishes — after Phase 6 teardown is complete, it runs `claude stop <its-own-id>` as its final action and will appear as `stopped` in `claude agents`. You do NOT need to stop it manually when it completes normally; `claude stop <id>` is only needed to abort early.
 
 Any human gate the background DRI parks on surfaces through `<ateam> human-list` and the `/initiatives` dashboard — so a needed decision is discoverable without tailing logs.
 

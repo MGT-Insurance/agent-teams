@@ -46,7 +46,7 @@ Otherwise, search the registry for an OPEN initiative whose `worktree:` field ma
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
-An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and stop unless the human asked for more work.
+An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the session (bg DRI: self-stop via `claude stop <id>` as described in Phase 6; interactive: end the turn).
 
 - **Open match found -> resume:** recover state — the initiative's notes, `<ateam> human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
 - **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
@@ -78,11 +78,13 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 5 — Deliver
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR (draft until the human says otherwise); NEVER merge. Registry: status note `delivered` with the PR link, and leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it. Opening a PR is not completion. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR (draft until the human says otherwise); NEVER merge. Registry: status note `delivered` with the PR link, and leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it. Opening a PR is not completion. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.) After recording the registry note, proceed to Phase 6 teardown.
 
 ## Phase 6 — Teardown
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `<ateam> learn dri <slug> --file <tmpfile>`).
+Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `<ateam> learn dri <slug> --file <tmpfile>`) -> write the final registry note.
+
+**Background sessions only — self-stop as the very last action.** When `$CLAUDE_JOB_DIR` is set (the bg-mode signal; interactive DRIs will not have it), after ALL teardown steps are complete and the terminal state is DONE (PR delivered with teardown complete, or a resume that just ran the close step, or a resume where awaiting-merge is still open and the human did not ask for more) and no parked gate is pending: stop this session by running `claude stop <id>`, where `<id>` is the final path segment of `$CLAUDE_JOB_DIR` (e.g. if `$CLAUDE_JOB_DIR` is `/Users/x/.claude/jobs/c7b8e7c0`, the id is `c7b8e7c0` — inline it literally, do NOT use command substitution like `$(basename ...)` as that trips an unsilenceable safety prompt). This is the session's very last action — it ends the process. Interactive DRIs never self-stop; the human ends the session.
 
 # Role-division rules (state these to the team; enforce them)
 
