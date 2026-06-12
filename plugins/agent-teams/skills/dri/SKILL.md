@@ -36,7 +36,9 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 ## Phase 1 — Register or resume
 
-Search the registry for an OPEN initiative whose `worktree:` field matches cwd:
+**Invoked with an initiative id (e.g. `at-16c`) -> resume that initiative directly.** This is the form a background DRI receives from `/agent-teams:dri-dispatch`: the dispatcher already registered the initiative and passes its id. If the argument is a single token shaped like an initiative id, look it up with `<ateam> show <id>`; if it resolves to a registered initiative, that is your initiative — recover its state (notes, `<ateam> human-list`, the project repo's beads, branch/PR state) and drive it. Do NOT re-register, and skip the cwd match below; resuming by id rather than by `$PWD` removes any dependence on exact path matching. (If the token does not resolve to a registered initiative, fall through and treat the argument as a problem statement.)
+
+Otherwise, search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 
 ```bash
 <ateam> resume-match "$PWD"

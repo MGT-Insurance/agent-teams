@@ -28,7 +28,8 @@ Your plugin directory is injected at load time. The workspace tool is at `<plugi
 ### 2. Scope the initiative
 
 - **Problem statement.** Take it from the invocation. If none was given, ask the human for one — this is the single load-bearing input.
-- **Project repo + base branch.** Determine the target repo from cwd (`git rev-parse --show-toplevel`; if you are inside a worktree, `git rev-parse --git-common-dir` resolves the shared repo). The base branch is the repo's integration branch (default `main`); if it is ambiguous or the human implied otherwise, confirm the base before creating the worktree — a wrong base is expensive to unwind.
+- **Figure out the target repo yourself; involve the human only if you cannot.** The initiative may target a repo OTHER than the one this dispatcher session is sitting in, so do not blindly assume cwd. Identify the target directory the human means (explicit in the invocation if they named one, otherwise the current directory), then resolve the actual repo root FROM that directory — `git -C <target-dir> rev-parse --show-toplevel`, and if it is a worktree, `git -C <target-dir> rev-parse --git-common-dir` for the shared repo. (The target may be a subdirectory or a worktree, not the repo root — resolve, don't assume.) If that yields a single unambiguous repo, proceed silently. Ask the human about the repo location ONLY when you are not confident: cwd is not inside any repo, the problem clearly refers to a different project you cannot locate, or more than one repo plausibly fits.
+- **Base branch.** The repo's integration branch (default `main`); if it is ambiguous or the human implied otherwise, confirm the base before creating the worktree — a wrong base is expensive to unwind.
 - **Slug.** Derive a short kebab-case slug from the problem (e.g. `add-undo-stack`). This names the worktree, the branch, and the background session.
 
 ### 3. Create the worktree (Option A: the DRI is born inside it)
@@ -58,17 +59,17 @@ mode: bg
 <ateam> register --title "<problem statement, short>" --file /tmp/initiative-body.txt
 ```
 
-The `worktree:` value MUST be the exact absolute path the dispatched DRI will see as its `$PWD` — that is how its Phase 1 `resume-match "$PWD"` finds this initiative and resumes it (rather than registering a duplicate). It prints the new initiative id; note it for the human.
+`register` prints the new initiative **id** — capture it. You pass it to the DRI in Step 5 (that is how the DRI knows which initiative it owns) and report it to the human. Set `worktree:` to the worktree's absolute path so the registry records where the DRI lives, but resume no longer depends on it matching `$PWD` exactly — the dispatched DRI resumes by id, not by path.
 
 ### 5. Dispatch the background DRI
 
-Launch a **bare** `/dri` (no problem statement on the command) into the worktree. The problem already lives in the registered initiative; passing it again would trip `/dri`'s "open match + new problem → ask the human" guard and park the background session on boot. `ateam new-initiative` with no description does exactly this — `cd`s into the worktree and launches `claude --bg … "/dri"`:
+Launch the background `/dri` into the worktree, passing the **initiative id** from Step 4. Telling the DRI exactly which initiative it owns is more robust than making it infer one from `$PWD`, and an id is not a problem statement, so it never trips `/dri`'s "open match + new problem → ask the human" guard. `ateam new-initiative` forwards its argument to `/dri` — it `cd`s into the worktree and launches `claude --bg … "/dri <initiative-id>"`:
 
 ```bash
-<ateam> new-initiative <ws>-worktrees/<slug>
+<ateam> new-initiative <ws>-worktrees/<slug> <initiative-id>
 ```
 
-The background DRI boots in the worktree, resume-matches the initiative you just registered, and drives it through plan → execute → PR. It runs under `--permission-mode bypassPermissions` for hands-off operation.
+The background DRI boots in the worktree, resumes the initiative by id, and drives it through plan → execute → PR. It runs under `--permission-mode bypassPermissions` for hands-off operation.
 
 ### 6. Report and hand off
 
