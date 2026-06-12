@@ -30,6 +30,7 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 - Resolve the absolute path to `<ateam>` from your plugin base directory (two levels up from this skill file, then `scripts/ateam`). Verify it works: `<ateam> ws` should print the workspace path. If the script is not found or fails, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
+- **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at teardown, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
 - Run `<ateam> audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.

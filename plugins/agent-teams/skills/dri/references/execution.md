@@ -4,9 +4,18 @@
 
 - `TeamCreate` with the team slug from preflight. Spawn members with the Agent tool: `subagent_type: "agent-teams:<role>"`, `team_name`, a human-readable `name`, `run_in_background: true`, and **`mode: "bypassPermissions"`**. The bypass mode is required for hands-off operation — backgrounded teammates must run without permission prompts.
 - Safety under bypass: role rules (never push/merge/deploy — DRI-only) and worktree isolation remain the guardrails. Bypass removes prompts, not role discipline.
-- Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and "report to team-lead; ping immediately on blockers or design ambiguity — never guess."
+- Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and "report to team-lead; ping immediately on blockers or design ambiguity — never guess." Also tell every spawned agent: **NEVER call `EnterWorktree`. A non-isolated teammate shares the lead's session cwd, so your `EnterWorktree` drifts the LEAD's cwd — the harness re-applies the pin before every Bash call, and the lead can't escape it. Work via absolute paths and `git -C <your-worktree-abs-path>`; never `cd` or `EnterWorktree` into your worktree.**
 - Models: planner=opus, others=sonnet (the agent defaults) unless the human directed otherwise.
 - Messages cross: an idle notification right after you assign work usually means the assignment hasn't been processed yet — verify against bd/git state before re-sending or escalating.
+
+## CWD discipline — the DRI never lets its cwd drift
+
+- **Never call `EnterWorktree`.** It re-pins the session cwd to the entered worktree; the harness re-applies that pin before every Bash call (`cd` cannot escape it). When that worktree is later removed at teardown, the pin dangles and the shell falls back to `$HOME`. The DRI's checkout under `${AGENT_TEAMS_HOME}-worktrees/<initiative>` IS its isolation — it is already isolated; there is nothing to "enter". (Recovery, if you ever do drift: `ExitWorktree` with `action: keep` returns the session to its original checkout without removing the worktree — that is its only sanctioned use in a DRI session.)
+- **Ignore the background-session bootstrap nudge.** If the session prompt says "use `EnterWorktree` to isolate your work — unless your cwd is already under `.claude/worktrees/`": IGNORE it. A DRI worktree lives under `${AGENT_TEAMS_HOME}-worktrees/`, which does not match that skip-condition, so the nudge misfires. You are isolated regardless.
+- **Stay cwd-immune.** Never depend on the shell cwd. Use `git -C <abs>` and `bd -C <abs>` and absolute paths for every command. This is already global policy; for the DRI it is load-bearing — a drifted or dangling pin silently miss-targets a sibling worktree with no error.
+- **Operate on track worktrees via `-C`/absolute paths.** Create them with `git worktree add` / `bd worktree create` and hand each implementer its absolute path. Never chdir or call `EnterWorktree` into a track worktree to operate in it.
+- Non-isolated team agents inherit the lead's cwd at spawn, so a drifted lead cascades miss-targeting to every agent it spawns — another reason the lead must never drift.
+- **Observed root cause (at-9iq).** The drift was triggered by a spawned implementer calling `EnterWorktree`, not the lead directly. A non-isolated subagent's `EnterWorktree` mutates the shared session cwd and drifts the lead. This is why spawn instructions must forbid it (see "## Team" above).
 
 ## Worktrees (parallel tracks)
 
