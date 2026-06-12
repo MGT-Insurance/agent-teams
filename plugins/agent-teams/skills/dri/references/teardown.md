@@ -9,4 +9,4 @@ In order; do not skip items because the session is long — this list exists pre
 5. Push the PROJECT repo (the branch backing the PR) — work is not done until pushed.
 6. Sync the GLOBAL workspace: `<ateam> sync` (Dolt remote configured at setup via `bd dolt remote add origin <url>` — done by /setup-agent-teams; if push fails with "no remote", re-run that command against the workspace).
 7. Learnings: contribute `dri:<slug>` entries for transferable orchestration insights — write to a temp file, then `<ateam> learn dri <slug> --file <tmpfile>`.
-8. Registry: final status note; close the initiative with the PR link (if delivered).
+8. Registry: final status note. If delivered, record `awaiting-merge` with the PR link and leave the initiative **OPEN** — teardown dismantles the working team, but an opened-not-merged PR is not completion, so the initiative must stay resumable. Close ONLY when the PR is merged or a human explicitly closes it (e.g. `<ateam> close <id> --reason "merged: <PR URL>"`); a long-term pause is also annotated, not closed.
