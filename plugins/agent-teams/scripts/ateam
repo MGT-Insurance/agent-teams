@@ -6,7 +6,8 @@
 #
 # Usage: ateam <verb> [args…]
 # Verbs: ws | list | list-json | human-list | resume-match | register |
-#        note | gate | clear-gate | learn | learnings | show | close | sync
+#        note | gate | clear-gate | learn | learnings | show | close | sync |
+#        new-initiative
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
@@ -219,15 +220,32 @@ case "$verb" in
     bd -C "$ATH" dolt push
     ;;
 
+  new-initiative)
+    # new-initiative <directory> <description…>
+    # Spawn a background DRI whose cwd is <directory>, passing the rest of the
+    # args as the /dri problem statement. claude has no working-directory flag,
+    # so cwd is set by launching from inside <directory> — doing it here keeps
+    # the caller's command fixed-form (no --cwd, no cd in the caller string).
+    ni_dir="${2:-}"
+    [ -n "$ni_dir" ] || { echo "ateam new-initiative: missing <directory>" >&2; exit 2; }
+    [ -d "$ni_dir" ] || { echo "ateam new-initiative: not a directory: $ni_dir" >&2; exit 2; }
+    shift 2
+    ni_desc="$*"
+    [ -n "$ni_desc" ] || { echo "ateam new-initiative: missing <description>" >&2; exit 2; }
+    command -v claude >/dev/null 2>&1 || { echo "ateam new-initiative: 'claude' not found in PATH" >&2; exit 3; }
+    ni_name=$(basename "$ni_dir")
+    cd "$ni_dir" && claude --bg -n "$ni_name" --permission-mode bypassPermissions "/dri $ni_desc"
+    ;;
+
   "")
     echo "ateam: verb required" >&2
-    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | resume-match\n       register | note | gate | clear-gate | learn | learnings\n       show | close | sync\n' >&2
+    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | resume-match\n       register | note | gate | clear-gate | learn | learnings\n       show | close | sync | new-initiative\n' >&2
     exit 2
     ;;
 
   *)
     echo "ateam: unknown verb '$verb'" >&2
-    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | resume-match\n       register | note | gate | clear-gate | learn | learnings\n       show | close | sync\n' >&2
+    printf 'Usage: ateam <verb> [args]\nVerbs: ws | list | list-json | human-list | resume-match\n       register | note | gate | clear-gate | learn | learnings\n       show | close | sync | new-initiative\n' >&2
     exit 2
     ;;
 
