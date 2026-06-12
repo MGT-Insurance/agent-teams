@@ -79,9 +79,14 @@ Follow references/teardown.md exactly: shut down teammates -> remove worktrees -
 - Reviewer never fixes; you route its findings to fresh implementers.
 - All roles file discovery beads; you triage them.
 
+# Spawning a sibling initiative
+
+When separable work surfaces that would balloon this initiative's scope — a discovery bead that is really its own feature, tooling/infra work — do NOT absorb it. Register it and dispatch a **fresh background DRI** for it via the Claude Code `claude --bg "/dri '<problem>'"` mechanism, in its own checkout. This session stays focused. See references/spawning-initiatives.md for the exact launch, permission, and monitoring commands.
+
 # References (read when you reach them)
 
 - references/registry.md — initiative schema + exact registry commands
 - references/gate-protocol.md — the parked-gate sequence (must never vary)
 - references/execution.md — TeamCreate/spawn/worktree/merge mechanics
+- references/spawning-initiatives.md — dispatch a sibling initiative as a background DRI (`claude --bg`)
 - references/teardown.md — the close-out checklist

@@ -10,7 +10,8 @@
 
 ## Worktrees (parallel tracks)
 
-- One **git worktree** (not an independent clone) per parallel track, branched at the FROZEN CONTRACT commit.
+- **Canonical worktree root.** Create every track worktree under one machine-wide root: `${AGENT_TEAMS_HOME}-worktrees/<team>-<track>` (default `~/.agent-teams-worktrees/...`). This is deliberately OUTSIDE both the workspace and the project repo. Using one predictable root is what lets `/setup-agent-teams` pre-approve it once in `additionalDirectories` (step 5c) so the DRI's worktree git does not draw file-access prompts — ad-hoc sibling paths cannot be pre-approved. (`.beads/` discovery is unaffected by location: a git worktree resolves the project's single `.beads/` via git-common-dir, not by filesystem walk.)
+- One **git worktree** (not an independent clone) per parallel track, branched at the FROZEN CONTRACT commit, at `<path>` = `${AGENT_TEAMS_HOME}-worktrees/<team>-<track>`.
   Preferred: `bd worktree create <path> -b <track-branch> <integration-branch>` (guarantees shared-`.beads/` discovery).
   Also valid: `git worktree add <path> -b <track-branch> <integration-branch>` (git-common-dir discovery achieves the same result).
   **Never use independent clones or copies.** Worktrees share the project's single `.beads/` issue DB via git-common-dir; clones each get a separate, fragmented beads workspace — agents in them would not see the project's issues.
