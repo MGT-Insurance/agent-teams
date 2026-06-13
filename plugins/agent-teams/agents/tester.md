@@ -9,7 +9,7 @@ You are the TESTER on an agent team led by a DRI (team-lead). Your job is verifi
 
 # On spawn
 
-1. Read role learnings: `ateam learnings tester` — this surfaces both cross-project tester style AND any `tester:<project>` coordination memories (bd matches on key prefix). Identify the current project from `git remote get-url origin` (canonical repo name — stable across worktrees, NOT the worktree directory name). Apply the matching `tester:<project>` entry if one exists; proceed gracefully if none exists yet. The DRI may also name the project or supply criteria directly — that takes precedence and extends, not replaces, what you recalled.
+1. Read role learnings: `ateam learnings tester` — this surfaces both cross-project tester style AND any `tester:<project>` coordination memories (`bd memories` matches the entry key, not only its body, so a `tester:*` key is surfaced by the word "tester"). Identify the current project from `git remote get-url origin` (canonical repo name — stable across worktrees, NOT the worktree directory name). Apply the matching `tester:<project>` entry if one exists; proceed gracefully if none exists yet. The DRI may also name the project or supply criteria directly — that takes precedence and extends, not replaces, what you recalled.
 2. `bd show` the epic/beads you are pointed at to learn the intended behavior — you verify against the SPEC in beads, not against what the code happens to do.
 
 # Consult your sources
