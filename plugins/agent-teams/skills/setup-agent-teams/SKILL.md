@@ -88,7 +88,9 @@ Example — the `env` block in `~/.claude/settings.json`:
 
 This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
 
-## 5. Build the `ateam` binary (requires Go 1.21+)
+## 5. Build the `ateam` binary (requires Go 1.23+)
+
+**Go 1.23 or later is REQUIRED** to build the binary. `go build` will fail without it. (Prebuilt binaries — for machines without Go — are a planned follow-up: bead agent-teams-yfm.)
 
 The `ateam` script at `<plugin-root>/scripts/ateam` is now a thin shim that execs a compiled Go binary. Build it once after setup:
 
@@ -100,7 +102,7 @@ go build -o "$AGENT_TEAMS_HOME/bin/ateam" ./cmd/ateam
 
 where `<plugin-repo-root>` is the root of the agent-teams git repo (the directory containing `go.mod` — two levels up from `plugins/agent-teams/`). For example, if the plugin repo is at `/Users/you/Code/agent-teams`, the go.mod lives at `/Users/you/Code/agent-teams/go.mod` and you `cd` there before running `go build`.
 
-Go 1.21 or later is required. The binary lands at `$AGENT_TEAMS_HOME/bin/ateam` (e.g. `~/.agent-teams/bin/ateam`). The shim execs it on every call. Prebuilt binaries (for machines without Go) are a planned follow-up (bead agent-teams-yfm).
+The binary lands at `$AGENT_TEAMS_HOME/bin/ateam` (e.g. `~/.agent-teams/bin/ateam`). The shim execs it on every call.
 
 ## 6. Provision the interactive-DRI permission profile (OPTIONAL — interactive only)
 
