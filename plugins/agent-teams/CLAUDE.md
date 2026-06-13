@@ -2,7 +2,9 @@
 
 This plugin hard-requires **beads** (`bd`) — all work tracking is beads-first. Never use TodoWrite/TaskCreate/markdown TODO lists in agent-teams workflows.
 
-**Global workspace:** `~/.agent-teams` — a git-backed beads workspace holding role learnings and the initiative registry (one bd issue per initiative). Access is via `ateam`, a Go binary installed on PATH by `/setup-agent-teams` via `go install ./cmd/ateam`. Skills call bare `ateam`; the single allowlist entry is `Bash(ateam:*)`. If the workspace does not exist or `ateam` is not found, run `/setup-agent-teams`.
+**Global workspace:** `~/.agent-teams` — a git-backed beads workspace holding role learnings and the initiative registry (one bd issue per initiative). Access is via `ateam`, which ships as prebuilt per-platform binaries in the plugin `bin/` (auto-added to PATH by Claude Code); `bin/ateam` is the POSIX dispatch wrapper that selects the right binary for the current platform. Skills call bare `ateam`; the single allowlist entry is `Bash(ateam:*)`. If the workspace does not exist or `ateam` is not found, run `/setup-agent-teams`.
+
+**DEV:** after editing `cmd/ateam`, regenerate the binaries with `scripts/build-binaries.sh` and commit `plugins/agent-teams/bin/`.
 
 ## 🚨 CARDINAL RULE — two beads databases, NEVER confuse them
 

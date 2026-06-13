@@ -1,0 +1,32 @@
+#!/bin/sh
+# POSIX dispatch wrapper — selects the prebuilt ateam binary for the current
+# platform and exec's it.  Claude Code auto-adds a plugin's bin/ to the Bash
+# PATH, so skills call bare `ateam` and land here.
+set -eu
+
+dir="$(cd "$(dirname "$0")" && pwd)"
+
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+raw_arch="$(uname -m)"
+case "$raw_arch" in
+    x86_64)  ARCH=amd64 ;;
+    aarch64) ARCH=arm64 ;;
+    arm64)   ARCH=arm64 ;;
+    *)       ARCH="$raw_arch" ;;
+esac
+
+target="$dir/ateam-${OS}-${ARCH}"
+
+if [ -x "$target" ]; then
+    exec "$target" "$@"
+fi
+
+printf 'ateam: unsupported platform %s-%s\n' "$OS" "$ARCH" >&2
+printf 'available binaries:\n' >&2
+for b in "$dir"/ateam-*; do
+    case "$b" in
+        *ateam-*-*) printf '  %s\n' "$(basename "$b")" >&2 ;;
+    esac
+done
+exit 1

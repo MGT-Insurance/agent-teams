@@ -88,34 +88,27 @@ Example — the `env` block in `~/.claude/settings.json`:
 
 This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
 
-## 5. Install `ateam` on PATH (requires Go 1.26+)
+## 5. Verify `ateam` is available
 
-**Go 1.26 or later is REQUIRED** to install the binary. `go install` will fail without it. (Prebuilt binaries — for machines without Go — are a planned follow-up: bead agent-teams-yfm.)
+`ateam` ships as prebuilt per-platform binaries inside the plugin's `bin/` directory. Claude Code automatically adds a plugin's `bin/` to the Bash PATH — no build step, no `go install`, and no PATH configuration is needed.
 
-Install from the repo root (the directory containing `go.mod`):
-
-```bash
-cd <plugin-repo-root>
-go install ./cmd/ateam
-```
-
-where `<plugin-repo-root>` is the root of the agent-teams git repo. For example, if the plugin repo is at `/Users/you/Code/agent-teams`, `go.mod` lives there and you `cd` there before running `go install`.
-
-This lands the binary in your Go bin directory (`go env GOBIN`, or `$(go env GOPATH)/bin` when GOBIN is empty).
-
-**Verify it is on PATH:**
+Verify it works:
 
 ```bash
-command -v ateam
+ateam ws
 ```
 
-- If it resolves (prints a path) → done; `ateam` is on PATH.
-- If not found → print the install directory:
-  ```bash
-  go env GOBIN   # if non-empty, that is the install dir
-  go env GOPATH  # if GOBIN is empty, the dir is $(go env GOPATH)/bin
-  ```
-  Add that directory to your `PATH` (e.g. in `~/.zshrc` or `~/.bashrc`), then re-run `command -v ateam` to confirm.
+Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`). If the command is not found, confirm the plugin is installed and the `bin/` directory is on PATH.
+
+### Allowlist `ateam`
+
+Add the following entry to the `permissions.allow` array in `~/.claude/settings.json` so workspace operations do not prompt:
+
+```
+"Bash(ateam:*)"
+```
+
+This single entry covers all `ateam` subcommands regardless of which per-platform binary is selected.
 
 ## 6. Provision the interactive-DRI permission profile (OPTIONAL — interactive only)
 
