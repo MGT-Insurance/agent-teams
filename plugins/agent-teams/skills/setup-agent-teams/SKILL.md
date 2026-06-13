@@ -88,7 +88,29 @@ Example — the `env` block in `~/.claude/settings.json`:
 
 This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
 
-## 5. Provision the interactive-DRI permission profile (OPTIONAL — interactive only)
+## 5. Verify `ateam` is available
+
+`ateam` ships as prebuilt per-platform binaries inside the plugin's `bin/` directory. Claude Code automatically adds a plugin's `bin/` to the Bash PATH — no build step, no `go install`, and no PATH configuration is needed.
+
+Verify it works:
+
+```bash
+ateam ws
+```
+
+Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`). If the command is not found, confirm the plugin is installed and the `bin/` directory is on PATH.
+
+### Allowlist `ateam`
+
+Add the following entry to the `permissions.allow` array in `~/.claude/settings.json` so workspace operations do not prompt:
+
+```
+"Bash(ateam:*)"
+```
+
+This single entry covers all `ateam` subcommands regardless of which per-platform binary is selected.
+
+## 6. Provision the interactive-DRI permission profile (OPTIONAL — interactive only)
 
 This whole step is **only for interactive DRI sessions** — the human-facing session
 that runs `/dri` in a terminal. Backgrounded DRIs and Phase-4 teammates run with
@@ -102,29 +124,27 @@ prompted on essentially every git command. The three entries below quiet that:
 the `ateam`/`bd` allowlist, a **scoped git allowlist**, and a **canonical worktree
 root** in `additionalDirectories`.
 
-### 5a. Allowlist the `ateam` script
+### 6a. Allowlist `ateam`
 
-Allowlist the `ateam` script path so workspace operations do not prompt.
+Allowlist the bare `ateam` command so workspace operations do not prompt.
 
-Resolve the absolute path now. This skill lives at `<plugin-root>/skills/setup-agent-teams/SKILL.md`, so the script is two levels up then `scripts/ateam`: `<plugin-root>/scripts/ateam`. For example, if the plugin repo is at `/Users/you/Code/agent-teams`, the path is `/Users/you/Code/agent-teams/plugins/agent-teams/scripts/ateam`.
-
-To allowlist (interactive DRI sessions), tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`, substituting the real absolute path you resolved:
+Tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`:
 
 ```
-"Bash(/Users/you/Code/agent-teams/plugins/agent-teams/scripts/ateam:*)"
+"Bash(ateam:*)"
 ```
 
-Note: this path changes if the plugin is reinstalled at a new location — re-allowlist then. (WS3 will ship `ateam` as a real CLI on PATH, removing this friction.)
+This single entry covers all `ateam` subcommands regardless of where the binary lives on PATH — no path to resolve, no re-allowlisting after reinstall.
 
-Verify the script works (using the resolved absolute path):
+Verify it works:
 
 ```bash
-<plugin-root>/scripts/ateam ws
+ateam ws
 ```
 
 Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`).
 
-### 5b. Allowlist git (scoped — standard tool, not a wrapper)
+### 6b. Allowlist git (scoped — standard tool, not a wrapper)
 
 The DRI calls **standard `git`** directly — that is deliberate; git is not wrapped in
 a bespoke CLI just to dodge prompts. To keep it quiet, add a **scoped** set of git
@@ -152,7 +172,7 @@ forms (`git reset --hard`, `git clean`, force-push) to still prompt the human �
 interactive DRI is the human's safety surface, so it should stay prompt-capable for
 the dangerous operations while the routine integration verbs run quietly.
 
-### 5c. Pre-approve the DRI worktree root
+### 6c. Pre-approve the DRI worktree root
 
 DRI implementer worktrees live under one canonical root (see
 `skills/dri/references/execution.md`): **`<AGENT_TEAMS_HOME>-worktrees`** — e.g.
@@ -169,39 +189,39 @@ in `~/.claude/settings.json`:
 }
 ```
 
-With 5a–5c in place, an interactive DRI runs its integration git silently and only
+With 6a–6c in place, an interactive DRI runs its integration git silently and only
 prompts the human for genuinely destructive operations.
 
-## 6. Smoke test
+## 7. Smoke test
 
-Run on BOTH paths (clone or fresh) after step 5 completes. Use the resolved absolute path to `<plugin-root>/scripts/ateam` (the same path you identified in step 5) for every `<ateam>` call below.
+Run on BOTH paths (clone or fresh) after step 6 completes.
 
 1. Write a test memory to a temp file and record it. Use the Write tool to create `/tmp/ateam-smoke.txt` with content:
    `setup smoke test. WHY: verify store. HOW TO APPLY: n/a.`
 
    Then record it:
    ```bash
-   <plugin-root>/scripts/ateam learn dri setup-smoke --file /tmp/ateam-smoke.txt
+   ateam learn dri setup-smoke --file /tmp/ateam-smoke.txt
    ```
 
 2. Verify it appears:
    ```bash
-   <plugin-root>/scripts/ateam learnings dri
+   ateam learnings dri
    ```
    Expected: shows `dri:setup-smoke`.
 
 3. Sync roundtrip:
    ```bash
-   <plugin-root>/scripts/ateam sync
+   ateam sync
    ```
    Expected: push succeeds.
 
 4. Clean up the smoke entry and push again to leave the store clean:
    ```bash
    bd -C ~/.agent-teams forget dri:setup-smoke
-   <plugin-root>/scripts/ateam sync
+   ateam sync
    ```
 
-## 7. Report
+## 8. Report
 
-Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (resolved `ateam` script path, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, and that `/dri` is ready to use.
+Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, and that `/dri` is ready to use.
