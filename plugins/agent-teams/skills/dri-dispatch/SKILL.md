@@ -14,7 +14,7 @@ For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 
 ## The `ateam` tool
 
-`ateam` is on PATH — installed by `/setup-agent-teams` via `go install ./cmd/ateam`. Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
+`ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
 
 **🚨 CARDINAL RULE.** The GLOBAL workspace (reached ONLY via `ateam`) holds ONLY initiative-tracking beads and role memories. Registering an initiative is the ONE write you make there, and `ateam register` is the only sanctioned way to do it — NEVER `bd -C <global> create`. All work beads (the planner's decomposition, feature/task/discovery beads) live in the PROJECT repo and are created by the background DRI and its team, not here.
 

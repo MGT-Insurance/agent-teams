@@ -306,7 +306,12 @@ func TestDispatch_IDOnly(t *testing.T) {
 	repoDir := t.TempDir()
 
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error { return nil },
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-idonly1"
+			}
+			return nil
+		},
 	}
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, stdout, _ := makeCtx(fbd, home)
@@ -353,6 +358,9 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 						gotBody = string(b)
 					}
 				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-body1"
 			}
 			return nil
 		},
@@ -467,6 +475,98 @@ func TestDispatch_BodyFile_Missing(t *testing.T) {
 	}
 }
 
+// TestDispatch_BodyFile_Missing_RemovesWorktree verifies that when --body-file
+// cannot be read (worktree already created), the worktree is cleaned up before
+// returning the usage error.
+func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var removedWt string
+	fg := &fakeGit{
+		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
+		removeWorktreeFn: func(repoRoot, wtPath string) error {
+			removedWt = wtPath
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchCommand{git: fg}
+
+	err := cmd.Run(ctx, []string{
+		"--problem", "Some work",
+		"--slug", "some-work",
+		"--repo", repoDir,
+		"--no-launch",
+		"--body-file", "/no/such/file/ever.txt",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing --body-file, got nil")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2 (UsageError), got %d", code)
+	}
+
+	expectedWt := filepath.Join(home+"-worktrees", "some-work")
+	if removedWt != expectedWt {
+		t.Errorf("RemoveWorktree called with wt=%q, want %q", removedWt, expectedWt)
+	}
+}
+
+// TestDispatch_EmptyID_RemovesWorktree verifies that when bd create returns
+// JSON with an empty id, dispatch removes the just-created worktree and returns
+// an error — no launch is attempted, no initiative_id line is printed.
+func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var removedWt string
+	fg := &fakeGit{
+		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
+		removeWorktreeFn: func(repoRoot, wtPath string) error {
+			removedWt = wtPath
+			return nil
+		},
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			// Return JSON with an empty id field.
+			if issue, ok := dst.(*bd.Issue); ok {
+				return json.Unmarshal([]byte(`{"id":"","title":"Some work"}`), issue)
+			}
+			return nil
+		},
+	}
+
+	ctx, stdout, _ := makeCtx(fbd, home)
+	cmd := &dispatchCommand{git: fg}
+
+	err := cmd.Run(ctx, []string{
+		"--problem", "Some work",
+		"--slug", "some-work",
+		"--repo", repoDir,
+		// intentionally no --no-launch so launchBGSession would be reached if
+		// the guard were absent; the error must fire before any launch attempt.
+	})
+	if err == nil {
+		t.Fatal("expected error for empty issue id, got nil")
+	}
+	if !strings.Contains(err.Error(), "bd create returned no id") {
+		t.Errorf("error missing 'bd create returned no id': %v", err)
+	}
+
+	expectedWt := filepath.Join(home+"-worktrees", "some-work")
+	if removedWt != expectedWt {
+		t.Errorf("RemoveWorktree called with wt=%q, want %q", removedWt, expectedWt)
+	}
+
+	// No initiative_id line must have been printed.
+	if strings.Contains(stdout.String(), "initiative_id:") {
+		t.Errorf("stdout must not contain 'initiative_id:' on empty-id error:\n%s", stdout.String())
+	}
+}
+
 // TestDispatch_BodyFile_Omitted verifies that omitting --body-file produces the
 // schema-only body unchanged (backward-compat).
 func TestDispatch_BodyFile_Omitted(t *testing.T) {
@@ -487,6 +587,9 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 						gotBody = string(b)
 					}
 				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-omit1"
 			}
 			return nil
 		},

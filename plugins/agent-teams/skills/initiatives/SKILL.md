@@ -3,7 +3,7 @@ name: initiatives
 description: Machine-wide dashboard of agent-teams initiatives. Renders every registered initiative as a compact table (status icon, id, title, phase, where) and footnotes the questions for any parked waiting on a human. Use when asked "what's running", "what needs me", "initiative status", or /initiatives.
 ---
 
-**The `ateam` tool.** `ateam` is on PATH — installed by `/setup-agent-teams` via `go install ./cmd/ateam`. Call it as bare `ateam` everywhere.
+**The `ateam` tool.** `ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere.
 
 Render the initiative dashboard from the global workspace. If `ateam ws` fails or `ateam` is not found, say so and point at /setup-agent-teams.
 

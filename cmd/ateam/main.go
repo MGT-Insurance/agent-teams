@@ -1,6 +1,5 @@
 // Command ateam is the agent-teams workspace-access CLI.
-// It replaces the plugins/agent-teams/scripts/ateam bash script and is
-// eventually exec'd by the shim at that path.
+// It replaces the plugins/agent-teams/scripts/ateam bash script.
 //
 // Usage: ateam <verb> [args…]
 package main

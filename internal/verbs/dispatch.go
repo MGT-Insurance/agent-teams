@@ -63,7 +63,7 @@ func (c *newInitiativeCommand) Run(ctx *cli.Context, args []string) error {
 // bypassPermissions "/dri <driArg>" with Dir set to dir.
 func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
-		return cli.Depf("ateam new-initiative: 'claude' not found in PATH")
+		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
 	cmd := exec.Command("claude", "--bg", "-n", name, "--permission-mode", "bypassPermissions", "/dri "+driArg)
@@ -186,6 +186,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 	if *bodyFile != "" {
 		extra, err := os.ReadFile(*bodyFile)
 		if err != nil {
+			_ = c.git.RemoveWorktree(repoRoot, wtPath)
 			return cli.Usagef("dispatch: --body-file %q: %v", *bodyFile, err)
 		}
 		if len(strings.TrimSpace(string(extra))) > 0 {
@@ -220,6 +221,11 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 			return fmt.Errorf("%w; also failed to remove worktree %s (remove manually): %v", regErr, wtPath, rmErr)
 		}
 		return regErr
+	}
+
+	if issue.ID == "" {
+		_ = c.git.RemoveWorktree(repoRoot, wtPath)
+		return fmt.Errorf("dispatch: bd create returned no id (does this bd support --json on create?)")
 	}
 
 	// 8. Launch background DRI unless --no-launch.
