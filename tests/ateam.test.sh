@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# Tests for the `ateam` workspace-access script.
+# Tests for the `ateam` binary.
 # Mirrors tests/hook-compact-recovery.test.sh structure.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/plugins/agent-teams/scripts/ateam"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export AGENT_TEAMS_HOME="$T/ws"
 mkdir -p "$AGENT_TEAMS_HOME"
 git -C "$AGENT_TEAMS_HOME" init -q
 (cd "$AGENT_TEAMS_HOME" && bd init --prefix at --non-interactive >/dev/null)
 
-# Build the Go binary so the shim (which execs $AGENT_TEAMS_HOME/bin/ateam) can find it.
-mkdir -p "$AGENT_TEAMS_HOME/bin"
-go build -C "$ROOT" -o "$AGENT_TEAMS_HOME/bin/ateam" ./cmd/ateam
+# Build the Go binary into a temp bin dir; SCRIPT points at it directly so
+# all invocations below work without the binary being on the system PATH.
+mkdir -p "$T/bin"
+go build -C "$ROOT" -o "$T/bin/ateam" ./cmd/ateam
+SCRIPT="$T/bin/ateam"
 
 # ── Case 1: ws verb prints the resolved workspace path ────────────────────────
 out=$("$SCRIPT" ws)
@@ -125,11 +126,10 @@ remaining_bc=$("$SCRIPT" list-json | jq -r --arg id "$bc_id" '.[] | select(.id =
 [ -z "$remaining_bc" ] || { echo "FAIL case11a: bare-closed issue '$bc_id' still in list-json"; exit 1; }
 
 # ── Case 11b: exit-4 guard (uninitialized workspace → read verb exits 4) ─────
-# The shim checks $AGENT_TEAMS_HOME/bin/ateam exists before execing; copy the
-# built binary there so the shim passes through and the Go binary's own
-# workspace-init guard (exit 4) fires.  No .beads/ → uninitialized.
-mkdir -p "$T/nope/bin"
-cp "$AGENT_TEAMS_HOME/bin/ateam" "$T/nope/bin/ateam"
+# The old shim had an exit-5 "binary not built" guard that is now gone.
+# Test the binary's own uninitialized-workspace guard (exit 4) directly by
+# pointing AGENT_TEAMS_HOME at a directory with no .beads/.
+mkdir -p "$T/nope"
 ec=0; AGENT_TEAMS_HOME="$T/nope" "$SCRIPT" list 2>/dev/null || ec=$?
 [ "$ec" -eq 4 ] || { echo "FAIL case11b: uninitialized workspace exit code $ec, want 4"; exit 1; }
 

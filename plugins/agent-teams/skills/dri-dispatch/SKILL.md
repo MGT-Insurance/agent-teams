@@ -14,16 +14,16 @@ For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 
 ## The `ateam` tool
 
-Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/dri-dispatch/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Use the literal path each time — do not assign it to a shell variable.
+`ateam` is on PATH — installed by `/setup-agent-teams` via `go install ./cmd/ateam`. Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
 
-**🚨 CARDINAL RULE.** The GLOBAL workspace (reached ONLY via `<ateam>`) holds ONLY initiative-tracking beads and role memories. Registering an initiative is the ONE write you make there, and `<ateam> register` is the only sanctioned way to do it — NEVER `bd -C <global> create`. All work beads (the planner's decomposition, feature/task/discovery beads) live in the PROJECT repo and are created by the background DRI and its team, not here.
+**🚨 CARDINAL RULE.** The GLOBAL workspace (reached ONLY via `ateam`) holds ONLY initiative-tracking beads and role memories. Registering an initiative is the ONE write you make there, and `ateam register` is the only sanctioned way to do it — NEVER `bd -C <global> create`. All work beads (the planner's decomposition, feature/task/discovery beads) live in the PROJECT repo and are created by the background DRI and its team, not here.
 
 ## Steps
 
 ### 1. Preflight
 
-- Resolve the absolute path to `<ateam>`. Verify it works: `<ateam> ws` prints the workspace path. If it fails, tell the human to run `/setup-agent-teams` and stop.
-- Run `<ateam> audit`. It must report clean before you add anything.
+- Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
+- Run `ateam audit`. It must report clean before you add anything.
 
 ### 2. Scope the initiative
 
@@ -39,7 +39,7 @@ The LLM's job here is **judgment only** — everything mechanical is handled by 
 Run a single call. Everything deterministic (slugify, git worktree add, initiative register, background DRI launch) is handled inside `ateam dispatch`:
 
 ```bash
-<ateam> dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>]
+ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>]
 ```
 
 `--problem` is the one-line title. `--body-file` carries the full context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context to pass.
@@ -71,7 +71,7 @@ claude stop <session-id>        # abort it early (the DRI self-stops when done �
 
 The background DRI self-stops its own session when it finishes — after Phase 6 teardown is complete, it runs `claude stop <its-own-id>` as its final action and will appear as `stopped` in `claude agents`. You do NOT need to stop it manually when it completes normally; `claude stop <session-id>` is only needed to abort early.
 
-Any human gate the background DRI parks on surfaces through `<ateam> human-list` and the `/initiatives` dashboard — so a needed decision is discoverable without tailing logs.
+Any human gate the background DRI parks on surfaces through `ateam human-list` and the `/initiatives` dashboard — so a needed decision is discoverable without tailing logs.
 
 ## Permissions
 

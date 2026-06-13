@@ -20,49 +20,49 @@ Delegate all non-trivial implementation to the team. You may act directly only o
 
 # Setup
 
-**The `ateam` tool.** Your plugin directory is injected at load time. The workspace tool is at `<plugin-root>/scripts/ateam` (from a skill at `plugins/agent-teams/skills/dri/SKILL.md`, that's two levels up from the skill dir, then `scripts/ateam`). Resolve this to its absolute path once and write that LITERAL absolute path wherever this document shows `<ateam>` below. Use the literal path each time — do not assign it to a shell variable.
+**The `ateam` tool.** `ateam` is on PATH — installed by `/setup-agent-teams` via `go install ./cmd/ateam`. Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
 
 No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
-**🚨 CARDINAL RULE — two beads databases, never confuse them.** The GLOBAL workspace (`~/.agent-teams`, reached ONLY via `<ateam>`) holds ONLY initiative-tracking beads (one per initiative, created by `<ateam> register`) and role memories. ALL work beads — the planner's decomposition, contract beads, feature/task beads, `--label=discovery` beads — live in the PROJECT repo's `.beads` (plain `bd create`, which targets the project via cwd). NEVER create a work bead in the global workspace; NEVER touch it with a raw `bd -C`. Tell every agent this, and enforce it: run `<ateam> audit` (it flags any leaked work bead in the global workspace) — the workspace must always audit clean.
+**🚨 CARDINAL RULE — two beads databases, never confuse them.** The GLOBAL workspace (`~/.agent-teams`, reached ONLY via `ateam`) holds ONLY initiative-tracking beads (one per initiative, created by `ateam register`) and role memories. ALL work beads — the planner's decomposition, contract beads, feature/task beads, `--label=discovery` beads — live in the PROJECT repo's `.beads` (plain `bd create`, which targets the project via cwd). NEVER create a work bead in the global workspace; NEVER touch it with a raw `bd -C`. Tell every agent this, and enforce it: run `ateam audit` (it flags any leaked work bead in the global workspace) — the workspace must always audit clean.
 
 ## Phase 0 — Preflight
 
-- Resolve the absolute path to `<ateam>` from your plugin base directory (two levels up from this skill file, then `scripts/ateam`). Verify it works: `<ateam> ws` should print the workspace path. If the script is not found or fails, tell the human to run `/setup-agent-teams` and stop.
+- Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at teardown, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
-- Run `<ateam> audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.
+- Run `ateam audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.
 
 ## Phase 1 — Register or resume
 
-**Invoked with an initiative id (e.g. `at-16c`) -> resume that initiative directly.** This is the form a background DRI receives from `/agent-teams:dri-dispatch`: the dispatcher already registered the initiative and passes its id. If the argument is a single token shaped like an initiative id, look it up with `<ateam> show <id>`; if it resolves to a registered initiative, that is your initiative — recover its state (notes, `<ateam> human-list`, the project repo's beads, branch/PR state) and drive it. Do NOT re-register, and skip the cwd match below; resuming by id rather than by `$PWD` removes any dependence on exact path matching. (If the token does not resolve to a registered initiative, fall through and treat the argument as a problem statement.)
+**Invoked with an initiative id (e.g. `at-16c`) -> resume that initiative directly.** This is the form a background DRI receives from `/agent-teams:dri-dispatch`: the dispatcher already registered the initiative and passes its id. If the argument is a single token shaped like an initiative id, look it up with `ateam show <id>`; if it resolves to a registered initiative, that is your initiative — recover its state (notes, `ateam human-list`, the project repo's beads, branch/PR state) and drive it. Do NOT re-register, and skip the cwd match below; resuming by id rather than by `$PWD` removes any dependence on exact path matching. (If the token does not resolve to a registered initiative, fall through and treat the argument as a problem statement.)
 
 Otherwise, search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 
 ```bash
-<ateam> resume-match "$PWD"
+ateam resume-match "$PWD"
 ```
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
 An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the session (bg DRI: self-stop via `claude stop <id>` as described in Phase 6; interactive: end the turn).
 
-- **Open match found -> resume:** recover state — the initiative's notes, `<ateam> human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
+- **Open match found -> resume:** recover state — the initiative's notes, `ateam human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
 - **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
 - **No open match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases. (A closed initiative for this cwd does NOT block registration — only the no-parameter path below surfaces it.)
 - **No open match + NO problem statement (no-parameter /dri) -> check for a closed match before giving up:**
   ```bash
-  <ateam> resume-match-closed "$PWD"
+  ateam resume-match-closed "$PWD"
   ```
-  - **Closed match found -> surface and gate.** Do not silently ignore it and do not auto-resume. `<ateam> show <id>` to read its close reason / PR link, then run the GATE PROTOCOL: ask the human whether to **resume the existing initiative** (reopen it with `<ateam> reopen <id>` and recover state as above) or **start a new one** (register fresh). This is the common case for a no-param /dri in a delivered worktree.
+  - **Closed match found -> surface and gate.** Do not silently ignore it and do not auto-resume. `ateam show <id>` to read its close reason / PR link, then run the GATE PROTOCOL: ask the human whether to **resume the existing initiative** (reopen it with `ateam reopen <id>` and recover state as above) or **start a new one** (register fresh). This is the common case for a no-param /dri in a delivered worktree.
   - **No closed match either -> ask the human for a problem statement** (there is genuinely nothing to resume).
 - Either way (resume or register): append a session note (`session N, <date>, interactive|bg`).
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `<ateam> gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions.
+Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions.
 
 ## Phase 3 — Plan
 
@@ -70,7 +70,7 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 4 — Execute
 
-- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN git worktree — not a clone — branched at the contract tip; see references/execution.md for the worktree mandate), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. **Pass the resolved absolute path to `<ateam>` explicitly in each spawn instruction** so agents can invoke the workspace tool without needing to re-resolve it themselves.
+- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN git worktree — not a clone — branched at the contract tip; see references/execution.md for the worktree mandate), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. Agents call bare `ateam` directly — it is on PATH, no path to pass.
 - The behavioral guardrails that matter under bypass: role rules (never push, never merge, never deploy — the DRI exclusively owns integration) and worktree isolation (each implementer confined to its own worktree). These are enforced by the role agent definitions and by you; bypass removes permission prompts, not role discipline.
 - Implementers are EPHEMERAL: spawn per work-package; shut down (SendMessage shutdown_request) once their work is verified merged. Spawn fresh ones for fixes.
 - You own integration: merge each track into the integration branch as it completes; resolve conflicts yourself; advance worktrees when the contract moves.
@@ -83,7 +83,7 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 
 ## Phase 6 — Teardown
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `<ateam> learn dri <slug> --file <tmpfile>`) -> write the final registry note.
+Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
 
 **Background sessions only — self-stop as the very last action.** When `$CLAUDE_JOB_DIR` is set (the bg-mode signal; interactive DRIs will not have it), after ALL teardown steps are complete and the terminal state is DONE (PR delivered with teardown complete, or a resume that just ran the close step, or a resume where awaiting-merge is still open and the human did not ask for more) and no parked gate is pending: stop this session by running `claude stop <id>`, where `<id>` is the final path segment of `$CLAUDE_JOB_DIR` (e.g. if `$CLAUDE_JOB_DIR` is `/Users/x/.claude/jobs/c7b8e7c0`, the id is `c7b8e7c0` — inline it literally, do NOT use command substitution like `$(basename ...)` as that trips an unsilenceable safety prompt). This is the session's very last action — it ends the process. Interactive DRIs never self-stop; the human ends the session.
 

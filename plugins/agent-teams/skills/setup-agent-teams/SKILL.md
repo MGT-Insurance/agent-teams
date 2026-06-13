@@ -88,21 +88,34 @@ Example — the `env` block in `~/.claude/settings.json`:
 
 This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
 
-## 5. Build the `ateam` binary (requires Go 1.26+)
+## 5. Install `ateam` on PATH (requires Go 1.26+)
 
-**Go 1.26 or later is REQUIRED** to build the binary. `go build` will fail without it. (Prebuilt binaries — for machines without Go — are a planned follow-up: bead agent-teams-yfm.)
+**Go 1.26 or later is REQUIRED** to install the binary. `go install` will fail without it. (Prebuilt binaries — for machines without Go — are a planned follow-up: bead agent-teams-yfm.)
 
-The `ateam` script at `<plugin-root>/scripts/ateam` is now a thin shim that execs a compiled Go binary. Build it once after setup:
+Install from the repo root (the directory containing `go.mod`):
 
 ```bash
-mkdir -p "$AGENT_TEAMS_HOME/bin"
 cd <plugin-repo-root>
-go build -o "$AGENT_TEAMS_HOME/bin/ateam" ./cmd/ateam
+go install ./cmd/ateam
 ```
 
-where `<plugin-repo-root>` is the root of the agent-teams git repo (the directory containing `go.mod` — two levels up from `plugins/agent-teams/`). For example, if the plugin repo is at `/Users/you/Code/agent-teams`, the go.mod lives at `/Users/you/Code/agent-teams/go.mod` and you `cd` there before running `go build`.
+where `<plugin-repo-root>` is the root of the agent-teams git repo. For example, if the plugin repo is at `/Users/you/Code/agent-teams`, `go.mod` lives there and you `cd` there before running `go install`.
 
-The binary lands at `$AGENT_TEAMS_HOME/bin/ateam` (e.g. `~/.agent-teams/bin/ateam`). The shim execs it on every call.
+This lands the binary in your Go bin directory (`go env GOBIN`, or `$(go env GOPATH)/bin` when GOBIN is empty).
+
+**Verify it is on PATH:**
+
+```bash
+command -v ateam
+```
+
+- If it resolves (prints a path) → done; `ateam` is on PATH.
+- If not found → print the install directory:
+  ```bash
+  go env GOBIN   # if non-empty, that is the install dir
+  go env GOPATH  # if GOBIN is empty, the dir is $(go env GOPATH)/bin
+  ```
+  Add that directory to your `PATH` (e.g. in `~/.zshrc` or `~/.bashrc`), then re-run `command -v ateam` to confirm.
 
 ## 6. Provision the interactive-DRI permission profile (OPTIONAL — interactive only)
 
@@ -118,24 +131,22 @@ prompted on essentially every git command. The three entries below quiet that:
 the `ateam`/`bd` allowlist, a **scoped git allowlist**, and a **canonical worktree
 root** in `additionalDirectories`.
 
-### 6a. Allowlist the `ateam` script
+### 6a. Allowlist `ateam`
 
-Allowlist the `ateam` script path so workspace operations do not prompt.
+Allowlist the bare `ateam` command so workspace operations do not prompt.
 
-Resolve the absolute path now. This skill lives at `<plugin-root>/skills/setup-agent-teams/SKILL.md`, so the script is two levels up then `scripts/ateam`: `<plugin-root>/scripts/ateam`. For example, if the plugin repo is at `/Users/you/Code/agent-teams`, the path is `/Users/you/Code/agent-teams/plugins/agent-teams/scripts/ateam`.
-
-To allowlist (interactive DRI sessions), tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`, substituting the real absolute path you resolved:
+Tell the human to add the following entry to the `permissions.allow` array in `~/.claude/settings.json`:
 
 ```
-"Bash(/Users/you/Code/agent-teams/plugins/agent-teams/scripts/ateam:*)"
+"Bash(ateam:*)"
 ```
 
-Note: this path changes if the plugin is reinstalled at a new location — re-allowlist then. (`ateam` is now a compiled binary invoked through this shim — the allowlist path is unchanged.)
+This single entry covers all `ateam` subcommands regardless of where the binary lives on PATH — no path to resolve, no re-allowlisting after reinstall.
 
-Verify the script works (using the resolved absolute path):
+Verify it works:
 
 ```bash
-<plugin-root>/scripts/ateam ws
+ateam ws
 ```
 
 Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`).
@@ -190,34 +201,34 @@ prompts the human for genuinely destructive operations.
 
 ## 7. Smoke test
 
-Run on BOTH paths (clone or fresh) after step 6 completes. Use the resolved absolute path to `<plugin-root>/scripts/ateam` (the same path you identified in step 6) for every `<ateam>` call below.
+Run on BOTH paths (clone or fresh) after step 6 completes.
 
 1. Write a test memory to a temp file and record it. Use the Write tool to create `/tmp/ateam-smoke.txt` with content:
    `setup smoke test. WHY: verify store. HOW TO APPLY: n/a.`
 
    Then record it:
    ```bash
-   <plugin-root>/scripts/ateam learn dri setup-smoke --file /tmp/ateam-smoke.txt
+   ateam learn dri setup-smoke --file /tmp/ateam-smoke.txt
    ```
 
 2. Verify it appears:
    ```bash
-   <plugin-root>/scripts/ateam learnings dri
+   ateam learnings dri
    ```
    Expected: shows `dri:setup-smoke`.
 
 3. Sync roundtrip:
    ```bash
-   <plugin-root>/scripts/ateam sync
+   ateam sync
    ```
    Expected: push succeeds.
 
 4. Clean up the smoke entry and push again to leave the store clean:
    ```bash
    bd -C ~/.agent-teams forget dri:setup-smoke
-   <plugin-root>/scripts/ateam sync
+   ateam sync
    ```
 
 ## 8. Report
 
-Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (resolved `ateam` script path, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, and that `/dri` is ready to use.
+Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, and that `/dri` is ready to use.
