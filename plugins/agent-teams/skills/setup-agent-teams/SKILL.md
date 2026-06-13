@@ -88,9 +88,9 @@ Example — the `env` block in `~/.claude/settings.json`:
 
 This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
 
-## 5. Build the `ateam` binary (requires Go 1.23+)
+## 5. Build the `ateam` binary (requires Go 1.26+)
 
-**Go 1.23 or later is REQUIRED** to build the binary. `go build` will fail without it. (Prebuilt binaries — for machines without Go — are a planned follow-up: bead agent-teams-yfm.)
+**Go 1.26 or later is REQUIRED** to build the binary. `go build` will fail without it. (Prebuilt binaries — for machines without Go — are a planned follow-up: bead agent-teams-yfm.)
 
 The `ateam` script at `<plugin-root>/scripts/ateam` is now a thin shim that execs a compiled Go binary. Build it once after setup:
 
