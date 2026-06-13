@@ -380,6 +380,144 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 	}
 }
 
+// ---- dispatch: --body-file appends context after schema lines ---------------
+
+func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	expectedSlug := "add-feature"
+	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
+
+	// Write context to a temp file.
+	ctxFile := filepath.Join(t.TempDir(), "context.txt")
+	contextText := "CONTEXT FROM ERIC\nThis is the full framing.\nKey constraint: must be fast."
+	if err := os.WriteFile(ctxFile, []byte(contextText), 0o600); err != nil {
+		t.Fatalf("write context file: %v", err)
+	}
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				return json.Unmarshal([]byte(`{"id":"at-bf1","title":"Add feature"}`), issue)
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+	cmd := &dispatchCommand{git: fg}
+
+	err := cmd.Run(ctx, []string{
+		"--problem", "Add feature",
+		"--slug", expectedSlug,
+		"--repo", repoDir,
+		"--no-launch",
+		"--body-file", ctxFile,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Schema lines must come first.
+	worktreeLine := "worktree: " + expectedWt
+	worktreeIdx := strings.Index(gotBody, worktreeLine)
+	contextIdx := strings.Index(gotBody, contextText)
+
+	if worktreeIdx < 0 {
+		t.Errorf("body missing worktree line %q:\n%s", worktreeLine, gotBody)
+	}
+	if contextIdx < 0 {
+		t.Errorf("body missing context text:\n%s", gotBody)
+	}
+	if worktreeIdx >= 0 && contextIdx >= 0 && worktreeIdx > contextIdx {
+		t.Errorf("schema worktree line must appear before context block; worktree at %d, context at %d", worktreeIdx, contextIdx)
+	}
+}
+
+// TestDispatch_BodyFile_Missing errors when the file does not exist.
+func TestDispatch_BodyFile_Missing(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchCommand{git: fg}
+
+	err := cmd.Run(ctx, []string{
+		"--problem", "Some work",
+		"--repo", repoDir,
+		"--no-launch",
+		"--body-file", "/no/such/file/ever.txt",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing --body-file, got nil")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2 (UsageError), got %d", code)
+	}
+}
+
+// TestDispatch_BodyFile_Omitted verifies that omitting --body-file produces the
+// schema-only body unchanged (backward-compat).
+func TestDispatch_BodyFile_Omitted(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	expectedSlug := "schema-only"
+	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+	cmd := &dispatchCommand{git: fg}
+
+	err := cmd.Run(ctx, []string{
+		"--problem", "Schema only",
+		"--slug", expectedSlug,
+		"--repo", repoDir,
+		"--no-launch",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Schema lines must be present.
+	if !strings.Contains(gotBody, "worktree: "+expectedWt) {
+		t.Errorf("body missing worktree line:\n%s", gotBody)
+	}
+	if !strings.Contains(gotBody, "mode: bg") {
+		t.Errorf("body missing 'mode: bg':\n%s", gotBody)
+	}
+	// No extra blank line at the end from a missing body-file.
+	if strings.Contains(gotBody, "\n\n") {
+		t.Errorf("schema-only body should not have double newline:\n%q", gotBody)
+	}
+}
+
 // ---- new-initiative: arg validation ----------------------------------------
 
 func TestNewInitiative_MissingDirectory(t *testing.T) {

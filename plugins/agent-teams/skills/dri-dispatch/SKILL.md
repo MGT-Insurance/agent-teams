@@ -30,6 +30,7 @@ Your plugin directory is injected at load time. The workspace tool is at `<plugi
 The LLM's job here is **judgment only** — everything mechanical is handled by `ateam dispatch` in step 3.
 
 - **Problem statement.** Take it from the invocation. If none was given, ask the human — this is the single load-bearing input.
+- **Full context block.** Capture the human's complete framing: constraints, background, relevant decisions already made, and any clarifying-question seeds the background DRI should answer before planning. This mirrors the old "CONTEXT FROM ERIC" block. WHY: the background DRI has no human attached — it recovers all context from the initiative bead via `ateam show <id>`. A bare one-liner starves its clarify phase; a rich context block lets it proceed with the right assumptions. Write the context to a temp file (e.g. `/tmp/ateam-ctx-<slug>.txt`) using the Write tool. If there is genuinely no additional context, skip the file and omit `--body-file`.
 - **Target repo.** The initiative may target a repo OTHER than the one this dispatcher session is sitting in — do not blindly assume cwd. Identify the target directory the human means (explicit in the invocation if they named one, otherwise the current directory). If that yields a single unambiguous repo, pass nothing (dispatch defaults to cwd). Pass `--repo <abs-path>` ONLY when you are not confident: cwd is not inside any repo, the problem clearly refers to a different project you cannot locate, or more than one repo plausibly fits.
 - **Base branch.** Default is the repo's detected default branch (dispatch auto-detects). Pass `--base-branch <b>` only when the human implies a non-default base or there is genuine ambiguity — a wrong base is expensive to unwind.
 
@@ -38,10 +39,12 @@ The LLM's job here is **judgment only** — everything mechanical is handled by 
 Run a single call. Everything deterministic (slugify, git worktree add, initiative register, background DRI launch) is handled inside `ateam dispatch`:
 
 ```bash
-<ateam> dispatch --problem "<one-line problem statement>" [--repo <abs-path>] [--base-branch <branch>]
+<ateam> dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>]
 ```
 
-`dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, or worktree-slug collision. It never prompts. On success it prints:
+`--problem` is the one-line title. `--body-file` carries the full context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context to pass.
+
+`dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, or a `--body-file` path that cannot be read. It never prompts. On success it prints:
 
 ```
 initiative_id: <id>

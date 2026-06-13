@@ -95,7 +95,7 @@ type dispatchCommand struct {
 func (c *dispatchCommand) Name() string { return "dispatch" }
 
 // Run implements: dispatch [--problem <text>] [--repo <path>] [--base-branch <name>]
-// [--slug <kebab>] [--id-only] [--no-launch]
+// [--slug <kebab>] [--body-file <path>] [--id-only] [--no-launch]
 func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam dispatch: not implemented")
@@ -107,6 +107,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 	repo := fs.String("repo", "", "target directory to resolve repo from (default: cwd)")
 	baseBranch := fs.String("base-branch", "", "override base branch (default: detected)")
 	slug := fs.String("slug", "", "kebab-case slug (default: derived from --problem)")
+	bodyFile := fs.String("body-file", "", "path to file whose content is appended to the initiative body after schema lines")
 	idOnly := fs.Bool("id-only", false, "print only the initiative id")
 	noLaunch := fs.Bool("no-launch", false, "create worktree and register, but do not launch claude bg session")
 
@@ -179,6 +180,18 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 		"branch: " + resolvedSlug + "\n" +
 		"team: " + team + "\n" +
 		"mode: bg\n"
+
+	// If --body-file is set, read it and append its content after the schema lines.
+	// Schema lines must stay first (the compaction hook greps for a `worktree:` line).
+	if *bodyFile != "" {
+		extra, err := os.ReadFile(*bodyFile)
+		if err != nil {
+			return cli.Usagef("dispatch: --body-file %q: %v", *bodyFile, err)
+		}
+		if len(strings.TrimSpace(string(extra))) > 0 {
+			body += "\n" + string(extra)
+		}
+	}
 
 	tmpFile, err := os.CreateTemp("", "ateam-dispatch-*.txt")
 	if err != nil {
