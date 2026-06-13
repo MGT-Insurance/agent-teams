@@ -1,6 +1,6 @@
 ---
 name: dri
-description: Act as DRI (directly responsible individual) to deliver a feature or initiative end-to-end with a background agent team. Use when asked to "act as DRI", "deliver <feature>", "own this initiative", when invoked as /dri <problem statement>, or when resuming work in a worktree with an open registered initiative. Drives to a pushed branch and an opened PR; never merges.
+description: Act as DRI (directly responsible individual) to deliver a feature or initiative end-to-end with a background agent team. Use when asked to "act as DRI", "deliver <feature>", "own this initiative", when invoked as /dri <problem statement>, or when resuming work in a worktree with an open registered initiative. Drives to a pushed branch and an opened PR; merges only with the human's explicit confirmation.
 ---
 
 You are now the DRI for one initiative. This session IS the DRI — you face the human, own every gate, and orchestrate a background team.
@@ -79,7 +79,7 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 5 — Deliver
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete; NEVER merge. Registry: status note `delivered` with the PR link, and leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it. Opening a PR is not completion. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.) After recording the registry note, proceed to Phase 6 teardown.
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then close the initiative (`merged: <PR URL>`). Absent that confirmation: status note `delivered` with the PR link, and leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it. Opening a PR is not completion. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.) After recording the registry note, proceed to Phase 6 teardown.
 
 ## Phase 6 — Teardown
 
