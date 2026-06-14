@@ -652,6 +652,86 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 	}
 }
 
+// ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
+
+func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
+	args := bgSessionArgs("my-session", "at-abc123")
+
+	// Locate --append-system-prompt and verify it is immediately followed by
+	// the canonical memoryRoutingRule const.
+	found := false
+	for i, a := range args {
+		if a == "--append-system-prompt" {
+			if i+1 >= len(args) {
+				t.Fatal("--append-system-prompt has no following value in argv")
+			}
+			val := args[i+1]
+			if val != memoryRoutingRule {
+				t.Errorf("value after --append-system-prompt does not match memoryRoutingRule const:\ngot:  %q\nwant: %q", val, memoryRoutingRule)
+			}
+			if !strings.Contains(val, "ateam learn") {
+				t.Errorf("memoryRoutingRule missing 'ateam learn': %q", val)
+			}
+			if !strings.Contains(val, "Never MEMORY.md") {
+				t.Errorf("memoryRoutingRule missing 'Never MEMORY.md': %q", val)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --append-system-prompt; got: %v", args)
+	}
+}
+
+func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
+	name := "my-session"
+	driArg := "at-abc123"
+	args := bgSessionArgs(name, driArg)
+
+	// Required flags and their values must be present in correct positions.
+	checks := []struct {
+		flag string
+		val  string
+	}{
+		{"--bg", ""},
+		{"-n", name},
+		{"--permission-mode", "bypassPermissions"},
+	}
+	for _, c := range checks {
+		if c.val == "" {
+			found := false
+			for _, a := range args {
+				if a == c.flag {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("argv missing flag %q; got: %v", c.flag, args)
+			}
+			continue
+		}
+		found := false
+		for i, a := range args {
+			if a == c.flag && i+1 < len(args) && args[i+1] == c.val {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("argv missing %q %q pair; got: %v", c.flag, c.val, args)
+		}
+	}
+
+	// Positional /dri arg must be last.
+	last := args[len(args)-1]
+	wantLast := "/dri " + driArg
+	if last != wantLast {
+		t.Errorf("last argv element = %q, want %q", last, wantLast)
+	}
+}
+
 func TestNewInitiative_MissingClaude(t *testing.T) {
 	// Only run when 'claude' is NOT in PATH.
 	if _, err := exec.LookPath("claude"); err == nil {

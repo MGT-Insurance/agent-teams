@@ -58,15 +58,39 @@ func (c *newInitiativeCommand) Run(ctx *cli.Context, args []string) error {
 	return launchBGSession(ctx, dir, driArg)
 }
 
+// memoryRoutingRule is the canonical memory-routing instruction appended to
+// every bg-DRI session at harness-instruction altitude so it overrides the
+// built-in file-memory prompt. Source of truth: contract bead agent-teams-8qm.
+const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. ~/.claude/projects/*/memory/). Persistent memory routes by kind:
+- Role/process learnings (transferable across repos) -> ateam learn <role> <slug> --file <tmpfile>, where <role> is dri | planner | implementer | tester | reviewer.
+- User/cross-project preferences & feedback -> ateam learn user <slug> --file <tmpfile>.
+- Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
+Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
+
+// bgSessionArgs returns the argv slice (everything after "claude") for a
+// background DRI launch. Extracted so tests can assert the argv without
+// executing the command.
+func bgSessionArgs(name, driArg string) []string {
+	return []string{
+		"--bg",
+		"-n", name,
+		"--permission-mode", "bypassPermissions",
+		"--append-system-prompt", memoryRoutingRule,
+		"/dri " + driArg,
+	}
+}
+
 // launchBGSession checks for claude, derives the session name from dir's
 // basename, and launches: claude --bg -n <name> --permission-mode
-// bypassPermissions "/dri <driArg>" with Dir set to dir.
+// bypassPermissions --append-system-prompt <memoryRoutingRule> "/dri <driArg>"
+// with Dir set to dir.
 func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
-	cmd := exec.Command("claude", "--bg", "-n", name, "--permission-mode", "bypassPermissions", "/dri "+driArg)
+	args := bgSessionArgs(name, driArg)
+	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout
 	cmd.Stderr = ctx.Stderr
