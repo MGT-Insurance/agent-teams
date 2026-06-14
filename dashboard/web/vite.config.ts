@@ -3,11 +3,11 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 
 // Dev port contract:
-//   Backend (Track A server): http://localhost:8787
-//   Vite dev server:          http://localhost:5173
+//   Backend (server): http://localhost:3001  (server PORT env default — keep in sync)
+//   Vite dev server:  http://localhost:5173
 // The /api proxy forwards all /api/* requests from the frontend to the backend.
 // In production this co-location assumption doesn't apply; serve via a reverse proxy.
-const BACKEND_PORT = 8787;
+const BACKEND_PORT = 3001;
 
 export default defineConfig({
   plugins: [react()],
