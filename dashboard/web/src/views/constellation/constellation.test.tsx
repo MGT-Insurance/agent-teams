@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import type { InitiativeNode } from "@agent-teams/shared";
+import type { InitiativeNode, SessionState } from "@agent-teams/shared";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be hoisted before the component import.
@@ -15,11 +15,13 @@ vi.mock("react-router-dom", () => ({
 // Capture the context value injected by tests.
 let mockSnapshotState: {
   initiatives: InitiativeNode[];
+  unmatchedSessions: SessionState[];
   connectionState: string;
   error: string | null;
   ts: number | null;
 } = {
   initiatives: [],
+  unmatchedSessions: [],
   connectionState: "connected",
   error: null,
   ts: null,
@@ -27,6 +29,13 @@ let mockSnapshotState: {
 
 vi.mock("../../SnapshotContext.js", () => ({
   useSnapshotContext: () => mockSnapshotState,
+}));
+
+// ResizeObserver not available in jsdom — provide a no-op stub.
+global.ResizeObserver = vi.fn().mockImplementation(() => ({
+  observe: vi.fn(),
+  unobserve: vi.fn(),
+  disconnect: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -71,6 +80,21 @@ function makeNode(
   };
 }
 
+function makeOrphan(overrides: Partial<SessionState> & { sessionId?: string } = {}): SessionState {
+  return {
+    pid: 99999,
+    cwd: "/some/unregistered/path",
+    kind: "background",
+    startedAt: Date.now(),
+    sessionId: overrides.sessionId ?? "orphan-session-id-1",
+    status: "idle",
+    id: overrides.id ?? "orphan1",
+    name: overrides.name ?? "orphan-session-name",
+    state: "working",
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -80,13 +104,14 @@ describe("ConstellationView", () => {
     mockNavigate.mockClear();
     mockSnapshotState = {
       initiatives: [],
+      unmatchedSessions: [],
       connectionState: "connected",
       error: null,
       ts: null,
     };
   });
 
-  it("renders empty state when there are no initiatives", () => {
+  it("renders empty state when there are no initiatives or orphans", () => {
     const { container } = render(<ConstellationView />);
     expect(container.textContent).toContain("No initiatives active");
   });
@@ -107,7 +132,7 @@ describe("ConstellationView", () => {
     expect(container.textContent).toContain("stream closed");
   });
 
-  it("renders one SVG node per initiative", () => {
+  it("renders one clickable SVG node per initiative", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
       initiatives: [
@@ -117,7 +142,6 @@ describe("ConstellationView", () => {
       ],
     };
     const { container } = render(<ConstellationView />);
-    // Each node has an aria-label
     const nodes = container.querySelectorAll("[role='button']");
     expect(nodes).toHaveLength(3);
   });
@@ -180,5 +204,186 @@ describe("ConstellationView", () => {
     expect(container.textContent).toContain("reconnecting");
     const nodes = container.querySelectorAll("[role='button']");
     expect(nodes).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Orphan session nodes
+  // ---------------------------------------------------------------------------
+
+  it("renders orphan session nodes with data-orphan-session-id attribute", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "init-1", title: "Tracked" })],
+      unmatchedSessions: [makeOrphan({ sessionId: "orphan-abc", name: "dispatch-orchestrator" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const orphanNode = container.querySelector("[data-orphan-session-id='orphan-abc']");
+    expect(orphanNode).not.toBeNull();
+  });
+
+  it("orphan nodes are not clickable (no role=button)", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [],
+      unmatchedSessions: [makeOrphan({ sessionId: "orphan-xyz" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const buttons = container.querySelectorAll("[role='button']");
+    expect(buttons).toHaveLength(0);
+    const orphan = container.querySelector("[data-orphan-session-id='orphan-xyz']");
+    expect(orphan).not.toBeNull();
+  });
+
+  it("orphan node is labeled with session name", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [],
+      unmatchedSessions: [makeOrphan({ sessionId: "orphan-named", name: "my-orphan-bg" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const orphan = container.querySelector("[data-orphan-session-id='orphan-named']");
+    expect(orphan?.getAttribute("aria-label")).toContain("my-orphan-bg");
+  });
+
+  it("empty state NOT shown when only orphans exist (no initiatives)", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [],
+      unmatchedSessions: [makeOrphan()],
+    };
+    const { container } = render(<ConstellationView />);
+    expect(container.textContent).not.toContain("No initiatives active");
+    const svg = container.querySelector("svg");
+    expect(svg).not.toBeNull();
+  });
+
+  it("data-node-count and data-orphan-count are set on the SVG", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "i1" }), makeNode({ id: "i2" })],
+      unmatchedSessions: [makeOrphan({ sessionId: "o1" }), makeOrphan({ sessionId: "o2" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const svg = container.querySelector("svg");
+    expect(svg?.getAttribute("data-node-count")).toBe("2");
+    expect(svg?.getAttribute("data-orphan-count")).toBe("2");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Badges
+  // ---------------------------------------------------------------------------
+
+  it("needs-human node has the needs-human badge", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "nh", activity: "needs-human" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const badge = container.querySelector("[data-badge='needs-human']");
+    expect(badge).not.toBeNull();
+  });
+
+  it("delivered node with prUrl has the PR badge", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [
+        makeNode({
+          id: "pr-node",
+          activity: "delivered",
+          initiative: {
+            id: "pr-node",
+            title: "PR Node",
+            description: "",
+            notes: "",
+            status: "open",
+            priority: "P1",
+            issue_type: "task",
+            owner: "eric",
+            created_at: "2026-01-01",
+            updated_at: "2026-01-01",
+            problem: "",
+            repo: "",
+            worktree: "/wt",
+            branch: "main",
+            team: "",
+            mode: "",
+            goal: "",
+            prUrl: "https://github.com/org/repo/pull/42",
+          },
+        }),
+      ],
+    };
+    const { container } = render(<ConstellationView />);
+    const badge = container.querySelector("[data-badge='pr']");
+    expect(badge).not.toBeNull();
+  });
+
+  it("idle node with no prUrl has no PR badge", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "idle-no-pr", activity: "idle" })],
+    };
+    const { container } = render(<ConstellationView />);
+    expect(container.querySelector("[data-badge='pr']")).toBeNull();
+  });
+
+  it("needs-human node does NOT show PR badge even with prUrl", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [
+        makeNode({
+          id: "nh-pr",
+          activity: "needs-human",
+          initiative: {
+            id: "nh-pr",
+            title: "NH with PR",
+            description: "",
+            notes: "",
+            status: "open",
+            priority: "P1",
+            issue_type: "task",
+            owner: "eric",
+            created_at: "2026-01-01",
+            updated_at: "2026-01-01",
+            problem: "",
+            repo: "",
+            worktree: "/wt",
+            branch: "main",
+            team: "",
+            mode: "",
+            goal: "",
+            prUrl: "https://github.com/org/repo/pull/99",
+          },
+        }),
+      ],
+    };
+    const { container } = render(<ConstellationView />);
+    // needs-human takes priority: needs-human badge shown, PR badge not shown
+    expect(container.querySelector("[data-badge='needs-human']")).not.toBeNull();
+    expect(container.querySelector("[data-badge='pr']")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Legend
+  // ---------------------------------------------------------------------------
+
+  it("renders the legend element", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "leg-1" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const legend = container.querySelector("[data-testid='constellation-legend']");
+    expect(legend).not.toBeNull();
+  });
+
+  it("legend has aria-label for accessibility", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "leg-2" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const legend = container.querySelector("[data-testid='constellation-legend']");
+    expect(legend?.getAttribute("aria-label")).toBeTruthy();
   });
 });

@@ -4,6 +4,7 @@ import type { SnapshotEvent } from "@agent-teams/shared";
 
 const baseState: SnapshotState = {
   initiatives: [],
+  unmatchedSessions: [],
   inbox: [],
   ts: null,
   connectionState: "connecting",
@@ -12,6 +13,7 @@ const baseState: SnapshotState = {
 
 const sampleSnapshot: SnapshotEvent = {
   initiatives: [],
+  unmatchedSessions: [],
   inbox: [],
   ts: 1_700_000_000_000,
 };
@@ -34,6 +36,35 @@ describe("snapshotReducer", () => {
     expect(state.connectionState).toBe("connected");
     expect(state.ts).toBe(1_700_000_000_000);
     expect(state.error).toBeNull();
+  });
+
+  it("snapshot action threads unmatchedSessions into state", () => {
+    const withOrphans: SnapshotEvent = {
+      ...sampleSnapshot,
+      unmatchedSessions: [
+        {
+          pid: 12345,
+          cwd: "/some/orphan/path",
+          kind: "background",
+          startedAt: 0,
+          sessionId: "orphan-uuid",
+          status: "idle",
+          id: "orphan1",
+          name: "dispatch-orchestrator",
+          state: "working",
+        },
+      ],
+    };
+    const state = snapshotReducer(baseState, { type: "snapshot", payload: withOrphans });
+    expect(state.unmatchedSessions).toHaveLength(1);
+    expect(state.unmatchedSessions[0]?.sessionId).toBe("orphan-uuid");
+  });
+
+  it("snapshot action defaults unmatchedSessions to [] when field absent", () => {
+    // Simulates a server that hasn't been updated yet — field missing from payload.
+    const legacySnapshot = { initiatives: [], inbox: [], ts: 0 } as unknown as SnapshotEvent;
+    const state = snapshotReducer(baseState, { type: "snapshot", payload: legacySnapshot });
+    expect(state.unmatchedSessions).toEqual([]);
   });
 
   it("snapshot action preserves previous data structure", () => {

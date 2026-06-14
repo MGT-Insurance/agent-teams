@@ -6,6 +6,7 @@ export type ConnectionState = "connecting" | "connected" | "reconnecting" | "err
 
 export interface SnapshotState {
   initiatives: SnapshotEvent["initiatives"];
+  unmatchedSessions: SnapshotEvent["unmatchedSessions"];
   inbox: SnapshotEvent["inbox"];
   ts: number | null;
   connectionState: ConnectionState;
@@ -20,6 +21,7 @@ type Action =
 
 const initialState: SnapshotState = {
   initiatives: [],
+  unmatchedSessions: [],
   inbox: [],
   ts: null,
   connectionState: "connecting",
@@ -34,6 +36,7 @@ export function snapshotReducer(state: SnapshotState, action: Action): SnapshotS
       return {
         ...state,
         initiatives: action.payload.initiatives,
+        unmatchedSessions: action.payload.unmatchedSessions ?? [],
         inbox: action.payload.inbox,
         ts: action.payload.ts,
         connectionState: "connected",

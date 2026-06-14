@@ -8,6 +8,7 @@ import {
   parseAteamListJson,
   parseClaudeAgents,
   buildInitiativeNodes,
+  buildOrphanSessions,
   buildInbox,
   deriveActivity,
   derivePhase,
@@ -415,5 +416,50 @@ describe("parseClaudeAgents shape validation", () => {
 
   it("accepts valid element shape", () => {
     expect(() => parseClaudeAgents(REAL_SESSIONS_JSON)).not.toThrow();
+  });
+});
+
+// ---- buildOrphanSessions ----------------------------------------------------
+
+describe("buildOrphanSessions", () => {
+  const sessions = parseClaudeAgents(REAL_SESSIONS_JSON);
+  // REAL_SESSIONS_JSON has:
+  //   - interactive: cwd=/Users/ericlloyd/Code/midgard
+  //   - bg id=21bd9e92: cwd matches RAW_AT_V4E worktree
+  //   - bg id=e8a3278e: cwd=/Users/ericlloyd/.agent-teams-worktrees/per-initiative-token-cost-attribution-and (no initiative)
+
+  const initiatives = [parseInitiative(RAW_AT_V4E), parseInitiative(RAW_AT_2JH)];
+
+  it("includes background sessions whose cwd matches no initiative worktree", () => {
+    const orphans = buildOrphanSessions(initiatives, sessions);
+    expect(orphans.some((s) => s.id === "e8a3278e")).toBe(true);
+  });
+
+  it("excludes background sessions that match an initiative worktree", () => {
+    const orphans = buildOrphanSessions(initiatives, sessions);
+    expect(orphans.some((s) => s.id === "21bd9e92")).toBe(false);
+  });
+
+  it("excludes interactive sessions entirely", () => {
+    const orphans = buildOrphanSessions(initiatives, sessions);
+    expect(orphans.every((s) => s.kind === "background")).toBe(true);
+  });
+
+  it("returns empty array when all background sessions are matched", () => {
+    // Provide an initiative whose worktree matches the only orphan bg session.
+    const extraInitiative: ParsedInitiative = {
+      ...parseInitiative(RAW_AT_V4E),
+      id: "extra",
+      worktree: "/Users/ericlloyd/.agent-teams-worktrees/per-initiative-token-cost-attribution-and",
+    };
+    const allMatched = buildOrphanSessions([...initiatives, extraInitiative], sessions);
+    expect(allMatched).toHaveLength(0);
+  });
+
+  it("returns all background sessions when no initiatives exist", () => {
+    const orphans = buildOrphanSessions([], sessions);
+    // Only the 2 bg sessions — interactive excluded.
+    expect(orphans).toHaveLength(2);
+    expect(orphans.every((s) => s.kind === "background")).toBe(true);
   });
 });
