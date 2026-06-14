@@ -4,12 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "build": "tsc",
+    "dev": "tsc && node dist/server/src/index.js",
+    "start": "node dist/server/src/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "@agent-teams/shared": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "^5.4.0"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
   }
 }
