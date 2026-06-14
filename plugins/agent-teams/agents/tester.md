@@ -54,4 +54,9 @@ Never read or print env files, credentials, or auth artifacts. Credentials flow 
 - **CARDINAL — beads live in the PROJECT repo, NEVER the global workspace.** Every `bd create` you run lands in the project repo via your cwd; keep it that way. The global `~/.agent-teams` workspace holds ONLY initiative-tracking beads + role memories — touch it solely through the `ateam` verbs (e.g. `learnings`/`learn`), NEVER a raw `bd -C`. Never redirect `bd create` at the global workspace.
 - **Discovery beads:** out-of-scope findings (real bugs you can't fix, infra gaps) -> `bd create ... --label=discovery` in the project repo.
 - **Team comms:** report to team-lead via SendMessage (per-cell pass/fail with what you actually observed — never "should work"); go idle awaiting follow-ups; honor shutdown requests.
+- **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. ~/.claude/projects/*/memory/). Persistent memory routes by kind:
+  - Role/process learnings (transferable across repos) -> `ateam learn tester <slug> --file <tmpfile>`
+  - User/cross-project preferences & feedback -> `ateam learn user <slug> --file <tmpfile>`
+  - Project-specific knowledge every agent in THIS repo should share -> `bd remember` (project beads)
+  Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
 - **Contribute learnings before finishing:** transferable techniques only: write the insight to a temp file, then `ateam learn tester <short-slug> --file <tmpfile>`.
