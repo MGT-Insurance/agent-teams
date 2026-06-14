@@ -3,6 +3,9 @@ package cost
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,12 +30,17 @@ type Report struct {
 // '/' becomes '-'; '.' becomes '-' (so "/.agent-teams" → "--agent-teams").
 // No lowercasing. No length cap. This is NOT gitutil.Slugify (which collapses
 // runs, lowercases, trims, and caps at 50 chars).
+//
+// Byte-wise per the frozen contract (agent-teams-9er): observed ~/.claude/projects
+// dir names are produced byte-by-byte, not rune-by-rune. Identical for ASCII
+// (all real paths); diverges only for multi-byte UTF-8 sequences.
 func SlugifyCWD(cwd string) string {
 	var b strings.Builder
 	b.Grow(len(cwd))
-	for _, r := range cwd {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
+	for i := 0; i < len(cwd); i++ {
+		c := cwd[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			b.WriteByte(c)
 		} else {
 			b.WriteByte('-')
 		}
@@ -96,7 +104,7 @@ func discoverSessions(initiativeID, jobsDir string) ([]driSession, error) {
 	return sessions, nil
 }
 
-// usageJSON is the nested cache_creation split inside message.usage.
+// cacheCreationJSON is the nested cache_creation split inside message.usage.
 type cacheCreationJSON struct {
 	Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
 	Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
@@ -132,8 +140,8 @@ func parseJSONL(path string, acc map[string]*TokenUsage) error {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	// Transcripts can have large lines (embedded content). Use a 10 MB buffer.
-	const maxLine = 10 * 1024 * 1024
+	// Transcripts can have large lines (embedded content). Use a 64 MB buffer.
+	const maxLine = 64 * 1024 * 1024
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, maxLine)
 
@@ -172,24 +180,42 @@ func parseJSONL(path string, acc map[string]*TokenUsage) error {
 
 // collectTranscripts reads the main transcript and all subagent transcripts for
 // one session into acc. Missing files and directories are skipped silently.
-func collectTranscripts(projectDir, sessionID string, acc map[string]*TokenUsage) {
+// Any non-missing-file scanner error is returned (scanner buffer overflow, I/O
+// error, etc.) so the caller can surface data-loss conditions.
+func collectTranscripts(projectDir, sessionID string, acc map[string]*TokenUsage) error {
 	// Main transcript.
 	mainPath := filepath.Join(projectDir, sessionID+".jsonl")
-	_ = parseJSONL(mainPath, acc) // missing file → open error → silently ignored
+	if err := parseJSONL(mainPath, acc); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Missing transcript is normal (session may have no file yet).
+		} else {
+			return fmt.Errorf("collectTranscripts %s: %w", mainPath, err)
+		}
+	}
 
 	// Subagent transcripts: <projectDir>/<sessionID>/subagents/agent-*.jsonl
 	subagentsDir := filepath.Join(projectDir, sessionID, "subagents")
 	entries, err := os.ReadDir(subagentsDir)
 	if err != nil {
-		return // no subagents dir — normal for some sessions
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // no subagents dir — normal for many sessions
+		}
+		return fmt.Errorf("collectTranscripts ReadDir %s: %w", subagentsDir, err)
 	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
-		_ = parseJSONL(filepath.Join(subagentsDir, name), acc)
+		p := filepath.Join(subagentsDir, name)
+		if err := parseJSONL(p, acc); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // disappeared between ReadDir and open — skip
+			}
+			return fmt.Errorf("collectTranscripts %s: %w", p, err)
+		}
 	}
+	return nil
 }
 
 // Attribute reconstructs token usage for one initiative from local Claude data.
@@ -206,7 +232,9 @@ func Attribute(initiativeID, jobsDir, projectsDir string) (Report, error) {
 	for _, s := range sessions {
 		slug := SlugifyCWD(s.cwd)
 		projectDir := filepath.Join(projectsDir, slug)
-		collectTranscripts(projectDir, s.sessionID, acc)
+		if err := collectTranscripts(projectDir, s.sessionID, acc); err != nil {
+			return Report{InitiativeID: initiativeID}, err
+		}
 	}
 
 	report := Report{
