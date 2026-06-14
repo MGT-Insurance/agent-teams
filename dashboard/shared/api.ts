@@ -4,10 +4,10 @@ import type { SnapshotEvent, DrillInDetail } from "./types.js";
 export const API_PATHS = {
   snapshot: "/api/snapshot",
   events: "/api/events",
-  initiative: (id: string) => `/api/initiatives/${id}`,
+  initiative: (id: string) => `/api/initiatives/${encodeURIComponent(id)}`,
   logs: (id: string, sessionId: string) =>
-    `/api/initiatives/${id}/logs?session=${sessionId}`,
-  attach: (id: string) => `/api/initiatives/${id}/attach`,
+    `/api/initiatives/${encodeURIComponent(id)}/logs?session=${encodeURIComponent(sessionId)}`,
+  attach: (id: string) => `/api/initiatives/${encodeURIComponent(id)}/attach`,
 } as const;
 
 // GET /api/snapshot

@@ -97,16 +97,23 @@ export function spawnClaudeLogs(
   proc.stdout.on("data", onData);
   proc.stderr.on("data", onData); // logs may write TUI output to stderr too
 
+  // Guard both error and close from double-firing.
+  let fired = false;
+
   proc.on("error", (err) => {
+    if (fired) return;
+    fired = true;
     onError(
       new CliError("claude logs", null, "", `failed to spawn claude logs: ${err.message}`),
     );
   });
 
   proc.on("close", (code) => {
+    if (fired) return;
+    fired = true;
     if (code !== 0 && code !== null) {
-      // Non-zero exit after streaming is still surfaced, but we already called onEnd
-      // for the data. Only fire onError if we haven't ended yet.
+      // Non-zero exit: surface the error but still end the response so the
+      // caller's HTTP connection is not left hanging.
       onError(new CliError("claude logs", code, "", `claude logs exited with code ${code}`));
     } else {
       onEnd();

@@ -8,13 +8,28 @@ export interface AttachResult {
   ok: true;
 }
 
+// UUID v4 format: 8-4-4-4-12 hex digits.
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isValidSessionId(sessionId: string): boolean {
+  return UUID_V4_RE.test(sessionId);
+}
+
+// Escape a string for safe embedding inside an AppleScript double-quoted string.
+// Replaces backslash then double-quote so the value cannot break out of `do script "..."`.
+function escapeForAppleScript(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 // Launch `claude attach <sessionId>` in a new macOS Terminal window.
 // Prefers iTerm2 if running, falls back to Terminal.app.
+// Caller MUST validate sessionId with isValidSessionId before calling.
 export function launchAttach(sessionId: string): Promise<AttachResult> {
   // Use osascript to open a new Terminal window and run the command.
   // The `do script` command opens a new tab/window in Terminal.app.
+  const safe = escapeForAppleScript(sessionId);
   const script = `tell application "Terminal"
-  do script "claude attach ${sessionId}"
+  do script "claude attach ${safe}"
   activate
 end tell`;
 

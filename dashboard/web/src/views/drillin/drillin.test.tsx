@@ -32,7 +32,6 @@ const mockAttachToInitiative = vi.fn();
 const mockLogsUrl = vi.fn((_id: string, _sessionId: string) => "/api/initiatives/init-abc/logs?session=sess-1");
 
 vi.mock("../../lib/api.js", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fetchInitiative: (id: string) => mockFetchInitiative(id),
   attachToInitiative: (id: string, sessionId: string) => mockAttachToInitiative(id, sessionId),
   logsUrl: (id: string, sessionId: string) => mockLogsUrl(id, sessionId),
