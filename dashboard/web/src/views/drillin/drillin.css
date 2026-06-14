@@ -1,0 +1,302 @@
+.drillin {
+  padding: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.drillin-back {
+  margin-bottom: -12px;
+}
+
+.back-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.back-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+/* Loading / error states */
+.drillin-status {
+  margin: 40px auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.drillin-status--error {
+  color: var(--color-error);
+}
+
+/* Header */
+.drillin-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drillin-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.drillin-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.meta-value {
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.meta-value--mono {
+  font-family: var(--font-mono);
+}
+
+.meta-link {
+  font-size: 13px;
+  color: var(--color-accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.meta-link:hover {
+  text-decoration: underline;
+}
+
+.drillin-goal {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  max-width: 700px;
+}
+
+/* Sections */
+.drillin-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-empty {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Badges */
+.badge {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.badge--busy {
+  color: var(--color-warn);
+  border-color: color-mix(in srgb, var(--color-warn) 30%, transparent);
+}
+
+.badge--idle {
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+}
+
+.badge--done {
+  color: var(--color-ok);
+  border-color: color-mix(in srgb, var(--color-ok) 30%, transparent);
+}
+
+.badge--default {
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+}
+
+/* Notes */
+.notes-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notes-item {
+  display: flex;
+  gap: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.notes-index {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  min-width: 20px;
+  padding-top: 2px;
+}
+
+.notes-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+}
+
+/* Tables (sessions + beads) */
+.sessions-table,
+.beads-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.sessions-table th,
+.beads-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sessions-table td,
+.beads-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  vertical-align: middle;
+}
+
+.sessions-row:last-child td,
+.beads-row:last-child td {
+  border-bottom: none;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.session-id {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+/* Log pane */
+.drillin-section--logs {
+  gap: 10px;
+}
+
+.log-session-select {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.log-pane {
+  height: 400px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+  /* xterm.js renders into this container */
+}
+
+/* Attach section */
+.attach-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.attach-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.attach-label {
+  min-width: 200px;
+  color: var(--color-text);
+}
+
+.attach-slot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.attach-btn {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 4px;
+  padding: 4px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.attach-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.attach-toast {
+  font-size: 12px;
+  color: var(--color-ok);
+  font-family: var(--font-mono);
+}
