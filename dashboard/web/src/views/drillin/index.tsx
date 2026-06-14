@@ -6,9 +6,10 @@ import type { DrillInDetail, SessionState } from "@agent-teams/shared";
 import { fetchInitiative, logsUrl, attachToInitiative } from "../../lib/api.js";
 import "./drillin.css";
 
-// Pick a default background session for log streaming: first bg session with a sessionId.
+// Pick a default background session for log streaming: first bg session with a short id.
+// Only background sessions have id != null; interactive sessions have id: null.
 function defaultBgSession(sessions: SessionState[]): SessionState | undefined {
-  return sessions.find((s) => s.kind === "background" && s.sessionId != null);
+  return sessions.find((s) => s.kind === "background" && s.id != null);
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -57,7 +58,8 @@ function LogPane({
 
     const ac = new AbortController();
     abortRef.current = ac;
-    const url = logsUrl(initiativeId, session.sessionId);
+    // session.id is the short claude session id (8 lowercase hex); the full UUID fails.
+    const url = logsUrl(initiativeId, session.id!);
 
     (async () => {
       try {
@@ -89,8 +91,8 @@ function LogPane({
       term.dispose();
       termRef.current = null;
     };
-    // Re-mount when the session changes.
-  }, [initiativeId, session.sessionId]);
+    // Re-mount when the session changes (keyed on short id, not uuid).
+  }, [initiativeId, session.id]);
 
   return <div className="log-pane" ref={containerRef} />;
 }
@@ -108,7 +110,8 @@ function AttachButton({
   async function handleAttach() {
     setPending(true);
     try {
-      await attachToInitiative(initiativeId, session.sessionId);
+      // session.id is the short claude session id; the full UUID (session.sessionId) fails.
+      await attachToInitiative(initiativeId, session.id!);
       const label = session.name ?? session.id ?? session.sessionId;
       setToast(`Launched terminal for ${label}`);
       setTimeout(() => setToast(null), 4_000);
@@ -183,7 +186,8 @@ export default function DrillInView() {
     );
   }
 
-  const bgSessions = detail.sessions.filter((s) => s.kind === "background");
+  // Only background sessions with a short id can be logged/attached.
+  const bgSessions = detail.sessions.filter((s) => s.kind === "background" && s.id != null);
 
   return (
     <div className="drillin">
@@ -318,14 +322,14 @@ export default function DrillInView() {
           {bgSessions.length > 1 && (
             <select
               className="log-session-select"
-              value={logSession?.sessionId ?? ""}
+              value={logSession?.id ?? ""}
               onChange={(e) => {
-                const s = bgSessions.find((b) => b.sessionId === e.target.value);
+                const s = bgSessions.find((b) => b.id === e.target.value);
                 setLogSession(s);
               }}
             >
               {bgSessions.map((s) => (
-                <option key={s.sessionId} value={s.sessionId}>
+                <option key={s.id} value={s.id!}>
                   {s.name ?? s.id ?? s.sessionId}
                 </option>
               ))}
@@ -339,7 +343,7 @@ export default function DrillInView() {
           <p className="section-empty">Select a session to view logs.</p>
         ) : (
           <LogPane
-            key={logSession.sessionId}
+            key={logSession.id}
             initiativeId={detail.id}
             session={logSession}
           />
@@ -354,7 +358,7 @@ export default function DrillInView() {
         ) : (
           <div className="attach-list">
             {bgSessions.map((s) => (
-              <div key={s.sessionId} className="attach-row">
+              <div key={s.id} className="attach-row">
                 <span className="mono attach-label">
                   {s.name ?? s.id ?? s.sessionId}
                 </span>

@@ -1,4 +1,4 @@
-// macOS terminal attach: open a real terminal window running `claude attach <sessionId>`.
+// macOS terminal attach: open a real terminal window running `claude attach <id>`.
 // Uses `open -a Terminal` with an osascript to run the command.
 // Returns { ok: true } on success, throws on failure.
 
@@ -8,11 +8,14 @@ export interface AttachResult {
   ok: true;
 }
 
-// UUID v4 format: 8-4-4-4-12 hex digits.
-const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// claude agents --json exposes two id fields:
+//   id        — short 8 lowercase-hex chars (e.g. "21bd9e92"), used by claude attach/logs/stop
+//   sessionId — full UUID v4, informational only
+// We validate the SHORT id here; passing the full UUID to `claude attach` silently fails.
+const CLAUDE_ID_RE = /^[0-9a-f]{8}$/;
 
-export function isValidSessionId(sessionId: string): boolean {
-  return UUID_V4_RE.test(sessionId);
+export function isValidSessionId(id: string): boolean {
+  return CLAUDE_ID_RE.test(id);
 }
 
 // Escape a string for safe embedding inside an AppleScript double-quoted string.
@@ -21,9 +24,9 @@ function escapeForAppleScript(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-// Launch `claude attach <sessionId>` in a new macOS Terminal window.
+// Launch `claude attach <id>` in a new macOS Terminal window.
 // Prefers iTerm2 if running, falls back to Terminal.app.
-// Caller MUST validate sessionId with isValidSessionId before calling.
+// Caller MUST validate id with isValidSessionId before calling.
 export function launchAttach(sessionId: string): Promise<AttachResult> {
   // Use osascript to open a new Terminal window and run the command.
   // The `do script` command opens a new tab/window in Terminal.app.
