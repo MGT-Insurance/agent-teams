@@ -90,14 +90,16 @@ export function parseClaudeAgents(raw: string): SessionState[] {
     throw new Error("claude agents --json --all did not return an array");
   }
   const first = items[0];
+  // sessionId is the only field present on EVERY entry. pid is absent on
+  // stopped sessions; id/name/state are absent on interactive sessions — so
+  // validating on those wrongly rejects legitimate shapes.
   if (
     items.length > 0 &&
     (typeof first !== "object" ||
       first === null ||
-      typeof (first as Record<string, unknown>)["pid"] !== "number" ||
       typeof (first as Record<string, unknown>)["sessionId"] !== "string")
   ) {
-    throw new Error("claude agents --json --all: unexpected element shape (missing pid or sessionId)");
+    throw new Error("claude agents --json --all: unexpected element shape (missing sessionId)");
   }
   return items as SessionState[];
 }

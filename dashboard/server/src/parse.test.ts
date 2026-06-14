@@ -403,9 +403,9 @@ describe("parseAteamListJson shape validation", () => {
 // ---- parseClaudeAgents shape checks -----------------------------------------
 
 describe("parseClaudeAgents shape validation", () => {
-  it("throws on element missing pid field", () => {
-    const bad = JSON.stringify([{ sessionId: "abc", kind: "interactive", cwd: "/", startedAt: 0, status: "idle" }]);
-    expect(() => parseClaudeAgents(bad)).toThrow("unexpected element shape");
+  it("accepts an element with no pid (stopped sessions have no pid)", () => {
+    const stopped = JSON.stringify([{ sessionId: "abc", kind: "background", cwd: "/", startedAt: 0, status: "idle", state: "stopped" }]);
+    expect(() => parseClaudeAgents(stopped)).not.toThrow();
   });
 
   it("throws on element missing sessionId field", () => {

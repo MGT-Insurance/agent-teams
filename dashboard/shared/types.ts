@@ -30,7 +30,7 @@ export interface ParsedInitiative extends RawInitiative {
 // Shape of one element from `claude agents --json --all`.
 // Background sessions have id/name/state; interactive sessions do not.
 export interface SessionState {
-  pid: number;
+  pid?: number; // absent on stopped sessions
   cwd: string;
   kind: "background" | "interactive";
   startedAt: number; // epoch ms
