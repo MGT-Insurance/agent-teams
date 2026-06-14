@@ -1,7 +1,47 @@
-# Agent-Teams Dashboard — API Spec
+# Agent-Teams Dashboard
 
-This document is the authoritative API surface for the agent-teams local dashboard.
-Track A (server) implements these endpoints. Tracks B–E consume them.
+A local, single-user web dashboard for agent-teams initiatives: an inbox of things
+needing you, a live constellation of all teams, and drill-in detail with logs + attach.
+
+## Run it
+
+```bash
+cd dashboard
+pnpm install   # first time only
+pnpm dev       # starts backend (:3001) + frontend (:5173) together
+```
+
+Then open **http://localhost:5173**. One command runs both processes (labeled
+`server`/`web` in the output); Ctrl-C stops both. The frontend proxies `/api/*`
+to the backend, so you only ever visit `:5173`.
+
+## Test it locally
+
+**Try the app** — with `pnpm dev` running, open http://localhost:5173:
+- **Inbox** (landing): initiatives needing you — human-gated decisions and PRs
+  awaiting merge. Empty = "nothing needs you" (the good case).
+- **Constellation**: every initiative as a live node — needs-human flares orange,
+  busy pulses blue, delivered breathes green, idle/done dimmed. Click a node to
+  drill in. Watch it update live as sessions change state (~2s).
+- **Drill-in** (`/initiative/:id`, or click any node/inbox item): notes/history,
+  live sessions, work beads, a raw log pane (xterm.js), and an **Attach** button
+  that opens a real Terminal running `claude attach <session>`.
+
+There are real initiatives running right now, so the views populate with live data.
+
+**Run the automated tests**:
+```bash
+cd dashboard
+pnpm test        # all suites (server + web) — 115 tests
+pnpm typecheck   # strict typecheck across packages
+```
+
+---
+
+## API Spec
+
+This document is also the authoritative API surface. The server implements these
+endpoints; the web app consumes them.
 
 ---
 

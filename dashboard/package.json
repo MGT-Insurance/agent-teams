@@ -3,6 +3,11 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names server,web -c blue,green \"pnpm --filter @agent-teams/server dev\" \"pnpm --filter @agent-teams/web dev\"",
+    "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
   }
 }
