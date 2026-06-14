@@ -13,10 +13,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve, sep, join } from "node:path";
 import { isValidSessionId } from "./attach.js";
 
-// ---- UUID validation (unit) -------------------------------------------------
+// ---- Short claude session id validation (unit) ------------------------------
+// claude attach/logs/stop accept only the short id (8 lowercase hex), not the full UUID.
 
 describe("isValidSessionId — route guard", () => {
-  it("rejects non-UUID session param on logs route", () => {
+  it("rejects non-id session param on logs route", () => {
     const bad = "../etc/passwd";
     expect(isValidSessionId(bad)).toBe(false);
   });
@@ -25,8 +26,12 @@ describe("isValidSessionId — route guard", () => {
     expect(isValidSessionId('"; open -a Calculator "')).toBe(false);
   });
 
-  it("accepts a valid UUID session param", () => {
-    expect(isValidSessionId("21bd9e92-ad92-4758-9a38-a236de7c6703")).toBe(true);
+  it("accepts a valid short claude session id", () => {
+    expect(isValidSessionId("21bd9e92")).toBe(true);
+  });
+
+  it("rejects the full UUID (was the original bug — must now be rejected)", () => {
+    expect(isValidSessionId("21bd9e92-ad92-4758-9a38-a236de7c6703")).toBe(false);
   });
 });
 

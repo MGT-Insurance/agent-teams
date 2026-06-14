@@ -201,8 +201,9 @@ describe("DrillInView", () => {
     const attachBtn = screen.getByRole("button", { name: /^attach$/i });
     fireEvent.click(attachBtn);
 
+    // Must pass the short id (s.id = "s1"), not the full sessionId ("sess-1").
     await waitFor(() => {
-      expect(mockAttachToInitiative).toHaveBeenCalledWith("init-abc", "sess-1");
+      expect(mockAttachToInitiative).toHaveBeenCalledWith("init-abc", "s1");
     });
 
     // Confirmation toast
