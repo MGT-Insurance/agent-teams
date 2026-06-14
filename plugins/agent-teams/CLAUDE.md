@@ -11,7 +11,7 @@ This plugin hard-requires **beads** (`bd`) — all work tracking is beads-first.
 There are **two separate beads databases**, and putting the wrong beads in the wrong one is a serious, recurring error:
 
 1. **The PROJECT repo's `.beads`** — holds **ALL work beads**: the planner's decomposition, contract beads, feature/task beads, `--label=discovery` beads, test and review beads. This is where every agent's `bd create` lands, because every agent's cwd is inside the project worktree.
-2. **The GLOBAL workspace (`~/.agent-teams`)** — holds **ONLY** two things: the **initiative-tracking beads** (one per initiative, created exclusively by `ateam register`) and **role memories** (`bd remember` / `ateam learn`). Nothing else. Ever.
+2. **The GLOBAL workspace (`~/.agent-teams`)** — holds **ONLY** two things: the **initiative-tracking beads** (one per initiative, created exclusively by `ateam register`) and **role memories** (via `ateam learn` — see Memory routing below). Nothing else. Ever.
 
 **The rules, non-negotiable:**
 
@@ -23,3 +23,13 @@ There are **two separate beads databases**, and putting the wrong beads in the w
 **Beads runtime:** embedded mode (no server daemon needed). Agent isolation uses git **worktrees** of the project repo, not independent clones — worktrees share the project's single `.beads/` issue DB via git-common-dir discovery; clones each get a separate, fragmented beads workspace.
 
 **Skills:** `/dri <problem>` — run/resume an initiative as DRI. `/dri-dispatch <problem>` — register a new initiative and hand it to a hands-off background DRI. `/initiatives` — machine-wide initiative dashboard. `/setup-agent-teams` — one-time machine setup.
+
+## Memory routing
+
+**MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
+
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`.
+- User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
+- Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
+
+Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
