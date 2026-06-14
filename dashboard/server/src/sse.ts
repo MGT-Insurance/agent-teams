@@ -18,7 +18,11 @@ export class SseRegistry {
   broadcast(event: SnapshotEvent): void {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const client of this.clients) {
-      client.write(payload);
+      if (!client.writableEnded && !client.destroyed) {
+        client.write(payload);
+      } else {
+        this.clients.delete(client);
+      }
     }
   }
 

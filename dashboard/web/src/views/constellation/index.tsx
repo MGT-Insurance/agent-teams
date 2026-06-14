@@ -218,12 +218,23 @@ export default function ConstellationView() {
   const cx = W / 2;
   const cy = H / 2;
 
-  const positioned = useMemo(
-    () => polarLayout(initiatives, cx, cy),
-    // Re-run only when initiative ids change, not on every tick (avoids jumpiness).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [initiatives.map((n) => n.initiative.id).join(","), cx, cy],
-  );
+  // Re-run layout only when initiative ids actually change, not on every snapshot tick.
+  // We derive a stable string key from the id list and cache the last layout result.
+  // When the key is unchanged the cached result is returned, preventing visual jumpiness.
+  const layoutCacheRef = useRef<{
+    key: string;
+    result: Array<{ node: InitiativeNode; x: number; y: number }>;
+  } | null>(null);
+
+  const initiativeIdKey = initiatives.map((n) => n.initiative.id).join(",");
+
+  const positioned = useMemo(() => {
+    const cache = layoutCacheRef.current;
+    if (cache && cache.key === initiativeIdKey) return cache.result;
+    const result = polarLayout(initiatives, cx, cy);
+    layoutCacheRef.current = { key: initiativeIdKey, result };
+    return result;
+  }, [initiatives, initiativeIdKey, cx, cy]);
 
   const handleNavigate = (id: string) => {
     navigate(`/initiative/${id}`);

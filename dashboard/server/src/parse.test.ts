@@ -367,4 +367,53 @@ describe("buildInbox", () => {
     const inbox = buildInbox(closed, new Set());
     expect(inbox).toHaveLength(0);
   });
+
+  it("does not include closed human-gated initiatives", () => {
+    const closed = initiatives.map((i) => ({ ...i, status: "closed" }));
+    const inbox = buildInbox(closed, new Set(["at-v4e"]));
+    expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
+  });
+
+  it("does not include done human-gated initiatives", () => {
+    const done = initiatives.map((i) => ({ ...i, status: "done" }));
+    const inbox = buildInbox(done, new Set(["at-v4e"]));
+    expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
+  });
+});
+
+// ---- parseAteamListJson shape checks ----------------------------------------
+
+describe("parseAteamListJson shape validation", () => {
+  it("throws on element missing id field", () => {
+    const bad = JSON.stringify([{ title: "no-id", description: "", notes: "", status: "open", priority: "1", issue_type: "task", owner: "x", created_at: "", updated_at: "" }]);
+    expect(() => parseAteamListJson(bad)).toThrow("unexpected element shape");
+  });
+
+  it("throws on element with non-string id", () => {
+    const bad = JSON.stringify([{ id: 42, title: "t", description: "", notes: "", status: "open", priority: "1", issue_type: "task", owner: "x", created_at: "", updated_at: "" }]);
+    expect(() => parseAteamListJson(bad)).toThrow("unexpected element shape");
+  });
+
+  it("accepts valid element shape", () => {
+    const good = JSON.stringify([RAW_AT_V4E]);
+    expect(() => parseAteamListJson(good)).not.toThrow();
+  });
+});
+
+// ---- parseClaudeAgents shape checks -----------------------------------------
+
+describe("parseClaudeAgents shape validation", () => {
+  it("throws on element missing pid field", () => {
+    const bad = JSON.stringify([{ sessionId: "abc", kind: "interactive", cwd: "/", startedAt: 0, status: "idle" }]);
+    expect(() => parseClaudeAgents(bad)).toThrow("unexpected element shape");
+  });
+
+  it("throws on element missing sessionId field", () => {
+    const bad = JSON.stringify([{ pid: 1, kind: "interactive", cwd: "/", startedAt: 0, status: "idle" }]);
+    expect(() => parseClaudeAgents(bad)).toThrow("unexpected element shape");
+  });
+
+  it("accepts valid element shape", () => {
+    expect(() => parseClaudeAgents(REAL_SESSIONS_JSON)).not.toThrow();
+  });
 });

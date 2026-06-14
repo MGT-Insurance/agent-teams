@@ -13,7 +13,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { DrillInDetail } from "@agent-teams/shared";
@@ -21,7 +21,7 @@ import { CliError, claudeAgentsJson, bdWorkBeads, spawnClaudeLogs } from "./cli.
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
-import { launchAttach } from "./attach.js";
+import { launchAttach, isValidSessionId } from "./attach.js";
 import { buildSnapshot } from "./snapshot.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
@@ -61,12 +61,22 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+const BODY_LIMIT = 64 * 1024; // 64KB
+
 function parseBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveBody, rejectBody) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    let total = 0;
+    req.on("data", (c: Buffer) => {
+      total += c.byteLength;
+      if (total > BODY_LIMIT) {
+        rejectBody(Object.assign(new Error("request body too large"), { code: 413 }));
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", rejectBody);
   });
 }
 
@@ -78,6 +88,13 @@ async function serveStatic(
   // Normalise the path; default to index.html for SPA routing.
   const rel = urlPath === "/" || !urlPath.includes(".") ? "index.html" : urlPath.slice(1);
   const filePath = join(WEB_DIST, rel);
+
+  // Guard against path traversal: resolved path must stay inside WEB_DIST.
+  if (!resolve(filePath).startsWith(resolve(WEB_DIST) + sep)) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "invalid path" }));
+    return true;
+  }
 
   try {
     await stat(filePath);
@@ -155,6 +172,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         json(res, 400, { error: "missing ?session= parameter" });
         return;
       }
+      if (!isValidSessionId(sessionId)) {
+        json(res, 400, { error: "invalid session id" });
+        return;
+      }
 
       res.writeHead(200, {
         "Content-Type": "application/octet-stream",
@@ -194,8 +215,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       let body: string;
       try {
         body = await parseBody(req);
-      } catch {
-        json(res, 400, { error: "could not read request body" });
+      } catch (err) {
+        const status = (err as { code?: number }).code === 413 ? 413 : 400;
+        json(res, status, { error: status === 413 ? "request body too large" : "could not read request body" });
         return;
       }
 
@@ -212,6 +234,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         sessionId = (parsed as { sessionId: string }).sessionId;
       } catch {
         json(res, 400, { error: "body must be { sessionId: string }" });
+        return;
+      }
+
+      if (!isValidSessionId(sessionId)) {
+        json(res, 400, { error: "invalid session id" });
         return;
       }
 
@@ -255,7 +282,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
           (s) => s.cwd === initiative.worktree,
         );
 
-        // Notes history: split by double-newline or session entry markers.
+        // Split on the lookahead `\n(?=session )` so each "session N, …" line
+        // starts a new entry while preserving multi-line content within an entry.
         const notesHistory = initiative.notes
           .split(/\n(?=session )/i)
           .map((s) => s.trim())

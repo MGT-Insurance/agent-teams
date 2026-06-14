@@ -70,6 +70,16 @@ export function parseAteamListJson(raw: string): ParsedInitiative[] {
   if (!Array.isArray(items)) {
     throw new Error("ateam list-json did not return an array");
   }
+  const first = items[0];
+  if (
+    items.length > 0 &&
+    (typeof first !== "object" ||
+      first === null ||
+      typeof (first as Record<string, unknown>)["id"] !== "string" ||
+      typeof (first as Record<string, unknown>)["title"] !== "string")
+  ) {
+    throw new Error("ateam list-json: unexpected element shape (missing id or title)");
+  }
   return (items as RawInitiative[]).map(parseInitiative);
 }
 
@@ -79,6 +89,16 @@ export function parseClaudeAgents(raw: string): SessionState[] {
   if (!Array.isArray(items)) {
     throw new Error("claude agents --json --all did not return an array");
   }
+  const first = items[0];
+  if (
+    items.length > 0 &&
+    (typeof first !== "object" ||
+      first === null ||
+      typeof (first as Record<string, unknown>)["pid"] !== "number" ||
+      typeof (first as Record<string, unknown>)["sessionId"] !== "string")
+  ) {
+    throw new Error("claude agents --json --all: unexpected element shape (missing pid or sessionId)");
+  }
   return items as SessionState[];
 }
 
@@ -87,6 +107,16 @@ export function parseBdList(raw: string): WorkBead[] {
   const items: unknown = JSON.parse(raw);
   if (!Array.isArray(items)) {
     throw new Error("bd list --json did not return an array");
+  }
+  const first = items[0];
+  if (
+    items.length > 0 &&
+    (typeof first !== "object" ||
+      first === null ||
+      typeof (first as Record<string, unknown>)["id"] !== "string" ||
+      typeof (first as Record<string, unknown>)["title"] !== "string")
+  ) {
+    throw new Error("bd list --json: unexpected element shape (missing id or title)");
   }
   return items as WorkBead[];
 }
@@ -164,7 +194,10 @@ export function buildInbox(
   const items: InboxItem[] = [];
 
   for (const initiative of initiatives) {
+    const s = initiative.status.toLowerCase();
     if (humanGatedIds.has(initiative.id)) {
+      if (s === "closed" || s === "done") continue;
+
       // Parked question = latest non-empty notes line.
       const question =
         initiative.notes
@@ -185,7 +218,6 @@ export function buildInbox(
 
     // PR-awaiting-merge: has a PR URL, not closed/done, not already human-gated.
     if (initiative.prUrl !== null) {
-      const s = initiative.status.toLowerCase();
       if (s !== "closed" && s !== "done") {
         items.push({
           initiativeId: initiative.id,
