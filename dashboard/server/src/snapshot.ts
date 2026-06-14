@@ -7,6 +7,7 @@ import {
   parseClaudeAgents,
   parseBdList,
   buildInitiativeNodes,
+  buildOrphanSessions,
   buildInbox,
 } from "./parse.js";
 
@@ -70,7 +71,8 @@ export async function buildSnapshot(): Promise<SnapshotEvent> {
   const humanGatedIds = new Set(humanGatedRaw.map((b) => b.id));
 
   const nodes = buildInitiativeNodes(initiatives, sessions, humanGatedIds);
+  const unmatchedSessions = buildOrphanSessions(initiatives, sessions);
   const inbox = buildInbox(initiatives, humanGatedIds);
 
-  return { initiatives: nodes, inbox, ts: Date.now() };
+  return { initiatives: nodes, unmatchedSessions, inbox, ts: Date.now() };
 }

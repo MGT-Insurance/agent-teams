@@ -90,6 +90,9 @@ export interface DrillInDetail extends ParsedInitiative {
 // The SSE payload shape pushed on each tick and returned by GET /api/snapshot.
 export interface SnapshotEvent {
   initiatives: InitiativeNode[];
+  // Background claude sessions that matched no registered initiative worktree.
+  // Interactive sessions are excluded — these are only unregistered background processes.
+  unmatchedSessions: SessionState[];
   inbox: InboxItem[];
   ts: number; // epoch ms
 }

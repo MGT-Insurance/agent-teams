@@ -187,6 +187,18 @@ export function buildInitiativeNodes(
   });
 }
 
+// Return background sessions whose cwd matched no initiative worktree.
+// Interactive sessions are always excluded.
+export function buildOrphanSessions(
+  initiatives: ParsedInitiative[],
+  sessions: SessionState[],
+): SessionState[] {
+  const worktreePaths = new Set(initiatives.map((i) => i.worktree).filter(Boolean));
+  return sessions.filter(
+    (s) => s.kind === "background" && !worktreePaths.has(s.cwd),
+  );
+}
+
 // Build InboxItem[] from initiatives + human-gated ids.
 // Includes human-gate items and PR-awaiting-merge items.
 export function buildInbox(

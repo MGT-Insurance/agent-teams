@@ -7,6 +7,7 @@ import type { InboxItem } from "@agent-teams/shared";
 // Snapshot context is mocked so we control the inbox data directly.
 const mockState: SnapshotState = {
   initiatives: [],
+  unmatchedSessions: [],
   inbox: [],
   ts: null,
   connectionState: "connected",

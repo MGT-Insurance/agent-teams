@@ -2,17 +2,20 @@
   position: relative;
   flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: stretch;
   background: var(--color-bg);
   overflow: hidden;
+  /* Fill the full available area */
+  width: 100%;
+  height: 100%;
 }
 
 .constellation-svg {
+  flex: 1;
   width: 100%;
   height: 100%;
-  max-width: 900px;
-  max-height: 700px;
+  display: block;
 }
 
 /* Empty/error/loading states */
@@ -87,12 +90,11 @@
   50% { opacity: 0; transform: scale(2.2); }
 }
 
-/* Extra liveness: busy+session-busy gets faster pulse */
 .node--session-busy.node--busy .node-pulse {
   animation-duration: 1.1s;
 }
 
-/* --- NEEDS-HUMAN: urgent flare + slow expand ring --- */
+/* --- NEEDS-HUMAN: urgent flare + fast pulse --- */
 .node--needs-human .node-flare {
   animation: flare 1.6s ease-out infinite;
   transform-origin: center;
@@ -100,21 +102,21 @@
 
 @keyframes flare {
   0% { opacity: 0.8; transform: scale(0.9); }
-  60% { opacity: 0; transform: scale(2.0); }
-  100% { opacity: 0; transform: scale(2.0); }
+  60% { opacity: 0; transform: scale(2.2); }
+  100% { opacity: 0; transform: scale(2.2); }
 }
 
 .node--needs-human .node-pulse {
-  animation: pulse-urgent 1.2s ease-in-out infinite;
+  animation: pulse-urgent 1.1s ease-in-out infinite;
   transform-origin: center;
 }
 
 @keyframes pulse-urgent {
   0%, 100% { opacity: 0.9; transform: scale(1); }
-  50% { opacity: 0.1; transform: scale(2.4); }
+  50% { opacity: 0.1; transform: scale(2.5); }
 }
 
-/* --- DELIVERED: gentle breathing glow --- */
+/* --- DELIVERED: gentle breathing --- */
 .node--delivered .node-core {
   animation: breathe-delivered 3s ease-in-out infinite;
 }
@@ -124,7 +126,7 @@
   50% { opacity: 0.7; }
 }
 
-/* --- IDLE: very slow dim pulse to stay alive --- */
+/* --- IDLE: slow dim pulse --- */
 .node--idle .node-core {
   animation: dim-idle 5s ease-in-out infinite;
 }
@@ -134,14 +136,19 @@
   50% { opacity: 0.35; }
 }
 
-/* --- DONE: nearly static, very faint --- */
+/* --- DONE: near-static, faint --- */
 .node--done .node-core {
   opacity: 0.25;
 }
 
-/* Hover: lift all non-done nodes slightly */
-.constellation-node:hover .node-core,
-.constellation-node:focus-visible .node-core {
+/* --- ORPHAN: no fill, dashed ring --- */
+.node--orphan {
+  cursor: default;
+}
+
+/* Hover: lift non-done/non-orphan nodes */
+.constellation-node:not(.node--done):not(.node--orphan):hover .node-core,
+.constellation-node:not(.node--done):not(.node--orphan):focus-visible .node-core {
   filter: brightness(1.35) !important;
   transition: filter 0.15s;
 }
@@ -149,4 +156,46 @@
 .constellation-node:hover .node-label,
 .constellation-node:focus-visible .node-label {
   fill: var(--color-text);
+}
+
+/* ---------------------------------------------------------------------------
+   Legend
+--------------------------------------------------------------------------- */
+
+.constellation-legend {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(10, 12, 18, 0.82);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.08));
+  border-radius: 6px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  backdrop-filter: blur(4px);
+}
+
+.constellation-legend__title {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  opacity: 0.5;
+  margin-bottom: 2px;
+}
+
+.constellation-legend__entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.constellation-legend__icon {
+  flex-shrink: 0;
 }
