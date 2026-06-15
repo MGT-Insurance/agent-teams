@@ -47,6 +47,18 @@ cp -rf source dest          # NOT: cp -r source dest
 - `apt-get` - use `-y` flag
 - `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
+## Memory routing (agent-teams)
+
+**MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
+
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`.
+- User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
+- Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
+
+Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
+
+Note: the auto-generated Beads block below says "Use `bd remember` for persistent knowledge" — for agent-teams work, the routing rule above supersedes that line. `bd remember` is correct only for project facts shared across all agents in this repo; role/process learnings go to `ateam learn`.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ccf33ec3 -->
 ## Beads Issue Tracker
 

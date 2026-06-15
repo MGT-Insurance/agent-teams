@@ -47,7 +47,7 @@ ateam resume-match "$PWD"
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
-An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the session (bg DRI: self-stop via `claude stop <id>` as described in Phase 6; interactive: end the turn).
+An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the turn.
 
 - **Open match found -> resume:** recover state — the initiative's notes, `ateam human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
 - **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
@@ -83,9 +83,21 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 
 ## Phase 6 — Teardown
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
+Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings per the Memory routing rule above (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
 
-**Background sessions only — self-stop as the very last action.** When `$CLAUDE_JOB_DIR` is set (the bg-mode signal; interactive DRIs will not have it), after ALL teardown steps are complete and the terminal state is DONE (PR delivered with teardown complete, or a resume that just ran the close step, or a resume where awaiting-merge is still open and the human did not ask for more) and no parked gate is pending: stop this session by running `claude stop <id>`, where `<id>` is the final path segment of `$CLAUDE_JOB_DIR` (e.g. if `$CLAUDE_JOB_DIR` is `/Users/x/.claude/jobs/c7b8e7c0`, the id is `c7b8e7c0` — inline it literally, do NOT use command substitution like `$(basename ...)` as that trips an unsilenceable safety prompt). This is the session's very last action — it ends the process. Interactive DRIs never self-stop; the human ends the session.
+**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with teardown complete; or a resume that just ran the close step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
+
+# Memory routing
+
+**MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
+
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`.
+- User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
+- Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
+
+Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
+
+This is the standing place for role learnings — the moment they form, not only at teardown. Phase 6 teardown is when DRI-specific learnings are *guaranteed* contributed (see teardown step: `ateam learn dri <slug> --file <tmpfile>`), but learnings that emerge during execution belong here immediately.
 
 # Role-division rules (state these to the team; enforce them)
 

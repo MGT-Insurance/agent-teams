@@ -242,6 +242,18 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ateam sync
    ```
 
-## 9. Report
+## 9. Verify memory-routing hook is active
 
-Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, and that `/dri` is ready to use.
+The agent-teams plugin ships a `block-claude-memory-writes.sh` PreToolUse hook that is **automatically registered from `hooks.json`** — no install step is needed. This step verifies it is active, not re-installs it.
+
+Run both probes and confirm the results match expectations:
+
+**Probe A — deny (write to a Claude memory path):** Ask Claude to attempt a Write to any path under `~/.claude/projects/test-project/memory/` (e.g. `~/.claude/projects/test-project/memory/smoke.md`). The hook must intercept and deny it with a message beginning `BLOCKED: agent-teams routes persistent memory to ateam`.
+
+**Probe B — allow (write to a normal path):** Ask Claude to attempt a Write to `/tmp/hook-verify.txt`. The hook must pass through and the write must succeed normally. Delete the file afterward.
+
+If Probe A is not denied, the plugin hooks are not loading — confirm the plugin is installed (`~/.claude/settings.json` has the agent-teams plugin listed) and that `hooks.json` contains the `PreToolUse` block. Do NOT copy or re-register the hook manually; diagnose why plugin hook loading failed.
+
+## 10. Report
+
+Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, hook-verify results, and that `/dri` is ready to use.

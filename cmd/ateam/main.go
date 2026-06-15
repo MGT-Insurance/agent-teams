@@ -63,6 +63,7 @@ func run(args []string) int {
 	verbs.RegisterMatch(reg)
 	verbs.RegisterWrite(reg)
 	verbs.RegisterDispatch(reg)
+	verbs.RegisterCost(reg)
 
 	cmd, ok := reg.Lookup(verb)
 	if !ok {
