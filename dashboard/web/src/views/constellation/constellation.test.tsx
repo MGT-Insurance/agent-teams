@@ -76,6 +76,8 @@ function makeNode(
     session: null,
     activity: overrides.activity ?? "idle",
     phase: overrides.phase ?? "parked",
+    delivery: overrides.delivery ?? "none",
+    needsHuman: overrides.needsHuman ?? false,
     ...overrides,
   };
 }

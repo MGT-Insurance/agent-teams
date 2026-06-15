@@ -3,6 +3,8 @@ export type {
   ParsedInitiative,
   SessionState,
   ActivityStatus,
+  DeliveryStatus,
+  NeedsHumanFlavor,
   InitiativeNode,
   InboxItem,
   WorkBead,

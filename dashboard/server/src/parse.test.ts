@@ -11,6 +11,8 @@ import {
   buildOrphanSessions,
   buildInbox,
   deriveActivity,
+  deriveDelivery,
+  deriveNeedsHuman,
   derivePhase,
 } from "./parse.js";
 import type { RawInitiative, SessionState, ParsedInitiative } from "@agent-teams/shared";
@@ -265,9 +267,10 @@ describe("deriveActivity", () => {
     expect(deriveActivity(baseInitiative, busySession, true)).toBe("needs-human");
   });
 
-  it("delivered when PR URL + session state=done", () => {
+  it("needs-human (review) when PR URL + idle session (PR awaiting review)", () => {
     const init = { ...baseInitiative, prUrl: "https://github.com/o/r/pull/1" };
-    expect(deriveActivity(init, idleSession, false)).toBe("delivered");
+    // delivery=pr-open, working=false → needs-human:review → deriveActivity returns "needs-human"
+    expect(deriveActivity(init, idleSession, false)).toBe("needs-human");
   });
 
   it("busy when session status is busy", () => {
@@ -291,8 +294,15 @@ describe("deriveActivity", () => {
     expect(deriveActivity(closed, null, false)).toBe("done");
   });
 
-  it("idle when no session and status is open", () => {
-    expect(deriveActivity(baseInitiative, null, false)).toBe("idle");
+  it("needs-human (review) when no session but PR open and status is open", () => {
+    // delivery=pr-open (prUrl present, status=open), working=false, isHumanGated=false
+    // → needsHuman="review" → deriveActivity returns "needs-human"
+    expect(deriveActivity(baseInitiative, null, false)).toBe("needs-human");
+  });
+
+  it("idle when no session, no PR, status is open", () => {
+    const noPr = { ...baseInitiative, prUrl: null as string | null };
+    expect(deriveActivity(noPr, null, false)).toBe("idle");
   });
 });
 
@@ -379,6 +389,122 @@ describe("buildInbox", () => {
     const done = initiatives.map((i) => ({ ...i, status: "done" }));
     const inbox = buildInbox(done, new Set(["at-v4e"]));
     expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
+  });
+});
+
+// ---- deriveDelivery (agent-teams-3e6) ----------------------------------------
+
+describe("deriveDelivery", () => {
+  it("returns pr-open when prUrl present and status is open", () => {
+    const init = parseInitiative(RAW_AT_V4E); // has prUrl, status="open"
+    expect(deriveDelivery(init)).toBe("pr-open");
+  });
+
+  it("returns pr-open when prUrl present and status is anything other than closed/done", () => {
+    const init = { ...parseInitiative(RAW_AT_V4E), status: "in_progress" };
+    expect(deriveDelivery(init)).toBe("pr-open");
+  });
+
+  it("returns merged when status is closed (regardless of prUrl)", () => {
+    const init = { ...parseInitiative(RAW_AT_V4E), status: "closed" };
+    expect(deriveDelivery(init)).toBe("merged");
+  });
+
+  it("returns merged when status is done", () => {
+    const init = { ...parseInitiative(RAW_AT_V4E), status: "done" };
+    expect(deriveDelivery(init)).toBe("merged");
+  });
+
+  it("returns none when no prUrl and status is open", () => {
+    const init = { ...parseInitiative(RAW_AT_V4E), prUrl: null as string | null };
+    expect(deriveDelivery(init)).toBe("none");
+  });
+});
+
+// ---- deriveNeedsHuman (agent-teams-3e6) truth table -------------------------
+
+describe("deriveNeedsHuman", () => {
+  it("none + working → false (initial work in progress)", () => {
+    expect(deriveNeedsHuman("none", true, false)).toBe(false);
+  });
+
+  it("none + idle + no gate → false", () => {
+    expect(deriveNeedsHuman("none", false, false)).toBe(false);
+  });
+
+  it("none + idle + gate → answer (initial work, blocked on gate)", () => {
+    expect(deriveNeedsHuman("none", false, true)).toBe("answer");
+  });
+
+  it("none + working + gate → answer (gate takes priority over working)", () => {
+    expect(deriveNeedsHuman("none", true, true)).toBe("answer");
+  });
+
+  it("pr-open + working → false (refining after delivery, Eric waits)", () => {
+    expect(deriveNeedsHuman("pr-open", true, false)).toBe(false);
+  });
+
+  it("pr-open + idle → review (PR awaiting Eric review — the key structural fix)", () => {
+    expect(deriveNeedsHuman("pr-open", false, false)).toBe("review");
+  });
+
+  it("pr-open + idle + gate → answer (explicit gate takes priority over review)", () => {
+    expect(deriveNeedsHuman("pr-open", false, true)).toBe("answer");
+  });
+
+  it("merged → false (done, nothing needed)", () => {
+    expect(deriveNeedsHuman("merged", false, false)).toBe(false);
+  });
+
+  it("merged + gate → false (closed initiatives never need human)", () => {
+    expect(deriveNeedsHuman("merged", false, true)).toBe(false);
+  });
+});
+
+// ---- buildInitiativeNodes: new two-dimension fields (agent-teams-3e6) -------
+
+describe("buildInitiativeNodes — two-dimension fields", () => {
+  const sessions = parseClaudeAgents(REAL_SESSIONS_JSON);
+
+  it("delivery is pr-open when initiative has prUrl and is open", () => {
+    const parsed = parseInitiative(RAW_AT_V4E); // has prUrl, status=open
+    const nodes = buildInitiativeNodes([parsed], sessions, new Set());
+    expect(nodes[0]?.delivery).toBe("pr-open");
+  });
+
+  it("needsHuman is review when delivery=pr-open and no working session", () => {
+    // at-2jh: has prUrl, status=open, no matched session (worktree not in REAL_SESSIONS_JSON)
+    const parsed = parseInitiative(RAW_AT_2JH);
+    const nodes = buildInitiativeNodes([parsed], sessions, new Set());
+    expect(nodes[0]?.delivery).toBe("pr-open");
+    expect(nodes[0]?.needsHuman).toBe("review");
+  });
+
+  it("needsHuman is false when delivery=pr-open and working session present", () => {
+    // at-v4e: has prUrl, matched session is busy+working
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const nodes = buildInitiativeNodes([parsed], sessions, new Set());
+    expect(nodes[0]?.delivery).toBe("pr-open");
+    expect(nodes[0]?.needsHuman).toBe(false);
+  });
+
+  it("needsHuman is answer when humanGated (regardless of delivery)", () => {
+    const parsed = parseInitiative(RAW_AT_2JH);
+    const nodes = buildInitiativeNodes([parsed], sessions, new Set(["at-2jh"]));
+    expect(nodes[0]?.needsHuman).toBe("answer");
+  });
+
+  it("delivery is merged when initiative status is closed", () => {
+    const closed = { ...parseInitiative(RAW_AT_V4E), status: "closed" };
+    const nodes = buildInitiativeNodes([closed], sessions, new Set());
+    expect(nodes[0]?.delivery).toBe("merged");
+    expect(nodes[0]?.needsHuman).toBe(false);
+  });
+
+  it("delivery is none when no prUrl and status open", () => {
+    const noPr = { ...parseInitiative(RAW_AT_V4E), prUrl: null as string | null };
+    const nodes = buildInitiativeNodes([noPr], sessions, new Set());
+    expect(nodes[0]?.delivery).toBe("none");
   });
 });
 

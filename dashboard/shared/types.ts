@@ -51,6 +51,37 @@ export type ActivityStatus =
   | "delivered"
   | "done";
 
+// ---------------------------------------------------------------------------
+// Two-dimension initiative state model (added 2026-06-15, agent-teams-3e6)
+// ---------------------------------------------------------------------------
+
+// DIMENSION A: delivery — about the PR, independent of activity.
+//   none     -> no PR URL, or initiative already merged/done
+//   pr-open  -> PR URL present in notes AND initiative status is OPEN
+//   merged   -> initiative status is CLOSED / DONE
+export type DeliveryStatus = "none" | "pr-open" | "merged";
+
+// DIMENSION B captured on InitiativeNode as a boolean-ish field — see below.
+// "working" = a live background session is busy/working in the initiative's worktree.
+// "idle"    = no live working session.
+// (Kept as a separate field; the existing ActivityStatus.activity covers this too.)
+
+// DERIVED: needsHuman — the action-required flag with a flavor.
+//   "answer" -> initiative is parked on a gate/question (the `human` label / ateam human-list)
+//   "review" -> delivery == pr-open AND no live working session (PR awaiting Eric's review/merge)
+//   false    -> no action required
+//
+// KEY principle: awaiting-merge is NOT flagged as a human gate in agent-teams.
+// "review" MUST be derived structurally (open + PR + idle), not read from a flag.
+export type NeedsHumanFlavor = "answer" | "review";
+
+// TRUTH TABLE:
+//   delivery=none  + working -> needsHuman=false            (initial work)
+//   delivery=none  + idle + gate -> needsHuman="answer"     (initial work, blocked)
+//   delivery=pr-open + working -> needsHuman=false          (refining after delivery)
+//   delivery=pr-open + idle    -> needsHuman="review"       (PR delivered, awaiting review)
+//   delivery=merged            -> needsHuman=false, done
+
 // The join of a ParsedInitiative with its matched SessionState (null = no live session).
 export interface InitiativeNode {
   initiative: ParsedInitiative;
@@ -58,6 +89,9 @@ export interface InitiativeNode {
   activity: ActivityStatus;
   // Human-readable phase token, e.g. "executing", "planning", "parked".
   phase: string;
+  // Two-dimension state model fields (agent-teams-3e6).
+  delivery: DeliveryStatus;
+  needsHuman: false | NeedsHumanFlavor;
 }
 
 // An item in the inbox requiring Eric's attention.

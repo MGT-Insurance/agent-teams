@@ -6,6 +6,8 @@ import type {
   ParsedInitiative,
   SessionState,
   ActivityStatus,
+  DeliveryStatus,
+  NeedsHumanFlavor,
   InitiativeNode,
   InboxItem,
   WorkBead,
@@ -123,23 +125,71 @@ export function parseBdList(raw: string): WorkBead[] {
   return items as WorkBead[];
 }
 
+// ---------------------------------------------------------------------------
+// Two-dimension state model (agent-teams-3e6)
+// ---------------------------------------------------------------------------
+
+// DIMENSION A: derive delivery status from initiative.
+// Uses a cheap notes/URL heuristic — no live gh call.
+export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
+  const s = initiative.status.toLowerCase();
+  if (s === "closed" || s === "done") return "merged";
+  if (initiative.prUrl !== null) return "pr-open";
+  return "none";
+}
+
+// Returns true when the session is actively working (live bg session busy/working).
+function isWorking(session: SessionState | null): boolean {
+  if (session === null) return false;
+  return session.status === "busy" || session.state === "working";
+}
+
+// Derive needsHuman with flavor from the two-dimension model.
+// Truth table (from agent-teams-3e6 spec):
+//   delivery=none  + working -> false            (initial work in progress)
+//   delivery=none  + idle + gate -> "answer"     (initial work, blocked on gate)
+//   delivery=pr-open + working -> false          (refining after delivery — Eric waits)
+//   delivery=pr-open + idle    -> "review"       (PR delivered, awaiting Eric review)  <- the key fix
+//   delivery=merged            -> false          (done)
+//
+// CRITICAL: "review" is derived structurally, never from the human-gate flag.
+// awaiting-merge is NOT flagged as a human gate in agent-teams.
+// NOTE: explicit human gate ("answer") takes priority over structural "review" when both apply.
+export function deriveNeedsHuman(
+  delivery: DeliveryStatus,
+  working: boolean,
+  isHumanGated: boolean,
+): false | NeedsHumanFlavor {
+  if (delivery === "merged") return false;
+  // Explicit gate takes priority — "answer" regardless of delivery state.
+  if (isHumanGated) return "answer";
+  if (delivery === "pr-open") {
+    // PR awaiting review: only when no live working session.
+    return working ? false : "review";
+  }
+  return false;
+}
+
 // Derive an ActivityStatus from initiative + session + human-gate flag.
+// This is the legacy flat enum kept for backward compatibility on the constellation
+// view while it migrates to the two-dimension model.
 // Priority: needs-human > delivered > busy > idle > done.
 export function deriveActivity(
   initiative: ParsedInitiative,
   session: SessionState | null,
   isHumanGated: boolean,
 ): ActivityStatus {
-  if (isHumanGated) return "needs-human";
+  const delivery = deriveDelivery(initiative);
+  const working = isWorking(session);
+  const needsHuman = deriveNeedsHuman(delivery, working, isHumanGated);
 
-  if (initiative.prUrl !== null && session?.state === "done") {
-    return "delivered";
-  }
+  if (needsHuman !== false) return "needs-human";
 
-  if (session !== null) {
-    if (session.status === "busy" || session.state === "working") return "busy";
-    return "idle";
-  }
+  if (delivery === "merged") return "done";
+
+  if (delivery === "pr-open" && !working) return "delivered";
+
+  if (working) return "busy";
 
   const s = initiative.status.toLowerCase();
   if (s === "closed" || s === "done") return "done";
@@ -183,7 +233,12 @@ export function buildInitiativeNodes(
     const activity = deriveActivity(initiative, session, isHumanGated);
     const phase = derivePhase(initiative.notes);
 
-    return { initiative, session, activity, phase };
+    // Two-dimension state model fields.
+    const delivery = deriveDelivery(initiative);
+    const working = session !== null && (session.status === "busy" || session.state === "working");
+    const needsHuman = deriveNeedsHuman(delivery, working, isHumanGated);
+
+    return { initiative, session, activity, phase, delivery, needsHuman };
   });
 }
 
