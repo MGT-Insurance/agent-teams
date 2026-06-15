@@ -6,6 +6,8 @@ This plugin hard-requires **beads** (`bd`) — all work tracking is beads-first.
 
 **DEV:** after editing `cmd/ateam`, regenerate the binaries with `scripts/build-binaries.sh` and commit `plugins/agent-teams/bin/`.
 
+**DEV — bump the version on EVERY plugin-content change.** Any change to plugin contents (skills, agents, hooks, commands, `.mcp.json`, binaries) MUST bump the version in BOTH `plugins/agent-teams/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (keep them identical). `claude plugin update` keys off the version: if it doesn't change, installed sessions keep the cached old copy and silently never pick up your change — the edit looks merged but is dead. No bump = not shipped.
+
 ## 🚨 CARDINAL RULE — two beads databases, NEVER confuse them
 
 There are **two separate beads databases**, and putting the wrong beads in the wrong one is a serious, recurring error:
