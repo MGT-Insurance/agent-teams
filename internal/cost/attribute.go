@@ -123,6 +123,7 @@ type msgUsageJSON struct {
 type recordJSON struct {
 	Type    string `json:"type"`
 	Message struct {
+		ID    string       `json:"id"`
 		Role  string       `json:"role"`
 		Model string       `json:"model"`
 		Usage msgUsageJSON `json:"usage"`
@@ -132,7 +133,13 @@ type recordJSON struct {
 // parseJSONL scans a .jsonl file line by line. For each assistant record it
 // adds the token counts into acc, keyed by model string. Non-assistant lines,
 // blank lines, and malformed lines are silently skipped.
-func parseJSONL(path string, acc map[string]*TokenUsage) error {
+//
+// seen tracks message.id values already accumulated across this Attribute run
+// (spanning main + all subagent transcripts). Each transcript turn is emitted
+// as 2-5 duplicate JSONL lines sharing the same message.id; keeping only the
+// first occurrence per id is lossless because duplicates carry identical usage.
+// Records with an empty message.id cannot be deduped and are always counted.
+func parseJSONL(path string, acc map[string]*TokenUsage, seen map[string]bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -163,6 +170,14 @@ func parseJSONL(path string, acc map[string]*TokenUsage) error {
 		if model == "" {
 			continue
 		}
+		// Dedupe by message.id across main + subagent transcripts. Empty id
+		// means the record cannot be keyed, so it is always accumulated.
+		if id := rec.Message.ID; id != "" {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+		}
 		u := acc[model]
 		if u == nil {
 			u = &TokenUsage{}
@@ -182,10 +197,11 @@ func parseJSONL(path string, acc map[string]*TokenUsage) error {
 // one session into acc. Missing files and directories are skipped silently.
 // Any non-missing-file scanner error is returned (scanner buffer overflow, I/O
 // error, etc.) so the caller can surface data-loss conditions.
-func collectTranscripts(projectDir, sessionID string, acc map[string]*TokenUsage) error {
+// seen is the per-Attribute-run dedupe set threaded from Attribute; see parseJSONL.
+func collectTranscripts(projectDir, sessionID string, acc map[string]*TokenUsage, seen map[string]bool) error {
 	// Main transcript.
 	mainPath := filepath.Join(projectDir, sessionID+".jsonl")
-	if err := parseJSONL(mainPath, acc); err != nil {
+	if err := parseJSONL(mainPath, acc, seen); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			// Missing transcript is normal (session may have no file yet).
 		} else {
@@ -208,7 +224,7 @@ func collectTranscripts(projectDir, sessionID string, acc map[string]*TokenUsage
 			continue
 		}
 		p := filepath.Join(subagentsDir, name)
-		if err := parseJSONL(p, acc); err != nil {
+		if err := parseJSONL(p, acc, seen); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue // disappeared between ReadDir and open — skip
 			}
@@ -229,10 +245,11 @@ func Attribute(initiativeID, jobsDir, projectsDir string) (Report, error) {
 	}
 
 	acc := make(map[string]*TokenUsage)
+	seen := make(map[string]bool) // dedupe assistant turns by message.id across all transcripts
 	for _, s := range sessions {
 		slug := SlugifyCWD(s.cwd)
 		projectDir := filepath.Join(projectsDir, slug)
-		if err := collectTranscripts(projectDir, s.sessionID, acc); err != nil {
+		if err := collectTranscripts(projectDir, s.sessionID, acc, seen); err != nil {
 			return Report{InitiativeID: initiativeID}, err
 		}
 	}
