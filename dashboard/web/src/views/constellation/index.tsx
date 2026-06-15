@@ -9,9 +9,13 @@ import "./constellation.css";
 // Computed from the two-dimension model (delivery x activity x needsHuman).
 // ---------------------------------------------------------------------------
 
-type UrgencyTier = "needs-human" | "working" | "idle" | "done";
+// "waiting" is a sub-tier of needs-human — most urgent (agent blocked on you).
+// Both "waiting" and "needs-human" orbit in the inner ring; "waiting" is visually
+// stronger (brighter color, double flare ring).
+type UrgencyTier = "waiting" | "needs-human" | "working" | "idle" | "done";
 
 function deriveUrgency(node: InitiativeNode): UrgencyTier {
+  if (node.needsHuman === "waiting") return "waiting";
   if (node.needsHuman !== false) return "needs-human";
   // Closed/merged → done
   if (node.delivery === "merged") return "done";
@@ -34,7 +38,8 @@ function deriveUrgency(node: InitiativeNode): UrgencyTier {
 // ---------------------------------------------------------------------------
 
 const URGENCY_RADIUS_FRACTION: Record<UrgencyTier, number> = {
-  "needs-human": 0.20, // innermost — pulled toward you
+  waiting: 0.20,      // innermost — agent waiting on you (most urgent)
+  "needs-human": 0.20, // same inner orbit — any needs-you flavor
   working: 0.35,
   idle: 0.55,
   done: 0.70, // outer dim rim
@@ -143,6 +148,16 @@ const URGENCY_META: Record<
   UrgencyTier,
   { color: string; glowColor: string; r: number; cssClass: string; label: string; opacity: number }
 > = {
+  // "waiting" — agent paused on human input. Strongest orange, larger node.
+  waiting: {
+    color: "#ff3d00",
+    glowColor: "rgba(255,61,0,0.8)",
+    r: 20,
+    cssClass: "node--waiting",
+    label: "needs you",
+    opacity: 1,
+  },
+  // "needs-human" — review/generic flavor. Same inner orbit, slightly softer orange.
   "needs-human": {
     color: "#ff6b35",
     glowColor: "rgba(255,107,53,0.7)",
@@ -177,8 +192,9 @@ const URGENCY_META: Record<
   },
 };
 
-// Tether line alpha tracks urgency: needs-human brightest, done faintest.
+// Tether line alpha tracks urgency: waiting brightest, done faintest.
 const TETHER_OPACITY: Record<UrgencyTier, number> = {
+  waiting: 0.70,
   "needs-human": 0.55,
   working: 0.38,
   idle: 0.13,
@@ -265,7 +281,11 @@ function NodeTooltip({ data, svgW, svgH }: { data: TooltipData; svgW: number; sv
           fontFamily="var(--font-mono)"
           fontWeight="600"
         >
-          {data.needsHuman === "answer" ? "needs answer" : "awaiting review"}
+          {data.needsHuman === "waiting"
+            ? "agent waiting on you"
+            : data.needsHuman === "review"
+              ? "verify & merge"
+              : "needs your attention"}
         </text>
       )}
     </g>
@@ -330,6 +350,7 @@ interface UrgencyRingsProps {
 }
 
 function UrgencyRings({ cx, cy, shortSide }: UrgencyRingsProps) {
+  // "waiting" and "needs-human" share the same radius (0.20), so only draw one inner ring.
   const rings: Array<{ tier: UrgencyTier; opacity: number }> = [
     { tier: "needs-human", opacity: 0.12 },
     { tier: "working", opacity: 0.07 },
@@ -693,6 +714,11 @@ function ConstellationLegend() {
 
       {/* CHANNEL 1: urgency (core color + motion) */}
       <div className="constellation-legend__section">urgency</div>
+
+      <div className="constellation-legend__entry legend-entry--waiting">
+        <LegendDot color="#ff3d00" badge="!" />
+        <span>agent waiting on you</span>
+      </div>
 
       <div className="constellation-legend__entry legend-entry--needs-human">
         <LegendDot color="#ff6b35" badge="!" />

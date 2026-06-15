@@ -3,6 +3,16 @@ import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import "./inbox.css";
 
+// Row label per flavor — matches the spec's specificity-follows-signal principle.
+// waiting: agent is paused, waiting for input.
+// review: delivered + session ended; we know the ask is verify & merge.
+// generic: delivered + no session; graceful degrade, no specific action asserted.
+function rowBadgeLabel(kind: InboxItem["kind"]): string {
+  if (kind === "waiting") return "agent waiting";
+  if (kind === "review") return "verify & merge";
+  return "needs you";
+}
+
 interface InboxRowProps {
   item: InboxItem;
   // Action slot: left intentionally empty for v1, shaped for future triage layer.
@@ -34,10 +44,10 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
     >
       <div className="inbox-row__header">
         <span className={`inbox-row__badge inbox-row__badge--${item.kind}`}>
-          {item.kind === "answer" ? "answer" : "review"}
+          {rowBadgeLabel(item.kind)}
         </span>
         <span className="inbox-row__title">{item.title}</span>
-        {item.kind === "review" && item.prUrl && (
+        {(item.kind === "review" || item.kind === "generic") && item.prUrl && (
           <a
             href={item.prUrl}
             target="_blank"
@@ -102,8 +112,10 @@ function InboxSection({ title, items, dataSection }: SectionProps) {
 export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
 
-  const answerItems = inbox.filter((i) => i.kind === "answer");
-  const reviewItems = inbox.filter((i) => i.kind === "review");
+  // "Waiting on you": agent is blocked/waiting on human input (most urgent).
+  const waitingItems = inbox.filter((i) => i.kind === "waiting");
+  // "Delivered — needs you": PR delivered (review = session ended; generic = no session).
+  const deliveredItems = inbox.filter((i) => i.kind === "review" || i.kind === "generic");
 
   const showBanner = connectionState !== "connected";
   const totalCount = inbox.length;
@@ -126,14 +138,14 @@ export default function InboxView() {
       ) : (
         <div className="inbox-sections">
           <InboxSection
-            title="Answer"
-            items={answerItems}
-            dataSection="answer"
+            title="Waiting on you"
+            items={waitingItems}
+            dataSection="waiting"
           />
           <InboxSection
-            title="Review / merge"
-            items={reviewItems}
-            dataSection="review"
+            title="Delivered — needs you"
+            items={deliveredItems}
+            dataSection="delivered"
           />
         </div>
       )}

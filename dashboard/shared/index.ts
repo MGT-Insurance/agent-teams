@@ -2,6 +2,7 @@ export type {
   RawInitiative,
   ParsedInitiative,
   SessionState,
+  SessionSignal,
   ActivityStatus,
   DeliveryStatus,
   NeedsHumanFlavor,

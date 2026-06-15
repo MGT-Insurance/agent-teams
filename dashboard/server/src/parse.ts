@@ -5,6 +5,7 @@ import type {
   RawInitiative,
   ParsedInitiative,
   SessionState,
+  SessionSignal,
   ActivityStatus,
   DeliveryStatus,
   NeedsHumanFlavor,
@@ -126,7 +127,7 @@ export function parseBdList(raw: string): WorkBead[] {
 }
 
 // ---------------------------------------------------------------------------
-// Two-dimension state model (agent-teams-3e6)
+// Two-dimension state model (agent-teams-3e6, extended by agent-teams-blo)
 // ---------------------------------------------------------------------------
 
 // DIMENSION A: derive delivery status from initiative.
@@ -138,34 +139,54 @@ export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
   return "none";
 }
 
-// Returns true when the session is actively working (live bg session busy/working).
-function isWorking(session: SessionState | null): boolean {
-  if (session === null) return false;
-  return session.status === "busy" || session.state === "working";
+// Derive the session signal from a matched SessionState (or null).
+// This is the key extension from agent-teams-blo: we now distinguish
+// "waiting" (blocked/paused on human) from "working" and "ended".
+//   "working" -> status=busy / state=working (live, active)
+//   "waiting" -> status=waiting / state=blocked (agent paused on human input) — THE BUG FIX
+//   "ended"   -> status=idle / state=done|stopped (session self-stopped)
+//   "none"    -> no matched session
+export function deriveSessionSignal(session: SessionState | null): SessionSignal {
+  if (session === null) return "none";
+  // Blocked state: agent is waiting on human input. Matches both:
+  //   status="waiting" (newer API) and state="blocked" (older API).
+  if (session.status === "waiting" || session.state === "blocked") return "waiting";
+  // Working: actively running.
+  if (session.status === "busy" || session.state === "working") return "working";
+  // Ended: session self-stopped or completed.
+  return "ended";
 }
 
-// Derive needsHuman with flavor from the two-dimension model.
-// Truth table (from agent-teams-3e6 spec):
-//   delivery=none  + working -> false            (initial work in progress)
-//   delivery=none  + idle + gate -> "answer"     (initial work, blocked on gate)
-//   delivery=pr-open + working -> false          (refining after delivery — Eric waits)
-//   delivery=pr-open + idle    -> "review"       (PR delivered, awaiting Eric review)  <- the key fix
-//   delivery=merged            -> false          (done)
+// Derive needsHuman with flavor from the two-dimension model (agent-teams-blo).
+// Truth table:
+//   session WAITING/blocked           -> "waiting" (active OR delivered; MOST URGENT)
+//   session WORKING                   -> false (refining — not in inbox)
+//   delivered + session ENDED         -> "review" (verify & merge; signal-backed)
+//   delivered + session NONE          -> "generic" (graceful degrade; label "needs you")
+//   active + session ENDED or NONE    -> false (idle/dormant, no PR)
+//   done initiative                   -> false
+//   explicit human gate               -> "waiting" (override; wins over inference)
 //
-// CRITICAL: "review" is derived structurally, never from the human-gate flag.
-// awaiting-merge is NOT flagged as a human gate in agent-teams.
-// NOTE: explicit human gate ("answer") takes priority over structural "review" when both apply.
+// CRITICAL: specificity follows the signal. Only assert "review" when we have
+// evidence (ENDED). Without session info -> "generic" (no action asserted).
 export function deriveNeedsHuman(
   delivery: DeliveryStatus,
-  working: boolean,
+  signal: SessionSignal,
   isHumanGated: boolean,
 ): false | NeedsHumanFlavor {
   if (delivery === "merged") return false;
-  // Explicit gate takes priority — "answer" regardless of delivery state.
-  if (isHumanGated) return "answer";
+  // Session waiting/blocked -> most urgent, regardless of delivery state.
+  if (signal === "waiting") return "waiting";
+  // Explicit human gate wins over inference -> "waiting" flavor.
+  if (isHumanGated) return "waiting";
+  // Working session -> refining (not in inbox).
+  if (signal === "working") return false;
+  // No active working session — check delivery for PR state.
   if (delivery === "pr-open") {
-    // PR awaiting review: only when no live working session.
-    return working ? false : "review";
+    // Session ended = we know it self-stopped after delivering.
+    if (signal === "ended") return "review";
+    // No session at all = graceful degrade.
+    if (signal === "none") return "generic";
   }
   return false;
 }
@@ -180,16 +201,16 @@ export function deriveActivity(
   isHumanGated: boolean,
 ): ActivityStatus {
   const delivery = deriveDelivery(initiative);
-  const working = isWorking(session);
-  const needsHuman = deriveNeedsHuman(delivery, working, isHumanGated);
+  const signal = deriveSessionSignal(session);
+  const needsHuman = deriveNeedsHuman(delivery, signal, isHumanGated);
 
   if (needsHuman !== false) return "needs-human";
 
   if (delivery === "merged") return "done";
 
-  if (delivery === "pr-open" && !working) return "delivered";
+  if (delivery === "pr-open" && signal !== "working") return "delivered";
 
-  if (working) return "busy";
+  if (signal === "working") return "busy";
 
   const s = initiative.status.toLowerCase();
   if (s === "closed" || s === "done") return "done";
@@ -233,10 +254,10 @@ export function buildInitiativeNodes(
     const activity = deriveActivity(initiative, session, isHumanGated);
     const phase = derivePhase(initiative.notes);
 
-    // Two-dimension state model fields.
+    // Two-dimension state model fields (agent-teams-blo).
     const delivery = deriveDelivery(initiative);
-    const working = session !== null && (session.status === "busy" || session.state === "working");
-    const needsHuman = deriveNeedsHuman(delivery, working, isHumanGated);
+    const signal = deriveSessionSignal(session);
+    const needsHuman = deriveNeedsHuman(delivery, signal, isHumanGated);
 
     return { initiative, session, activity, phase, delivery, needsHuman };
   });
@@ -256,9 +277,10 @@ export function buildOrphanSessions(
 
 // Build InboxItem[] from already-built InitiativeNode[].
 // An item is in the inbox iff node.needsHuman !== false.
-//   needsHuman="answer" -> initiative parked on a gate/question  (kind="answer")
-//   needsHuman="review" -> PR open, no active working session    (kind="review")
-// Initiatives with needsHuman=false (including refining: pr-open + working) are excluded.
+//   needsHuman="waiting" -> session blocked/waiting or explicit gate (kind="waiting")
+//   needsHuman="review"  -> PR open, session ended (kind="review")
+//   needsHuman="generic" -> PR open, no session (kind="generic"; graceful degrade)
+// Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
 export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
   const items: InboxItem[] = [];
 
@@ -267,8 +289,9 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const { initiative } = node;
 
-    if (node.needsHuman === "answer") {
-      // Parked question = latest non-empty notes line.
+    if (node.needsHuman === "waiting") {
+      // Agent waiting on human input, or explicit human gate.
+      // Question = latest non-empty notes line (may contain the gate question).
       const question =
         initiative.notes
           .split("\n")
@@ -278,18 +301,28 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
-        kind: "answer",
+        kind: "waiting",
         question,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });
-    } else {
-      // needsHuman === "review": PR awaiting Eric's review/merge.
+    } else if (node.needsHuman === "review") {
+      // Delivered + session ended: verify & merge.
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "review",
         question: `PR awaiting review: ${initiative.prUrl ?? "(no PR URL)"}`,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+      });
+    } else {
+      // needsHuman === "generic": delivered + no session; graceful degrade.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "generic",
+        question: "Needs your attention",
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });

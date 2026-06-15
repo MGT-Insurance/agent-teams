@@ -44,17 +44,17 @@ function setInbox(items: InboxItem[], extra: Partial<SnapshotState> = {}) {
   mockState.error = extra.error ?? null;
 }
 
-// kind="answer" — initiative parked on a gate/question
-const answerItem: InboxItem = {
+// kind="waiting" — session blocked or explicit human gate
+const waitingItem: InboxItem = {
   initiativeId: "init-1",
   title: "Deploy canary to prod",
-  kind: "answer",
+  kind: "waiting",
   question: "Should we enable the feature flag for all users?",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
   prUrl: null,
 };
 
-// kind="review" — PR open and idle, awaiting Eric's review/merge
+// kind="review" — delivered + session ended (verify & merge, signal-backed)
 const reviewItem: InboxItem = {
   initiativeId: "init-2",
   title: "Refactor auth layer",
@@ -62,6 +62,16 @@ const reviewItem: InboxItem = {
   question: "PR awaiting review: https://github.com/org/repo/pull/42",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
+};
+
+// kind="generic" — delivered + no session (graceful degrade)
+const genericItem: InboxItem = {
+  initiativeId: "init-3",
+  title: "Specialty quote API",
+  kind: "generic",
+  question: "Needs your attention",
+  worktree: "/Users/ericlloyd/.worktrees/init-3",
+  prUrl: "https://github.com/org/repo/pull/99",
 };
 
 beforeEach(() => {
@@ -90,12 +100,12 @@ describe("InboxView — empty state", () => {
   });
 });
 
-describe("InboxView — Answer section (kind='answer')", () => {
-  beforeEach(() => setInbox([answerItem]));
+describe("InboxView — Waiting on you section (kind='waiting')", () => {
+  beforeEach(() => setInbox([waitingItem]));
 
-  it("renders the 'Answer' section heading", () => {
+  it("renders the 'Waiting on you' section heading", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /answer/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
   });
 
   it("renders the item title", () => {
@@ -103,15 +113,10 @@ describe("InboxView — Answer section (kind='answer')", () => {
     expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
   });
 
-  it("renders an 'answer' badge on the row", () => {
+  it("renders an 'agent waiting' badge on the row", () => {
     renderInbox();
-    // The badge is a span inside the row; getAllByText handles both section heading + badge.
-    const matches = screen.getAllByText(/^answer$/i);
-    // At least one match should be the badge (has the badge class).
-    const badge = matches.find(
-      (el) => el.classList.contains("inbox-row__badge"),
-    );
-    expect(badge).toBeTruthy();
+    const badge = screen.getByText(/^agent waiting$/i);
+    expect(badge.classList.contains("inbox-row__badge")).toBeTruthy();
   });
 
   it("renders the parked question prominently", () => {
@@ -119,7 +124,7 @@ describe("InboxView — Answer section (kind='answer')", () => {
     expect(screen.getByText("Should we enable the feature flag for all users?")).toBeTruthy();
   });
 
-  it("does not render a PR link for answer items", () => {
+  it("does not render a PR link for waiting items (no prUrl)", () => {
     renderInbox();
     expect(screen.queryByText(/view pr/i)).toBeNull();
   });
@@ -131,19 +136,19 @@ describe("InboxView — Answer section (kind='answer')", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-1");
   });
 
-  it("row has data-kind='answer' attribute", () => {
+  it("row has data-kind='waiting' attribute", () => {
     renderInbox();
     const row = screen.getByRole("button", { name: /deploy canary to prod/i });
-    expect(row.getAttribute("data-kind")).toBe("answer");
+    expect(row.getAttribute("data-kind")).toBe("waiting");
   });
 });
 
-describe("InboxView — Review / merge section (kind='review')", () => {
+describe("InboxView — Delivered — needs you section (kind='review')", () => {
   beforeEach(() => setInbox([reviewItem]));
 
-  it("renders the 'Review / merge' section heading", () => {
+  it("renders the 'Delivered — needs you' section heading", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /review \/ merge/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
   });
 
   it("renders the item title", () => {
@@ -151,9 +156,9 @@ describe("InboxView — Review / merge section (kind='review')", () => {
     expect(screen.getByText("Refactor auth layer")).toBeTruthy();
   });
 
-  it("renders a 'review' badge", () => {
+  it("renders a 'verify & merge' badge for review kind", () => {
     renderInbox();
-    expect(screen.getByText(/^review$/i)).toBeTruthy();
+    expect(screen.getByText(/^verify & merge$/i)).toBeTruthy();
   });
 
   it("renders the question text", () => {
@@ -182,50 +187,93 @@ describe("InboxView — Review / merge section (kind='review')", () => {
   });
 });
 
-describe("InboxView — both sections together", () => {
-  beforeEach(() => setInbox([answerItem, reviewItem]));
+describe("InboxView — Delivered — needs you section (kind='generic')", () => {
+  beforeEach(() => setInbox([genericItem]));
 
-  it("renders both items", () => {
+  it("renders the 'Delivered — needs you' section heading for generic items", () => {
+    renderInbox();
+    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+  });
+
+  it("renders the item title for generic kind", () => {
+    renderInbox();
+    expect(screen.getByText("Specialty quote API")).toBeTruthy();
+  });
+
+  it("renders a 'needs you' badge for generic kind", () => {
+    renderInbox();
+    const badge = screen.getByText(/^needs you$/i);
+    expect(badge.classList.contains("inbox-row__badge")).toBeTruthy();
+  });
+
+  it("renders a link to the PR URL for generic items (has prUrl)", () => {
+    renderInbox();
+    const link = screen.getByRole("link", { name: /view pr/i });
+    expect(link.getAttribute("href")).toBe("https://github.com/org/repo/pull/99");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("row has data-kind='generic' attribute", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /specialty quote api/i });
+    expect(row.getAttribute("data-kind")).toBe("generic");
+  });
+});
+
+describe("InboxView — all three sections together", () => {
+  beforeEach(() => setInbox([waitingItem, reviewItem, genericItem]));
+
+  it("renders all items", () => {
     renderInbox();
     expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
     expect(screen.getByText("Refactor auth layer")).toBeTruthy();
+    expect(screen.getByText("Specialty quote API")).toBeTruthy();
   });
 
-  it("shows a count badge for two items", () => {
+  it("shows a count badge for three items", () => {
     renderInbox();
-    expect(screen.getByTestId("inbox-count").textContent).toBe("2");
+    expect(screen.getByTestId("inbox-count").textContent).toBe("3");
   });
 
   it("renders both section headings", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /answer/i })).toBeTruthy();
-    expect(screen.getByRole("region", { name: /review \/ merge/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
   });
 
-  it("answer item is in Answer section, review item is in Review/merge section", () => {
+  it("waiting item is in 'Waiting on you' section; review+generic in 'Delivered — needs you'", () => {
     renderInbox();
-    const answerSection = screen.getByRole("region", { name: /^answer$/i });
-    const reviewSection = screen.getByRole("region", { name: /review \/ merge/i });
-    expect(answerSection.querySelector("[data-kind='answer']")).not.toBeNull();
-    expect(answerSection.querySelector("[data-kind='review']")).toBeNull();
-    expect(reviewSection.querySelector("[data-kind='review']")).not.toBeNull();
-    expect(reviewSection.querySelector("[data-kind='answer']")).toBeNull();
+    const waitingSection = screen.getByRole("region", { name: /waiting on you/i });
+    const deliveredSection = screen.getByRole("region", { name: /delivered.*needs you/i });
+    expect(waitingSection.querySelector("[data-kind='waiting']")).not.toBeNull();
+    expect(waitingSection.querySelector("[data-kind='review']")).toBeNull();
+    expect(waitingSection.querySelector("[data-kind='generic']")).toBeNull();
+    expect(deliveredSection.querySelector("[data-kind='review']")).not.toBeNull();
+    expect(deliveredSection.querySelector("[data-kind='generic']")).not.toBeNull();
+    expect(deliveredSection.querySelector("[data-kind='waiting']")).toBeNull();
   });
 });
 
 describe("InboxView — section visibility", () => {
-  it("shows only Answer section when inbox has only answer items", () => {
-    setInbox([answerItem]);
+  it("shows only 'Waiting on you' section when inbox has only waiting items", () => {
+    setInbox([waitingItem]);
     renderInbox();
-    expect(screen.getByRole("region", { name: /^answer$/i })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: /review \/ merge/i })).toBeNull();
+    expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
 
-  it("shows only Review/merge section when inbox has only review items", () => {
+  it("shows only 'Delivered — needs you' section when inbox has only delivered items", () => {
     setInbox([reviewItem]);
     renderInbox();
-    expect(screen.getByRole("region", { name: /review \/ merge/i })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: /^answer$/i })).toBeNull();
+    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
+  });
+
+  it("shows only 'Delivered — needs you' section for generic items", () => {
+    setInbox([genericItem]);
+    renderInbox();
+    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
   });
 });
 
@@ -250,7 +298,7 @@ describe("InboxView — disconnected states", () => {
   });
 
   it("still renders inbox items when reconnecting", () => {
-    setInbox([answerItem], { connectionState: "reconnecting" });
+    setInbox([waitingItem], { connectionState: "reconnecting" });
     renderInbox();
     expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
     expect(screen.getByText(/reconnecting/i)).toBeTruthy();

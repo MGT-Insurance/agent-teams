@@ -175,7 +175,7 @@ describe("ConstellationView", () => {
   it("node aria-label includes the activity status (needs you)", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
-      initiatives: [makeNode({ id: "nh-1", title: "Blocked Thing", needsHuman: "answer" })],
+      initiatives: [makeNode({ id: "nh-1", title: "Blocked Thing", needsHuman: "waiting" })],
     };
     render(<ConstellationView />);
     const node = screen.getByRole("button", { name: /Blocked Thing.*needs you/i });
@@ -279,7 +279,7 @@ describe("ConstellationView", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
       // needsHuman drives the badge now; activity field kept for compat.
-      initiatives: [makeNode({ id: "nh", needsHuman: "answer" })],
+      initiatives: [makeNode({ id: "nh", needsHuman: "waiting" })],
     };
     const { container } = render(<ConstellationView />);
     const badge = container.querySelector("[data-badge='needs-human']");
@@ -391,5 +391,67 @@ describe("ConstellationView", () => {
     const { container } = render(<ConstellationView />);
     const legend = container.querySelector("[data-testid='constellation-legend']");
     expect(legend?.getAttribute("aria-label")).toBeTruthy();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Attention state model (agent-teams-blo)
+  // ---------------------------------------------------------------------------
+
+  it("needsHuman='waiting' node has the needs-human badge (most urgent)", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "wt-1", needsHuman: "waiting" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const badge = container.querySelector("[data-badge='needs-human']");
+    expect(badge).not.toBeNull();
+  });
+
+  it("needsHuman='generic' node has the needs-human badge", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "gen-1", needsHuman: "generic" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const badge = container.querySelector("[data-badge='needs-human']");
+    expect(badge).not.toBeNull();
+  });
+
+  it("needsHuman='review' node has the needs-human badge", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "rv-1", needsHuman: "review" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const badge = container.querySelector("[data-badge='needs-human']");
+    expect(badge).not.toBeNull();
+  });
+
+  it("needsHuman='waiting' maps to data-activity='needs-human'", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "wt-2", needsHuman: "waiting" })],
+    };
+    const { container } = render(<ConstellationView />);
+    const node = container.querySelector("[data-initiative-id='wt-2']");
+    expect(node?.getAttribute("data-activity")).toBe("needs-human");
+  });
+
+  it("needsHuman=false working node maps to data-activity='busy'", () => {
+    const workingSession: import("@agent-teams/shared").SessionState = {
+      sessionId: "sess-wk",
+      kind: "background",
+      cwd: "/wt",
+      startedAt: 0,
+      status: "busy",
+      state: "working",
+    };
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [makeNode({ id: "wk-1", needsHuman: false, session: workingSession })],
+    };
+    const { container } = render(<ConstellationView />);
+    const node = container.querySelector("[data-initiative-id='wk-1']");
+    expect(node?.getAttribute("data-activity")).toBe("busy");
   });
 });

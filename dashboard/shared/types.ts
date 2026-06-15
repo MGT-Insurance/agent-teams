@@ -35,7 +35,8 @@ export interface SessionState {
   kind: "background" | "interactive";
   startedAt: number; // epoch ms
   sessionId: string; // uuid
-  status: "idle" | "busy";
+  // "waiting" is added by agent-teams-blo: the session is paused, waiting on human input.
+  status: "idle" | "busy" | "waiting";
   // background-only fields
   id?: string;
   name?: string;
@@ -66,21 +67,37 @@ export type DeliveryStatus = "none" | "pr-open" | "merged";
 // "idle"    = no live working session.
 // (Kept as a separate field; the existing ActivityStatus.activity covers this too.)
 
-// DERIVED: needsHuman — the action-required flag with a flavor.
-//   "answer" -> initiative is parked on a gate/question (the `human` label / ateam human-list)
-//   "review" -> delivery == pr-open AND no live working session (PR awaiting Eric's review/merge)
-//   false    -> no action required
-//
-// KEY principle: awaiting-merge is NOT flagged as a human gate in agent-teams.
-// "review" MUST be derived structurally (open + PR + idle), not read from a flag.
-export type NeedsHumanFlavor = "answer" | "review";
+// SESSION SIGNAL — derived from the matched SessionState (if any):
+//   "working" -> status=busy / state=working (live session, active)
+//   "waiting" -> status=waiting / state=blocked (agent paused, waiting on human)
+//   "ended"   -> status=idle / state=done|stopped (session self-stopped)
+//   "none"    -> no matched session found
+export type SessionSignal = "working" | "waiting" | "ended" | "none";
 
-// TRUTH TABLE:
-//   delivery=none  + working -> needsHuman=false            (initial work)
-//   delivery=none  + idle + gate -> needsHuman="answer"     (initial work, blocked)
-//   delivery=pr-open + working -> needsHuman=false          (refining after delivery)
-//   delivery=pr-open + idle    -> needsHuman="review"       (PR delivered, awaiting review)
-//   delivery=merged            -> needsHuman=false, done
+// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo).
+//   "waiting" -> session is blocked/waiting (agent paused on human input) OR explicit human gate.
+//                MOST URGENT — works for active OR delivered.
+//   "review"  -> delivery == pr-open AND session ENDED (we know it self-stopped).
+//                "verify & merge" — specific, signal-backed.
+//   "generic" -> delivery == pr-open AND session NONE (no session info to confirm).
+//                "needs you" — graceful degrade; no specific action asserted.
+//   false     -> no action required
+//
+// KEY principles:
+// - Specificity follows the signal: specific flavor only when session info supports it.
+// - Without session info -> generic "needs you" (never assert specific action).
+// - "review" MUST be derived structurally (open + PR + session ended), not from a flag.
+// - awaiting-merge is NOT flagged as a human gate in agent-teams.
+export type NeedsHumanFlavor = "waiting" | "review" | "generic";
+
+// TRUTH TABLE (agent-teams-blo):
+//   session WAITING/blocked           -> needsHuman="waiting" (active OR delivered; most urgent)
+//   session WORKING                   -> needsHuman=false (working / refining, not in inbox)
+//   delivered + session ENDED         -> needsHuman="review" (verify & merge, signal-backed)
+//   delivered + session NONE          -> needsHuman="generic" (graceful degrade; label "needs you")
+//   active + session ENDED or NONE    -> needsHuman=false (idle/dormant, no PR)
+//   done initiative                   -> needsHuman=false
+//   explicit human gate               -> needsHuman="waiting" (override; wins over inference)
 
 // The join of a ParsedInitiative with its matched SessionState (null = no live session).
 export interface InitiativeNode {
@@ -95,15 +112,17 @@ export interface InitiativeNode {
 }
 
 // An item in the inbox requiring Eric's attention.
-// kind mirrors NeedsHumanFlavor:
-//   "answer" -> initiative parked on a gate/question (needsHuman="answer")
-//   "review" -> PR open, no active working session (needsHuman="review")
+// kind mirrors NeedsHumanFlavor (agent-teams-blo):
+//   "waiting" -> session blocked/waiting or explicit gate (agent waiting on human input)
+//   "review"  -> delivered + session ended (verify & merge, signal-backed)
+//   "generic" -> delivered + no session (graceful degrade; label "needs you")
 export interface InboxItem {
   initiativeId: string;
   title: string;
-  kind: "answer" | "review";
-  // For "answer" items: the parked question text from the latest notes entry.
+  kind: "waiting" | "review" | "generic";
+  // For "waiting" items: the gate question text from notes (if available).
   // For "review" items: describes the PR awaiting merge.
+  // For "generic" items: generic "needs your attention" text.
   question: string;
   worktree: string;
   prUrl: string | null;

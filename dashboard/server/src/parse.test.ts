@@ -13,6 +13,7 @@ import {
   deriveActivity,
   deriveDelivery,
   deriveNeedsHuman,
+  deriveSessionSignal,
   derivePhase,
 } from "./parse.js";
 import type { RawInitiative, SessionState, ParsedInitiative } from "@agent-teams/shared";
@@ -82,6 +83,30 @@ const REAL_SESSIONS_JSON = JSON.stringify([
     state: "working",
   },
 ]);
+
+// Session fixture for blocked/waiting state (agent-teams-blo).
+const BLOCKED_SESSION: SessionState = {
+  id: "5aa-blocked",
+  cwd: "/Users/ericlloyd/.agent-teams-worktrees/some-blocked-initiative",
+  kind: "background",
+  startedAt: 1781400000000,
+  sessionId: "5aa00000-0000-0000-0000-000000000000",
+  name: "some-blocked-initiative",
+  status: "waiting",
+  state: "blocked",
+};
+
+const ENDED_SESSION: SessionState = {
+  id: "5aa-ended",
+  cwd: "/Users/ericlloyd/.agent-teams-worktrees/specialty-quote-api",
+  kind: "background",
+  startedAt: 1781400000001,
+  sessionId: "5aa11111-0000-0000-0000-000000000000",
+  name: "specialty-quote-api",
+  // No pid — session self-stopped.
+  status: "idle",
+  state: "stopped",
+};
 
 // ---- extractPrUrl -----------------------------------------------------------
 
@@ -294,9 +319,9 @@ describe("deriveActivity", () => {
     expect(deriveActivity(closed, null, false)).toBe("done");
   });
 
-  it("needs-human (review) when no session but PR open and status is open", () => {
-    // delivery=pr-open (prUrl present, status=open), working=false, isHumanGated=false
-    // → needsHuman="review" → deriveActivity returns "needs-human"
+  it("needs-human (generic) when no session but PR open and status is open", () => {
+    // delivery=pr-open (prUrl present, status=open), signal=none, isHumanGated=false
+    // → needsHuman="generic" (graceful degrade) → deriveActivity returns "needs-human"
     expect(deriveActivity(baseInitiative, null, false)).toBe("needs-human");
   });
 
@@ -349,8 +374,8 @@ describe("buildInbox", () => {
   // at-v4e: worktree matches a busy+working session -> needsHuman=false (refining)
   // at-2jh: no matched session, prUrl present -> needsHuman="review"
 
-  it("includes answer items (needsHuman=answer) with kind='answer'", () => {
-    // Make at-v4e human-gated -> needsHuman="answer"
+  it("includes waiting items (needsHuman=waiting) with kind='waiting'", () => {
+    // Make at-v4e human-gated -> needsHuman="waiting"
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -359,10 +384,10 @@ describe("buildInbox", () => {
     const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-v4e");
     expect(item).toBeDefined();
-    expect(item?.kind).toBe("answer");
+    expect(item?.kind).toBe("waiting");
   });
 
-  it("answer item carries the latest notes line as question", () => {
+  it("waiting item carries the latest notes line as question", () => {
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -374,11 +399,25 @@ describe("buildInbox", () => {
     expect(item?.question).toContain("awaiting-merge");
   });
 
-  it("includes review items (needsHuman=review) with kind='review'", () => {
-    // at-2jh: prUrl present, no matched session -> needsHuman="review"
+  it("includes generic items (needsHuman=generic) when delivered + no session", () => {
+    // at-2jh: prUrl present, no matched session -> signal=none -> needsHuman="generic" (graceful degrade)
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
       sessions,
+      new Set(),
+    );
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-2jh");
+    expect(item).toBeDefined();
+    expect(item?.kind).toBe("generic");
+    expect(item?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+  });
+
+  it("includes review items (needsHuman=review) when delivered + session ENDED", () => {
+    // at-2jh: prUrl present, matched ENDED session -> signal=ended -> needsHuman="review"
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_2JH)],
+      [ENDED_SESSION],
       new Set(),
     );
     const inbox = buildInbox(nodes);
@@ -408,8 +447,8 @@ describe("buildInbox", () => {
     expect(inbox).toHaveLength(0);
   });
 
-  it("answer takes priority over review when both conditions apply (human-gated + pr-open + idle)", () => {
-    // at-2jh: prUrl present, no working session, and human-gated -> needsHuman="answer" (not "review")
+  it("waiting takes priority over review when both conditions apply (human-gated + pr-open + idle)", () => {
+    // at-2jh: prUrl present, no working session, and human-gated -> needsHuman="waiting" (not "review")
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
       sessions,
@@ -418,7 +457,7 @@ describe("buildInbox", () => {
     const inbox = buildInbox(nodes);
     const items = inbox.filter((i) => i.initiativeId === "at-2jh");
     expect(items).toHaveLength(1);
-    expect(items[0]?.kind).toBe("answer");
+    expect(items[0]?.kind).toBe("waiting");
   });
 
   it("returns empty array when all nodes have needsHuman=false", () => {
@@ -472,43 +511,106 @@ describe("deriveDelivery", () => {
   });
 });
 
-// ---- deriveNeedsHuman (agent-teams-3e6) truth table -------------------------
+// ---- deriveSessionSignal (agent-teams-blo) ----------------------------------
+
+describe("deriveSessionSignal", () => {
+  it("null session -> 'none'", () => {
+    expect(deriveSessionSignal(null)).toBe("none");
+  });
+
+  it("status=waiting -> 'waiting' (agent paused on human input)", () => {
+    const s: SessionState = { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "waiting", state: "blocked" };
+    expect(deriveSessionSignal(s)).toBe("waiting");
+  });
+
+  it("state=blocked -> 'waiting' (older API style)", () => {
+    const s: SessionState = { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "idle", state: "blocked" };
+    expect(deriveSessionSignal(s)).toBe("waiting");
+  });
+
+  it("status=busy -> 'working'", () => {
+    const s: SessionState = { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "busy", state: "working" };
+    expect(deriveSessionSignal(s)).toBe("working");
+  });
+
+  it("state=working, status=idle -> 'working'", () => {
+    const s: SessionState = { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "idle", state: "working" };
+    expect(deriveSessionSignal(s)).toBe("working");
+  });
+
+  it("status=idle, state=stopped -> 'ended'", () => {
+    const s: SessionState = { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "idle", state: "stopped" };
+    expect(deriveSessionSignal(s)).toBe("ended");
+  });
+
+  it("status=idle, state=done -> 'ended'", () => {
+    const s: SessionState = { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "idle", state: "done" };
+    expect(deriveSessionSignal(s)).toBe("ended");
+  });
+
+  it("interactive session, status=idle -> 'ended' (not working, not blocked)", () => {
+    const s: SessionState = { sessionId: "a", kind: "interactive", cwd: "/x", startedAt: 0, status: "idle" };
+    expect(deriveSessionSignal(s)).toBe("ended");
+  });
+});
+
+// ---- deriveNeedsHuman (agent-teams-blo) truth table -------------------------
 
 describe("deriveNeedsHuman", () => {
-  it("none + working → false (initial work in progress)", () => {
-    expect(deriveNeedsHuman("none", true, false)).toBe(false);
+  it("session WAITING -> 'waiting' (most urgent; active initiative)", () => {
+    expect(deriveNeedsHuman("none", "waiting", false)).toBe("waiting");
   });
 
-  it("none + idle + no gate → false", () => {
-    expect(deriveNeedsHuman("none", false, false)).toBe(false);
+  it("session WAITING + delivered -> 'waiting' (most urgent; delivered initiative)", () => {
+    expect(deriveNeedsHuman("pr-open", "waiting", false)).toBe("waiting");
   });
 
-  it("none + idle + gate → answer (initial work, blocked on gate)", () => {
-    expect(deriveNeedsHuman("none", false, true)).toBe("answer");
+  it("explicit gate (no session) -> 'waiting' (human gate override)", () => {
+    expect(deriveNeedsHuman("none", "none", true)).toBe("waiting");
   });
 
-  it("none + working + gate → answer (gate takes priority over working)", () => {
-    expect(deriveNeedsHuman("none", true, true)).toBe("answer");
+  it("explicit gate + working session -> 'waiting' (gate wins over working)", () => {
+    expect(deriveNeedsHuman("none", "working", true)).toBe("waiting");
   });
 
-  it("pr-open + working → false (refining after delivery, Eric waits)", () => {
-    expect(deriveNeedsHuman("pr-open", true, false)).toBe(false);
+  it("explicit gate + delivered -> 'waiting' (gate wins)", () => {
+    expect(deriveNeedsHuman("pr-open", "none", true)).toBe("waiting");
   });
 
-  it("pr-open + idle → review (PR awaiting Eric review — the key structural fix)", () => {
-    expect(deriveNeedsHuman("pr-open", false, false)).toBe("review");
+  it("session WORKING -> false (refining after delivery, not in inbox)", () => {
+    expect(deriveNeedsHuman("pr-open", "working", false)).toBe(false);
   });
 
-  it("pr-open + idle + gate → answer (explicit gate takes priority over review)", () => {
-    expect(deriveNeedsHuman("pr-open", false, true)).toBe("answer");
+  it("none + WORKING -> false (initial work in progress)", () => {
+    expect(deriveNeedsHuman("none", "working", false)).toBe(false);
   });
 
-  it("merged → false (done, nothing needed)", () => {
-    expect(deriveNeedsHuman("merged", false, false)).toBe(false);
+  it("none + ENDED -> false (active + ended = idle/dormant, no PR)", () => {
+    expect(deriveNeedsHuman("none", "ended", false)).toBe(false);
   });
 
-  it("merged + gate → false (closed initiatives never need human)", () => {
-    expect(deriveNeedsHuman("merged", false, true)).toBe(false);
+  it("none + NONE -> false (active + no session = idle/dormant)", () => {
+    expect(deriveNeedsHuman("none", "none", false)).toBe(false);
+  });
+
+  it("delivered + ENDED -> 'review' (verify & merge — signal-backed)", () => {
+    expect(deriveNeedsHuman("pr-open", "ended", false)).toBe("review");
+  });
+
+  it("delivered + NONE -> 'generic' (graceful degrade; no session info)", () => {
+    expect(deriveNeedsHuman("pr-open", "none", false)).toBe("generic");
+  });
+
+  it("merged -> false (done, nothing needed)", () => {
+    expect(deriveNeedsHuman("merged", "none", false)).toBe(false);
+  });
+
+  it("merged + gate -> false (closed initiatives never need human)", () => {
+    expect(deriveNeedsHuman("merged", "none", true)).toBe(false);
+  });
+
+  it("merged + WAITING -> false (done wins over waiting)", () => {
+    expect(deriveNeedsHuman("merged", "waiting", false)).toBe(false);
   });
 });
 
@@ -523,10 +625,18 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.delivery).toBe("pr-open");
   });
 
-  it("needsHuman is review when delivery=pr-open and no working session", () => {
-    // at-2jh: has prUrl, status=open, no matched session (worktree not in REAL_SESSIONS_JSON)
+  it("needsHuman is generic when delivery=pr-open and no matched session", () => {
+    // at-2jh: has prUrl, status=open, no matched session -> signal=none -> needsHuman="generic" (graceful degrade)
     const parsed = parseInitiative(RAW_AT_2JH);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
+    expect(nodes[0]?.delivery).toBe("pr-open");
+    expect(nodes[0]?.needsHuman).toBe("generic");
+  });
+
+  it("needsHuman is review when delivery=pr-open and session ENDED", () => {
+    // at-2jh: has prUrl, matched ENDED session -> signal=ended -> needsHuman="review"
+    const parsed = parseInitiative(RAW_AT_2JH);
+    const nodes = buildInitiativeNodes([parsed], [ENDED_SESSION], new Set());
     expect(nodes[0]?.delivery).toBe("pr-open");
     expect(nodes[0]?.needsHuman).toBe("review");
   });
@@ -539,10 +649,10 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.needsHuman).toBe(false);
   });
 
-  it("needsHuman is answer when humanGated (regardless of delivery)", () => {
+  it("needsHuman is waiting when humanGated (regardless of delivery)", () => {
     const parsed = parseInitiative(RAW_AT_2JH);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set(["at-2jh"]));
-    expect(nodes[0]?.needsHuman).toBe("answer");
+    expect(nodes[0]?.needsHuman).toBe("waiting");
   });
 
   it("delivery is merged when initiative status is closed", () => {
@@ -556,6 +666,144 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     const noPr = { ...parseInitiative(RAW_AT_V4E), prUrl: null as string | null };
     const nodes = buildInitiativeNodes([noPr], sessions, new Set());
     expect(nodes[0]?.delivery).toBe("none");
+  });
+
+  it("needsHuman is waiting when session is blocked (state=blocked) — the core blo fix", () => {
+    // Blocked session: status=waiting, state=blocked -> signal="waiting" -> needsHuman="waiting"
+    const parsed = parseInitiative(RAW_AT_2JH); // has prUrl but that's irrelevant
+    const nodes = buildInitiativeNodes([parsed], [BLOCKED_SESSION], new Set());
+    // BLOCKED_SESSION.cwd matches RAW_AT_2JH worktree? No — different path.
+    // Use a tweaked RAW so the worktree matches BLOCKED_SESSION.cwd.
+    const raw: RawInitiative = { ...RAW_AT_2JH, description: RAW_AT_2JH.description.replace(
+      "/Users/ericlloyd/.agent-teams-worktrees/specialty-quote-api",
+      "/Users/ericlloyd/.agent-teams-worktrees/some-blocked-initiative",
+    )};
+    const nodes2 = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
+    expect(nodes2[0]?.needsHuman).toBe("waiting");
+    expect(nodes2[0]?.activity).toBe("needs-human");
+  });
+});
+
+// ---- spec-required attention state test cases (agent-teams-blo) -------------
+
+describe("attention state: spec-required scenarios", () => {
+  // Helper: make a ParsedInitiative with a specific worktree.
+  function makeInit(id: string, haspr: boolean, status = "open"): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status,
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-15",
+      updated_at: "2026-06-15",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: haspr ? `https://github.com/org/repo/pull/1` : null,
+    };
+  }
+
+  function makeSession(worktree: string, status: string, state?: string): SessionState {
+    return {
+      sessionId: `sess-${worktree}`,
+      kind: "background",
+      cwd: worktree,
+      startedAt: 0,
+      status: status as "idle" | "busy" | "waiting",
+      state: state as "working" | "blocked" | "done" | "stopped" | undefined,
+    };
+  }
+
+  it("session waiting/blocked -> needsHuman='waiting' (most urgent)", () => {
+    const init = makeInit("blocked-1", false);
+    const sess = makeSession("/wt/blocked-1", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+    expect(nodes[0]?.activity).toBe("needs-human");
+  });
+
+  it("session working -> not needs-you (refining if delivered, working if active)", () => {
+    const init = makeInit("working-1", true);
+    const sess = makeSession("/wt/working-1", "busy", "working");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
+  });
+
+  it("delivered + session ended -> needsHuman='review' (verify & merge)", () => {
+    const init = makeInit("review-1", true);
+    const sess = makeSession("/wt/review-1", "idle", "stopped");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe("review");
+    expect(nodes[0]?.activity).toBe("needs-human");
+  });
+
+  it("delivered + no session -> needsHuman='generic' (graceful degrade)", () => {
+    const init = makeInit("generic-1", true);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe("generic");
+    expect(nodes[0]?.activity).toBe("needs-human");
+  });
+
+  it("active + no session -> needsHuman=false (idle/dormant)", () => {
+    const init = makeInit("idle-1", false); // no PR
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
+    expect(nodes[0]?.activity).toBe("idle");
+  });
+
+  it("active + session ended -> needsHuman=false (idle/dormant, no PR)", () => {
+    const init = makeInit("idle-2", false);
+    const sess = makeSession("/wt/idle-2", "idle", "done");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
+    expect(nodes[0]?.activity).toBe("idle");
+  });
+
+  it("done initiative -> needsHuman=false regardless of session", () => {
+    const init = makeInit("done-1", true, "closed");
+    const sess = makeSession("/wt/done-1", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
+    expect(nodes[0]?.activity).toBe("done");
+  });
+
+  it("inbox: waiting item has kind='waiting'", () => {
+    const init = makeInit("w-inbox", false);
+    const sess = makeSession("/wt/w-inbox", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
+  });
+
+  it("inbox: review item has kind='review' (delivered + ended)", () => {
+    const init = makeInit("r-inbox", true);
+    const sess = makeSession("/wt/r-inbox", "idle", "stopped");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("review");
+  });
+
+  it("inbox: generic item has kind='generic' (delivered + no session)", () => {
+    const init = makeInit("g-inbox", true);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("generic");
+  });
+
+  it("inbox: working session -> not in inbox", () => {
+    const init = makeInit("notinbox", true);
+    const sess = makeSession("/wt/notinbox", "busy", "working");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
   });
 });
 
