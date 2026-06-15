@@ -37,16 +37,21 @@ function deriveUrgency(node: InitiativeNode): UrgencyTier {
 // angle — even nodes at the same radius can never stack.
 // ---------------------------------------------------------------------------
 
+// Radii are fractions of shortSide (= min(W,H)). Coordinates are centered at
+// (W/2, H/2), so usable radius = shortSide/2. These fractions use the full
+// shortSide, so the actual fraction of available canvas = value / 2.
+//   E.g. shortSide=782 → inner=0.28*782=219px (56% of 391px half-canvas)
+//                        done=0.44*782=344px (88% of half-canvas)
 const URGENCY_RADIUS_FRACTION: Record<UrgencyTier, number> = {
-  waiting: 0.22,      // innermost — agent waiting on you (most urgent)
-  "needs-human": 0.22, // same inner orbit — any needs-you flavor
-  working: 0.38,
-  idle: 0.56,
-  done: 0.72, // outer dim rim
+  waiting: 0.28,      // innermost — agent waiting on you (most urgent)
+  "needs-human": 0.28, // same inner orbit — any needs-you flavor
+  working: 0.34,
+  idle: 0.40,
+  done: 0.44, // outer dim rim
 };
 
-// Orphans live at the rim with done nodes but visually distinct.
-const ORPHAN_RADIUS_FRACTION = 0.76;
+// Orphans live at the rim, slightly outside done nodes.
+const ORPHAN_RADIUS_FRACTION = 0.46;
 
 // Urgency tier sort order — lower number = more urgent = placed first.
 const URGENCY_SORT_ORDER: Record<UrgencyTier, number> = {
@@ -935,6 +940,11 @@ export default function ConstellationView() {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // Sync immediately on mount so the first layout uses the real size.
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 50 && rect.height > 50) {
+      setViewSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
+    }
     const obs = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -1002,7 +1012,7 @@ export default function ConstellationView() {
       <svg
         className="constellation-svg"
         viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="xMidYMid meet"
+        preserveAspectRatio="none"
         aria-label="Initiative constellation"
         data-node-count={positioned.length}
         data-orphan-count={positionedOrphans.length}
