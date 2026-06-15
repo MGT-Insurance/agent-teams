@@ -74,7 +74,7 @@ describe("snapshotReducer", () => {
         {
           initiativeId: "abc",
           title: "Do a thing",
-          kind: "human-gate",
+          kind: "answer",
           question: "Which approach?",
           worktree: "/tmp/wt",
           prUrl: null,

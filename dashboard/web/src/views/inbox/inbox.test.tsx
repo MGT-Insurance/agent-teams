@@ -44,20 +44,22 @@ function setInbox(items: InboxItem[], extra: Partial<SnapshotState> = {}) {
   mockState.error = extra.error ?? null;
 }
 
-const humanGateItem: InboxItem = {
+// kind="answer" — initiative parked on a gate/question
+const answerItem: InboxItem = {
   initiativeId: "init-1",
   title: "Deploy canary to prod",
-  kind: "human-gate",
+  kind: "answer",
   question: "Should we enable the feature flag for all users?",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
   prUrl: null,
 };
 
-const prMergeItem: InboxItem = {
+// kind="review" — PR open and idle, awaiting Eric's review/merge
+const reviewItem: InboxItem = {
   initiativeId: "init-2",
   title: "Refactor auth layer",
-  kind: "pr-awaiting-merge",
-  question: "PR is ready. Merge to main?",
+  kind: "review",
+  question: "PR awaiting review: https://github.com/org/repo/pull/42",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
 };
@@ -81,19 +83,35 @@ describe("InboxView — empty state", () => {
     renderInbox();
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("does not show a count badge when inbox is empty", () => {
+    renderInbox();
+    expect(screen.queryByTestId("inbox-count")).toBeNull();
+  });
 });
 
-describe("InboxView — human-gate item", () => {
-  beforeEach(() => setInbox([humanGateItem]));
+describe("InboxView — Answer section (kind='answer')", () => {
+  beforeEach(() => setInbox([answerItem]));
+
+  it("renders the 'Answer' section heading", () => {
+    renderInbox();
+    expect(screen.getByRole("region", { name: /answer/i })).toBeTruthy();
+  });
 
   it("renders the item title", () => {
     renderInbox();
     expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
   });
 
-  it("renders a 'human gate' badge", () => {
+  it("renders an 'answer' badge on the row", () => {
     renderInbox();
-    expect(screen.getByText(/human gate/i)).toBeTruthy();
+    // The badge is a span inside the row; getAllByText handles both section heading + badge.
+    const matches = screen.getAllByText(/^answer$/i);
+    // At least one match should be the badge (has the badge class).
+    const badge = matches.find(
+      (el) => el.classList.contains("inbox-row__badge"),
+    );
+    expect(badge).toBeTruthy();
   });
 
   it("renders the parked question prominently", () => {
@@ -101,7 +119,7 @@ describe("InboxView — human-gate item", () => {
     expect(screen.getByText("Should we enable the feature flag for all users?")).toBeTruthy();
   });
 
-  it("does not render a PR link for human-gate items", () => {
+  it("does not render a PR link for answer items", () => {
     renderInbox();
     expect(screen.queryByText(/view pr/i)).toBeNull();
   });
@@ -112,24 +130,35 @@ describe("InboxView — human-gate item", () => {
     fireEvent.click(row);
     expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-1");
   });
+
+  it("row has data-kind='answer' attribute", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /deploy canary to prod/i });
+    expect(row.getAttribute("data-kind")).toBe("answer");
+  });
 });
 
-describe("InboxView — pr-awaiting-merge item", () => {
-  beforeEach(() => setInbox([prMergeItem]));
+describe("InboxView — Review / merge section (kind='review')", () => {
+  beforeEach(() => setInbox([reviewItem]));
+
+  it("renders the 'Review / merge' section heading", () => {
+    renderInbox();
+    expect(screen.getByRole("region", { name: /review \/ merge/i })).toBeTruthy();
+  });
 
   it("renders the item title", () => {
     renderInbox();
     expect(screen.getByText("Refactor auth layer")).toBeTruthy();
   });
 
-  it("renders a 'pr awaiting merge' badge", () => {
+  it("renders a 'review' badge", () => {
     renderInbox();
-    expect(screen.getByText(/pr awaiting merge/i)).toBeTruthy();
+    expect(screen.getByText(/^review$/i)).toBeTruthy();
   });
 
-  it("renders the parked question", () => {
+  it("renders the question text", () => {
     renderInbox();
-    expect(screen.getByText("PR is ready. Merge to main?")).toBeTruthy();
+    expect(screen.getByText(/PR awaiting review/i)).toBeTruthy();
   });
 
   it("renders a link to the PR URL that opens in a new tab", () => {
@@ -145,10 +174,16 @@ describe("InboxView — pr-awaiting-merge item", () => {
     fireEvent.click(row);
     expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-2");
   });
+
+  it("row has data-kind='review' attribute", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /refactor auth layer/i });
+    expect(row.getAttribute("data-kind")).toBe("review");
+  });
 });
 
-describe("InboxView — both item kinds together", () => {
-  beforeEach(() => setInbox([humanGateItem, prMergeItem]));
+describe("InboxView — both sections together", () => {
+  beforeEach(() => setInbox([answerItem, reviewItem]));
 
   it("renders both items", () => {
     renderInbox();
@@ -158,7 +193,39 @@ describe("InboxView — both item kinds together", () => {
 
   it("shows a count badge for two items", () => {
     renderInbox();
-    expect(screen.getByText("2")).toBeTruthy();
+    expect(screen.getByTestId("inbox-count").textContent).toBe("2");
+  });
+
+  it("renders both section headings", () => {
+    renderInbox();
+    expect(screen.getByRole("region", { name: /answer/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /review \/ merge/i })).toBeTruthy();
+  });
+
+  it("answer item is in Answer section, review item is in Review/merge section", () => {
+    renderInbox();
+    const answerSection = screen.getByRole("region", { name: /^answer$/i });
+    const reviewSection = screen.getByRole("region", { name: /review \/ merge/i });
+    expect(answerSection.querySelector("[data-kind='answer']")).not.toBeNull();
+    expect(answerSection.querySelector("[data-kind='review']")).toBeNull();
+    expect(reviewSection.querySelector("[data-kind='review']")).not.toBeNull();
+    expect(reviewSection.querySelector("[data-kind='answer']")).toBeNull();
+  });
+});
+
+describe("InboxView — section visibility", () => {
+  it("shows only Answer section when inbox has only answer items", () => {
+    setInbox([answerItem]);
+    renderInbox();
+    expect(screen.getByRole("region", { name: /^answer$/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /review \/ merge/i })).toBeNull();
+  });
+
+  it("shows only Review/merge section when inbox has only review items", () => {
+    setInbox([reviewItem]);
+    renderInbox();
+    expect(screen.getByRole("region", { name: /review \/ merge/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /^answer$/i })).toBeNull();
   });
 });
 
@@ -183,7 +250,7 @@ describe("InboxView — disconnected states", () => {
   });
 
   it("still renders inbox items when reconnecting", () => {
-    setInbox([humanGateItem], { connectionState: "reconnecting" });
+    setInbox([answerItem], { connectionState: "reconnecting" });
     renderInbox();
     expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
     expect(screen.getByText(/reconnecting/i)).toBeTruthy();

@@ -254,19 +254,20 @@ export function buildOrphanSessions(
   );
 }
 
-// Build InboxItem[] from initiatives + human-gated ids.
-// Includes human-gate items and PR-awaiting-merge items.
-export function buildInbox(
-  initiatives: ParsedInitiative[],
-  humanGatedIds: Set<string>,
-): InboxItem[] {
+// Build InboxItem[] from already-built InitiativeNode[].
+// An item is in the inbox iff node.needsHuman !== false.
+//   needsHuman="answer" -> initiative parked on a gate/question  (kind="answer")
+//   needsHuman="review" -> PR open, no active working session    (kind="review")
+// Initiatives with needsHuman=false (including refining: pr-open + working) are excluded.
+export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
   const items: InboxItem[] = [];
 
-  for (const initiative of initiatives) {
-    const s = initiative.status.toLowerCase();
-    if (humanGatedIds.has(initiative.id)) {
-      if (s === "closed" || s === "done") continue;
+  for (const node of nodes) {
+    if (node.needsHuman === false) continue;
 
+    const { initiative } = node;
+
+    if (node.needsHuman === "answer") {
       // Parked question = latest non-empty notes line.
       const question =
         initiative.notes
@@ -277,26 +278,21 @@ export function buildInbox(
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
-        kind: "human-gate",
+        kind: "answer",
         question,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });
-      continue;
-    }
-
-    // PR-awaiting-merge: has a PR URL, not closed/done, not already human-gated.
-    if (initiative.prUrl !== null) {
-      if (s !== "closed" && s !== "done") {
-        items.push({
-          initiativeId: initiative.id,
-          title: initiative.title,
-          kind: "pr-awaiting-merge",
-          question: `PR awaiting merge: ${initiative.prUrl}`,
-          worktree: initiative.worktree,
-          prUrl: initiative.prUrl,
-        });
-      }
+    } else {
+      // needsHuman === "review": PR awaiting Eric's review/merge.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "review",
+        question: `PR awaiting review: ${initiative.prUrl ?? "(no PR URL)"}`,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+      });
     }
   }
 

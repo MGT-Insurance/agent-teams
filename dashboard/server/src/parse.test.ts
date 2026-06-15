@@ -338,56 +338,107 @@ describe("derivePhase", () => {
   });
 });
 
-// ---- buildInbox -------------------------------------------------------------
+// ---- buildInbox (two-dimension model) ---------------------------------------
+//
+// buildInbox now consumes InitiativeNode[] (which carry needsHuman) instead of
+// re-deriving state from ParsedInitiative[] + humanGatedIds.
 
 describe("buildInbox", () => {
-  const initiatives = [
-    parseInitiative(RAW_AT_V4E),
-    parseInitiative(RAW_AT_2JH),
-  ];
+  const sessions = parseClaudeAgents(REAL_SESSIONS_JSON);
 
-  it("includes human-gated initiatives", () => {
-    const inbox = buildInbox(initiatives, new Set(["at-v4e"]));
+  // at-v4e: worktree matches a busy+working session -> needsHuman=false (refining)
+  // at-2jh: no matched session, prUrl present -> needsHuman="review"
+
+  it("includes answer items (needsHuman=answer) with kind='answer'", () => {
+    // Make at-v4e human-gated -> needsHuman="answer"
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_V4E)],
+      sessions,
+      new Set(["at-v4e"]),
+    );
+    const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-v4e");
     expect(item).toBeDefined();
-    expect(item?.kind).toBe("human-gate");
+    expect(item?.kind).toBe("answer");
   });
 
-  it("includes pr-awaiting-merge initiatives when PR URL present and status is open", () => {
-    const inbox = buildInbox(initiatives, new Set());
-    const prItem = inbox.find((i) => i.kind === "pr-awaiting-merge");
-    expect(prItem).toBeDefined();
-    expect(prItem?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+  it("answer item carries the latest notes line as question", () => {
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_V4E)],
+      sessions,
+      new Set(["at-v4e"]),
+    );
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-v4e");
+    // Latest non-empty notes line of RAW_AT_V4E
+    expect(item?.question).toContain("awaiting-merge");
   });
 
-  it("does not duplicate: human-gate takes priority over pr-awaiting-merge", () => {
-    const inbox = buildInbox(initiatives, new Set(["at-2jh"]));
-    const items = inbox.filter((i) => i.initiativeId === "at-2jh");
-    expect(items).toHaveLength(1);
-    expect(items[0]?.kind).toBe("human-gate");
+  it("includes review items (needsHuman=review) with kind='review'", () => {
+    // at-2jh: prUrl present, no matched session -> needsHuman="review"
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_2JH)],
+      sessions,
+      new Set(),
+    );
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-2jh");
+    expect(item).toBeDefined();
+    expect(item?.kind).toBe("review");
+    expect(item?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
   });
 
-  it("returns empty array when no human gates and no PRs", () => {
-    const nopr = initiatives.map((i) => ({ ...i, prUrl: null as string | null }));
-    const inbox = buildInbox(nopr, new Set());
-    expect(inbox).toHaveLength(0);
-  });
-
-  it("does not include closed initiatives in pr-awaiting-merge", () => {
-    const closed = initiatives.map((i) => ({ ...i, status: "closed" }));
-    const inbox = buildInbox(closed, new Set());
-    expect(inbox).toHaveLength(0);
-  });
-
-  it("does not include closed human-gated initiatives", () => {
-    const closed = initiatives.map((i) => ({ ...i, status: "closed" }));
-    const inbox = buildInbox(closed, new Set(["at-v4e"]));
+  it("does NOT include pr-open + working (refining) initiatives — the key correctness case", () => {
+    // at-v4e: prUrl present, session is busy+working -> needsHuman=false (refining, not in inbox)
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_V4E)],
+      sessions,
+      new Set(),  // not human-gated
+    );
+    // Verify the node really has needsHuman=false before testing inbox
+    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
     expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
   });
 
-  it("does not include done human-gated initiatives", () => {
-    const done = initiatives.map((i) => ({ ...i, status: "done" }));
-    const inbox = buildInbox(done, new Set(["at-v4e"]));
+  it("does NOT include pr-open + idle initiatives that are merged/closed", () => {
+    const closed = { ...parseInitiative(RAW_AT_2JH), status: "closed" };
+    const nodes = buildInitiativeNodes([closed], sessions, new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
+  });
+
+  it("answer takes priority over review when both conditions apply (human-gated + pr-open + idle)", () => {
+    // at-2jh: prUrl present, no working session, and human-gated -> needsHuman="answer" (not "review")
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_2JH)],
+      sessions,
+      new Set(["at-2jh"]),
+    );
+    const inbox = buildInbox(nodes);
+    const items = inbox.filter((i) => i.initiativeId === "at-2jh");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.kind).toBe("answer");
+  });
+
+  it("returns empty array when all nodes have needsHuman=false", () => {
+    // at-v4e is refining (busy+working), at-2jh with null prUrl has needsHuman=false
+    const noPr = { ...parseInitiative(RAW_AT_2JH), prUrl: null as string | null };
+    const nodes = buildInitiativeNodes(
+      [parseInitiative(RAW_AT_V4E), noPr],
+      sessions,
+      new Set(),
+    );
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
+  });
+
+  it("does not include merged initiatives (needsHuman=false for merged)", () => {
+    const done = { ...parseInitiative(RAW_AT_V4E), status: "done" };
+    const nodes = buildInitiativeNodes([done], sessions, new Set(["at-v4e"]));
+    // merged overrides gate: needsHuman=false
+    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
     expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
   });
 });

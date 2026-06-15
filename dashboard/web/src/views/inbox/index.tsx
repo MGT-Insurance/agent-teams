@@ -24,6 +24,8 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
   return (
     <div
       className={`inbox-row inbox-row--${item.kind}`}
+      data-kind={item.kind}
+      data-initiative-id={item.initiativeId}
       onClick={handleRowClick}
       role="button"
       tabIndex={0}
@@ -32,10 +34,10 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
     >
       <div className="inbox-row__header">
         <span className={`inbox-row__badge inbox-row__badge--${item.kind}`}>
-          {item.kind === "human-gate" ? "human gate" : "pr awaiting merge"}
+          {item.kind === "answer" ? "answer" : "review"}
         </span>
         <span className="inbox-row__title">{item.title}</span>
-        {item.kind === "pr-awaiting-merge" && item.prUrl && (
+        {item.kind === "review" && item.prUrl && (
           <a
             href={item.prUrl}
             target="_blank"
@@ -75,17 +77,43 @@ function DisconnectedBanner({ connectionState, error }: { connectionState: strin
   );
 }
 
+interface SectionProps {
+  title: string;
+  items: InboxItem[];
+  dataSection: string;
+}
+
+function InboxSection({ title, items, dataSection }: SectionProps) {
+  if (items.length === 0) return null;
+  return (
+    <section className="inbox-section" data-section={dataSection} aria-label={title}>
+      <h2 className="inbox-section__title">{title}</h2>
+      <ul className="inbox-list" aria-label={`${title} items`}>
+        {items.map((item) => (
+          <li key={item.initiativeId} className="inbox-list__item">
+            <InboxRow item={item} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
 
+  const answerItems = inbox.filter((i) => i.kind === "answer");
+  const reviewItems = inbox.filter((i) => i.kind === "review");
+
   const showBanner = connectionState !== "connected";
+  const totalCount = inbox.length;
 
   return (
     <div className="inbox-view">
       <header className="inbox-header">
         <h1 className="inbox-header__title">Inbox</h1>
-        {inbox.length > 0 && (
-          <span className="inbox-header__count">{inbox.length}</span>
+        {totalCount > 0 && (
+          <span className="inbox-header__count" data-testid="inbox-count">{totalCount}</span>
         )}
       </header>
 
@@ -93,16 +121,21 @@ export default function InboxView() {
         <DisconnectedBanner connectionState={connectionState} error={error} />
       )}
 
-      {inbox.length === 0 ? (
+      {totalCount === 0 ? (
         <EmptyState />
       ) : (
-        <ul className="inbox-list" aria-label="Items needing your attention">
-          {inbox.map((item) => (
-            <li key={item.initiativeId} className="inbox-list__item">
-              <InboxRow item={item} />
-            </li>
-          ))}
-        </ul>
+        <div className="inbox-sections">
+          <InboxSection
+            title="Answer"
+            items={answerItems}
+            dataSection="answer"
+          />
+          <InboxSection
+            title="Review / merge"
+            items={reviewItems}
+            dataSection="review"
+          />
+        </div>
       )}
     </div>
   );

@@ -72,7 +72,8 @@ export async function buildSnapshot(): Promise<SnapshotEvent> {
 
   const nodes = buildInitiativeNodes(initiatives, sessions, humanGatedIds);
   const unmatchedSessions = buildOrphanSessions(initiatives, sessions);
-  const inbox = buildInbox(initiatives, humanGatedIds);
+  // buildInbox consumes the already-built nodes (which carry needsHuman) to avoid re-deriving state.
+  const inbox = buildInbox(nodes);
 
   return { initiatives: nodes, unmatchedSessions, inbox, ts: Date.now() };
 }

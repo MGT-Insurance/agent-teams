@@ -95,11 +95,15 @@ export interface InitiativeNode {
 }
 
 // An item in the inbox requiring Eric's attention.
+// kind mirrors NeedsHumanFlavor:
+//   "answer" -> initiative parked on a gate/question (needsHuman="answer")
+//   "review" -> PR open, no active working session (needsHuman="review")
 export interface InboxItem {
   initiativeId: string;
   title: string;
-  kind: "human-gate" | "pr-awaiting-merge";
-  // The parked question text, parsed from the latest notes entry.
+  kind: "answer" | "review";
+  // For "answer" items: the parked question text from the latest notes entry.
+  // For "review" items: describes the PR awaiting merge.
   question: string;
   worktree: string;
   prUrl: string | null;
