@@ -212,7 +212,7 @@ No credentials or auth required.
 
 If any `playwright`-prefixed tool appears in the list, the MCP server is connected and the tester can use `browser_navigate` and related tools for live UI verification.
 
-## 9. Smoke test
+## 8. Smoke test
 
 Run on BOTH paths (clone or fresh) after step 6 completes.
 
@@ -242,6 +242,6 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ateam sync
    ```
 
-## 10. Report
+## 9. Report
 
 Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, and that `/dri` is ready to use.
