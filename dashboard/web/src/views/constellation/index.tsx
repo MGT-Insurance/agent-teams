@@ -33,52 +33,106 @@ function deriveUrgency(node: InitiativeNode): UrgencyTier {
 // Urgency-orbital layout
 // ---------------------------------------------------------------------------
 // Position encodes urgency: needs-human innermost, done outermost.
-// Angle is a stable per-id hash so nodes never jump on refresh.
-// Only radius changes as urgency changes.
+// Angles are globally-even across ALL nodes so no two nodes ever share an
+// angle — even nodes at the same radius can never stack.
 // ---------------------------------------------------------------------------
 
 const URGENCY_RADIUS_FRACTION: Record<UrgencyTier, number> = {
-  waiting: 0.20,      // innermost — agent waiting on you (most urgent)
-  "needs-human": 0.20, // same inner orbit — any needs-you flavor
-  working: 0.35,
-  idle: 0.55,
-  done: 0.70, // outer dim rim
+  waiting: 0.22,      // innermost — agent waiting on you (most urgent)
+  "needs-human": 0.22, // same inner orbit — any needs-you flavor
+  working: 0.38,
+  idle: 0.56,
+  done: 0.72, // outer dim rim
 };
 
 // Orphans live at the rim with done nodes but visually distinct.
-const ORPHAN_RADIUS_FRACTION = 0.73;
+const ORPHAN_RADIUS_FRACTION = 0.76;
 
-// Stable deterministic hash → [0, 1) used for sort-order and jitter.
+// Urgency tier sort order — lower number = more urgent = placed first.
+const URGENCY_SORT_ORDER: Record<UrgencyTier, number> = {
+  waiting: 0,
+  "needs-human": 1,
+  working: 2,
+  idle: 3,
+  done: 4,
+};
+
+// Stable deterministic hash → [0, 1) used for sort tie-breaking and placement.
 function stableHash(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return h / 0xffffffff;
 }
 
-// Lay out a list of items evenly around a circle at the given radius.
-// Items are sorted by their hash (stable order across refreshes), then
-// assigned angle = i*(2π/n) + small per-id jitter so the spacing is
-// guaranteed (no two nodes < 2π/n apart) but the exact positions feel
-// organic rather than mechanical.
-function evenTierAngles(ids: string[]): Map<string, number> {
-  const n = ids.length;
+// Globally-even angular distribution across ALL nodes (initiatives + orphans).
+//
+// KEY INVARIANT: every node gets angle = index * (2π / totalCount) + fixedPhase,
+// so same-radius nodes are ALWAYS angularly separated. No two nodes can stack.
+//
+// Sort order: urgency tier (most urgent first), then stable id-hash tie-break.
+// This keeps the layout stable across refreshes (no jumps) while guaranteeing
+// minimum angular separation of 360°/N between any two adjacent nodes.
+export function globalEvenAngles(
+  allIds: Array<{ id: string; urgencyOrder: number }>,
+): Map<string, number> {
+  const n = allIds.length;
   if (n === 0) return new Map();
 
-  // Sort by hash for a stable, deterministic order.
-  const sorted = [...ids].sort((a, b) => stableHash(a) - stableHash(b));
+  // Sort deterministically: urgency tier first, then stable hash tie-break.
+  const sorted = [...allIds].sort((a, b) => {
+    if (a.urgencyOrder !== b.urgencyOrder) return a.urgencyOrder - b.urgencyOrder;
+    return stableHash(a.id) - stableHash(b.id);
+  });
 
   const result = new Map<string, number>();
   const slice = (2 * Math.PI) / n;
-  // Max jitter: ±20% of the slice, so nodes can't get closer than 60% of a slice.
-  const maxJitter = slice * 0.20;
+  // Fixed phase offset: start at top (-π/2) so first node lands at 12 o'clock.
+  const phase = -Math.PI / 2;
 
-  sorted.forEach((id, i) => {
-    const base = i * slice;
-    // Per-id jitter in [-maxJitter, +maxJitter]
-    const jitter = (stableHash(id + "jitter") - 0.5) * 2 * maxJitter;
-    result.set(id, base + jitter);
+  sorted.forEach(({ id }, i) => {
+    result.set(id, phase + i * slice);
   });
 
+  return result;
+}
+
+// Minimum center-to-center distance between two placed nodes to prevent overlap.
+// If the globally-even angles still result in nodes too close (e.g. very dense),
+// nudge the radius outward. With N >= 2 and even angles this should rarely fire.
+const MIN_NODE_SEPARATION = 55; // px — covers r=20 node + glow rings + margin
+
+function nudgeForSeparation(
+  placed: Array<{ id: string; x: number; y: number; angle: number; radius: number }>,
+  cx: number,
+  cy: number,
+): Array<{ id: string; x: number; y: number; angle: number; radius: number }> {
+  // Simple O(n^2) pass — node counts are small (< ~20 typically).
+  const result = placed.map((p) => ({ ...p }));
+  let changed = true;
+  let passes = 0;
+  while (changed && passes < 10) {
+    changed = false;
+    for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        const pi = result[i];
+        const pj = result[j];
+        if (!pi || !pj) continue;
+        const dx = pi.x - pj.x;
+        const dy = pi.y - pj.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < MIN_NODE_SEPARATION) {
+          // Nudge the outer node (larger radius) outward along its angle.
+          const outer = pi.radius >= pj.radius ? pi : pj;
+          const need = MIN_NODE_SEPARATION - dist;
+          outer.radius += need / 2 + 1;
+          outer.x = cx + outer.radius * Math.cos(outer.angle);
+          outer.y = cy + outer.radius * Math.sin(outer.angle);
+          changed = true;
+        }
+      }
+    }
+    passes++;
+  }
   return result;
 }
 
@@ -89,52 +143,73 @@ function urgencyOrbitalLayout(
   cy: number,
   shortSide: number,
 ): {
-  initiatives: Array<{ node: InitiativeNode; urgency: UrgencyTier; x: number; y: number }>;
+  initiatives: Array<{ node: InitiativeNode; urgency: UrgencyTier; angle: number; x: number; y: number }>;
   orphans: Array<{ session: SessionState; x: number; y: number }>;
 } {
-  // Group node ids by urgency tier so we can spread each tier evenly.
-  const tierGroups = new Map<UrgencyTier, string[]>();
+  // Build the global node list for angle assignment.
   const nodeUrgency = new Map<string, UrgencyTier>();
+  const allIds: Array<{ id: string; urgencyOrder: number }> = [];
+
   for (const node of nodes) {
     const urgency = deriveUrgency(node);
     nodeUrgency.set(node.initiative.id, urgency);
-    const g = tierGroups.get(urgency) ?? [];
-    g.push(node.initiative.id);
-    tierGroups.set(urgency, g);
+    allIds.push({ id: node.initiative.id, urgencyOrder: URGENCY_SORT_ORDER[urgency] });
+  }
+  // Orphans get sorted after all initiative tiers (urgencyOrder=5).
+  for (const session of orphans) {
+    allIds.push({ id: session.sessionId, urgencyOrder: 5 });
   }
 
-  // Compute evenly-distributed angles per tier.
-  const angleMap = new Map<string, number>();
-  for (const [, ids] of tierGroups) {
-    const angles = evenTierAngles(ids);
-    for (const [id, angle] of angles) {
-      angleMap.set(id, angle);
-    }
-  }
+  // Assign globally-even angles — no two nodes share an angle.
+  const angleMap = globalEvenAngles(allIds);
 
-  const initiatives = nodes.map((node) => {
+  // Place initiative nodes.
+  const rawInitiatives = nodes.map((node) => {
     const urgency = nodeUrgency.get(node.initiative.id) ?? deriveUrgency(node);
     const fraction = URGENCY_RADIUS_FRACTION[urgency];
     const radius = shortSide * fraction;
     const angle = angleMap.get(node.initiative.id) ?? stableHash(node.initiative.id) * 2 * Math.PI;
     return {
-      node,
-      urgency,
+      id: node.initiative.id,
+      angle,
+      radius,
       x: cx + radius * Math.cos(angle),
       y: cy + radius * Math.sin(angle),
+      node,
+      urgency,
     };
   });
 
-  // Orphans: also even-distribute around the orphan radius.
-  const orphanAngles = evenTierAngles(orphans.map((s) => s.sessionId));
-  const orphanNodes = orphans.map((session) => {
+  // Place orphan nodes.
+  const rawOrphans = orphans.map((session) => {
     const radius = shortSide * ORPHAN_RADIUS_FRACTION;
-    const angle = orphanAngles.get(session.sessionId) ?? stableHash(session.sessionId) * 2 * Math.PI;
+    const angle = angleMap.get(session.sessionId) ?? stableHash(session.sessionId) * 2 * Math.PI;
     return {
-      session,
+      id: session.sessionId,
+      angle,
+      radius,
       x: cx + radius * Math.cos(angle),
       y: cy + radius * Math.sin(angle),
+      session,
     };
+  });
+
+  // Combine all placed items, apply separation nudge, then split back out.
+  const allPlaced = [
+    ...rawInitiatives.map((p) => ({ id: p.id, x: p.x, y: p.y, angle: p.angle, radius: p.radius })),
+    ...rawOrphans.map((p) => ({ id: p.id, x: p.x, y: p.y, angle: p.angle, radius: p.radius })),
+  ];
+  const nudged = nudgeForSeparation(allPlaced, cx, cy);
+  const nudgedMap = new Map(nudged.map((p) => [p.id, p]));
+
+  const initiatives = rawInitiatives.map((p) => {
+    const n = nudgedMap.get(p.id) ?? p;
+    return { node: p.node, urgency: p.urgency, angle: n.angle, x: n.x, y: n.y };
+  });
+
+  const orphanNodes = rawOrphans.map((p) => {
+    const n = nudgedMap.get(p.id) ?? p;
+    return { session: p.session, x: n.x, y: n.y };
   });
 
   return { initiatives, orphans: orphanNodes };
@@ -427,6 +502,7 @@ function CenterAnchor({ cx, cy }: CenterAnchorProps) {
 interface NodeProps {
   node: InitiativeNode;
   urgency: UrgencyTier;
+  angle: number;
   x: number;
   y: number;
   svgW: number;
@@ -434,12 +510,22 @@ interface NodeProps {
   onNavigate: (id: string) => void;
 }
 
-function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: NodeProps) {
+// Compute radial label offset: place the label past the node's full visual
+// radius (core + glow + flare rings + gap) so it never sits on the node.
+// For needs-human nodes the outermost ring is at r+26 (secondary flare).
+// For working nodes the pulse ring is at r. Add 12px gap beyond the edge.
+function labelOffset(meta: typeof URGENCY_META[UrgencyTier], hasFlare: boolean): number {
+  if (hasFlare) return meta.r + 26 + 12; // past secondary flare ring
+  return meta.r + 10 + 6;               // past glow, add gap
+}
+
+function ConstellationNode({ node, urgency, angle, x, y, svgW, svgH, onNavigate }: NodeProps) {
   const [hovered, setHovered] = useState(false);
   const meta = URGENCY_META[urgency];
   const needsHuman = node.needsHuman;
   const delivery = node.delivery;
   const hasPr = delivery === "pr-open";
+  const hasFlare = needsHuman !== false;
   // PR ring radius: slightly outside core + delivery ring if any.
   const prRingR = meta.r + 8;
 
@@ -450,6 +536,35 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
   // Tests check for "idle", "busy", "needs-human" etc — map urgency tiers to match.
   const dataActivity =
     needsHuman !== false ? "needs-human" : urgency === "working" ? "busy" : urgency;
+
+  // Radial label placement — labels radiate OUTWARD from the node center
+  // (away from canvas center), never sitting on the node glow/ring.
+  //
+  // Strategy: the node <g> is already translated to (x, y). Labels are
+  // positioned relative to the node origin (0,0). We compute an outward
+  // direction from the angle, then offset the label along that direction.
+  //
+  // textAnchor: left half of circle → "end" (text grows left = outward),
+  //             right half → "start", top/bottom ≈ ±15° → "middle".
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+  const LABEL_ANCHOR_THRESHOLD = 0.25; // ~15° band around 0° / 180°
+  const textAnchor =
+    Math.abs(sinA) < LABEL_ANCHOR_THRESHOLD
+      ? "middle"
+      : cosA >= 0
+        ? "start"
+        : "end";
+
+  const lOffset = labelOffset(meta, hasFlare);
+  // Base label position: outward along angle from node origin
+  const lx = cosA * lOffset;
+  const ly = sinA * lOffset;
+  // Line height for multi-line labels
+  const LINE_H = 13;
+
+  // Phase token sits below the last title line
+  const phaseY = ly + titleLines.length * LINE_H + 2;
 
   return (
     <g
@@ -489,7 +604,7 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
       {/* CHANNEL 1 urgency animations */}
 
       {/* needs-human: outer flare ring (animated) */}
-      {needsHuman !== false && (
+      {hasFlare && (
         <circle
           className="node-flare"
           cx={0}
@@ -503,7 +618,7 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
       )}
 
       {/* needs-human: secondary flare ring (staggered, animated) */}
-      {needsHuman !== false && (
+      {hasFlare && (
         <circle
           className="node-flare-2"
           cx={0}
@@ -528,7 +643,7 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
       />
 
       {/* Pulse ring for working + needs-human (animated) */}
-      {(urgency === "working" || needsHuman !== false) && (
+      {(urgency === "working" || hasFlare) && (
         <circle
           className="node-pulse"
           cx={0}
@@ -541,7 +656,7 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
       )}
 
       {/* needs-human badge: "!" */}
-      {needsHuman !== false && (
+      {hasFlare && (
         <g className="node-badge node-badge--needs-human" data-badge="needs-human">
           <circle cx={meta.r} cy={-(meta.r)} r={8} fill="#ff6b35" stroke="rgba(0,0,0,0.3)" strokeWidth={1} />
           <text
@@ -585,14 +700,15 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
         </g>
       )}
 
-      {/* Title — two lines (longer, higher contrast) */}
+      {/* Title — radially outward from node, never on top of glow/ring */}
       {titleLines.map((line, i) => (
         <text
           key={i}
           className="node-label"
-          x={0}
-          y={meta.r + 18 + i * 13}
-          textAnchor="middle"
+          x={lx}
+          y={ly + i * LINE_H}
+          textAnchor={textAnchor}
+          dominantBaseline="middle"
           fill={needsHuman !== false ? "#ffcbb3" : "rgba(226,232,240,0.87)"}
           fontSize={11}
           fontFamily="var(--font-mono)"
@@ -602,12 +718,13 @@ function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: Node
         </text>
       ))}
 
-      {/* Phase token */}
+      {/* Phase token — below label lines */}
       <text
         className="node-phase"
-        x={0}
-        y={meta.r + 18 + titleLines.length * 13}
-        textAnchor="middle"
+        x={lx}
+        y={phaseY}
+        textAnchor={textAnchor}
+        dominantBaseline="middle"
         fill={meta.color}
         fontSize={9.5}
         fontFamily="var(--font-mono)"
@@ -939,11 +1056,12 @@ export default function ConstellationView() {
         ))}
 
         {/* Initiative nodes — drawn last so they sit on top of tethers */}
-        {positioned.map(({ node, urgency, x, y }) => (
+        {positioned.map(({ node, urgency, angle, x, y }) => (
           <ConstellationNode
             key={node.initiative.id}
             node={node}
             urgency={urgency}
+            angle={angle}
             x={x}
             y={y}
             svgW={W}

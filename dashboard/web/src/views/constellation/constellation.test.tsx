@@ -42,6 +42,7 @@ global.ResizeObserver = vi.fn().mockImplementation(() => ({
 // Import component AFTER mocks are registered.
 // ---------------------------------------------------------------------------
 import ConstellationView from "./index.js";
+import { globalEvenAngles } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -528,5 +529,105 @@ describe("ConstellationView", () => {
     expect(badge).not.toBeNull();
     const node = container.querySelector("[data-initiative-id='gate-wins']");
     expect(node?.getAttribute("data-activity")).toBe("needs-human");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// globalEvenAngles — unit tests for the globally-even angular distribution
+// (agent-teams-55v: collision-free layout)
+// ---------------------------------------------------------------------------
+
+describe("globalEvenAngles", () => {
+  it("returns empty map for zero nodes", () => {
+    const result = globalEvenAngles([]);
+    expect(result.size).toBe(0);
+  });
+
+  it("assigns one angle for a single node", () => {
+    const result = globalEvenAngles([{ id: "a", urgencyOrder: 0 }]);
+    expect(result.size).toBe(1);
+    expect(result.has("a")).toBe(true);
+  });
+
+  it("all angles are distinct — no two nodes share an angle", () => {
+    const ids = ["alpha", "beta", "gamma", "delta", "epsilon"].map((id, i) => ({
+      id,
+      urgencyOrder: i % 3,
+    }));
+    const result = globalEvenAngles(ids);
+    const angles = Array.from(result.values());
+    const uniqueAngles = new Set(angles.map((a) => a.toFixed(10)));
+    expect(uniqueAngles.size).toBe(ids.length);
+  });
+
+  it("minimum angular separation equals 2pi/N for N nodes", () => {
+    const n = 6;
+    const ids = Array.from({ length: n }, (_, i) => ({ id: `node-${i}`, urgencyOrder: 0 }));
+    const result = globalEvenAngles(ids);
+    const angles = Array.from(result.values()).sort((a, b) => a - b);
+    const expectedSlice = (2 * Math.PI) / n;
+    for (let i = 0; i < angles.length - 1; i++) {
+      const sep = (angles[i + 1] ?? 0) - (angles[i] ?? 0);
+      expect(sep).toBeCloseTo(expectedSlice, 5);
+    }
+  });
+
+  it("layout is stable — same inputs produce same angles on repeated calls", () => {
+    const ids = [
+      { id: "waiting-node", urgencyOrder: 0 },
+      { id: "needs-human-node", urgencyOrder: 1 },
+      { id: "working-node", urgencyOrder: 2 },
+      { id: "idle-node", urgencyOrder: 3 },
+    ];
+    const result1 = globalEvenAngles(ids);
+    const result2 = globalEvenAngles(ids);
+    for (const { id } of ids) {
+      expect(result1.get(id)).toBe(result2.get(id));
+    }
+  });
+
+  it("urgency order controls sort: most urgent node gets first angle slot", () => {
+    const ids = [
+      { id: "idle", urgencyOrder: 3 },
+      { id: "urgent", urgencyOrder: 0 },
+      { id: "working", urgencyOrder: 2 },
+    ];
+    const result = globalEvenAngles(ids);
+    const slice = (2 * Math.PI) / 3;
+    const phase = -Math.PI / 2;
+    expect(result.get("urgent")).toBeCloseTo(phase, 5);
+    expect(result.get("working")).toBeCloseTo(phase + slice, 5);
+    expect(result.get("idle")).toBeCloseTo(phase + 2 * slice, 5);
+  });
+
+  it("two nodes at same urgencyOrder are separated by pi (half circle)", () => {
+    const ids = [
+      { id: "node-a", urgencyOrder: 0 },
+      { id: "node-b", urgencyOrder: 0 },
+    ];
+    const result = globalEvenAngles(ids);
+    const a = result.get("node-a") ?? 0;
+    const b = result.get("node-b") ?? 0;
+    const sep = Math.abs(b - a);
+    expect(sep).toBeCloseTo(Math.PI, 5);
+  });
+
+  it("handles 4 mixed-tier nodes with distinct evenly-spaced angles", () => {
+    const ids = [
+      { id: "w1", urgencyOrder: 0 },
+      { id: "n1", urgencyOrder: 1 },
+      { id: "i1", urgencyOrder: 3 },
+      { id: "d1", urgencyOrder: 4 },
+    ];
+    const result = globalEvenAngles(ids);
+    expect(result.size).toBe(4);
+    const angles = Array.from(result.values());
+    const uniqueAngles = new Set(angles.map((a) => a.toFixed(10)));
+    expect(uniqueAngles.size).toBe(4);
+    const sorted = angles.slice().sort((a, b) => a - b);
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const sep = (sorted[i + 1] ?? 0) - (sorted[i] ?? 0);
+      expect(sep).toBeCloseTo(Math.PI / 2, 5);
+    }
   });
 });
