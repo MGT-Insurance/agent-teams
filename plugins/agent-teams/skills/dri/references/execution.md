@@ -25,7 +25,7 @@
   Also valid: `git worktree add <path> -b <track-branch> <integration-branch>` (git-common-dir discovery achieves the same result).
   **Never use independent clones or copies.** Worktrees share the project's single `.beads/` issue DB via git-common-dir; clones each get a separate, fragmented beads workspace — agents in them would not see the project's issues.
 - If the contract advances before tracks start, advance the worktrees: `git -C <path> reset --hard <integration-branch>` (only safe while the worktree is clean — check first).
-- Fresh worktrees need dependency install; tell the implementer.
+- Fresh worktrees need dependency install; tell the implementer. After `pnpm install` completes, run `ateam worktree-setup <abs-worktree-path>` to provision any repo-configured env wiring (gitignored `.vercel` link, env files, etc.). **Ordering is load-bearing:** install deps first — the setup hook's `env:pull` step needs `node_modules`. Non-fatal: if no hook is configured for the repo, a harmless message prints and the verb exits 0; if the hook script fails, a loud warning appears on stderr but the verb still exits 0 — a missing or failed hook never blocks worktree creation.
 
 ## Integration (DRI-owned)
 

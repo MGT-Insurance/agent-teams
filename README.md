@@ -45,6 +45,22 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 - **Prime directive:** deliver a PR that solves the problem — investigating beats asking; asking beats delivering wrong.
 - **Lifecycle:** the DRI drives to an opened PR, then leaves the initiative open in an `awaiting-merge` state; a resume after the PR merges closes it out. Opening the PR is delivery — merging is yours.
 
+## Worktree setup hooks
+
+When an implementer creates a fresh track worktree, it's clean by design — gitignored files (`.vercel` project link, environment files, local-only config) are not present. For repos that need those files to run tooling (e.g. `vercel env pull` requires a linked project), the worktree-setup hook convention wires them in automatically.
+
+After `pnpm install` in a fresh worktree, the implementer runs:
+
+```bash
+ateam worktree-setup <abs-worktree-path>
+```
+
+The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>` (repo-key = slugified basename of the repo root). If a hook file exists, its contents (the absolute path to the repo's setup script) are used to run `<script> <wtPath> <srcCheckout>`. The script receives both the new worktree path and the source checkout path as arguments, so it can copy gitignored files and pull creds without modifying the source repo.
+
+**Non-fatal by design.** A missing hook file prints an informational message and exits 0. A script failure prints a loud warning to stderr but the verb still exits 0 — a broken hook never blocks worktree creation.
+
+**Registering a hook** is one-time per repo: write the absolute path to the repo's setup script into `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>`. The reference implementation for midgard is `scripts/midgard-worktree-setup.sh` in this repo — it copies gitignored env files from the source checkout and runs `vercel env pull` to restore creds-dependent tooling. See `/setup-agent-teams` step 8 for the exact registration command.
+
 ## Roadmap
 
 - `plugins/overseer/` — a meta-orchestrator watching every initiative on the machine (feeds on the registry).
