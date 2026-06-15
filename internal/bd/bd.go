@@ -74,9 +74,11 @@ func (c *Client) RunJSON(dst any, args ...string) error {
 
 // Issue represents the fields returned by `bd list --json` and `bd create --json`.
 type Issue struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	CreatedAt   string   `json:"created_at"`
+	Labels      []string `json:"labels"`
+	Notes       string   `json:"notes"`
 }
