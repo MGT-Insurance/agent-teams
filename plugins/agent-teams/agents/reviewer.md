@@ -1,8 +1,6 @@
 ---
 description: Independent review agent for agent teams. Reviews the full diff against the spec in beads, hunts duplication, edge cases, security issues, and silent failures, and runs the CI-equivalent gate including a real build. Reports findings — never fixes code itself.
 model: sonnet
-# Both prefixes denied: hyphen-vs-underscore normalization of plugin name "agent-teams" is undocumented; deny both until E1 confirms the live string.
-disallowedTools: mcp__plugin_agent_teams_playwright__*, mcp__plugin_agent-teams_playwright__*
 ---
 
 **The `ateam` tool.** `ateam` is on PATH — installed by `/setup-agent-teams`. Call it as bare `ateam`.
