@@ -518,10 +518,10 @@ interface NodeProps {
 // Compute radial label offset: place the label past the node's full visual
 // radius (core + glow + flare rings + gap) so it never sits on the node.
 // For needs-human nodes the outermost ring is at r+26 (secondary flare).
-// For working nodes the pulse ring is at r. Add 12px gap beyond the edge.
+// For working nodes the pulse ring is at r. Add a generous gap beyond the edge.
 function labelOffset(meta: typeof URGENCY_META[UrgencyTier], hasFlare: boolean): number {
-  if (hasFlare) return meta.r + 26 + 12; // past secondary flare ring
-  return meta.r + 10 + 6;               // past glow, add gap
+  if (hasFlare) return meta.r + 26 + 20; // past secondary flare ring + 20px gap
+  return meta.r + 10 + 12;              // past glow + 12px gap
 }
 
 function ConstellationNode({ node, urgency, angle, x, y, svgW, svgH, onNavigate }: NodeProps) {
@@ -549,17 +549,20 @@ function ConstellationNode({ node, urgency, angle, x, y, svgW, svgH, onNavigate 
   // positioned relative to the node origin (0,0). We compute an outward
   // direction from the angle, then offset the label along that direction.
   //
-  // textAnchor: left half of circle → "end" (text grows left = outward),
-  //             right half → "start", top/bottom ≈ ±15° → "middle".
+  // textAnchor controls which direction text grows from the anchor point:
+  //   right half (cosA > 0.2): "start" — text extends rightward (outward)
+  //   left half  (cosA < -0.2): "end"   — text extends leftward (outward)
+  //   top/bottom (|cosA| <= 0.2): "middle" — text is horizontally centered
+  // This ensures text always radiates AWAY from the node, never over it.
   const cosA = Math.cos(angle);
   const sinA = Math.sin(angle);
-  const LABEL_ANCHOR_THRESHOLD = 0.25; // ~15° band around 0° / 180°
+  const LABEL_ANCHOR_THRESHOLD = 0.20;
   const textAnchor =
-    Math.abs(sinA) < LABEL_ANCHOR_THRESHOLD
-      ? "middle"
-      : cosA >= 0
-        ? "start"
-        : "end";
+    cosA > LABEL_ANCHOR_THRESHOLD
+      ? "start"
+      : cosA < -LABEL_ANCHOR_THRESHOLD
+        ? "end"
+        : "middle";
 
   const lOffset = labelOffset(meta, hasFlare);
   // Base label position: outward along angle from node origin
@@ -937,10 +940,19 @@ export default function ConstellationView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewSize, setViewSize] = useState({ w: 900, h: 700 });
 
+  // Re-run when the component transitions from an early-return state (no ref)
+  // to the full SVG render (ref attached). Without these deps the effect only
+  // runs on the initial mount — if that mount shows "connecting" the div isn't
+  // rendered yet and containerRef.current is null, so the observer never starts.
+  const hasContent =
+    connectionState !== "error" &&
+    !(connectionState === "connecting" && initiatives.length === 0) &&
+    (initiatives.length > 0 || unmatchedSessions.length > 0);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    // Sync immediately on mount so the first layout uses the real size.
+    // Sync immediately so the first layout uses the real size, not the 900×700 default.
     const rect = el.getBoundingClientRect();
     if (rect.width > 50 && rect.height > 50) {
       setViewSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
@@ -955,7 +967,7 @@ export default function ConstellationView() {
     });
     obs.observe(el);
     return () => obs.disconnect();
-  }, []);
+  }, [hasContent]);
 
   const W = viewSize.w;
   const H = viewSize.h;
@@ -1012,7 +1024,6 @@ export default function ConstellationView() {
       <svg
         className="constellation-svg"
         viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
         aria-label="Initiative constellation"
         data-node-count={positioned.length}
         data-orphan-count={positionedOrphans.length}
