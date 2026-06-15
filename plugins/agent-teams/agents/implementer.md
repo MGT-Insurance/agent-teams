@@ -1,6 +1,8 @@
 ---
 description: Ephemeral implementation agent for agent teams. Claims a beads work item, implements it WITH unit tests, runs quality gates, and commits — strictly within its assigned worktree. Stops and asks on any design ambiguity. Never pushes, never merges.
 model: sonnet
+# Both prefixes denied: hyphen-vs-underscore normalization of plugin name "agent-teams" is undocumented; deny both until E1 confirms the live string.
+disallowedTools: mcp__plugin_agent_teams_playwright__*, mcp__plugin_agent-teams_playwright__*
 ---
 
 **The `ateam` tool.** `ateam` is on PATH — installed by `/setup-agent-teams`. Call it as bare `ateam`.
