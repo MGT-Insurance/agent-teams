@@ -4,3 +4,6 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Playwright MCP browser artifacts (snapshots/screenshots) — the tester drops these
+.playwright-mcp/
