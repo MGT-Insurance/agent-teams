@@ -112,7 +112,7 @@ type gateCmd struct{}
 func (c *gateCmd) Name() string { return "gate" }
 
 func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
-	id, file, err := parseIDFileFlags("gate", args)
+	id, file, kind, err := parseGateFlags(args)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,47 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
+	if runErr != nil {
+		return runErr
+	}
+	out, runErr = ctx.BD.Run("label", "add", id, "gate:"+kind)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return runErr
+}
+
+// parseGateFlags parses <id> --file <f> [--kind=review|question] from args.
+// kind defaults to "question" when omitted.
+func parseGateFlags(args []string) (id, file, kind string, err error) {
+	if len(args) == 0 {
+		return "", "", "", cli.Usagef("ateam gate: missing <id>")
+	}
+	id = args[0]
+	kind = "question"
+	for i := 1; i < len(args); {
+		if v, n := parseFlag(args, i, "--file"); n > 0 {
+			file = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--kind"); n > 0 {
+			kind = v
+			i += n
+			continue
+		}
+		return "", "", "", cli.Usagef("ateam gate: unknown flag %q", args[i])
+	}
+	if kind != "review" && kind != "question" {
+		return "", "", "", cli.Usagef("ateam gate: --kind must be review or question")
+	}
+	if file == "" {
+		return "", "", "", cli.Usagef("ateam gate: --file required")
+	}
+	if _, statErr := os.Stat(file); statErr != nil {
+		return "", "", "", cli.Usagef("ateam gate: file not found: %s", file)
+	}
+	return id, file, kind, nil
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────
@@ -154,6 +194,22 @@ func (c *clearGateCmd) Run(ctx *cli.Context, args []string) error {
 		}
 	}
 	out, runErr := ctx.BD.Run("label", "remove", id, "human")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	// Remove both gate:* labels. bd label remove is idempotent (exit 0 even
+	// when the label is absent), so these succeed regardless of gate kind.
+	out, runErr = ctx.BD.Run("label", "remove", id, "gate:review")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	out, runErr = ctx.BD.Run("label", "remove", id, "gate:question")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -313,7 +369,7 @@ func (c *syncCmd) Run(ctx *cli.Context, args []string) error {
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
-// parseIDFileFlags parses <id> --file <f> from args for note and gate.
+// parseIDFileFlags parses <id> --file <f> from args for note.
 func parseIDFileFlags(verb string, args []string) (id, file string, err error) {
 	if len(args) == 0 {
 		return "", "", cli.Usagef("ateam %s: missing <id>", verb)

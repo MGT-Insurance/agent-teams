@@ -301,30 +301,73 @@ func TestNote_FileNotFound(t *testing.T) {
 // ── gate ──────────────────────────────────────────────────────────────────────
 
 func TestGate_NoteAndLabel(t *testing.T) {
+	// No --kind: defaults to question => 3 calls (note, label add human, label add gate:question)
 	f := makeTempFile(t, "question")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 bd calls, got %d", len(*calls))
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
 	}
-	// First call: note
 	assertArgs(t, *calls, 0, []string{"note", "at-2", "--file=" + f})
-	// Second call: label add
 	assertArgs(t, *calls, 1, []string{"label", "add", "at-2", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-2", "gate:question"})
+}
+
+func TestGate_KindReview(t *testing.T) {
+	f := makeTempFile(t, "pr ready")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f, "--kind", "review"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 0, []string{"note", "at-2", "--file=" + f})
+	assertArgs(t, *calls, 1, []string{"label", "add", "at-2", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-2", "gate:review"})
+}
+
+func TestGate_KindReviewEqualsForm(t *testing.T) {
+	f := makeTempFile(t, "pr ready")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file=" + f, "--kind=review"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-2", "gate:review"})
+}
+
+func TestGate_KindQuestionExplicit(t *testing.T) {
+	f := makeTempFile(t, "question")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f, "--kind", "question"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-2", "gate:question"})
+}
+
+func TestGate_KindBogus(t *testing.T) {
+	f := makeTempFile(t, "question")
+	ctx, _ := newCtx(t, nil)
+	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f, "--kind=bogus"})
+	assertUsageError(t, err, "review or question")
 }
 
 func TestGate_EqualsForm(t *testing.T) {
 	f := makeTempFile(t, "question")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file=" + f})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertArgs(t, *calls, 0, []string{"note", "at-2", "--file=" + f})
 	assertArgs(t, *calls, 1, []string{"label", "add", "at-2", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-2", "gate:question"})
 }
 
 func TestGate_MissingID(t *testing.T) {
@@ -340,40 +383,48 @@ func TestGate_MissingFile(t *testing.T) {
 // ── clear-gate ────────────────────────────────────────────────────────────────
 
 func TestClearGate_WithFile(t *testing.T) {
+	// 4 calls: comment, label remove human, label remove gate:review, label remove gate:question
 	f := makeTempFile(t, "response")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 	err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file", f})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 bd calls, got %d", len(*calls))
+	if len(*calls) != 4 {
+		t.Fatalf("expected 4 bd calls, got %d", len(*calls))
 	}
 	assertArgs(t, *calls, 0, []string{"comment", "at-3", "--file=" + f})
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
 }
 
 func TestClearGate_WithoutFile(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	// 3 calls: label remove human, label remove gate:review, label remove gate:question
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 	err := (&clearGateCmd{}).Run(ctx, []string{"at-3"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("expected 1 bd call, got %d", len(*calls))
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
 	}
 	assertArgs(t, *calls, 0, []string{"label", "remove", "at-3", "human"})
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "gate:review"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:question"})
 }
 
 func TestClearGate_EqualsForm(t *testing.T) {
 	f := makeTempFile(t, "response")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 	err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file=" + f})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertArgs(t, *calls, 0, []string{"comment", "at-3", "--file=" + f})
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
 }
 
 func TestClearGate_MissingID(t *testing.T) {
@@ -639,9 +690,12 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	responses := []fakeResp{
 		{stdout: string(jsonOut)}, // register: create --json
 		{stdout: "ok"},            // gate: note
-		{stdout: "ok"},            // gate: label add
+		{stdout: "ok"},            // gate: label add human
+		{stdout: "ok"},            // gate: label add gate:question
 		{stdout: "ok"},            // clear-gate: comment
-		{stdout: "ok"},            // clear-gate: label remove
+		{stdout: "ok"},            // clear-gate: label remove human
+		{stdout: "ok"},            // clear-gate: label remove gate:review
+		{stdout: "ok"},            // clear-gate: label remove gate:question
 	}
 	execFn, calls := fakeExec(responses)
 	client := bd.NewClientWithExec(dir, execFn)
@@ -657,7 +711,7 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 		t.Errorf("register: id = %q, want %q", gotID, "at-round1")
 	}
 
-	// gate
+	// gate (default kind=question)
 	if err := (&gateCmd{}).Run(ctx, []string{"at-round1", "--file", questionFile}); err != nil {
 		t.Fatalf("gate: %v", err)
 	}
@@ -668,8 +722,8 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	}
 
 	// Verify call sequence
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls, got %d: %v", len(*calls), *calls)
+	if len(*calls) != 8 {
+		t.Fatalf("expected 8 bd calls, got %d: %v", len(*calls), *calls)
 	}
 	// call 0: create --json
 	if (*calls)[0].args[0] != "create" {
@@ -682,10 +736,16 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	assertArgs(t, *calls, 1, []string{"note", "at-round1", "--file=" + questionFile})
 	// call 2: label add human
 	assertArgs(t, *calls, 2, []string{"label", "add", "at-round1", "human"})
-	// call 3: comment
-	assertArgs(t, *calls, 3, []string{"comment", "at-round1", "--file=" + responseFile})
-	// call 4: label remove human
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-round1", "human"})
+	// call 3: label add gate:question
+	assertArgs(t, *calls, 3, []string{"label", "add", "at-round1", "gate:question"})
+	// call 4: comment
+	assertArgs(t, *calls, 4, []string{"comment", "at-round1", "--file=" + responseFile})
+	// call 5: label remove human
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-round1", "human"})
+	// call 6: label remove gate:review
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-round1", "gate:review"})
+	// call 7: label remove gate:question
+	assertArgs(t, *calls, 7, []string{"label", "remove", "at-round1", "gate:question"})
 }
 
 // ── stdout forwarding ─────────────────────────────────────────────────────────
@@ -718,6 +778,7 @@ func TestGate_ForwardsBothOutputs(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{
 		{stdout: "✓ Note added to at-2"},
 		{stdout: "✓ Added label 'human'"},
+		{stdout: "✓ Added label 'gate:question'"},
 	})
 	if err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -728,6 +789,9 @@ func TestGate_ForwardsBothOutputs(t *testing.T) {
 	}
 	if !strings.Contains(got, "✓ Added label 'human'") {
 		t.Errorf("stdout missing label output; got %q", got)
+	}
+	if !strings.Contains(got, "✓ Added label 'gate:question'") {
+		t.Errorf("stdout missing gate:question label output; got %q", got)
 	}
 	// note output must appear before label output
 	noteIdx := strings.Index(got, "✓ Note added to at-2")
@@ -742,6 +806,8 @@ func TestClearGate_WithFile_ForwardsBothOutputs(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{
 		{stdout: "✓ Comment added"},
 		{stdout: "✓ Removed label 'human'"},
+		{stdout: "✓ Removed label 'gate:review'"},
+		{stdout: "✓ Removed label 'gate:question'"},
 	})
 	if err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file", f}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -761,7 +827,11 @@ func TestClearGate_WithFile_ForwardsBothOutputs(t *testing.T) {
 }
 
 func TestClearGate_WithoutFile_ForwardsLabelOutput(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Removed label 'human'"}})
+	ctx, _ := newCtx(t, []fakeResp{
+		{stdout: "✓ Removed label 'human'"},
+		{stdout: "✓ Removed label 'gate:review'"},
+		{stdout: "✓ Removed label 'gate:question'"},
+	})
 	if err := (&clearGateCmd{}).Run(ctx, []string{"at-3"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

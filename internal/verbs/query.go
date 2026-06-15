@@ -5,6 +5,7 @@ package verbs
 import (
 	"fmt"
 
+	"github.com/erlloyd/agent-teams/internal/bd"
 	"github.com/erlloyd/agent-teams/internal/cli"
 )
 
@@ -69,7 +70,15 @@ func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
 	return nil
 }
 
-// humanListCmd passes through: bd human list
+// humanListCmd renders gated beads with their gate kind and note.
+// Calls `bd human list --json`, parses the result, and emits a terse
+// scannable display per issue:
+//
+//	<id>  [REVIEW|QUESTION]  <title>
+//	    <notes>  (omitted when empty)
+//
+// Kind is derived from labels: gate:review => REVIEW; otherwise QUESTION
+// (covers gate:question and backward-compat human-only beads).
 type humanListCmd struct{}
 
 func (c *humanListCmd) Name() string { return "human-list" }
@@ -78,12 +87,35 @@ func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam human-list: no context")
 	}
-	out, err := ctx.BD.Run("human", "list")
-	if err != nil {
+	var issues []bd.Issue
+	if err := ctx.BD.RunJSON(&issues, "human", "list", "--json"); err != nil {
 		return err
 	}
-	fmt.Fprintln(ctx.Stdout, out)
+	if len(issues) == 0 {
+		fmt.Fprintln(ctx.Stdout, "No human-needed beads found.")
+		return nil
+	}
+	for _, issue := range issues {
+		kind := gateKind(issue.Labels)
+		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
+		if issue.Notes != "" {
+			fmt.Fprintf(ctx.Stdout, "    %s\n", issue.Notes)
+		}
+	}
 	return nil
+}
+
+// gateKind derives the gate kind from a bead's labels using the kind-resolution
+// rule from contract agent-teams-04c:
+//   - contains "gate:review"  => "REVIEW"
+//   - else (human present, or gate:question, or backward-compat) => "QUESTION"
+func gateKind(labels []string) string {
+	for _, l := range labels {
+		if l == "gate:review" {
+			return "REVIEW"
+		}
+	}
+	return "QUESTION"
 }
 
 // showCmd passes through: bd show <id>

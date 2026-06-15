@@ -11,13 +11,16 @@ Render the initiative dashboard from the global workspace. If `ateam ws` fails o
    ```bash
    ateam list-json
    ```
-   Each element includes `id`, `title`, `description` (the full line-oriented registry schema), `labels`, and notes. The `description` field contains the `branch:`, `team:`, and latest phase state.
+   Each element includes `id`, `title`, `description` (the full line-oriented registry schema), `labels`, and notes. The `description` field contains the `branch:`, `team:`, and latest phase state. The `labels` array carries gate signals — apply the **kind-resolution rule** to determine gate kind:
+   - `labels` contains `gate:review` → **REVIEW** (PR delivered, awaiting merge)
+   - `labels` contains `gate:question`, OR contains `human` but no `gate:*` label → **QUESTION** (backward-compat: pre-existing gated beads predate `gate:*`)
+   - no `human` label → not gated
 
 2. Parked gates — `ateam human-list` is the canonical needs-human view:
    ```bash
    ateam human-list
    ```
-   Issues carrying the `human` label (set by the gate protocol via `ateam gate`) appear here. The `labels` field in the JSON output also shows it (look for `"human"` in the array).
+   Issues carrying the `human` label (set by the gate protocol via `ateam gate`) appear here. `ateam human-list` renders enriched output that includes the gate KIND (`REVIEW` or `QUESTION`) and the gate note (e.g. the PR URL) per gated initiative — it does not emit raw JSON. Derive the kind from the `labels` array in `ateam list-json` (step 1 above) if you need the programmatic form.
 
 3. Render ONE markdown table, ordered needs-human first. Columns, in order:
 
@@ -31,7 +34,11 @@ Render the initiative dashboard from the global workspace. If `ateam ws` fails o
 
    Keep cells terse — the table is the at-a-glance view, not the full story. Do not add prose commentary per row.
 
-4. Below the table, for each needs-human initiative ONLY, add one footnote line: `⚠ <id>: <parked question(s) from the latest gate note>`. This is the one place full question text belongs — cells stay short.
+4. Below the table, for each needs-human initiative ONLY, add one footnote line:
+   - REVIEW gate: `⚠ <id>: PR ready — needs review: <gate note / PR url>`
+   - QUESTION gate: `⚠ <id>: <parked question(s) from the latest gate note>`
+
+   This is the one place full question/note text belongs — cells stay short.
 
 5. If nothing is open: say exactly that, one line. (No empty table.)
 
