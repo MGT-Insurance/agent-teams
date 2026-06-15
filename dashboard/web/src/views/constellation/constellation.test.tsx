@@ -454,4 +454,79 @@ describe("ConstellationView", () => {
     const node = container.querySelector("[data-initiative-id='wk-1']");
     expect(node?.getAttribute("data-activity")).toBe("busy");
   });
+
+  // ---------------------------------------------------------------------------
+  // Explicit gate:review (agent-teams-0rl)
+  // ---------------------------------------------------------------------------
+
+  it("needsHuman='review' (gate:review) node has needs-human badge + inner orbit styling", () => {
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [
+        makeNode({
+          id: "gate-review-1",
+          needsHuman: "review",
+          delivery: "pr-open",
+          initiative: {
+            id: "gate-review-1",
+            title: "Gate Review Initiative",
+            description: "",
+            notes: "",
+            status: "open",
+            priority: "P1",
+            issue_type: "task",
+            owner: "eric",
+            created_at: "2026-01-01",
+            updated_at: "2026-01-01",
+            problem: "",
+            repo: "",
+            worktree: "/wt",
+            branch: "main",
+            team: "",
+            mode: "",
+            goal: "",
+            prUrl: "https://github.com/org/repo/pull/10",
+          },
+        }),
+      ],
+    };
+    const { container } = render(<ConstellationView />);
+    // needs-human badge (orange "!")
+    const badge = container.querySelector("[data-badge='needs-human']");
+    expect(badge).not.toBeNull();
+    // data-activity='needs-human'
+    const node = container.querySelector("[data-initiative-id='gate-review-1']");
+    expect(node?.getAttribute("data-activity")).toBe("needs-human");
+    // delivery ring (green ring around node) — delivery=pr-open -> hasPr=true
+    expect(node?.querySelector(".node-delivery-ring")).not.toBeNull();
+    // NOT PR badge (needs-human takes priority)
+    expect(container.querySelector("[data-badge='pr']")).toBeNull();
+  });
+
+  it("gate:review node wins over working session (still shows needs-human)", () => {
+    const workingSession: import("@agent-teams/shared").SessionState = {
+      sessionId: "gate-sess",
+      kind: "background",
+      cwd: "/wt",
+      startedAt: 0,
+      status: "busy",
+      state: "working",
+    };
+    mockSnapshotState = {
+      ...mockSnapshotState,
+      initiatives: [
+        makeNode({
+          id: "gate-wins",
+          needsHuman: "review",
+          delivery: "pr-open",
+          session: workingSession,
+        }),
+      ],
+    };
+    const { container } = render(<ConstellationView />);
+    const badge = container.querySelector("[data-badge='needs-human']");
+    expect(badge).not.toBeNull();
+    const node = container.querySelector("[data-initiative-id='gate-wins']");
+    expect(node?.getAttribute("data-activity")).toBe("needs-human");
+  });
 });

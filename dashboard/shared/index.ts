@@ -6,6 +6,7 @@ export type {
   ActivityStatus,
   DeliveryStatus,
   NeedsHumanFlavor,
+  ExplicitGateKind,
   InitiativeNode,
   InboxItem,
   WorkBead,

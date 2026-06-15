@@ -12,6 +12,7 @@ import {
   buildInbox,
   deriveActivity,
   deriveDelivery,
+  deriveExplicitGate,
   deriveNeedsHuman,
   deriveSessionSignal,
   derivePhase,
@@ -260,7 +261,7 @@ describe("buildInitiativeNodes", () => {
     expect(nodes[0]?.session).toBeNull();
   });
 
-  it("activity is needs-human when initiative is in humanGatedIds", () => {
+  it("activity is needs-human when initiative is in humanGatedIds (legacy fallback)", () => {
     const parsed = parseInitiative(RAW_AT_V4E);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set(["at-v4e"]));
     expect(nodes[0]?.activity).toBe("needs-human");
@@ -288,46 +289,46 @@ describe("deriveActivity", () => {
   };
   const idleSession: SessionState = { ...busySession, status: "idle", state: "done" };
 
-  it("needs-human overrides everything", () => {
-    expect(deriveActivity(baseInitiative, busySession, true)).toBe("needs-human");
+  it("needs-human overrides everything (explicit gate:review)", () => {
+    expect(deriveActivity(baseInitiative, busySession, "review")).toBe("needs-human");
   });
 
-  it("needs-human (review) when PR URL + idle session (PR awaiting review)", () => {
+  it("needs-human (generic) when PR URL + idle session (no explicit gate)", () => {
     const init = { ...baseInitiative, prUrl: "https://github.com/o/r/pull/1" };
-    // delivery=pr-open, working=false → needs-human:review → deriveActivity returns "needs-human"
-    expect(deriveActivity(init, idleSession, false)).toBe("needs-human");
+    // delivery=pr-open, signal=ended, gate=null → needs-human:generic → "needs-human"
+    expect(deriveActivity(init, idleSession, null)).toBe("needs-human");
   });
 
   it("busy when session status is busy", () => {
-    expect(deriveActivity(baseInitiative, busySession, false)).toBe("busy");
+    expect(deriveActivity(baseInitiative, busySession, null)).toBe("busy");
   });
 
   it("busy when session has state=working even if status=idle", () => {
     const notDoneSession: SessionState = { ...busySession, status: "idle", state: "working" };
-    expect(deriveActivity(baseInitiative, notDoneSession, false)).toBe("busy");
+    expect(deriveActivity(baseInitiative, notDoneSession, null)).toBe("busy");
   });
 
   it("idle when session is not busy and state is not working", () => {
     const quietSession: SessionState = { ...busySession, status: "idle", state: "done" };
     // Use an initiative without a PR URL so the delivered branch doesn't fire.
     const noPrInitiative = { ...baseInitiative, prUrl: null as string | null };
-    expect(deriveActivity(noPrInitiative, quietSession, false)).toBe("idle");
+    expect(deriveActivity(noPrInitiative, quietSession, null)).toBe("idle");
   });
 
   it("done when no session and initiative status is closed", () => {
     const closed = { ...baseInitiative, status: "closed" };
-    expect(deriveActivity(closed, null, false)).toBe("done");
+    expect(deriveActivity(closed, null, null)).toBe("done");
   });
 
   it("needs-human (generic) when no session but PR open and status is open", () => {
-    // delivery=pr-open (prUrl present, status=open), signal=none, isHumanGated=false
+    // delivery=pr-open (prUrl present, status=open), signal=none, gate=null
     // → needsHuman="generic" (graceful degrade) → deriveActivity returns "needs-human"
-    expect(deriveActivity(baseInitiative, null, false)).toBe("needs-human");
+    expect(deriveActivity(baseInitiative, null, null)).toBe("needs-human");
   });
 
   it("idle when no session, no PR, status is open", () => {
     const noPr = { ...baseInitiative, prUrl: null as string | null };
-    expect(deriveActivity(noPr, null, false)).toBe("idle");
+    expect(deriveActivity(noPr, null, null)).toBe("idle");
   });
 });
 
@@ -506,8 +507,9 @@ describe("buildInbox", () => {
     expect(item?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
   });
 
-  it("includes review items (needsHuman=review) when delivered + session ENDED", () => {
-    // at-2jh: prUrl present, matched ENDED session -> signal=ended -> needsHuman="review"
+  it("includes generic items (needsHuman=generic) when delivered + session ENDED (no explicit gate)", () => {
+    // at-2jh: prUrl present, matched ENDED session, no labels -> signal=ended, gate=null -> needsHuman="generic"
+    // (DEMOTED from "review": review now requires explicit gate:review label)
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
       [ENDED_SESSION],
@@ -516,7 +518,7 @@ describe("buildInbox", () => {
     const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-2jh");
     expect(item).toBeDefined();
-    expect(item?.kind).toBe("review");
+    expect(item?.kind).toBe("generic");
     expect(item?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
   });
 
@@ -540,8 +542,8 @@ describe("buildInbox", () => {
     expect(inbox).toHaveLength(0);
   });
 
-  it("waiting takes priority over review when both conditions apply (human-gated + pr-open + idle)", () => {
-    // at-2jh: prUrl present, no working session, and human-gated -> needsHuman="waiting" (not "review")
+  it("waiting takes priority over generic when humanGatedIds set (legacy path)", () => {
+    // at-2jh: prUrl present, no working session, humanGatedIds set -> gate="question" -> needsHuman="waiting"
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
       sessions,
@@ -647,63 +649,117 @@ describe("deriveSessionSignal", () => {
   });
 });
 
-// ---- deriveNeedsHuman (agent-teams-blo) truth table -------------------------
+// ---- deriveExplicitGate (agent-teams-0rl) ------------------------------------
+
+describe("deriveExplicitGate", () => {
+  it("gate:review label -> 'review'", () => {
+    expect(deriveExplicitGate(["gate:review", "human"])).toBe("review");
+  });
+
+  it("gate:review alone -> 'review'", () => {
+    expect(deriveExplicitGate(["gate:review"])).toBe("review");
+  });
+
+  it("gate:question label -> 'question'", () => {
+    expect(deriveExplicitGate(["gate:question", "human"])).toBe("question");
+  });
+
+  it("gate:question alone -> 'question'", () => {
+    expect(deriveExplicitGate(["gate:question"])).toBe("question");
+  });
+
+  it("human-only (no gate:*) -> 'question' (legacy gate)", () => {
+    expect(deriveExplicitGate(["human"])).toBe("question");
+  });
+
+  it("gate:review takes priority over gate:question", () => {
+    expect(deriveExplicitGate(["gate:review", "gate:question"])).toBe("review");
+  });
+
+  it("empty labels array -> null", () => {
+    expect(deriveExplicitGate([])).toBeNull();
+  });
+
+  it("undefined labels -> null (missing field resilience)", () => {
+    expect(deriveExplicitGate(undefined)).toBeNull();
+  });
+
+  it("unrelated labels -> null", () => {
+    expect(deriveExplicitGate(["some-other-label"])).toBeNull();
+  });
+});
+
+// ---- deriveNeedsHuman (agent-teams-0rl) truth table -------------------------
 
 describe("deriveNeedsHuman", () => {
+  // Explicit gate cases (new behavior, agent-teams-0rl)
+  it("gate:review -> 'review' (AUTHORITATIVE; wins over session)", () => {
+    expect(deriveNeedsHuman("none", "working", "review")).toBe("review");
+  });
+
+  it("gate:review + delivered -> 'review' (authoritative)", () => {
+    expect(deriveNeedsHuman("pr-open", "ended", "review")).toBe("review");
+  });
+
+  it("gate:review wins over working session", () => {
+    expect(deriveNeedsHuman("pr-open", "working", "review")).toBe("review");
+  });
+
+  it("gate:question -> 'waiting' (agent asking a question)", () => {
+    expect(deriveNeedsHuman("none", "none", "question")).toBe("waiting");
+  });
+
+  it("gate:question + working session -> 'waiting' (gate wins)", () => {
+    expect(deriveNeedsHuman("none", "working", "question")).toBe("waiting");
+  });
+
+  it("gate:question + delivered -> 'waiting' (gate wins)", () => {
+    expect(deriveNeedsHuman("pr-open", "none", "question")).toBe("waiting");
+  });
+
+  // Session-based cases (gate=null)
   it("session WAITING -> 'waiting' (most urgent; active initiative)", () => {
-    expect(deriveNeedsHuman("none", "waiting", false)).toBe("waiting");
+    expect(deriveNeedsHuman("none", "waiting", null)).toBe("waiting");
   });
 
   it("session WAITING + delivered -> 'waiting' (most urgent; delivered initiative)", () => {
-    expect(deriveNeedsHuman("pr-open", "waiting", false)).toBe("waiting");
-  });
-
-  it("explicit gate (no session) -> 'waiting' (human gate override)", () => {
-    expect(deriveNeedsHuman("none", "none", true)).toBe("waiting");
-  });
-
-  it("explicit gate + working session -> 'waiting' (gate wins over working)", () => {
-    expect(deriveNeedsHuman("none", "working", true)).toBe("waiting");
-  });
-
-  it("explicit gate + delivered -> 'waiting' (gate wins)", () => {
-    expect(deriveNeedsHuman("pr-open", "none", true)).toBe("waiting");
+    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("waiting");
   });
 
   it("session WORKING -> false (refining after delivery, not in inbox)", () => {
-    expect(deriveNeedsHuman("pr-open", "working", false)).toBe(false);
+    expect(deriveNeedsHuman("pr-open", "working", null)).toBe(false);
   });
 
   it("none + WORKING -> false (initial work in progress)", () => {
-    expect(deriveNeedsHuman("none", "working", false)).toBe(false);
+    expect(deriveNeedsHuman("none", "working", null)).toBe(false);
   });
 
   it("none + ENDED -> false (active + ended = idle/dormant, no PR)", () => {
-    expect(deriveNeedsHuman("none", "ended", false)).toBe(false);
+    expect(deriveNeedsHuman("none", "ended", null)).toBe(false);
   });
 
   it("none + NONE -> false (active + no session = idle/dormant)", () => {
-    expect(deriveNeedsHuman("none", "none", false)).toBe(false);
+    expect(deriveNeedsHuman("none", "none", null)).toBe(false);
   });
 
-  it("delivered + ENDED -> 'review' (verify & merge — signal-backed)", () => {
-    expect(deriveNeedsHuman("pr-open", "ended", false)).toBe("review");
+  it("delivered + ENDED -> 'generic' (DEMOTED from review; no explicit gate)", () => {
+    expect(deriveNeedsHuman("pr-open", "ended", null)).toBe("generic");
   });
 
   it("delivered + NONE -> 'generic' (graceful degrade; no session info)", () => {
-    expect(deriveNeedsHuman("pr-open", "none", false)).toBe("generic");
+    expect(deriveNeedsHuman("pr-open", "none", null)).toBe("generic");
   });
 
   it("merged -> false (done, nothing needed)", () => {
-    expect(deriveNeedsHuman("merged", "none", false)).toBe(false);
+    expect(deriveNeedsHuman("merged", "none", null)).toBe(false);
   });
 
-  it("merged + gate -> false (closed initiatives never need human)", () => {
-    expect(deriveNeedsHuman("merged", "none", true)).toBe(false);
+  it("merged + gate:review -> false (closed initiatives never need human)", () => {
+    expect(deriveNeedsHuman("merged", "none", "review")).toBe(false);
   });
 
   it("merged + WAITING -> false (done wins over waiting)", () => {
-    expect(deriveNeedsHuman("merged", "waiting", false)).toBe(false);
+    expect(deriveNeedsHuman("merged", "waiting", null)).toBe(false);
   });
 });
 
@@ -726,12 +782,13 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.needsHuman).toBe("generic");
   });
 
-  it("needsHuman is review when delivery=pr-open and session ENDED", () => {
-    // at-2jh: has prUrl, matched ENDED session -> signal=ended -> needsHuman="review"
+  it("needsHuman is generic when delivery=pr-open and session ENDED (no explicit gate)", () => {
+    // at-2jh: has prUrl, matched ENDED session, no labels -> signal=ended, gate=null -> needsHuman="generic"
+    // (DEMOTED: delivered+ended is no longer "review" — review requires explicit gate:review label)
     const parsed = parseInitiative(RAW_AT_2JH);
     const nodes = buildInitiativeNodes([parsed], [ENDED_SESSION], new Set());
     expect(nodes[0]?.delivery).toBe("pr-open");
-    expect(nodes[0]?.needsHuman).toBe("review");
+    expect(nodes[0]?.needsHuman).toBe("generic");
   });
 
   it("needsHuman is false when delivery=pr-open and working session present", () => {
@@ -742,7 +799,7 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.needsHuman).toBe(false);
   });
 
-  it("needsHuman is waiting when humanGated (regardless of delivery)", () => {
+  it("needsHuman is waiting when humanGatedIds set (legacy fallback -> gate:question)", () => {
     const parsed = parseInitiative(RAW_AT_2JH);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set(["at-2jh"]));
     expect(nodes[0]?.needsHuman).toBe("waiting");
@@ -830,11 +887,11 @@ describe("attention state: spec-required scenarios", () => {
     expect(nodes[0]?.needsHuman).toBe(false);
   });
 
-  it("delivered + session ended -> needsHuman='review' (verify & merge)", () => {
-    const init = makeInit("review-1", true);
-    const sess = makeSession("/wt/review-1", "idle", "stopped");
+  it("delivered + session ended -> needsHuman='generic' (no explicit gate; DEMOTED from review)", () => {
+    const init = makeInit("generic-via-ended-1", true);
+    const sess = makeSession("/wt/generic-via-ended-1", "idle", "stopped");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
-    expect(nodes[0]?.needsHuman).toBe("review");
+    expect(nodes[0]?.needsHuman).toBe("generic");
     expect(nodes[0]?.activity).toBe("needs-human");
   });
 
@@ -876,12 +933,13 @@ describe("attention state: spec-required scenarios", () => {
     expect(inbox[0]?.kind).toBe("waiting");
   });
 
-  it("inbox: review item has kind='review' (delivered + ended)", () => {
+  it("inbox: generic item when delivered + ended (no explicit gate)", () => {
+    // delivered+ended is now "generic" (DEMOTED from "review"; review requires explicit gate:review)
     const init = makeInit("r-inbox", true);
     const sess = makeSession("/wt/r-inbox", "idle", "stopped");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
-    expect(inbox[0]?.kind).toBe("review");
+    expect(inbox[0]?.kind).toBe("generic");
   });
 
   it("inbox: generic item has kind='generic' (delivered + no session)", () => {
@@ -897,6 +955,105 @@ describe("attention state: spec-required scenarios", () => {
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox).toHaveLength(0);
+  });
+});
+
+// ---- gate:review label cases (agent-teams-0rl) --------------------------------
+//
+// These verify the AUTHORITATIVE review signal derived from explicit gate labels.
+
+describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)", () => {
+  // Helper: make a ParsedInitiative with a specific worktree and optional labels.
+  function makeGateInit(
+    id: string,
+    labels: string[] | undefined,
+    haspr: boolean,
+  ): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "session 1 — parked waiting on review",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-15",
+      updated_at: "2026-06-15",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      labels,
+      prUrl: haspr ? "https://github.com/org/repo/pull/1" : null,
+    };
+  }
+
+  function makeSessionForId(id: string, status: string, state?: string) {
+    return {
+      sessionId: `sess-${id}`,
+      kind: "background" as const,
+      cwd: `/wt/${id}`,
+      startedAt: 0,
+      status: status as "idle" | "busy" | "waiting",
+      state: state as "working" | "blocked" | "done" | "stopped" | undefined,
+    };
+  }
+
+  it("gate:review -> needsHuman='review' (AUTHORITATIVE)", () => {
+    const init = makeGateInit("r1", ["gate:review", "human"], true);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe("review");
+  });
+
+  it("gate:review wins over working session -> needsHuman='review'", () => {
+    const init = makeGateInit("r2", ["gate:review", "human"], true);
+    const sess = makeSessionForId("r2", "busy", "working");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe("review");
+    expect(nodes[0]?.activity).toBe("needs-human");
+  });
+
+  it("gate:question -> needsHuman='waiting'", () => {
+    const init = makeGateInit("q1", ["gate:question", "human"], false);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+  });
+
+  it("human-only label (legacy gate) -> needsHuman='waiting'", () => {
+    const init = makeGateInit("h1", ["human"], false);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+  });
+
+  it("delivered + ended + no gate -> needsHuman='generic' (NOT review)", () => {
+    const init = makeGateInit("g1", undefined, true);
+    const sess = makeSessionForId("g1", "idle", "stopped");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    expect(nodes[0]?.needsHuman).toBe("generic");
+  });
+
+  it("gate:review initiative has delivery ring AND review badge (review item in inbox)", () => {
+    const init = makeGateInit("r3", ["gate:review", "human"], true);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("review");
+    expect(inbox[0]?.prUrl).toBe("https://github.com/org/repo/pull/1");
+  });
+
+  it("labels=[]: tolerate empty array -> no gate", () => {
+    const init = makeGateInit("e1", [], false);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
+  });
+
+  it("labels=undefined: tolerate missing labels -> no gate", () => {
+    const init = makeGateInit("e2", undefined, false);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
   });
 });
 

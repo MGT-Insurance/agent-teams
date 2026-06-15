@@ -4,12 +4,12 @@ import { useSnapshotContext } from "../../SnapshotContext.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
-// waiting: agent is paused, waiting for input.
-// review: delivered + session ended; we know the ask is verify & merge.
-// generic: delivered + no session; graceful degrade, no specific action asserted.
+// review: AUTHORITATIVE gate:review label; "review the PR".
+// waiting: agent is paused, waiting for input (explicit question gate or session blocked).
+// generic: delivered + no explicit gate; graceful degrade, no specific action asserted.
 function rowBadgeLabel(kind: InboxItem["kind"]): string {
+  if (kind === "review") return "review the PR";
   if (kind === "waiting") return "agent waiting";
-  if (kind === "review") return "verify & merge";
   return "needs you";
 }
 
@@ -59,8 +59,8 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
             view PR ↗
           </a>
         )}
-        {/* PR chip on waiting items — makes the orthogonal delivery visible at a glance. */}
-        {item.kind === "waiting" && item.prUrl && (
+        {/* PR chip on review and waiting items with a PR URL. */}
+        {(item.kind === "review" || item.kind === "waiting") && item.prUrl && (
           <span className="inbox-row__pr-chip" aria-label="open PR">PR</span>
         )}
         {actionSlot && (
@@ -117,10 +117,12 @@ function InboxSection({ title, items, dataSection }: SectionProps) {
 export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
 
-  // "Waiting on you": agent is blocked/waiting on human input (most urgent).
+  // "Review the PR": explicit gate:review label — authoritative review signal.
+  const reviewItems = inbox.filter((i) => i.kind === "review");
+  // "Waiting on you": agent is blocked/waiting on human input (explicit question gate or session blocked).
   const waitingItems = inbox.filter((i) => i.kind === "waiting");
-  // "Delivered — needs you": PR delivered (review = session ended; generic = no session).
-  const deliveredItems = inbox.filter((i) => i.kind === "review" || i.kind === "generic");
+  // "Delivered — needs you": PR delivered but no explicit gate (graceful degrade).
+  const genericItems = inbox.filter((i) => i.kind === "generic");
 
   const showBanner = connectionState !== "connected";
   const totalCount = inbox.length;
@@ -143,13 +145,18 @@ export default function InboxView() {
       ) : (
         <div className="inbox-sections">
           <InboxSection
+            title="Review the PR"
+            items={reviewItems}
+            dataSection="review"
+          />
+          <InboxSection
             title="Waiting on you"
             items={waitingItems}
             dataSection="waiting"
           />
           <InboxSection
             title="Delivered — needs you"
-            items={deliveredItems}
+            items={genericItems}
             dataSection="delivered"
           />
         </div>

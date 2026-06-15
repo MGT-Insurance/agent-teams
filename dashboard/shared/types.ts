@@ -1,5 +1,5 @@
 // Raw JSON shape returned by `ateam list-json`.
-// CRITICAL: there is NO `labels` field in this output (verified).
+// `labels` is an optional array of label strings (e.g. "gate:review", "gate:question", "human").
 // Structured fields (repo, worktree, branch, team, mode, goal) are embedded
 // as `key: value` TEXT lines inside `description` — backend must parse them.
 export interface RawInitiative {
@@ -13,7 +13,16 @@ export interface RawInitiative {
   owner: string;
   created_at: string;
   updated_at: string;
+  // Optional: present when the ateam framework has set a gate (PR #14+).
+  // Tolerate missing or empty — older registries do not emit this field.
+  labels?: string[];
 }
+
+// Explicit gate kind derived from labels:
+//   "review"   -> "gate:review" label present  (AUTHORITATIVE review signal)
+//   "question" -> "gate:question" or "human"-only label (agent asking a question)
+//   none       -> no gate label present
+export type ExplicitGateKind = "review" | "question";
 
 // RawInitiative plus fields parsed out of description text, and a derived PR URL.
 export interface ParsedInitiative extends RawInitiative {
@@ -74,30 +83,32 @@ export type DeliveryStatus = "none" | "pr-open" | "merged";
 //   "none"    -> no matched session found
 export type SessionSignal = "working" | "waiting" | "ended" | "none";
 
-// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo).
-//   "waiting" -> session is blocked/waiting (agent paused on human input) OR explicit human gate.
+// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo, updated agent-teams-0rl).
+//   "waiting" -> session is blocked/waiting (agent paused on human input) OR explicit question gate.
 //                MOST URGENT — works for active OR delivered.
-//   "review"  -> delivery == pr-open AND session ENDED (we know it self-stopped).
-//                "verify & merge" — specific, signal-backed.
-//   "generic" -> delivery == pr-open AND session NONE (no session info to confirm).
+//   "review"  -> EXPLICIT gate:review label (AUTHORITATIVE — "review the PR").
+//                Wins over session signal; comes only from the gate label.
+//   "generic" -> fallback: delivered + session ENDED or NONE (no explicit gate).
 //                "needs you" — graceful degrade; no specific action asserted.
 //   false     -> no action required
 //
-// KEY principles:
-// - Specificity follows the signal: specific flavor only when session info supports it.
-// - Without session info -> generic "needs you" (never assert specific action).
-// - "review" MUST be derived structurally (open + PR + session ended), not from a flag.
-// - awaiting-merge is NOT flagged as a human gate in agent-teams.
+// KEY principles (updated agent-teams-0rl):
+// - "review" comes ONLY from explicit gate:review label — NOT inferred from session signal.
+// - Explicit gate:review wins over session signal (even working session).
+// - Explicit gate:question or human-only -> "waiting" (agent asking a question).
+// - Without a gate, delivered + ended/none -> "generic" (needs input; NOT review).
 export type NeedsHumanFlavor = "waiting" | "review" | "generic";
 
-// TRUTH TABLE (agent-teams-blo):
-//   session WAITING/blocked           -> needsHuman="waiting" (active OR delivered; most urgent)
-//   session WORKING                   -> needsHuman=false (working / refining, not in inbox)
-//   delivered + session ENDED         -> needsHuman="review" (verify & merge, signal-backed)
-//   delivered + session NONE          -> needsHuman="generic" (graceful degrade; label "needs you")
-//   active + session ENDED or NONE    -> needsHuman=false (idle/dormant, no PR)
+// TRUTH TABLE (agent-teams-0rl):
+//   merged                            -> needsHuman=false (done, nothing needed)
+//   explicit gate:review              -> needsHuman="review" (AUTHORITATIVE; wins over session)
+//   explicit gate:question or human   -> needsHuman="waiting" (agent asking a question)
+//   else session WAITING/blocked      -> needsHuman="waiting" (active OR delivered; most urgent)
+//   else session WORKING              -> needsHuman=false (working / refining, not in inbox)
+//   else delivered + session ENDED    -> needsHuman="generic" (needs input; NOT review anymore)
+//   else delivered + session NONE     -> needsHuman="generic" (graceful degrade; label "needs you")
+//   else active + session ENDED/NONE  -> needsHuman=false (idle/dormant, no PR)
 //   done initiative                   -> needsHuman=false
-//   explicit human gate               -> needsHuman="waiting" (override; wins over inference)
 
 // The join of a ParsedInitiative with its matched SessionState (null = no live session).
 export interface InitiativeNode {
@@ -112,10 +123,10 @@ export interface InitiativeNode {
 }
 
 // An item in the inbox requiring Eric's attention.
-// kind mirrors NeedsHumanFlavor (agent-teams-blo):
-//   "waiting" -> session blocked/waiting or explicit gate (agent waiting on human input)
-//   "review"  -> delivered + session ended (verify & merge, signal-backed)
-//   "generic" -> delivered + no session (graceful degrade; label "needs you")
+// kind mirrors NeedsHumanFlavor (agent-teams-0rl):
+//   "waiting" -> session blocked/waiting or explicit gate:question/human (agent waiting on input)
+//   "review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
+//   "generic" -> delivered + no explicit gate (graceful degrade; label "needs you")
 export interface InboxItem {
   initiativeId: string;
   title: string;

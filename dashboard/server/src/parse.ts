@@ -9,6 +9,7 @@ import type {
   ActivityStatus,
   DeliveryStatus,
   NeedsHumanFlavor,
+  ExplicitGateKind,
   InitiativeNode,
   InboxItem,
   WorkBead,
@@ -166,52 +167,70 @@ export function deriveSessionSignal(session: SessionState | null): SessionSignal
   return "ended";
 }
 
-// Derive needsHuman with flavor from the two-dimension model (agent-teams-blo).
+// Derive the explicit gate kind from an initiative's labels array.
+// Resilient: tolerates undefined/null/empty labels (missing or unset).
+//   "gate:review"   => "review"   (AUTHORITATIVE: initiative is awaiting PR review)
+//   "gate:question" => "question" (agent is parked asking a question)
+//   "human" (no gate:*) => "question" (legacy/plain gate; treat as question)
+//   else none
+export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKind | null {
+  if (!labels || labels.length === 0) return null;
+  if (labels.includes("gate:review")) return "review";
+  if (labels.includes("gate:question")) return "question";
+  // Plain "human" with no gate:* label = legacy gate, treat as question.
+  if (labels.includes("human")) return "question";
+  return null;
+}
+
+// Derive needsHuman with flavor (agent-teams-0rl: explicit gate takes priority).
 // Truth table:
-//   session WAITING/blocked           -> "waiting" (active OR delivered; MOST URGENT)
-//   session WORKING                   -> false (refining — not in inbox)
-//   delivered + session ENDED         -> "review" (verify & merge; signal-backed)
-//   delivered + session NONE          -> "generic" (graceful degrade; label "needs you")
-//   active + session ENDED or NONE    -> false (idle/dormant, no PR)
-//   done initiative                   -> false
-//   explicit human gate               -> "waiting" (override; wins over inference)
+//   merged                            -> false (done)
+//   explicit gate == "review"         -> "review"  (AUTHORITATIVE; wins over session)
+//   explicit gate == "question"       -> "waiting" (agent asking a question)
+//   else session WAITING/blocked      -> "waiting" (active OR delivered; MOST URGENT)
+//   else session WORKING              -> false (refining — not in inbox)
+//   else delivered + session ENDED    -> "generic" (needs input; NOT "review" anymore)
+//   else delivered + session NONE     -> "generic" (graceful degrade; label "needs you")
+//   else active + session ENDED/NONE  -> false (idle/dormant, no PR)
 //
-// CRITICAL: specificity follows the signal. Only assert "review" when we have
-// evidence (ENDED). Without session info -> "generic" (no action asserted).
+// KEY CHANGE (agent-teams-0rl): "review" flavor now comes ONLY from an explicit
+// gate:review label — not from the delivered+ended session inference.
+// The delivered+ended path is DEMOTED to "generic".
 export function deriveNeedsHuman(
   delivery: DeliveryStatus,
   signal: SessionSignal,
-  isHumanGated: boolean,
+  gate: ExplicitGateKind | null,
 ): false | NeedsHumanFlavor {
   if (delivery === "merged") return false;
+  // Explicit gate:review -> AUTHORITATIVE review signal (wins over everything).
+  if (gate === "review") return "review";
+  // Explicit gate:question (or legacy human-only) -> agent is waiting on your answer.
+  if (gate === "question") return "waiting";
   // Session waiting/blocked -> most urgent, regardless of delivery state.
   if (signal === "waiting") return "waiting";
-  // Explicit human gate wins over inference -> "waiting" flavor.
-  if (isHumanGated) return "waiting";
   // Working session -> refining (not in inbox).
   if (signal === "working") return false;
   // No active working session — check delivery for PR state.
+  // NOTE: delivered + ended was previously "review"; now demoted to "generic".
   if (delivery === "pr-open") {
-    // Session ended = we know it self-stopped after delivering.
-    if (signal === "ended") return "review";
-    // No session at all = graceful degrade.
+    if (signal === "ended") return "generic";
     if (signal === "none") return "generic";
   }
   return false;
 }
 
-// Derive an ActivityStatus from initiative + session + human-gate flag.
+// Derive an ActivityStatus from initiative + session + explicit gate.
 // This is the legacy flat enum kept for backward compatibility on the constellation
 // view while it migrates to the two-dimension model.
 // Priority: needs-human > delivered > busy > idle > done.
 export function deriveActivity(
   initiative: ParsedInitiative,
   session: SessionState | null,
-  isHumanGated: boolean,
+  gate: ExplicitGateKind | null,
 ): ActivityStatus {
   const delivery = deriveDelivery(initiative);
   const signal = deriveSessionSignal(session);
-  const needsHuman = deriveNeedsHuman(delivery, signal, isHumanGated);
+  const needsHuman = deriveNeedsHuman(delivery, signal, gate);
 
   if (needsHuman !== false) return "needs-human";
 
@@ -249,7 +268,8 @@ export function derivePhase(notes: string): string {
 }
 
 // Join initiatives with sessions: session.cwd === initiative.worktree.
-// humanGatedIds is the set of initiative IDs returned by `bd list --label human`.
+// humanGatedIds is the set of initiative IDs returned by `bd list --label human`
+// (kept for resilience: used to supplement labels when labels array is absent).
 //
 // RESILIENCE: each initiative is processed independently.  If deriving state for
 // one initiative throws (e.g. malformed data from a freshly-registered entry), that
@@ -267,14 +287,21 @@ export function buildInitiativeNodes(
           (s) => s.kind === "background" && s.cwd === initiative.worktree,
         ) ?? null;
 
-      const isHumanGated = humanGatedIds.has(initiative.id);
-      const activity = deriveActivity(initiative, session, isHumanGated);
+      // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
+      // labels is optional/missing on older entries — deriveExplicitGate handles that safely.
+      let gate = deriveExplicitGate(initiative.labels);
+      if (gate === null && humanGatedIds.has(initiative.id)) {
+        // Legacy: bd list --label human with no labels array -> treat as question gate.
+        gate = "question";
+      }
+
+      const activity = deriveActivity(initiative, session, gate);
       const phase = derivePhase(initiative.notes);
 
       // Two-dimension state model fields (agent-teams-blo).
       const delivery = deriveDelivery(initiative);
       const signal = deriveSessionSignal(session);
-      const needsHuman = deriveNeedsHuman(delivery, signal, isHumanGated);
+      const needsHuman = deriveNeedsHuman(delivery, signal, gate);
 
       return { initiative, session, activity, phase, delivery, needsHuman };
     } catch (err) {
@@ -308,9 +335,9 @@ export function buildOrphanSessions(
 
 // Build InboxItem[] from already-built InitiativeNode[].
 // An item is in the inbox iff node.needsHuman !== false.
-//   needsHuman="waiting" -> session blocked/waiting or explicit gate (kind="waiting")
-//   needsHuman="review"  -> PR open, session ended (kind="review")
-//   needsHuman="generic" -> PR open, no session (kind="generic"; graceful degrade)
+//   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
+//   needsHuman="waiting" -> explicit gate:question/human, or session blocked/waiting
+//   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
 // Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
 export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
   const items: InboxItem[] = [];
@@ -320,8 +347,18 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const { initiative } = node;
 
-    if (node.needsHuman === "waiting") {
-      // Agent waiting on human input, or explicit human gate.
+    if (node.needsHuman === "review") {
+      // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "review",
+        question: `Review the PR: ${initiative.prUrl ?? "(no PR URL)"}`,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+      });
+    } else if (node.needsHuman === "waiting") {
+      // Agent waiting on human input: explicit gate:question/human or session blocked.
       // Question = latest non-empty notes line (may contain the gate question).
       const question =
         initiative.notes
@@ -337,18 +374,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });
-    } else if (node.needsHuman === "review") {
-      // Delivered + session ended: verify & merge.
-      items.push({
-        initiativeId: initiative.id,
-        title: initiative.title,
-        kind: "review",
-        question: `PR awaiting review: ${initiative.prUrl ?? "(no PR URL)"}`,
-        worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
-      });
     } else {
-      // needsHuman === "generic": delivered + no session; graceful degrade.
+      // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,

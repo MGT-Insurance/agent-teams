@@ -54,12 +54,12 @@ const waitingItem: InboxItem = {
   prUrl: null,
 };
 
-// kind="review" — delivered + session ended (verify & merge, signal-backed)
+// kind="review" — explicit gate:review label (AUTHORITATIVE; "review the PR")
 const reviewItem: InboxItem = {
   initiativeId: "init-2",
   title: "Refactor auth layer",
   kind: "review",
-  question: "PR awaiting review: https://github.com/org/repo/pull/42",
+  question: "Review the PR: https://github.com/org/repo/pull/42",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
 };
@@ -187,20 +187,26 @@ describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => 
     expect(row.getAttribute("data-kind")).toBe("waiting");
   });
 
-  it("item is placed in the 'Waiting on you' section, not 'Delivered — needs you'", () => {
+  it("item is placed in the 'Waiting on you' section, not 'Review the PR' or 'Delivered — needs you'", () => {
     renderInbox();
     const waitingSection = screen.getByRole("region", { name: /waiting on you/i });
     expect(waitingSection.querySelector("[data-kind='waiting']")).not.toBeNull();
+    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
     expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
 });
 
-describe("InboxView — Delivered — needs you section (kind='review')", () => {
+describe("InboxView — Review the PR section (kind='review')", () => {
   beforeEach(() => setInbox([reviewItem]));
 
-  it("renders the 'Delivered — needs you' section heading", () => {
+  it("renders the 'Review the PR' section heading (authoritative gate:review)", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /review the pr/i })).toBeTruthy();
+  });
+
+  it("does NOT render 'Delivered — needs you' section for review items", () => {
+    renderInbox();
+    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
 
   it("renders the item title", () => {
@@ -208,14 +214,19 @@ describe("InboxView — Delivered — needs you section (kind='review')", () => 
     expect(screen.getByText("Refactor auth layer")).toBeTruthy();
   });
 
-  it("renders a 'verify & merge' badge for review kind", () => {
-    renderInbox();
-    expect(screen.getByText(/^verify & merge$/i)).toBeTruthy();
+  it("renders a 'review the PR' badge for review kind", () => {
+    const { container } = renderInbox();
+    // Use querySelector to avoid collision with the section heading "Review the PR"
+    const badge = container.querySelector(".inbox-row__badge--review");
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent?.toLowerCase()).toContain("review the pr");
   });
 
   it("renders the question text", () => {
-    renderInbox();
-    expect(screen.getByText(/PR awaiting review/i)).toBeTruthy();
+    const { container } = renderInbox();
+    // The question paragraph contains "Review the PR: ..."
+    const question = container.querySelector(".inbox-row__question");
+    expect(question?.textContent).toMatch(/Review the PR/i);
   });
 
   it("renders a link to the PR URL that opens in a new tab", () => {
@@ -223,6 +234,12 @@ describe("InboxView — Delivered — needs you section (kind='review')", () => 
     const link = screen.getByRole("link", { name: /view pr/i });
     expect(link.getAttribute("href")).toBe("https://github.com/org/repo/pull/42");
     expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("renders a PR chip on a review item with a prUrl", () => {
+    const { container } = renderInbox();
+    const chip = container.querySelector(".inbox-row__pr-chip");
+    expect(chip).not.toBeNull();
   });
 
   it("navigates to /initiative/:id on row click", () => {
@@ -287,21 +304,26 @@ describe("InboxView — all three sections together", () => {
     expect(screen.getByTestId("inbox-count").textContent).toBe("3");
   });
 
-  it("renders both section headings", () => {
+  it("renders all three section headings", () => {
     renderInbox();
+    expect(screen.getByRole("region", { name: /review the pr/i })).toBeTruthy();
     expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
     expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
   });
 
-  it("waiting item is in 'Waiting on you' section; review+generic in 'Delivered — needs you'", () => {
+  it("review in 'Review the PR'; waiting in 'Waiting on you'; generic in 'Delivered — needs you'", () => {
     renderInbox();
+    const reviewSection = screen.getByRole("region", { name: /review the pr/i });
     const waitingSection = screen.getByRole("region", { name: /waiting on you/i });
     const deliveredSection = screen.getByRole("region", { name: /delivered.*needs you/i });
+    expect(reviewSection.querySelector("[data-kind='review']")).not.toBeNull();
+    expect(reviewSection.querySelector("[data-kind='waiting']")).toBeNull();
+    expect(reviewSection.querySelector("[data-kind='generic']")).toBeNull();
     expect(waitingSection.querySelector("[data-kind='waiting']")).not.toBeNull();
     expect(waitingSection.querySelector("[data-kind='review']")).toBeNull();
     expect(waitingSection.querySelector("[data-kind='generic']")).toBeNull();
-    expect(deliveredSection.querySelector("[data-kind='review']")).not.toBeNull();
     expect(deliveredSection.querySelector("[data-kind='generic']")).not.toBeNull();
+    expect(deliveredSection.querySelector("[data-kind='review']")).toBeNull();
     expect(deliveredSection.querySelector("[data-kind='waiting']")).toBeNull();
   });
 });
@@ -311,20 +333,23 @@ describe("InboxView — section visibility", () => {
     setInbox([waitingItem]);
     renderInbox();
     expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
     expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
 
-  it("shows only 'Delivered — needs you' section when inbox has only delivered items", () => {
+  it("shows only 'Review the PR' section when inbox has only review items", () => {
     setInbox([reviewItem]);
     renderInbox();
-    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /review the pr/i })).toBeTruthy();
     expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
+    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
 
   it("shows only 'Delivered — needs you' section for generic items", () => {
     setInbox([genericItem]);
     renderInbox();
     expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
     expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
   });
 });
