@@ -113,7 +113,7 @@ func TestWorktreeSetup_ScriptSucceeds(t *testing.T) {
 		commonDirFn: func(dir string) (string, error) { return filepath.Join(repoRoot, ".git"), nil },
 	}
 
-	// repoKey = Slugify(basename(repoRoot))
+	// repoKey = Slugify(basename(srcCheckout)); here srcCheckout = filepath.Dir(commonDir) = repoRoot
 	repoKey := slugifyBasename(repoRoot)
 	writeHookFile(t, home, repoKey, scriptPath)
 
@@ -138,6 +138,65 @@ func TestWorktreeSetup_ScriptSucceeds(t *testing.T) {
 	absWtDir, _ := filepath.Abs(wtDir)
 	wantSrcCheckout := filepath.Dir(filepath.Join(repoRoot, ".git"))
 	wantArgs := absWtDir + " " + wantSrcCheckout
+	if gotArgs != wantArgs {
+		t.Errorf("script args = %q, want %q", gotArgs, wantArgs)
+	}
+}
+
+// ---- repo-key comes from main checkout, not the worktree toplevel ------------
+//
+// Regression: RepoRoot(wtPath) of a git worktree returns the worktree's own
+// path (e.g. /x/at-yrd-go), NOT the main checkout (/x/agent-teams). A hook
+// registered as "agent-teams" would never match a key derived from "at-yrd-go".
+// The key MUST come from srcCheckout = filepath.Dir(commonDir).
+
+func TestWorktreeSetup_RepoKeyFromMainCheckout(t *testing.T) {
+	home := t.TempDir()
+	scriptDir := t.TempDir()
+	wtDir := t.TempDir()
+
+	// Simulate: worktree toplevel is /x/at-yrd-go, but commonDir points back to
+	// the main checkout at /x/agent-teams/.git — as happens with real worktrees.
+	mainCheckout := t.TempDir() // represents /x/agent-teams
+	worktreeRoot := t.TempDir() // represents /x/at-yrd-go (different basename)
+
+	scriptPath := filepath.Join(scriptDir, "setup.sh")
+	argsFile := filepath.Join(scriptDir, "args.txt")
+	writeTinyScript(t, scriptPath, "#!/bin/sh\necho \"$1 $2\" > "+argsFile+"\n")
+
+	fg := &fakeWTGit{
+		repoRootFn:  func(dir string) (string, error) { return worktreeRoot, nil },
+		commonDirFn: func(dir string) (string, error) { return filepath.Join(mainCheckout, ".git"), nil },
+	}
+
+	// Register hook under the MAIN checkout's key, not the worktree's.
+	mainKey := slugifyBasename(mainCheckout)
+	writeHookFile(t, home, mainKey, scriptPath)
+
+	ctx, stdout, stderr := makeWTCtx(home)
+	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+
+	err := cmd.Run(ctx, []string{wtDir})
+	if err != nil {
+		t.Fatalf("expected nil, got: %v", err)
+	}
+	// If the key had been derived from worktreeRoot instead, the hook file
+	// wouldn't be found and stdout would contain "no worktree-setup hook configured".
+	if strings.Contains(stdout.String(), "no worktree-setup hook configured") {
+		t.Errorf("hook was not found: key was derived from worktree root instead of main checkout\nstdout: %q", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Errorf("expected empty stderr on success, got: %q", stderr.String())
+	}
+
+	// Verify script received wtDir (absolute) and mainCheckout as args.
+	argsData, readErr := os.ReadFile(argsFile)
+	if readErr != nil {
+		t.Fatalf("args file not written by script: %v", readErr)
+	}
+	gotArgs := strings.TrimSpace(string(argsData))
+	absWtDir, _ := filepath.Abs(wtDir)
+	wantArgs := absWtDir + " " + mainCheckout
 	if gotArgs != wantArgs {
 		t.Errorf("script args = %q, want %q", gotArgs, wantArgs)
 	}

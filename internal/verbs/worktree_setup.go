@@ -76,9 +76,10 @@ func (c *worktreeSetupCommand) Run(ctx *cli.Context, args []string) error {
 	}
 	wtPath = absWtPath
 
-	// 2. Resolve repoRoot and srcCheckout. Failures here are precondition errors.
-	repoRoot, err := c.git.RepoRoot(wtPath)
-	if err != nil {
+	// 2. Resolve srcCheckout. Failures here are precondition errors.
+	// RepoRoot is called as a git-repo presence check; its value is not used
+	// because for a worktree it returns the worktree path, not the main checkout.
+	if _, err := c.git.RepoRoot(wtPath); err != nil {
 		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
 	}
 	commonDir, err := c.git.CommonDir(wtPath)
@@ -87,8 +88,11 @@ func (c *worktreeSetupCommand) Run(ctx *cli.Context, args []string) error {
 	}
 	srcCheckout := filepath.Dir(commonDir)
 
-	// 3. repo-key = Slugify(basename(repoRoot))
-	repoKey := gitutil.Slugify(filepath.Base(repoRoot))
+	// 3. repo-key = Slugify(basename(srcCheckout)) — the MAIN checkout, not the
+	// worktree. RepoRoot(wtPath) of a git worktree returns the worktree's own
+	// path, giving a unique per-worktree key that never matches the registered
+	// hook. srcCheckout (dirname of commonDir) always points to the main repo.
+	repoKey := gitutil.Slugify(filepath.Base(srcCheckout))
 
 	// 4. Look up hook file.
 	hookFile := filepath.Join(ctx.Home, "worktree-hooks", repoKey)
