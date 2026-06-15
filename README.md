@@ -47,9 +47,9 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 
 ## Worktree setup hooks
 
-When an implementer creates a fresh track worktree, it's clean by design — gitignored files (`.vercel` project link, environment files, local-only config) are not present. For repos that need those files to run tooling (e.g. `vercel env pull` requires a linked project), the worktree-setup hook convention wires them in automatically.
+When an agent creates a fresh track worktree, it's clean by design — gitignored files (`.vercel` project link, environment files, local-only config) are not present. **Most work doesn't need them, and the hook can be heavy** (`vercel env pull`, copying creds) — so this is **on-demand, not routine**. Run it only when a worktree actually needs live env: running a dev server, creds-dependent validation (e.g. socotra), or a pre-commit hook that requires it.
 
-After `pnpm install` in a fresh worktree, the implementer runs:
+When you do need it, run it after `pnpm install` (the hook's `env:pull` needs `node_modules`):
 
 ```bash
 ateam worktree-setup <abs-worktree-path>
