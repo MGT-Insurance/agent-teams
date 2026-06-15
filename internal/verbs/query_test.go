@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/erlloyd/agent-teams/internal/bd"
@@ -196,7 +197,15 @@ func TestListJSONEmitsValidJSON(t *testing.T) {
 
 func TestHumanListCallsBDArgs(t *testing.T) {
 	var calls [][]string
-	client := bd.NewClientWithExec("/ws", captureArgs(&calls))
+	// captureArgs returns "result\n" which is not valid JSON; use a JSON stub instead.
+	emptyJSON := []byte("[]\n")
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		cp := make([]string, len(args))
+		copy(cp, args)
+		calls = append(calls, cp)
+		return emptyJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
@@ -210,11 +219,128 @@ func TestHumanListCallsBDArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 bd call, got %d", len(calls))
 	}
-	wantArgs := []string{"-C", "/ws", "human", "list"}
+	wantArgs := []string{"-C", "/ws", "human", "list", "--json"}
 	for i, w := range wantArgs {
 		if i >= len(calls[0]) || calls[0][i] != w {
 			t.Errorf("bd args[%d] = %q, want %q (full: %v)", i, calls[0][i], w, calls[0])
 		}
+	}
+}
+
+// newHumanListCtx builds a cli.Context whose bd fake returns the given issues
+// as JSON for any "human" subcommand.
+func newHumanListCtx(t *testing.T, issues []bd.Issue) (*cli.Context, *bytes.Buffer) {
+	t.Helper()
+	raw, err := json.Marshal(issues)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	raw = append(raw, '\n')
+	out := &bytes.Buffer{}
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return raw, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     client,
+		Stdout: out,
+		Stderr: &bytes.Buffer{},
+	}
+	return ctx, out
+}
+
+func TestHumanListReviewGate(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-r1", Title: "Ship feature", Labels: []string{"human", "gate:review"}, Notes: "PR https://github.com/org/repo/pull/42 ready for review"},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[REVIEW]") {
+		t.Errorf("expected [REVIEW] in output, got: %q", got)
+	}
+	if !strings.Contains(got, "at-r1") {
+		t.Errorf("expected id at-r1 in output, got: %q", got)
+	}
+	if !strings.Contains(got, "PR https://github.com/org/repo/pull/42 ready for review") {
+		t.Errorf("expected note text in output, got: %q", got)
+	}
+}
+
+func TestHumanListQuestionGate(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-q1", Title: "Which approach?", Labels: []string{"human", "gate:question"}, Notes: "Should we use approach A or B?"},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[QUESTION]") {
+		t.Errorf("expected [QUESTION] in output, got: %q", got)
+	}
+	if !strings.Contains(got, "at-q1") {
+		t.Errorf("expected id at-q1 in output, got: %q", got)
+	}
+}
+
+func TestHumanListBackwardCompatHumanOnly(t *testing.T) {
+	// Pre-existing gated bead: only "human" label, no gate:* — must render as QUESTION.
+	issues := []bd.Issue{
+		{ID: "at-old1", Title: "Old gate bead", Labels: []string{"human"}, Notes: "Legacy question"},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[QUESTION]") {
+		t.Errorf("expected [QUESTION] for backward-compat human-only bead, got: %q", got)
+	}
+	if strings.Contains(got, "[REVIEW]") {
+		t.Errorf("backward-compat bead must not render as [REVIEW], got: %q", got)
+	}
+}
+
+func TestHumanListEmptyNoteOmitsNoteLine(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-notnote", Title: "No note bead", Labels: []string{"human", "gate:review"}, Notes: ""},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	// Should be exactly one line: the id/kind/title line.
+	if len(lines) != 1 {
+		t.Errorf("expected 1 line for bead with no note, got %d: %q", len(lines), got)
+	}
+	if !strings.Contains(got, "[REVIEW]") {
+		t.Errorf("expected [REVIEW] in output, got: %q", got)
 	}
 }
 
