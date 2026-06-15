@@ -123,7 +123,7 @@ type msgUsageJSON struct {
 type recordJSON struct {
 	Type    string `json:"type"`
 	Message struct {
-		Id    string       `json:"id"`
+		ID    string       `json:"id"`
 		Role  string       `json:"role"`
 		Model string       `json:"model"`
 		Usage msgUsageJSON `json:"usage"`
@@ -172,7 +172,7 @@ func parseJSONL(path string, acc map[string]*TokenUsage, seen map[string]bool) e
 		}
 		// Dedupe by message.id across main + subagent transcripts. Empty id
 		// means the record cannot be keyed, so it is always accumulated.
-		if id := rec.Message.Id; id != "" {
+		if id := rec.Message.ID; id != "" {
 			if seen[id] {
 				continue
 			}
