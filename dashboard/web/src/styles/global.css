@@ -1,0 +1,133 @@
+/* Base design tokens — dark, calm ambient dashboard */
+:root {
+  --color-bg: #0d0f12;
+  --color-surface: #161a1f;
+  --color-border: #242830;
+  --color-text: #c8cdd5;
+  --color-text-muted: #6b717a;
+  --color-accent: #4a9eff;
+  --color-accent-dim: #1e3a5f;
+  --color-ok: #3ecf8e;
+  --color-warn: #f5a623;
+  --color-error: #e05252;
+
+  --nav-height: 48px;
+  --font-mono: "Berkeley Mono", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: system-ui, -apple-system, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* App shell: fixed nav bar + scrollable view area */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: var(--nav-height);
+  padding: 0 20px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.nav-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+}
+
+.nav-links {
+  display: flex;
+  gap: 4px;
+}
+
+.nav-link {
+  padding: 5px 12px;
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.nav-link:hover {
+  color: var(--color-text);
+  background: var(--color-border);
+}
+
+.nav-link--active {
+  color: var(--color-text);
+  background: var(--color-accent-dim);
+}
+
+/* Connection state badge */
+.connection-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.connection-badge--connected {
+  color: var(--color-ok);
+  border-color: color-mix(in srgb, var(--color-ok) 30%, transparent);
+}
+
+.connection-badge--connecting,
+.connection-badge--reconnecting {
+  color: var(--color-warn);
+  border-color: color-mix(in srgb, var(--color-warn) 30%, transparent);
+}
+
+.connection-badge--error {
+  color: var(--color-error);
+  border-color: color-mix(in srgb, var(--color-error) 30%, transparent);
+  cursor: help;
+}
+
+/* Full-height view area for routed views */
+.view-area {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Placeholder shown until C/D/E land */
+.view-placeholder {
+  margin: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 40px;
+}

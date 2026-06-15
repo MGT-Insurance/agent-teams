@@ -1,0 +1,212 @@
+.inbox-view {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+  gap: 16px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.inbox-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.inbox-header__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.inbox-header__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+/* Banner for disconnected / error states */
+.inbox-banner {
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.inbox-banner--warn {
+  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
+  color: var(--color-warn);
+  border: 1px solid color-mix(in srgb, var(--color-warn) 30%, transparent);
+}
+
+.inbox-banner--error {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+  border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
+}
+
+/* Empty state */
+.inbox-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 60px 0;
+  color: var(--color-text-muted);
+}
+
+.inbox-empty__icon {
+  font-size: 24px;
+  color: var(--color-ok);
+}
+
+.inbox-empty__message {
+  font-size: 14px;
+}
+
+/* Section containers */
+.inbox-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.inbox-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inbox-section__title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+  margin: 0 0 4px 0;
+}
+
+/* Inbox list */
+.inbox-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inbox-list__item {
+  display: contents;
+}
+
+/* Row card */
+.inbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+}
+
+.inbox-row:hover,
+.inbox-row:focus-visible {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+}
+
+/* Left accent line per kind */
+.inbox-row--waiting {
+  border-left: 3px solid #ff6b35;
+}
+
+.inbox-row--review {
+  border-left: 3px solid var(--color-ok);
+}
+
+.inbox-row--generic {
+  border-left: 3px solid var(--color-accent);
+}
+
+.inbox-row__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inbox-row__badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.inbox-row__badge--waiting {
+  background: color-mix(in srgb, #ff6b35 15%, transparent);
+  color: #ff6b35;
+}
+
+.inbox-row__badge--review {
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
+  color: var(--color-ok);
+}
+
+.inbox-row__badge--generic {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
+}
+
+.inbox-row__title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+  flex: 1;
+}
+
+.inbox-row__pr-link {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--color-accent);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.inbox-row__pr-link:hover {
+  text-decoration: underline;
+}
+
+/* PR chip — shown on waiting items that also have an open PR (delivery is orthogonal). */
+.inbox-row__pr-chip {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, #a78bfa 20%, transparent);
+  color: #a78bfa;
+  flex-shrink: 0;
+}
+
+/* Future triage action slot — reserve space but invisible in v1 */
+.inbox-row__action-slot {
+  margin-left: auto;
+}
+
+.inbox-row__question {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}

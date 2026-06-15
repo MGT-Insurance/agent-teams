@@ -1,0 +1,37 @@
+import type { SnapshotEvent, DrillInDetail, AttachRequest, AttachResponse } from "@agent-teams/shared";
+import { API_PATHS } from "@agent-teams/shared";
+
+async function fetchJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+// GET /api/snapshot — one-shot fetch of the current snapshot (use SSE for live updates).
+export function fetchSnapshot(): Promise<SnapshotEvent> {
+  return fetchJSON<SnapshotEvent>(API_PATHS.snapshot);
+}
+
+// GET /api/initiatives/:id — full drill-in detail for one initiative.
+export function fetchInitiative(id: string): Promise<DrillInDetail> {
+  return fetchJSON<DrillInDetail>(API_PATHS.initiative(id));
+}
+
+// POST /api/initiatives/:id/attach — open a terminal attach session.
+// The backend shells out via macOS open/osascript; the response is just { ok: true }.
+export async function attachToInitiative(id: string, sessionId: string): Promise<AttachResponse> {
+  const body: AttachRequest = { sessionId };
+  const res = await fetch(API_PATHS.attach(id), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`POST ${API_PATHS.attach(id)} failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<AttachResponse>;
+}
+
+// Returns the URL for log streaming (piped into xterm.js by the drill-in view).
+// Do NOT fetch this with fetchJSON — it is a chunked byte stream.
+export function logsUrl(id: string, sessionId: string): string {
+  return API_PATHS.logs(id, sessionId);
+}
