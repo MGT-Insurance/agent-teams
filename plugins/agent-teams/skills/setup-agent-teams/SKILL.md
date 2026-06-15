@@ -212,7 +212,24 @@ No credentials or auth required.
 
 If any `playwright`-prefixed tool appears in the list, the MCP server is connected and the tester can use `browser_navigate` and related tools for live UI verification.
 
-## 8. Smoke test
+## 8. Register a repo's worktree-setup hook (OPTIONAL — one-time per repo)
+
+After a fresh worktree is created and deps are installed, `ateam worktree-setup <wtPath>` provisions any gitignored env wiring the repo needs (e.g. `.vercel` link, env files). The verb is a no-op unless a hook is registered for the repo. Registration is optional and non-fatal: absent or failed hooks never block worktree creation.
+
+**How it works.** The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>`. The repo-key is the slugified basename of the main checkout (the source checkout behind the worktree) — the same identity dispatch uses for team names. If the file exists, its single line (trimmed) is treated as the absolute path to the repo's setup script; the verb runs `<script> <wtPath> <srcCheckout>`. No file → harmless "no hook configured" message.
+
+**To register a repo**, write the hook file containing the absolute path to the repo's setup script:
+
+```bash
+# Example: registering the midgard repo
+# repo-key = Slugify(basename of midgard main checkout), e.g. "midgard"
+echo /abs/path/to/agent-teams/scripts/midgard-worktree-setup.sh \
+  > ~/.agent-teams/worktree-hooks/midgard
+```
+
+The reference implementation for midgard is `scripts/midgard-worktree-setup.sh` in this (agent-teams) repo. It copies gitignored files from the source checkout and runs `vercel env pull` to restore creds-dependent tooling in the new worktree.
+
+## 9. Smoke test
 
 Run on BOTH paths (clone or fresh) after step 6 completes.
 
@@ -242,7 +259,7 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ateam sync
    ```
 
-## 9. Verify memory-routing hook is active
+## 10. Verify memory-routing hook is active
 
 The agent-teams plugin ships a `block-claude-memory-writes.sh` PreToolUse hook that is **automatically registered from `hooks.json`** — no install step is needed. This step verifies it is active, not re-installs it.
 
@@ -254,6 +271,6 @@ Run both probes and confirm the results match expectations:
 
 If Probe A is not denied, the plugin hooks are not loading — confirm the plugin is installed (`~/.claude/settings.json` has the agent-teams plugin listed) and that `hooks.json` contains the `PreToolUse` block. Do NOT copy or re-register the hook manually; diagnose why plugin hook loading failed.
 
-## 10. Report
+## 11. Report
 
 Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, hook-verify results, and that `/dri` is ready to use.
