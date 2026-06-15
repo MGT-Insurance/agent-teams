@@ -6,12 +6,33 @@ import type { ActivityStatus } from "@agent-teams/shared";
 import "./constellation.css";
 
 // ---------------------------------------------------------------------------
-// Layout
+// Urgency-orbital layout
+// ---------------------------------------------------------------------------
+// Position encodes urgency: needs-human innermost, done outermost.
+// Angle is a stable per-id hash so nodes never jump on refresh.
+// Only radius changes as activity changes.
 // ---------------------------------------------------------------------------
 
-// Stable deterministic polar layout scaled to the given viewport.
-// minRFraction and ringGapFraction are fractions of the shorter viewport side.
-function polarLayout(
+// Urgency levels: lower number = closer to center (more urgent).
+const URGENCY_RADIUS_FRACTION: Record<ActivityStatus, number> = {
+  "needs-human": 0.20, // innermost — pulled toward you
+  busy: 0.35,
+  delivered: 0.47,
+  idle: 0.58,
+  done: 0.70, // outer dim rim
+};
+
+// Orphans live at the rim with done nodes but visually distinct.
+const ORPHAN_RADIUS_FRACTION = 0.73;
+
+// Stable deterministic angle from an id string (0 to 2π).
+function stableAngle(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return (h % 36000) * (Math.PI / 18000); // 0 to 2π with fine resolution
+}
+
+function urgencyOrbitalLayout(
   nodes: InitiativeNode[],
   orphans: SessionState[],
   cx: number,
@@ -21,70 +42,28 @@ function polarLayout(
   initiatives: Array<{ node: InitiativeNode; x: number; y: number }>;
   orphans: Array<{ session: SessionState; x: number; y: number }>;
 } {
-  // Cheap stable hash → angle in radians
-  function stableAngle(id: string): number {
-    let h = 0;
-    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-    return (h % 360) * (Math.PI / 180);
-  }
+  const initiatives = nodes.map((node) => {
+    const fraction = URGENCY_RADIUS_FRACTION[node.activity];
+    const radius = shortSide * fraction;
+    const angle = stableAngle(node.initiative.id);
+    return {
+      node,
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle),
+    };
+  });
 
-  // Scale rings relative to viewport — fill the space with breathing room.
-  const minR = shortSide * 0.18;
-  const ringGap = shortSide * 0.22;
+  const orphanNodes = orphans.map((session) => {
+    const radius = shortSide * ORPHAN_RADIUS_FRACTION;
+    const angle = stableAngle(session.sessionId);
+    return {
+      session,
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle),
+    };
+  });
 
-  // Pack into rings: ring 0 fits 6, ring 1 fits 12, etc.
-  const ringCapacity = (ring: number) => Math.max(6, (ring + 1) * 6);
-
-  function layOutNodes<T>(
-    items: T[],
-    getId: (item: T) => string,
-    ringOffset = 0,
-  ): Array<{ item: T; x: number; y: number }> {
-    if (items.length === 0) return [];
-    const rings: T[][] = [];
-    let remaining = [...items];
-    let ring = ringOffset;
-    while (remaining.length > 0) {
-      const cap = ringCapacity(ring - ringOffset);
-      rings.push(remaining.slice(0, cap));
-      remaining = remaining.slice(cap);
-      ring++;
-    }
-    const result: Array<{ item: T; x: number; y: number }> = [];
-    for (let r = 0; r < rings.length; r++) {
-      const radius = minR + r * ringGap;
-      const ringNodes = rings[r];
-      if (!ringNodes || ringNodes.length === 0) continue;
-      const baseAngle = (2 * Math.PI) / ringNodes.length;
-      ringNodes.forEach((n, i) => {
-        const hashOffset = stableAngle(getId(n));
-        const angle = i * baseAngle + (hashOffset % baseAngle);
-        result.push({ item: n, x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) });
-      });
-    }
-    return result;
-  }
-
-  const initiativesRings = Math.ceil(nodes.length / 6);
-
-  const initiativePositions = layOutNodes(
-    nodes,
-    (n) => n.initiative.id,
-    0,
-  );
-
-  // Orphans go in the next ring out so they form an outer halo.
-  const orphanRingOffset = initiativesRings;
-  const orphanPositions = layOutNodes(
-    orphans,
-    (s) => s.sessionId,
-    orphanRingOffset,
-  );
-
-  return {
-    initiatives: initiativePositions.map(({ item, x, y }) => ({ node: item, x, y })),
-    orphans: orphanPositions.map(({ item, x, y }) => ({ session: item, x, y })),
-  };
+  return { initiatives, orphans: orphanNodes };
 }
 
 // ---------------------------------------------------------------------------
@@ -93,44 +72,184 @@ function polarLayout(
 
 const ACTIVITY_META: Record<
   ActivityStatus,
-  { color: string; glowColor: string; r: number; cssClass: string; label: string }
+  { color: string; glowColor: string; r: number; cssClass: string; label: string; opacity: number }
 > = {
   "needs-human": {
     color: "#ff6b35",
-    glowColor: "rgba(255,107,53,0.6)",
-    r: 16,
+    glowColor: "rgba(255,107,53,0.7)",
+    r: 18,
     cssClass: "node--needs-human",
     label: "needs you",
+    opacity: 1,
   },
   busy: {
     color: "#4a9eff",
-    glowColor: "rgba(74,158,255,0.45)",
-    r: 13,
+    glowColor: "rgba(74,158,255,0.5)",
+    r: 14,
     cssClass: "node--busy",
     label: "busy",
+    opacity: 1,
   },
   delivered: {
     color: "#3ecf8e",
-    glowColor: "rgba(62,207,142,0.35)",
-    r: 13,
+    glowColor: "rgba(62,207,142,0.4)",
+    r: 14,
     cssClass: "node--delivered",
     label: "delivered",
+    opacity: 0.95,
   },
   idle: {
     color: "#4b5563",
     glowColor: "rgba(75,85,99,0.25)",
-    r: 10,
+    r: 11,
     cssClass: "node--idle",
     label: "idle",
+    opacity: 0.65,
   },
   done: {
-    color: "#2a2e35",
-    glowColor: "rgba(42,46,53,0.15)",
+    color: "#323840",
+    glowColor: "rgba(50,56,64,0.15)",
     r: 9,
     cssClass: "node--done",
     label: "done",
+    opacity: 0.3,
   },
 };
+
+// Tether line alpha tracks urgency: needs-human brightest, done faintest.
+const TETHER_OPACITY: Record<ActivityStatus, number> = {
+  "needs-human": 0.55,
+  busy: 0.38,
+  delivered: 0.28,
+  idle: 0.14,
+  done: 0.07,
+};
+
+// ---------------------------------------------------------------------------
+// Tether line (center → node)
+// ---------------------------------------------------------------------------
+
+interface TetherProps {
+  cx: number;
+  cy: number;
+  x: number;
+  y: number;
+  activity: ActivityStatus;
+  color: string;
+}
+
+function TetherLine({ cx, cy, x, y, activity, color }: TetherProps) {
+  const opacity = TETHER_OPACITY[activity];
+  // Shorten the line so it stops at the node edge, not node center.
+  const meta = ACTIVITY_META[activity];
+  const dx = x - cx;
+  const dy = y - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  const stopX = x - (dx / dist) * (meta.r + 4);
+  const stopY = y - (dy / dist) * (meta.r + 4);
+
+  return (
+    <line
+      x1={cx}
+      y1={cy}
+      x2={stopX}
+      y2={stopY}
+      stroke={color}
+      strokeWidth={activity === "needs-human" ? 1.5 : 1}
+      opacity={opacity}
+      strokeLinecap="round"
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Urgency rings (decorative reference circles around center)
+// ---------------------------------------------------------------------------
+
+interface UrgencyRingsProps {
+  cx: number;
+  cy: number;
+  shortSide: number;
+}
+
+function UrgencyRings({ cx, cy, shortSide }: UrgencyRingsProps) {
+  const rings: Array<{ fraction: number; label: string; opacity: number }> = [
+    { fraction: URGENCY_RADIUS_FRACTION["needs-human"], label: "needs you", opacity: 0.12 },
+    { fraction: URGENCY_RADIUS_FRACTION.busy, label: "busy", opacity: 0.07 },
+    { fraction: URGENCY_RADIUS_FRACTION.delivered, label: "delivered", opacity: 0.06 },
+    { fraction: URGENCY_RADIUS_FRACTION.idle, label: "idle", opacity: 0.05 },
+    { fraction: URGENCY_RADIUS_FRACTION.done, label: "done", opacity: 0.04 },
+  ];
+
+  return (
+    <>
+      {rings.map(({ fraction, label, opacity }) => (
+        <circle
+          key={label}
+          cx={cx}
+          cy={cy}
+          r={shortSide * fraction}
+          fill="none"
+          stroke="rgba(255,255,255,0.55)"
+          strokeWidth={1}
+          opacity={opacity}
+          strokeDasharray="3 6"
+        />
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Center anchor — "YOU"
+// ---------------------------------------------------------------------------
+
+interface CenterAnchorProps {
+  cx: number;
+  cy: number;
+}
+
+function CenterAnchor({ cx, cy }: CenterAnchorProps) {
+  return (
+    <g className="constellation-center">
+      {/* Subtle radiant glow */}
+      <circle
+        cx={cx}
+        cy={cy}
+        r={22}
+        fill="radial-gradient()"
+        className="center-glow"
+      />
+      {/* Core dot */}
+      <circle
+        cx={cx}
+        cy={cy}
+        r={6}
+        fill="#e2e8f0"
+        opacity={0.9}
+        style={{ filter: "drop-shadow(0 0 8px rgba(226,232,240,0.6))" }}
+      />
+      {/* Crosshair lines */}
+      <line x1={cx - 14} y1={cy} x2={cx - 8} y2={cy} stroke="#e2e8f0" strokeWidth={1} opacity={0.4} />
+      <line x1={cx + 8} y1={cy} x2={cx + 14} y2={cy} stroke="#e2e8f0" strokeWidth={1} opacity={0.4} />
+      <line x1={cx} y1={cy - 14} x2={cx} y2={cy - 8} stroke="#e2e8f0" strokeWidth={1} opacity={0.4} />
+      <line x1={cx} y1={cy + 8} x2={cx} y2={cy + 14} stroke="#e2e8f0" strokeWidth={1} opacity={0.4} />
+      {/* "YOU" label */}
+      <text
+        x={cx}
+        y={cy + 26}
+        textAnchor="middle"
+        fill="#e2e8f0"
+        fontSize={9}
+        fontFamily="var(--font-mono)"
+        letterSpacing="0.12em"
+        opacity={0.55}
+      >
+        YOU
+      </text>
+    </g>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Initiative node
@@ -149,6 +268,12 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
   const hasPr = node.initiative.prUrl !== null;
   const needsHuman = node.activity === "needs-human";
 
+  // Title: truncate to fit, with more room than before (legibility).
+  const title =
+    node.initiative.title.length > 26
+      ? node.initiative.title.slice(0, 24) + "…"
+      : node.initiative.title;
+
   return (
     <g
       className={`constellation-node ${meta.cssClass}${isBusy ? " node--session-busy" : ""}`}
@@ -165,30 +290,44 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
       }}
       style={{ cursor: "pointer" }}
     >
-      {/* Outer glow ring for needs-human flare */}
+      {/* Outer flare ring for needs-human — most prominent animation */}
       {needsHuman && (
         <circle
           className="node-flare"
           cx={0}
           cy={0}
-          r={meta.r + 12}
+          r={meta.r + 14}
           fill="none"
           stroke={meta.color}
           strokeWidth={2}
-          opacity={0.6}
+          opacity={0.7}
         />
       )}
 
-      {/* Delivered outer ring */}
+      {/* Secondary flare ring — needs-human only */}
+      {needsHuman && (
+        <circle
+          className="node-flare-2"
+          cx={0}
+          cy={0}
+          r={meta.r + 26}
+          fill="none"
+          stroke={meta.color}
+          strokeWidth={1}
+          opacity={0.35}
+        />
+      )}
+
+      {/* Delivered outer ring — dashed, subtle */}
       {node.activity === "delivered" && (
         <circle
           cx={0}
           cy={0}
-          r={meta.r + 7}
+          r={meta.r + 8}
           fill="none"
           stroke={meta.color}
           strokeWidth={1}
-          opacity={0.5}
+          opacity={0.4}
           strokeDasharray="4 3"
         />
       )}
@@ -200,10 +339,11 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         cy={0}
         r={meta.r}
         fill={meta.color}
-        style={{ filter: `drop-shadow(0 0 ${meta.r * 0.8}px ${meta.glowColor})` }}
+        opacity={meta.opacity}
+        style={{ filter: `drop-shadow(0 0 ${meta.r * 0.9}px ${meta.glowColor})` }}
       />
 
-      {/* Pulse ring for busy/needs-human */}
+      {/* Pulse ring for busy / needs-human */}
       {(node.activity === "busy" || needsHuman) && (
         <circle
           className="node-pulse"
@@ -216,16 +356,16 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         />
       )}
 
-      {/* needs-human badge: "!" exclamation */}
+      {/* needs-human badge: "!" */}
       {needsHuman && (
         <g className="node-badge node-badge--needs-human" data-badge="needs-human">
-          <circle cx={meta.r - 2} cy={-(meta.r - 2)} r={7} fill="#ff6b35" />
+          <circle cx={meta.r} cy={-(meta.r)} r={8} fill="#ff6b35" stroke="rgba(0,0,0,0.3)" strokeWidth={1} />
           <text
-            x={meta.r - 2}
-            y={-(meta.r - 2) + 4}
+            x={meta.r}
+            y={-(meta.r) + 4}
             textAnchor="middle"
             fill="white"
-            fontSize={9}
+            fontSize={10}
             fontWeight="bold"
             fontFamily="var(--font-mono)"
             aria-hidden="true"
@@ -239,19 +379,19 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
       {hasPr && !needsHuman && (
         <g className="node-badge node-badge--pr" data-badge="pr">
           <rect
-            x={meta.r - 4}
-            y={-(meta.r + 6)}
-            width={16}
-            height={10}
+            x={meta.r - 3}
+            y={-(meta.r + 8)}
+            width={18}
+            height={11}
             rx={3}
             fill="#a78bfa"
           />
           <text
-            x={meta.r + 4}
-            y={-(meta.r + 6) + 8}
+            x={meta.r + 6}
+            y={-(meta.r + 8) + 8}
             textAnchor="middle"
             fill="white"
-            fontSize={7}
+            fontSize={7.5}
             fontWeight="bold"
             fontFamily="var(--font-mono)"
             aria-hidden="true"
@@ -261,31 +401,31 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         </g>
       )}
 
-      {/* Label below node */}
+      {/* Title label — larger, higher contrast */}
       <text
         className="node-label"
         x={0}
-        y={meta.r + 16}
+        y={meta.r + 18}
         textAnchor="middle"
-        fill="var(--color-text-muted)"
-        fontSize={10}
+        fill={needsHuman ? "#ffcbb3" : "rgba(226,232,240,0.85)"}
+        fontSize={11}
         fontFamily="var(--font-mono)"
+        fontWeight={needsHuman ? "600" : "400"}
       >
-        {node.initiative.title.length > 22
-          ? node.initiative.title.slice(0, 20) + "…"
-          : node.initiative.title}
+        {title}
       </text>
 
-      {/* Phase token */}
+      {/* Phase token — readable, slightly below label */}
       <text
         className="node-phase"
         x={0}
-        y={meta.r + 28}
+        y={meta.r + 31}
         textAnchor="middle"
         fill={meta.color}
-        fontSize={8.5}
+        fontSize={9.5}
         fontFamily="var(--font-mono)"
-        opacity={0.7}
+        opacity={needsHuman ? 0.9 : 0.65}
+        letterSpacing="0.04em"
       >
         {node.phase}
       </text>
@@ -325,30 +465,29 @@ function OrphanNode({ session, x, y }: OrphanNodeProps) {
         stroke={color}
         strokeWidth={1.5}
         strokeDasharray="3 2"
-        opacity={0.7}
+        opacity={0.6}
       />
 
       <text
         className="node-label"
         x={0}
-        y={r + 14}
+        y={r + 15}
         textAnchor="middle"
-        fill={color}
-        fontSize={9}
+        fill="rgba(156,163,175,0.7)"
+        fontSize={9.5}
         fontFamily="var(--font-mono)"
-        opacity={0.6}
       >
         {label.length > 18 ? label.slice(0, 16) + "…" : label}
       </text>
 
       <text
         x={0}
-        y={r + 24}
+        y={r + 25}
         textAnchor="middle"
         fill={color}
         fontSize={7.5}
         fontFamily="var(--font-mono)"
-        opacity={0.4}
+        opacity={0.35}
       >
         unregistered
       </text>
@@ -361,31 +500,45 @@ function OrphanNode({ session, x, y }: OrphanNodeProps) {
 // ---------------------------------------------------------------------------
 
 function ConstellationLegend() {
-  const entries: Array<{ color: string; shape: "circle" | "dashed"; badge?: string; label: string; cssClass?: string }> = [
+  const entries: Array<{
+    color: string;
+    shape: "circle" | "dashed";
+    badge?: string;
+    label: string;
+    cssClass?: string;
+    dim?: boolean;
+  }> = [
     { color: "#ff6b35", shape: "circle", badge: "!", label: "needs your input", cssClass: "legend-entry--needs-human" },
     { color: "#a78bfa", shape: "circle", badge: "PR", label: "has open PR", cssClass: "legend-entry--pr" },
     { color: "#4a9eff", shape: "circle", label: "busy / working", cssClass: "legend-entry--busy" },
     { color: "#3ecf8e", shape: "circle", label: "delivered", cssClass: "legend-entry--delivered" },
-    { color: "#4b5563", shape: "circle", label: "idle", cssClass: "legend-entry--idle" },
-    { color: "#2a2e35", shape: "circle", label: "done", cssClass: "legend-entry--done" },
-    { color: "#6b7280", shape: "dashed", label: "unregistered session", cssClass: "legend-entry--orphan" },
+    { color: "#4b5563", shape: "circle", label: "idle", cssClass: "legend-entry--idle", dim: true },
+    { color: "#323840", shape: "circle", label: "done", cssClass: "legend-entry--done", dim: true },
+    { color: "#6b7280", shape: "dashed", label: "unregistered session", cssClass: "legend-entry--orphan", dim: true },
   ];
 
   return (
-    <div className="constellation-legend" aria-label="Constellation legend" data-testid="constellation-legend">
-      <div className="constellation-legend__title">legend</div>
+    <div
+      className="constellation-legend"
+      aria-label="Constellation legend — inner orbit needs you, outer orbit done"
+      data-testid="constellation-legend"
+    >
+      <div className="constellation-legend__title">orbit key · inner = urgent</div>
       {entries.map((e) => (
-        <div key={e.label} className={`constellation-legend__entry ${e.cssClass ?? ""}`}>
+        <div
+          key={e.label}
+          className={`constellation-legend__entry ${e.cssClass ?? ""}${e.dim ? " legend-entry--dim" : ""}`}
+        >
           <svg width={22} height={22} className="constellation-legend__icon" aria-hidden="true">
             {e.shape === "dashed" ? (
-              <circle cx={11} cy={11} r={7} fill="none" stroke={e.color} strokeWidth={1.5} strokeDasharray="3 2" opacity={0.8} />
+              <circle cx={11} cy={11} r={7} fill="none" stroke={e.color} strokeWidth={1.5} strokeDasharray="3 2" opacity={0.7} />
             ) : (
-              <circle cx={11} cy={11} r={7} fill={e.color} />
+              <circle cx={11} cy={11} r={7} fill={e.color} opacity={e.dim ? 0.4 : 1} />
             )}
             {e.badge === "!" && (
               <>
-                <circle cx={18} cy={5} r={4} fill="#ff6b35" />
-                <text x={18} y={8} textAnchor="middle" fill="white" fontSize={6} fontWeight="bold" fontFamily="monospace">!</text>
+                <circle cx={18} cy={5} r={4.5} fill="#ff6b35" />
+                <text x={18} y={8.5} textAnchor="middle" fill="white" fontSize={6.5} fontWeight="bold" fontFamily="monospace">!</text>
               </>
             )}
             {e.badge === "PR" && (
@@ -435,26 +588,27 @@ export default function ConstellationView() {
   const cy = H / 2;
   const shortSide = Math.min(W, H);
 
-  // Layout cache: re-run only when initiative ids or orphan session ids change.
-  const layoutCacheRef = useRef<{
-    key: string;
-    result: ReturnType<typeof polarLayout>;
-  } | null>(null);
-
-  const idKey =
-    initiatives.map((n) => n.initiative.id).join(",") +
+  // Layout: re-run when initiative ids, activity, or orphan session ids change.
+  // Activity changes affect radius, so we include it in the key.
+  const layoutKey =
+    initiatives.map((n) => `${n.initiative.id}:${n.activity}`).join(",") +
     "|" +
     unmatchedSessions.map((s) => s.sessionId).join(",");
 
+  const layoutCacheRef = useRef<{
+    key: string;
+    result: ReturnType<typeof urgencyOrbitalLayout>;
+  } | null>(null);
+
   const { positioned, positionedOrphans } = useMemo(() => {
     const cache = layoutCacheRef.current;
-    if (cache && cache.key === idKey) {
+    if (cache && cache.key === layoutKey) {
       return { positioned: cache.result.initiatives, positionedOrphans: cache.result.orphans };
     }
-    const result = polarLayout(initiatives, unmatchedSessions, cx, cy, shortSide);
-    layoutCacheRef.current = { key: idKey, result };
+    const result = urgencyOrbitalLayout(initiatives, unmatchedSessions, cx, cy, shortSide);
+    layoutCacheRef.current = { key: layoutKey, result };
     return { positioned: result.initiatives, positionedOrphans: result.orphans };
-  }, [initiatives, unmatchedSessions, idKey, cx, cy, shortSide]);
+  }, [initiatives, unmatchedSessions, layoutKey, cx, cy, shortSide]);
 
   const handleNavigate = (id: string) => {
     navigate(`/initiative/${id}`);
@@ -502,21 +656,43 @@ export default function ConstellationView() {
         data-orphan-count={positionedOrphans.length}
       >
         {/* Star field background */}
-        <StarField seed={42} count={80} w={W} h={H} />
+        <StarField seed={42} count={90} w={W} h={H} />
 
-        {/* Central anchor */}
-        <circle cx={cx} cy={cy} r={3} fill="var(--color-text-muted)" opacity={0.3} />
-        <circle
-          cx={cx}
-          cy={cy}
-          r={shortSide * 0.14}
-          fill="none"
-          stroke="var(--color-text-muted)"
-          strokeWidth={1}
-          opacity={0.06}
-        />
+        {/* Urgency reference rings (dashed orbital guides) */}
+        <UrgencyRings cx={cx} cy={cy} shortSide={shortSide} />
 
-        {/* Orphan nodes (outer halo) */}
+        {/* Tether lines from center to each initiative — drawn before nodes */}
+        {positioned.map(({ node, x, y }) => (
+          <TetherLine
+            key={`tether-${node.initiative.id}`}
+            cx={cx}
+            cy={cy}
+            x={x}
+            y={y}
+            activity={node.activity}
+            color={ACTIVITY_META[node.activity].color}
+          />
+        ))}
+
+        {/* Tether lines for orphan sessions (dashed, very faint) */}
+        {positionedOrphans.map(({ session, x, y }) => (
+          <line
+            key={`tether-orphan-${session.sessionId}`}
+            x1={cx}
+            y1={cy}
+            x2={x}
+            y2={y}
+            stroke="#6b7280"
+            strokeWidth={0.75}
+            opacity={0.1}
+            strokeDasharray="3 4"
+          />
+        ))}
+
+        {/* Center anchor — "YOU" */}
+        <CenterAnchor cx={cx} cy={cy} />
+
+        {/* Orphan nodes (rim) */}
         {positionedOrphans.map(({ session, x, y }) => (
           <OrphanNode
             key={session.sessionId}
@@ -526,7 +702,7 @@ export default function ConstellationView() {
           />
         ))}
 
-        {/* Initiative nodes */}
+        {/* Initiative nodes — drawn last so they sit on top of tethers */}
         {positioned.map(({ node, x, y }) => (
           <ConstellationNode
             key={node.initiative.id}
@@ -563,7 +739,7 @@ function StarField({ seed, count, w, h }: { seed: number; count: number; w: numb
       x: next() * w,
       y: next() * h,
       r: next() * 1.2 + 0.3,
-      opacity: next() * 0.22 + 0.05,
+      opacity: next() * 0.18 + 0.04,
     }));
   }, [seed, count, w, h]);
 
