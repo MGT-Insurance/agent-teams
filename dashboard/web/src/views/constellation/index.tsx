@@ -810,28 +810,14 @@ export default function ConstellationView() {
   const cy = H / 2;
   const shortSide = Math.min(W, H);
 
-  // Layout cache key: re-run when ids, delivery, needsHuman, or session state change.
-  const layoutKey =
-    initiatives
-      .map((n) => `${n.initiative.id}:${n.delivery}:${String(n.needsHuman)}:${n.activity}`)
-      .join(",") +
-    "|" +
-    unmatchedSessions.map((s) => s.sessionId).join(",");
-
-  const layoutCacheRef = useRef<{
-    key: string;
-    result: ReturnType<typeof urgencyOrbitalLayout>;
-  } | null>(null);
-
+  // useMemo recomputes whenever any dep changes — cx, cy, shortSide included.
+  // The manual layoutCacheRef was removed: it keyed only on initiative/orphan ids,
+  // so it returned a stale layout (computed at the 900×700 default) on tab-switch
+  // remounts after the ResizeObserver had already updated the real container size.
   const { positioned, positionedOrphans } = useMemo(() => {
-    const cache = layoutCacheRef.current;
-    if (cache && cache.key === layoutKey) {
-      return { positioned: cache.result.initiatives, positionedOrphans: cache.result.orphans };
-    }
     const result = urgencyOrbitalLayout(initiatives, unmatchedSessions, cx, cy, shortSide);
-    layoutCacheRef.current = { key: layoutKey, result };
     return { positioned: result.initiatives, positionedOrphans: result.orphans };
-  }, [initiatives, unmatchedSessions, layoutKey, cx, cy, shortSide]);
+  }, [initiatives, unmatchedSessions, cx, cy, shortSide]);
 
   const handleNavigate = (id: string) => {
     navigate(`/initiative/${id}`);
