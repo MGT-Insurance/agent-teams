@@ -6,7 +6,6 @@
   justify-content: stretch;
   background: var(--color-bg);
   overflow: hidden;
-  /* Fill the full available area */
   width: 100%;
   height: 100%;
 }
@@ -70,15 +69,11 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Center anchor — "YOU"
+   Center anchor
 --------------------------------------------------------------------------- */
 
 .constellation-center {
   pointer-events: none;
-}
-
-.center-glow {
-  fill: radial-gradient(circle, rgba(226,232,240,0.08) 0%, transparent 70%);
 }
 
 /* ---------------------------------------------------------------------------
@@ -95,25 +90,27 @@
 }
 
 /* ---------------------------------------------------------------------------
-   BUSY: steady expanding pulse
+   MOTION PHILOSOPHY: stillness is the default.
+   Motion is RESERVED for what needs Eric (needs-human) and active work (working).
+   idle and done are STILL — no animation.
 --------------------------------------------------------------------------- */
 
-.node--busy .node-pulse {
-  animation: pulse-busy 2s ease-in-out infinite;
+/* ---------------------------------------------------------------------------
+   WORKING: steady expanding pulse — "something is happening"
+--------------------------------------------------------------------------- */
+
+.node--working .node-pulse {
+  animation: pulse-working 2s ease-in-out infinite;
   transform-origin: center;
 }
 
-@keyframes pulse-busy {
-  0%, 100% { opacity: 0.7; transform: scale(1); }
-  50% { opacity: 0; transform: scale(2.4); }
-}
-
-.node--session-busy.node--busy .node-pulse {
-  animation-duration: 1.1s;
+@keyframes pulse-working {
+  0%, 100% { opacity: 0.65; transform: scale(1); }
+  50%       { opacity: 0;    transform: scale(2.4); }
 }
 
 /* ---------------------------------------------------------------------------
-   NEEDS-HUMAN: urgent flare + fast double-ring expansion
+   NEEDS-HUMAN: urgent double-ring flare + fast pulse — "this needs YOU now"
 --------------------------------------------------------------------------- */
 
 .node--needs-human .node-flare {
@@ -128,8 +125,8 @@
 
 @keyframes flare-ring {
   0%  { opacity: 0.75; transform: scale(0.85); }
-  55% { opacity: 0;    transform: scale(1.6); }
-  100%{ opacity: 0;    transform: scale(1.6); }
+  55% { opacity: 0;    transform: scale(1.6);  }
+  100%{ opacity: 0;    transform: scale(1.6);  }
 }
 
 .node--needs-human .node-pulse {
@@ -138,52 +135,42 @@
 }
 
 @keyframes pulse-urgent {
-  0%, 100% { opacity: 0.9; transform: scale(1); }
+  0%, 100% { opacity: 0.9; transform: scale(1);   }
   50%       { opacity: 0.1; transform: scale(2.6); }
 }
 
-/* Brighter, more vibrant core for needs-human */
+/* Core throb — makes the needs-human dot visually breathe with urgency */
 .node--needs-human .node-core {
   animation: core-throb 1.5s ease-in-out infinite;
 }
 
 @keyframes core-throb {
-  0%, 100% { filter: drop-shadow(0 0 16px rgba(255,107,53,0.85)); }
-  50%       { filter: drop-shadow(0 0 28px rgba(255,107,53,1.0)) brightness(1.15); }
+  0%, 100% { filter: drop-shadow(0 0 14px rgba(255,107,53,0.8));  }
+  50%       { filter: drop-shadow(0 0 26px rgba(255,107,53,1.0)); }
 }
 
 /* ---------------------------------------------------------------------------
-   DELIVERED: gentle breathing
---------------------------------------------------------------------------- */
-
-.node--delivered .node-core {
-  animation: breathe-delivered 3.5s ease-in-out infinite;
-}
-
-@keyframes breathe-delivered {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.72; }
-}
-
-/* ---------------------------------------------------------------------------
-   IDLE: slow dim pulse — recedes visually
+   IDLE: STILL — no animation (deliberate recede)
 --------------------------------------------------------------------------- */
 
 .node--idle .node-core {
-  animation: dim-idle 6s ease-in-out infinite;
-}
-
-@keyframes dim-idle {
-  0%, 100% { opacity: 0.65; }
-  50%       { opacity: 0.35; }
+  opacity: 0.65;
 }
 
 /* ---------------------------------------------------------------------------
-   DONE: near-static, very faint — deliberately recedes
+   DONE: STILL, very faint
 --------------------------------------------------------------------------- */
 
 .node--done .node-core {
   opacity: 0.22;
+}
+
+/* ---------------------------------------------------------------------------
+   DELIVERY RING (channel 2): calm green, NO motion
+--------------------------------------------------------------------------- */
+
+.node-delivery-ring {
+  /* intentionally static — motion is reserved for urgency channel only */
 }
 
 /* ---------------------------------------------------------------------------
@@ -217,14 +204,14 @@
   position: absolute;
   bottom: 20px;
   right: 20px;
-  background: rgba(8, 10, 16, 0.88);
+  background: rgba(8, 10, 16, 0.90);
   border: 1px solid rgba(255,255,255,0.09);
   border-radius: 7px;
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  min-width: 196px;
+  gap: 6px;
+  min-width: 200px;
   backdrop-filter: blur(6px);
 }
 
@@ -235,7 +222,17 @@
   text-transform: uppercase;
   color: var(--color-text-muted);
   opacity: 0.45;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
+}
+
+.constellation-legend__section {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  opacity: 0.3;
+  margin-top: 4px;
 }
 
 .constellation-legend__entry {
@@ -248,9 +245,15 @@
 }
 
 .constellation-legend__entry.legend-entry--dim {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .constellation-legend__icon {
   flex-shrink: 0;
+}
+
+/* Legend pulse (small indicator in legend only, very subtle) */
+.legend-pulse {
+  animation: pulse-working 2s ease-in-out infinite;
+  transform-origin: 11px 11px;
 }

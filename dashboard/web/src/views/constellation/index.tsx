@@ -1,24 +1,42 @@
 import { useMemo, useRef, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSnapshotContext } from "../../SnapshotContext.js";
-import type { InitiativeNode, SessionState } from "@agent-teams/shared";
-import type { ActivityStatus } from "@agent-teams/shared";
+import type { InitiativeNode, SessionState, DeliveryStatus, NeedsHumanFlavor } from "@agent-teams/shared";
 import "./constellation.css";
+
+// ---------------------------------------------------------------------------
+// Derived urgency — the single dimension that drives orbital radius + motion.
+// Computed from the two-dimension model (delivery x activity x needsHuman).
+// ---------------------------------------------------------------------------
+
+type UrgencyTier = "needs-human" | "working" | "idle" | "done";
+
+function deriveUrgency(node: InitiativeNode): UrgencyTier {
+  if (node.needsHuman !== false) return "needs-human";
+  // Closed/merged → done
+  if (node.delivery === "merged") return "done";
+  const s = node.initiative.status.toLowerCase();
+  if (s === "closed" || s === "done") return "done";
+  // Live working session → working
+  const isWorking =
+    node.session !== null &&
+    (node.session.status === "busy" || node.session.state === "working");
+  if (isWorking) return "working";
+  return "idle";
+}
 
 // ---------------------------------------------------------------------------
 // Urgency-orbital layout
 // ---------------------------------------------------------------------------
 // Position encodes urgency: needs-human innermost, done outermost.
 // Angle is a stable per-id hash so nodes never jump on refresh.
-// Only radius changes as activity changes.
+// Only radius changes as urgency changes.
 // ---------------------------------------------------------------------------
 
-// Urgency levels: lower number = closer to center (more urgent).
-const URGENCY_RADIUS_FRACTION: Record<ActivityStatus, number> = {
+const URGENCY_RADIUS_FRACTION: Record<UrgencyTier, number> = {
   "needs-human": 0.20, // innermost — pulled toward you
-  busy: 0.35,
-  delivered: 0.47,
-  idle: 0.58,
+  working: 0.35,
+  idle: 0.55,
   done: 0.70, // outer dim rim
 };
 
@@ -39,15 +57,17 @@ function urgencyOrbitalLayout(
   cy: number,
   shortSide: number,
 ): {
-  initiatives: Array<{ node: InitiativeNode; x: number; y: number }>;
+  initiatives: Array<{ node: InitiativeNode; urgency: UrgencyTier; x: number; y: number }>;
   orphans: Array<{ session: SessionState; x: number; y: number }>;
 } {
   const initiatives = nodes.map((node) => {
-    const fraction = URGENCY_RADIUS_FRACTION[node.activity];
+    const urgency = deriveUrgency(node);
+    const fraction = URGENCY_RADIUS_FRACTION[urgency];
     const radius = shortSide * fraction;
     const angle = stableAngle(node.initiative.id);
     return {
       node,
+      urgency,
       x: cx + radius * Math.cos(angle),
       y: cy + radius * Math.sin(angle),
     };
@@ -67,11 +87,11 @@ function urgencyOrbitalLayout(
 }
 
 // ---------------------------------------------------------------------------
-// Visual metadata for activity states
+// Visual metadata per urgency tier — CHANNEL 1: core color + motion
 // ---------------------------------------------------------------------------
 
-const ACTIVITY_META: Record<
-  ActivityStatus,
+const URGENCY_META: Record<
+  UrgencyTier,
   { color: string; glowColor: string; r: number; cssClass: string; label: string; opacity: number }
 > = {
   "needs-human": {
@@ -82,48 +102,137 @@ const ACTIVITY_META: Record<
     label: "needs you",
     opacity: 1,
   },
-  busy: {
+  working: {
     color: "#4a9eff",
     glowColor: "rgba(74,158,255,0.5)",
     r: 14,
-    cssClass: "node--busy",
-    label: "busy",
+    cssClass: "node--working",
+    label: "working",
     opacity: 1,
-  },
-  delivered: {
-    color: "#3ecf8e",
-    glowColor: "rgba(62,207,142,0.4)",
-    r: 14,
-    cssClass: "node--delivered",
-    label: "delivered",
-    opacity: 0.95,
   },
   idle: {
     color: "#4b5563",
-    glowColor: "rgba(75,85,99,0.25)",
+    glowColor: "rgba(75,85,99,0.2)",
     r: 11,
     cssClass: "node--idle",
     label: "idle",
     opacity: 0.65,
   },
   done: {
-    color: "#323840",
-    glowColor: "rgba(50,56,64,0.15)",
+    color: "#2e3540",
+    glowColor: "rgba(46,53,64,0.1)",
     r: 9,
     cssClass: "node--done",
     label: "done",
-    opacity: 0.3,
+    opacity: 0.25,
   },
 };
 
 // Tether line alpha tracks urgency: needs-human brightest, done faintest.
-const TETHER_OPACITY: Record<ActivityStatus, number> = {
+const TETHER_OPACITY: Record<UrgencyTier, number> = {
   "needs-human": 0.55,
-  busy: 0.38,
-  delivered: 0.28,
-  idle: 0.14,
-  done: 0.07,
+  working: 0.38,
+  idle: 0.13,
+  done: 0.06,
 };
+
+// PR delivery ring color — CHANNEL 2: calm green, no motion.
+const DELIVERY_RING_COLOR = "#3ecf8e";
+const DELIVERY_RING_GLOW = "rgba(62,207,142,0.35)";
+
+// ---------------------------------------------------------------------------
+// Hover tooltip
+// ---------------------------------------------------------------------------
+
+interface TooltipData {
+  x: number;
+  y: number;
+  title: string;
+  phase: string;
+  delivery: DeliveryStatus;
+  urgency: UrgencyTier;
+  needsHuman: false | NeedsHumanFlavor;
+}
+
+function NodeTooltip({ data, svgW, svgH }: { data: TooltipData; svgW: number; svgH: number }) {
+  // Delivery label
+  const deliveryLabel =
+    data.delivery === "pr-open"
+      ? "PR open"
+      : data.delivery === "merged"
+        ? "merged"
+        : "no PR";
+
+  // Clamp tooltip to stay inside the SVG viewport.
+  const TW = 200;
+  const TH = 76;
+  const PAD = 12;
+  const rawX = data.x + 20;
+  const rawY = data.y - 10;
+  const clampedX = Math.min(Math.max(rawX, PAD), svgW - TW - PAD);
+  const clampedY = Math.min(Math.max(rawY, PAD), svgH - TH - PAD);
+
+  return (
+    <g className="node-tooltip" style={{ pointerEvents: "none" }}>
+      <rect
+        x={clampedX}
+        y={clampedY}
+        width={TW}
+        height={TH}
+        rx={5}
+        fill="rgba(8,10,16,0.94)"
+        stroke="rgba(255,255,255,0.10)"
+        strokeWidth={1}
+      />
+      {/* Full title — wrap at 28 chars per line, two lines max */}
+      {wrapText(data.title, 28).map((line, i) => (
+        <text
+          key={i}
+          x={clampedX + 10}
+          y={clampedY + 18 + i * 14}
+          fill="rgba(226,232,240,0.95)"
+          fontSize={11}
+          fontFamily="var(--font-mono)"
+          fontWeight="500"
+        >
+          {line}
+        </text>
+      ))}
+      <text
+        x={clampedX + 10}
+        y={clampedY + 52}
+        fill="rgba(160,170,185,0.75)"
+        fontSize={9.5}
+        fontFamily="var(--font-mono)"
+      >
+        {data.phase} · {deliveryLabel} · {data.urgency}
+      </text>
+      {data.needsHuman !== false && (
+        <text
+          x={clampedX + 10}
+          y={clampedY + 66}
+          fill="#ff6b35"
+          fontSize={9}
+          fontFamily="var(--font-mono)"
+          fontWeight="600"
+        >
+          {data.needsHuman === "answer" ? "needs answer" : "awaiting review"}
+        </text>
+      )}
+    </g>
+  );
+}
+
+// Wrap text at approx charLimit chars per line, returning up to 2 lines.
+function wrapText(text: string, charLimit: number): string[] {
+  if (text.length <= charLimit) return [text];
+  const cut = text.lastIndexOf(" ", charLimit);
+  const breakAt = cut > 0 ? cut : charLimit;
+  const line1 = text.slice(0, breakAt);
+  const rest = text.slice(breakAt + (cut > 0 ? 1 : 0));
+  const line2 = rest.length > charLimit ? rest.slice(0, charLimit - 1) + "…" : rest;
+  return [line1, line2];
+}
 
 // ---------------------------------------------------------------------------
 // Tether line (center → node)
@@ -134,19 +243,18 @@ interface TetherProps {
   cy: number;
   x: number;
   y: number;
-  activity: ActivityStatus;
+  urgency: UrgencyTier;
   color: string;
+  r: number;
 }
 
-function TetherLine({ cx, cy, x, y, activity, color }: TetherProps) {
-  const opacity = TETHER_OPACITY[activity];
-  // Shorten the line so it stops at the node edge, not node center.
-  const meta = ACTIVITY_META[activity];
+function TetherLine({ cx, cy, x, y, urgency, color, r }: TetherProps) {
+  const opacity = TETHER_OPACITY[urgency];
   const dx = x - cx;
   const dy = y - cy;
   const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-  const stopX = x - (dx / dist) * (meta.r + 4);
-  const stopY = y - (dy / dist) * (meta.r + 4);
+  const stopX = x - (dx / dist) * (r + 4);
+  const stopY = y - (dy / dist) * (r + 4);
 
   return (
     <line
@@ -155,7 +263,7 @@ function TetherLine({ cx, cy, x, y, activity, color }: TetherProps) {
       x2={stopX}
       y2={stopY}
       stroke={color}
-      strokeWidth={activity === "needs-human" ? 1.5 : 1}
+      strokeWidth={urgency === "needs-human" ? 1.5 : 1}
       opacity={opacity}
       strokeLinecap="round"
     />
@@ -173,22 +281,21 @@ interface UrgencyRingsProps {
 }
 
 function UrgencyRings({ cx, cy, shortSide }: UrgencyRingsProps) {
-  const rings: Array<{ fraction: number; label: string; opacity: number }> = [
-    { fraction: URGENCY_RADIUS_FRACTION["needs-human"], label: "needs you", opacity: 0.12 },
-    { fraction: URGENCY_RADIUS_FRACTION.busy, label: "busy", opacity: 0.07 },
-    { fraction: URGENCY_RADIUS_FRACTION.delivered, label: "delivered", opacity: 0.06 },
-    { fraction: URGENCY_RADIUS_FRACTION.idle, label: "idle", opacity: 0.05 },
-    { fraction: URGENCY_RADIUS_FRACTION.done, label: "done", opacity: 0.04 },
+  const rings: Array<{ tier: UrgencyTier; opacity: number }> = [
+    { tier: "needs-human", opacity: 0.12 },
+    { tier: "working", opacity: 0.07 },
+    { tier: "idle", opacity: 0.05 },
+    { tier: "done", opacity: 0.04 },
   ];
 
   return (
     <>
-      {rings.map(({ fraction, label, opacity }) => (
+      {rings.map(({ tier, opacity }) => (
         <circle
-          key={label}
+          key={tier}
           cx={cx}
           cy={cy}
-          r={shortSide * fraction}
+          r={shortSide * URGENCY_RADIUS_FRACTION[tier]}
           fill="none"
           stroke="rgba(255,255,255,0.55)"
           strokeWidth={1}
@@ -211,15 +318,7 @@ interface CenterAnchorProps {
 
 function CenterAnchor({ cx, cy }: CenterAnchorProps) {
   return (
-    <g className="constellation-center">
-      {/* Subtle radiant glow */}
-      <circle
-        cx={cx}
-        cy={cy}
-        r={22}
-        fill="radial-gradient()"
-        className="center-glow"
-      />
+    <g className="constellation-center" style={{ pointerEvents: "none" }}>
       {/* Core dot */}
       <circle
         cx={cx}
@@ -257,41 +356,70 @@ function CenterAnchor({ cx, cy }: CenterAnchorProps) {
 
 interface NodeProps {
   node: InitiativeNode;
+  urgency: UrgencyTier;
   x: number;
   y: number;
+  svgW: number;
+  svgH: number;
   onNavigate: (id: string) => void;
 }
 
-function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
-  const meta = ACTIVITY_META[node.activity];
-  const isBusy = node.session?.status === "busy";
-  const hasPr = node.initiative.prUrl !== null;
-  const needsHuman = node.activity === "needs-human";
+function ConstellationNode({ node, urgency, x, y, svgW, svgH, onNavigate }: NodeProps) {
+  const [hovered, setHovered] = useState(false);
+  const meta = URGENCY_META[urgency];
+  const needsHuman = node.needsHuman;
+  const delivery = node.delivery;
+  const hasPr = delivery === "pr-open";
+  // PR ring radius: slightly outside core + delivery ring if any.
+  const prRingR = meta.r + 8;
 
-  // Title: truncate to fit, with more room than before (legibility).
-  const title =
-    node.initiative.title.length > 26
-      ? node.initiative.title.slice(0, 24) + "…"
-      : node.initiative.title;
+  // Title: two lines up to 22 chars each, no hard truncation in the node label.
+  const titleLines = wrapText(node.initiative.title, 22);
+
+  // Legacy data-activity: map urgency back to something meaningful for test hooks.
+  // Tests check for "idle", "busy", "needs-human" etc — map urgency tiers to match.
+  const dataActivity =
+    needsHuman !== false ? "needs-human" : urgency === "working" ? "busy" : urgency;
 
   return (
     <g
-      className={`constellation-node ${meta.cssClass}${isBusy ? " node--session-busy" : ""}`}
+      className={`constellation-node ${meta.cssClass}`}
       transform={`translate(${x},${y})`}
       role="button"
       tabIndex={0}
       aria-label={`${node.initiative.title} — ${meta.label}`}
       data-initiative-id={node.initiative.id}
-      data-activity={node.activity}
+      data-activity={dataActivity}
       data-has-pr={hasPr ? "true" : "false"}
       onClick={() => onNavigate(node.initiative.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onNavigate(node.initiative.id);
       }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
       style={{ cursor: "pointer" }}
     >
-      {/* Outer flare ring for needs-human — most prominent animation */}
-      {needsHuman && (
+      {/* CHANNEL 2: Delivery ring — calm green, NO motion, shown when PR exists */}
+      {hasPr && (
+        <circle
+          className="node-delivery-ring"
+          cx={0}
+          cy={0}
+          r={prRingR}
+          fill="none"
+          stroke={DELIVERY_RING_COLOR}
+          strokeWidth={1.5}
+          opacity={0.55}
+          style={{ filter: `drop-shadow(0 0 5px ${DELIVERY_RING_GLOW})` }}
+        />
+      )}
+
+      {/* CHANNEL 1 urgency animations */}
+
+      {/* needs-human: outer flare ring (animated) */}
+      {needsHuman !== false && (
         <circle
           className="node-flare"
           cx={0}
@@ -304,8 +432,8 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         />
       )}
 
-      {/* Secondary flare ring — needs-human only */}
-      {needsHuman && (
+      {/* needs-human: secondary flare ring (staggered, animated) */}
+      {needsHuman !== false && (
         <circle
           className="node-flare-2"
           cx={0}
@@ -318,21 +446,7 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         />
       )}
 
-      {/* Delivered outer ring — dashed, subtle */}
-      {node.activity === "delivered" && (
-        <circle
-          cx={0}
-          cy={0}
-          r={meta.r + 8}
-          fill="none"
-          stroke={meta.color}
-          strokeWidth={1}
-          opacity={0.4}
-          strokeDasharray="4 3"
-        />
-      )}
-
-      {/* Core circle */}
+      {/* Core circle — CHANNEL 1 color */}
       <circle
         className="node-core"
         cx={0}
@@ -343,8 +457,8 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         style={{ filter: `drop-shadow(0 0 ${meta.r * 0.9}px ${meta.glowColor})` }}
       />
 
-      {/* Pulse ring for busy / needs-human */}
-      {(node.activity === "busy" || needsHuman) && (
+      {/* Pulse ring for working + needs-human (animated) */}
+      {(urgency === "working" || needsHuman !== false) && (
         <circle
           className="node-pulse"
           cx={0}
@@ -357,7 +471,7 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
       )}
 
       {/* needs-human badge: "!" */}
-      {needsHuman && (
+      {needsHuman !== false && (
         <g className="node-badge node-badge--needs-human" data-badge="needs-human">
           <circle cx={meta.r} cy={-(meta.r)} r={8} fill="#ff6b35" stroke="rgba(0,0,0,0.3)" strokeWidth={1} />
           <text
@@ -375,8 +489,8 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         </g>
       )}
 
-      {/* PR badge */}
-      {hasPr && !needsHuman && (
+      {/* PR badge — shown when PR open and NOT needs-human (to avoid badge collision) */}
+      {hasPr && needsHuman === false && (
         <g className="node-badge node-badge--pr" data-badge="pr">
           <rect
             x={meta.r - 3}
@@ -401,34 +515,54 @@ function ConstellationNode({ node, x, y, onNavigate }: NodeProps) {
         </g>
       )}
 
-      {/* Title label — larger, higher contrast */}
-      <text
-        className="node-label"
-        x={0}
-        y={meta.r + 18}
-        textAnchor="middle"
-        fill={needsHuman ? "#ffcbb3" : "rgba(226,232,240,0.85)"}
-        fontSize={11}
-        fontFamily="var(--font-mono)"
-        fontWeight={needsHuman ? "600" : "400"}
-      >
-        {title}
-      </text>
+      {/* Title — two lines (longer, higher contrast) */}
+      {titleLines.map((line, i) => (
+        <text
+          key={i}
+          className="node-label"
+          x={0}
+          y={meta.r + 18 + i * 13}
+          textAnchor="middle"
+          fill={needsHuman !== false ? "#ffcbb3" : "rgba(226,232,240,0.87)"}
+          fontSize={11}
+          fontFamily="var(--font-mono)"
+          fontWeight={needsHuman !== false ? "600" : "400"}
+        >
+          {line}
+        </text>
+      ))}
 
-      {/* Phase token — readable, slightly below label */}
+      {/* Phase token */}
       <text
         className="node-phase"
         x={0}
-        y={meta.r + 31}
+        y={meta.r + 18 + titleLines.length * 13}
         textAnchor="middle"
         fill={meta.color}
         fontSize={9.5}
         fontFamily="var(--font-mono)"
-        opacity={needsHuman ? 0.9 : 0.65}
+        opacity={needsHuman !== false ? 0.9 : 0.6}
         letterSpacing="0.04em"
       >
         {node.phase}
       </text>
+
+      {/* Hover tooltip — shows full title + state summary */}
+      {hovered && (
+        <NodeTooltip
+          data={{
+            x: 0,
+            y: 0,
+            title: node.initiative.title,
+            phase: node.phase,
+            delivery: node.delivery,
+            urgency,
+            needsHuman,
+          }}
+          svgW={svgW}
+          svgH={svgH}
+        />
+      )}
     </g>
   );
 }
@@ -500,23 +634,6 @@ function OrphanNode({ session, x, y }: OrphanNodeProps) {
 // ---------------------------------------------------------------------------
 
 function ConstellationLegend() {
-  const entries: Array<{
-    color: string;
-    shape: "circle" | "dashed";
-    badge?: string;
-    label: string;
-    cssClass?: string;
-    dim?: boolean;
-  }> = [
-    { color: "#ff6b35", shape: "circle", badge: "!", label: "needs your input", cssClass: "legend-entry--needs-human" },
-    { color: "#a78bfa", shape: "circle", badge: "PR", label: "has open PR", cssClass: "legend-entry--pr" },
-    { color: "#4a9eff", shape: "circle", label: "busy / working", cssClass: "legend-entry--busy" },
-    { color: "#3ecf8e", shape: "circle", label: "delivered", cssClass: "legend-entry--delivered" },
-    { color: "#4b5563", shape: "circle", label: "idle", cssClass: "legend-entry--idle", dim: true },
-    { color: "#323840", shape: "circle", label: "done", cssClass: "legend-entry--done", dim: true },
-    { color: "#6b7280", shape: "dashed", label: "unregistered session", cssClass: "legend-entry--orphan", dim: true },
-  ];
-
   return (
     <div
       className="constellation-legend"
@@ -524,34 +641,90 @@ function ConstellationLegend() {
       data-testid="constellation-legend"
     >
       <div className="constellation-legend__title">orbit key · inner = urgent</div>
-      {entries.map((e) => (
-        <div
-          key={e.label}
-          className={`constellation-legend__entry ${e.cssClass ?? ""}${e.dim ? " legend-entry--dim" : ""}`}
-        >
-          <svg width={22} height={22} className="constellation-legend__icon" aria-hidden="true">
-            {e.shape === "dashed" ? (
-              <circle cx={11} cy={11} r={7} fill="none" stroke={e.color} strokeWidth={1.5} strokeDasharray="3 2" opacity={0.7} />
-            ) : (
-              <circle cx={11} cy={11} r={7} fill={e.color} opacity={e.dim ? 0.4 : 1} />
-            )}
-            {e.badge === "!" && (
-              <>
-                <circle cx={18} cy={5} r={4.5} fill="#ff6b35" />
-                <text x={18} y={8.5} textAnchor="middle" fill="white" fontSize={6.5} fontWeight="bold" fontFamily="monospace">!</text>
-              </>
-            )}
-            {e.badge === "PR" && (
-              <>
-                <rect x={14} y={2} width={8} height={6} rx={1.5} fill="#a78bfa" />
-                <text x={18} y={8} textAnchor="middle" fill="white" fontSize={4.5} fontWeight="bold" fontFamily="monospace">PR</text>
-              </>
-            )}
-          </svg>
-          <span>{e.label}</span>
-        </div>
-      ))}
+
+      {/* CHANNEL 1: urgency (core color + motion) */}
+      <div className="constellation-legend__section">urgency</div>
+
+      <div className="constellation-legend__entry legend-entry--needs-human">
+        <LegendDot color="#ff6b35" badge="!" />
+        <span>needs your input</span>
+      </div>
+
+      <div className="constellation-legend__entry legend-entry--working">
+        <LegendDot color="#4a9eff" pulse />
+        <span>working</span>
+      </div>
+
+      <div className="constellation-legend__entry legend-entry--idle legend-entry--dim">
+        <LegendDot color="#4b5563" />
+        <span>idle</span>
+      </div>
+
+      <div className="constellation-legend__entry legend-entry--done legend-entry--dim">
+        <LegendDot color="#2e3540" faint />
+        <span>done / merged</span>
+      </div>
+
+      {/* CHANNEL 2: delivery ring */}
+      <div className="constellation-legend__section">delivery</div>
+
+      <div className="constellation-legend__entry legend-entry--pr">
+        <LegendDeliveryRing badge="PR" />
+        <span>open PR — awaiting review</span>
+      </div>
+
+      <div className="constellation-legend__entry legend-entry--orphan legend-entry--dim">
+        <LegendDot color="#6b7280" dashed />
+        <span>unregistered session</span>
+      </div>
     </div>
+  );
+}
+
+function LegendDot({
+  color,
+  badge,
+  pulse,
+  faint,
+  dashed,
+}: {
+  color: string;
+  badge?: string;
+  pulse?: boolean;
+  faint?: boolean;
+  dashed?: boolean;
+}) {
+  return (
+    <svg width={22} height={22} className="constellation-legend__icon" aria-hidden="true">
+      {dashed ? (
+        <circle cx={11} cy={11} r={7} fill="none" stroke={color} strokeWidth={1.5} strokeDasharray="3 2" opacity={0.7} />
+      ) : (
+        <circle cx={11} cy={11} r={7} fill={color} opacity={faint ? 0.3 : 1} />
+      )}
+      {badge === "!" && (
+        <>
+          <circle cx={18} cy={5} r={4.5} fill="#ff6b35" />
+          <text x={18} y={8.5} textAnchor="middle" fill="white" fontSize={6.5} fontWeight="bold" fontFamily="monospace">!</text>
+        </>
+      )}
+      {pulse && (
+        <circle cx={11} cy={11} r={7} fill="none" stroke={color} strokeWidth={1} className="legend-pulse" />
+      )}
+    </svg>
+  );
+}
+
+function LegendDeliveryRing({ badge }: { badge: string }) {
+  return (
+    <svg width={22} height={22} className="constellation-legend__icon" aria-hidden="true">
+      {/* core (blue = working example) */}
+      <circle cx={11} cy={11} r={5} fill="#4a9eff" opacity={0.8} />
+      {/* delivery ring — green, no motion */}
+      <circle cx={11} cy={11} r={9} fill="none" stroke="#3ecf8e" strokeWidth={1.5} opacity={0.6} />
+      {/* PR badge */}
+      <rect x={14} y={2} width={8} height={6} rx={1.5} fill="#a78bfa" />
+      <text x={18} y={7} textAnchor="middle" fill="white" fontSize={4} fontWeight="bold" fontFamily="monospace">{badge}</text>
+    </svg>
   );
 }
 
@@ -588,10 +761,11 @@ export default function ConstellationView() {
   const cy = H / 2;
   const shortSide = Math.min(W, H);
 
-  // Layout: re-run when initiative ids, activity, or orphan session ids change.
-  // Activity changes affect radius, so we include it in the key.
+  // Layout cache key: re-run when ids, delivery, needsHuman, or session state change.
   const layoutKey =
-    initiatives.map((n) => `${n.initiative.id}:${n.activity}`).join(",") +
+    initiatives
+      .map((n) => `${n.initiative.id}:${n.delivery}:${String(n.needsHuman)}:${n.activity}`)
+      .join(",") +
     "|" +
     unmatchedSessions.map((s) => s.sessionId).join(",");
 
@@ -662,15 +836,16 @@ export default function ConstellationView() {
         <UrgencyRings cx={cx} cy={cy} shortSide={shortSide} />
 
         {/* Tether lines from center to each initiative — drawn before nodes */}
-        {positioned.map(({ node, x, y }) => (
+        {positioned.map(({ node, urgency, x, y }) => (
           <TetherLine
             key={`tether-${node.initiative.id}`}
             cx={cx}
             cy={cy}
             x={x}
             y={y}
-            activity={node.activity}
-            color={ACTIVITY_META[node.activity].color}
+            urgency={urgency}
+            color={URGENCY_META[urgency].color}
+            r={URGENCY_META[urgency].r}
           />
         ))}
 
@@ -703,12 +878,15 @@ export default function ConstellationView() {
         ))}
 
         {/* Initiative nodes — drawn last so they sit on top of tethers */}
-        {positioned.map(({ node, x, y }) => (
+        {positioned.map(({ node, urgency, x, y }) => (
           <ConstellationNode
             key={node.initiative.id}
             node={node}
+            urgency={urgency}
             x={x}
             y={y}
+            svgW={W}
+            svgH={H}
             onNavigate={handleNavigate}
           />
         ))}
@@ -745,8 +923,8 @@ function StarField({ seed, count, w, h }: { seed: number; count: number; w: numb
 
   return (
     <>
-      {stars.map((s) => (
-        <circle key={s.key} cx={s.x} cy={s.y} r={s.r} fill="white" opacity={s.opacity} />
+      {stars.map((st) => (
+        <circle key={st.key} cx={st.x} cy={st.y} r={st.r} fill="white" opacity={st.opacity} />
       ))}
     </>
   );

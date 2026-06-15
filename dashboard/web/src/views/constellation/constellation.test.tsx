@@ -172,10 +172,10 @@ describe("ConstellationView", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/initiative/kbd-id");
   });
 
-  it("node aria-label includes the activity status", () => {
+  it("node aria-label includes the activity status (needs you)", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
-      initiatives: [makeNode({ id: "nh-1", title: "Blocked Thing", activity: "needs-human" })],
+      initiatives: [makeNode({ id: "nh-1", title: "Blocked Thing", needsHuman: "answer" })],
     };
     render(<ConstellationView />);
     const node = screen.getByRole("button", { name: /Blocked Thing.*needs you/i });
@@ -278,20 +278,22 @@ describe("ConstellationView", () => {
   it("needs-human node has the needs-human badge", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
-      initiatives: [makeNode({ id: "nh", activity: "needs-human" })],
+      // needsHuman drives the badge now; activity field kept for compat.
+      initiatives: [makeNode({ id: "nh", needsHuman: "answer" })],
     };
     const { container } = render(<ConstellationView />);
     const badge = container.querySelector("[data-badge='needs-human']");
     expect(badge).not.toBeNull();
   });
 
-  it("delivered node with prUrl has the PR badge", () => {
+  it("node with delivery=pr-open and needsHuman=false has the PR badge", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
       initiatives: [
         makeNode({
           id: "pr-node",
-          activity: "delivered",
+          delivery: "pr-open",
+          needsHuman: false,
           initiative: {
             id: "pr-node",
             title: "PR Node",
@@ -329,13 +331,15 @@ describe("ConstellationView", () => {
     expect(container.querySelector("[data-badge='pr']")).toBeNull();
   });
 
-  it("needs-human node does NOT show PR badge even with prUrl", () => {
+  it("needs-human node does NOT show PR badge even with delivery=pr-open", () => {
     mockSnapshotState = {
       ...mockSnapshotState,
       initiatives: [
         makeNode({
           id: "nh-pr",
-          activity: "needs-human",
+          // review flavor: pr-open + idle — needsHuman badge takes priority
+          delivery: "pr-open",
+          needsHuman: "review",
           initiative: {
             id: "nh-pr",
             title: "NH with PR",
