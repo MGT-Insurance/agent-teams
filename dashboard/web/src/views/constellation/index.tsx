@@ -148,10 +148,10 @@ const URGENCY_META: Record<
   UrgencyTier,
   { color: string; glowColor: string; r: number; cssClass: string; label: string; opacity: number }
 > = {
-  // "waiting" — agent paused on human input. Strongest orange, larger node.
+  // "waiting" — agent paused on human input. Shared orange family; stronger via pulse/size.
   waiting: {
-    color: "#ff3d00",
-    glowColor: "rgba(255,61,0,0.8)",
+    color: "#ff6b35",
+    glowColor: "rgba(255,107,53,0.8)",
     r: 20,
     cssClass: "node--waiting",
     label: "needs you",
@@ -716,7 +716,7 @@ function ConstellationLegend() {
       <div className="constellation-legend__section">urgency</div>
 
       <div className="constellation-legend__entry legend-entry--waiting">
-        <LegendDot color="#ff3d00" badge="!" />
+        <LegendDot color="#ff6b35" badge="!" />
         <span>agent waiting on you</span>
       </div>
 

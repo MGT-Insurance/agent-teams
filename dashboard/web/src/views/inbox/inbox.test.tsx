@@ -74,6 +74,17 @@ const genericItem: InboxItem = {
   prUrl: "https://github.com/org/repo/pull/99",
 };
 
+// kind="waiting" WITH a PR — agent blocked but initiative also has an open PR.
+// Delivery is orthogonal to flavor: the PR link must still appear.
+const waitingItemWithPr: InboxItem = {
+  initiativeId: "init-4",
+  title: "Specialty Products quote API",
+  kind: "waiting",
+  question: "CI GREEN on PR #3551 after rename + py-SDK fix.",
+  worktree: "/Users/ericlloyd/.worktrees/init-4",
+  prUrl: "https://github.com/MGT-Insurance/midgard/pull/3551",
+};
+
 beforeEach(() => {
   mockNavigate.mockReset();
   setInbox([]);
@@ -124,7 +135,7 @@ describe("InboxView — Waiting on you section (kind='waiting')", () => {
     expect(screen.getByText("Should we enable the feature flag for all users?")).toBeTruthy();
   });
 
-  it("does not render a PR link for waiting items (no prUrl)", () => {
+  it("does not render a PR link for waiting items with no prUrl", () => {
     renderInbox();
     expect(screen.queryByText(/view pr/i)).toBeNull();
   });
@@ -140,6 +151,47 @@ describe("InboxView — Waiting on you section (kind='waiting')", () => {
     renderInbox();
     const row = screen.getByRole("button", { name: /deploy canary to prod/i });
     expect(row.getAttribute("data-kind")).toBe("waiting");
+  });
+});
+
+describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => {
+  beforeEach(() => setInbox([waitingItemWithPr]));
+
+  it("renders the 'view PR' link for a waiting item that has a prUrl", () => {
+    renderInbox();
+    const link = screen.getByRole("link", { name: /view pr/i });
+    expect(link.getAttribute("href")).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  it("renders the PR chip alongside the 'agent waiting' badge", () => {
+    renderInbox();
+    const { container } = renderInbox();
+    // Badge label
+    const badges = container.querySelectorAll(".inbox-row__badge");
+    const badge = Array.from(badges).find((el) => el.textContent?.match(/agent waiting/i));
+    expect(badge).toBeTruthy();
+    // PR chip
+    const chip = container.querySelector(".inbox-row__pr-chip");
+    expect(chip).not.toBeNull();
+  });
+
+  it("still renders the 'agent waiting' badge (PR chip does not replace the flavor badge)", () => {
+    renderInbox();
+    expect(screen.getAllByText(/agent waiting/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("row has data-kind='waiting' (flavor badge takes precedence, not PR kind)", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /specialty products quote api/i });
+    expect(row.getAttribute("data-kind")).toBe("waiting");
+  });
+
+  it("item is placed in the 'Waiting on you' section, not 'Delivered — needs you'", () => {
+    renderInbox();
+    const waitingSection = screen.getByRole("region", { name: /waiting on you/i });
+    expect(waitingSection.querySelector("[data-kind='waiting']")).not.toBeNull();
+    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
 });
 

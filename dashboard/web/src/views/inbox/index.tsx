@@ -47,7 +47,8 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           {rowBadgeLabel(item.kind)}
         </span>
         <span className="inbox-row__title">{item.title}</span>
-        {(item.kind === "review" || item.kind === "generic") && item.prUrl && (
+        {/* PR link whenever a URL is present — delivery is orthogonal to flavor. */}
+        {item.prUrl && (
           <a
             href={item.prUrl}
             target="_blank"
@@ -57,6 +58,10 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           >
             view PR ↗
           </a>
+        )}
+        {/* PR chip on waiting items — makes the orthogonal delivery visible at a glance. */}
+        {item.kind === "waiting" && item.prUrl && (
+          <span className="inbox-row__pr-chip" aria-label="open PR">PR</span>
         )}
         {actionSlot && (
           <div className="inbox-row__action-slot">{actionSlot}</div>
