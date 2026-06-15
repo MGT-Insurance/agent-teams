@@ -49,7 +49,7 @@ This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. 
 
 An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the turn.
 
-- **Open match found -> resume:** recover state — the initiative's notes, `ateam human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh.
+- **Open match found -> resume:** recover state — the initiative's notes, `ateam human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh. When recovering a parked gate, check its kind: a **REVIEW** gate means the initiative delivered a PR awaiting merge — clear the gate (`ateam clear-gate <id>`) if the PR has since merged, then close; a **QUESTION** gate means a pending decision, handle normally.
 - **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
 - **No open match + problem statement given -> register:** create the initiative issue in the global workspace with the description schema (see references/registry.md). Status notes track phases. (A closed initiative for this cwd does NOT block registration — only the no-parameter path below surfaces it.)
 - **No open match + NO problem statement (no-parameter /dri) -> check for a closed match before giving up:**
@@ -79,7 +79,15 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 ## Phase 5 — Deliver
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then close the initiative (`merged: <PR URL>`). Absent that confirmation: status note `delivered` with the PR link, and leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it. Opening a PR is not completion. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.) After recording the registry note, proceed to Phase 6 teardown.
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing the initiative (`merged: <PR URL>`). Absent that confirmation: status note `delivered` with the PR link, leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it — and **MANDATORY: raise a REVIEW gate**:
+
+```bash
+# write note to temp file (no \n# in command string)
+# e.g.: "PR <url> ready for review"
+ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
+```
+
+This makes the dashboard show the initiative as REVIEW (awaiting PR merge), not just a generic needs-human. Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.) After recording the registry note and raising the review gate, proceed to Phase 6 teardown.
 
 ## Phase 6 — Teardown
 
