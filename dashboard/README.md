@@ -8,7 +8,7 @@ needing you, a live constellation of all teams, and drill-in detail with logs + 
 ```bash
 cd dashboard
 pnpm install   # first time only
-pnpm dev       # starts backend (:3001) + frontend (:5173) together
+pnpm dev       # starts backend (:4823) + frontend (:5173) together
 ```
 
 Then open **http://localhost:5173**. One command runs both processes (labeled

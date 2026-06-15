@@ -8,7 +8,7 @@
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
-// vite.config.ts proxy to forward /api/** to this server (default port 3001).
+// vite.config.ts proxy to forward /api/** to this server (default port 4823).
 // The static-serve fallback only activates when dashboard/web/dist/ exists.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -24,7 +24,7 @@ import { SnapshotManager } from "./snapshot.js";
 import { launchAttach, isValidSessionId } from "./attach.js";
 import { buildSnapshot } from "./snapshot.js";
 
-const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
+const PORT = parseInt(process.env["PORT"] ?? "4823", 10);
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // The web build output lives at dashboard/web/dist relative to server/src/.
 const WEB_DIST = join(__dirname, "..", "..", "web", "dist");
