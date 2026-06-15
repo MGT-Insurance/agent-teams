@@ -41,13 +41,27 @@ fi
 
 # 2. Pull Vercel-backed env (regenerates e.g. apps/shadowfax/.env.local).
 if [ -d "$WT/.vercel" ] && [ -d "$WT/node_modules" ]; then
-  ( cd "$WT" && pnpm env:pull )
-  echo "✓ pulled vercel env"
+  _env_pull_err="/tmp/midgard-setup-env-pull-$$.err"
+  if ( cd "$WT" && pnpm env:pull ) 2>"$_env_pull_err"; then
+    echo "✓ pulled vercel env"
+  else
+    _exit=$?
+    # Surface a clear message for the most common failure: missing auth.
+    if grep -qiE "no (existing )?credentials|not logged in|please run.*login|vercel login|VERCEL_TOKEN" "$_env_pull_err" 2>/dev/null; then
+      echo "✗ env:pull failed: vercel auth missing — run \`vercel login\` or set VERCEL_TOKEN" >&2
+    else
+      echo "✗ env:pull failed (exit $_exit) — see output above for details" >&2
+    fi
+    rm -f "$_env_pull_err"
+    exit "$_exit"
+  fi
+  rm -f "$_env_pull_err"
 elif [ -d "$WT/.vercel" ]; then
   echo "⚠ worktree has no node_modules — run 'pnpm install' then 'pnpm env:pull' for vercel-backed env"
 fi
 
-# 3. Copy local-only env files NOT covered by env:pull. Extend as needed.
+# 3. Copy local-only env files NOT covered by env:pull.
+#    Paths are relative to the repo root. Add new entries here as needed.
 LOCAL_ENV_FILES=(
   "apps/shadowfax/.env.development.local"
   "packages/socotra-config/.env.local"
