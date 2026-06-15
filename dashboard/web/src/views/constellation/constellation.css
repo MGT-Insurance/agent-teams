@@ -102,6 +102,7 @@
 .node--working .node-pulse {
   animation: pulse-working 2s ease-in-out infinite;
   transform-origin: center;
+  transform-box: fill-box;
 }
 
 @keyframes pulse-working {
@@ -116,11 +117,13 @@
 .node--needs-human .node-flare {
   animation: flare-ring 1.5s ease-out infinite;
   transform-origin: center;
+  transform-box: fill-box;
 }
 
 .node--needs-human .node-flare-2 {
   animation: flare-ring 1.5s ease-out infinite 0.4s;
   transform-origin: center;
+  transform-box: fill-box;
 }
 
 @keyframes flare-ring {
@@ -132,6 +135,7 @@
 .node--needs-human .node-pulse {
   animation: pulse-urgent 1.0s ease-in-out infinite;
   transform-origin: center;
+  transform-box: fill-box;
 }
 
 @keyframes pulse-urgent {

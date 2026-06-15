@@ -43,11 +43,38 @@ const URGENCY_RADIUS_FRACTION: Record<UrgencyTier, number> = {
 // Orphans live at the rim with done nodes but visually distinct.
 const ORPHAN_RADIUS_FRACTION = 0.73;
 
-// Stable deterministic angle from an id string (0 to 2π).
-function stableAngle(id: string): number {
+// Stable deterministic hash → [0, 1) used for sort-order and jitter.
+function stableHash(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return (h % 36000) * (Math.PI / 18000); // 0 to 2π with fine resolution
+  return h / 0xffffffff;
+}
+
+// Lay out a list of items evenly around a circle at the given radius.
+// Items are sorted by their hash (stable order across refreshes), then
+// assigned angle = i*(2π/n) + small per-id jitter so the spacing is
+// guaranteed (no two nodes < 2π/n apart) but the exact positions feel
+// organic rather than mechanical.
+function evenTierAngles(ids: string[]): Map<string, number> {
+  const n = ids.length;
+  if (n === 0) return new Map();
+
+  // Sort by hash for a stable, deterministic order.
+  const sorted = [...ids].sort((a, b) => stableHash(a) - stableHash(b));
+
+  const result = new Map<string, number>();
+  const slice = (2 * Math.PI) / n;
+  // Max jitter: ±20% of the slice, so nodes can't get closer than 60% of a slice.
+  const maxJitter = slice * 0.20;
+
+  sorted.forEach((id, i) => {
+    const base = i * slice;
+    // Per-id jitter in [-maxJitter, +maxJitter]
+    const jitter = (stableHash(id + "jitter") - 0.5) * 2 * maxJitter;
+    result.set(id, base + jitter);
+  });
+
+  return result;
 }
 
 function urgencyOrbitalLayout(
@@ -60,11 +87,31 @@ function urgencyOrbitalLayout(
   initiatives: Array<{ node: InitiativeNode; urgency: UrgencyTier; x: number; y: number }>;
   orphans: Array<{ session: SessionState; x: number; y: number }>;
 } {
-  const initiatives = nodes.map((node) => {
+  // Group node ids by urgency tier so we can spread each tier evenly.
+  const tierGroups = new Map<UrgencyTier, string[]>();
+  const nodeUrgency = new Map<string, UrgencyTier>();
+  for (const node of nodes) {
     const urgency = deriveUrgency(node);
+    nodeUrgency.set(node.initiative.id, urgency);
+    const g = tierGroups.get(urgency) ?? [];
+    g.push(node.initiative.id);
+    tierGroups.set(urgency, g);
+  }
+
+  // Compute evenly-distributed angles per tier.
+  const angleMap = new Map<string, number>();
+  for (const [, ids] of tierGroups) {
+    const angles = evenTierAngles(ids);
+    for (const [id, angle] of angles) {
+      angleMap.set(id, angle);
+    }
+  }
+
+  const initiatives = nodes.map((node) => {
+    const urgency = nodeUrgency.get(node.initiative.id) ?? deriveUrgency(node);
     const fraction = URGENCY_RADIUS_FRACTION[urgency];
     const radius = shortSide * fraction;
-    const angle = stableAngle(node.initiative.id);
+    const angle = angleMap.get(node.initiative.id) ?? stableHash(node.initiative.id) * 2 * Math.PI;
     return {
       node,
       urgency,
@@ -73,9 +120,11 @@ function urgencyOrbitalLayout(
     };
   });
 
+  // Orphans: also even-distribute around the orphan radius.
+  const orphanAngles = evenTierAngles(orphans.map((s) => s.sessionId));
   const orphanNodes = orphans.map((session) => {
     const radius = shortSide * ORPHAN_RADIUS_FRACTION;
-    const angle = stableAngle(session.sessionId);
+    const angle = orphanAngles.get(session.sessionId) ?? stableHash(session.sessionId) * 2 * Math.PI;
     return {
       session,
       x: cx + radius * Math.cos(angle),
