@@ -377,6 +377,111 @@ func TestAttribute_dedupeBySessionID(t *testing.T) {
 	}
 }
 
+// TestAttribute_dedupeByMessageID verifies that duplicate JSONL lines sharing the
+// same message.id are counted exactly once, while records with no message.id
+// still accumulate (the existing fixture relies on this).
+//
+// Fixture layout (single session, main transcript only):
+//   - assistant turn with message.id="msg-X", emitted TWICE (identical usage)
+//   - assistant turn with message.id="msg-Y", emitted once
+//   - assistant record with NO message.id (must accumulate regardless)
+//
+// Expected: X tokens counted once, Y once, id-less record once — not 2× for X.
+func TestAttribute_dedupeByMessageID(t *testing.T) {
+	const id = "test-init-dedup-msgid"
+	root := t.TempDir()
+	jobsDir := filepath.Join(root, "jobs")
+	projectsDir := filepath.Join(root, "projects")
+
+	cwd := "/Users/testuser/worktrees/dedup-msgid"
+	sessionID := "ccccdddd-0000-1111-2222-333344445555"
+
+	// Write state.json.
+	jobDir := filepath.Join(jobsDir, "job1")
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stateData, _ := json.Marshal(map[string]string{
+		"intent":    "/dri " + id,
+		"sessionId": sessionID,
+		"cwd":       cwd,
+	})
+	if err := os.WriteFile(filepath.Join(jobDir, "state.json"), stateData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build the project dir.
+	slug := SlugifyCWD(cwd)
+	projDir := filepath.Join(projectsDir, slug)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn X: emitted twice with identical usage. After dedup: input=100, output=40.
+	turnX := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"id":    "msg-X",
+			"role":  "assistant",
+			"model": "claude-opus-4-8",
+			"usage": map[string]any{
+				"input_tokens":  int64(100),
+				"output_tokens": int64(40),
+			},
+		},
+	}
+	// Turn Y: single occurrence. input=200, output=80.
+	turnY := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"id":    "msg-Y",
+			"role":  "assistant",
+			"model": "claude-opus-4-8",
+			"usage": map[string]any{
+				"input_tokens":  int64(200),
+				"output_tokens": int64(80),
+			},
+		},
+	}
+	// No id: must always accumulate. input=50, output=20.
+	noID := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"role":  "assistant",
+			"model": "claude-opus-4-8",
+			"usage": map[string]any{
+				"input_tokens":  int64(50),
+				"output_tokens": int64(20),
+			},
+		},
+	}
+
+	// Write: X, X (duplicate), Y, noID — X appears twice.
+	writeJSONL(t, filepath.Join(projDir, sessionID+".jsonl"), []any{turnX, turnX, turnY, noID}, "")
+
+	report, err := Attribute(id, jobsDir, projectsDir)
+	if err != nil {
+		t.Fatalf("Attribute error: %v", err)
+	}
+
+	opus, ok := findModel(report, "claude-opus-4-8")
+	if !ok {
+		t.Fatal("claude-opus-4-8 not found in report")
+	}
+
+	// X counted once (100), Y once (200), noID once (50) → 350 total.
+	// If X is double-counted the total would be 450 — this guards regression.
+	wantInput := int64(100 + 200 + 50)
+	if opus.InputTokens != wantInput {
+		t.Errorf("InputTokens=%d, want %d (X must be deduped to one occurrence)", opus.InputTokens, wantInput)
+	}
+
+	wantOutput := int64(40 + 80 + 20)
+	if opus.OutputTokens != wantOutput {
+		t.Errorf("OutputTokens=%d, want %d", opus.OutputTokens, wantOutput)
+	}
+}
+
 // modelNames returns model strings from r.ByModel for diagnostic messages.
 func modelNames(r Report) []string {
 	names := make([]string, len(r.ByModel))
