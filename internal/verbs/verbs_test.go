@@ -16,6 +16,8 @@ var allVerbs = []string{
 	"register", "note", "gate", "clear-gate", "learn", "close", "reopen", "sync",
 	// Track D
 	"new-initiative", "dispatch",
+	// Track GO
+	"worktree-setup",
 }
 
 func buildRegistry() cli.Registry {
@@ -24,6 +26,7 @@ func buildRegistry() cli.Registry {
 	verbs.RegisterMatch(reg)
 	verbs.RegisterWrite(reg)
 	verbs.RegisterDispatch(reg)
+	verbs.RegisterWorktreeSetup(reg)
 	return reg
 }
 
