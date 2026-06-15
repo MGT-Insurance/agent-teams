@@ -41,7 +41,7 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 ## Concepts
 
 - **Global workspace** (`${AGENT_TEAMS_HOME:-$HOME/.agent-teams}`): a git-backed beads workspace. Role learnings (`<role>:<slug>` memories — every planner learns from every planner) and the initiative registry (one issue per initiative; `bd human` flags = "waiting on a human"). Syncs across machines via its git remote.
-- **Roles:** planner (opus) plans as beads; implementers (sonnet, ephemeral) write code + unit tests in isolated worktrees; tester runs suites + live verification; reviewer reviews independently and runs the CI gate. All file `discovery` beads; the DRI triages them.
+- **Roles:** planner (opus) plans as beads; implementers (sonnet, ephemeral) write code + unit tests in isolated worktrees; tester runs suites + live verification (including Playwright MCP browser tools for UI checks — available in `claude --bg` sessions via MCP inheritance); reviewer reviews independently and runs the CI gate. All file `discovery` beads; the DRI triages them.
 - **Prime directive:** deliver a PR that solves the problem — investigating beats asking; asking beats delivering wrong.
 - **Lifecycle:** the DRI drives to an opened PR, then leaves the initiative open in an `awaiting-merge` state; a resume after the PR merges closes it out. Opening the PR is delivery — merging is yours.
 

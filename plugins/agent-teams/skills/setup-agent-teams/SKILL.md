@@ -192,7 +192,27 @@ in `~/.claude/settings.json`:
 With 6a–6c in place, an interactive DRI runs its integration git silently and only
 prompts the human for genuinely destructive operations.
 
-## 7. Smoke test
+## 7. Playwright MCP (tester live-UI verification)
+
+The plugin ships a Playwright MCP server via `plugins/agent-teams/.mcp.json` (server name: `playwright`, runs `npx -y @playwright/mcp@latest`). The tester role uses it for live browser verification, including in `claude --bg` headless sessions — MCP servers connected at the session level propagate to subagents automatically.
+
+**Prerequisite:** `npx` (Node.js) must be on PATH. The first `browser_navigate` call will trigger a one-time Playwright browser download. To pre-install and avoid that delay:
+
+```bash
+npx playwright install chromium
+```
+
+No credentials or auth required.
+
+**Smoke check (prefix-tolerant):** after a DRI session is running, confirm a Playwright MCP tool is available. The exact prefix depends on how Claude Code normalizes the plugin name at runtime — look for a connected tool whose name *contains* `playwright`:
+
+```
+/tools | grep playwright
+```
+
+If any `playwright`-prefixed tool appears in the list, the MCP server is connected and the tester can use `browser_navigate` and related tools for live UI verification.
+
+## 8. Smoke test
 
 Run on BOTH paths (clone or fresh) after step 6 completes.
 
@@ -222,7 +242,7 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ateam sync
    ```
 
-## 8. Verify memory-routing hook is active
+## 9. Verify memory-routing hook is active
 
 The agent-teams plugin ships a `block-claude-memory-writes.sh` PreToolUse hook that is **automatically registered from `hooks.json`** — no install step is needed. This step verifies it is active, not re-installs it.
 
@@ -234,6 +254,6 @@ Run both probes and confirm the results match expectations:
 
 If Probe A is not denied, the plugin hooks are not loading — confirm the plugin is installed (`~/.claude/settings.json` has the agent-teams plugin listed) and that `hooks.json` contains the `PreToolUse` block. Do NOT copy or re-register the hook manually; diagnose why plugin hook loading failed.
 
-## 9. Report
+## 10. Report
 
 Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, hook-verify results, and that `/dri` is ready to use.
