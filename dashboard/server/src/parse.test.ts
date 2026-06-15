@@ -361,6 +361,99 @@ describe("derivePhase", () => {
   it("returns active as fallback", () => {
     expect(derivePhase("session 1\nsomething unrecognised")).toBe("active");
   });
+
+  // ---- regression: no-notes / undefined safety (agent-teams-cbe) ----
+  it("returns active for empty string without throwing", () => {
+    expect(derivePhase("")).toBe("active");
+  });
+
+  it("returns active for undefined without throwing (defensive guard)", () => {
+    // Cast to string to simulate a runtime call-site that bypassed parseInitiative.
+    expect(derivePhase(undefined as unknown as string)).toBe("active");
+  });
+
+  it("returns active for null without throwing (defensive guard)", () => {
+    expect(derivePhase(null as unknown as string)).toBe("active");
+  });
+});
+
+// ---- parseInitiative: no-notes resilience (agent-teams-cbe) -----------------
+
+describe("parseInitiative — no-notes resilience", () => {
+  it("normalises missing notes to empty string", () => {
+    const raw: RawInitiative = {
+      ...RAW_AT_V4E,
+      notes: undefined as unknown as string,
+    };
+    const parsed = parseInitiative(raw);
+    expect(parsed.notes).toBe("");
+  });
+
+  it("normalises missing description to empty string", () => {
+    const raw: RawInitiative = {
+      ...RAW_AT_V4E,
+      description: undefined as unknown as string,
+    };
+    const parsed = parseInitiative(raw);
+    expect(parsed.description).toBe("");
+  });
+
+  it("still extracts a prUrl when notes is present", () => {
+    // Regression: the coercion must not lose real notes data.
+    const parsed = parseInitiative(RAW_AT_V4E);
+    expect(parsed.notes).toBe(RAW_AT_V4E.notes);
+    expect(parsed.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+  });
+});
+
+// ---- buildInitiativeNodes: per-initiative resilience (agent-teams-cbe) ------
+
+describe("buildInitiativeNodes — per-initiative resilience", () => {
+  const sessions = parseClaudeAgents(REAL_SESSIONS_JSON);
+
+  it("returns a snapshot including a no-notes initiative rather than throwing", () => {
+    // Simulate at-3rw: freshly dispatched, notes === undefined at the registry level.
+    const noNotes: ParsedInitiative = {
+      ...parseInitiative(RAW_AT_V4E),
+      id: "at-3rw",
+      notes: undefined as unknown as string,
+    };
+    const good = parseInitiative(RAW_AT_2JH);
+
+    // Must not throw.
+    let nodes: ReturnType<typeof buildInitiativeNodes>;
+    expect(() => {
+      nodes = buildInitiativeNodes([noNotes, good], sessions, new Set());
+    }).not.toThrow();
+
+    // Both initiatives present in output.
+    expect(nodes!).toHaveLength(2);
+    expect(nodes!.some((n) => n.initiative.id === "at-3rw")).toBe(true);
+    expect(nodes!.some((n) => n.initiative.id === "at-2jh")).toBe(true);
+  });
+
+  it("healthy initiatives are unaffected when one throws", () => {
+    // Force a throw by injecting an initiative whose status accessor blows up.
+    const throws: ParsedInitiative = {
+      ...parseInitiative(RAW_AT_V4E),
+      id: "bad-one",
+      // Getter that throws when status.toLowerCase() is called inside deriveDelivery.
+      get status(): string { throw new Error("simulated bad data"); },
+    };
+    const good = parseInitiative(RAW_AT_2JH);
+    const nodes = buildInitiativeNodes([throws, good], sessions, new Set());
+
+    // good initiative still present and correct.
+    expect(nodes).toHaveLength(2);
+    const goodNode = nodes.find((n) => n.initiative.id === "at-2jh");
+    expect(goodNode?.delivery).toBe("pr-open");
+
+    // bad-one degrades to minimal safe node.
+    const badNode = nodes.find((n) => n.initiative.id === "bad-one");
+    expect(badNode?.activity).toBe("idle");
+    expect(badNode?.needsHuman).toBe(false);
+    expect(badNode?.session).toBeNull();
+  });
 });
 
 // ---- buildInbox (two-dimension model) ---------------------------------------

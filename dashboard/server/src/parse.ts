@@ -44,17 +44,26 @@ function parseDescriptionFields(
 // fields from the description text and finding the first PR URL in
 // notes + description.
 export function parseInitiative(raw: RawInitiative): ParsedInitiative {
-  const fields = parseDescriptionFields(raw.description);
+  // notes and description are typed as string but the registry can emit undefined
+  // for freshly-created initiatives that have no NOTES section yet.  Coerce to ""
+  // here so every downstream function receives a guaranteed string.
+  const notes = raw.notes ?? "";
+  const description = raw.description ?? "";
+
+  const fields = parseDescriptionFields(description);
 
   // Extract the problem line — the very first line of description often
   // starts with "problem: ...".
   const problem = (fields["problem"] ?? "").trim();
 
   // PR URL may appear in notes (later entries) or description.
-  const prUrl = extractPrUrl(raw.notes) ?? extractPrUrl(raw.description);
+  const prUrl = extractPrUrl(notes) ?? extractPrUrl(description);
 
   return {
     ...raw,
+    // Normalise notes/description so downstream code always has real strings.
+    notes,
+    description,
     problem,
     repo: fields["repo"] ?? "",
     worktree: fields["worktree"] ?? "",
@@ -230,7 +239,9 @@ const PHASE_KEYWORDS: [RegExp, string][] = [
 
 export function derivePhase(notes: string): string {
   // Latest entry is the last non-empty line of notes.
-  const latestEntry = notes.split("\n").filter((l) => l.trim()).pop() ?? "";
+  // Guard against undefined/null passed in from call sites that haven't gone
+  // through parseInitiative (e.g. direct test helpers or future callers).
+  const latestEntry = (notes ?? "").split("\n").filter((l) => l.trim()).pop() ?? "";
   for (const [re, phase] of PHASE_KEYWORDS) {
     if (re.test(latestEntry)) return phase;
   }
@@ -239,27 +250,47 @@ export function derivePhase(notes: string): string {
 
 // Join initiatives with sessions: session.cwd === initiative.worktree.
 // humanGatedIds is the set of initiative IDs returned by `bd list --label human`.
+//
+// RESILIENCE: each initiative is processed independently.  If deriving state for
+// one initiative throws (e.g. malformed data from a freshly-registered entry), that
+// initiative degrades to a minimal safe node and a warning is logged.  The rest of
+// the snapshot is unaffected — the dashboard stays live.
 export function buildInitiativeNodes(
   initiatives: ParsedInitiative[],
   sessions: SessionState[],
   humanGatedIds: Set<string>,
 ): InitiativeNode[] {
   return initiatives.map((initiative) => {
-    const session =
-      sessions.find(
-        (s) => s.kind === "background" && s.cwd === initiative.worktree,
-      ) ?? null;
+    try {
+      const session =
+        sessions.find(
+          (s) => s.kind === "background" && s.cwd === initiative.worktree,
+        ) ?? null;
 
-    const isHumanGated = humanGatedIds.has(initiative.id);
-    const activity = deriveActivity(initiative, session, isHumanGated);
-    const phase = derivePhase(initiative.notes);
+      const isHumanGated = humanGatedIds.has(initiative.id);
+      const activity = deriveActivity(initiative, session, isHumanGated);
+      const phase = derivePhase(initiative.notes);
 
-    // Two-dimension state model fields (agent-teams-blo).
-    const delivery = deriveDelivery(initiative);
-    const signal = deriveSessionSignal(session);
-    const needsHuman = deriveNeedsHuman(delivery, signal, isHumanGated);
+      // Two-dimension state model fields (agent-teams-blo).
+      const delivery = deriveDelivery(initiative);
+      const signal = deriveSessionSignal(session);
+      const needsHuman = deriveNeedsHuman(delivery, signal, isHumanGated);
 
-    return { initiative, session, activity, phase, delivery, needsHuman };
+      return { initiative, session, activity, phase, delivery, needsHuman };
+    } catch (err) {
+      console.warn(
+        `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // Minimal safe node: idle, no session, no PR, no needs-human.
+      return {
+        initiative,
+        session: null,
+        activity: "idle" as const,
+        phase: "active",
+        delivery: "none" as const,
+        needsHuman: false as const,
+      };
+    }
   });
 }
 
