@@ -55,7 +55,7 @@ After `pnpm install` in a fresh worktree, the implementer runs:
 ateam worktree-setup <abs-worktree-path>
 ```
 
-The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>` (repo-key = slugified basename of the repo root). If a hook file exists, its contents (the absolute path to the repo's setup script) are used to run `<script> <wtPath> <srcCheckout>`. The script receives both the new worktree path and the source checkout path as arguments, so it can copy gitignored files and pull creds without modifying the source repo.
+The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>` (repo-key = slugified basename of the main checkout (the source checkout behind the worktree)). If a hook file exists, its contents (the absolute path to the repo's setup script) are used to run `<script> <wtPath> <srcCheckout>`. The script receives both the new worktree path and the source checkout path as arguments, so it can copy gitignored files and pull creds without modifying the source repo.
 
 **Non-fatal by design.** A missing hook file prints an informational message and exits 0. A script failure prints a loud warning to stderr but the verb still exits 0 — a broken hook never blocks worktree creation.
 

@@ -216,13 +216,13 @@ If any `playwright`-prefixed tool appears in the list, the MCP server is connect
 
 After a fresh worktree is created and deps are installed, `ateam worktree-setup <wtPath>` provisions any gitignored env wiring the repo needs (e.g. `.vercel` link, env files). The verb is a no-op unless a hook is registered for the repo. Registration is optional and non-fatal: absent or failed hooks never block worktree creation.
 
-**How it works.** The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>`. The repo-key is the slugified basename of the repo root — the same identity dispatch uses for team names. If the file exists, its single line (trimmed) is treated as the absolute path to the repo's setup script; the verb runs `<script> <wtPath> <srcCheckout>`. No file → harmless "no hook configured" message.
+**How it works.** The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>`. The repo-key is the slugified basename of the main checkout (the source checkout behind the worktree) — the same identity dispatch uses for team names. If the file exists, its single line (trimmed) is treated as the absolute path to the repo's setup script; the verb runs `<script> <wtPath> <srcCheckout>`. No file → harmless "no hook configured" message.
 
 **To register a repo**, write the hook file containing the absolute path to the repo's setup script:
 
 ```bash
 # Example: registering the midgard repo
-# repo-key = Slugify(basename of midgard repo root), e.g. "midgard"
+# repo-key = Slugify(basename of midgard main checkout), e.g. "midgard"
 echo /abs/path/to/agent-teams/scripts/midgard-worktree-setup.sh \
   > ~/.agent-teams/worktree-hooks/midgard
 ```
