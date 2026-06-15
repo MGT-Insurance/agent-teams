@@ -65,6 +65,7 @@ fi
 LOCAL_ENV_FILES=(
   "apps/shadowfax/.env.development.local"
   "packages/socotra-config/.env.local"
+  "packages/ngrok/.env.local"
 )
 for rel in "${LOCAL_ENV_FILES[@]}"; do
   if [ -f "$SRC/$rel" ]; then
