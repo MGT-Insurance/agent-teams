@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // fakeWTGit implements wtGitRunner for tests.

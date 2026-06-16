@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/cli"
-	"github.com/erlloyd/agent-teams/internal/cost"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/cost"
 )
 
 // fakeReport builds a cost.Report for use in rendering tests without live data.

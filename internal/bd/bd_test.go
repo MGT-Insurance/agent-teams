@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/bd"
 )
 
 // fakeExec builds an ExecFunc that returns a fixed response for "bd" calls.

@@ -1,3 +1,3 @@
-module github.com/erlloyd/agent-teams
+module github.com/mgt-insurance/agent-teams
 
 go 1.26

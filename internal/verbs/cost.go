@@ -9,8 +9,8 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/erlloyd/agent-teams/internal/cli"
-	"github.com/erlloyd/agent-teams/internal/cost"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/cost"
 )
 
 // RegisterCost registers the cost verb.

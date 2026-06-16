@@ -10,7 +10,7 @@ Multi-agent software delivery for Claude Code. One session acts as the **DRI** (
 ## Install
 
 ```
-/plugin marketplace add erlloyd/agent-teams
+/plugin marketplace add mgt-insurance/agent-teams
 /plugin install agent-teams@agent-teams
 /setup-agent-teams        # one-time per machine: creates/clones the global workspace
 ```
