@@ -3,8 +3,8 @@ package verbs_test
 import (
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/cli"
-	"github.com/erlloyd/agent-teams/internal/verbs"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/verbs"
 )
 
 var allVerbs = []string{

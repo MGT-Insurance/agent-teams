@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/bd"
-	"github.com/erlloyd/agent-teams/internal/cli"
-	"github.com/erlloyd/agent-teams/internal/verbs"
+	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/verbs"
 )
 
 // newCtx builds a cli.Context backed by a fake bd.Client that responds to

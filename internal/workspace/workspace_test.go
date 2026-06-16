@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/workspace"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
 
 func TestHomeDefault(t *testing.T) {

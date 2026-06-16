@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/erlloyd/agent-teams/internal/bd"
-	"github.com/erlloyd/agent-teams/internal/cli"
-	"github.com/erlloyd/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 )
 
 // RegisterDispatch registers the dispatch verbs:

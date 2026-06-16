@@ -5,8 +5,8 @@ package verbs
 import (
 	"fmt"
 
-	"github.com/erlloyd/agent-teams/internal/bd"
-	"github.com/erlloyd/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // RegisterQuery registers the read/query verbs:

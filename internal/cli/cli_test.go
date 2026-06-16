@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/erlloyd/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 func TestExitCode(t *testing.T) {
