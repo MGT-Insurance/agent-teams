@@ -2,7 +2,7 @@
 
 ## Team
 
-- `TeamCreate` with the team slug from preflight. Spawn members with the Agent tool: `subagent_type: "agent-teams:<role>"`, `team_name`, a human-readable `name`, `run_in_background: true`, and **`mode: "bypassPermissions"`**. The bypass mode is required for hands-off operation — backgrounded teammates must run without permission prompts.
+- No team-creation step — the team forms automatically when you spawn the first teammate (one implicit, session-scoped team; the pre-v2.1.178 `TeamCreate`/`TeamDelete` tools no longer exist). Spawn members with the Agent tool: `subagent_type: "agent-teams:<role>"`, a human-readable `name`, `run_in_background: true`, and **`mode: "bypassPermissions"`**. Do NOT pass `team_name` — the harness accepts but ignores it (there is one implicit team per session). The bypass mode is required for hands-off operation — backgrounded teammates must run without permission prompts.
 - Safety under bypass: role rules (never push/merge/deploy — DRI-only) and worktree isolation remain the guardrails. Bypass removes prompts, not role discipline.
 - Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and "report to team-lead; ping immediately on blockers or design ambiguity — never guess." Also tell every spawned agent: **NEVER call `EnterWorktree`. A non-isolated teammate shares the lead's session cwd, so your `EnterWorktree` drifts the LEAD's cwd — the harness re-applies the pin before every Bash call, and the lead can't escape it. Work via absolute paths and `git -C <your-worktree-abs-path>`; never `cd` or `EnterWorktree` into your worktree.**
 - Models: planner=opus, others=sonnet (the agent defaults) unless the human directed otherwise.

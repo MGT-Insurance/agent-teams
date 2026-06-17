@@ -67,7 +67,7 @@ bd -C ~/.agent-teams dolt push
 
 ## 4. Enable team orchestration (REQUIRED)
 
-The DRI's `TeamCreate` / team-join model requires the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var to be set. Without it, `TeamCreate` silently no-ops and the DRI cannot orchestrate a background team at Phase 4.
+The DRI's team-orchestration model (team-joined background spawns + `SendMessage` peer messaging) requires the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var to be set. Without it, teammates cannot join a team or message each other, and the DRI cannot orchestrate a background team at Phase 4. There is no separate team-creation step — with the env var set, the team forms automatically when the first teammate is spawned (the pre-v2.1.178 `TeamCreate`/`TeamDelete` tools no longer exist).
 
 Tell the human to add the following to the `env` block of `~/.claude/settings.json`:
 
