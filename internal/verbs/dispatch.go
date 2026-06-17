@@ -294,7 +294,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 func worktreePath(description string) string {
 	for _, line := range strings.Split(description, "\n") {
 		if strings.HasPrefix(line, "worktree: ") {
-			return strings.TrimPrefix(line, "worktree: ")
+			return strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
 		}
 	}
 	return ""
@@ -309,7 +309,7 @@ func (c *resumeCommand) Name() string { return "resume" }
 // background DRI session in its registered worktree via launchBGSession.
 func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
-		return fmt.Errorf("ateam resume: not implemented")
+		return fmt.Errorf("ateam resume: nil context")
 	}
 	if len(args) == 0 || args[0] == "" {
 		return cli.Usagef("ateam resume: missing <id>")

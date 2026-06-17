@@ -43,6 +43,14 @@ func TestWorktreePath_EmptyDescription(t *testing.T) {
 	}
 }
 
+func TestWorktreePath_TrailingCR(t *testing.T) {
+	desc := "worktree: /wt/path\r\nbranch: x\n"
+	got := worktreePath(desc)
+	if got != "/wt/path" {
+		t.Errorf("got %q, want %q", got, "/wt/path")
+	}
+}
+
 // ---- resumeCommand: nil context --------------------------------------------
 
 func TestResume_NilContext(t *testing.T) {
