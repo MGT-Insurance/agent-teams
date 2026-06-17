@@ -218,12 +218,9 @@ func TestResume_MissingClaude(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: happy path (claude present) ----------------------------
+// ---- resumeCommand: happy path (stubbed launch) ----------------------------
 
 func TestResume_HappyPath(t *testing.T) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skip("claude not in PATH; skipping happy-path test")
-	}
 	dir := t.TempDir()
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -235,20 +232,26 @@ func TestResume_HappyPath(t *testing.T) {
 			return nil
 		},
 	}
+
+	var launchedDir, launchedArg string
+	orig := launchSession
+	launchSession = func(_ *cli.Context, d, arg string) error {
+		launchedDir = d
+		launchedArg = arg
+		return nil
+	}
+	t.Cleanup(func() { launchSession = orig })
+
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 	cmd := &resumeCommand{}
 
-	// We can't prevent claude --bg from running in a test, so only confirm
-	// that all pre-flight guardrails pass (no exit-1/2/3 before the launch).
-	// The actual launch will either succeed or fail depending on the environment;
-	// we only care that the guardrail path produced no silent error.
-	err := cmd.Run(ctx, []string{"at-happy1"})
-	if err != nil {
-		code := cli.ExitCode(err)
-		if code == 1 || code == 2 {
-			t.Errorf("guardrail fired unexpectedly (exit %d): %v", code, err)
-		}
-		// exit 3 (claude not found) is skipped above, so any remaining error
-		// is from the actual launch — acceptable in a unit test environment.
+	if err := cmd.Run(ctx, []string{"at-happy1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if launchedDir != dir {
+		t.Errorf("launch dir = %q, want %q", launchedDir, dir)
+	}
+	if launchedArg != "at-happy1" {
+		t.Errorf("launch driArg = %q, want %q", launchedArg, "at-happy1")
 	}
 }

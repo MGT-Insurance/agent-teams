@@ -81,6 +81,10 @@ func bgSessionArgs(name, driArg string) []string {
 	}
 }
 
+// launchSession is the package-level seam for launching a background DRI
+// session. Tests override it to avoid spawning a real claude process.
+var launchSession = launchBGSession
+
 // launchBGSession checks for claude, derives the session name from dir's
 // basename, and launches: claude --bg -n <name> --permission-mode
 // bypassPermissions --append-system-prompt <memoryRoutingRule> "/dri <driArg>"
@@ -255,7 +259,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 
 	// 8. Launch background DRI unless --no-launch.
 	if !*noLaunch {
-		if err := launchBGSession(ctx, wtPath, issue.ID); err != nil {
+		if err := launchSession(ctx, wtPath, issue.ID); err != nil {
 			return fmt.Errorf("dispatch: launch: %w", err)
 		}
 	}
@@ -334,5 +338,5 @@ func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
 		return cli.Silent(1)
 	}
 
-	return launchBGSession(ctx, dir, id)
+	return launchSession(ctx, dir, id)
 }
