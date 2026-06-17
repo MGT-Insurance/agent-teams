@@ -15,10 +15,11 @@ import (
 )
 
 // RegisterDispatch registers the dispatch verbs:
-// new-initiative, dispatch.
+// new-initiative, dispatch, resume.
 func RegisterDispatch(reg cli.Registry) {
 	reg.Register(&newInitiativeCommand{})
 	reg.Register(&dispatchCommand{git: gitutil.New()})
+	reg.Register(&resumeCommand{})
 }
 
 // ---- new-initiative --------------------------------------------------------
@@ -280,4 +281,58 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 		fmt.Fprintf(ctx.Stdout, "  claude stop %s         # abort it early\n", sessionName)
 	}
 	return nil
+}
+
+// ---- resume ----------------------------------------------------------------
+
+// worktreePath extracts the value of the first "worktree: <path>" line from
+// description. Returns "" if no such line is present.
+func worktreePath(description string) string {
+	for _, line := range strings.Split(description, "\n") {
+		if strings.HasPrefix(line, "worktree: ") {
+			return strings.TrimPrefix(line, "worktree: ")
+		}
+	}
+	return ""
+}
+
+type resumeCommand struct{}
+
+func (c *resumeCommand) Name() string { return "resume" }
+
+// Run implements: resume <id>
+// Looks up the open initiative by id, validates it, and re-launches a
+// background DRI session in its registered worktree via launchBGSession.
+func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam resume: not implemented")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam resume: missing <id>")
+	}
+	id := args[0]
+
+	var issue bd.Issue
+	if err := ctx.BD.RunJSON(&issue, "show", id, "--json"); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: no such initiative: %s\n", id)
+		return cli.Silent(1)
+	}
+
+	if issue.Status == "closed" {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s is closed — use ateam reopen first if you want to resume it\n", id)
+		return cli.Silent(1)
+	}
+
+	dir := worktreePath(issue.Description)
+	if dir == "" {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", id)
+		return cli.Silent(1)
+	}
+
+	if _, err := os.Stat(dir); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: worktree path does not exist: %s\n", dir)
+		return cli.Silent(1)
+	}
+
+	return launchBGSession(ctx, dir, id)
 }

@@ -22,6 +22,7 @@ Multi-agent software delivery for Claude Code. One session acts as the **DRI** (
 - `/dri <problem statement>` — make the current session the DRI for an initiative and run it end-to-end in the current worktree. Interactive: you approve the plan and answer load-bearing questions.
 - `/dri` in a worktree with an open initiative — resume it.
 - `/dri-dispatch <problem statement>` — register a *new* initiative in its own worktree and hand it to a hands-off background DRI. Use it to split off separable work without derailing what you're on; the dispatched DRI drives its own initiative to a PR independently.
+- `ateam resume <id>` — one-command re-launch of a parked or interrupted background initiative by id. Looks up the registered worktree, validates the initiative is still open, and fires a new background DRI session in it.
 - `/initiatives` — machine-wide dashboard: what's running, what's parked waiting on you.
 
 ### Headless spawn

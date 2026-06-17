@@ -210,6 +210,36 @@ echo "$id_only_out" | grep -qE '^at-' \
 dispatch_wt2="$AGENT_TEAMS_HOME-worktrees/add-a-redo-stack"
 [ -d "$dispatch_wt2" ] && git -C "$dispatch_repo2" worktree remove --force "$dispatch_wt2" || true
 
+# ── Case 19: resume guardrails ───────────────────────────────────────────────
+# 19a: missing arg → exit 2
+ec19a=0; ateam resume 2>/dev/null || ec19a=$?
+[ "$ec19a" -eq 2 ] \
+  || { echo "FAIL case19a: resume with no arg exited $ec19a, want 2"; exit 1; }
+
+# 19b: unknown id → exit 1
+ec19b=0; ateam resume at-nosuchid-99999 2>/dev/null || ec19b=$?
+[ "$ec19b" -eq 1 ] \
+  || { echo "FAIL case19b: resume with unknown id exited $ec19b, want 1"; exit 1; }
+
+# 19c: closed initiative → exit 1
+# Register an initiative and immediately close it, then confirm resume refuses.
+printf 'problem: closed-resume-test\nrepo: %s\nworktree: %s/wt-cr\nbranch: feat/cr\nteam: alpha\nmode: interactive\n' \
+  "$T" "$T" > "$T/closed-resume-body.md"
+cr_id=$(ateam register --title "Closed Resume Test" --file "$T/closed-resume-body.md")
+ateam close "$cr_id" >/dev/null
+ec19c=0; ateam resume "$cr_id" 2>/dev/null || ec19c=$?
+[ "$ec19c" -eq 1 ] \
+  || { echo "FAIL case19c: resume of closed initiative exited $ec19c, want 1"; exit 1; }
+
+# 19d: open initiative with a worktree path that does not exist → exit 1
+# Register an initiative with a worktree path that is never created.
+printf 'problem: missing-wt-test\nrepo: %s\nworktree: /no/such/path/ever\nbranch: feat/mwt\nteam: alpha\nmode: interactive\n' \
+  "$T" > "$T/missing-wt-body.md"
+mwt_id=$(ateam register --title "Missing WT Test" --file "$T/missing-wt-body.md")
+ec19d=0; ateam resume "$mwt_id" 2>/dev/null || ec19d=$?
+[ "$ec19d" -eq 1 ] \
+  || { echo "FAIL case19d: resume with missing worktree exited $ec19d, want 1"; exit 1; }
+
 # ── Case 18: wrapper unsupported-platform error path ─────────────────────────
 # Point the wrapper at a temp bin/ that only has a binary for a fake platform
 # so the host platform's target is missing.

@@ -15,7 +15,7 @@ var allVerbs = []string{
 	// Track C
 	"register", "note", "gate", "clear-gate", "learn", "close", "reopen", "sync",
 	// Track D
-	"new-initiative", "dispatch",
+	"new-initiative", "dispatch", "resume",
 	// Track GO
 	"worktree-setup",
 }
