@@ -9,7 +9,7 @@ import (
 
 var allVerbs = []string{
 	// Track A
-	"ws", "list", "list-json", "human-list", "show", "learnings",
+	"ws", "list", "list-json", "human-list", "show", "learnings", "prime",
 	// Track B
 	"audit", "resume-match", "resume-match-closed",
 	// Track C
