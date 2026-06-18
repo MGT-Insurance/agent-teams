@@ -4,7 +4,7 @@
 
 - No team-creation step — the team forms automatically when you spawn the first teammate (one implicit, session-scoped team; the pre-v2.1.178 `TeamCreate`/`TeamDelete` tools no longer exist). Spawn members with the Agent tool: `subagent_type: "agent-teams:<role>"`, a human-readable `name`, `run_in_background: true`, and **`mode: "bypassPermissions"`**. Do NOT pass `team_name` — the harness accepts but ignores it (there is one implicit team per session). The bypass mode is required for hands-off operation — backgrounded teammates must run without permission prompts.
 - Safety under bypass: role rules (never push/merge/deploy — DRI-only) and worktree isolation remain the guardrails. Bypass removes prompts, not role discipline.
-- Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and "report to team-lead; ping immediately on blockers or design ambiguity — never guess." Also tell every spawned agent: **NEVER call `EnterWorktree`. A non-isolated teammate shares the lead's session cwd, so your `EnterWorktree` drifts the LEAD's cwd — the harness re-applies the pin before every Bash call, and the lead can't escape it. Work via absolute paths and `git -C <your-worktree-abs-path>`; never `cd` or `EnterWorktree` into your worktree.**
+- Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and "coordinate directly with named peers via SendMessage for handoffs, clarifications, and verification requests — you do NOT route peer coordination through the DRI; escalate blockers, design ambiguity, and scope changes to team-lead, who stays decider/integrator not relay." Also tell every spawned agent: **NEVER call `EnterWorktree`. A non-isolated teammate shares the lead's session cwd, so your `EnterWorktree` drifts the LEAD's cwd — the harness re-applies the pin before every Bash call, and the lead can't escape it. Work via absolute paths and `git -C <your-worktree-abs-path>`; never `cd` or `EnterWorktree` into your worktree.**
 - Models: planner=opus, others=sonnet (the agent defaults) unless the human directed otherwise.
 - Messages cross: an idle notification right after you assign work usually means the assignment hasn't been processed yet — verify against bd/git state before re-sending or escalating.
 
@@ -31,7 +31,7 @@
 ## Integration (DRI-owned)
 
 - Merge each track into the integration branch as it lands: prefer `git merge --ff-only <track-branch>`; on real conflicts, resolve them YOURSELF (read both sides; keep the contract's intent), then complete the merge.
-- After all tracks: run an integration verification pass (full typecheck + the feature's suites on the composed branch) before declaring the loop closed — independently of what tracks reported.
+- After the loop-closing set's tracks are merged: run an integration verification pass (full typecheck + the feature's suites on the composed branch) before declaring the loop closed — independently of what tracks reported. Run the same pass again after each subsequent enhancement ring's tracks merge.
 - Remove worktrees and delete track branches at teardown, not before.
 
 ## Lifecycle
