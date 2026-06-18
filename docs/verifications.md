@@ -318,6 +318,22 @@ Independent CLONES each get their own separate `.beads/` — there is no shared 
 
 ---
 
+## ateam resume guardrails (verified 2026-06-17)
+
+**V6 — `ateam resume <id>` exit-code contract.** Exercised via `go test` unit cases + `tests/ateam.test.sh` case 19:
+
+- Missing arg → exit 2 (UsageError).
+- Unknown id (bd show errors) → stderr "no such initiative" + exit 1.
+- Closed initiative → stderr refusal mentioning "closed" + exit 1.
+- Open initiative with no `worktree:` line in description → stderr error + exit 1.
+- Open initiative with a `worktree:` line pointing to a path that does not exist → stderr names the missing path + exit 1.
+- `claude` not in PATH → exit 3 (DepError, inherited from launchBGSession).
+- Happy path (open initiative, worktree exists, claude in PATH) → launches `claude --bg … /dri <id>` in the registered worktree, same argv as `ateam dispatch`.
+
+All cases pass `go vet` / `go test ./...` and the CLI harness test.
+
+---
+
 ## Summary of surprises
 
 1. **`bd -C` does not work for `bd init`** — flag requires an existing beads project. Use subshell pattern: `(cd <dir> && bd init ...)`.

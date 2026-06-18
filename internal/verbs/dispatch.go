@@ -4,6 +4,7 @@ package verbs
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,10 +16,11 @@ import (
 )
 
 // RegisterDispatch registers the dispatch verbs:
-// new-initiative, dispatch.
+// new-initiative, dispatch, resume.
 func RegisterDispatch(reg cli.Registry) {
 	reg.Register(&newInitiativeCommand{})
-	reg.Register(&dispatchCommand{git: gitutil.New()})
+	reg.Register(&dispatchCommand{git: gitutil.New(), launch: launchBGSession})
+	reg.Register(&resumeCommand{launch: launchBGSession})
 }
 
 // ---- new-initiative --------------------------------------------------------
@@ -80,6 +82,11 @@ func bgSessionArgs(name, driArg string) []string {
 	}
 }
 
+// launchFunc is the function type for launching a background DRI session.
+// Both dispatchCommand and resumeCommand hold an injected field of this type
+// so tests can substitute a fake without touching a package global.
+type launchFunc func(ctx *cli.Context, dir, driArg string) error
+
 // launchBGSession checks for claude, derives the session name from dir's
 // basename, and launches: claude --bg -n <name> --permission-mode
 // bypassPermissions --append-system-prompt <memoryRoutingRule> "/dri <driArg>"
@@ -100,6 +107,17 @@ func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 	return nil
 }
 
+// printWatchControl writes the standard "Watch and control" block to w.
+// sessionName is the basename of the worktree directory, which is the name
+// passed to claude --bg -n.
+func printWatchControl(w io.Writer, sessionName string) {
+	fmt.Fprintf(w, "\nWatch and control:\n")
+	fmt.Fprintf(w, "  claude agents          # list background sessions\n")
+	fmt.Fprintf(w, "  claude logs %s         # recent output without attaching\n", sessionName)
+	fmt.Fprintf(w, "  claude attach %s       # open it in this terminal\n", sessionName)
+	fmt.Fprintf(w, "  claude stop %s         # abort it early\n", sessionName)
+}
+
 // ---- dispatch --------------------------------------------------------------
 
 // gitRunner is the subset of gitutil.Runner used by dispatch, extracted so
@@ -113,7 +131,8 @@ type gitRunner interface {
 }
 
 type dispatchCommand struct {
-	git gitRunner
+	git    gitRunner
+	launch launchFunc
 }
 
 func (c *dispatchCommand) Name() string { return "dispatch" }
@@ -254,7 +273,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 
 	// 8. Launch background DRI unless --no-launch.
 	if !*noLaunch {
-		if err := launchBGSession(ctx, wtPath, issue.ID); err != nil {
+		if err := c.launch(ctx, wtPath, issue.ID); err != nil {
 			return fmt.Errorf("dispatch: launch: %w", err)
 		}
 	}
@@ -273,11 +292,72 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 	fmt.Fprintf(ctx.Stdout, "team: %s\n", team)
 	if !*noLaunch {
 		fmt.Fprintf(ctx.Stdout, "\nBackground session launched: %s\n", sessionName)
-		fmt.Fprintf(ctx.Stdout, "\nWatch and control:\n")
-		fmt.Fprintf(ctx.Stdout, "  claude agents          # list background sessions\n")
-		fmt.Fprintf(ctx.Stdout, "  claude logs %s         # recent output without attaching\n", sessionName)
-		fmt.Fprintf(ctx.Stdout, "  claude attach %s       # open it in this terminal\n", sessionName)
-		fmt.Fprintf(ctx.Stdout, "  claude stop %s         # abort it early\n", sessionName)
+		printWatchControl(ctx.Stdout, sessionName)
 	}
+	return nil
+}
+
+// ---- resume ----------------------------------------------------------------
+
+// worktreePath extracts the value of the first "worktree: <path>" line from
+// description. Returns "" if no such line is present.
+func worktreePath(description string) string {
+	for _, line := range strings.Split(description, "\n") {
+		if strings.HasPrefix(line, "worktree: ") {
+			return strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
+		}
+	}
+	return ""
+}
+
+type resumeCommand struct {
+	launch launchFunc
+}
+
+func (c *resumeCommand) Name() string { return "resume" }
+
+// Run implements: resume <id>
+// Looks up the open initiative by id, validates it, and re-launches a
+// background DRI session in its registered worktree via launchBGSession.
+func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam resume: nil context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam resume: missing <id>")
+	}
+	id := args[0]
+
+	var issue bd.Issue
+	if err := ctx.BD.RunJSON(&issue, "show", id, "--json"); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: no such initiative: %s\n", id)
+		return cli.Silent(1)
+	}
+
+	if issue.Status == "closed" {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s is closed — use ateam reopen first if you want to resume it\n", id)
+		return cli.Silent(1)
+	}
+
+	dir := worktreePath(issue.Description)
+	if dir == "" {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", id)
+		return cli.Silent(1)
+	}
+
+	if _, err := os.Stat(dir); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: worktree path does not exist: %s\n", dir)
+		return cli.Silent(1)
+	}
+
+	if err := c.launch(ctx, dir, id); err != nil {
+		return err
+	}
+
+	sessionName := filepath.Base(dir)
+	fmt.Fprintf(ctx.Stdout, "initiative_id: %s\n", id)
+	fmt.Fprintf(ctx.Stdout, "worktree: %s\n", dir)
+	fmt.Fprintf(ctx.Stdout, "\nBackground session launched: %s\n", sessionName)
+	printWatchControl(ctx.Stdout, sessionName)
 	return nil
 }
