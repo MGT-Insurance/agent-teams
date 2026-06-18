@@ -1,9 +1,9 @@
 ---
 name: dri-resume
-description: Relaunch a background DRI for an ALREADY-REGISTERED, still-open initiative by id. Use when asked to "resume an initiative", "resume initiative <id>", "re-launch a parked or interrupted background DRI", "restart a background initiative", or when invoked as /dri-resume <id>. Does NOT create a new initiative — use /dri-dispatch for that. Requires an initiative id.
+description: Resolve a natural-language description to an open initiative and relaunch its background DRI. Use when asked to "resume the initiative about X", "restart the <topic> work", "resume an initiative", "pick up where we left off on <description>", or when invoked as /dri-resume <description-or-id>. Accepts a free-text description (fuzzy-matches open initiatives) or an explicit id. Does NOT create a new initiative — use /dri-dispatch for that.
 ---
 
-You relaunch a background DRI for an existing initiative — you do not register anything. This skill calls `ateam resume <id>`, which looks up the registered worktree, validates the initiative is still open, and fires a new background `/dri` session in it. The current session stays free.
+You relaunch a background DRI for an existing initiative — you do not register anything. This skill resolves a description (or explicit id) to an open initiative, then calls `ateam resume <id>`, which looks up the registered worktree, validates the initiative is still open, and fires a new background `/dri` session in it. The current session stays free.
 
 Use this when:
 
@@ -23,15 +23,25 @@ For *dispatching a brand-new initiative*, use `/dri-dispatch` instead. For *beco
 
 Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
 
-### 2. Get the initiative id
+### 2. Resolve the initiative
 
-Take it from the invocation (e.g. `/dri-resume at-abc`). If none was given, ask the human for the id. You may run `ateam human-list` to show open initiatives and help them pick, or mention that `/initiatives` gives a machine-wide dashboard.
+This is the core step — identifying which initiative to resume.
 
-Note: slug-based lookup and no-argument cwd-inference are not yet supported. An explicit id is required.
+**Case A — no argument given.** Run `ateam list-json`, filter to `status == "open"`, and present the list (id + title each). Ask the human which one to resume.
+
+**Case B — explicit id given** (arg matches the `at-xxx` pattern and resolves in `ateam list-json`). Use it directly; skip to step 3.
+
+**Case C — free-text description given** (everything else). Run `ateam list-json`, filter to `status == "open"`, and match the description against each initiative's `title` and `description` fields. Rank candidates by relevance.
+
+- **One clear match:** show it (`<id> — <title>`) and confirm with the human before launching. Resuming starts a background DRI session — don't silently launch on a guess.
+- **Multiple plausible matches:** present the shortlist (id + title each) and ask the human to pick.
+- **No match:** say so and show the full open list (id + title) so the human can pick or clarify.
+
+Note: slug-based lookup and cwd-inference are separate gated features; description-resolution is what this skill adds.
 
 ### 3. Resume
 
-Run a single call:
+Once an id is settled, run a single call:
 
 ```bash
 ateam resume <id>
