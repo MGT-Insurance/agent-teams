@@ -216,7 +216,7 @@ func TestResume_MissingClaude(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{}
+	cmd := &resumeCommand{launch: launchBGSession}
 
 	err := cmd.Run(ctx, []string{"at-noclaude"})
 	if err == nil {
@@ -243,16 +243,14 @@ func TestResume_HappyPath(t *testing.T) {
 	}
 
 	var launchedDir, launchedArg string
-	orig := launchSession
-	launchSession = func(_ *cli.Context, d, arg string) error {
-		launchedDir = d
-		launchedArg = arg
-		return nil
-	}
-	t.Cleanup(func() { launchSession = orig })
-
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{}
+	cmd := &resumeCommand{
+		launch: func(_ *cli.Context, d, arg string) error {
+			launchedDir = d
+			launchedArg = arg
+			return nil
+		},
+	}
 
 	if err := cmd.Run(ctx, []string{"at-happy1"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)

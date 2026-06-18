@@ -19,8 +19,8 @@ import (
 // new-initiative, dispatch, resume.
 func RegisterDispatch(reg cli.Registry) {
 	reg.Register(&newInitiativeCommand{})
-	reg.Register(&dispatchCommand{git: gitutil.New()})
-	reg.Register(&resumeCommand{})
+	reg.Register(&dispatchCommand{git: gitutil.New(), launch: launchBGSession})
+	reg.Register(&resumeCommand{launch: launchBGSession})
 }
 
 // ---- new-initiative --------------------------------------------------------
@@ -82,9 +82,10 @@ func bgSessionArgs(name, driArg string) []string {
 	}
 }
 
-// launchSession is the package-level seam for launching a background DRI
-// session. Tests override it to avoid spawning a real claude process.
-var launchSession = launchBGSession
+// launchFunc is the function type for launching a background DRI session.
+// Both dispatchCommand and resumeCommand hold an injected field of this type
+// so tests can substitute a fake without touching a package global.
+type launchFunc func(ctx *cli.Context, dir, driArg string) error
 
 // launchBGSession checks for claude, derives the session name from dir's
 // basename, and launches: claude --bg -n <name> --permission-mode
@@ -130,7 +131,8 @@ type gitRunner interface {
 }
 
 type dispatchCommand struct {
-	git gitRunner
+	git    gitRunner
+	launch launchFunc
 }
 
 func (c *dispatchCommand) Name() string { return "dispatch" }
@@ -271,7 +273,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 
 	// 8. Launch background DRI unless --no-launch.
 	if !*noLaunch {
-		if err := launchSession(ctx, wtPath, issue.ID); err != nil {
+		if err := c.launch(ctx, wtPath, issue.ID); err != nil {
 			return fmt.Errorf("dispatch: launch: %w", err)
 		}
 	}
@@ -308,7 +310,9 @@ func worktreePath(description string) string {
 	return ""
 }
 
-type resumeCommand struct{}
+type resumeCommand struct {
+	launch launchFunc
+}
 
 func (c *resumeCommand) Name() string { return "resume" }
 
@@ -346,7 +350,7 @@ func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
 		return cli.Silent(1)
 	}
 
-	if err := launchSession(ctx, dir, id); err != nil {
+	if err := c.launch(ctx, dir, id); err != nil {
 		return err
 	}
 
