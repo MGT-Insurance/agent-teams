@@ -72,7 +72,7 @@ Spawn one or more `agent-teams:planner` agents (persistent team members, backgro
 
 Drive ONLY the loop-closing set first. Before opening any enhancement ring, the loop must be closed.
 
-- `TeamCreate`, then spawn role agents background + team-joined: `agent-teams:implementer` (one per parallel track, each in its OWN git worktree — not a clone — branched at the contract tip; see references/execution.md for the worktree mandate), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. Agents call bare `ateam` directly — it is on PATH, no path to pass. Fresh worktrees need `pnpm install`; `ateam worktree-setup <abs-worktree-path>` provisions repo-configured env wiring but is **on-demand only** — run it solely when a worktree needs live env (dev server, creds-dependent validation/pre-commit like socotra), not routinely on every track (see references/execution.md).
+- Spawn role agents background + team-joined — the team forms automatically on the first spawn, no creation step (the old `TeamCreate` tool is gone): `agent-teams:implementer` (one per parallel track, each in its OWN git worktree — not a clone — branched at the contract tip; see references/execution.md for the worktree mandate), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. Agents call bare `ateam` directly — it is on PATH, no path to pass. Fresh worktrees need `pnpm install`; `ateam worktree-setup <abs-worktree-path>` provisions repo-configured env wiring but is **on-demand only** — run it solely when a worktree needs live env (dev server, creds-dependent validation/pre-commit like socotra), not routinely on every track (see references/execution.md).
 - The behavioral guardrails that matter under bypass: role rules (never push, never merge, never deploy — the DRI exclusively owns integration) and worktree isolation (each implementer confined to its own worktree). These are enforced by the role agent definitions and by you; bypass removes permission prompts, not role discipline.
 - Implementers are EPHEMERAL: spawn per work-package; shut down (SendMessage shutdown_request) once their work is verified merged. Spawn fresh ones for fixes.
 - You own integration: merge each track into the integration branch as it completes; resolve conflicts yourself; advance worktrees when the contract moves.
@@ -127,7 +127,7 @@ When separable work surfaces that would balloon this initiative's scope — a di
 
 - references/registry.md — initiative schema + exact registry commands
 - references/gate-protocol.md — the parked-gate sequence (must never vary)
-- references/execution.md — TeamCreate/spawn/worktree/merge mechanics
+- references/execution.md — spawn/worktree/merge mechanics
 - references/teardown.md — the close-out checklist
 
 (To spin off separable work as its own background initiative, use the `/agent-teams:dri-dispatch` skill — not a hand-rolled `claude --bg`.)
