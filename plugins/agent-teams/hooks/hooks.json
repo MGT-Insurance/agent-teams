@@ -30,6 +30,17 @@
           }
         ]
       }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "implementer|planner|tester|reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/subagent-prime-learnings.sh"
+          }
+        ]
+      }
     ]
   }
 }
