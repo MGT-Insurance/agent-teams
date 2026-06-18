@@ -3,6 +3,7 @@ package verbs
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -250,7 +251,7 @@ func TestResume_HappyPath(t *testing.T) {
 	}
 	t.Cleanup(func() { launchSession = orig })
 
-	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	cmd := &resumeCommand{}
 
 	if err := cmd.Run(ctx, []string{"at-happy1"}); err != nil {
@@ -261,5 +262,19 @@ func TestResume_HappyPath(t *testing.T) {
 	}
 	if launchedArg != "at-happy1" {
 		t.Errorf("launch driArg = %q, want %q", launchedArg, "at-happy1")
+	}
+
+	out := stdout.String()
+	basename := filepath.Base(dir)
+	checks := []string{
+		"initiative_id: at-happy1",
+		"worktree: " + dir,
+		"Background session launched: " + basename,
+		"claude attach " + basename,
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q\ngot:\n%s", want, out)
+		}
 	}
 }

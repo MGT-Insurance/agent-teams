@@ -4,6 +4,7 @@ package verbs
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,17 @@ func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 		return fmt.Errorf("claude --bg: %w", err)
 	}
 	return nil
+}
+
+// printWatchControl writes the standard "Watch and control" block to w.
+// sessionName is the basename of the worktree directory, which is the name
+// passed to claude --bg -n.
+func printWatchControl(w io.Writer, sessionName string) {
+	fmt.Fprintf(w, "\nWatch and control:\n")
+	fmt.Fprintf(w, "  claude agents          # list background sessions\n")
+	fmt.Fprintf(w, "  claude logs %s         # recent output without attaching\n", sessionName)
+	fmt.Fprintf(w, "  claude attach %s       # open it in this terminal\n", sessionName)
+	fmt.Fprintf(w, "  claude stop %s         # abort it early\n", sessionName)
 }
 
 // ---- dispatch --------------------------------------------------------------
@@ -278,11 +290,7 @@ func (c *dispatchCommand) Run(ctx *cli.Context, args []string) error {
 	fmt.Fprintf(ctx.Stdout, "team: %s\n", team)
 	if !*noLaunch {
 		fmt.Fprintf(ctx.Stdout, "\nBackground session launched: %s\n", sessionName)
-		fmt.Fprintf(ctx.Stdout, "\nWatch and control:\n")
-		fmt.Fprintf(ctx.Stdout, "  claude agents          # list background sessions\n")
-		fmt.Fprintf(ctx.Stdout, "  claude logs %s         # recent output without attaching\n", sessionName)
-		fmt.Fprintf(ctx.Stdout, "  claude attach %s       # open it in this terminal\n", sessionName)
-		fmt.Fprintf(ctx.Stdout, "  claude stop %s         # abort it early\n", sessionName)
+		printWatchControl(ctx.Stdout, sessionName)
 	}
 	return nil
 }
@@ -338,5 +346,14 @@ func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
 		return cli.Silent(1)
 	}
 
-	return launchSession(ctx, dir, id)
+	if err := launchSession(ctx, dir, id); err != nil {
+		return err
+	}
+
+	sessionName := filepath.Base(dir)
+	fmt.Fprintf(ctx.Stdout, "initiative_id: %s\n", id)
+	fmt.Fprintf(ctx.Stdout, "worktree: %s\n", dir)
+	fmt.Fprintf(ctx.Stdout, "\nBackground session launched: %s\n", sessionName)
+	printWatchControl(ctx.Stdout, sessionName)
+	return nil
 }

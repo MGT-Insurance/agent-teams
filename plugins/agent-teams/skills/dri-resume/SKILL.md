@@ -39,18 +39,26 @@ ateam resume <id>
 
 `ateam resume` looks up the registered worktree for the initiative, validates the initiative is still open (non-zero exit with a clear error if it is closed or the worktree is missing), and launches a background `/dri <id>` session in the registered worktree. It is prompt-free — the launch happens inside the binary (`Bash(ateam:*)`).
 
-On success, `ateam resume` passes `claude`'s own launch output through. The new background session is named after the worktree's basename and appears immediately in `claude agents`.
+On success, `ateam resume` prints a confirmation block to stdout:
+
+```
+initiative_id: <id>
+worktree: <abs-path>
+
+Background session launched: <session-name>
+
+Watch and control:
+  claude agents          # list background sessions
+  claude logs <session-name>         # recent output without attaching
+  claude attach <session-name>       # open it in this terminal
+  claude stop <session-name>         # abort it early
+```
+
+The session name is the basename of the registered worktree directory.
 
 ### 4. Report and hand off
 
-Tell the human the session is running. How to watch and control it — find the session name via `claude agents` (it is named after the worktree basename):
-
-```bash
-claude agents                        # list background sessions; find the session name here
-claude logs <session-name>           # recent output without attaching
-claude attach <session-name>         # open it in this terminal
-claude stop <session-name>           # abort early OR reap a finished idle session
-```
+The watch and control commands are printed by `ateam resume` — relay them to the human as-is. No need to look up the session name separately.
 
 When the background DRI finishes, it ends its turn and the session stays idle — it does NOT self-stop. It appears as idle in `claude agents`; use `claude stop <session-id>` to stop it when you are done with it.
 
