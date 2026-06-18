@@ -31,7 +31,7 @@
 ## Integration (DRI-owned)
 
 - Merge each track into the integration branch as it lands: prefer `git merge --ff-only <track-branch>`; on real conflicts, resolve them YOURSELF (read both sides; keep the contract's intent), then complete the merge.
-- After all tracks: run an integration verification pass (full typecheck + the feature's suites on the composed branch) before declaring the loop closed — independently of what tracks reported.
+- After the loop-closing set's tracks are merged: run an integration verification pass (full typecheck + the feature's suites on the composed branch) before declaring the loop closed — independently of what tracks reported. Run the same pass again after each subsequent enhancement ring's tracks merge.
 - Remove worktrees and delete track branches at teardown, not before.
 
 ## Lifecycle
