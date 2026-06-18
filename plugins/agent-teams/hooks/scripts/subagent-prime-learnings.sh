@@ -2,6 +2,7 @@
 # SubagentStart hook for agent-teams.
 # Injects role learnings into spawned role agents via `ateam learnings <role>`.
 # Silent no-op if ateam/jq not installed, or agent_type is absent. Never fails.
+set -eu
 command -v ateam >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 

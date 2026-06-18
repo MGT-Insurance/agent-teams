@@ -199,6 +199,49 @@ func TestPrime_Truncation(t *testing.T) {
 	}
 }
 
+// TestPrime_MultibyteTruncation verifies truncation counts RUNES (not bytes) and
+// never splits a multibyte rune — a body of 400 3-byte runes must truncate to
+// 300 runes + ellipsis and remain valid UTF-8.
+func TestPrime_MultibyteTruncation(t *testing.T) {
+	longBody := strings.Repeat("世", 400) // 400 runes, 1200 bytes
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{"user:cjk": longBody}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &primeCmd{}
+
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	lines := strings.SplitN(out, "\n", 3)
+	if len(lines) < 2 {
+		t.Fatalf("unexpected output shape:\n%s", out)
+	}
+	bulletLine := lines[1]
+	bodyStart := strings.Index(bulletLine, ": ")
+	if bodyStart < 0 {
+		t.Fatalf("no ': ' separator in bullet line: %q", bulletLine)
+	}
+	bodyPart := bulletLine[bodyStart+2:]
+
+	if !utf8.ValidString(bodyPart) {
+		t.Errorf("truncated multibyte body must remain valid UTF-8 (no split rune); got bytes: %x", bodyPart)
+	}
+	if runeLen := utf8.RuneCountInString(bodyPart); runeLen != 301 {
+		t.Errorf("body part rune count = %d, want 301 (300 runes + ellipsis)", runeLen)
+	}
+	if !strings.HasSuffix(bodyPart, "…") {
+		t.Errorf("truncated body must end with ellipsis; got: %q", bodyPart)
+	}
+}
+
 // TestPrime_ShortBodyNoEllipsis verifies bodies at or under 300 runes are not truncated.
 func TestPrime_ShortBodyNoEllipsis(t *testing.T) {
 	exactBody := strings.Repeat("x", 300)
