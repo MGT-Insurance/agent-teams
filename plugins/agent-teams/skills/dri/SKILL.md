@@ -123,6 +123,8 @@ This is the standing place for role learnings — the moment they form, not only
 
 When separable work surfaces that would balloon this initiative's scope — a discovery bead that is really its own feature, tooling/infra work — do NOT absorb it. This session stays focused; dispatch the work as its own background initiative with the **`/agent-teams:dri-dispatch`** skill, which creates the worktree, registers the initiative, and launches a background DRI to drive it. Invoke it with the problem statement; do not hand-roll the `claude --bg` launch here.
 
+To re-launch a parked or interrupted background initiative by id, use `ateam resume <id>` — one command, no hand-rolling required.
+
 # References (read when you reach them)
 
 - references/registry.md — initiative schema + exact registry commands
