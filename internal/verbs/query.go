@@ -4,13 +4,16 @@ package verbs
 
 import (
 	"fmt"
+	"sort"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // RegisterQuery registers the read/query verbs:
-// ws, list, list-json, human-list, show, learnings.
+// ws, list, list-json, human-list, show, learnings, prime.
 //
 // NOTE: ws is also special-cased in main before workspace initialization is
 // checked; it is registered here for completeness and usage listing.
@@ -21,6 +24,7 @@ func RegisterQuery(reg cli.Registry) {
 	reg.Register(&humanListCmd{})
 	reg.Register(&showCmd{})
 	reg.Register(&learningsCmd{})
+	reg.Register(&primeCmd{})
 }
 
 // wsCmd prints the workspace home path.
@@ -156,4 +160,60 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 	}
 	fmt.Fprintln(ctx.Stdout, out)
 	return nil
+}
+
+// primeCmd prints cross-project user preferences from bd memories.
+// It filters to keys with the "user:" prefix, caps at 12, and truncates
+// each body to ~300 chars. Emits nothing when no user: memories exist.
+type primeCmd struct{}
+
+func (c *primeCmd) Name() string { return "prime" }
+
+func (c *primeCmd) Run(ctx *cli.Context, _ []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam prime: no context")
+	}
+	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	// Collect keys with the "user:" prefix whose values are strings.
+	var keys []string
+	for k, v := range raw {
+		if strings.HasPrefix(k, "user:") {
+			if _, ok := v.(string); ok {
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	sort.Strings(keys)
+	if len(keys) > 12 {
+		keys = keys[:12]
+	}
+
+	fmt.Fprintln(ctx.Stdout, "## agent-teams: cross-project user preferences")
+	for _, k := range keys {
+		slug := strings.TrimPrefix(k, "user:")
+		body := formatBody(raw[k].(string))
+		fmt.Fprintf(ctx.Stdout, "- **%s**: %s\n", slug, body)
+	}
+	return nil
+}
+
+// formatBody collapses newlines to spaces and truncates to ~300 chars,
+// appending an ellipsis when truncated.
+func formatBody(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	const limit = 300
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:limit]) + "…"
 }

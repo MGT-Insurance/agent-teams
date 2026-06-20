@@ -62,6 +62,35 @@ The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>` (repo-key = slu
 
 **Registering a hook** is one-time per repo: write the absolute path to the repo's setup script into `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>`. The reference implementation for midgard is `scripts/midgard-worktree-setup.sh` in this repo — it copies gitignored env files from the source checkout and runs `vercel env pull` to restore creds-dependent tooling. See `/setup-agent-teams` step 8 for the exact registration command.
 
+## Memory priming hooks
+
+Role learnings and user preferences live in the global workspace (`ateam learn …`),
+but something has to load them into a session. Two mechanisms:
+
+- **SessionStart user-preference prime (shipped).** A `SessionStart` hook
+  (`hooks/scripts/prime-user-memories.sh`, matchers `startup|resume|clear|compact`)
+  runs `ateam prime`, which emits the `user:`-prefixed memories (cross-project
+  working-style preferences) as a concise capped block that the harness injects
+  into every session's context. Before this, `ateam learn user …` had no consumer —
+  user memories were written but never loaded. The hook coexists with the existing
+  `compact`-only recovery hook (a separate entry; Claude Code runs all matching
+  entries). `ateam prime` filters by key prefix `user:` (not a substring match),
+  caps at 12 memories / ~300 chars each, and emits nothing when there are none.
+
+- **Deterministic agent-start priming (finding + planned wiring).** Role learnings
+  are loaded today by *instructing* each role agent, in its prompt, to run
+  `ateam learnings <role>` as step 1 — prompt-dependent and non-deterministic.
+  Claude Code exposes a **`SubagentStart`** hook event
+  ([hooks reference](https://code.claude.com/docs/en/hooks)) that fires before a
+  spawned subagent's first prompt, injects via stdout / `additionalContext`, and
+  matches by `agent_type` — the deterministic mechanism we want. **Constraint:**
+  plugin-shipped subagents *ignore* the frontmatter `hooks:` field for security
+  reasons ([sub-agents](https://code.claude.com/docs/en/sub-agents),
+  [plugins-reference](https://code.claude.com/docs/en/plugins-reference)), so the
+  hook must live in `hooks/hooks.json`, not in an agent's `.md` frontmatter. The
+  plan: a `SubagentStart` hook runs `ateam learnings <agent_type>` and injects it,
+  letting the prompt-step-1 instruction be removed once live firing is verified.
+
 ## Roadmap
 
 - `plugins/overseer/` — a meta-orchestrator watching every initiative on the machine (feeds on the registry).
