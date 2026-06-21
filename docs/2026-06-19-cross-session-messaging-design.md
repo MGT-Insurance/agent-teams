@@ -160,6 +160,6 @@ Filed in the project repo (`agent-teams-*`, tagged `at-1xd`). **Design-first: no
 
 ## 12. Open questions for the human (review gate)
 
-Resolved: **bead type** (native `type=message`), **read/delivered marker** (`read` label + keep open), **drain timing** (`UserPromptSubmit` per-turn), **heartbeat/timeout** (4h / 24h — mail latency is the ~1s doorbell, not the heartbeat; 24h is the sleep-survival cap), **sleep recovery** (24h timeout survives normal closes; >24h-continuous-close is a noted edge with a wake-time re-arm enhancement). Remaining:
+All design questions are **resolved**: **bead type** (native `type=message`), **read/delivered marker** (`read` label + keep open), **drain timing** (`UserPromptSubmit` per-turn), **heartbeat/timeout** (4h / 24h — mail latency is the ~1s doorbell, not the heartbeat; 24h is the sleep-survival cap), **sleep recovery** (24h timeout survives normal closes; >24h-continuous-close is a noted edge with a wake-time re-arm enhancement), and **stop-on-closed** (option A — the watcher self-checks `ateam show <id>` status at each heartbeat re-arm and `exit 0`s if CLOSED; self-contained, handles out-of-band closes, no teardown coupling).
 
-1. **Stop-on-closed via status check** — accept the per-heartbeat `ateam show` status check as the silence mechanism (since close does not kill the process), or prefer an explicit teardown step that signals the watcher?
+The contract (`agent-teams-29k`) is fully specified; the loop-closing POC is unblocked pending the human's go-ahead to implement.
