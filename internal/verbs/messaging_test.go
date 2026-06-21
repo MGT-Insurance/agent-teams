@@ -209,26 +209,24 @@ func TestSend_HappyPath_LiveSession(t *testing.T) {
 	f := makeTempFile(t, "hello recipient")
 
 	recipientWt := t.TempDir()
-	var bdCalls [][]string
+	var createArgs []string
 	fbd := &fakeBD{
+		// bd create --json returns a single object (not an array).
 		runJSONFn: func(dst any, args ...string) error {
-			bdCalls = append(bdCalls, args)
-			// First call is bd create (returns issue id).
-			// Second call is bd show (recipient worktree lookup).
-			if len(bdCalls) == 1 {
-				if issue, ok := dst.(*bd.Issue); ok {
-					issue.ID = "at-wisp-msg1"
-				}
-				return nil
-			}
-			if len(bdCalls) == 2 {
-				if issue, ok := dst.(*bd.Issue); ok {
-					issue.ID = "at-recipient"
-					issue.Description = "worktree: " + recipientWt + "\n"
-				}
-				return nil
+			createArgs = args
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-wisp-msg1"
 			}
 			return nil
+		},
+		// bd show <id> --json returns a single-element array.
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-recipient",
+				Description: "worktree: " + recipientWt + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 
@@ -252,10 +250,9 @@ func TestSend_HappyPath_LiveSession(t *testing.T) {
 	}
 
 	// Message bead must have been created.
-	if len(bdCalls) == 0 {
+	if len(createArgs) == 0 {
 		t.Fatal("expected bd create call, got none")
 	}
-	createArgs := bdCalls[0]
 	assertContains(t, createArgs, "--type=message", "bd create missing --type=message")
 	assertContains(t, createArgs, "--assignee=at-recipient", "bd create missing --assignee")
 	assertContains(t, createArgs, "--labels=delivery:pending", "bd create missing delivery:pending label")
@@ -297,14 +294,21 @@ func TestSend_DeadSession_EscalatesToResume(t *testing.T) {
 	recipientWt := t.TempDir()
 
 	fbd := &fakeBD{
+		// bd create --json returns single object.
 		runJSONFn: func(dst any, args ...string) error {
 			if issue, ok := dst.(*bd.Issue); ok {
 				issue.ID = "at-wisp-msg2"
-				if len(args) > 0 && args[0] == "show" {
-					issue.Description = "worktree: " + recipientWt + "\n"
-				}
 			}
 			return nil
+		},
+		// bd show <id> --json returns single-element array.
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-dead",
+				Description: "worktree: " + recipientWt + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 
@@ -358,20 +362,19 @@ func TestSend_ThreadLabel(t *testing.T) {
 
 	var createArgs []string
 	fbd := &fakeBD{
+		// bd create --json returns single object.
 		runJSONFn: func(dst any, args ...string) error {
-			if len(createArgs) == 0 {
-				createArgs = args
-				if issue, ok := dst.(*bd.Issue); ok {
-					issue.ID = "at-wisp-t1"
-				}
-			} else {
-				// show call — no worktree needed
-				if issue, ok := dst.(*bd.Issue); ok {
-					issue.ID = "at-recip"
-					issue.Description = ""
-				}
+			createArgs = args
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-wisp-t1"
 			}
 			return nil
+		},
+		// bd show --json: return issue with no worktree line (non-fatal path).
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-recip", Description: ""}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 

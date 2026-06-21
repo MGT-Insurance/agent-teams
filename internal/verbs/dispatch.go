@@ -328,8 +328,8 @@ func (c *resumeCommand) Run(ctx *cli.Context, args []string) error {
 	}
 	id := args[0]
 
-	var issue bd.Issue
-	if err := ctx.BD.RunJSON(&issue, "show", id, "--json"); err != nil {
+	issue, err := bd.ShowIssue(ctx.BD, id)
+	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: no such initiative: %s\n", id)
 		return cli.Silent(1)
 	}

@@ -72,6 +72,30 @@ func (c *Client) RunJSON(dst any, args ...string) error {
 	return nil
 }
 
+// runner is a minimal interface for executing bd subcommands and returning
+// stdout as a string. Used by ShowIssue to avoid importing the cli package.
+type runner interface {
+	Run(args ...string) (string, error)
+}
+
+// ShowIssue runs `bd show <id> --json`, which returns a single-element array,
+// and returns the issue. The array shape is a quirk of the bd CLI; this helper
+// unwraps it so callers work with a plain Issue.
+func ShowIssue(r runner, id string) (Issue, error) {
+	out, err := r.Run("show", id, "--json")
+	if err != nil {
+		return Issue{}, err
+	}
+	var issues []Issue
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return Issue{}, fmt.Errorf("bd show %s: unmarshal: %w (raw: %.200s)", id, err, out)
+	}
+	if len(issues) == 0 {
+		return Issue{}, fmt.Errorf("bd show %s: not found", id)
+	}
+	return issues[0], nil
+}
+
 // Issue represents the fields returned by `bd list --json` and `bd create --json`.
 type Issue struct {
 	ID          string   `json:"id"`

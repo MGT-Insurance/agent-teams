@@ -215,8 +215,8 @@ func touchFile(path string) error {
 // recipientWorktree looks up the initiative by id and extracts its worktree
 // path from the description.
 func recipientWorktree(ctx *cli.Context, id string) (string, error) {
-	var issue bd.Issue
-	if err := ctx.BD.RunJSON(&issue, "show", id, "--json"); err != nil {
+	issue, err := bd.ShowIssue(ctx.BD, id)
+	if err != nil {
 		return "", fmt.Errorf("bd show %s: %w", id, err)
 	}
 	wt := worktreePath(issue.Description)
