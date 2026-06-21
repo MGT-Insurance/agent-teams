@@ -15,7 +15,7 @@ We want: any sender can deliver a durable message to any session, addressed by a
 
 ## 2. Recommendation in one line
 
-A **beads-backed mailbox** (durable, synced message beads) + **drain** (`ateam inbox`, at `SessionStart` and on wake) + **wake** (an `asyncRewake` Stop-hook background watcher that blocks on a per-recipient doorbell file and re-wakes the idle session on arrival, self-renewing via a heartbeat so it never hits the harness hook-timeout) + a **conditional `ateam resume` fallback** for sessions whose process has exited. Cross-session messaging is the **generalization of the gate protocol**: same store, same drain-on-turn habit, sender widened from human-only to anyone, plus a real wake for idle recipients.
+A **beads-backed mailbox** (durable, synced `type=message` beads) + **drain** (`ateam inbox`, per-turn via `UserPromptSubmit`) + **wake** (an `asyncRewake` Stop-hook background watcher that blocks on a per-recipient doorbell file and re-wakes the idle session on arrival, self-renewing via a heartbeat so it never hits the harness hook-timeout) + a **conditional `ateam resume` fallback** for sessions whose process has exited. Cross-session messaging is the **generalization of the gate protocol**: same store, same drain-on-turn habit, sender widened from human-only to anyone, plus a real wake for idle recipients.
 
 The six questions are answered mechanism-first with alternatives-rejected. **§3 (idle wake) is backed by an empirical spike against Claude Code 2.1.183** and is presented first because it constrains everything else.
 
@@ -63,54 +63,63 @@ Every load-bearing assumption was tested against the running harness (CC 2.1.183
 
 ## 4. Q1 — Transport: where a message lives
 
-**Recommendation: beads.** Dedicated message beads in the GLOBAL workspace (`~/.agent-teams`), one per message, labeled by recipient initiative. A small **per-recipient doorbell file** (e.g. `~/.agent-teams/mailbox/<initiative-id>.wake`) is the local wake signal the watcher blocks on — **not** the store, just the bell.
+**Recommendation: a beads `type=message` bead** in the GLOBAL workspace (`~/.agent-teams`), one per message. A small **per-recipient doorbell file** (e.g. `~/.agent-teams/mailbox/<initiative-id>.wake`) is the local wake signal the watcher blocks on — **not** the store, just the bell.
 
-**Mechanism.** The message is a bead (a `msg:*` label or beads' built-in `Message` type — resolve in CONTRACT with evidence) carrying the §8 schema, living in the workspace Dolt DB, synced over `refs/dolt/data` like the registry and role memories — durability + cross-machine sync for free. The doorbell is local-only; cross-machine delivery is the synced message + the relaunch fallback after `bd dolt pull`, not the doorbell.
+**Mechanism (validated against Gas City source — same substrate).** Beads has a **native `message` issue type** (GH#1347, "re-promoted to built-in for inter-agent communication"). It needs **no `types.custom` config**, is created `Ephemeral: true` (wisp tier), and is **excluded from work queries** (`bd ready`/`bd list` — verified: 0 message beads surface). Gas City stores a message exactly this way: `Type="message"`, `Assignee`=recipient, `From`=sender, title=subject, description=body. We adopt that schema (§8). It lives in the workspace Dolt DB, synced over `refs/dolt/data` like the registry and role memories — durability + cross-machine sync for free. The doorbell is local-only; cross-machine delivery is the synced message + the relaunch fallback after `bd dolt pull`, not the doorbell.
 
-**Beads has no native send.** `bd mail` is a *delegation shim* ("mail functionality is typically provided by the orchestrator… delegates to the configured mail provider", default `gt mail`), and there is **no native `Message` issue type** (types: `bug|feature|task|epic|chore|decision`). So `ateam send`/`ateam inbox` aren't reinventing beads mail — they *are* the provider beads delegates to (we could `bd config set mail.delegate "ateam mail"`). The value of `ateam send` is **convention, not capability** (recipient = initiative id; doorbell; delivered-marker) — so it stays thin.
+**No-TTL-on-unread invariant (verified in beads + Gas City).** `Ephemeral: true` only makes a message *eligible* for opt-in cleanup (`bd cleanup --ephemeral --older-than N`); there is **no background process that silently expires unread mail**, and `compaction_enabled`/`auto_compact_enabled` default **false**. Gas City's sweep only touches **read** mail (`Type:"message", Label:"read"`, ~60min). So an undelivered message persists indefinitely; the self-cleaning applies only to already-read/closed mail — which is the benefit, not a risk.
 
-**Alternatives rejected:** (a) gate notes on the initiative bead — conflates phase narrative with inbound mail, no per-message lifecycle/dedup; (b) a filesystem mailbox as the *store* — loses beads' cross-machine sync (a doorbell *file* as a *signal* is fine); (c) a new table/DB — violates reuse-beads-if-it-fits.
+**Beads has no native send.** `bd mail` is a *delegation shim* (it execs the configured provider, default `gt mail`). So `ateam send`/`ateam inbox` aren't reinventing beads mail — they *are* the provider beads delegates to (we could `bd config set mail.delegate "ateam mail"`). The value of `ateam send` is **convention, not capability** (recipient addressing; doorbell; read/ack lifecycle) — so it stays thin.
 
-**Cardinal-rule extension.** The workspace gains a **third** sanctioned bead kind (message). Mitigation: a distinct type/label so `ateam audit` recognizes message beads and still catches leaked work beads — a **required** enhancement (§9).
+**Alternatives rejected:** (a) `task`+`msg:*` label — pollutes the work queue (`bd ready` would surface messages) and is a weaker discriminator than the native type; (b) a filesystem mailbox as the *store* — loses beads' cross-machine sync (a doorbell *file* as a *signal* is fine); (c) a new table/DB — violates reuse-beads-if-it-fits.
+
+**Cardinal-rule extension.** The workspace gains a **third** sanctioned bead kind (message). Mitigation: `ateam audit` recognizes `type=message` beads as legitimate (a clean intrinsic discriminator) and still catches leaked work beads — a **required** enhancement (§11).
 
 ## 5. Q2 — Addressing
 
 **Recommendation: the initiative id is the stable recipient handle** (the session id rotates; worktree/branch are stable but repo-relative).
 
-**Mechanism.** A sender addresses a message to an initiative id; the drain resolves "messages for me" by the recipient's own initiative (resolved by `worktree: $PWD`, as `compact-recovery.sh` does today). External senders holding only branch/PR identity (pr-shepherd) resolve branch → initiative id via the `branch:` line in open initiative bodies — the `agent-teams-fkr.6` branch-match — and that lives with the consumer, not this primitive.
+**Mechanism.** The recipient initiative id is stored in the message bead's **`assignee`** field (Gas City's convention: `Assignee`=recipient, `From`=sender). The drain resolves "messages for me" by the recipient's own initiative (resolved by `worktree: $PWD`, as `compact-recovery.sh` does today) and queries `assignee == <my initiative id>`. External senders holding only branch/PR identity (pr-shepherd) resolve branch → initiative id via the `branch:` line in open initiative bodies — the `agent-teams-fkr.6` branch-match — and that lives with the consumer, not this primitive. The resolver should **reject ambiguous addresses** (Gas City's `ResolveRecipient` errors rather than guessing).
 
 **Liveness/session resolution = `claude agents --json`** (finding #2): sessionId, cwd, name(=slug), status for every live bg session. This is the conditional-wake check and removes any need to record a session id in the bead — liveness is queried live, and the relaunch fallback resolves by worktree. (This deletes the session-id-recording change the first draft required.)
 
 ## 6. Q3 — Drain (pickup)
 
-**Recommendation: a new verb `ateam inbox` drains the mailbox; it runs at `SessionStart` and on every wake.** It resolves the recipient by `worktree: $PWD`, queries undelivered message beads, prints them (`--json` for the hook), and marks each delivered (§7). It runs (1) in a `SessionStart` hook (`startup|resume|clear|compact`) for the cold path — startup, post-compaction, relaunch-resume; and (2) on a doorbell wake via the watcher's rewake instruction (§3). The session may also call it explicitly mid-turn.
+**Recommendation: a new verb `ateam inbox` drains the mailbox, run on every turn via a `UserPromptSubmit` hook (Gas City's model), with `SessionStart` reserved for priming.** `ateam inbox` resolves the recipient by `worktree: $PWD`, queries unread message beads (`assignee == me`, no `read` label), prints them as a `<system-reminder>` block, and marks each **read** (adds the `read` label, **keeps the bead open**) + writes the delivery ack (§7).
+
+**Why `UserPromptSubmit`, not `SessionStart` (corrected from the first draft, per Gas City).** Draining on *every turn boundary* catches mail that arrives **mid-session**, not just at startup — Gas City wires `gt mail check --inject` to `UserPromptSubmit` and reserves `SessionStart` for `gt prime`. We do the same: the `UserPromptSubmit` hook **both drains the mailbox and disarms the wake watcher** (the session is now active; it re-arms on the next `Stop`). `SessionStart` runs `ateam inbox` only as a cold-path catch (startup/relaunch-resume/post-compaction). On an `asyncRewake` wake (§3) the rewake instruction tells the session to run `ateam inbox`, so the idle-wake path drains even if the rewake turn does not itself fire `UserPromptSubmit`.
 
 ## 7. Q5 — Delivery guarantees
 
-**At-least-once + idempotent drain.** Beads is durable + synced, so a message persists until drained. The drain dedups by **message id** and marks each delivered (close the bead or a `delivered` label — CONTRACT picks one), so a re-fired hook/heartbeat never re-injects a seen message. Exactly-once is not attempted. **Acks/read-receipts deferred** (gated) — pr-shepherd is fire-and-forget (HTTP 2xx only).
+**At-least-once + idempotent drain + two-phase delivery acks (Gas Town's pattern, which Gas City regressed on).** Beads is durable + synced, so a message persists until drained. The drain dedups by **message id** and is idempotent. Lifecycle (Gas City invariants): a message is **open + no `read` label** = unread; the drain adds the **`read` label and keeps the bead open** (still queryable); **archive/close** is a separate, later cleanup (sweep only touches read mail). So the dedup key for "don't re-inject" is the `read` label, not closing the bead.
+
+**Delivery acks are in scope, not deferred.** Gas Town uses cheap, crash-safe label-based two-phase delivery: every send starts `delivery:pending`; the drain writes `delivery-acked-by:<id>`, `delivery-acked-at:<ts>`, `delivery:acked` and removes `delivery:pending`, idempotently. Gas City dropped this and admits "no delivery confirmation" — a regression we avoid. pr-shepherd itself is fire-and-forget (HTTP 2xx), but the ack labels give an overseer or a sender that *does* care visibility into whether a message was actually seen, at near-zero cost.
 
 ## 8. Schema, verbs, hook contract (frozen in the CONTRACT bead)
 
-| Field | Req | Meaning |
+A message is a beads `type=message` bead (native, `Ephemeral: true`). Fields map to beads' built-ins (Gas City convention):
+
+| Field | beads field | Meaning |
 |---|---|---|
-| `id` | yes | Bead id; dedup key |
-| `sender` | yes | Free-text identity (`pr-shepherd-conductor`, `overseer`, `dri:<id>`) — a field, not a type, keeping the primitive symmetric (Q6) |
-| `recipient` | yes | Recipient **initiative id** |
-| `body` | yes | Message text |
-| `created` | yes | Timestamp |
-| `delivered` | yes | Marker set by the drain |
-| `replies_to` | no | Parent message id (threading, Q6) |
+| id | bead id | Dedup key |
+| sender | `From` | Free-text identity (`pr-shepherd-conductor`, `overseer`, `dri:<id>`) — keeps the primitive symmetric (Q6) |
+| recipient | `Assignee` | Recipient **initiative id** |
+| subject | `Title` | Short subject |
+| body | `Description` | Message text |
+| created | bead-native | Timestamp |
+| unread/read | status open + `read` label | Open & no `read` label = unread; drain adds `read`, keeps open; archive/close = later cleanup |
+| delivery ack | `delivery:pending`→`delivery:acked` + `delivery-acked-by/at` labels | Two-phase, idempotent (§7) |
+| thread | `thread:<id>` label | Threading (Q6) |
 
 **Verbs (frozen):**
-- `ateam send <recipient-initiative-id> --file <path> [--sender <id>] [--replies-to <id>]` — write a message bead **and** touch the doorbell; then if `claude agents --json` shows a live session → done, else `ateam resume <id>`.
-- `ateam inbox [--json]` — drain: resolve by `worktree:$PWD`, print undelivered, mark delivered.
+- `ateam send <recipient-initiative-id> --file <path> [--sender <id>] [--thread <id>]` — create a `type=message` bead (`Assignee`=recipient, `From`=sender, `delivery:pending`) **and** touch the doorbell; then if `claude agents --json` shows a live session → done, else `ateam resume <id>`.
+- `ateam inbox [--json]` — drain: resolve recipient by `worktree:$PWD`, query unread (`assignee==me`, no `read` label), print as `<system-reminder>`, add `read` label (keep open), write the delivery ack.
 - (reuse) `ateam resume <id>` — dead-session fallback (#16).
 
-**Wake hook contract (frozen):**
-- `Stop` hook `{type:"command", command:"<watcher>", async:true, asyncRewake:true, timeout:<T>}` in plugin `hooks.json`.
-- Watcher: **singleton** (pidfile, kill-prior); **poll-loop** block (no `fswatch` dep; sleep-safe); `exit 2` on doorbell (drain) or heartbeat-deadline (re-arm); **stop-on-closed** (status check → `exit 0`); heartbeat interval just under `timeout`.
-- `UserPromptSubmit` hook **disarms** the watcher when the session becomes active (re-arms on next Stop).
-- `SessionStart` hook (`startup|resume|clear|compact`) runs `ateam inbox` for the cold path.
+**Hook contract (frozen):**
+- `UserPromptSubmit` hook → runs `ateam inbox` (per-turn drain) **and** disarms the wake watcher (session is active; re-arms on next Stop). The primary drain path.
+- `Stop` hook `{type:"command", command:"<watcher>", async:true, asyncRewake:true, timeout:<T>}` → the wake watcher: **singleton** (pidfile, kill-prior); **poll-loop** block (no `fswatch` dep; sleep-safe); `exit 2` on doorbell (→ run `ateam inbox`) or heartbeat-deadline (→ cheap re-arm turn); **stop-on-closed** (per-cycle status check → `exit 0`); heartbeat interval just under `timeout`.
+- `SessionStart` hook (`startup|resume|clear|compact`) → `ateam inbox` cold-path catch (priming otherwise reserved for existing hooks).
 
 ## 9. Q6 — Peer-to-peer (secondary)
 
@@ -120,30 +129,32 @@ Every load-bearing assumption was tested against the running harness (CC 2.1.183
 
 This sits in the **durable-signal** family — Temporal **signals**, LangGraph **resume**, the Claude **Sessions API** enqueue-to-session-id. Our recipient handle (initiative id) is the analogue of the workflow/session id; our drain is the idempotent handler.
 
-Closest concrete prior art is **Gas Town** (gastownhall, the same org as beads): durable **mail** + a **nudge** wake. We adopt the split and **diverge** on the wake: Gas Town nudges via **`tmux send-keys`** (terminal puppeting, no delivery confirmation, layout-fragile); we use an **`asyncRewake` background hook** — a documented primitive that reopens the exact session and returns an exit status, no terminal. We verified (§3) the cleaner-looking alternatives (FileChanged, live `--resume`, the Managed-Agents Sessions API) do **not** apply to local `claude --bg` sessions; the Managed-Agents cloud API is the only first-class "enqueue to a session id" but would require re-platforming execution off local CLI sessions — recorded as a future foundation, not a v1 dependency.
+Closest concrete prior art is **Gas Town / Gas City** (gastownhall, the same org as beads) — investigated at source. We adopt its **validated schema** (`type=message` bead, `Assignee`=recipient, `From`=sender, read-label, `thread:` label), its **per-turn `UserPromptSubmit` drain**, and Gas Town's **two-phase delivery acks** (Gas City dropped these — a regression we avoid). We **diverge on the wake, with evidence on our side.** Gas Town's *primary* drain is the same `UserPromptSubmit` queue we use — but it states plainly *"idle agents never submit, so queued nudges deadlock,"* and its fix is a **daemon-started poller (10s) that injects via `tmux send-keys`** (terminal puppeting, with copy-mode guards, SIGWINCH dances, literal-mode + separate-Enter + 3× verified-Enter retries, per-session flock — all the machinery that proves send-keys is fragile). So **even Gas Town has no clean non-tmux idle-wake**; the poller+tmux is exactly the fallback our **`asyncRewake` doorbell replaces** — a push-on-enqueue wake (spike-proven, §3) that needs no daemon and no terminal. Their own "normal wake" is feed-subscription (`bd activity --follow`), which still needs a live listener; asyncRewake is that listener, harness-native. We also verified the cleaner-looking alternatives (FileChanged, live `--resume`, the Managed-Agents Sessions API) do **not** apply to local `claude --bg` sessions; the Managed-Agents cloud API is the only first-class "enqueue to a session id" but would require re-platforming execution off local CLI sessions — recorded as a future foundation, not a v1 dependency. One watch-item Gas Town's design flags: the recurring failure mode is *"idle agent never drains its own queue"* — our defense is that the doorbell→exit-2 wake is genuinely push, not a queue the idle agent must notice.
 
 ## 11. Bead plan (concentric)
 
 Filed in the project repo (`agent-teams-*`, tagged `at-1xd`). **Design-first: nothing implemented before this doc is approved.** The wake is now **spike-proven**, so the riskiest unknown is retired and the loop-closing set is smaller than the first draft.
 
-**CONTRACT** (`agent-teams-29k`, the review artifact): freezes §8 — schema, addressing (initiative id; `claude agents --json` for liveness; **no session-id-in-bead**), the verbs, and the wake-hook contract (singleton + heartbeat + stop-on-closed + disarm-on-active + poll-loop). Resolves the bead-type question with evidence.
+**CONTRACT** (`agent-teams-29k`, the review artifact): freezes §8 — the `type=message` schema (validated by Gas City), addressing (initiative id in `assignee`; `claude agents --json` for liveness; **no session-id-in-bead**), the verbs, and the hook contract (`UserPromptSubmit` drain+disarm; `Stop` asyncRewake watcher — singleton + heartbeat + stop-on-closed + poll-loop; `SessionStart` cold drain). Bead type is **resolved** (native `message`), so the only open CONTRACT decisions are the heartbeat/timeout defaults and the stop-on-closed status-check (doc §12).
 
 **LOOP-CLOSING POC SET** (blocked on CONTRACT + review; file-disjoint):
-1. **`ateam send`/`ateam inbox` verbs** — message-bead write/query/mark-delivered + doorbell touch + `claude agents --json` liveness check + `ateam resume` escalation.
-2. **Wake hook + watcher** — the `asyncRewake` Stop hook, the singleton/heartbeat/poll-loop/stop-on-closed watcher, the `UserPromptSubmit` disarm hook, the `SessionStart` `ateam inbox` drain — wired in plugin `hooks.json`.
-3. **Loop validation** — in a **real `/dri` bg session** (alongside the plugin's existing Stop hooks): `ateam send` → idle session woken → `ateam inbox` drains → delivered; heartbeat re-arms across the timeout; a second message after many heartbeats still wakes; stop-on-closed silences the pulse. (The earlier session-id-recording track is dropped.)
+1. **`ateam send`/`ateam inbox` verbs** — `type=message` bead write (`assignee`/`From`/`delivery:pending`) + query unread + mark read (label, keep open) + two-phase delivery ack + doorbell touch + `claude agents --json` liveness check + `ateam resume` escalation.
+2. **Hooks + watcher** — the `UserPromptSubmit` drain+disarm hook, the `asyncRewake` Stop watcher (singleton/heartbeat/poll-loop/stop-on-closed), the `SessionStart` cold drain — wired in plugin `hooks.json`, coexisting with the existing plugin hooks.
+3. **Loop validation** — in a **real `/dri` bg session**: `ateam send` → idle session woken by the doorbell → `ateam inbox` drains (read + ack) → message marked read; heartbeat re-arms across the timeout; a second message after many heartbeats still wakes; mid-session mail drains via `UserPromptSubmit`; stop-on-closed silences the pulse; dead-session fallback escalates to `ateam resume` without double-launch.
 
 **GATED ENHANCEMENTS** (blocked until loop closes):
-- `ateam audit` awareness of the message bead kind — **required** (Q1 mitigation).
-- Acks / read-receipts (Q5).
-- Message threading `replies_to` (Q6).
+- `ateam audit` awareness of the `type=message` bead kind — **required** (§4 mitigation).
+- Read-mail sweep / cleanup (`bd cleanup --ephemeral`, read-only) — self-cleaning mailbox.
+- Message threading beyond a `thread:` label (Q6).
 - pr-shepherd conductor wiring — **references `agent-teams-fkr.6`** as the consumer; does not duplicate it.
 - P2P etiquette / anti-wake-spam (Q6).
 - `ateam resume` double-launch guard — fold the conditional `claude agents --json` check into `agent-teams-o05`.
 
+(Two-phase delivery acks are now **in the loop-closing set** (Track 1), not gated — Gas Town shows them cheap + crash-safe, §7.)
+
 ## 12. Open questions for the human (review gate)
 
-1. **Heartbeat interval / timeout** — defaults (e.g. `timeout: 86400`, heartbeat ~daily) vs. a tighter pulse for faster recovery after an undetected watcher death.
-2. **Bead type** — built-in `Message` type if it fits, else `task`+`msg:*`: decide at CONTRACT time, or pre-commit now?
-3. **Delivered marker** — close the message bead vs. a `delivered` label?
-4. **Stop-on-closed via status check** — accept the per-heartbeat `ateam show` status check as the silence mechanism (since close does not kill the process)?
+Resolved by the spike + Gas City investigation: **bead type** (native `type=message`), **read/delivered marker** (add `read` label + keep open; archive/close is later cleanup), and **drain timing** (`UserPromptSubmit` per-turn). Remaining:
+
+1. **Heartbeat interval / timeout** — defaults (e.g. `timeout: 86400`, heartbeat ~daily) vs. a tighter pulse for faster recovery after an undetected watcher death (latency-vs-cost).
+2. **Stop-on-closed via status check** — accept the per-heartbeat `ateam show` status check as the silence mechanism (since close does not kill the process), or prefer an explicit teardown step that signals the watcher?
