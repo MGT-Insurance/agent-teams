@@ -81,4 +81,7 @@ type Issue struct {
 	CreatedAt   string   `json:"created_at"`
 	Labels      []string `json:"labels"`
 	Notes       string   `json:"notes"`
+	Assignee    string   `json:"assignee"`
+	IssueType   string   `json:"issue_type"`
+	CreatedBy   string   `json:"created_by"`
 }

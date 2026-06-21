@@ -65,6 +65,7 @@ func run(args []string) int {
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterCost(reg)
 	verbs.RegisterWorktreeSetup(reg)
+	verbs.RegisterMessaging(reg)
 
 	cmd, ok := reg.Lookup(verb)
 	if !ok {
