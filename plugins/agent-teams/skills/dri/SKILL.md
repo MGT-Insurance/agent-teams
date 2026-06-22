@@ -91,7 +91,25 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This makes the dashboard show the initiative as REVIEW (awaiting PR merge), not just a generic needs-human. Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.) After recording the registry note and raising the review gate, proceed to Phase 6 teardown.
+This makes the dashboard show the initiative as REVIEW (awaiting PR merge), not just a generic needs-human. Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
+
+**MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to teardown. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
+
+```bash
+# Write a note file containing the structured pr: line (copy-paste exactly, substitute your URL)
+printf 'pr: https://github.com/<owner>/<repo>/pull/<n>\n' > /tmp/pr-field-note.txt
+ateam note <initiative-id> --file /tmp/pr-field-note.txt
+```
+
+The note file must contain a line in exactly this format (one line, key `pr:`, full https GitHub PR URL):
+
+```
+pr: https://github.com/<owner>/<repo>/pull/<n>
+```
+
+This can be combined with the delivery note in a single `ateam note` call — add the `pr:` line alongside any other text in the note file. The line must appear literally (not in a code block, not prefixed) so the match engine can grep it. Do NOT skip this step; without it the pr-shepherd cannot route events for this initiative.
+
+After recording the registry note, raising the review gate, and recording the `pr:` field, proceed to Phase 6 teardown.
 
 ## Phase 6 — Teardown
 

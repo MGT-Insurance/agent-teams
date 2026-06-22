@@ -18,6 +18,8 @@ var allVerbs = []string{
 	"new-initiative", "dispatch", "resume",
 	// Track GO
 	"worktree-setup",
+	// Track R
+	"route-pr-event",
 }
 
 func buildRegistry() cli.Registry {
@@ -27,6 +29,7 @@ func buildRegistry() cli.Registry {
 	verbs.RegisterWrite(reg)
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterWorktreeSetup(reg)
+	verbs.RegisterRouteEvent(reg)
 	return reg
 }
 
