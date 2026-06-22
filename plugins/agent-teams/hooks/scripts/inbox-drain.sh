@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook for agent-teams: per-turn mailbox drain + watcher disarm.
+# UserPromptSubmit hook for agent-teams: per-turn watcher disarm + mail signal.
 # Fires on every user prompt. Does two things:
 #   1. DISARM: kills the pending wake watcher for this initiative (the session
 #      is now active; the watcher re-arms on the next Stop).
-#   2. DRAIN: runs `ateam inbox`; its stdout is returned as additionalContext so
-#      the model sees incoming mail in the current turn.
+#   2. SIGNAL: runs `ateam inbox --peek`; if unread mail is reported, emits an
+#      additionalContext message telling the model to run `ateam inbox`.
+#      Does NOT consume (drain) mail — the model runs `ateam inbox` to do that.
 # Silent no-op when cwd is not a registered initiative — teammate subagents and
 # ad-hoc claude sessions must not be affected.
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
 MAILBOX="$ATH/mailbox"
+ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 command -v bd    >/dev/null 2>&1 || exit 0
 command -v jq    >/dev/null 2>&1 || exit 0
-command -v ateam >/dev/null 2>&1 || exit 0
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ] || exit 0
 [ -d "$ATH/.beads" ] || exit 0
 
 # ── Resolve initiative id by worktree:$PWD ──────────────────────────────────
@@ -34,9 +36,12 @@ if [ -f "$PIDFILE" ]; then
   rm -f "$PIDFILE"
 fi
 
-# ── Drain: run ateam inbox; its output becomes additionalContext ─────────────
-inbox_out=$(ateam inbox 2>/dev/null || true)
-[ -n "$inbox_out" ] || exit 0
-
-# Emit as additionalContext via the UserPromptSubmit hook stdout protocol.
-jq -n --arg ctx "$inbox_out" '{"additionalContext": $ctx}'
+# ── Signal: peek at unread mail; emit additionalContext if any ───────────────
+peek_out=$("$ATEAM" inbox --peek 2>/dev/null || true)
+# peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.
+case "$peek_out" in
+  *"unread message"*)
+    signal="You have ${peek_out} — run \`ateam inbox\` to read them."
+    jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
+    ;;
+esac

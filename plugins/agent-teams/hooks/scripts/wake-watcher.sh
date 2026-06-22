@@ -7,6 +7,11 @@
 # Silently exits 0 when cwd is not a registered OPEN initiative or when
 # the initiative has since been CLOSED.
 #
+# On doorbell: emits a SIGNAL to stderr (the woken turn's prompt) telling the
+# model to run `ateam inbox`. Does NOT consume (drain) mail — the model is the
+# single consume path. The doorbell firing is sufficient proof of mail; no peek
+# is needed here.
+#
 # Keying: doorbell  ~/.agent-teams/mailbox/<initiative-id>.wake
 #         pidfile   ~/.agent-teams/mailbox/<initiative-id>.watcher.pid
 #
@@ -59,7 +64,7 @@ while true; do
   # Doorbell check.
   if [ -f "$DOORBELL" ]; then
     rm -f "$DOORBELL"
-    printf "agent-teams: you have mail for initiative %s — run 'ateam inbox' to read it.\n" "$match_id" >&2
+    printf "You have new mail — run \`ateam inbox\` to read it. (Messages are beads, not files — nothing to read on disk.)\n" >&2
     exit 2
   fi
 
