@@ -234,13 +234,19 @@ func (c *inboxCmd) Name() string { return "inbox" }
 
 // Run implements:
 //
-//	ateam inbox [--json]
+//	ateam inbox [--json] [--peek]
+//
+// --peek: query unread count and print a brief summary WITHOUT marking messages
+// read. Safe to call from hooks that need to decide whether to signal the model.
+// Normal mode (no --peek): render the <system-reminder> block and mark read
+// (single consume path — the model is the only consumer).
+// Zero unread: prints "no unread mail" so repeated calls are visibly clean.
 func (c *inboxCmd) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam inbox: nil context")
 	}
 
-	jsonOut, err := parseInboxFlags(args)
+	jsonOut, peek, err := parseInboxFlags(args)
 	if err != nil {
 		return err
 	}
@@ -273,7 +279,18 @@ func (c *inboxCmd) Run(ctx *cli.Context, args []string) error {
 	// Filter to type=message only (include-infra returns all infra types).
 	messages = filterMessageType(messages)
 
+	if peek {
+		// Non-consuming summary for hooks. Print count and return; never mark read.
+		if len(messages) == 0 {
+			fmt.Fprintln(ctx.Stdout, "no unread mail")
+		} else {
+			fmt.Fprintf(ctx.Stdout, "%d unread message(s)\n", len(messages))
+		}
+		return nil
+	}
+
 	if len(messages) == 0 {
+		fmt.Fprintln(ctx.Stdout, "no unread mail")
 		return nil
 	}
 
@@ -299,17 +316,22 @@ func (c *inboxCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// parseInboxFlags parses [--json] from args.
-func parseInboxFlags(args []string) (jsonOut bool, err error) {
+// parseInboxFlags parses [--json] [--peek] from args.
+func parseInboxFlags(args []string) (jsonOut, peek bool, err error) {
 	for i := 0; i < len(args); {
 		if args[i] == "--json" {
 			jsonOut = true
 			i++
 			continue
 		}
-		return false, cli.Usagef("ateam inbox: unknown flag %q", args[i])
+		if args[i] == "--peek" {
+			peek = true
+			i++
+			continue
+		}
+		return false, false, cli.Usagef("ateam inbox: unknown flag %q", args[i])
 	}
-	return jsonOut, nil
+	return jsonOut, peek, nil
 }
 
 // resolveMyInitiative finds the open initiative whose worktree: line matches cwd.
