@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -94,8 +95,8 @@ func TestResume_EmptyArg(t *testing.T) {
 
 func TestResume_UnknownID(t *testing.T) {
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			return fmt.Errorf("bd show: not found")
+		runFn: func(args ...string) (string, error) {
+			return "", fmt.Errorf("bd show: not found")
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
@@ -117,13 +118,14 @@ func TestResume_UnknownID(t *testing.T) {
 
 func TestResume_ClosedInitiative(t *testing.T) {
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-closed1"
-				issue.Status = "closed"
-				issue.Description = "worktree: /some/path\n"
-			}
-			return nil
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-closed1",
+				Status:      "closed",
+				Description: "worktree: /some/path\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
@@ -145,13 +147,14 @@ func TestResume_ClosedInitiative(t *testing.T) {
 
 func TestResume_NoWorktreeLine(t *testing.T) {
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-nowt1"
-				issue.Status = "open"
-				issue.Description = "problem: no worktree here\n"
-			}
-			return nil
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-nowt1",
+				Status:      "open",
+				Description: "problem: no worktree here\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
@@ -174,13 +177,14 @@ func TestResume_NoWorktreeLine(t *testing.T) {
 func TestResume_MissingWorktreePath(t *testing.T) {
 	missingPath := "/no/such/worktree/path/ever"
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-nowt2"
-				issue.Status = "open"
-				issue.Description = "worktree: " + missingPath + "\n"
-			}
-			return nil
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-nowt2",
+				Status:      "open",
+				Description: "worktree: " + missingPath + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
@@ -206,13 +210,14 @@ func TestResume_MissingClaude(t *testing.T) {
 	}
 	dir := t.TempDir()
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-noclaude"
-				issue.Status = "open"
-				issue.Description = "worktree: " + dir + "\n"
-			}
-			return nil
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-noclaude",
+				Status:      "open",
+				Description: "worktree: " + dir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
@@ -232,13 +237,14 @@ func TestResume_MissingClaude(t *testing.T) {
 func TestResume_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-happy1"
-				issue.Status = "open"
-				issue.Description = "worktree: " + dir + "\n"
-			}
-			return nil
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-happy1",
+				Status:      "open",
+				Description: "worktree: " + dir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
 		},
 	}
 

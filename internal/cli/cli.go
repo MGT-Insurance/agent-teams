@@ -136,4 +136,4 @@ const UsageText = "Usage: ateam <verb> [args]\n" +
 	"Verbs: ws | list | list-json | human-list | audit | resume-match | resume-match-closed\n" +
 	"       register | note | gate | clear-gate | learn | learnings | prime\n" +
 	"       show | close | reopen | sync | new-initiative | dispatch | resume | cost\n" +
-	"       worktree-setup\n"
+	"       worktree-setup | send | inbox\n"

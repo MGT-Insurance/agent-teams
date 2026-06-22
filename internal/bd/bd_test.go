@@ -3,6 +3,7 @@ package bd_test
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -88,5 +89,80 @@ func TestRunJSONBadJSON(t *testing.T) {
 	err := c.RunJSON(&got, "list", "--json")
 	if err == nil {
 		t.Fatal("expected unmarshal error, got nil")
+	}
+}
+
+// ---- ShowIssue -------------------------------------------------------------
+
+// fakeRunner implements the runner interface consumed by ShowIssue.
+type fakeRunner struct {
+	runFn func(args ...string) (string, error)
+}
+
+func (f *fakeRunner) Run(args ...string) (string, error) {
+	return f.runFn(args...)
+}
+
+func TestShowIssue_HappyPath(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-x", Description: "worktree: /p\nbranch: b", Status: "open"},
+	}
+	raw, _ := json.Marshal(issues)
+
+	r := &fakeRunner{runFn: func(args ...string) (string, error) {
+		return string(raw), nil
+	}}
+
+	got, err := bd.ShowIssue(r, "at-x")
+	if err != nil {
+		t.Fatalf("ShowIssue: %v", err)
+	}
+	if got.ID != "at-x" {
+		t.Errorf("ID = %q, want %q", got.ID, "at-x")
+	}
+	if got.Description != "worktree: /p\nbranch: b" {
+		t.Errorf("Description = %q, want %q", got.Description, "worktree: /p\nbranch: b")
+	}
+}
+
+func TestShowIssue_EmptyArray(t *testing.T) {
+	r := &fakeRunner{runFn: func(args ...string) (string, error) {
+		return "[]", nil
+	}}
+
+	_, err := bd.ShowIssue(r, "at-missing")
+	if err == nil {
+		t.Fatal("expected error for empty array, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+}
+
+func TestShowIssue_RunError(t *testing.T) {
+	r := &fakeRunner{runFn: func(args ...string) (string, error) {
+		return "", fmt.Errorf("bd show: exit status 1")
+	}}
+
+	_, err := bd.ShowIssue(r, "at-err")
+	if err == nil {
+		t.Fatal("expected error from Run, got nil")
+	}
+	if !strings.Contains(err.Error(), "exit status 1") {
+		t.Errorf("expected Run error propagated, got: %v", err)
+	}
+}
+
+func TestShowIssue_BadJSON(t *testing.T) {
+	r := &fakeRunner{runFn: func(args ...string) (string, error) {
+		return "not json", nil
+	}}
+
+	_, err := bd.ShowIssue(r, "at-bad")
+	if err == nil {
+		t.Fatal("expected unmarshal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal") {
+		t.Errorf("expected 'unmarshal' in error, got: %v", err)
 	}
 }
