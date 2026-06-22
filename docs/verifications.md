@@ -334,6 +334,41 @@ All cases pass `go vet` / `go test ./...` and the CLI harness test.
 
 ---
 
+## SessionStart user-memory prime (verified 2026-06-17)
+
+**V7 — `ateam prime` verb + SessionStart prime hook.** Initiative at-kka.
+Verification ladder (a/b/c = must-pass automatable gate, all PASS; d = live-fire gold standard, pending):
+
+- **(a) Hook script end-to-end.** `prime-user-memories.sh` with the freshly-built
+  binary on PATH emits the `## agent-teams: cross-project user preferences` block
+  and exits 0. With NO `ateam` on PATH it is a silent no-op, exit 0 (never fails a
+  session). PASS.
+- **(b) Verb against the real workspace.** The rebuilt `ateam-darwin-arm64 prime`
+  renders the two existing `user:` memories (`user:` prefix stripped from slug,
+  bodies newline-collapsed + truncated). `bd memories --json` returns
+  `schema_version` as an integer, so the verb unmarshals into `map[string]any` and
+  keeps only string values whose key has the `user:` prefix — `schema_version` is
+  excluded by both type and prefix. PASS.
+- **(c) hooks.json valid.** `jq .` parses; the new `startup|resume|clear|compact`
+  matcher-object coexists with the original `compact`-only compact-recovery entry
+  (separate array entries; Claude Code runs all matching). PASS.
+- **(d) LIVE-FIRE (pending — gold standard).** Proving Claude Code actually invokes
+  the SessionStart hook and injects its stdout requires the *edited* plugin to be
+  the active install: bump shipped (0.8.0) → `claude plugin update agent-teams` →
+  `/reload-plugins` → `/hooks` shows the entry with source `Plugin` → a fresh
+  session shows the prime block. Not run here: forcing a plugin reinstall from a
+  background job would mutate the live install. Low risk regardless — the hook is
+  defensive (always exit 0), and its structure is identical to the proven
+  compact-recovery SessionStart entry. Carried as the manual step in the at-kka
+  REVIEW gate.
+
+Unit tests: `internal/verbs/prime_test.go` (8 cases: user-only filter,
+schema_version exclusion, empty-set no-output, cap-12 + key-sort determinism,
+truncation + ellipsis, slug rendering, bd-error propagation, nil context). Full
+`go build/test/vet ./...` green on the integration branch.
+
+---
+
 ## Summary of surprises
 
 1. **`bd -C` does not work for `bd init`** — flag requires an existing beads project. Use subshell pattern: `(cd <dir> && bd init ...)`.
