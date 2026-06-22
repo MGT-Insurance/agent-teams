@@ -3,6 +3,7 @@
 # Runs `ateam prime` to inject cross-project user preferences into the session.
 # Silent no-op if ateam is not installed. Never fails the session.
 set -eu
-command -v ateam >/dev/null 2>&1 || exit 0
-ateam prime || true
+ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ] || exit 0
+"$ATEAM" prime || true
 exit 0
