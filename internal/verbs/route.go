@@ -6,6 +6,7 @@ package verbs
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -168,6 +169,9 @@ func parseRoutePREventFlags(args []string) (repo string, prNumber int, headBranc
 	}
 	if bodyFile == "" {
 		return "", 0, "", "", "", "", cli.Usagef("ateam route-pr-event: --body-file required")
+	}
+	if _, statErr := os.Stat(bodyFile); statErr != nil {
+		return "", 0, "", "", "", "", cli.Usagef("ateam route-pr-event: body-file not found: %s", bodyFile)
 	}
 
 	return repo, prNumber, headBranch, transition, bodyFile, prURL, nil

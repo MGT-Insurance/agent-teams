@@ -25,7 +25,7 @@ const (
 type PREvent struct {
 	Repo       string       // owner/repo (nameWithOwner)
 	PRNumber   int          // pull request number
-	PRURL      string       // full https URL; may be derived if absent
+	PRURL      string       // full https URL; accepted from --pr-url for logging/forward-compat; NOT used for matching (matching uses Repo + PRNumber)
 	Transition PRTransition // what happened
 	Body       string       // CI text / review body / empty
 }

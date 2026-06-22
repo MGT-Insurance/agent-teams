@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -465,5 +464,3 @@ func verbs_registerAll(reg cli.Registry) {
 	RegisterRouteEvent(reg)
 }
 
-// Suppress unused import warnings by referencing strconv here.
-var _ = strconv.Itoa
