@@ -11,10 +11,11 @@ set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
 MAILBOX="$ATH/mailbox"
+ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 command -v bd    >/dev/null 2>&1 || exit 0
 command -v jq    >/dev/null 2>&1 || exit 0
-command -v ateam >/dev/null 2>&1 || exit 0
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ] || exit 0
 [ -d "$ATH/.beads" ] || exit 0
 
 # ── Resolve initiative id by worktree:$PWD ──────────────────────────────────
@@ -35,7 +36,7 @@ if [ -f "$PIDFILE" ]; then
 fi
 
 # ── Drain: run ateam inbox; its output becomes additionalContext ─────────────
-inbox_out=$(ateam inbox 2>/dev/null || true)
+inbox_out=$("$ATEAM" inbox 2>/dev/null || true)
 [ -n "$inbox_out" ] || exit 0
 
 # Emit as additionalContext via the UserPromptSubmit hook stdout protocol.

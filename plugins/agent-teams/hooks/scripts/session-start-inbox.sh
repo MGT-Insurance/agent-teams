@@ -7,10 +7,11 @@
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 command -v bd    >/dev/null 2>&1 || exit 0
 command -v jq    >/dev/null 2>&1 || exit 0
-command -v ateam >/dev/null 2>&1 || exit 0
+[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ] || exit 0
 [ -d "$ATH/.beads" ] || exit 0
 
 # ── Resolve initiative id by worktree:$PWD ──────────────────────────────────
@@ -21,4 +22,4 @@ match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
 [ -n "$match_id" ] || exit 0
 
 # ── Drain: run ateam inbox; print output for additionalContext injection ──────
-ateam inbox 2>/dev/null || true
+"$ATEAM" inbox 2>/dev/null || true
