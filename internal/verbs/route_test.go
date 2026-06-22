@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,6 +43,8 @@ func (f *routeFakeBD) RunJSON(dst any, args ...string) error {
 }
 
 // makeRouteCtx builds a minimal cli.Context backed by a routeFakeBD.
+// ctx.Home is set to a synthetic path; use makeRouteCtxWithHome when
+// spawnReviewInitiative needs a real fs-accessible home.
 func makeRouteCtx(issues []bd.Issue) (*cli.Context, *bytes.Buffer, *bytes.Buffer) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
@@ -51,6 +54,22 @@ func makeRouteCtx(issues []bd.Issue) (*cli.Context, *bytes.Buffer, *bytes.Buffer
 		Stdout: stdout,
 		Stderr: stderr,
 	}, stdout, stderr
+}
+
+// makeRouteCtxWithHome builds a cli.Context whose Home is set to tmpHome,
+// so spawnReviewInitiative can find (or not find) config files under it.
+func makeRouteCtxWithHome(t *testing.T, issues []bd.Issue) (*cli.Context, *bytes.Buffer, *bytes.Buffer, string) {
+	t.Helper()
+	tmpHome := t.TempDir()
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   tmpHome,
+		BD:     &routeFakeBD{issues: issues},
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+	return ctx, stdout, stderr, tmpHome
 }
 
 // writeTempFile creates a temp file with the given content and returns its path.
@@ -324,11 +343,12 @@ func TestDecisionMatrix_OwnedViaMatchBranchRoutesViaSend(t *testing.T) {
 	}
 }
 
-// TestDecisionMatrix_UnownedReviewRequestedHitsSpawnSeam verifies the SPAWN seam:
-// unowned + review_requested → spawnReviewInitiative called, runner NOT called.
-func TestDecisionMatrix_UnownedReviewRequestedHitsSpawnSeam(t *testing.T) {
+// TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips verifies the SPAWN seam
+// when the repo is not registered in review-repos: runner NOT called, "skipping" logged.
+func TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips(t *testing.T) {
 	bodyFile := writeTempFile(t, "reviewer added")
-	ctx, stdout, _ := makeRouteCtx(nil) // no issues → MatchNone
+	// ctx.Home points to a real temp dir with no review-repos/<key> file.
+	ctx, stdout, _, _ := makeRouteCtxWithHome(t, nil) // no issues → MatchNone
 	fr := &fakeRunner{}
 	cmd := &routePREventCommand{runner: fr.run}
 
@@ -342,14 +362,146 @@ func TestDecisionMatrix_UnownedReviewRequestedHitsSpawnSeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
-	// Runner must NOT have been called.
+	// Runner must NOT have been called — no config file means skip.
 	if len(fr.calls) != 0 {
-		t.Errorf("expected 0 runner calls for unowned review_requested, got %d: %v", len(fr.calls), fr.calls)
+		t.Errorf("expected 0 runner calls for unconfigured review_requested, got %d: %v", len(fr.calls), fr.calls)
 	}
-	// Spawn seam should log the TODO fkr.23 marker.
 	out := stdout.String()
-	if !strings.Contains(out, "fkr.23") {
-		t.Errorf("stdout should mention fkr.23 seam; got: %q", out)
+	if !strings.Contains(out, "skipping") {
+		t.Errorf("stdout should say 'skipping' for unconfigured repo; got: %q", out)
+	}
+}
+
+// TestSpawnReviewInitiative_Configured verifies the happy path: a review-repos
+// config file is present → runner called with dispatch + correct args, body-file
+// contains the required review instructions.
+func TestSpawnReviewInitiative_Configured(t *testing.T) {
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+
+	// Register a fake clone path in the config.
+	clonePath := t.TempDir()
+	repoKey := "midgard" // Slugify(basename("MGT-Insurance/midgard"))
+	configDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, repoKey), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	fr := &fakeRunner{}
+	cmd := &routePREventCommand{runner: fr.run}
+
+	event := PREvent{
+		Repo:       "MGT-Insurance/midgard",
+		PRNumber:   42,
+		PRURL:      "https://github.com/MGT-Insurance/midgard/pull/42",
+		Transition: TransitionReviewRequested,
+	}
+
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+		t.Fatalf("spawnReviewInitiative error: %v", err)
+	}
+
+	// Runner must have been called exactly once.
+	if len(fr.calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d: %v", len(fr.calls), fr.calls)
+	}
+	call := fr.calls[0]
+
+	// Verify argv structure: dispatch --repo <clone> --problem <title> --body-file <path>
+	if len(call) < 7 {
+		t.Fatalf("runner call too short (%d args): %v", len(call), call)
+	}
+	if call[0] != "dispatch" {
+		t.Errorf("call[0]: got %q, want \"dispatch\"", call[0])
+	}
+	if call[1] != "--repo" {
+		t.Errorf("call[1]: got %q, want \"--repo\"", call[1])
+	}
+	if call[2] != clonePath {
+		t.Errorf("call[2] (clone path): got %q, want %q", call[2], clonePath)
+	}
+	if call[3] != "--problem" {
+		t.Errorf("call[3]: got %q, want \"--problem\"", call[3])
+	}
+	// Problem must mention the PR number.
+	if !strings.Contains(call[4], "42") {
+		t.Errorf("--problem should mention PR number 42; got %q", call[4])
+	}
+	if call[5] != "--body-file" {
+		t.Errorf("call[5]: got %q, want \"--body-file\"", call[5])
+	}
+	// Body file path comes from the runner args (temp file is cleaned up after run,
+	// but we capture the path from the call before it's removed).
+	bodyFilePath := call[6]
+	// The temp file is removed after runner returns; we only have the path recorded.
+	// Since fakeRunner records args synchronously before returning, we can't read
+	// the file after the fact — instead capture content via a custom runner.
+	_ = bodyFilePath
+
+	// Confirmation line must appear in stdout.
+	out := stdout.String()
+	if !strings.Contains(out, "spawned review initiative") {
+		t.Errorf("stdout should confirm spawn; got: %q", out)
+	}
+}
+
+// TestSpawnReviewInitiative_ConfiguredBodyContent verifies the review instructions
+// body written to the temp file contains the required phrases.
+func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
+	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
+
+	clonePath := t.TempDir()
+	repoKey := "midgard"
+	configDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, repoKey), []byte(clonePath), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var capturedBody string
+	bodyCapturingRunner := func(args ...string) error {
+		// Find --body-file arg and read it before returning.
+		for i, a := range args {
+			if a == "--body-file" && i+1 < len(args) {
+				data, err := os.ReadFile(args[i+1])
+				if err == nil {
+					capturedBody = string(data)
+				}
+				break
+			}
+		}
+		return nil
+	}
+
+	cmd := &routePREventCommand{runner: bodyCapturingRunner}
+	event := PREvent{
+		Repo:       "MGT-Insurance/midgard",
+		PRNumber:   42,
+		PRURL:      "https://github.com/MGT-Insurance/midgard/pull/42",
+		Transition: TransitionReviewRequested,
+	}
+
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+		t.Fatalf("spawnReviewInitiative error: %v", err)
+	}
+
+	requiredPhrases := []string{
+		"gh pr checkout 42",
+		"gh pr diff 42",
+		"gh pr review",
+		"must NOT open a new PR",
+		"Do NOT open a PR",
+		"https://github.com/MGT-Insurance/midgard/pull/42",
+		"MGT-Insurance/midgard",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(capturedBody, phrase) {
+			t.Errorf("review body missing %q; body:\n%s", phrase, capturedBody)
+		}
 	}
 }
 

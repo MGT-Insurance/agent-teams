@@ -1,5 +1,5 @@
 // This file is owned by Track R (route-pr-event verbs).
-// route.go — route-pr-event verb: decision matrix + registration (fkr.21).
+// route.go — route-pr-event verb: decision matrix + registration (fkr.21, fkr.23).
 // Depends on route_types.go (PREvent, MatchResult, ateamRunner) and
 // route_match.go (matchInitiative). File-disjoint from both.
 package verbs
@@ -7,9 +7,12 @@ package verbs
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 )
 
 // RegisterRouteEvent registers the route-pr-event verb.
@@ -33,7 +36,7 @@ func (c *routePREventCommand) Name() string { return "route-pr-event" }
 // Decision matrix (Eric-approved, fkr.18 contract):
 //
 //	owned (MatchPRField | MatchBranch) → ateam send <id> --file <body> --sender pr-shepherd
-//	unowned + review_requested        → spawnReviewInitiative (TODO fkr.23 stub)
+//	unowned + review_requested        → spawnReviewInitiative (fkr.23)
 //	unowned + other transition        → log and exit 0
 func (c *routePREventCommand) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
@@ -69,7 +72,7 @@ func (c *routePREventCommand) Run(ctx *cli.Context, args []string) error {
 
 	case transition == TransitionReviewRequested:
 		// SPAWN: unowned PR + review_requested → secondary track (fkr.23).
-		return spawnReviewInitiative(ctx, event, headBranch)
+		return c.spawnReviewInitiative(ctx, event)
 
 	default:
 		// LOG-AND-SKIP: unowned PR, non-review transition → do nothing.
@@ -79,15 +82,82 @@ func (c *routePREventCommand) Run(ctx *cli.Context, args []string) error {
 	}
 }
 
-// spawnReviewInitiative is the seam for the secondary track (fkr.23).
-// It is called when a PR event arrives with transition=review_requested and
-// no owning initiative has been found. fkr.23 fills in the body of this
-// function with the actual dispatch/external-repo logic.
+// spawnReviewInitiative handles the SPAWN path (fkr.23): an unowned PR with
+// transition=review_requested. It resolves the event repo to a local clone
+// path via a config file at <ctx.Home>/review-repos/<repo-key>, where
+// repo-key = Slugify(basename(event.Repo)). If the config file is absent,
+// it logs a skip message and returns nil. If configured, it writes a temp
+// file containing review instructions and invokes the ateamRunner with:
 //
-// Signature (frozen): func(ctx *cli.Context, event PREvent, headBranch string) error
-func spawnReviewInitiative(ctx *cli.Context, event PREvent, headBranch string) error {
-	// TODO fkr.23: implement spawn review initiative for unowned review_requested PRs.
-	fmt.Fprintf(ctx.Stdout, "route-pr-event: unowned review_requested for %s#%d — spawn review initiative (TODO fkr.23)\n",
+//	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile>
+//
+// Registration (one-time, out of band):
+//
+//	mkdir -p ~/.agent-teams/review-repos
+//	echo /abs/path/to/local-clone > ~/.agent-teams/review-repos/<repo-key>
+//
+// e.g. for MGT-Insurance/midgard (key = "midgard"):
+//
+//	echo /Users/ericlloyd/Code/midgard > ~/.agent-teams/review-repos/midgard
+func (c *routePREventCommand) spawnReviewInitiative(ctx *cli.Context, event PREvent) error {
+	// repo-key = Slugify(basename of owner/repo)
+	repoKey := gitutil.Slugify(filepath.Base(event.Repo))
+
+	// Read the config file that maps the key to a local clone path.
+	configFile := filepath.Join(ctx.Home, "review-repos", repoKey)
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		// Not configured for this repo — log and skip.
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: review-spawn not configured for %s (no %s); skipping\n",
+			event.Repo, configFile)
+		return nil
+	}
+	clonePath := strings.TrimSpace(string(data))
+
+	// Build the review title and instruction body.
+	title := fmt.Sprintf("Review PR #%d (%s)", event.PRNumber, event.Repo)
+
+	var sb strings.Builder
+	sb.WriteString("You are reviewing an EXISTING pull request — you are NOT building a feature ")
+	sb.WriteString("and you must NOT open a new PR.\n\n")
+	sb.WriteString(fmt.Sprintf("You are in a fresh worktree of %s.\n\n", event.Repo))
+	sb.WriteString("Steps:\n")
+	sb.WriteString(fmt.Sprintf("(1) Run `gh pr checkout %d` to get the PR's code locally.\n", event.PRNumber))
+	sb.WriteString(fmt.Sprintf("(2) Read the full diff: `gh pr diff %d`\n", event.PRNumber))
+	sb.WriteString("(3) Read the surrounding code as needed.\n")
+	sb.WriteString("(4) Review for correctness, tests, edge cases, and security.\n")
+	sb.WriteString(fmt.Sprintf("(5) Post your review: `gh pr review %d` (and/or `gh pr comment`).\n\n", event.PRNumber))
+	sb.WriteString("If the worktree needs a live env to run/build, run `ateam worktree-setup <this-worktree-abs-path>`.\n\n")
+	sb.WriteString("Do NOT open a PR.\n")
+	sb.WriteString("Do NOT raise a merge/review gate for your own work.\n")
+	sb.WriteString("Your deliverable is the posted review on PR #" + fmt.Sprintf("%d", event.PRNumber) + ".\n")
+	if event.PRURL != "" {
+		sb.WriteString("\nPR URL: " + event.PRURL + "\n")
+	}
+
+	// Write the instruction body to a temp file.
+	tmpFile, err := os.CreateTemp("", "review-instructions-*.txt")
+	if err != nil {
+		return fmt.Errorf("route-pr-event: review-spawn: create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.WriteString(sb.String()); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("route-pr-event: review-spawn: write temp file: %w", err)
+	}
+	tmpFile.Close()
+
+	// Invoke dispatch via the runner.
+	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath)
+	// Clean up temp file after the runner returns (dispatch has already read it).
+	os.Remove(tmpPath)
+
+	if runErr != nil {
+		return fmt.Errorf("route-pr-event: review-spawn: dispatch: %w", runErr)
+	}
+
+	fmt.Fprintf(ctx.Stdout, "route-pr-event: spawned review initiative for %s#%d\n",
 		event.Repo, event.PRNumber)
 	return nil
 }
