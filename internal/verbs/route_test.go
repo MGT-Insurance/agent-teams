@@ -492,7 +492,10 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 	requiredPhrases := []string{
 		"gh pr checkout 42",
 		"gh pr diff 42",
-		"gh pr review",
+		"NO nit comments",
+		"INLINE comment",
+		"gh api repos/MGT-Insurance/midgard/pulls/42/reviews",
+		"single sentence",
 		"must NOT open a new PR",
 		"Do NOT open a PR",
 		"https://github.com/MGT-Insurance/midgard/pull/42",
