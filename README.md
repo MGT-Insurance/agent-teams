@@ -91,6 +91,16 @@ but something has to load them into a session. Two mechanisms:
   plan: a `SubagentStart` hook runs `ateam learnings <agent_type>` and injects it,
   letting the prompt-step-1 instruction be removed once live firing is verified.
 
+## Cross-session messaging
+
+Deliver a message to a running session from *outside* it — a PR-shepherd conductor, an overseer, or a peer DRI — including waking a session that has gone idle. A generalization of the human-gate protocol: any sender, plus a wake. Design doc: [`docs/2026-06-19-cross-session-messaging-design.md`](docs/2026-06-19-cross-session-messaging-design.md).
+
+- **Send.** `ateam send <recipient-initiative-id> --file <body> [--sender <id>] [--thread <id>]` writes a beads `type=message` bead (addressed by `assignee` = recipient initiative id; ephemeral, excluded from `bd ready`/`list`) and rings a per-recipient doorbell file `~/.agent-teams/mailbox/<id>.wake`. If `claude agents --json` shows no live session, it escalates to `ateam resume`.
+- **Drain.** `ateam inbox` resolves the recipient by `worktree: $PWD`, prints unread messages as a `<system-reminder>` (adds a `read` label, keeps the bead open) and writes a two-phase delivery ack. It runs per-turn via a `UserPromptSubmit` hook and at session start via `SessionStart` — at-least-once, idempotent.
+- **Wake (the idle case).** A per-initiative singleton `asyncRewake` `Stop` hook (`hooks/scripts/wake-watcher.sh`) arms a dependency-free poll-loop on the doorbell when a session goes idle. A doorbell write wakes the session within ~1s (the `Stop`-hook process exits 2, which Claude Code treats as a re-wake). A heartbeat re-arms before the hook timeout reaps it (defaults: **4h heartbeat / 24h timeout**), so the session stays reachable while the initiative is open and self-silences once it's closed. The 24h timeout survives normal laptop sleeps; only a continuous >24h close drops the watcher.
+
+The mailbox is durable and git/Dolt-synced, so messages survive crashes and reach a recipient on another machine after `bd dolt pull`. Verified end-to-end against the live plugin (see [`docs/verifications.md`](docs/verifications.md)).
+
 ## Roadmap
 
 - `plugins/overseer/` — a meta-orchestrator watching every initiative on the machine (feeds on the registry).
