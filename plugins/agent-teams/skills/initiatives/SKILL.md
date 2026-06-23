@@ -9,10 +9,10 @@ Render the initiative dashboard from the global workspace. If `ateam ws` fails o
 
 ## Data source
 
-Call `ateam execution-status --json`. This is the ONLY data source for status. Do NOT infer phase, reviewability, or execution state from labels, notes prose, or any other field — `execution_status` is computed deterministically in Go and you render it as-is.
+Call `ateam execution-status`. This is the ONLY data source for status. Do NOT infer phase, reviewability, or execution state from labels, notes prose, or any other field — `execution_status` is computed deterministically in Go and you render it as-is. The verb always emits JSON.
 
 ```bash
-ateam execution-status --json
+ateam execution-status
 ```
 
 Each element in the returned array has:

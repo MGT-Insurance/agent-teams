@@ -12,7 +12,8 @@ package verbs
 //	    "worktree":       "/path/to/wt",    // from "worktree: <path>" line in description
 //	    "labels":         ["human","gate:review"],
 //	    "execution_status": "REVIEWABLE",   // see STATUS COMPUTATION below
-//	    "notes":          "..."             // raw bead notes (crisp-ask block lives here)
+//	    "ask":            { "decision": "...", ... } // null when no sentinel block
+//	    "pr":             "https://..."    // first GitHub PR URL in notes, or ""
 //	  },
 //	  ...
 //	]
@@ -35,6 +36,7 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -200,12 +202,12 @@ func isActivelyWorking(sessions []agentSession, worktree string) bool {
 	if worktree == "" {
 		return false
 	}
-	// matchByWorktree uses exact-line matching against bd.Issue.Description.
-	// Here we do the same cwd comparison that hasLiveSession does — exact string
-	// equality after trimming trailing slashes — because sessions have cwd not a
-	// full description. The join key is the worktree path string.
+	// Mirror hasLiveSession: exact string equality after trimming trailing slashes.
+	// Claude agents sometimes reports cwd with a trailing slash; the stored
+	// worktree path never has one, so we normalise both sides before comparing.
+	want := strings.TrimRight(worktree, "/")
 	for _, s := range sessions {
-		if s.CWD == worktree {
+		if strings.TrimRight(s.CWD, "/") == want {
 			if s.Status == "busy" || s.State == "working" {
 				return true
 			}

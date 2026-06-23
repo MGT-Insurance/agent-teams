@@ -199,6 +199,83 @@ func TestIsActivelyWorking(t *testing.T) {
 	}
 }
 
+// ── B1: trailing-slash normalisation ─────────────────────────────────────────
+
+// TestIsActivelyWorking_TrailingSlash verifies that isActivelyWorking treats a
+// cwd with a trailing slash as equal to the stored worktree path (which has no
+// trailing slash), and vice versa.
+func TestIsActivelyWorking_TrailingSlash(t *testing.T) {
+	const wt = "/home/agent/worktrees/my-initiative"
+
+	tests := []struct {
+		name    string
+		cwdFn   func() string // session cwd
+		wtFn    func() string // worktree path passed to isActivelyWorking
+		status  string
+		want    bool
+	}{
+		{
+			name:   "session cwd has trailing slash, worktree does not",
+			cwdFn:  func() string { return wt + "/" },
+			wtFn:   func() string { return wt },
+			status: "busy",
+			want:   true,
+		},
+		{
+			name:   "session cwd no trailing slash, worktree has trailing slash",
+			cwdFn:  func() string { return wt },
+			wtFn:   func() string { return wt + "/" },
+			status: "busy",
+			want:   true,
+		},
+		{
+			name:   "both have trailing slash",
+			cwdFn:  func() string { return wt + "/" },
+			wtFn:   func() string { return wt + "/" },
+			status: "busy",
+			want:   true,
+		},
+		{
+			name:   "trailing slash match, state=working",
+			cwdFn:  func() string { return wt + "/" },
+			wtFn:   func() string { return wt },
+			status: "idle",
+			want:   true, // state=working below
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := ""
+			if tc.name == "trailing slash match, state=working" {
+				state = "working"
+			}
+			sess := []agentSession{session(tc.cwdFn(), tc.status, state)}
+			got := isActivelyWorking(sess, tc.wtFn())
+			if got != tc.want {
+				t.Errorf("isActivelyWorking(cwd=%q, wt=%q) = %v, want %v",
+					tc.cwdFn(), tc.wtFn(), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComputeExecutionStatus_TrailingSlashOverridesReviewGate verifies the
+// contract invariant: an initiative with gate:review AND a session whose cwd
+// has a trailing slash resolves to IN-PROGRESS (not REVIEWABLE).
+func TestComputeExecutionStatus_TrailingSlashOverridesReviewGate(t *testing.T) {
+	const wt = "/home/agent/worktrees/my-initiative"
+
+	// Session reports cwd with trailing slash; worktree stored without.
+	sess := []agentSession{session(wt+"/", "busy", "")}
+	labels := []string{"human", "gate:review"}
+
+	got := computeExecutionStatus(labels, sess, wt)
+	if got != "IN-PROGRESS" {
+		t.Errorf("computeExecutionStatus with trailing-slash session: got %q, want IN-PROGRESS", got)
+	}
+}
+
 // ── agentSession JSON decoding ────────────────────────────────────────────────
 
 // TestAgentSessionDecode verifies the extended struct handles both background
@@ -550,6 +627,87 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 	}
 	if r.PR != prURL {
 		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	}
+}
+
+// ── S2: line-anchored close sentinel ─────────────────────────────────────────
+
+// TestExtractLatestAsk_InlineTripleArrow verifies that ">>>" embedded in prose
+// (not at the start of a line) does NOT truncate a block's body — the block
+// must parse fully.
+func TestExtractLatestAsk_InlineTripleArrow(t *testing.T) {
+	// ">>>" appears mid-line inside the recommendation field — must not close block.
+	notes := "<<<ateam-ask\n" +
+		"decision: pick one\n" +
+		"recommendation: use A >>> B (A is faster)\n" +
+		"alternative: use B\n" +
+		">>>\n"
+
+	got, ok := extractLatestAsk(notes)
+	if !ok {
+		t.Fatal("extractLatestAsk returned ok=false, want true")
+	}
+	if got.decision != "pick one" {
+		t.Errorf("decision = %q, want %q", got.decision, "pick one")
+	}
+	if got.recommendation != "use A >>> B (A is faster)" {
+		t.Errorf("recommendation = %q, want %q", got.recommendation, "use A >>> B (A is faster)")
+	}
+	if got.alternative != "use B" {
+		t.Errorf("alternative = %q, want %q", got.alternative, "use B")
+	}
+}
+
+// TestExtractLatestAsk_InlineTripleArrowNotPartialParse verifies that a block
+// whose context field contains ">>>" mid-line does not produce a partial parse
+// (i.e., the context field is not silently truncated).
+func TestExtractLatestAsk_InlineTripleArrowNotPartialParse(t *testing.T) {
+	notes := "<<<ateam-ask\n" +
+		"decision: merge approach\n" +
+		"recommendation: approach A\n" +
+		"alternative: approach B\n" +
+		"context: see git conflict markers (>>>) in history\n" +
+		">>>\n"
+
+	got, ok := extractLatestAsk(notes)
+	if !ok {
+		t.Fatal("extractLatestAsk returned ok=false, want true")
+	}
+	if got.context != "see git conflict markers (>>>) in history" {
+		t.Errorf("context = %q, want full value with embedded >>>", got.context)
+	}
+}
+
+// ── N1: unclosed block skipped, later valid block wins ────────────────────────
+
+// TestExtractLatestAsk_UnclosedThenValid verifies that an unclosed block is
+// skipped and the subsequent valid block is returned (last-valid-wins).
+func TestExtractLatestAsk_UnclosedThenValid(t *testing.T) {
+	// First block has no closing >>>; second block is well-formed.
+	notes := "<<<ateam-ask\n" +
+		"decision: stale incomplete block\n" +
+		"recommendation: stale-rec\n" +
+		"alternative: stale-alt\n" +
+		// no closing >>>
+		"<<<ateam-ask\n" +
+		"decision: valid block decision\n" +
+		"recommendation: valid-rec\n" +
+		"alternative: valid-alt\n" +
+		"context: valid-ctx\n" +
+		">>>\n"
+
+	got, ok := extractLatestAsk(notes)
+	if !ok {
+		t.Fatal("extractLatestAsk returned ok=false; expected valid block to be found")
+	}
+	if got.decision != "valid block decision" {
+		t.Errorf("decision = %q, want %q (unclosed block must be skipped)", got.decision, "valid block decision")
+	}
+	if got.recommendation != "valid-rec" {
+		t.Errorf("recommendation = %q, want valid-rec", got.recommendation)
+	}
+	if got.context != "valid-ctx" {
+		t.Errorf("context = %q, want valid-ctx", got.context)
 	}
 }
 

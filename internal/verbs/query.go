@@ -133,9 +133,27 @@ type askBlock struct {
 // extractLatestAsk scans notes for the LAST sentinel-delimited ateam-ask block
 // and parses it. Returns the parsed block and true when found; false otherwise.
 // Malformed or incomplete blocks (missing closing sentinel) are skipped.
+//
+// The closing sentinel ">>>" must appear at the start of a line to avoid
+// matching ">>>" embedded in prose or git conflict markers.
 func extractLatestAsk(notes string) (askBlock, bool) {
 	const open = "<<<ateam-ask"
-	const close = ">>>"
+
+	// closeMarker matches ">>>" anchored to the start of a line.
+	// The writer (buildAskBlock) always emits ">>>" on its own line, so
+	// requiring a leading "\n" is a safe tighter match that round-trips correctly.
+	closeLine := func(s string) int {
+		// Check for ">>>" at the very start of the string (first block, no
+		// preceding newline) or after a newline.
+		if strings.HasPrefix(s, ">>>") {
+			return 0
+		}
+		idx := strings.Index(s, "\n>>>")
+		if idx == -1 {
+			return -1
+		}
+		return idx + 1 // position of the ">" that starts ">>>"
+	}
 
 	var last askBlock
 	found := false
@@ -146,17 +164,19 @@ func extractLatestAsk(notes string) (askBlock, bool) {
 			break
 		}
 		after := remaining[start+len(open):]
-		end := strings.Index(after, close)
+		end := closeLine(after)
 		if end == -1 {
-			// Unclosed block — skip and stop searching.
-			break
+			// Unclosed block — skip and keep scanning for later valid blocks.
+			// Advance past the open sentinel so we don't loop on the same position.
+			remaining = after
+			continue
 		}
 		body := after[:end]
 		if parsed, ok := parseAskBody(body); ok {
 			last = parsed
 			found = true
 		}
-		remaining = after[end+len(close):]
+		remaining = after[end+len(">>>"):]
 	}
 	return last, found
 }
