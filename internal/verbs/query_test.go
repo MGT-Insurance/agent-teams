@@ -419,7 +419,16 @@ func TestLearningsMissingRoleReturnsUsageError(t *testing.T) {
 
 func TestLearningsCallsBDArgs(t *testing.T) {
 	var calls [][]string
-	client := bd.NewClientWithExec("/ws", captureArgs(&calls))
+	// The new implementation calls `memories --json`, not `memories <role>`.
+	// captureArgs returns "result\n" which is not valid JSON; use a JSON stub.
+	emptyJSON := []byte("{}\n")
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		cp := make([]string, len(args))
+		copy(cp, args)
+		calls = append(calls, cp)
+		return emptyJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
@@ -433,7 +442,7 @@ func TestLearningsCallsBDArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 bd call, got %d", len(calls))
 	}
-	wantArgs := []string{"-C", "/ws", "memories", "planner"}
+	wantArgs := []string{"-C", "/ws", "memories", "--json"}
 	for i, w := range wantArgs {
 		if i >= len(calls[0]) || calls[0][i] != w {
 			t.Errorf("bd args[%d] = %q, want %q (full: %v)", i, calls[0][i], w, calls[0])
@@ -442,8 +451,10 @@ func TestLearningsCallsBDArgs(t *testing.T) {
 }
 
 func TestLearningsWritesOutput(t *testing.T) {
+	// The new implementation filters by role prefix and prints full bodies.
+	memoriesJSON := []byte(`{"planner:foo":"first line\nsecond line","dri:bar":"should not appear"}` + "\n")
 	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
-		return []byte("memory: foo\n"), nil, nil
+		return memoriesJSON, nil, nil
 	}
 	client := bd.NewClientWithExec("/ws", execFn)
 	out := &bytes.Buffer{}
@@ -452,13 +463,17 @@ func TestLearningsWritesOutput(t *testing.T) {
 	reg := make(cli.Registry)
 	verbs.RegisterQuery(reg)
 	cmd, _ := reg.Lookup("learnings")
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx, []string{"planner"}); err != nil {
 		t.Fatalf("learnings.Run: %v", err)
 	}
 	if out.Len() == 0 {
 		t.Error("learnings produced no output")
 	}
-	if got := out.String(); got != "memory: foo\n" {
-		t.Errorf("learnings output = %q, want %q", got, "memory: foo\n")
+	got := out.String()
+	if !strings.Contains(got, "planner:foo") {
+		t.Errorf("expected planner:foo key in output; got: %q", got)
+	}
+	if strings.Contains(got, "dri:") {
+		t.Errorf("cross-role dri: key must not appear in output; got: %q", got)
 	}
 }
