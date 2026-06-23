@@ -1230,3 +1230,222 @@ func containsArgPrefix(args []string, prefix string) bool {
 	}
 	return false
 }
+
+// ── forget ────────────────────────────────────────────────────────────────────
+
+func TestForget_ColdKeyFormed(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:stale-slug"}})
+	err := (&forgetCmd{}).Run(ctx, []string{"dri", "stale-slug"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"forget", "dri:stale-slug"})
+}
+
+func TestForget_HotKeyFormed(t *testing.T) {
+	// Callers pass slug as "hot:<name>" to target the hot-tier key.
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:hot:hot-item"}})
+	err := (&forgetCmd{}).Run(ctx, []string{"dri", "hot:hot-item"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"forget", "dri:hot:hot-item"})
+}
+
+func TestForget_MissingRole(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	err := (&forgetCmd{}).Run(ctx, nil)
+	assertUsageError(t, err, "missing <role>")
+}
+
+func TestForget_MissingSlug(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	err := (&forgetCmd{}).Run(ctx, []string{"dri"})
+	assertUsageError(t, err, "missing <slug>")
+}
+
+func TestForget_NilContext(t *testing.T) {
+	err := (&forgetCmd{}).Run(nil, []string{"dri", "slug"})
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestForget_ForwardsBDOutput(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:foo"}})
+	if err := (&forgetCmd{}).Run(ctx, []string{"dri", "foo"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Deleted dri:foo") {
+		t.Errorf("stdout = %q, want bd forget output", got)
+	}
+}
+
+// ── condense ──────────────────────────────────────────────────────────────────
+
+// condensePacketFor runs condenseCmd with a fakeBD returning the given memories
+// map and parses the JSON packet from stdout.
+func condensePacketFor(t *testing.T, role string, memories map[string]any) condensePacket {
+	t.Helper()
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = memories
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	if err := (&condenseCmd{}).Run(ctx, []string{role}); err != nil {
+		t.Fatalf("condense.Run: %v", err)
+	}
+	var pkt condensePacket
+	if err := json.NewDecoder(stdout).Decode(&pkt); err != nil {
+		t.Fatalf("packet JSON decode: %v (raw: %q)", err, stdout.String())
+	}
+	return pkt
+}
+
+func TestCondense_PacketContainsAllRoleMemories(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:alpha":      "body alpha",
+		"dri:beta":       "body beta",
+		"dri:hot:gamma":  "body gamma (hot)",
+		"planner:other":  "should not appear",
+		"schema_version": 1,
+	})
+
+	if len(pkt.Memories) != 3 {
+		t.Fatalf("expected 3 memories (both tiers, dri: prefix only), got %d: %+v", len(pkt.Memories), pkt.Memories)
+	}
+	keys := make(map[string]string, len(pkt.Memories))
+	for _, m := range pkt.Memories {
+		keys[m.Key] = m.Body
+	}
+	if keys["dri:alpha"] != "body alpha" {
+		t.Errorf("dri:alpha body = %q, want %q", keys["dri:alpha"], "body alpha")
+	}
+	if keys["dri:beta"] != "body beta" {
+		t.Errorf("dri:beta body = %q, want %q", keys["dri:beta"], "body beta")
+	}
+	if keys["dri:hot:gamma"] != "body gamma (hot)" {
+		t.Errorf("dri:hot:gamma body = %q, want %q", keys["dri:hot:gamma"], "body gamma (hot)")
+	}
+	if _, ok := keys["planner:other"]; ok {
+		t.Error("planner:other must not appear in dri condense packet")
+	}
+}
+
+func TestCondense_PacketContainsBudget(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if pkt.HotBudget != condenseBudgetTokens {
+		t.Errorf("HotBudget = %d, want %d", pkt.HotBudget, condenseBudgetTokens)
+	}
+}
+
+func TestCondense_PacketContainsContract(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if pkt.Contract == "" {
+		t.Fatal("instruction_contract must not be empty")
+	}
+	// Contract must mention the key verbs the consuming agent uses.
+	for _, want := range []string{"ateam learn", "ateam forget", "PROMOTE", "DEMOTE", "EVICT"} {
+		if !strings.Contains(pkt.Contract, want) {
+			t.Errorf("contract missing %q", want)
+		}
+	}
+}
+
+func TestCondense_ZeroWritesOccur(t *testing.T) {
+	var calls []string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, args[0])
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{"dri:foo": "body"}
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	if err := (&condenseCmd{}).Run(ctx, []string{"dri"}); err != nil {
+		t.Fatalf("condense.Run: %v", err)
+	}
+	for _, c := range calls {
+		if c == "remember" || c == "forget" {
+			t.Errorf("condense issued a write call %q — must be zero-write", c)
+		}
+	}
+}
+
+func TestCondense_MemoriesSorted(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:zzz": "last",
+		"dri:aaa": "first",
+		"dri:mmm": "middle",
+	})
+	if len(pkt.Memories) != 3 {
+		t.Fatalf("expected 3 memories, got %d", len(pkt.Memories))
+	}
+	if pkt.Memories[0].Key != "dri:aaa" || pkt.Memories[1].Key != "dri:mmm" || pkt.Memories[2].Key != "dri:zzz" {
+		t.Errorf("memories not sorted: %v", pkt.Memories)
+	}
+}
+
+func TestCondense_MissingRole(t *testing.T) {
+	fbd := &fakeBD{}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	err := (&condenseCmd{}).Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected usage error for missing role")
+	}
+	if _, ok := err.(*cli.UsageError); !ok {
+		t.Errorf("expected *cli.UsageError, got %T: %v", err, err)
+	}
+}
+
+func TestCondense_NilContext(t *testing.T) {
+	err := (&condenseCmd{}).Run(nil, []string{"dri"})
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestCondense_EmptyRoleSet(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"planner:something": "other role",
+	})
+	if len(pkt.Memories) != 0 {
+		t.Errorf("expected 0 memories for empty role set, got %d", len(pkt.Memories))
+	}
+}
+
+func TestCondense_SchemaVersionExcluded(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"schema_version": 1,
+		"dri:real":       "real body",
+	})
+	for _, m := range pkt.Memories {
+		if m.Key == "schema_version" {
+			t.Error("schema_version must not appear in condense packet")
+		}
+	}
+	if len(pkt.Memories) != 1 || pkt.Memories[0].Key != "dri:real" {
+		t.Errorf("expected only dri:real, got: %+v", pkt.Memories)
+	}
+}
+
+func TestCondense_RoleInPacket(t *testing.T) {
+	pkt := condensePacketFor(t, "implementer", map[string]any{
+		"implementer:foo": "body",
+	})
+	if pkt.Role != "implementer" {
+		t.Errorf("packet Role = %q, want %q", pkt.Role, "implementer")
+	}
+}
