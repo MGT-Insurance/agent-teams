@@ -72,9 +72,9 @@ type factory func(home string) (Transport, error)
 // registry maps transport names to their factory functions.
 var registry = map[string]factory{}
 
-// register adds a factory under name. Called by sub-package init() functions.
-// Panics on duplicate name (programming error).
-func register(name string, f factory) {
+// RegisterTransport adds a factory under name. Called by sub-package init()
+// functions. Panics on duplicate name (programming error).
+func RegisterTransport(name string, f factory) {
 	if _, exists := registry[name]; exists {
 		panic(fmt.Sprintf("transport: duplicate registration: %q", name))
 	}
