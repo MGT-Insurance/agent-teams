@@ -1,20 +1,72 @@
 ---
 name: condense
-description: Manual trigger to condense a role's learnings memory into the succinct hot layer; no-arg discovers and condenses all learning roles.
+description: Triggered manually or at teardown to drain fresh memories then condense hot/cold learnings for each over-threshold role. Lock-guarded; skips cleanly if another condense is already running.
 ---
 
 **The `ateam` tool.** `ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere.
 
 ## Parse the argument
 
-- **`/agent-teams:condense <role>`** — condense ONLY that role (e.g. `dri`, `implementer`).
-- **`/agent-teams:condense` (no arg)** — run `ateam roles` to discover all role namespaces, then condense each EXCEPT `user`. The `user:` namespace is served by `ateam prime` (capped and truncated at read time) and is NOT part of the hot/cold learnings model — skip it unconditionally. Roles to condense are the learning roles: `dri`, `planner`, `implementer`, `tester`, `reviewer` (and any others returned by `ateam roles` that are not `user`).
+- **`/agent-teams:condense <role>`** — condense ONLY that named role (e.g. `dri`, `implementer`). Skips the lock-acquire guard and runs the drain+condense procedure directly for that one role.
+- **`/agent-teams:condense` (no arg)** — all-roles sweep (see below).
 
-## Condense procedure (repeat for each target role)
+---
 
-This procedure is autonomous — NO human-review gate. Safety rests on Dolt history recoverability and the per-role change-summary line you emit.
+## All-roles sweep (no-arg form)
 
-### Step 1 — Gather
+### Step 0 — Acquire the condense lock
+
+```bash
+ateam condense-lock acquire
+```
+
+If this exits with **code 5** (lock held by another session), log:
+
+```
+condense in progress elsewhere — skipping, fresh flushes next run
+```
+
+Then **exit cleanly** — nothing was acquired, so nothing to release. Do NOT block or retry.
+
+If acquisition succeeds, proceed and ensure the lock is released in every exit path (success, error). The lock window covers all role processing and any `ateam sync` at the end.
+
+### Step 1 — Enumerate roles
+
+```bash
+ateam roles
+```
+
+Skip the `user` role unconditionally. The `user:` namespace is served by `ateam prime` (capped and truncated at read time) and is not part of the hot/cold learnings model. Learning roles to consider: `dri`, `planner`, `implementer`, `tester`, `reviewer`, and any others returned by `ateam roles` that are not `user`.
+
+### Step 2 — Per-role size gate (8K token threshold)
+
+For each role:
+
+```bash
+ateam learnings <role>
+```
+
+Measure the **byte length** of the output. Approximate token count as `bytes / 4` (rough heuristic: one token ≈ 4 bytes of English text; adjust this divisor if you observe systematic over- or under-counting). If `approx_tokens <= 8000`, **skip this role cheaply** with a one-line note:
+
+```
+<role>: under threshold (~<N> tokens) — skipped
+```
+
+Only roles where `approx_tokens > 8000` proceed to drain+condense. Most teardown runs will find nothing over 8K and exit after the release with zero LLM work done.
+
+### Step 3 — Drain fresh then condense (per gated role)
+
+For each role that exceeded the 8K gate:
+
+#### 3a — Drain fresh tier
+
+```bash
+ateam fresh-drain <role>
+```
+
+This is deterministic (no LLM call). It moves all `<role>:fresh:*` keys into bare cold keys (`<role>:<slug>`). After this, the condense agent sees only hot and cold — no third tier.
+
+#### 3b — Condense (emit packet, spawn agent)
 
 ```bash
 ateam condense <role>
@@ -31,9 +83,27 @@ This emits a JSON packet to stdout:
 }
 ```
 
-Read ALL memory bodies from this packet. These are the full cold + hot contents for the role.
+Read ALL memory bodies from this packet. These are the full cold + hot contents for the role (fresh has already been drained into cold). Apply the condense procedure below autonomously for this role.
 
-### Step 2 — Design the hot set (BEFORE writing anything)
+### Step 4 — Release the lock
+
+After ALL role processing is complete (whether roles were skipped or condensed), release the lock:
+
+```bash
+ateam condense-lock release
+```
+
+Release on error paths too — do not leave the lock held. (Exception: the held-skip path in Step 0 never acquired the lock, so no release is needed there.)
+
+If you performed an `ateam sync` (Dolt push) at any point, that sync must also occur within the lock window, before release.
+
+---
+
+## Condense procedure (for each gated role)
+
+This procedure is autonomous — NO human-review gate. Safety rests on Dolt history recoverability and the per-role change-summary line you emit.
+
+### Design the hot set (BEFORE writing anything)
 
 IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. The moment one hot key exists, `ateam learnings <role>` serves ONLY hot keys — a partial hot set would under-serve the next session.
 
@@ -44,7 +114,7 @@ Design principles:
 - Target <= 6000 tokens (~24KB) / ~15-25 items total across all hot keys.
 - Assign each hot entry a meaningful slug (e.g. `hot:cardinal-rule`, `hot:ship-constraint`).
 
-### Step 3 — Apply (batch write, then cleanup)
+### Apply (batch write, then cleanup)
 
 Create a unique session-scoped temp directory so parallel condense runs cannot clobber each other:
 
@@ -60,15 +130,16 @@ ateam learn <role> hot:<slug> --file "$DIR/<slug>.txt"
 ```
 
 After ALL hot entries are written, handle cold cleanup:
-- For each cold `<role>:<slug>` whose content is NOW FULLY CAPTURED in a hot entry: `ateam forget <role> <slug>` (removes the redundant original — recoverable via Dolt history).
+- DEMOTE stale hot items to cold: `ateam learn <role> cold:<slug> --file <f>` then `ateam forget <role> hot:<slug>`.
+- Within cold: MERGE duplicates or REWRITE for brevity via `ateam learn <role> cold:<slug> --file <f>`; EVICT truly-dead items via `ateam forget <role> <slug>`.
 - LEAVE IN COLD any learning not promoted (the long tail stays searchable, not injected).
-- EVICT (forget) ONLY exact duplicates or clearly-superseded items. When in doubt, keep in cold. Conservative: NO eviction floor, but evict little.
+- EVICT ONLY exact duplicates or clearly-superseded items. When in doubt, keep in cold. Conservative: NO eviction floor, but evict little.
 
 If you are refreshing an existing hot key, `ateam learn <role> hot:<slug>` is an UPSERT — it overwrites in place.
 
 If you restructure the hot set (e.g. merge several old hot entries into fewer new ones), you MUST `ateam forget <role> hot:<old-slug>` for every old hot key that is NOT present in the new hot set. Skipping this step leaves stale hot entries that linger and bloat the injected layer.
 
-### Step 4 — Verify
+### Verify
 
 ```bash
 ateam learnings <role>
@@ -82,9 +153,9 @@ ateam recall <role> <term>
 
 Confirm cold memories are still reachable for a representative term.
 
-### Step 5 — Emit summary line
+### Emit summary line
 
-Emit one line to the user:
+Emit one line per role:
 
 ```
 <role>: promoted N / merged M / evicted K / hot now X tokens
@@ -96,9 +167,9 @@ Where:
 - K = number of cold entries removed via `ateam forget`
 - X = approximate token count of the current hot set (estimate from character count / 4)
 
-## Handling multiple roles (no-arg form)
+If a role returned zero memories from `ateam condense <role>`, skip it with: `<role>: no memories — skipped`.
 
-Process roles sequentially. After each role, emit its summary line before starting the next. If a role returns zero memories from `ateam condense <role>`, skip it with a one-line note: `<role>: no memories — skipped`.
+---
 
 ## Memory routing reminder
 
