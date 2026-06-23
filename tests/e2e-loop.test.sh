@@ -54,7 +54,30 @@ mkdir -p "$T/bin"
 go build -C "$ROOT" -tags e2e -o "$T/bin/ateam-${PLATFORM_OS}-${PLATFORM_ARCH}" ./cmd/ateam
 cp "$ROOT/plugins/agent-teams/bin/ateam" "$T/bin/ateam"
 chmod +x "$T/bin/ateam-${PLATFORM_OS}-${PLATFORM_ARCH}" "$T/bin/ateam"
+
+# Fake claude shim: makes ateam send's liveness check return "live" so it
+# delivers via the doorbell and never escalates to ateam resume. Without this
+# the test would spawn a real background claude session against the temp
+# worktree — an unsafe side effect that prevents re-runs and breaks CI.
+#
+# `claude agents --json` returns a single-element JSON array whose cwd matches
+# the initiative worktree. Any other claude subcommand is a no-op (exit 0).
+#
+# AGENT_TEAMS_STUB_WT is read at shim runtime so it resolves after the
+# initiative worktree path is known.
+cat > "$T/bin/claude" <<'SHIM'
+#!/usr/bin/env bash
+if [ "${1:-}" = "agents" ] && [ "${2:-}" = "--json" ]; then
+  wt="${AGENT_TEAMS_STUB_WT:-}"
+  printf '[{"name":"e2e-test-session","cwd":"%s"}]\n' "$wt"
+  exit 0
+fi
+exit 0
+SHIM
+chmod +x "$T/bin/claude"
+
 export PATH="$T/bin:$PATH"
+export AGENT_TEAMS_STUB_WT="$INITIATIVE_WT"
 
 # ── Case 1: opt-in / no-op — no transport configured → relay exits 0 ─────────
 # Clear any transport selection; Telegram creds not present → Enabled() = false.
@@ -119,10 +142,40 @@ reply_text="Looks good — proceed with the plan."
 printf '{"thread_ref": "%s", "text": "%s"}\n' "$thread_ref" "$reply_text" \
   > "$AGENT_TEAMS_STUB_DIR/reply-001.json"
 
+# Capture the real claude session list before relay so we can prove no new
+# sessions are spawned. The fake claude shim on PATH intercepts ateam send's
+# internal liveness call, but we want the REAL agent count for the before/after
+# assertion — so we call the real claude (bypassing our shim) via its full path.
+real_claude="$(PATH="${PATH#"$T/bin:"}" command -v claude 2>/dev/null || echo "")"
+sessions_before=""
+if [ -n "$real_claude" ]; then
+  sessions_before="$("$real_claude" agents --json 2>/dev/null || echo "[]")"
+else
+  sessions_before="[]"
+fi
+echo "sessions before relay: $sessions_before"
+
 # Run relay. It calls stub.Receive which drains reply files and executes
-# ateam send <init_id> --sender human for each one.
+# ateam send <init_id> --sender human for each one. The fake claude shim
+# makes ateam send's hasLiveSession return true (cwd matches $INITIATIVE_WT),
+# so send delivers via the doorbell and never escalates to ateam resume.
 relay_out=$(ateam relay 2>&1)
 echo "relay output: $relay_out"
+
+# Capture session list after relay and assert count did not increase.
+sessions_after=""
+if [ -n "$real_claude" ]; then
+  sessions_after="$("$real_claude" agents --json 2>/dev/null || echo "[]")"
+else
+  sessions_after="[]"
+fi
+echo "sessions after relay: $sessions_after"
+
+count_before=$(echo "$sessions_before" | jq 'length' 2>/dev/null || echo 0)
+count_after=$(echo "$sessions_after" | jq 'length' 2>/dev/null || echo 0)
+[ "$count_after" -le "$count_before" ] \
+  || { echo "FAIL case5: relay spawned a background claude session (before=$count_before after=$count_after)"; exit 1; }
+echo "sessions before=$count_before after=$count_after — no orphan spawned"
 
 # Verify relay found and processed the reply.
 echo "$relay_out" | grep -q "starting on transport" \
@@ -132,7 +185,7 @@ echo "$relay_out" | grep -q "starting on transport" \
 [ ! -f "$AGENT_TEAMS_STUB_DIR/reply-001.json" ] \
   || { echo "FAIL case5: stub did not consume reply-001.json after relay"; exit 1; }
 
-echo "case5 PASS: relay processed reply, file consumed"
+echo "case5 PASS: relay processed reply, file consumed, no session spawned"
 
 # ── Case 6: ateam inbox (from initiative worktree) shows the human reply ─────
 # inbox resolves initiative via cwd matching worktree: line.
