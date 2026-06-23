@@ -363,9 +363,14 @@ func (c *learnCmd) Run(ctx *cli.Context, args []string) error {
 }
 
 // learnKey computes the bd memory key for a learn invocation.
-// If slug already starts with "hot:" or "fresh:", it is passed through unchanged
-// (key = role:slug). Otherwise, "fresh:" is prepended (key = role:fresh:slug).
+// Precedence:
+//   - "cold:<slug>" → role:<slug> (bare cold key, no tier tag)
+//   - "hot:<slug>" or "fresh:<slug>" → role:<slug> (passthrough)
+//   - anything else → role:fresh:<slug> (default to fresh tier)
 func learnKey(role, slug string) string {
+	if strings.HasPrefix(slug, "cold:") {
+		return role + ":" + slug[len("cold:"):]
+	}
 	if strings.HasPrefix(slug, "hot:") || strings.HasPrefix(slug, "fresh:") {
 		return role + ":" + slug
 	}
@@ -532,8 +537,8 @@ const condenseInstructionContract = `Condense the memories above into a hot tier
 
 Rules:
 - PROMOTE or REFRESH high-signal or repeatedly-learned items into hot (key: <role>:hot:<slug>) via: ateam learn <role> hot:<slug> --file <f>
-- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam forget <role> hot:<slug>
-- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam forget <role> <slug>
+- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
+- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam learn <role> cold:<slug> --file <f> (for rewrites) or ateam forget <role> <slug> (for evictions)
 - Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
 - Apply ALL changes AUTONOMOUSLY with no human review gate
 - After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"

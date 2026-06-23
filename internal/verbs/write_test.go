@@ -1157,6 +1157,31 @@ func TestLearn_ForwardsBDStdout(t *testing.T) {
 	}
 }
 
+func TestLearn_ColdSlugWritesBareKey(t *testing.T) {
+	f := makeTempFile(t, "cold body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "cold:foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// cold:<slug> must produce role:<slug> — no tier tag, no fresh: prefix.
+	if got := (*calls)[0].args[1]; got != "--key=implementer:foo" {
+		t.Errorf("key = %q, want --key=implementer:foo (bare cold key)", got)
+	}
+}
+
+func TestLearn_ColdSlugNotDoublePrefixed(t *testing.T) {
+	f := makeTempFile(t, "cold body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"dri", "cold:some-insight", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := (*calls)[0].args[1]
+	// Must be bare role:slug — must not contain fresh: or cold:.
+	if got != "--key=dri:some-insight" {
+		t.Errorf("key = %q, want --key=dri:some-insight (no tier tag)", got)
+	}
+}
+
 func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
 	if err := (&closeCmd{}).Run(ctx, []string{"at-5"}); err != nil {
