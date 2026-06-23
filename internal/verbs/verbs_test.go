@@ -14,7 +14,7 @@ var allVerbs = []string{
 	"audit", "resume-match", "resume-match-closed",
 	// Track C
 	"register", "note", "gate", "clear-gate", "learn", "close", "reopen", "sync",
-	"forget", "condense",
+	"forget", "condense", "fresh-drain", "condense-lock",
 	// Track D
 	"new-initiative", "dispatch", "resume",
 	// Track GO
