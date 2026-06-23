@@ -579,7 +579,11 @@ func (c *condenseCmd) Run(ctx *cli.Context, args []string) error {
 		return err
 	}
 
-	// Collect all role: keys (both hot and cold tiers) whose values are strings.
+	// Collect all role: keys (hot and cold tiers) whose values are strings.
+	// Invariant: callers must run `ateam fresh-drain <role>` before this verb
+	// so that role:fresh:* keys have been moved to cold. The /agent-teams:condense
+	// skill enforces this; a direct `ateam condense <role>` would include fresh
+	// keys in the packet, mislabeled as cold in the agent's view.
 	var keys []string
 	for k, v := range raw {
 		if strings.HasPrefix(k, prefix) {

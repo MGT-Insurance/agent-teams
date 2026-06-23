@@ -104,18 +104,22 @@ func (c *condenseLockCmd) acquire(ctx *cli.Context, path string) error {
 	return cli.Silent(condenseLockHeldCode)
 }
 
-// writeLock writes pid and unix timestamp to an open (just-created) lock file.
+// writeLock writes the current process PID and unix timestamp to an open
+// (just-created or stolen) lock file. Format: "<pid>\n<unix-ts>\n".
+// parseLockTimestamp reads lines[1] for the timestamp; the PID is on lines[0].
 func (c *condenseLockCmd) writeLock(f *os.File) error {
 	defer f.Close()
 	ts := c.now().Unix()
-	_, err := fmt.Fprintf(f, "pid\n%d\n", ts)
+	_, err := fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), ts)
 	return err
 }
 
-// overwrite replaces the lock file non-atomically (write-truncate). Used only
-// after confirming the existing lock is stale or unreadable.
+// overwrite replaces the lock file non-atomically (create-or-truncate). Used
+// only after confirming the existing lock is stale or unreadable. O_CREATE is
+// included so that a lock released between the stale-read and this steal does
+// not cause a "no such file" error — we simply re-create it.
 func (c *condenseLockCmd) overwrite(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("ateam condense-lock acquire (steal): %w", err)
 	}
@@ -132,7 +136,7 @@ func (c *condenseLockCmd) release(path string) error {
 }
 
 // parseLockTimestamp extracts the unix timestamp from lock file content.
-// Expected format: "pid\n<unix-ts>\n"
+// Expected format: "<pid>\n<unix-ts>\n"
 func parseLockTimestamp(content string) (int64, error) {
 	lines := strings.SplitN(strings.TrimSpace(content), "\n", 3)
 	if len(lines) < 2 {

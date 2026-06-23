@@ -142,7 +142,7 @@ This procedure is autonomous — NO human-review gate. Safety rests on Dolt hist
 
 ### Design the hot set (BEFORE writing anything)
 
-IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. The moment one hot key exists, `ateam learnings <role>` serves ONLY hot keys — a partial hot set would under-serve the next session.
+IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. `ateam learnings <role>` serves hot ∪ fresh; because `ateam fresh-drain <role>` already ran, the fresh set is empty here — so a partial hot set would under-serve the next session. Design the complete hot set first, then write all hot keys as a batch.
 
 Design principles:
 - Select the highest-signal learnings: recurring process rules, hard-won gotchas, ship constraints, cardinal rules — anything whose loss causes a wrong or expensive action.
@@ -182,7 +182,7 @@ If you restructure the hot set (e.g. merge several old hot entries into fewer ne
 ateam learnings <role>
 ```
 
-Confirm output shows only the hot set and is <= ~24KB. Then spot-check cold:
+Confirm output shows only the hot entries (the fresh tier is empty after drain) and is <= ~24KB. Then spot-check cold:
 
 ```bash
 ateam recall <role> <term>

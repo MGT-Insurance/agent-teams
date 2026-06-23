@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestFreshDrain_DrainsFreshToCode verifies that fresh: keys are promoted to
+// TestFreshDrain_DrainsFreshToCold verifies that fresh: keys are promoted to
 // cold keys (role:<slug>) and then removed.
 func TestFreshDrain_DrainsFreshToCold(t *testing.T) {
 	var calls [][]string
