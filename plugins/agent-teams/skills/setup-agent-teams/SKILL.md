@@ -144,9 +144,29 @@ If this prints a path, that is the wrapper.
 
 If none of the three options resolves a path, STOP — the plugin is not installed. Confirm the agent-teams plugin is installed in `~/.claude/settings.json` and retry.
 
-### 5b. Install the symlink
+### 5b. Canonicalize through symlinks
 
-With `WRAPPER_PATH` set to the resolved path from 5a:
+The resolved candidate may itself be a symlink (e.g. Option A returns `~/.local/bin/ateam` if setup has already run). Follow symlinks to the real wrapper before installing — otherwise `ln -sf` points `~/.local/bin/ateam` at itself, creating a self-referential loop that breaks on re-run.
+
+With `WRAPPER_PATH` set to the candidate from 5a:
+
+```bash
+# Follow symlinks to the real wrapper (POSIX; works on macOS and Linux)
+while [ -h "$WRAPPER_PATH" ]; do
+    t="$(readlink "$WRAPPER_PATH")"
+    case "$t" in
+        /*) WRAPPER_PATH="$t" ;;
+        *)  WRAPPER_PATH="$(dirname "$WRAPPER_PATH")/$t" ;;
+    esac
+done
+echo "Real wrapper: $WRAPPER_PATH"
+```
+
+Report the printed path. It must be the real `bin/ateam` inside the plugin installation, not a path under `~/.local/bin`.
+
+### 5c. Install the symlink
+
+With `WRAPPER_PATH` canonicalized in 5b:
 
 ```bash
 mkdir -p ~/.local/bin
@@ -155,7 +175,7 @@ ln -sf "$WRAPPER_PATH" ~/.local/bin/ateam
 
 `ln -sf` is force-mode: it overwrites any existing symlink and does not error on re-run. If `~/.local/bin` does not exist it is created. Report the result of `ls -la ~/.local/bin/ateam`.
 
-### 5c. Smoke test — fail loud
+### 5d. Smoke test — fail loud
 
 ```bash
 ateam ws
