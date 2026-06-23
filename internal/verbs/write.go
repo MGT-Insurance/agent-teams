@@ -13,7 +13,8 @@ import (
 )
 
 // RegisterWrite registers the write verbs:
-// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense.
+// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense,
+// fresh-drain, condense-lock.
 func RegisterWrite(reg cli.Registry) {
 	reg.Register(&registerCmd{})
 	reg.Register(&noteCmd{})
@@ -25,6 +26,8 @@ func RegisterWrite(reg cli.Registry) {
 	reg.Register(&syncCmd{})
 	reg.Register(&forgetCmd{})
 	reg.Register(&condenseCmd{})
+	reg.Register(&freshDrainCmd{})
+	reg.Register(&condenseLockCmd{})
 }
 
 // parseFlag parses a single --flag value or --flag=value token from args[i].
@@ -599,6 +602,59 @@ func (c *condenseCmd) Run(ctx *cli.Context, args []string) error {
 	enc := json.NewEncoder(ctx.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(packet)
+}
+
+// ── fresh-drain ───────────────────────────────────────────────────────────────
+
+// freshDrainCmd moves every role:fresh:<slug> memory to role:<slug> (cold),
+// overwriting any existing cold value (fresh = newer). It is deterministic,
+// requires no LLM, and is idempotent (no fresh keys → clean no-op).
+type freshDrainCmd struct{}
+
+func (c *freshDrainCmd) Name() string { return "fresh-drain" }
+
+func (c *freshDrainCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam fresh-drain: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam fresh-drain: missing <role>")
+	}
+	role := args[0]
+	freshPrefix := role + ":fresh:"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	// Collect fresh keys, sorted for determinism.
+	var freshKeys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if strings.HasPrefix(k, freshPrefix) {
+			freshKeys = append(freshKeys, k)
+		}
+	}
+	sort.Strings(freshKeys)
+
+	for _, k := range freshKeys {
+		slug := k[len(freshPrefix):]
+		body := raw[k].(string)
+		coldKey := role + ":" + slug
+
+		if _, err := ctx.BD.Run("remember", "--key="+coldKey, body); err != nil {
+			return err
+		}
+		if _, err := ctx.BD.Run("forget", k); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(ctx.Stdout, "fresh-drain %s: drained %d\n", role, len(freshKeys))
+	return nil
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────
