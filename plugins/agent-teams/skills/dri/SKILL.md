@@ -62,7 +62,7 @@ An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions.
+Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions. For question gates, use the structured form — `ateam gate <id> --decision "..." --recommendation "..." --alternative "..."` — it forces crisp framing and is what the dashboard renders. Fall back to `--file` prose only when the ask genuinely doesn't fit the structured schema.
 
 ## Phase 3 — Plan
 
@@ -91,7 +91,9 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This makes the dashboard show the initiative as REVIEW (awaiting PR merge), not just a generic needs-human. Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
+This is the DRI's explicit "ready for you" intent bit. It makes the initiative *eligible* for REVIEWABLE — but the dashboard derives the actual REVIEWABLE status from execution-state (gate labels joined to the live session's run/park state), not from the gate label alone. While this session is still running (including teardown), the initiative reads as IN-PROGRESS; it flips to REVIEWABLE only once the session goes idle or exits. That is intentional: the dashboard never surfaces an initiative as reviewable while the DRI is still working. The DRI need not worry about raising the gate slightly early — the "not actively working" check prevents premature REVIEWABLE. See references/gate-protocol.md for the full execution-state model.
+
+Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
 
 **MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to teardown. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
 
