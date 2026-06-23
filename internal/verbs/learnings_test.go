@@ -262,3 +262,274 @@ func TestLearnings_BDErrorPropagates(t *testing.T) {
 		t.Errorf("error message should contain 'simulated failure'; got: %v", err)
 	}
 }
+
+// TestLearnings_HotLayerPreferred verifies that when a role has :hot: keys,
+// only those are emitted — not the cold role: keys.
+func TestLearnings_HotLayerPreferred(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:hot:condensed": "hot memory body",
+				"dri:old-cold":      "cold memory body",
+				"dri:another-cold":  "another cold body",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:hot:condensed") {
+		t.Errorf("expected hot key in output; got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:old-cold") {
+		t.Errorf("cold key must not appear when hot keys exist; got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:another-cold") {
+		t.Errorf("cold key must not appear when hot keys exist; got:\n%s", out)
+	}
+}
+
+// TestLearnings_ZeroHotFallback verifies that when a role has no :hot: keys,
+// all role: keys are emitted (backward-compat for healthy roles).
+func TestLearnings_ZeroHotFallback(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"implementer:foo": "body foo",
+				"implementer:bar": "body bar",
+				"dri:hot:x":       "should not appear",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsCmd{}
+
+	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "implementer:foo") {
+		t.Errorf("expected implementer:foo in fallback output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "implementer:bar") {
+		t.Errorf("expected implementer:bar in fallback output; got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:") {
+		t.Errorf("dri: keys must not appear in implementer output; got:\n%s", out)
+	}
+}
+
+// TestRecall_MatchByKey verifies recall matches on key substring.
+func TestRecall_MatchByKey(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:deploy-process": "body about deployment",
+				"dri:code-review":    "body about reviewing",
+				"planner:something":  "other role body",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri", "deploy"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:deploy-process") {
+		t.Errorf("expected deploy-process key in output; got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:code-review") {
+		t.Errorf("code-review key must not appear for query 'deploy'; got:\n%s", out)
+	}
+	if strings.Contains(out, "planner:") {
+		t.Errorf("planner keys must not appear in dri recall; got:\n%s", out)
+	}
+}
+
+// TestRecall_MatchByBody verifies recall matches on body substring.
+func TestRecall_MatchByBody(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:aaa": "this body mentions rebase workflow",
+				"dri:bbb": "something unrelated here",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri", "rebase"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:aaa") {
+		t.Errorf("expected dri:aaa in output (body match); got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:bbb") {
+		t.Errorf("dri:bbb must not appear (no body match); got:\n%s", out)
+	}
+}
+
+// TestRecall_NoMatch verifies empty stdout and nil error when nothing matches.
+func TestRecall_NoMatch(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:foo": "body with some text",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri", "xyzzy-not-present"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdout.Len() > 0 {
+		t.Errorf("expected empty output for no-match; got:\n%s", stdout.String())
+	}
+}
+
+// TestRecall_RolePrefixIsolation verifies recall does not bleed cross-role.
+func TestRecall_RolePrefixIsolation(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:thing":        "matching target body",
+				"planner:thing":    "cross-role key — must not appear",
+				"implementer:blah": "also cross-role",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri", "thing"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:thing") {
+		t.Errorf("expected dri:thing in output; got:\n%s", out)
+	}
+	if strings.Contains(out, "planner:") {
+		t.Errorf("planner: must not bleed through; got:\n%s", out)
+	}
+	if strings.Contains(out, "implementer:") {
+		t.Errorf("implementer: must not bleed through; got:\n%s", out)
+	}
+}
+
+// TestRecall_HotAndColdSearched verifies recall covers both hot and cold keys.
+func TestRecall_HotAndColdSearched(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:hot:summary": "condensed hot body with keyword",
+				"dri:old-cold":    "cold body also has keyword",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri", "keyword"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:hot:summary") {
+		t.Errorf("expected hot key in recall output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "dri:old-cold") {
+		t.Errorf("expected cold key in recall output; got:\n%s", out)
+	}
+}
+
+// TestRecall_MissingRoleReturnsUsageError verifies missing <role> arg returns error.
+func TestRecall_MissingRoleReturnsUsageError(t *testing.T) {
+	fbd := &fakeBD{}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	err := cmd.Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected usage error, got nil")
+	}
+}
+
+// TestRecall_MissingQueryReturnsUsageError verifies missing <query> arg returns error.
+func TestRecall_MissingQueryReturnsUsageError(t *testing.T) {
+	fbd := &fakeBD{}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	err := cmd.Run(ctx, []string{"dri"})
+	if err == nil {
+		t.Fatal("expected usage error for missing query, got nil")
+	}
+}
+
+// TestRecall_NilContextReturnsError verifies nil context returns an error.
+func TestRecall_NilContextReturnsError(t *testing.T) {
+	cmd := &recallCmd{}
+	err := cmd.Run(nil, []string{"dri", "something"})
+	if err == nil {
+		t.Fatal("expected error for nil context; got nil")
+	}
+}
+
+// TestRecall_CaseInsensitiveMatch verifies query matching is case-insensitive.
+func TestRecall_CaseInsensitiveMatch(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:foo": "body with UPPERCASE content",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri", "uppercase"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "dri:foo") {
+		t.Errorf("expected case-insensitive match; got:\n%s", out)
+	}
+}
