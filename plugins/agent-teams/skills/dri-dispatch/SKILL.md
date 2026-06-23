@@ -12,6 +12,22 @@ Use this when:
 
 For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 
+---
+
+**THIS SESSION IS A HAND-OFF, NOT AN INVESTIGATION.**
+
+Your job is preflight → capture the human's framing → dispatch. Nothing more.
+
+Do NOT:
+- Grep the codebase or measure current state.
+- Research the topic or form a mechanism opinion.
+- Design a solution or write an "agreed design direction" into the context block.
+- Answer clarifying questions on the human's behalf.
+
+All of that is the background DRI's job in its clarify/plan phase. The background DRI has no human attached — it recovers context from the initiative bead and then investigates and plans. Doing that work here does not help; it contaminates the context block with the dispatcher's assumptions instead of the human's framing.
+
+---
+
 ## The `ateam` tool
 
 `ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
@@ -25,12 +41,12 @@ For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 - Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
 - Run `ateam audit`. It must report clean before you add anything.
 
-### 2. Scope the initiative
+### 2. Capture the human's framing
 
-The LLM's job here is **judgment only** — everything mechanical is handled by `ateam dispatch` in step 3.
+The dispatcher's only judgment here is whether the hand-off inputs are present. Do NOT research the topic or analyze the codebase to fill gaps you perceive.
 
-- **Problem statement.** Take it from the invocation. If none was given, ask the human — this is the single load-bearing input.
-- **Full context block.** Capture the human's complete framing: constraints, background, relevant decisions already made, and any clarifying-question seeds the background DRI should answer before planning. This mirrors the old "CONTEXT FROM ERIC" block. WHY: the background DRI has no human attached — it recovers all context from the initiative bead via `ateam show <id>`. A bare one-liner starves its clarify phase; a rich context block lets it proceed with the right assumptions. Write the context to a temp file (e.g. `/tmp/ateam-ctx-<slug>.txt`) using the Write tool. If there is genuinely no additional context, skip the file and omit `--body-file`.
+- **Problem statement.** Take it verbatim from the invocation. If none was given, ask the human — this is the only load-bearing input you should ask for. Do not rephrase or embellish it.
+- **Context block.** Copy the human's framing as-is: their stated constraints, background, decisions they've already made, and any open questions they've raised that the background DRI should answer before planning. This mirrors the old "CONTEXT FROM ERIC" block. Write it verbatim — do not add your own analysis, mechanism opinions, or design assumptions. If the human has open questions they haven't answered, pass them through as open questions; do not answer them. Write the context to a temp file (e.g. `/tmp/ateam-ctx-<slug>.txt`) using the Write tool. If there is genuinely no additional context from the human, skip the file and omit `--body-file`.
 - **Target repo.** The initiative may target a repo OTHER than the one this dispatcher session is sitting in — do not blindly assume cwd. Identify the target directory the human means (explicit in the invocation if they named one, otherwise the current directory). If that yields a single unambiguous repo, pass nothing (dispatch defaults to cwd). Pass `--repo <abs-path>` ONLY when you are not confident: cwd is not inside any repo, the problem clearly refers to a different project you cannot locate, or more than one repo plausibly fits.
 - **Base branch.** Default is the repo's detected default branch (dispatch auto-detects). Pass `--base-branch <b>` only when the human implies a non-default base or there is genuine ambiguity — a wrong base is expensive to unwind.
 
@@ -42,7 +58,7 @@ Run a single call. Everything deterministic (slugify, git worktree add, initiati
 ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>]
 ```
 
-`--problem` is the one-line title. `--body-file` carries the full context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context to pass.
+`--problem` is the one-line title. `--body-file` carries the context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context from the human to pass.
 
 `dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, or a `--body-file` path that cannot be read. It never prompts. On success it prints:
 
