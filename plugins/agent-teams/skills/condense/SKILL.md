@@ -7,8 +7,45 @@ description: Triggered manually or at teardown to drain fresh memories then cond
 
 ## Parse the argument
 
-- **`/agent-teams:condense <role>`** — condense ONLY that named role (e.g. `dri`, `implementer`). Skips the lock-acquire guard and runs the drain+condense procedure directly for that one role.
+- **`/agent-teams:condense <role>`** — condense ONLY that named role (e.g. `dri`, `implementer`). Lock-guarded (same try-acquire/skip semantics as the all-roles form); no 8K size gate — an explicit single-role invocation always condenses that role regardless of current size. See **Single-role form** below.
 - **`/agent-teams:condense` (no arg)** — all-roles sweep (see below).
+
+---
+
+## Single-role form (`/agent-teams:condense <role>`)
+
+### Step 0 — Acquire the condense lock
+
+```bash
+ateam condense-lock acquire
+```
+
+If this exits with **code 5** (lock held by another session), log:
+
+```
+condense in progress elsewhere — skipping, fresh flushes next run
+```
+
+Then **exit cleanly** — nothing was acquired, so nothing to release. Do NOT block or retry.
+
+### Step 1 — Drain fresh then condense
+
+On successful lock acquisition, run the drain+condense procedure for the ONE named role (no 8K size gate — an explicit invocation always condenses):
+
+```bash
+ateam fresh-drain <role>
+ateam condense <role>
+```
+
+Apply the condense procedure (Design hot set → Apply batch → Verify → Emit summary) exactly as described in **Condense procedure** below.
+
+### Step 2 — Release the lock
+
+```bash
+ateam condense-lock release
+```
+
+Release in ALL exit paths (success and error). The held-skip path (Step 0 exit-5) never acquired the lock, so no release is needed there.
 
 ---
 
