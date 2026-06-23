@@ -331,6 +331,38 @@ func TestLearnings_ZeroHotFallback(t *testing.T) {
 	}
 }
 
+// TestLearnings_ZeroHotFallbackEmitsAllRoleKeys verifies the spec invariant:
+// when a role has zero hot keys, ALL its role: keys are emitted — cold and any
+// hypothetical hot keys alike. Seeds dri:a and dri:b (both cold) with no hot
+// keys; asserts both appear in output.
+func TestLearnings_ZeroHotFallbackEmitsAllRoleKeys(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:a": "body a",
+				"dri:b": "body b",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:a") {
+		t.Errorf("expected dri:a in zero-hot fallback output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "dri:b") {
+		t.Errorf("expected dri:b in zero-hot fallback output; got:\n%s", out)
+	}
+}
+
 // TestRecall_MatchByKey verifies recall matches on key substring.
 func TestRecall_MatchByKey(t *testing.T) {
 	fbd := &fakeBD{

@@ -46,11 +46,17 @@ Design principles:
 
 ### Step 3 — Apply (batch write, then cleanup)
 
-For each entry in your decided hot set, write to a temp file and promote:
+Create a unique session-scoped temp directory so parallel condense runs cannot clobber each other:
 
 ```bash
-printf '%s' "<hot body>" > /tmp/ateam-condense-<role>-<slug>.txt
-ateam learn <role> hot:<slug> --file /tmp/ateam-condense-<role>-<slug>.txt
+DIR=$(mktemp -d)
+```
+
+For each entry in your decided hot set, write to a file under `$DIR` and promote:
+
+```bash
+printf '%s' "<hot body>" > "$DIR/<slug>.txt"
+ateam learn <role> hot:<slug> --file "$DIR/<slug>.txt"
 ```
 
 After ALL hot entries are written, handle cold cleanup:
@@ -58,7 +64,9 @@ After ALL hot entries are written, handle cold cleanup:
 - LEAVE IN COLD any learning not promoted (the long tail stays searchable, not injected).
 - EVICT (forget) ONLY exact duplicates or clearly-superseded items. When in doubt, keep in cold. Conservative: NO eviction floor, but evict little.
 
-Do NOT remove hot entries from a previous run unless they are superseded by the new hot set. If you are refreshing an existing hot key, `ateam learn <role> hot:<slug>` is an UPSERT — it overwrites in place.
+If you are refreshing an existing hot key, `ateam learn <role> hot:<slug>` is an UPSERT — it overwrites in place.
+
+If you restructure the hot set (e.g. merge several old hot entries into fewer new ones), you MUST `ateam forget <role> hot:<old-slug>` for every old hot key that is NOT present in the new hot set. Skipping this step leaves stale hot entries that linger and bloat the injected layer.
 
 ### Step 4 — Verify
 
