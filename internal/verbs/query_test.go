@@ -344,6 +344,139 @@ func TestHumanListEmptyNoteOmitsNoteLine(t *testing.T) {
 	}
 }
 
+// ── human-list: structured ask extraction ────────────────────────────────────
+
+func TestHumanListStructuredAskRendered(t *testing.T) {
+	// Notes contain a sentinel block — structured fields must appear, not raw Notes.
+	notes := "<<<ateam-ask\ndecision: Use approach A\nrecommendation: A\nalternative: B\ncontext: Faster path\n>>>"
+	issues := []bd.Issue{
+		{ID: "at-s1", Title: "Pick approach", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "decision: Use approach A") {
+		t.Errorf("expected decision field, got: %q", got)
+	}
+	if !strings.Contains(got, "recommendation: A") {
+		t.Errorf("expected recommendation field, got: %q", got)
+	}
+	if !strings.Contains(got, "alternative: B") {
+		t.Errorf("expected alternative field, got: %q", got)
+	}
+	if !strings.Contains(got, "context: Faster path") {
+		t.Errorf("expected context field, got: %q", got)
+	}
+	// Raw Notes blob must NOT appear verbatim (sentinel markers must not leak).
+	if strings.Contains(got, "<<<ateam-ask") {
+		t.Errorf("sentinel open marker must not appear in output, got: %q", got)
+	}
+	if strings.Contains(got, ">>>") {
+		t.Errorf("sentinel close marker must not appear in output, got: %q", got)
+	}
+}
+
+func TestHumanListStructuredAskLastBlockWins(t *testing.T) {
+	// Multiple blocks — only the last one should be rendered.
+	notes := "<<<ateam-ask\ndecision: Old decision\nrecommendation: old-rec\nalternative: old-alt\n>>>\nsome notes\n<<<ateam-ask\ndecision: New decision\nrecommendation: new-rec\nalternative: new-alt\ncontext: updated\n>>>"
+	issues := []bd.Issue{
+		{ID: "at-s2", Title: "Multi-block", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "decision: New decision") {
+		t.Errorf("expected last block's decision, got: %q", got)
+	}
+	if strings.Contains(got, "Old decision") {
+		t.Errorf("earlier block must not appear, got: %q", got)
+	}
+	if !strings.Contains(got, "context: updated") {
+		t.Errorf("expected last block's context, got: %q", got)
+	}
+}
+
+func TestHumanListNoStructuredBlockFallsBackToRawNotes(t *testing.T) {
+	// No sentinel block — raw Notes must appear unchanged.
+	rawNote := "PR https://github.com/org/repo/pull/42 ready for review"
+	issues := []bd.Issue{
+		{ID: "at-s3", Title: "Review PR", Labels: []string{"human", "gate:review"}, Notes: rawNote},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, rawNote) {
+		t.Errorf("expected raw note text %q in output, got: %q", rawNote, got)
+	}
+}
+
+func TestHumanListMalformedBlockFallsBackToRawNotes(t *testing.T) {
+	// Block with missing closing sentinel — treated as no block, raw fallback.
+	notes := "some preamble\n<<<ateam-ask\ndecision: incomplete block\n"
+	issues := []bd.Issue{
+		{ID: "at-s4", Title: "Malformed", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	// Raw Notes should appear (fallback), not structured rendering.
+	if !strings.Contains(got, notes) {
+		t.Errorf("expected raw notes fallback for malformed block, got: %q", got)
+	}
+}
+
+func TestHumanListStructuredAskContextOmittedWhenEmpty(t *testing.T) {
+	// Block without context field — context line must not appear in output.
+	notes := "<<<ateam-ask\ndecision: Ship it\nrecommendation: yes\nalternative: wait\n>>>"
+	issues := []bd.Issue{
+		{ID: "at-s5", Title: "Ship decision", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, "context:") {
+		t.Errorf("context line must be omitted when empty, got: %q", got)
+	}
+	if !strings.Contains(got, "decision: Ship it") {
+		t.Errorf("expected decision field, got: %q", got)
+	}
+}
+
 // ── show ──────────────────────────────────────────────────────────────────────
 
 func TestShowMissingIDReturnsUsageError(t *testing.T) {

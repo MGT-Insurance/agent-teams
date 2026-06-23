@@ -79,7 +79,15 @@ func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
 // scannable display per issue:
 //
 //	<id>  [REVIEW|QUESTION]  <title>
-//	    <notes>  (omitted when empty)
+//	    decision: ...
+//	    recommendation: ...
+//	    alternative: ...
+//	    context: ...         (omitted when empty)
+//
+// When the Notes contain a sentinel-delimited ateam-ask block (CONTRACT
+// agent-teams-j9s §2), the LATEST block's structured fields are rendered.
+// When no block is present, raw Notes are rendered (back-compat for --file
+// gates). The note section is omitted entirely when Notes is empty.
 //
 // Kind is derived from labels: gate:review => REVIEW; otherwise QUESTION
 // (covers gate:question and backward-compat human-only beads).
@@ -103,10 +111,89 @@ func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
 		kind := gateKind(issue.Labels)
 		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
 		if issue.Notes != "" {
-			fmt.Fprintf(ctx.Stdout, "    %s\n", issue.Notes)
+			if ask, ok := extractLatestAsk(issue.Notes); ok {
+				fmt.Fprint(ctx.Stdout, renderAsk(ask))
+			} else {
+				fmt.Fprintf(ctx.Stdout, "    %s\n", issue.Notes)
+			}
 		}
 	}
 	return nil
+}
+
+// askBlock holds the parsed fields of a structured ateam-ask sentinel block
+// (CONTRACT agent-teams-j9s §2).
+type askBlock struct {
+	decision       string
+	recommendation string
+	alternative    string
+	context        string
+}
+
+// extractLatestAsk scans notes for the LAST sentinel-delimited ateam-ask block
+// and parses it. Returns the parsed block and true when found; false otherwise.
+// Malformed or incomplete blocks (missing closing sentinel) are skipped.
+func extractLatestAsk(notes string) (askBlock, bool) {
+	const open = "<<<ateam-ask"
+	const close = ">>>"
+
+	var last askBlock
+	found := false
+	remaining := notes
+	for {
+		start := strings.Index(remaining, open)
+		if start == -1 {
+			break
+		}
+		after := remaining[start+len(open):]
+		end := strings.Index(after, close)
+		if end == -1 {
+			// Unclosed block — skip and stop searching.
+			break
+		}
+		body := after[:end]
+		if parsed, ok := parseAskBody(body); ok {
+			last = parsed
+			found = true
+		}
+		remaining = after[end+len(close):]
+	}
+	return last, found
+}
+
+// parseAskBody parses the interior of an ateam-ask block. Returns false when
+// the required decision field is absent or empty.
+func parseAskBody(body string) (askBlock, bool) {
+	var b askBlock
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "decision:"); ok {
+			b.decision = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "recommendation:"); ok {
+			b.recommendation = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "alternative:"); ok {
+			b.alternative = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "context:"); ok {
+			b.context = strings.TrimSpace(after)
+		}
+	}
+	if b.decision == "" {
+		return askBlock{}, false
+	}
+	return b, true
+}
+
+// renderAsk formats a parsed askBlock for human-list output. Each field is
+// indented with four spaces; context is omitted when empty.
+func renderAsk(b askBlock) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "    decision: %s\n", b.decision)
+	fmt.Fprintf(&sb, "    recommendation: %s\n", b.recommendation)
+	fmt.Fprintf(&sb, "    alternative: %s\n", b.alternative)
+	if b.context != "" {
+		fmt.Fprintf(&sb, "    context: %s\n", b.context)
+	}
+	return sb.String()
 }
 
 // gateKind derives the gate kind from a bead's labels using the kind-resolution
