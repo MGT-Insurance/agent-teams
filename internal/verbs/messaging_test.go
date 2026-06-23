@@ -794,6 +794,63 @@ func TestInbox_IdempotentMark(t *testing.T) {
 	}
 }
 
+// ── printMessagesBlock ────────────────────────────────────────────────────────
+
+func TestPrintMessagesBlock_FooterPresent(t *testing.T) {
+	messages := []bd.Issue{
+		{ID: "at-wisp-f1", IssueType: "message", Notes: "from: agent-a", Description: "body one"},
+		{ID: "at-wisp-f2", IssueType: "message", Notes: "from: agent-b", Description: "body two"},
+	}
+	ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
+	printMessagesBlock(ctx, messages)
+
+	out := stdout.String()
+	if !strings.Contains(out, "ateam show at-wisp-f1") {
+		t.Errorf("footer missing 'ateam show at-wisp-f1':\n%s", out)
+	}
+	if !strings.Contains(out, "ateam show at-wisp-f2") {
+		t.Errorf("footer missing 'ateam show at-wisp-f2':\n%s", out)
+	}
+	if !strings.Contains(out, "To re-read a consumed message:") {
+		t.Errorf("footer missing guidance line:\n%s", out)
+	}
+	// Footer must appear inside the system-reminder block (before closing tag).
+	closeIdx := strings.Index(out, "</system-reminder>")
+	f1Idx := strings.Index(out, "ateam show at-wisp-f1")
+	if closeIdx < 0 || f1Idx < 0 || f1Idx > closeIdx {
+		t.Errorf("footer must appear before </system-reminder>; closeIdx=%d f1Idx=%d\n%s", closeIdx, f1Idx, out)
+	}
+}
+
+func TestPrintMessagesBlock_SingleMessage(t *testing.T) {
+	messages := []bd.Issue{
+		{ID: "at-solo", IssueType: "message", Notes: "from: x", Description: "only"},
+	}
+	ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
+	printMessagesBlock(ctx, messages)
+
+	out := stdout.String()
+	if !strings.Contains(out, "ateam show at-solo") {
+		t.Errorf("footer missing 'ateam show at-solo':\n%s", out)
+	}
+}
+
+func TestPrintMessagesBlock_JSONPathNoFooter(t *testing.T) {
+	// The --json path never calls printMessagesBlock; it marshals directly.
+	// Verify that a plain JSON marshal of messages does NOT contain the footer.
+	messages := []bd.Issue{
+		{ID: "at-wisp-j9", IssueType: "message", Description: "json body"},
+	}
+	raw, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	out := string(raw)
+	if strings.Contains(out, "ateam show") {
+		t.Errorf("--json output must not contain re-read footer, got:\n%s", out)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // assertContains checks that target contains want in its args slice.
