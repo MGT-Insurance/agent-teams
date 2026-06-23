@@ -107,16 +107,47 @@ func (c *noteCmd) Run(ctx *cli.Context, args []string) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
+// gateAsk holds the parsed structured-ask fields for ateam gate.
+type gateAsk struct {
+	decision       string
+	recommendation string
+	alternative    string
+	contextFile    string
+}
+
 type gateCmd struct{}
 
 func (c *gateCmd) Name() string { return "gate" }
 
 func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
-	id, file, kind, err := parseGateFlags(args)
+	id, file, kind, ask, err := parseGateFlags(args)
 	if err != nil {
 		return err
 	}
-	out, runErr := ctx.BD.Run("note", id, "--file="+file)
+
+	noteFile := file
+	if ask != nil {
+		// Structured form: build the sentinel block and write to a temp file.
+		block, buildErr := buildAskBlock(ask)
+		if buildErr != nil {
+			return buildErr
+		}
+		tmp, tmpErr := os.CreateTemp("", "ateam-gate-ask-*")
+		if tmpErr != nil {
+			return fmt.Errorf("ateam gate: create temp file: %w", tmpErr)
+		}
+		tmpPath := tmp.Name()
+		if _, writeErr := tmp.WriteString(block); writeErr != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("ateam gate: write temp file: %w", writeErr)
+		}
+		tmp.Close()
+		defer os.Remove(tmpPath)
+		noteFile = tmpPath
+	}
+
+	out, runErr := ctx.BD.Run("note", id, "--file="+noteFile)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -137,14 +168,43 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 	return runErr
 }
 
-// parseGateFlags parses <id> --file <f> [--kind=review|question] from args.
+// buildAskBlock serializes a gateAsk into the sentinel-delimited format from
+// contract j9s section 2. The context field may be empty; all other fields are
+// expected to be pre-validated by parseGateFlags.
+func buildAskBlock(ask *gateAsk) (string, error) {
+	var b strings.Builder
+	b.WriteString("<<<ateam-ask\n")
+	b.WriteString("decision: " + ask.decision + "\n")
+	b.WriteString("recommendation: " + ask.recommendation + "\n")
+	b.WriteString("alternative: " + ask.alternative + "\n")
+	if ask.contextFile != "" {
+		data, err := os.ReadFile(ask.contextFile)
+		if err != nil {
+			return "", cli.Usagef("ateam gate: context-file not found: %s", ask.contextFile)
+		}
+		ctx := strings.TrimRight(string(data), "\n")
+		if len(ctx) > 280 {
+			return "", cli.Usagef("ateam gate: --context-file content exceeds 280 chars (got %d)", len(ctx))
+		}
+		b.WriteString("context: " + ctx + "\n")
+	}
+	b.WriteString(">>>")
+	return b.String(), nil
+}
+
+// parseGateFlags parses <id> [--file <f>] [--kind=review|question]
+// [--decision <d>] [--recommendation <r>] [--alternative <a>]
+// [--context-file <f>] from args.
 // kind defaults to "question" when omitted.
-func parseGateFlags(args []string) (id, file, kind string, err error) {
+// Returns a non-nil ask when the structured form is used (--decision present).
+// --file and the structured flags are mutually exclusive.
+func parseGateFlags(args []string) (id, file, kind string, ask *gateAsk, err error) {
 	if len(args) == 0 {
-		return "", "", "", cli.Usagef("ateam gate: missing <id>")
+		return "", "", "", nil, cli.Usagef("ateam gate: missing <id>")
 	}
 	id = args[0]
 	kind = "question"
+	var parsed gateAsk
 	for i := 1; i < len(args); {
 		if v, n := parseFlag(args, i, "--file"); n > 0 {
 			file = v
@@ -156,18 +216,57 @@ func parseGateFlags(args []string) (id, file, kind string, err error) {
 			i += n
 			continue
 		}
-		return "", "", "", cli.Usagef("ateam gate: unknown flag %q", args[i])
+		if v, n := parseFlag(args, i, "--decision"); n > 0 {
+			parsed.decision = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--recommendation"); n > 0 {
+			parsed.recommendation = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--alternative"); n > 0 {
+			parsed.alternative = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--context-file"); n > 0 {
+			parsed.contextFile = v
+			i += n
+			continue
+		}
+		return "", "", "", nil, cli.Usagef("ateam gate: unknown flag %q", args[i])
 	}
 	if kind != "review" && kind != "question" {
-		return "", "", "", cli.Usagef("ateam gate: --kind must be review or question")
+		return "", "", "", nil, cli.Usagef("ateam gate: --kind must be review or question")
 	}
+
+	structuredUsed := parsed.decision != "" || parsed.recommendation != "" ||
+		parsed.alternative != "" || parsed.contextFile != ""
+
+	if structuredUsed {
+		// Structured form validation.
+		if file != "" {
+			return "", "", "", nil, cli.Usagef("ateam gate: --file and structured flags (--decision etc.) are mutually exclusive")
+		}
+		if parsed.decision == "" {
+			return "", "", "", nil, cli.Usagef("ateam gate: --decision required when using structured form")
+		}
+		if len(parsed.decision) > 120 {
+			return "", "", "", nil, cli.Usagef("ateam gate: --decision exceeds 120 chars (got %d)", len(parsed.decision))
+		}
+		return id, "", kind, &parsed, nil
+	}
+
+	// Prose / back-compat form.
 	if file == "" {
-		return "", "", "", cli.Usagef("ateam gate: --file required")
+		return "", "", "", nil, cli.Usagef("ateam gate: --file required")
 	}
 	if _, statErr := os.Stat(file); statErr != nil {
-		return "", "", "", cli.Usagef("ateam gate: file not found: %s", file)
+		return "", "", "", nil, cli.Usagef("ateam gate: file not found: %s", file)
 	}
-	return id, file, kind, nil
+	return id, file, kind, nil, nil
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────

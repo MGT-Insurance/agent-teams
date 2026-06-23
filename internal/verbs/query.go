@@ -79,7 +79,17 @@ func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
 // scannable display per issue:
 //
 //	<id>  [REVIEW|QUESTION]  <title>
-//	    <notes>  (omitted when empty)
+//	    decision: ...
+//	    recommendation: ...
+//	    alternative: ...
+//	    context: ...         (omitted when empty)
+//
+// When the Notes contain a sentinel-delimited ateam-ask block (CONTRACT
+// agent-teams-j9s §2), the LATEST block's structured fields are rendered.
+// When no block is present, the LATEST note block is rendered as the fallback
+// (back-compat for --file gates): notes are split on blank-line boundaries,
+// the last non-empty block is taken and capped to lastNoteBlockLines lines.
+// The note section is omitted entirely when Notes is empty.
 //
 // Kind is derived from labels: gate:review => REVIEW; otherwise QUESTION
 // (covers gate:question and backward-compat human-only beads).
@@ -103,10 +113,173 @@ func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
 		kind := gateKind(issue.Labels)
 		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
 		if issue.Notes != "" {
-			fmt.Fprintf(ctx.Stdout, "    %s\n", issue.Notes)
+			if ask, ok := extractLatestAsk(issue.Notes); ok {
+				fmt.Fprint(ctx.Stdout, renderAsk(ask))
+			} else {
+				fmt.Fprintf(ctx.Stdout, "    %s\n", lastNoteBlock(issue.Notes))
+			}
 		}
 	}
 	return nil
+}
+
+// lastNoteBlockLines is the maximum number of lines rendered from the fallback
+// note block before a truncation indicator is prepended.
+const lastNoteBlockLines = 10
+
+// lastNoteBlock returns the last non-empty blank-line-separated block from
+// notes, capped to lastNoteBlockLines lines. When the block exceeds the cap,
+// a single indicator line is prepended. Leading/trailing whitespace is trimmed
+// from the returned block.
+func lastNoteBlock(notes string) string {
+	notes = strings.TrimSpace(notes)
+	if notes == "" {
+		return ""
+	}
+
+	// Split on one or more blank lines (a newline followed by optional
+	// whitespace then another newline).
+	blocks := splitOnBlankLines(notes)
+
+	// Find the last non-empty block.
+	last := ""
+	for i := len(blocks) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(blocks[i])
+		if trimmed != "" {
+			last = trimmed
+			break
+		}
+	}
+	if last == "" {
+		return notes
+	}
+
+	lines := strings.Split(last, "\n")
+	if len(lines) <= lastNoteBlockLines {
+		return last
+	}
+	tail := strings.Join(lines[len(lines)-lastNoteBlockLines:], "\n")
+	return "(…older lines truncated — see bd show <id>)\n" + tail
+}
+
+// splitOnBlankLines splits s into blocks separated by one or more blank lines.
+// A blank line is a line that contains only whitespace (including an empty line).
+func splitOnBlankLines(s string) []string {
+	var blocks []string
+	var current strings.Builder
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			if current.Len() > 0 {
+				blocks = append(blocks, current.String())
+				current.Reset()
+			}
+		} else {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(line)
+		}
+	}
+	if current.Len() > 0 {
+		blocks = append(blocks, current.String())
+	}
+	return blocks
+}
+
+// askBlock holds the parsed fields of a structured ateam-ask sentinel block
+// (CONTRACT agent-teams-j9s §2).
+type askBlock struct {
+	decision       string
+	recommendation string
+	alternative    string
+	context        string
+}
+
+// extractLatestAsk scans notes for the LAST sentinel-delimited ateam-ask block
+// and parses it. Returns the parsed block and true when found; false otherwise.
+// Malformed or incomplete blocks (missing closing sentinel) are skipped.
+//
+// The closing sentinel ">>>" must appear at the start of a line to avoid
+// matching ">>>" embedded in prose or git conflict markers.
+func extractLatestAsk(notes string) (askBlock, bool) {
+	const open = "<<<ateam-ask"
+
+	// closeMarker matches ">>>" anchored to the start of a line.
+	// The writer (buildAskBlock) always emits ">>>" on its own line, so
+	// requiring a leading "\n" is a safe tighter match that round-trips correctly.
+	closeLine := func(s string) int {
+		// Check for ">>>" at the very start of the string (first block, no
+		// preceding newline) or after a newline.
+		if strings.HasPrefix(s, ">>>") {
+			return 0
+		}
+		idx := strings.Index(s, "\n>>>")
+		if idx == -1 {
+			return -1
+		}
+		return idx + 1 // position of the ">" that starts ">>>"
+	}
+
+	var last askBlock
+	found := false
+	remaining := notes
+	for {
+		start := strings.Index(remaining, open)
+		if start == -1 {
+			break
+		}
+		after := remaining[start+len(open):]
+		end := closeLine(after)
+		if end == -1 {
+			// Unclosed block — skip and keep scanning for later valid blocks.
+			// Advance past the open sentinel so we don't loop on the same position.
+			remaining = after
+			continue
+		}
+		body := after[:end]
+		if parsed, ok := parseAskBody(body); ok {
+			last = parsed
+			found = true
+		}
+		remaining = after[end+len(">>>"):]
+	}
+	return last, found
+}
+
+// parseAskBody parses the interior of an ateam-ask block. Returns false when
+// the required decision field is absent or empty.
+func parseAskBody(body string) (askBlock, bool) {
+	var b askBlock
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "decision:"); ok {
+			b.decision = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "recommendation:"); ok {
+			b.recommendation = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "alternative:"); ok {
+			b.alternative = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "context:"); ok {
+			b.context = strings.TrimSpace(after)
+		}
+	}
+	if b.decision == "" {
+		return askBlock{}, false
+	}
+	return b, true
+}
+
+// renderAsk formats a parsed askBlock for human-list output. Each field is
+// indented with four spaces; context is omitted when empty.
+func renderAsk(b askBlock) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "    decision: %s\n", b.decision)
+	fmt.Fprintf(&sb, "    recommendation: %s\n", b.recommendation)
+	fmt.Fprintf(&sb, "    alternative: %s\n", b.alternative)
+	if b.context != "" {
+		fmt.Fprintf(&sb, "    context: %s\n", b.context)
+	}
+	return sb.String()
 }
 
 // gateKind derives the gate kind from a bead's labels using the kind-resolution
