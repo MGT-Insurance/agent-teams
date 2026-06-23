@@ -142,7 +142,12 @@ func (c *showCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// learningsCmd passes through: bd memories <role>
+// learningsCmd prints full bodies of memories whose keys are prefixed with
+// <role>: (e.g. "implementer:"). It calls `bd memories --json` to get a flat
+// {key: body} map with untruncated bodies, then filters to keys with the
+// requested role prefix. This avoids both the one-line truncation and the
+// cross-role bleed that `bd memories <role>` (substring match over key+body)
+// produces.
 type learningsCmd struct{}
 
 func (c *learningsCmd) Name() string { return "learnings" }
@@ -154,11 +159,36 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 	if len(args) == 0 || args[0] == "" {
 		return cli.Usagef("ateam learnings: missing <role>")
 	}
-	out, err := ctx.BD.Run("memories", args[0])
-	if err != nil {
+	role := args[0]
+	prefix := role + ":"
+
+	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
 		return err
 	}
-	fmt.Fprintln(ctx.Stdout, out)
+
+	// Collect keys with the "<role>:" prefix whose values are strings.
+	var keys []string
+	for k, v := range raw {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := v.(string); ok {
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	sort.Strings(keys)
+	for i, k := range keys {
+		fmt.Fprintln(ctx.Stdout, k)
+		fmt.Fprintln(ctx.Stdout, raw[k].(string))
+		if i < len(keys)-1 {
+			fmt.Fprintln(ctx.Stdout)
+		}
+	}
 	return nil
 }
 
