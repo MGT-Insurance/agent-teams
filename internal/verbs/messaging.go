@@ -378,6 +378,10 @@ func printMessagesBlock(ctx *cli.Context, messages []bd.Issue) {
 		}
 		fmt.Fprintf(ctx.Stdout, "\n[%s] from: %s\n%s\n", msg.ID, sender, msg.Description)
 	}
+	fmt.Fprintln(ctx.Stdout, "To re-read a consumed message:")
+	for _, msg := range messages {
+		fmt.Fprintf(ctx.Stdout, "  ateam show %s\n", msg.ID)
+	}
 	fmt.Fprintln(ctx.Stdout, "</system-reminder>")
 }
 
