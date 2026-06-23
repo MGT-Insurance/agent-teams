@@ -351,11 +351,22 @@ func (c *learnCmd) Run(ctx *cli.Context, args []string) error {
 	if readErr != nil {
 		return cli.Usagef("ateam learn: file not found: %s", file)
 	}
-	out, runErr := ctx.BD.Run("remember", "--key="+role+":"+slug, string(data))
+	key := learnKey(role, slug)
+	out, runErr := ctx.BD.Run("remember", "--key="+key, string(data))
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
 	return runErr
+}
+
+// learnKey computes the bd memory key for a learn invocation.
+// If slug already starts with "hot:" or "fresh:", it is passed through unchanged
+// (key = role:slug). Otherwise, "fresh:" is prepended (key = role:fresh:slug).
+func learnKey(role, slug string) string {
+	if strings.HasPrefix(slug, "hot:") || strings.HasPrefix(slug, "fresh:") {
+		return role + ":" + slug
+	}
+	return role + ":fresh:" + slug
 }
 
 // parseLearnFlags parses <role> <slug> --file <f> from args.

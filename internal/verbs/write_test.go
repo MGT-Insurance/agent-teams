@@ -768,11 +768,46 @@ func TestLearn_CallsBDRemember(t *testing.T) {
 	if call.args[0] != "remember" {
 		t.Errorf("args[0] = %q, want %q", call.args[0], "remember")
 	}
-	if call.args[1] != "--key=planner:design-heuristics" {
-		t.Errorf("args[1] = %q, want %q", call.args[1], "--key=planner:design-heuristics")
+	// Default slugs now get the fresh: prefix.
+	if call.args[1] != "--key=planner:fresh:design-heuristics" {
+		t.Errorf("args[1] = %q, want %q", call.args[1], "--key=planner:fresh:design-heuristics")
 	}
 	if call.args[2] != "learned content here" {
 		t.Errorf("args[2] = %q, want %q", call.args[2], "learned content here")
+	}
+}
+
+func TestLearn_DefaultSlugGetsFreshPrefix(t *testing.T) {
+	f := makeTempFile(t, "body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := (*calls)[0].args[1]; got != "--key=implementer:fresh:foo" {
+		t.Errorf("key = %q, want --key=implementer:fresh:foo", got)
+	}
+}
+
+func TestLearn_HotSlugPassthrough(t *testing.T) {
+	f := makeTempFile(t, "body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "hot:foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := (*calls)[0].args[1]; got != "--key=implementer:hot:foo" {
+		t.Errorf("key = %q, want --key=implementer:hot:foo", got)
+	}
+}
+
+func TestLearn_FreshSlugPassthrough(t *testing.T) {
+	f := makeTempFile(t, "body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "fresh:foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Must not produce implementer:fresh:fresh:foo.
+	if got := (*calls)[0].args[1]; got != "--key=implementer:fresh:foo" {
+		t.Errorf("key = %q, want --key=implementer:fresh:foo (no double-prefix)", got)
 	}
 }
 
