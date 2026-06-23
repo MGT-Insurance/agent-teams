@@ -88,17 +88,92 @@ Example — the `env` block in `~/.claude/settings.json`:
 
 This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
 
-## 5. Verify `ateam` is available
+## 5. Install `ateam` onto PATH
 
-`ateam` ships as prebuilt per-platform binaries inside the plugin's `bin/` directory. Claude Code automatically adds a plugin's `bin/` to the Bash PATH — no build step, no `go install`, and no PATH configuration is needed.
+`ateam` ships as prebuilt per-platform binaries inside the plugin's `bin/` directory. Setup owns putting bare `ateam` on PATH — it creates a symlink in `~/.local/bin` (which is on PATH on standard macOS/Linux user setups). This is idempotent: re-running setup is always safe.
 
-Verify it works:
+### 5a. Resolve the installed wrapper path
+
+Work through the following resolution order and stop at the first path that exists:
+
+**Option A — harness auto-add already resolved it:**
+
+```bash
+command -v ateam
+```
+
+If this prints a path (exit 0), that is the wrapper. Use it directly.
+
+**Option B — marketplace cache install:**
+
+```bash
+python3 -c "
+import json, os
+data = json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')))
+plugins = data.get('plugins', {})
+for key, entries in plugins.items():
+    if key.startswith('agent-teams@'):
+        for e in entries:
+            p = e.get('installPath', '')
+            candidate = p + '/bin/ateam'
+            if os.path.isfile(candidate):
+                print(candidate)
+                break
+"
+```
+
+If this prints a path, that is the wrapper.
+
+**Option C — local directory-marketplace checkout:**
+
+```bash
+python3 -c "
+import json, os
+data = json.load(open(os.path.expanduser('~/.claude/plugins/known_marketplaces.json')))
+for mp_name, mp in data.items():
+    src = mp.get('source', {})
+    if src.get('source') == 'directory' and 'agent-teams' in mp_name:
+        candidate = src['path'] + '/plugins/agent-teams/bin/ateam'
+        if os.path.isfile(candidate):
+            print(candidate)
+            break
+"
+```
+
+If this prints a path, that is the wrapper.
+
+If none of the three options resolves a path, STOP — the plugin is not installed. Confirm the agent-teams plugin is installed in `~/.claude/settings.json` and retry.
+
+### 5b. Install the symlink
+
+With `WRAPPER_PATH` set to the resolved path from 5a:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$WRAPPER_PATH" ~/.local/bin/ateam
+```
+
+`ln -sf` is force-mode: it overwrites any existing symlink and does not error on re-run. If `~/.local/bin` does not exist it is created. Report the result of `ls -la ~/.local/bin/ateam`.
+
+### 5c. Smoke test — fail loud
 
 ```bash
 ateam ws
 ```
 
-Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`). If the command is not found, confirm the plugin is installed and the `bin/` directory is on PATH.
+Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`). Exit 0.
+
+If this fails with "command not found" or a non-zero exit:
+
+**STOP. Do not proceed.** `~/.local/bin` is not on PATH in this shell environment. The human must add it:
+
+```
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add that line to `~/.zshrc` (or `~/.bashrc`) so it persists, then open a new terminal and re-run `/setup-agent-teams` from step 5 onward.
+
+If the error is "unsupported platform" rather than "command not found", the symlink resolved correctly but the plugin's `bin/` directory is missing the platform binary — file an issue against the agent-teams plugin.
 
 ### Allowlist `ateam`
 
@@ -134,9 +209,9 @@ Tell the human to add the following entry to the `permissions.allow` array in `~
 "Bash(ateam:*)"
 ```
 
-This single entry covers all `ateam` subcommands regardless of where the binary lives on PATH — no path to resolve, no re-allowlisting after reinstall.
+This single entry covers all `ateam` subcommands regardless of where the symlink target resolves — no re-allowlisting is needed after a plugin version upgrade, because the allowlist matches the bare command name, not the resolved binary path.
 
-Verify it works:
+Step 5 already verified `ateam ws` resolves. Confirm it still works:
 
 ```bash
 ateam ws
