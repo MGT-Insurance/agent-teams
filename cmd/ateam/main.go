@@ -13,6 +13,9 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
+
+	// Register available transports (self-register via init()).
+	_ "github.com/mgt-insurance/agent-teams/internal/transport/telegram"
 )
 
 func main() {
