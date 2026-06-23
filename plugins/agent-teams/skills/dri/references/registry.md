@@ -13,6 +13,8 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
     team: <team slug>
     mode: interactive|bg
 
+There is NO `phase:` or `status:` field. The DRI maintains no phase; execution-state (IN-PROGRESS / REVIEWABLE / NEEDS-DECISION) is computed by the dashboard from gate labels and the live session's run/park state. The only routing key the DRI writes after delivery is the `pr:` line (see below).
+
 ## Commands
 
 Write the body to a temp file first (avoids the newline-# safety prompt), then:

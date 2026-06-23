@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterQuery registers the read/query verbs:
-// ws, list, list-json, human-list, show, learnings, prime.
+// ws, list, list-json, human-list, show, learnings, recall, prime, roles.
 //
 // NOTE: ws is also special-cased in main before workspace initialization is
 // checked; it is registered here for completeness and usage listing.
@@ -24,7 +24,9 @@ func RegisterQuery(reg cli.Registry) {
 	reg.Register(&humanListCmd{})
 	reg.Register(&showCmd{})
 	reg.Register(&learningsCmd{})
+	reg.Register(&recallCmd{})
 	reg.Register(&primeCmd{})
+	reg.Register(&rolesCmd{})
 }
 
 // wsCmd prints the workspace home path.
@@ -79,7 +81,17 @@ func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
 // scannable display per issue:
 //
 //	<id>  [REVIEW|QUESTION]  <title>
-//	    <notes>  (omitted when empty)
+//	    decision: ...
+//	    recommendation: ...
+//	    alternative: ...
+//	    context: ...         (omitted when empty)
+//
+// When the Notes contain a sentinel-delimited ateam-ask block (CONTRACT
+// agent-teams-j9s §2), the LATEST block's structured fields are rendered.
+// When no block is present, the LATEST note block is rendered as the fallback
+// (back-compat for --file gates): notes are split on blank-line boundaries,
+// the last non-empty block is taken and capped to lastNoteBlockLines lines.
+// The note section is omitted entirely when Notes is empty.
 //
 // Kind is derived from labels: gate:review => REVIEW; otherwise QUESTION
 // (covers gate:question and backward-compat human-only beads).
@@ -103,10 +115,173 @@ func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
 		kind := gateKind(issue.Labels)
 		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
 		if issue.Notes != "" {
-			fmt.Fprintf(ctx.Stdout, "    %s\n", issue.Notes)
+			if ask, ok := extractLatestAsk(issue.Notes); ok {
+				fmt.Fprint(ctx.Stdout, renderAsk(ask))
+			} else {
+				fmt.Fprintf(ctx.Stdout, "    %s\n", lastNoteBlock(issue.Notes))
+			}
 		}
 	}
 	return nil
+}
+
+// lastNoteBlockLines is the maximum number of lines rendered from the fallback
+// note block before a truncation indicator is prepended.
+const lastNoteBlockLines = 10
+
+// lastNoteBlock returns the last non-empty blank-line-separated block from
+// notes, capped to lastNoteBlockLines lines. When the block exceeds the cap,
+// a single indicator line is prepended. Leading/trailing whitespace is trimmed
+// from the returned block.
+func lastNoteBlock(notes string) string {
+	notes = strings.TrimSpace(notes)
+	if notes == "" {
+		return ""
+	}
+
+	// Split on one or more blank lines (a newline followed by optional
+	// whitespace then another newline).
+	blocks := splitOnBlankLines(notes)
+
+	// Find the last non-empty block.
+	last := ""
+	for i := len(blocks) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(blocks[i])
+		if trimmed != "" {
+			last = trimmed
+			break
+		}
+	}
+	if last == "" {
+		return notes
+	}
+
+	lines := strings.Split(last, "\n")
+	if len(lines) <= lastNoteBlockLines {
+		return last
+	}
+	tail := strings.Join(lines[len(lines)-lastNoteBlockLines:], "\n")
+	return "(…older lines truncated — see bd show <id>)\n" + tail
+}
+
+// splitOnBlankLines splits s into blocks separated by one or more blank lines.
+// A blank line is a line that contains only whitespace (including an empty line).
+func splitOnBlankLines(s string) []string {
+	var blocks []string
+	var current strings.Builder
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			if current.Len() > 0 {
+				blocks = append(blocks, current.String())
+				current.Reset()
+			}
+		} else {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(line)
+		}
+	}
+	if current.Len() > 0 {
+		blocks = append(blocks, current.String())
+	}
+	return blocks
+}
+
+// askBlock holds the parsed fields of a structured ateam-ask sentinel block
+// (CONTRACT agent-teams-j9s §2).
+type askBlock struct {
+	decision       string
+	recommendation string
+	alternative    string
+	context        string
+}
+
+// extractLatestAsk scans notes for the LAST sentinel-delimited ateam-ask block
+// and parses it. Returns the parsed block and true when found; false otherwise.
+// Malformed or incomplete blocks (missing closing sentinel) are skipped.
+//
+// The closing sentinel ">>>" must appear at the start of a line to avoid
+// matching ">>>" embedded in prose or git conflict markers.
+func extractLatestAsk(notes string) (askBlock, bool) {
+	const open = "<<<ateam-ask"
+
+	// closeMarker matches ">>>" anchored to the start of a line.
+	// The writer (buildAskBlock) always emits ">>>" on its own line, so
+	// requiring a leading "\n" is a safe tighter match that round-trips correctly.
+	closeLine := func(s string) int {
+		// Check for ">>>" at the very start of the string (first block, no
+		// preceding newline) or after a newline.
+		if strings.HasPrefix(s, ">>>") {
+			return 0
+		}
+		idx := strings.Index(s, "\n>>>")
+		if idx == -1 {
+			return -1
+		}
+		return idx + 1 // position of the ">" that starts ">>>"
+	}
+
+	var last askBlock
+	found := false
+	remaining := notes
+	for {
+		start := strings.Index(remaining, open)
+		if start == -1 {
+			break
+		}
+		after := remaining[start+len(open):]
+		end := closeLine(after)
+		if end == -1 {
+			// Unclosed block — skip and keep scanning for later valid blocks.
+			// Advance past the open sentinel so we don't loop on the same position.
+			remaining = after
+			continue
+		}
+		body := after[:end]
+		if parsed, ok := parseAskBody(body); ok {
+			last = parsed
+			found = true
+		}
+		remaining = after[end+len(">>>"):]
+	}
+	return last, found
+}
+
+// parseAskBody parses the interior of an ateam-ask block. Returns false when
+// the required decision field is absent or empty.
+func parseAskBody(body string) (askBlock, bool) {
+	var b askBlock
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "decision:"); ok {
+			b.decision = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "recommendation:"); ok {
+			b.recommendation = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "alternative:"); ok {
+			b.alternative = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(line, "context:"); ok {
+			b.context = strings.TrimSpace(after)
+		}
+	}
+	if b.decision == "" {
+		return askBlock{}, false
+	}
+	return b, true
+}
+
+// renderAsk formats a parsed askBlock for human-list output. Each field is
+// indented with four spaces; context is omitted when empty.
+func renderAsk(b askBlock) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "    decision: %s\n", b.decision)
+	fmt.Fprintf(&sb, "    recommendation: %s\n", b.recommendation)
+	fmt.Fprintf(&sb, "    alternative: %s\n", b.alternative)
+	if b.context != "" {
+		fmt.Fprintf(&sb, "    context: %s\n", b.context)
+	}
+	return sb.String()
 }
 
 // gateKind derives the gate kind from a bead's labels using the kind-resolution
@@ -142,7 +317,17 @@ func (c *showCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// learningsCmd passes through: bd memories <role>
+// learningsCmd prints full bodies of memories for a role. It serves the union
+// of HOT keys (prefix `role+":hot:"`) and FRESH keys (prefix `role+":fresh:"`).
+// If both sets are empty, it falls back to ALL `role:` keys, preserving
+// backward compatibility for roles that have not yet been triaged.
+//
+// Invariant: when hotKeys and freshKeys are both empty, allRoleKeys contains
+// EVERY key under the role: namespace, so the fallback always emits the
+// complete set.
+//
+// It calls `bd memories --json` to get a flat {key: body} map with untruncated
+// bodies. No read-time truncation is applied.
 type learningsCmd struct{}
 
 func (c *learningsCmd) Name() string { return "learnings" }
@@ -154,11 +339,122 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 	if len(args) == 0 || args[0] == "" {
 		return cli.Usagef("ateam learnings: missing <role>")
 	}
-	out, err := ctx.BD.Run("memories", args[0])
-	if err != nil {
+	role := args[0]
+	hotPrefix := role + ":hot:"
+	freshPrefix := role + ":fresh:"
+	rolePrefix := role + ":"
+
+	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
 		return err
 	}
-	fmt.Fprintln(ctx.Stdout, out)
+
+	// Collect hot, fresh, and all-role keys in one pass.
+	var hotKeys []string
+	var freshKeys []string
+	var allRoleKeys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if strings.HasPrefix(k, hotPrefix) {
+			hotKeys = append(hotKeys, k)
+		}
+		if strings.HasPrefix(k, freshPrefix) {
+			freshKeys = append(freshKeys, k)
+		}
+		if strings.HasPrefix(k, rolePrefix) {
+			allRoleKeys = append(allRoleKeys, k)
+		}
+	}
+
+	// Served set = union(hotKeys, freshKeys). Fall back to allRoleKeys when both
+	// are empty, preserving zero-tier backward-compat behavior.
+	var keys []string
+	if len(hotKeys) > 0 || len(freshKeys) > 0 {
+		seen := make(map[string]struct{}, len(hotKeys)+len(freshKeys))
+		for _, k := range hotKeys {
+			if _, dup := seen[k]; !dup {
+				keys = append(keys, k)
+				seen[k] = struct{}{}
+			}
+		}
+		for _, k := range freshKeys {
+			if _, dup := seen[k]; !dup {
+				keys = append(keys, k)
+				seen[k] = struct{}{}
+			}
+		}
+	} else {
+		keys = allRoleKeys
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	sort.Strings(keys)
+	for i, k := range keys {
+		fmt.Fprintln(ctx.Stdout, k)
+		fmt.Fprintln(ctx.Stdout, raw[k].(string))
+		if i < len(keys)-1 {
+			fmt.Fprintln(ctx.Stdout)
+		}
+	}
+	return nil
+}
+
+// recallCmd performs a substring search over a role's memories (both hot and
+// cold), printing key + body for each match. It is read-only and never
+// auto-injected; it is invoked on demand to surface cold memories.
+type recallCmd struct{}
+
+func (c *recallCmd) Name() string { return "recall" }
+
+func (c *recallCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam recall: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam recall: missing <role>")
+	}
+	if len(args) < 2 || args[1] == "" {
+		return cli.Usagef("ateam recall: missing <query>")
+	}
+	role := args[0]
+	query := strings.ToLower(args[1])
+	rolePrefix := role + ":"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	var keys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if !strings.HasPrefix(k, rolePrefix) {
+			continue
+		}
+		body := v.(string)
+		if strings.Contains(strings.ToLower(k), query) || strings.Contains(strings.ToLower(body), query) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	sort.Strings(keys)
+	for i, k := range keys {
+		fmt.Fprintln(ctx.Stdout, k)
+		fmt.Fprintln(ctx.Stdout, raw[k].(string))
+		if i < len(keys)-1 {
+			fmt.Fprintln(ctx.Stdout)
+		}
+	}
 	return nil
 }
 
@@ -216,4 +512,49 @@ func formatBody(s string) string {
 	}
 	runes := []rune(s)
 	return string(runes[:limit]) + "…"
+}
+
+// rolesCmd lists the distinct role namespaces present in global workspace
+// memories. For every string-valued key containing a ':', the substring
+// BEFORE the first ':' is taken as the role. Keys without a ':' and
+// non-string values (e.g. schema_version) are excluded. Roles are deduped,
+// sorted, and printed one per line. A key like `dri:hot:slug` yields role
+// "dri" — hot keys collapse to the same namespace as cold keys.
+type rolesCmd struct{}
+
+func (c *rolesCmd) Name() string { return "roles" }
+
+func (c *rolesCmd) Run(ctx *cli.Context, _ []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam roles: no context")
+	}
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	seen := make(map[string]struct{})
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		idx := strings.Index(k, ":")
+		if idx < 0 {
+			continue
+		}
+		role := k[:idx]
+		seen[role] = struct{}{}
+	}
+
+	roles := make([]string, 0, len(seen))
+	for r := range seen {
+		roles = append(roles, r)
+	}
+	sort.Strings(roles)
+
+	for _, r := range roles {
+		fmt.Fprintln(ctx.Stdout, r)
+	}
+	return nil
 }

@@ -381,6 +381,275 @@ func TestGate_MissingFile(t *testing.T) {
 	assertUsageError(t, (&gateCmd{}).Run(ctx, []string{"at-2"}), "--file required")
 }
 
+// ── gate: structured-ask flags ────────────────────────────────────────────────
+
+func TestGate_StructuredAsk_WriteSentinelBlock(t *testing.T) {
+	// Structured form: 3 bd calls (note with sentinel content, label add human, label add gate:question)
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	err := (&gateCmd{}).Run(ctx, []string{
+		"at-s1",
+		"--decision", "Should we use approach A?",
+		"--recommendation", "Yes, use approach A",
+		"--alternative", "Use approach B instead",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+	// call 0: note with temp file containing sentinel block
+	noteCall := (*calls)[0]
+	if noteCall.args[0] != "note" {
+		t.Errorf("call[0] = %q, want note", noteCall.args[0])
+	}
+	if noteCall.args[1] != "at-s1" {
+		t.Errorf("call[0] id = %q, want at-s1", noteCall.args[1])
+	}
+	if !containsArgPrefix(noteCall.args, "--file=") {
+		t.Errorf("call[0] missing --file=: %v", noteCall.args)
+	}
+	// call 1: label add human
+	assertArgs(t, *calls, 1, []string{"label", "add", "at-s1", "human"})
+	// call 2: label add gate:question (default kind)
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-s1", "gate:question"})
+}
+
+func TestGate_StructuredAsk_SentinelFormat(t *testing.T) {
+	// Capture the temp file path from the note call and read its content to
+	// verify the exact sentinel-delimited format from contract j9s section 2.
+	var capturedFile string
+	calls := &[]capturedCall{}
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		*calls = append(*calls, capturedCall{args: stripped})
+		if idx == 0 {
+			// note call: capture the --file= path
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					capturedFile = a[len("--file="):]
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	contextFile := makeTempFile(t, "some optional context here")
+	err := (&gateCmd{}).Run(ctx, []string{
+		"at-s2",
+		"--decision", "Which design to pick?",
+		"--recommendation", "Design A",
+		"--alternative", "Design B",
+		"--context-file", contextFile,
+		"--kind", "review",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The temp file should have been cleaned up by the time we get here, so we
+	// capture via the note call's file arg above. But since defer runs after
+	// Run returns, the file is gone — we need to capture content inside the
+	// fake exec. Let's re-test by reading the file DURING the fake exec; we
+	// already captured capturedFile path above but the deferred Remove() runs
+	// after Run returns. Read it from the call args instead via a helper that
+	// reads content before cleanup.
+
+	// Re-do with a content-capturing exec to read file before deferred Remove.
+	var capturedContent string
+	idx2 := 0
+	execFn2 := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx2 == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					path := a[len("--file="):]
+					data, _ := os.ReadFile(path)
+					capturedContent = string(data)
+				}
+			}
+		}
+		idx2++
+		return []byte("ok"), nil, nil
+	}
+	client2 := bd.NewClientWithExec(t.TempDir(), execFn2)
+	var stdout2, stderr2 bytes.Buffer
+	ctx2 := &cli.Context{Home: t.TempDir(), BD: client2, Stdout: &stdout2, Stderr: &stderr2}
+
+	contextFile2 := makeTempFile(t, "some optional context here")
+	if err := (&gateCmd{}).Run(ctx2, []string{
+		"at-s2",
+		"--decision", "Which design to pick?",
+		"--recommendation", "Design A",
+		"--alternative", "Design B",
+		"--context-file", contextFile2,
+		"--kind", "review",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "<<<ateam-ask\ndecision: Which design to pick?\nrecommendation: Design A\nalternative: Design B\ncontext: some optional context here\n>>>"
+	if capturedContent != want {
+		t.Errorf("sentinel block =\n%q\nwant:\n%q", capturedContent, want)
+	}
+	_ = capturedFile
+}
+
+func TestGate_StructuredAsk_WithoutContext(t *testing.T) {
+	var capturedContent string
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedContent = string(data)
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	if err := (&gateCmd{}).Run(ctx, []string{
+		"at-s3",
+		"--decision", "Go or no-go?",
+		"--recommendation", "Go",
+		"--alternative", "No-go",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "<<<ateam-ask\ndecision: Go or no-go?\nrecommendation: Go\nalternative: No-go\n>>>"
+	if capturedContent != want {
+		t.Errorf("sentinel block without context =\n%q\nwant:\n%q", capturedContent, want)
+	}
+}
+
+func TestGate_StructuredAsk_DecisionTooLong(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	long := strings.Repeat("x", 121)
+	err := (&gateCmd{}).Run(ctx, []string{"at-s4", "--decision", long, "--recommendation", "r", "--alternative", "a"})
+	assertUsageError(t, err, "exceeds 120 chars")
+}
+
+func TestGate_StructuredAsk_EmptyDecision(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	// Using another structured flag but empty --decision triggers the required check.
+	err := (&gateCmd{}).Run(ctx, []string{"at-s5", "--recommendation", "r", "--alternative", "a"})
+	assertUsageError(t, err, "--decision required")
+}
+
+func TestGate_StructuredAsk_ContextTooLong(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	longContext := makeTempFile(t, strings.Repeat("y", 281))
+	err := (&gateCmd{}).Run(ctx, []string{
+		"at-s6",
+		"--decision", "A short decision",
+		"--recommendation", "r",
+		"--alternative", "a",
+		"--context-file", longContext,
+	})
+	assertUsageError(t, err, "exceeds 280 chars")
+}
+
+func TestGate_StructuredAsk_ContextExactLimit(t *testing.T) {
+	// 280 chars should be accepted.
+	var capturedContent string
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedContent = string(data)
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	exactContext := strings.Repeat("z", 280)
+	contextFile := makeTempFile(t, exactContext)
+	if err := (&gateCmd{}).Run(ctx, []string{
+		"at-s7",
+		"--decision", "Boundary check",
+		"--recommendation", "r",
+		"--alternative", "a",
+		"--context-file", contextFile,
+	}); err != nil {
+		t.Fatalf("unexpected error for 280-char context: %v", err)
+	}
+	if !strings.Contains(capturedContent, exactContext) {
+		t.Errorf("expected 280-char context in sentinel block")
+	}
+}
+
+func TestGate_StructuredAsk_MutuallyExclusiveWithFile(t *testing.T) {
+	f := makeTempFile(t, "prose")
+	ctx, _ := newCtx(t, nil)
+	err := (&gateCmd{}).Run(ctx, []string{"at-s8", "--file", f, "--decision", "d"})
+	assertUsageError(t, err, "mutually exclusive")
+}
+
+func TestGate_StructuredAsk_SetsHumanAndGateKind(t *testing.T) {
+	calls := &[]capturedCall{}
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		*calls = append(*calls, capturedCall{args: stripped})
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	if err := (&gateCmd{}).Run(ctx, []string{
+		"at-s9",
+		"--decision", "Should we proceed?",
+		"--recommendation", "Yes",
+		"--alternative", "No",
+		"--kind", "review",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 1, []string{"label", "add", "at-s9", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-s9", "gate:review"})
+}
+
 // ── gate notify (agent-teams-tlx7) ────────────────────────────────────────────
 
 // TestGate_NotifyFiredWithGateNote confirms that after labels are set the notify
@@ -665,11 +934,46 @@ func TestLearn_CallsBDRemember(t *testing.T) {
 	if call.args[0] != "remember" {
 		t.Errorf("args[0] = %q, want %q", call.args[0], "remember")
 	}
-	if call.args[1] != "--key=planner:design-heuristics" {
-		t.Errorf("args[1] = %q, want %q", call.args[1], "--key=planner:design-heuristics")
+	// Default slugs now get the fresh: prefix.
+	if call.args[1] != "--key=planner:fresh:design-heuristics" {
+		t.Errorf("args[1] = %q, want %q", call.args[1], "--key=planner:fresh:design-heuristics")
 	}
 	if call.args[2] != "learned content here" {
 		t.Errorf("args[2] = %q, want %q", call.args[2], "learned content here")
+	}
+}
+
+func TestLearn_DefaultSlugGetsFreshPrefix(t *testing.T) {
+	f := makeTempFile(t, "body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := (*calls)[0].args[1]; got != "--key=implementer:fresh:foo" {
+		t.Errorf("key = %q, want --key=implementer:fresh:foo", got)
+	}
+}
+
+func TestLearn_HotSlugPassthrough(t *testing.T) {
+	f := makeTempFile(t, "body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "hot:foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := (*calls)[0].args[1]; got != "--key=implementer:hot:foo" {
+		t.Errorf("key = %q, want --key=implementer:hot:foo", got)
+	}
+}
+
+func TestLearn_FreshSlugPassthrough(t *testing.T) {
+	f := makeTempFile(t, "body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "fresh:foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Must not produce implementer:fresh:fresh:foo.
+	if got := (*calls)[0].args[1]; got != "--key=implementer:fresh:foo" {
+		t.Errorf("key = %q, want --key=implementer:fresh:foo (no double-prefix)", got)
 	}
 }
 
@@ -1019,6 +1323,31 @@ func TestLearn_ForwardsBDStdout(t *testing.T) {
 	}
 }
 
+func TestLearn_ColdSlugWritesBareKey(t *testing.T) {
+	f := makeTempFile(t, "cold body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "cold:foo", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// cold:<slug> must produce role:<slug> — no tier tag, no fresh: prefix.
+	if got := (*calls)[0].args[1]; got != "--key=implementer:foo" {
+		t.Errorf("key = %q, want --key=implementer:foo (bare cold key)", got)
+	}
+}
+
+func TestLearn_ColdSlugNotDoublePrefixed(t *testing.T) {
+	f := makeTempFile(t, "cold body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnCmd{}).Run(ctx, []string{"dri", "cold:some-insight", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := (*calls)[0].args[1]
+	// Must be bare role:slug — must not contain fresh: or cold:.
+	if got != "--key=dri:some-insight" {
+		t.Errorf("key = %q, want --key=dri:some-insight (no tier tag)", got)
+	}
+}
+
 func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
 	if err := (&closeCmd{}).Run(ctx, []string{"at-5"}); err != nil {
@@ -1126,4 +1455,223 @@ func containsArgPrefix(args []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// ── forget ────────────────────────────────────────────────────────────────────
+
+func TestForget_ColdKeyFormed(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:stale-slug"}})
+	err := (&forgetCmd{}).Run(ctx, []string{"dri", "stale-slug"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"forget", "dri:stale-slug"})
+}
+
+func TestForget_HotKeyFormed(t *testing.T) {
+	// Callers pass slug as "hot:<name>" to target the hot-tier key.
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:hot:hot-item"}})
+	err := (&forgetCmd{}).Run(ctx, []string{"dri", "hot:hot-item"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"forget", "dri:hot:hot-item"})
+}
+
+func TestForget_MissingRole(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	err := (&forgetCmd{}).Run(ctx, nil)
+	assertUsageError(t, err, "missing <role>")
+}
+
+func TestForget_MissingSlug(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	err := (&forgetCmd{}).Run(ctx, []string{"dri"})
+	assertUsageError(t, err, "missing <slug>")
+}
+
+func TestForget_NilContext(t *testing.T) {
+	err := (&forgetCmd{}).Run(nil, []string{"dri", "slug"})
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestForget_ForwardsBDOutput(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:foo"}})
+	if err := (&forgetCmd{}).Run(ctx, []string{"dri", "foo"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(stdoutOf(ctx))
+	if !strings.Contains(got, "✓ Deleted dri:foo") {
+		t.Errorf("stdout = %q, want bd forget output", got)
+	}
+}
+
+// ── condense ──────────────────────────────────────────────────────────────────
+
+// condensePacketFor runs condenseCmd with a fakeBD returning the given memories
+// map and parses the JSON packet from stdout.
+func condensePacketFor(t *testing.T, role string, memories map[string]any) condensePacket {
+	t.Helper()
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = memories
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	if err := (&condenseCmd{}).Run(ctx, []string{role}); err != nil {
+		t.Fatalf("condense.Run: %v", err)
+	}
+	var pkt condensePacket
+	if err := json.NewDecoder(stdout).Decode(&pkt); err != nil {
+		t.Fatalf("packet JSON decode: %v (raw: %q)", err, stdout.String())
+	}
+	return pkt
+}
+
+func TestCondense_PacketContainsAllRoleMemories(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:alpha":      "body alpha",
+		"dri:beta":       "body beta",
+		"dri:hot:gamma":  "body gamma (hot)",
+		"planner:other":  "should not appear",
+		"schema_version": 1,
+	})
+
+	if len(pkt.Memories) != 3 {
+		t.Fatalf("expected 3 memories (both tiers, dri: prefix only), got %d: %+v", len(pkt.Memories), pkt.Memories)
+	}
+	keys := make(map[string]string, len(pkt.Memories))
+	for _, m := range pkt.Memories {
+		keys[m.Key] = m.Body
+	}
+	if keys["dri:alpha"] != "body alpha" {
+		t.Errorf("dri:alpha body = %q, want %q", keys["dri:alpha"], "body alpha")
+	}
+	if keys["dri:beta"] != "body beta" {
+		t.Errorf("dri:beta body = %q, want %q", keys["dri:beta"], "body beta")
+	}
+	if keys["dri:hot:gamma"] != "body gamma (hot)" {
+		t.Errorf("dri:hot:gamma body = %q, want %q", keys["dri:hot:gamma"], "body gamma (hot)")
+	}
+	if _, ok := keys["planner:other"]; ok {
+		t.Error("planner:other must not appear in dri condense packet")
+	}
+}
+
+func TestCondense_PacketContainsBudget(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if pkt.HotBudget != condenseBudgetTokens {
+		t.Errorf("HotBudget = %d, want %d", pkt.HotBudget, condenseBudgetTokens)
+	}
+}
+
+func TestCondense_PacketContainsContract(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if pkt.Contract == "" {
+		t.Fatal("instruction_contract must not be empty")
+	}
+	// Contract must mention the key verbs the consuming agent uses.
+	for _, want := range []string{"ateam learn", "ateam forget", "PROMOTE", "DEMOTE", "EVICT"} {
+		if !strings.Contains(pkt.Contract, want) {
+			t.Errorf("contract missing %q", want)
+		}
+	}
+}
+
+func TestCondense_ZeroWritesOccur(t *testing.T) {
+	var calls []string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, args[0])
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{"dri:foo": "body"}
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	if err := (&condenseCmd{}).Run(ctx, []string{"dri"}); err != nil {
+		t.Fatalf("condense.Run: %v", err)
+	}
+	for _, c := range calls {
+		if c == "remember" || c == "forget" {
+			t.Errorf("condense issued a write call %q — must be zero-write", c)
+		}
+	}
+}
+
+func TestCondense_MemoriesSorted(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:zzz": "last",
+		"dri:aaa": "first",
+		"dri:mmm": "middle",
+	})
+	if len(pkt.Memories) != 3 {
+		t.Fatalf("expected 3 memories, got %d", len(pkt.Memories))
+	}
+	if pkt.Memories[0].Key != "dri:aaa" || pkt.Memories[1].Key != "dri:mmm" || pkt.Memories[2].Key != "dri:zzz" {
+		t.Errorf("memories not sorted: %v", pkt.Memories)
+	}
+}
+
+func TestCondense_MissingRole(t *testing.T) {
+	fbd := &fakeBD{}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	err := (&condenseCmd{}).Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected usage error for missing role")
+	}
+	if _, ok := err.(*cli.UsageError); !ok {
+		t.Errorf("expected *cli.UsageError, got %T: %v", err, err)
+	}
+}
+
+func TestCondense_NilContext(t *testing.T) {
+	err := (&condenseCmd{}).Run(nil, []string{"dri"})
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestCondense_EmptyRoleSet(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"planner:something": "other role",
+	})
+	if len(pkt.Memories) != 0 {
+		t.Errorf("expected 0 memories for empty role set, got %d", len(pkt.Memories))
+	}
+}
+
+func TestCondense_SchemaVersionExcluded(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"schema_version": 1,
+		"dri:real":       "real body",
+	})
+	for _, m := range pkt.Memories {
+		if m.Key == "schema_version" {
+			t.Error("schema_version must not appear in condense packet")
+		}
+	}
+	if len(pkt.Memories) != 1 || pkt.Memories[0].Key != "dri:real" {
+		t.Errorf("expected only dri:real, got: %+v", pkt.Memories)
+	}
+}
+
+func TestCondense_RoleInPacket(t *testing.T) {
+	pkt := condensePacketFor(t, "implementer", map[string]any{
+		"implementer:foo": "body",
+	})
+	if pkt.Role != "implementer" {
+		t.Errorf("packet Role = %q, want %q", pkt.Role, "implementer")
+	}
 }

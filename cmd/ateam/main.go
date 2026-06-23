@@ -77,6 +77,7 @@ func run(args []string) int {
 	verbs.RegisterWorktreeSetup(reg)
 	verbs.RegisterMessaging(reg)
 	verbs.RegisterRouteEvent(reg)
+	verbs.RegisterStatus(reg)
 
 	cmd, ok := reg.Lookup(verb)
 	if !ok {

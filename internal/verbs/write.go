@@ -2,8 +2,10 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -21,7 +23,8 @@ type gateNotifyFunc func(ctx *cli.Context, id, file string) error
 type gateEnabledFunc func(home string) bool
 
 // RegisterWrite registers the write verbs:
-// register, note, gate, clear-gate, learn, close, reopen, sync.
+// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense,
+// fresh-drain, condense-lock.
 // gn is the best-effort notify hook fired after every successful gate; pass
 // nil to disable (e.g. when transport is not configured).
 // enabled gates the notify call; pass transport.Enabled to wire live behaviour.
@@ -34,6 +37,10 @@ func RegisterWrite(reg cli.Registry, gn gateNotifyFunc, enabled gateEnabledFunc)
 	reg.Register(&closeCmd{})
 	reg.Register(&reopenCmd{})
 	reg.Register(&syncCmd{})
+	reg.Register(&forgetCmd{})
+	reg.Register(&condenseCmd{})
+	reg.Register(&freshDrainCmd{})
+	reg.Register(&condenseLockCmd{})
 }
 
 // parseFlag parses a single --flag value or --flag=value token from args[i].
@@ -120,6 +127,14 @@ func (c *noteCmd) Run(ctx *cli.Context, args []string) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
+// gateAsk holds the parsed structured-ask fields for ateam gate.
+type gateAsk struct {
+	decision       string
+	recommendation string
+	alternative    string
+	contextFile    string
+}
+
 type gateCmd struct {
 	// notify is called after labels are set to ping the human via transport.
 	// Best-effort: a failure warns to stderr but does not fail the gate.
@@ -135,11 +150,34 @@ type gateCmd struct {
 func (c *gateCmd) Name() string { return "gate" }
 
 func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
-	id, file, kind, err := parseGateFlags(args)
+	id, file, kind, ask, err := parseGateFlags(args)
 	if err != nil {
 		return err
 	}
-	out, runErr := ctx.BD.Run("note", id, "--file="+file)
+
+	noteFile := file
+	if ask != nil {
+		// Structured form: build the sentinel block and write to a temp file.
+		block, buildErr := buildAskBlock(ask)
+		if buildErr != nil {
+			return buildErr
+		}
+		tmp, tmpErr := os.CreateTemp("", "ateam-gate-ask-*")
+		if tmpErr != nil {
+			return fmt.Errorf("ateam gate: create temp file: %w", tmpErr)
+		}
+		tmpPath := tmp.Name()
+		if _, writeErr := tmp.WriteString(block); writeErr != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("ateam gate: write temp file: %w", writeErr)
+		}
+		tmp.Close()
+		defer os.Remove(tmpPath)
+		noteFile = tmpPath
+	}
+
+	out, runErr := ctx.BD.Run("note", id, "--file="+noteFile)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -166,21 +204,50 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 	// failure after a successful Enabled check warns to stderr but stays
 	// non-fatal to the gate.
 	if c.notify != nil && c.enabled != nil && c.enabled(ctx.Home) {
-		if notifyErr := c.notify(ctx, id, file); notifyErr != nil {
+		if notifyErr := c.notify(ctx, id, noteFile); notifyErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
 		}
 	}
 	return nil
 }
 
-// parseGateFlags parses <id> --file <f> [--kind=review|question] from args.
+// buildAskBlock serializes a gateAsk into the sentinel-delimited format from
+// contract j9s section 2. The context field may be empty; all other fields are
+// expected to be pre-validated by parseGateFlags.
+func buildAskBlock(ask *gateAsk) (string, error) {
+	var b strings.Builder
+	b.WriteString("<<<ateam-ask\n")
+	b.WriteString("decision: " + ask.decision + "\n")
+	b.WriteString("recommendation: " + ask.recommendation + "\n")
+	b.WriteString("alternative: " + ask.alternative + "\n")
+	if ask.contextFile != "" {
+		data, err := os.ReadFile(ask.contextFile)
+		if err != nil {
+			return "", cli.Usagef("ateam gate: context-file not found: %s", ask.contextFile)
+		}
+		ctx := strings.TrimRight(string(data), "\n")
+		if len(ctx) > 280 {
+			return "", cli.Usagef("ateam gate: --context-file content exceeds 280 chars (got %d)", len(ctx))
+		}
+		b.WriteString("context: " + ctx + "\n")
+	}
+	b.WriteString(">>>")
+	return b.String(), nil
+}
+
+// parseGateFlags parses <id> [--file <f>] [--kind=review|question]
+// [--decision <d>] [--recommendation <r>] [--alternative <a>]
+// [--context-file <f>] from args.
 // kind defaults to "question" when omitted.
-func parseGateFlags(args []string) (id, file, kind string, err error) {
+// Returns a non-nil ask when the structured form is used (--decision present).
+// --file and the structured flags are mutually exclusive.
+func parseGateFlags(args []string) (id, file, kind string, ask *gateAsk, err error) {
 	if len(args) == 0 {
-		return "", "", "", cli.Usagef("ateam gate: missing <id>")
+		return "", "", "", nil, cli.Usagef("ateam gate: missing <id>")
 	}
 	id = args[0]
 	kind = "question"
+	var parsed gateAsk
 	for i := 1; i < len(args); {
 		if v, n := parseFlag(args, i, "--file"); n > 0 {
 			file = v
@@ -192,18 +259,57 @@ func parseGateFlags(args []string) (id, file, kind string, err error) {
 			i += n
 			continue
 		}
-		return "", "", "", cli.Usagef("ateam gate: unknown flag %q", args[i])
+		if v, n := parseFlag(args, i, "--decision"); n > 0 {
+			parsed.decision = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--recommendation"); n > 0 {
+			parsed.recommendation = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--alternative"); n > 0 {
+			parsed.alternative = v
+			i += n
+			continue
+		}
+		if v, n := parseFlag(args, i, "--context-file"); n > 0 {
+			parsed.contextFile = v
+			i += n
+			continue
+		}
+		return "", "", "", nil, cli.Usagef("ateam gate: unknown flag %q", args[i])
 	}
 	if kind != "review" && kind != "question" {
-		return "", "", "", cli.Usagef("ateam gate: --kind must be review or question")
+		return "", "", "", nil, cli.Usagef("ateam gate: --kind must be review or question")
 	}
+
+	structuredUsed := parsed.decision != "" || parsed.recommendation != "" ||
+		parsed.alternative != "" || parsed.contextFile != ""
+
+	if structuredUsed {
+		// Structured form validation.
+		if file != "" {
+			return "", "", "", nil, cli.Usagef("ateam gate: --file and structured flags (--decision etc.) are mutually exclusive")
+		}
+		if parsed.decision == "" {
+			return "", "", "", nil, cli.Usagef("ateam gate: --decision required when using structured form")
+		}
+		if len(parsed.decision) > 120 {
+			return "", "", "", nil, cli.Usagef("ateam gate: --decision exceeds 120 chars (got %d)", len(parsed.decision))
+		}
+		return id, "", kind, &parsed, nil
+	}
+
+	// Prose / back-compat form.
 	if file == "" {
-		return "", "", "", cli.Usagef("ateam gate: --file required")
+		return "", "", "", nil, cli.Usagef("ateam gate: --file required")
 	}
 	if _, statErr := os.Stat(file); statErr != nil {
-		return "", "", "", cli.Usagef("ateam gate: file not found: %s", file)
+		return "", "", "", nil, cli.Usagef("ateam gate: file not found: %s", file)
 	}
-	return id, file, kind, nil
+	return id, file, kind, nil, nil
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────
@@ -284,11 +390,27 @@ func (c *learnCmd) Run(ctx *cli.Context, args []string) error {
 	if readErr != nil {
 		return cli.Usagef("ateam learn: file not found: %s", file)
 	}
-	out, runErr := ctx.BD.Run("remember", "--key="+role+":"+slug, string(data))
+	key := learnKey(role, slug)
+	out, runErr := ctx.BD.Run("remember", "--key="+key, string(data))
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
 	return runErr
+}
+
+// learnKey computes the bd memory key for a learn invocation.
+// Precedence:
+//   - "cold:<slug>" → role:<slug> (bare cold key, no tier tag)
+//   - "hot:<slug>" or "fresh:<slug>" → role:<slug> (passthrough)
+//   - anything else → role:fresh:<slug> (default to fresh tier)
+func learnKey(role, slug string) string {
+	if strings.HasPrefix(slug, "cold:") {
+		return role + ":" + slug[len("cold:"):]
+	}
+	if strings.HasPrefix(slug, "hot:") || strings.HasPrefix(slug, "fresh:") {
+		return role + ":" + slug
+	}
+	return role + ":fresh:" + slug
 }
 
 // parseLearnFlags parses <role> <slug> --file <f> from args.
@@ -401,6 +523,183 @@ func (c *syncCmd) Run(ctx *cli.Context, args []string) error {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
 	return err
+}
+
+// ── forget ────────────────────────────────────────────────────────────────────
+
+// forgetCmd removes a memory by key. The key is formed as <role>:<slug>.
+// Callers pass slug as "hot:<name>" to target the hot-tier key <role>:hot:<name>.
+// This serves both hot demotion cleanup and cold eviction.
+type forgetCmd struct{}
+
+func (c *forgetCmd) Name() string { return "forget" }
+
+func (c *forgetCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam forget: no context")
+	}
+	role, slug, err := parseForgetArgs(args)
+	if err != nil {
+		return err
+	}
+	key := role + ":" + slug
+	out, runErr := ctx.BD.Run("forget", key)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return runErr
+}
+
+// parseForgetArgs parses <role> <slug> positional args.
+func parseForgetArgs(args []string) (role, slug string, err error) {
+	if len(args) == 0 || args[0] == "" {
+		return "", "", cli.Usagef("ateam forget: missing <role>")
+	}
+	if len(args) < 2 || args[1] == "" {
+		return "", "", cli.Usagef("ateam forget: missing <slug>")
+	}
+	return args[0], args[1], nil
+}
+
+// ── condense ──────────────────────────────────────────────────────────────────
+
+// condenseBudgetTokens is the hot-tier token budget the condense agent targets.
+const condenseBudgetTokens = 6000
+
+// condenseInstructionContract is the instruction contract emitted to the
+// consuming condense agent. The agent applies the result DIRECTLY and
+// autonomously via ateam learn / ateam forget — no human review gate.
+const condenseInstructionContract = `Condense the memories above into a hot tier for this role.
+
+Rules:
+- PROMOTE or REFRESH high-signal or repeatedly-learned items into hot (key: <role>:hot:<slug>) via: ateam learn <role> hot:<slug> --file <f>
+- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
+- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam learn <role> cold:<slug> --file <f> (for rewrites) or ateam forget <role> <slug> (for evictions)
+- Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
+- Apply ALL changes AUTONOMOUSLY with no human review gate
+- After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"
+- v1 has NO eviction floor — trust Dolt history for recoverability`
+
+// condenseMemory is a single memory record in the condense packet.
+type condenseMemory struct {
+	Key  string `json:"key"`
+	Body string `json:"body"`
+}
+
+// condensePacket is the full structured packet emitted to stdout.
+type condensePacket struct {
+	Role      string           `json:"role"`
+	Memories  []condenseMemory `json:"memories"`
+	HotBudget int              `json:"hot_budget_tokens"`
+	Contract  string           `json:"instruction_contract"`
+}
+
+// condenseCmd emits a structured packet of all role: memories to stdout.
+// It is DETERMINISTIC — no LLM call, no memory writes.
+type condenseCmd struct{}
+
+func (c *condenseCmd) Name() string { return "condense" }
+
+func (c *condenseCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam condense: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam condense: missing <role>")
+	}
+	role := args[0]
+	prefix := role + ":"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	// Collect all role: keys (hot and cold tiers) whose values are strings.
+	// Invariant: callers must run `ateam fresh-drain <role>` before this verb
+	// so that role:fresh:* keys have been moved to cold. The /agent-teams:condense
+	// skill enforces this; a direct `ateam condense <role>` would include fresh
+	// keys in the packet, mislabeled as cold in the agent's view.
+	var keys []string
+	for k, v := range raw {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := v.(string); ok {
+				keys = append(keys, k)
+			}
+		}
+	}
+
+	// Sort for determinism.
+	sort.Strings(keys)
+
+	memories := make([]condenseMemory, 0, len(keys))
+	for _, k := range keys {
+		memories = append(memories, condenseMemory{Key: k, Body: raw[k].(string)})
+	}
+
+	packet := condensePacket{
+		Role:      role,
+		Memories:  memories,
+		HotBudget: condenseBudgetTokens,
+		Contract:  condenseInstructionContract,
+	}
+
+	enc := json.NewEncoder(ctx.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(packet)
+}
+
+// ── fresh-drain ───────────────────────────────────────────────────────────────
+
+// freshDrainCmd moves every role:fresh:<slug> memory to role:<slug> (cold),
+// overwriting any existing cold value (fresh = newer). It is deterministic,
+// requires no LLM, and is idempotent (no fresh keys → clean no-op).
+type freshDrainCmd struct{}
+
+func (c *freshDrainCmd) Name() string { return "fresh-drain" }
+
+func (c *freshDrainCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam fresh-drain: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam fresh-drain: missing <role>")
+	}
+	role := args[0]
+	freshPrefix := role + ":fresh:"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	// Collect fresh keys, sorted for determinism.
+	var freshKeys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if strings.HasPrefix(k, freshPrefix) {
+			freshKeys = append(freshKeys, k)
+		}
+	}
+	sort.Strings(freshKeys)
+
+	for _, k := range freshKeys {
+		slug := k[len(freshPrefix):]
+		body := raw[k].(string)
+		coldKey := role + ":" + slug
+
+		if _, err := ctx.BD.Run("remember", "--key="+coldKey, body); err != nil {
+			return err
+		}
+		if _, err := ctx.BD.Run("forget", k); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(ctx.Stdout, "fresh-drain %s: drained %d\n", role, len(freshKeys))
+	return nil
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────

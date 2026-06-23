@@ -62,7 +62,7 @@ An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions.
+Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions. For question gates, use the structured form — `ateam gate <id> --decision "..." --recommendation "..." --alternative "..."` — it forces crisp framing and is what the dashboard renders. Fall back to `--file` prose only when the ask genuinely doesn't fit the structured schema.
 
 ## Phase 3 — Plan
 
@@ -91,7 +91,9 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This makes the dashboard show the initiative as REVIEW (awaiting PR merge), not just a generic needs-human. Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
+This is the DRI's explicit "ready for you" intent bit. It makes the initiative *eligible* for REVIEWABLE — but the dashboard derives the actual REVIEWABLE status from execution-state (gate labels joined to the live session's run/park state), not from the gate label alone. While this session is still running (including teardown), the initiative reads as IN-PROGRESS; it flips to REVIEWABLE only once the session goes idle or exits. That is intentional: the dashboard never surfaces an initiative as reviewable while the DRI is still working. The DRI need not worry about raising the gate slightly early — the "not actively working" check prevents premature REVIEWABLE. See references/gate-protocol.md for the full execution-state model.
+
+Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
 
 **MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to teardown. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
 
@@ -121,13 +123,55 @@ Follow references/teardown.md exactly: shut down teammates -> remove worktrees -
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 
 Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
 
 This is the standing place for role learnings — the moment they form, not only at teardown. Phase 6 teardown is when DRI-specific learnings are *guaranteed* contributed (see teardown step: `ateam learn dri <slug> --file <tmpfile>`), but learnings that emerge during execution belong here immediately.
+
+## Three-tier memory model (fresh / hot / cold)
+
+Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
+
+- **Fresh:** `<role>:fresh:<slug>` — the default write tier. `ateam learn <role> <slug> --file <f>` (bare slug, no prefix) writes here automatically. Fresh memories accumulate between condense runs; `ateam learnings <role>` serves them alongside hot. Fresh is the "just written, not yet curated" tier and is periodically drained into cold by `ateam fresh-drain <role>`.
+- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct; target budget is ~6000 tokens (~15–25 learnings) across all hot keys for a role.
+- **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. Write explicitly with `ateam learn <role> cold:<slug> --file <f>` (the `cold:` prefix is stripped to produce the bare `role:<slug>` key). The existing pre-tier `dri:<slug>` memories are already cold with no migration needed.
+
+`ateam learnings <role>` serves the **hot ∪ fresh** union. It falls back to all `role:` keys only when BOTH hot and fresh are empty (preserving pre-tier behavior for roles with no curated set). All three tiers are living; cold is not a frozen archive.
+
+**Key conventions at a glance:**
+- `ateam learn <role> <slug>` → writes `role:fresh:<slug>` (default)
+- `ateam learn <role> hot:<slug>` → writes `role:hot:<slug>` (explicit hot)
+- `ateam learn <role> fresh:<slug>` → writes `role:fresh:<slug>` (explicit fresh, same as default)
+- `ateam learn <role> cold:<slug>` → writes `role:<slug>` (explicit cold, no tier tag)
+
+**Searching cold memories:** `ateam recall <role> <query>` does a substring search over a role's memories (key+body) and prints matching key+body pairs on demand. Use this to surface cold context before starting a task or when a hot hint points to a cold detail.
+
+**Removing a memory:** `ateam forget <role> <slug>` removes a cold memory. `ateam forget <role> hot:<slug>` removes a hot memory. `ateam forget <role> fresh:<slug>` removes a fresh memory. Every removal is recoverable from Dolt history (`refs/dolt/data`).
+
+**Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body succinct — hot memories are injected whole every session, so verbosity directly costs context.
+
+## Condensing (autonomous)
+
+Condensing is **lock-guarded**: the `/agent-teams:condense` skill acquires `ateam condense-lock` before doing any work, skips cleanly if another session holds the lock, and releases on all exit paths. Use the skill (no arg for all roles; `<role>` arg for a single role) rather than calling `ateam condense <role>` directly.
+
+The condense flow per role: `ateam fresh-drain <role>` first (deterministic — moves `role:fresh:*` → cold, no LLM), then `ateam condense <role>` (emits a read-only structured packet: all memories, hot budget, and instruction contract) to stdout. The condense agent reads that packet and applies changes autonomously via `ateam learn` and `ateam forget`:
+- promote/refresh into hot: `ateam learn <role> hot:<slug> --file <f>`
+- demote stale hot to cold: `ateam learn <role> cold:<slug> --file <f>`, then `ateam forget <role> hot:<slug>`
+- merge/rewrite in cold: `ateam learn <role> cold:<slug> --file <f>`
+- evict dead items: `ateam forget <role> <slug>`
+
+There is NO human-review gate and NO staged diff — the agent acts autonomously.
+
+Safety backstops:
+- **Dolt history** — every write, including eviction, is recoverable via `refs/dolt/data`. A bad run is revertible.
+- **Change-summary log** — the condense agent emits one line per run: `promoted N / merged M / evicted K / hot now X tokens`.
+
+v1 has no per-run eviction floor — trust the agent and Dolt-history recoverability.
+
+**Teardown touchpoint:** at Phase 6 teardown, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most teardowns find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
 
 # Role-division rules (state these to the team; enforce them)
 

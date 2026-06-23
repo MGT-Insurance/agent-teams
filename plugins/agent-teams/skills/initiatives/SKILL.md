@@ -7,41 +7,80 @@ description: Machine-wide dashboard of agent-teams initiatives. Renders every re
 
 Render the initiative dashboard from the global workspace. If `ateam ws` fails or `ateam` is not found, say so and point at /setup-agent-teams.
 
-1. Open initiatives:
-   ```bash
-   ateam list-json
-   ```
-   Each element includes `id`, `title`, `description` (the full line-oriented registry schema), `labels`, and notes. The `description` field contains the `branch:`, `team:`, and latest phase state. The `labels` array carries gate signals — apply the **kind-resolution rule** to determine gate kind:
-   - `labels` contains `gate:review` → **REVIEW** (PR delivered, awaiting merge)
-   - `labels` contains `gate:question`, OR contains `human` but no `gate:*` label → **QUESTION** (backward-compat: pre-existing gated beads predate `gate:*`)
-   - no `human` label → not gated
+## Data source
 
-2. Parked gates — `ateam human-list` is the canonical needs-human view:
-   ```bash
-   ateam human-list
-   ```
-   Issues carrying the `human` label (set by the gate protocol via `ateam gate`) appear here. `ateam human-list` renders enriched output that includes the gate KIND (`REVIEW` or `QUESTION`) and the gate note (e.g. the PR URL) per gated initiative — it does not emit raw JSON. Derive the kind from the `labels` array in `ateam list-json` (step 1 above) if you need the programmatic form.
+Call `ateam execution-status`. This is the ONLY data source for status. Do NOT infer phase, reviewability, or execution state from labels, notes prose, or any other field — `execution_status` is computed deterministically in Go and you render it as-is. The verb always emits JSON.
 
-3. Render ONE markdown table, ordered needs-human first. Columns, in order:
+```bash
+ateam execution-status
+```
 
-   | column | content |
-   |--------|---------|
-   | (icon) | status at a glance: `⚠` needs human · `✅` delivered (PR open/awaiting merge) · `🔍` investigating/root-causing · `▶` executing · `📋` planning · `⏸` parked/blocked (non-human). Pick the one that fits the latest phase note; when in doubt use the closest. |
-   | ID | the initiative id (e.g. `at-zot`) |
-   | Title | the initiative title, untruncated unless absurdly long |
-   | Phase | a SHORT phase token distilled from the latest note (e.g. `planning`, `executing`, `root-caused`, `delivered`) — NOT a sentence |
-   | Where | `PR #N` if a PR exists, else the `branch:` name |
+Each element in the returned array has:
 
-   Keep cells terse — the table is the at-a-glance view, not the full story. Do not add prose commentary per row.
+| field | content |
+|-------|---------|
+| `id` | initiative bead id (e.g. `at-zot`) |
+| `title` | initiative title |
+| `worktree` | worktree path (informational) |
+| `labels` | raw label array |
+| `execution_status` | one of `NEEDS-DECISION`, `IN-PROGRESS`, `REVIEWABLE`, `unknown` |
+| `ask` | structured ask block or `null` — `{ decision, recommendation, alternative, context? }` |
+| `pr` | GitHub PR URL string, or `""` |
 
-4. Below the table, for each needs-human initiative ONLY, add one footnote line:
-   - REVIEW gate: `⚠ <id>: PR ready — needs review: <gate note / PR url>`
-   - QUESTION gate: `⚠ <id>: <parked question(s) from the latest gate note>`
+## Render: three-tier ranked list
 
-   This is the one place full question/note text belongs — cells stay short.
+Render a single ranked list in three tiers, ordered by urgency:
 
-5. If nothing is open: say exactly that, one line. (No empty table.)
+### Tier 1 — NEEDS DECISION (`execution_status == "NEEDS-DECISION"`)
 
-6. Workspace health: run `ateam audit`. The global workspace must contain ONLY initiative-tracking beads + role memories. On a clean result, add a single terse line under the table (e.g. `_audit clean · no leaked work beads_`). If audit reports leaked work beads (feature/plan/discovery beads that belong in a project repo), surface them under a `⚠ leaked work beads` heading so they get cleaned up — this is a recurring drift worth catching every time the dashboard runs.
+Requires immediate human input. Sort first, mark with `⚠`.
+
+For each: show id and title on one line, then the crisp ask block expanded below it:
+
+```
+⚠ at-abc  My initiative title
+    decide: <ask.decision>
+    recommend: <ask.recommendation>
+    alternative: <ask.alternative>
+    context: <ask.context>    ← omit if empty
+```
+
+If `ask` is null (no structured block), show the raw notes in place of the structured fields (backward-compat for pre-sentinel gates). If notes are also empty, just show `(no details)`.
+
+### Tier 2 — REVIEWABLE (`execution_status == "REVIEWABLE"`)
+
+PR is ready and the agent is not actively working. Show id, title, and the PR link. Mark with `✅`.
+
+```
+✅ at-def  Another initiative   PR: <pr url>
+```
+
+If `pr` is empty, omit the PR field and note `(no PR link)`.
+
+### Tier 3 — IN PROGRESS (`execution_status == "IN-PROGRESS"`)
+
+Agent is working or no gate is set — do not touch. Mark with `▶`. Show id and title only.
+
+```
+▶ at-ghi  Third initiative
+```
+
+### Unknown status (`execution_status == "unknown"`)
+
+Group under Tier 3 with `(state unknown)` appended.
+
+```
+▶ at-xyz  Some initiative   (state unknown)
+```
+
+## Format
+
+- If nothing is open: say exactly that, one line. No empty table.
+- Keep each row terse — Tier 1 is the only place multi-line content appears.
+- Separate tiers with a blank line and a heading (`## Needs decision`, `## Ready to review`, `## In progress`).
+
+## Workspace health
+
+Run `ateam audit`. On a clean result, add a single terse line at the bottom (e.g. `_audit clean · no leaked work beads_`). If audit reports leaked work beads (feature/plan/discovery beads that belong in a project repo), surface them under a `⚠ leaked work beads` heading.
 
 Read-only: this skill never modifies the registry (the audit is read-only too — it reports, it does not delete).

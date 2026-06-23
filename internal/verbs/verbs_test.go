@@ -9,11 +9,12 @@ import (
 
 var allVerbs = []string{
 	// Track A
-	"ws", "list", "list-json", "human-list", "show", "learnings", "prime",
+	"ws", "list", "list-json", "human-list", "show", "learnings", "recall", "prime", "roles",
 	// Track B
 	"audit", "resume-match", "resume-match-closed",
 	// Track C
 	"register", "note", "gate", "clear-gate", "learn", "close", "reopen", "sync",
+	"forget", "condense", "fresh-drain", "condense-lock",
 	// Track D
 	"new-initiative", "dispatch", "resume",
 	// Track GO
@@ -22,6 +23,8 @@ var allVerbs = []string{
 	"route-pr-event",
 	// agent-teams-5jnn
 	"relay",
+	// Track S
+	"execution-status",
 }
 
 func buildRegistry() cli.Registry {
@@ -33,6 +36,7 @@ func buildRegistry() cli.Registry {
 	verbs.RegisterWorktreeSetup(reg)
 	verbs.RegisterRouteEvent(reg)
 	verbs.RegisterRelay(reg)
+	verbs.RegisterStatus(reg)
 	return reg
 }
 
