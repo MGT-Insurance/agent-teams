@@ -10,12 +10,19 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
+// gateNotifyFunc is called after gate labels are set to ping the human.
+// Injected so tests can verify invocations and simulate failures without a
+// real transport. nil means skip notify (zero-value gateCmd, test usage).
+type gateNotifyFunc func(ctx *cli.Context, id, file string) error
+
 // RegisterWrite registers the write verbs:
 // register, note, gate, clear-gate, learn, close, reopen, sync.
-func RegisterWrite(reg cli.Registry) {
+// gn is the best-effort notify hook fired after every successful gate; pass
+// nil to disable (e.g. when transport is not configured).
+func RegisterWrite(reg cli.Registry, gn gateNotifyFunc) {
 	reg.Register(&registerCmd{})
 	reg.Register(&noteCmd{})
-	reg.Register(&gateCmd{})
+	reg.Register(&gateCmd{notify: gn})
 	reg.Register(&clearGateCmd{})
 	reg.Register(&learnCmd{})
 	reg.Register(&closeCmd{})
@@ -107,7 +114,12 @@ func (c *noteCmd) Run(ctx *cli.Context, args []string) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
-type gateCmd struct{}
+type gateCmd struct {
+	// notify is called after labels are set to ping the human via transport.
+	// Best-effort: a failure warns to stderr but does not fail the gate.
+	// nil means skip (zero-value struct, test usage without a notify hook).
+	notify gateNotifyFunc
+}
 
 func (c *gateCmd) Name() string { return "gate" }
 
@@ -134,7 +146,17 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	return runErr
+	if runErr != nil {
+		return runErr
+	}
+	// Best-effort phone ping: fire the notify path so Eric is pinged with the
+	// gate question. Failure (no transport, Send error) must not fail the gate.
+	if c.notify != nil {
+		if notifyErr := c.notify(ctx, id, file); notifyErr != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
+		}
+	}
+	return nil
 }
 
 // parseGateFlags parses <id> --file <f> [--kind=review|question] from args.

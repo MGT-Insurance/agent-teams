@@ -3,6 +3,7 @@ package verbs
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -378,6 +379,78 @@ func TestGate_MissingID(t *testing.T) {
 func TestGate_MissingFile(t *testing.T) {
 	ctx, _ := newCtx(t, nil)
 	assertUsageError(t, (&gateCmd{}).Run(ctx, []string{"at-2"}), "--file required")
+}
+
+// ── gate notify (agent-teams-tlx7) ────────────────────────────────────────────
+
+// TestGate_NotifyFiredWithGateNote confirms that after labels are set the notify
+// hook is called exactly once, with the same id and file as the gate.
+func TestGate_NotifyFiredWithGateNote(t *testing.T) {
+	f := makeTempFile(t, "should we proceed?")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+
+	type notifyCall struct{ id, file string }
+	var got []notifyCall
+	cmd := &gateCmd{
+		notify: func(ctx *cli.Context, id, file string) error {
+			got = append(got, notifyCall{id, file})
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{"at-5", "--file", f}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 notify call, got %d", len(got))
+	}
+	if got[0].id != "at-5" {
+		t.Errorf("notify id = %q, want at-5", got[0].id)
+	}
+	if got[0].file != f {
+		t.Errorf("notify file = %q, want %q", got[0].file, f)
+	}
+}
+
+// TestGate_NotifyFailureIsNonFatal confirms that a notify error does not cause
+// gate to fail — labels are already set; the phone ping is best-effort only.
+func TestGate_NotifyFailureIsNonFatal(t *testing.T) {
+	f := makeTempFile(t, "question body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	errBuf := ctx.Stderr.(*bytes.Buffer)
+
+	cmd := &gateCmd{
+		notify: func(ctx *cli.Context, id, file string) error {
+			return fmt.Errorf("no transport configured")
+		},
+	}
+	if err := cmd.Run(ctx, []string{"at-5", "--file", f}); err != nil {
+		t.Fatalf("gate must succeed even when notify fails, got: %v", err)
+	}
+	// Labels were still set.
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+	// Warning emitted on stderr.
+	if !strings.Contains(errBuf.String(), "warning") {
+		t.Errorf("expected warning on stderr, got: %q", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "no transport configured") {
+		t.Errorf("stderr missing transport error; got: %q", errBuf.String())
+	}
+}
+
+// TestGate_NilNotifySkipped confirms that a nil notify func is a no-op (zero-
+// value gateCmd, used in tests without transport).
+func TestGate_NilNotifySkipped(t *testing.T) {
+	f := makeTempFile(t, "question")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	if err := (&gateCmd{notify: nil}).Run(ctx, []string{"at-5", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Exactly 3 bd calls — no extra calls from notify.
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────

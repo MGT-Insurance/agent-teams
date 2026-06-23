@@ -64,12 +64,16 @@ func run(args []string) int {
 	reg := make(cli.Registry)
 	verbs.RegisterQuery(reg)
 	verbs.RegisterMatch(reg)
-	verbs.RegisterWrite(reg)
+	// Register notify first so gate can call it in-process via a registry lookup.
+	verbs.RegisterNotify(reg)
+	notifyCmd, _ := reg.Lookup("notify")
+	verbs.RegisterWrite(reg, func(ctx *cli.Context, id, file string) error {
+		return notifyCmd.Run(ctx, []string{id, "--file", file})
+	})
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterCost(reg)
 	verbs.RegisterWorktreeSetup(reg)
 	verbs.RegisterMessaging(reg)
-	verbs.RegisterNotify(reg)
 	verbs.RegisterRouteEvent(reg)
 
 	cmd, ok := reg.Lookup(verb)

@@ -26,7 +26,7 @@ func buildRegistry() cli.Registry {
 	reg := make(cli.Registry)
 	verbs.RegisterQuery(reg)
 	verbs.RegisterMatch(reg)
-	verbs.RegisterWrite(reg)
+	verbs.RegisterWrite(reg, nil)
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterWorktreeSetup(reg)
 	verbs.RegisterRouteEvent(reg)
