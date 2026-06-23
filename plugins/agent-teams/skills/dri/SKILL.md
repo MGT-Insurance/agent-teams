@@ -158,7 +158,7 @@ Safety backstops:
 
 v1 has no per-run eviction floor — trust the agent and Dolt-history recoverability.
 
-**Teardown touchpoint:** at Phase 6 teardown, check whether the hot layer for `dri` is near or over the ~6000-token budget. If it is, consider running `ateam condense dri` before closing — this keeps the auto-injected set lean for the next DRI session.
+**Teardown touchpoint:** at Phase 6 teardown, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most teardowns find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
 
 # Role-division rules (state these to the team; enforce them)
 
