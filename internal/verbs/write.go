@@ -13,7 +13,8 @@ import (
 )
 
 // RegisterWrite registers the write verbs:
-// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense.
+// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense,
+// fresh-drain, condense-lock.
 func RegisterWrite(reg cli.Registry) {
 	reg.Register(&registerCmd{})
 	reg.Register(&noteCmd{})
@@ -25,6 +26,8 @@ func RegisterWrite(reg cli.Registry) {
 	reg.Register(&syncCmd{})
 	reg.Register(&forgetCmd{})
 	reg.Register(&condenseCmd{})
+	reg.Register(&freshDrainCmd{})
+	reg.Register(&condenseLockCmd{})
 }
 
 // parseFlag parses a single --flag value or --flag=value token from args[i].
@@ -351,11 +354,27 @@ func (c *learnCmd) Run(ctx *cli.Context, args []string) error {
 	if readErr != nil {
 		return cli.Usagef("ateam learn: file not found: %s", file)
 	}
-	out, runErr := ctx.BD.Run("remember", "--key="+role+":"+slug, string(data))
+	key := learnKey(role, slug)
+	out, runErr := ctx.BD.Run("remember", "--key="+key, string(data))
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
 	return runErr
+}
+
+// learnKey computes the bd memory key for a learn invocation.
+// Precedence:
+//   - "cold:<slug>" → role:<slug> (bare cold key, no tier tag)
+//   - "hot:<slug>" or "fresh:<slug>" → role:<slug> (passthrough)
+//   - anything else → role:fresh:<slug> (default to fresh tier)
+func learnKey(role, slug string) string {
+	if strings.HasPrefix(slug, "cold:") {
+		return role + ":" + slug[len("cold:"):]
+	}
+	if strings.HasPrefix(slug, "hot:") || strings.HasPrefix(slug, "fresh:") {
+		return role + ":" + slug
+	}
+	return role + ":fresh:" + slug
 }
 
 // parseLearnFlags parses <role> <slug> --file <f> from args.
@@ -518,8 +537,8 @@ const condenseInstructionContract = `Condense the memories above into a hot tier
 
 Rules:
 - PROMOTE or REFRESH high-signal or repeatedly-learned items into hot (key: <role>:hot:<slug>) via: ateam learn <role> hot:<slug> --file <f>
-- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam forget <role> hot:<slug>
-- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam forget <role> <slug>
+- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
+- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam learn <role> cold:<slug> --file <f> (for rewrites) or ateam forget <role> <slug> (for evictions)
 - Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
 - Apply ALL changes AUTONOMOUSLY with no human review gate
 - After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"
@@ -560,7 +579,11 @@ func (c *condenseCmd) Run(ctx *cli.Context, args []string) error {
 		return err
 	}
 
-	// Collect all role: keys (both hot and cold tiers) whose values are strings.
+	// Collect all role: keys (hot and cold tiers) whose values are strings.
+	// Invariant: callers must run `ateam fresh-drain <role>` before this verb
+	// so that role:fresh:* keys have been moved to cold. The /agent-teams:condense
+	// skill enforces this; a direct `ateam condense <role>` would include fresh
+	// keys in the packet, mislabeled as cold in the agent's view.
 	var keys []string
 	for k, v := range raw {
 		if strings.HasPrefix(k, prefix) {
@@ -588,6 +611,59 @@ func (c *condenseCmd) Run(ctx *cli.Context, args []string) error {
 	enc := json.NewEncoder(ctx.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(packet)
+}
+
+// ── fresh-drain ───────────────────────────────────────────────────────────────
+
+// freshDrainCmd moves every role:fresh:<slug> memory to role:<slug> (cold),
+// overwriting any existing cold value (fresh = newer). It is deterministic,
+// requires no LLM, and is idempotent (no fresh keys → clean no-op).
+type freshDrainCmd struct{}
+
+func (c *freshDrainCmd) Name() string { return "fresh-drain" }
+
+func (c *freshDrainCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam fresh-drain: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam fresh-drain: missing <role>")
+	}
+	role := args[0]
+	freshPrefix := role + ":fresh:"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	// Collect fresh keys, sorted for determinism.
+	var freshKeys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if strings.HasPrefix(k, freshPrefix) {
+			freshKeys = append(freshKeys, k)
+		}
+	}
+	sort.Strings(freshKeys)
+
+	for _, k := range freshKeys {
+		slug := k[len(freshPrefix):]
+		body := raw[k].(string)
+		coldKey := role + ":" + slug
+
+		if _, err := ctx.BD.Run("remember", "--key="+coldKey, body); err != nil {
+			return err
+		}
+		if _, err := ctx.BD.Run("forget", k); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(ctx.Stdout, "fresh-drain %s: drained %d\n", role, len(freshKeys))
+	return nil
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────

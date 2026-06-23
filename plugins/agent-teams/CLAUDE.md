@@ -30,32 +30,42 @@ There are **two separate beads databases**, and putting the wrong beads in the w
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 
 Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
 
-### Hot/cold two-layer model
+### Three-tier memory model (fresh / hot / cold)
 
-Role memories use a two-layer key convention — the tier is encoded in the key, not in metadata:
+Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
 
-- **Hot:** `<role>:hot:<slug>` — auto-injected into every session for that role via `ateam learnings <role>`. Hot bodies are deliberately succinct; the target budget is ~6000 tokens (~15–25 learnings) across all hot keys for a role.
-- **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. The existing `dri:<slug>` memories start as cold with no migration needed.
+- **Fresh:** `<role>:fresh:<slug>` — the default write tier. `ateam learn <role> <slug> --file <f>` (bare slug, no prefix) writes here automatically. Fresh memories accumulate between condense runs; `ateam learnings <role>` serves them alongside hot. Fresh is the "just written, not yet curated" tier and is periodically drained into cold by `ateam fresh-drain <role>`.
+- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct; target budget is ~6000 tokens (~15–25 learnings) across all hot keys for a role.
+- **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. Write explicitly with `ateam learn <role> cold:<slug> --file <f>` (the `cold:` prefix is stripped to produce the bare `role:<slug>` key). The existing pre-tier `dri:<slug>` memories are already cold with no migration needed.
 
-Both tiers are living and decay over time — cold is not a frozen archive. `ateam learnings <role>` serves the hot layer; if a role has zero `:hot:` keys it falls back to all `role:` keys (the pre-tier behavior), so all other roles continue working unchanged.
+`ateam learnings <role>` serves the **hot ∪ fresh** union. It falls back to all `role:` keys only when BOTH hot and fresh are empty (preserving pre-tier behavior for roles with no curated set). All three tiers are living; cold is not a frozen archive.
+
+**Key conventions:**
+- `ateam learn <role> <slug>` → writes `role:fresh:<slug>` (default)
+- `ateam learn <role> hot:<slug>` → writes `role:hot:<slug>`
+- `ateam learn <role> cold:<slug>` → writes `role:<slug>` (bare cold key, no tier tag)
 
 **Searching cold memories:** `ateam recall <role> <query>` does a substring search over a role's memories (key+body) and prints matching key+body pairs on demand.
 
-**Removing a memory:** `ateam forget <role> <slug>` removes a cold memory. `ateam forget <role> hot:<slug>` removes a hot memory. Every removal is recoverable from Dolt history (`refs/dolt/data`).
+**Removing a memory:** `ateam forget <role> <slug>` removes a cold memory. `ateam forget <role> hot:<slug>` removes a hot memory. `ateam forget <role> fresh:<slug>` removes a fresh memory. Every removal is recoverable from Dolt history (`refs/dolt/data`).
 
 **Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body succinct — hot memories are injected whole every session.
 
 ### Condensing (autonomous)
 
-When the hot layer drifts over budget or cold memories accumulate dead weight, run `ateam condense <role>`. This emits a read-only structured packet (all memories for the role, the hot budget, and the consolidation contract) to stdout — it does NOT mutate anything.
+Condensing is **lock-guarded** via `ateam condense-lock`. Use the `/agent-teams:condense` skill (no arg = all roles; `<role>` arg = single role) — do not call `ateam condense <role>` directly. The skill acquires the lock, skips cleanly if another session holds it, drains fresh into cold first (`ateam fresh-drain <role>`, deterministic, no LLM), then emits the condense packet (`ateam condense <role>`) for agent curation, and releases the lock on all exit paths.
 
-A spawned condense agent reads that packet and applies changes directly via `ateam learn` (promote/refresh into hot, rewrite in cold) and `ateam forget` (demote stale hot to cold, evict dead cold items). There is NO human-review gate and NO staged diff — the agent acts autonomously.
+The condense agent applies changes directly via `ateam learn` and `ateam forget` — cold writes use `ateam learn <role> cold:<slug> --file <f>` (since bare `ateam learn` now writes fresh). There is NO human-review gate and NO staged diff — the agent acts autonomously.
+
+New verbs introduced by the three-tier model:
+- `ateam fresh-drain <role>` — deterministic drain of `role:fresh:*` into cold (no LLM).
+- `ateam condense-lock acquire` / `ateam condense-lock release` — advisory lock for condense serialization.
 
 Safety backstops:
 - **Dolt history** — every write, including eviction, is recoverable via `refs/dolt/data`. A bad run is revertible.
