@@ -20,16 +20,19 @@ var allVerbs = []string{
 	"worktree-setup",
 	// Track R
 	"route-pr-event",
+	// agent-teams-5jnn
+	"relay",
 }
 
 func buildRegistry() cli.Registry {
 	reg := make(cli.Registry)
 	verbs.RegisterQuery(reg)
 	verbs.RegisterMatch(reg)
-	verbs.RegisterWrite(reg, nil)
+	verbs.RegisterWrite(reg, nil, nil)
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterWorktreeSetup(reg)
 	verbs.RegisterRouteEvent(reg)
+	verbs.RegisterRelay(reg)
 	return reg
 }
 

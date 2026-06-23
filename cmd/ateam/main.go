@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
 
@@ -69,7 +70,8 @@ func run(args []string) int {
 	notifyCmd, _ := reg.Lookup("notify")
 	verbs.RegisterWrite(reg, func(ctx *cli.Context, id, file string) error {
 		return notifyCmd.Run(ctx, []string{id, "--file", file})
-	})
+	}, transport.Enabled)
+	verbs.RegisterRelay(reg)
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterCost(reg)
 	verbs.RegisterWorktreeSetup(reg)

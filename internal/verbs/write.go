@@ -15,14 +15,20 @@ import (
 // real transport. nil means skip notify (zero-value gateCmd, test usage).
 type gateNotifyFunc func(ctx *cli.Context, id, file string) error
 
+// gateEnabledFunc reports whether the active transport is configured and
+// usable. Injected so tests can control the Enabled result without touching
+// env / config files. nil is treated as "not enabled" (zero-value gateCmd).
+type gateEnabledFunc func(home string) bool
+
 // RegisterWrite registers the write verbs:
 // register, note, gate, clear-gate, learn, close, reopen, sync.
 // gn is the best-effort notify hook fired after every successful gate; pass
 // nil to disable (e.g. when transport is not configured).
-func RegisterWrite(reg cli.Registry, gn gateNotifyFunc) {
+// enabled gates the notify call; pass transport.Enabled to wire live behaviour.
+func RegisterWrite(reg cli.Registry, gn gateNotifyFunc, enabled gateEnabledFunc) {
 	reg.Register(&registerCmd{})
 	reg.Register(&noteCmd{})
-	reg.Register(&gateCmd{notify: gn})
+	reg.Register(&gateCmd{notify: gn, enabled: enabled})
 	reg.Register(&clearGateCmd{})
 	reg.Register(&learnCmd{})
 	reg.Register(&closeCmd{})
@@ -119,6 +125,11 @@ type gateCmd struct {
 	// Best-effort: a failure warns to stderr but does not fail the gate.
 	// nil means skip (zero-value struct, test usage without a notify hook).
 	notify gateNotifyFunc
+
+	// enabled reports whether a transport is configured. The gate calls it
+	// before notifying; if false, notify is skipped silently (no warning).
+	// nil is treated as not-enabled.
+	enabled gateEnabledFunc
 }
 
 func (c *gateCmd) Name() string { return "gate" }
@@ -150,8 +161,11 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 		return runErr
 	}
 	// Best-effort phone ping: fire the notify path so Eric is pinged with the
-	// gate question. Failure (no transport, Send error) must not fail the gate.
-	if c.notify != nil {
+	// gate question. Only runs when messaging is configured (enabled); if not
+	// configured, skip silently — no warning, no behavior change. A Send
+	// failure after a successful Enabled check warns to stderr but stays
+	// non-fatal to the gate.
+	if c.notify != nil && c.enabled != nil && c.enabled(ctx.Home) {
 		if notifyErr := c.notify(ctx, id, file); notifyErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
 		}

@@ -392,6 +392,7 @@ func TestGate_NotifyFiredWithGateNote(t *testing.T) {
 	type notifyCall struct{ id, file string }
 	var got []notifyCall
 	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
 		notify: func(ctx *cli.Context, id, file string) error {
 			got = append(got, notifyCall{id, file})
 			return nil
@@ -413,14 +414,16 @@ func TestGate_NotifyFiredWithGateNote(t *testing.T) {
 
 // TestGate_NotifyFailureIsNonFatal confirms that a notify error does not cause
 // gate to fail — labels are already set; the phone ping is best-effort only.
+// This exercises the Enabled=true + Send-fails branch (warning surfaced, non-fatal).
 func TestGate_NotifyFailureIsNonFatal(t *testing.T) {
 	f := makeTempFile(t, "question body")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 	errBuf := ctx.Stderr.(*bytes.Buffer)
 
 	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
 		notify: func(ctx *cli.Context, id, file string) error {
-			return fmt.Errorf("no transport configured")
+			return fmt.Errorf("send failed: connection refused")
 		},
 	}
 	if err := cmd.Run(ctx, []string{"at-5", "--file", f}); err != nil {
@@ -434,8 +437,8 @@ func TestGate_NotifyFailureIsNonFatal(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "warning") {
 		t.Errorf("expected warning on stderr, got: %q", errBuf.String())
 	}
-	if !strings.Contains(errBuf.String(), "no transport configured") {
-		t.Errorf("stderr missing transport error; got: %q", errBuf.String())
+	if !strings.Contains(errBuf.String(), "send failed") {
+		t.Errorf("stderr missing send error; got: %q", errBuf.String())
 	}
 }
 
@@ -450,6 +453,96 @@ func TestGate_NilNotifySkipped(t *testing.T) {
 	// Exactly 3 bd calls — no extra calls from notify.
 	if len(*calls) != 3 {
 		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+}
+
+// ── gate opt-in (agent-teams-5jnn) ───────────────────────────────────────────
+
+// TestGate_EnabledFalse_NoNotifyNoWarning is the key opt-in test: when
+// messaging is off (Enabled=false), the notify hook must NOT be called and
+// stderr must stay empty. Gate still succeeds.
+func TestGate_EnabledFalse_NoNotifyNoWarning(t *testing.T) {
+	f := makeTempFile(t, "question body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	errBuf := ctx.Stderr.(*bytes.Buffer)
+
+	notifyCalled := false
+	cmd := &gateCmd{
+		enabled: func(string) bool { return false },
+		notify: func(ctx *cli.Context, id, file string) error {
+			notifyCalled = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{"at-5", "--file", f}); err != nil {
+		t.Fatalf("gate must succeed with messaging off, got: %v", err)
+	}
+	// Labels were still set — gate behavior unchanged.
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls (gate unchanged), got %d", len(*calls))
+	}
+	// notify must NOT have been called.
+	if notifyCalled {
+		t.Error("notify must NOT be called when Enabled=false")
+	}
+	// No warning output — silent skip.
+	if errBuf.String() != "" {
+		t.Errorf("expected empty stderr when messaging is off, got: %q", errBuf.String())
+	}
+}
+
+// TestGate_EnabledTrue_NotifyCalledOnSuccess confirms that when messaging is on
+// and notify succeeds, no warning is emitted.
+func TestGate_EnabledTrue_NotifyCalledOnSuccess(t *testing.T) {
+	f := makeTempFile(t, "question body")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	errBuf := ctx.Stderr.(*bytes.Buffer)
+
+	notifyCalled := false
+	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
+		notify: func(ctx *cli.Context, id, file string) error {
+			notifyCalled = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{"at-5", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !notifyCalled {
+		t.Error("notify must be called when Enabled=true")
+	}
+	if errBuf.String() != "" {
+		t.Errorf("expected no stderr on success, got: %q", errBuf.String())
+	}
+}
+
+// TestGate_NilEnabled_NoNotify confirms that a nil enabled func (zero-value
+// gateCmd) behaves the same as Enabled=false — notify is skipped silently.
+func TestGate_NilEnabled_NoNotify(t *testing.T) {
+	f := makeTempFile(t, "question")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	errBuf := ctx.Stderr.(*bytes.Buffer)
+
+	notifyCalled := false
+	cmd := &gateCmd{
+		enabled: nil, // explicitly nil
+		notify: func(ctx *cli.Context, id, file string) error {
+			notifyCalled = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{"at-5", "--file", f}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+	if notifyCalled {
+		t.Error("notify must NOT be called when enabled is nil")
+	}
+	if errBuf.String() != "" {
+		t.Errorf("expected empty stderr, got: %q", errBuf.String())
 	}
 }
 

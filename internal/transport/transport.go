@@ -81,6 +81,23 @@ func RegisterTransport(name string, f factory) {
 	registry[name] = f
 }
 
+// Enabled reports whether a usable transport is configured. It returns true iff
+// the selected transport name is registered AND the factory call succeeds (which
+// means all required config — e.g. Telegram token and chat-id — is resolvable).
+//
+// Callers that fire on a best-effort basis (e.g. the gate auto-notify) should
+// check Enabled before calling For to avoid surfacing config-absent errors as
+// warnings when the operator intentionally has not set up messaging.
+func Enabled(home string) bool {
+	name := selectedName(home)
+	f, ok := registry[name]
+	if !ok {
+		return false
+	}
+	_, err := f(home)
+	return err == nil
+}
+
 // For returns the Transport selected by the AGENT_TEAMS_TRANSPORT env var, or
 // by the file ~/.agent-teams/transport (first line, trimmed). Defaults to
 // "telegram" when no config is found. Returns an error if the selected name is

@@ -611,7 +611,7 @@ func TestRegisterRouteEvent_NoDuplicateWithFullRegistry(t *testing.T) {
 func verbs_registerAll(reg cli.Registry) {
 	RegisterQuery(reg)
 	RegisterMatch(reg)
-	RegisterWrite(reg, nil)
+	RegisterWrite(reg, nil, nil)
 	RegisterDispatch(reg)
 	RegisterCost(reg)
 	RegisterWorktreeSetup(reg)
