@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -474,6 +475,132 @@ func TestHumanListStructuredAskContextOmittedWhenEmpty(t *testing.T) {
 	}
 	if !strings.Contains(got, "decision: Ship it") {
 		t.Errorf("expected decision field, got: %q", got)
+	}
+}
+
+// ── human-list: lastNoteBlock fallback ───────────────────────────────────────
+
+func TestHumanListFallbackMultiBlockShowsOnlyLast(t *testing.T) {
+	// Multi-block notes: only the last block should appear; earlier blocks absent.
+	notes := "First entry: old context\n\nSecond entry: more history\n\nThird entry: current status"
+	issues := []bd.Issue{
+		{ID: "at-mb1", Title: "Multi-block bead", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "Third entry: current status") {
+		t.Errorf("expected last block in output, got: %q", got)
+	}
+	if strings.Contains(got, "First entry: old context") {
+		t.Errorf("earlier block must not appear, got: %q", got)
+	}
+	if strings.Contains(got, "Second entry: more history") {
+		t.Errorf("earlier block must not appear, got: %q", got)
+	}
+}
+
+func TestHumanListFallbackLongBlockTruncated(t *testing.T) {
+	// A last block longer than 10 lines: truncation indicator must appear,
+	// and only the last 10 lines of the block are shown.
+	var linesBuf strings.Builder
+	for i := 1; i <= 15; i++ {
+		fmt.Fprintf(&linesBuf, "line %d\n", i)
+	}
+	notes := strings.TrimRight(linesBuf.String(), "\n")
+	issues := []bd.Issue{
+		{ID: "at-long1", Title: "Long note bead", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "…older lines truncated") {
+		t.Errorf("expected truncation indicator, got: %q", got)
+	}
+	// Last 10 lines (6-15) should appear.
+	if !strings.Contains(got, "line 15") {
+		t.Errorf("expected last line in output, got: %q", got)
+	}
+	if !strings.Contains(got, "line 6") {
+		t.Errorf("expected line 6 (10th from end) in output, got: %q", got)
+	}
+	// First 5 lines should NOT appear.
+	if strings.Contains(got, "line 1\n") {
+		t.Errorf("truncated lines must not appear, got: %q", got)
+	}
+	if strings.Contains(got, "line 5\n") {
+		t.Errorf("truncated lines must not appear, got: %q", got)
+	}
+}
+
+func TestHumanListFallbackSingleBlockNoTruncation(t *testing.T) {
+	// Single-block notes (no blank lines) rendered as-is when short enough.
+	notes := "PR https://github.com/org/repo/pull/99 needs approval"
+	issues := []bd.Issue{
+		{ID: "at-sb1", Title: "Single block", Labels: []string{"human", "gate:review"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, notes) {
+		t.Errorf("expected note text in output, got: %q", got)
+	}
+	if strings.Contains(got, "truncated") {
+		t.Errorf("must not show truncation indicator for short note, got: %q", got)
+	}
+}
+
+func TestHumanListStructuredAskPathUnchanged(t *testing.T) {
+	// Structured ask present: renderAsk is used, lastNoteBlock fallback not taken.
+	// The raw sentinel markers must not appear, and structured fields must.
+	notes := "preamble note\n\n<<<ateam-ask\ndecision: Use X\nrecommendation: X is faster\nalternative: Y\ncontext: benchmarked\n>>>"
+	issues := []bd.Issue{
+		{ID: "at-struct1", Title: "Structured ask", Labels: []string{"human", "gate:question"}, Notes: notes},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	reg := make(cli.Registry)
+	verbs.RegisterQuery(reg)
+	cmd, _ := reg.Lookup("human-list")
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "decision: Use X") {
+		t.Errorf("expected structured decision field, got: %q", got)
+	}
+	if !strings.Contains(got, "context: benchmarked") {
+		t.Errorf("expected structured context field, got: %q", got)
+	}
+	// Fallback must not be taken — sentinel markers must not leak.
+	if strings.Contains(got, "<<<ateam-ask") {
+		t.Errorf("sentinel open must not appear in output, got: %q", got)
+	}
+	// The preamble note block must not appear (fallback not taken).
+	if strings.Contains(got, "preamble note") {
+		t.Errorf("preamble must not appear when structured ask is present, got: %q", got)
 	}
 }
 

@@ -86,8 +86,10 @@ func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
 //
 // When the Notes contain a sentinel-delimited ateam-ask block (CONTRACT
 // agent-teams-j9s §2), the LATEST block's structured fields are rendered.
-// When no block is present, raw Notes are rendered (back-compat for --file
-// gates). The note section is omitted entirely when Notes is empty.
+// When no block is present, the LATEST note block is rendered as the fallback
+// (back-compat for --file gates): notes are split on blank-line boundaries,
+// the last non-empty block is taken and capped to lastNoteBlockLines lines.
+// The note section is omitted entirely when Notes is empty.
 //
 // Kind is derived from labels: gate:review => REVIEW; otherwise QUESTION
 // (covers gate:question and backward-compat human-only beads).
@@ -114,11 +116,75 @@ func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
 			if ask, ok := extractLatestAsk(issue.Notes); ok {
 				fmt.Fprint(ctx.Stdout, renderAsk(ask))
 			} else {
-				fmt.Fprintf(ctx.Stdout, "    %s\n", issue.Notes)
+				fmt.Fprintf(ctx.Stdout, "    %s\n", lastNoteBlock(issue.Notes))
 			}
 		}
 	}
 	return nil
+}
+
+// lastNoteBlockLines is the maximum number of lines rendered from the fallback
+// note block before a truncation indicator is prepended.
+const lastNoteBlockLines = 10
+
+// lastNoteBlock returns the last non-empty blank-line-separated block from
+// notes, capped to lastNoteBlockLines lines. When the block exceeds the cap,
+// a single indicator line is prepended. Leading/trailing whitespace is trimmed
+// from the returned block.
+func lastNoteBlock(notes string) string {
+	notes = strings.TrimSpace(notes)
+	if notes == "" {
+		return ""
+	}
+
+	// Split on one or more blank lines (a newline followed by optional
+	// whitespace then another newline).
+	blocks := splitOnBlankLines(notes)
+
+	// Find the last non-empty block.
+	last := ""
+	for i := len(blocks) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(blocks[i])
+		if trimmed != "" {
+			last = trimmed
+			break
+		}
+	}
+	if last == "" {
+		return notes
+	}
+
+	lines := strings.Split(last, "\n")
+	if len(lines) <= lastNoteBlockLines {
+		return last
+	}
+	tail := strings.Join(lines[len(lines)-lastNoteBlockLines:], "\n")
+	return "(…older lines truncated — see bd show <id>)\n" + tail
+}
+
+// splitOnBlankLines splits s into blocks separated by one or more blank lines.
+// A blank line is a line that contains only whitespace (including an empty line).
+func splitOnBlankLines(s string) []string {
+	var blocks []string
+	var current strings.Builder
+	lines := strings.Split(s, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			if current.Len() > 0 {
+				blocks = append(blocks, current.String())
+				current.Reset()
+			}
+		} else {
+			if current.Len() > 0 {
+				current.WriteByte('\n')
+			}
+			current.WriteString(line)
+		}
+	}
+	if current.Len() > 0 {
+		blocks = append(blocks, current.String())
+	}
+	return blocks
 }
 
 // askBlock holds the parsed fields of a structured ateam-ask sentinel block
