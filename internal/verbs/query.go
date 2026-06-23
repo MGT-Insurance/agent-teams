@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterQuery registers the read/query verbs:
-// ws, list, list-json, human-list, show, learnings, recall, prime.
+// ws, list, list-json, human-list, show, learnings, recall, prime, roles.
 //
 // NOTE: ws is also special-cased in main before workspace initialization is
 // checked; it is registered here for completeness and usage listing.
@@ -26,6 +26,7 @@ func RegisterQuery(reg cli.Registry) {
 	reg.Register(&learningsCmd{})
 	reg.Register(&recallCmd{})
 	reg.Register(&primeCmd{})
+	reg.Register(&rolesCmd{})
 }
 
 // wsCmd prints the workspace home path.
@@ -489,4 +490,49 @@ func formatBody(s string) string {
 	}
 	runes := []rune(s)
 	return string(runes[:limit]) + "…"
+}
+
+// rolesCmd lists the distinct role namespaces present in global workspace
+// memories. For every string-valued key containing a ':', the substring
+// BEFORE the first ':' is taken as the role. Keys without a ':' and
+// non-string values (e.g. schema_version) are excluded. Roles are deduped,
+// sorted, and printed one per line. A key like `dri:hot:slug` yields role
+// "dri" — hot keys collapse to the same namespace as cold keys.
+type rolesCmd struct{}
+
+func (c *rolesCmd) Name() string { return "roles" }
+
+func (c *rolesCmd) Run(ctx *cli.Context, _ []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam roles: no context")
+	}
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	seen := make(map[string]struct{})
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		idx := strings.Index(k, ":")
+		if idx < 0 {
+			continue
+		}
+		role := k[:idx]
+		seen[role] = struct{}{}
+	}
+
+	roles := make([]string, 0, len(seen))
+	for r := range seen {
+		roles = append(roles, r)
+	}
+	sort.Strings(roles)
+
+	for _, r := range roles {
+		fmt.Fprintln(ctx.Stdout, r)
+	}
+	return nil
 }
