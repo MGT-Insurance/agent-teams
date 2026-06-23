@@ -815,6 +815,159 @@ func TestGate_NilEnabled_NoNotify(t *testing.T) {
 	}
 }
 
+// ── gate: structured-ask notify body (agent-teams-lbxl) ──────────────────────
+
+// TestGate_StructuredAsk_NotifyGetsHumanReadable confirms that when a
+// structured-ask gate fires with Enabled=true, the notify hook receives the
+// human-readable body (decision / Recommended / Alternative) and NOT the
+// sentinel block marker.
+func TestGate_StructuredAsk_NotifyGetsHumanReadable(t *testing.T) {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+
+	type notifyCall struct{ id, file string }
+	var got []notifyCall
+	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
+		notify: func(ctx *cli.Context, id, file string) error {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Errorf("notify: ReadFile(%q) failed: %v", file, err)
+				return nil
+			}
+			got = append(got, notifyCall{id, string(data)})
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{
+		"at-lbxl1",
+		"--decision", "Should we ship feature X?",
+		"--recommendation", "Yes, ship it",
+		"--alternative", "Wait for next cycle",
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 notify call, got %d", len(got))
+	}
+	if got[0].id != "at-lbxl1" {
+		t.Errorf("notify id = %q, want at-lbxl1", got[0].id)
+	}
+	body := got[0].file
+	if !strings.Contains(body, "Should we ship feature X?") {
+		t.Errorf("notify body missing decision; got: %q", body)
+	}
+	if !strings.Contains(body, "Recommended: Yes, ship it") {
+		t.Errorf("notify body missing Recommended:; got: %q", body)
+	}
+	if !strings.Contains(body, "Alternative: Wait for next cycle") {
+		t.Errorf("notify body missing Alternative:; got: %q", body)
+	}
+	// Must NOT contain the sentinel marker.
+	if strings.Contains(body, "<<<ateam-ask") {
+		t.Errorf("notify body must not contain sentinel marker; got: %q", body)
+	}
+}
+
+// TestGate_StructuredAsk_NotifyGetsContextInBody confirms that the context-file
+// content appears in the human-readable notify body.
+func TestGate_StructuredAsk_NotifyGetsContextInBody(t *testing.T) {
+	contextFile := makeTempFile(t, "some extra context here")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+
+	var notifyBody string
+	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
+		notify: func(ctx *cli.Context, id, file string) error {
+			data, _ := os.ReadFile(file)
+			notifyBody = string(data)
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{
+		"at-lbxl2",
+		"--decision", "Go or no-go?",
+		"--recommendation", "Go",
+		"--alternative", "No-go",
+		"--context-file", contextFile,
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(notifyBody, "Context: some extra context here") {
+		t.Errorf("notify body missing context; got: %q", notifyBody)
+	}
+}
+
+// TestGate_PlainFile_NotifyGetsFileContent confirms that a plain --file gate
+// with Enabled=true sends the original file content to notify (unchanged).
+func TestGate_PlainFile_NotifyGetsFileContent(t *testing.T) {
+	f := makeTempFile(t, "plain gate question body")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+
+	var notifyFile string
+	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
+		notify: func(ctx *cli.Context, id, file string) error {
+			notifyFile = file
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx, []string{"at-lbxl3", "--file", f}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	// For plain --file gates, notify receives the original file path unchanged.
+	if notifyFile != f {
+		t.Errorf("plain gate: notify file = %q, want %q", notifyFile, f)
+	}
+}
+
+// TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock confirms that the bead
+// note call still receives the sentinel block even when messaging is enabled.
+// The phone body is separate; the bd record must stay parseable.
+func TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock(t *testing.T) {
+	var capturedNoteContent string
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedNoteContent = string(data)
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	cmd := &gateCmd{
+		enabled: func(string) bool { return true },
+		notify:  func(ctx *cli.Context, id, file string) error { return nil },
+	}
+	if err := cmd.Run(ctx, []string{
+		"at-lbxl4",
+		"--decision", "Proceed with refactor?",
+		"--recommendation", "Yes",
+		"--alternative", "Defer",
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	// The bd note must still contain the sentinel block.
+	if !strings.Contains(capturedNoteContent, "<<<ateam-ask") {
+		t.Errorf("bd note missing sentinel marker; got: %q", capturedNoteContent)
+	}
+	if !strings.Contains(capturedNoteContent, "decision: Proceed with refactor?") {
+		t.Errorf("bd note missing decision field; got: %q", capturedNoteContent)
+	}
+}
+
 // ── clear-gate ────────────────────────────────────────────────────────────────
 
 func TestClearGate_WithFile(t *testing.T) {

@@ -203,12 +203,52 @@ func (c *gateCmd) Run(ctx *cli.Context, args []string) error {
 	// configured, skip silently — no warning, no behavior change. A Send
 	// failure after a successful Enabled check warns to stderr but stays
 	// non-fatal to the gate.
+	//
+	// For structured-ask gates, send the human-readable form (buildAskMessage)
+	// rather than the raw sentinel block. The bead note (noteFile) is unchanged
+	// — only the phone body differs. This is lazy: the temp file is built only
+	// inside the enabled branch to stay zero-footprint when messaging is off.
 	if c.notify != nil && c.enabled != nil && c.enabled(ctx.Home) {
-		if notifyErr := c.notify(ctx, id, noteFile); notifyErr != nil {
+		notifyFile := noteFile
+		if ask != nil {
+			msg := buildAskMessage(ask)
+			if tmp, tmpErr := os.CreateTemp("", "ateam-gate-notify-*"); tmpErr == nil {
+				tmpNotifyPath := tmp.Name()
+				if _, writeErr := tmp.WriteString(msg); writeErr == nil {
+					tmp.Close()
+					notifyFile = tmpNotifyPath
+					defer os.Remove(tmpNotifyPath)
+				} else {
+					tmp.Close()
+					os.Remove(tmpNotifyPath)
+				}
+			}
+			// On any temp-file failure, fall back to noteFile (sentinel block).
+		}
+		if notifyErr := c.notify(ctx, id, notifyFile); notifyErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
 		}
 	}
 	return nil
+}
+
+// buildAskMessage renders a clean human-readable plain-text body for a phone
+// transport from a structured gateAsk. Sentinel markers are not included —
+// this is the human-facing form only (bead notes use buildAskBlock instead).
+// Context is appended best-effort: a read error is silently ignored because
+// buildAskBlock already validated the file path earlier in Run.
+func buildAskMessage(ask *gateAsk) string {
+	var b strings.Builder
+	b.WriteString(ask.decision + "\n\n")
+	b.WriteString("Recommended: " + ask.recommendation + "\n")
+	b.WriteString("Alternative: " + ask.alternative)
+	if ask.contextFile != "" {
+		data, err := os.ReadFile(ask.contextFile)
+		if err == nil {
+			b.WriteString("\nContext: " + strings.TrimRight(string(data), "\n"))
+		}
+	}
+	return b.String()
 }
 
 // buildAskBlock serializes a gateAsk into the sentinel-delimited format from
