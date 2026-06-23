@@ -1,10 +1,22 @@
 #!/bin/sh
 # POSIX dispatch wrapper — selects the prebuilt ateam binary for the current
-# platform and exec's it.  Claude Code auto-adds a plugin's bin/ to the Bash
-# PATH, so skills call bare `ateam` and land here.
+# platform and exec's it.  Reachable via Claude Code's plugin bin/ PATH
+# auto-add or via a symlink in ~/.local/bin; the resolution loop below
+# handles both.
 set -eu
 
-dir="$(cd "$(dirname "$0")" && pwd)"
+# Resolve $0 through chained symlinks (POSIX; handles absolute and relative
+# link targets) so dir points at the real bin/ containing platform binaries,
+# not the symlink's directory.
+src="$0"
+while [ -h "$src" ]; do
+    target="$(readlink "$src")"
+    case "$target" in
+        /*) src="$target" ;;
+        *)  src="$(dirname "$src")/$target" ;;
+    esac
+done
+dir="$(cd "$(dirname "$src")" && pwd)"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
