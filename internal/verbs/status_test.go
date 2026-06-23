@@ -420,9 +420,136 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 		}
 	}
 
-	// Verify notes pass through.
-	if byID["at-001"].Notes != "decision: pick A or B" {
-		t.Errorf("at-001 notes not passed through: %q", byID["at-001"].Notes)
+	// Verify ask is extracted from notes for at-001 (has bare "decision: pick A or B" — not a
+	// sentinel block, so no structured ask should be present).
+	if byID["at-001"].Ask != nil {
+		t.Errorf("at-001: expected nil ask for bare notes (no sentinel block), got %+v", byID["at-001"].Ask)
+	}
+
+	// Verify pr field is empty when notes contain no PR URL.
+	for _, id := range []string{"at-001", "at-002", "at-003", "at-004"} {
+		if byID[id].PR != "" {
+			t.Errorf("%s: expected empty pr, got %q", id, byID[id].PR)
+		}
+	}
+}
+
+// TestExecutionStatusCmd_Run_AskAndPRFields verifies that the ask and pr fields
+// are correctly populated from notes containing a sentinel ask block and a PR URL.
+func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
+	const wt = "/tmp/wt-ask-pr"
+	const prURL = "https://github.com/mgt-insurance/agent-teams/pull/42"
+	notes := "pr: " + prURL + "\n" +
+		"<<<ateam-ask\n" +
+		"decision: merge approach A or B?\n" +
+		"recommendation: A (simpler)\n" +
+		"alternative: B (more flexible)\n" +
+		"context: see discussion in PR\n" +
+		">>>\n"
+
+	issues := []bd.Issue{
+		{
+			ID:          "at-ask1",
+			Title:       "ask-and-pr test",
+			Description: "worktree: " + wt,
+			Labels:      []string{"human", "gate:question"},
+			Notes:       notes,
+			Status:      "open",
+		},
+	}
+
+	bdClient := bd.NewClientWithExec("/fake/home", fakeListExec(issues))
+	buf := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   "/fake/home",
+		BD:     bdClient,
+		Stdout: buf,
+		Stderr: &bytes.Buffer{},
+	}
+	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var result []initiativeStatus
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &result); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	r := result[0]
+
+	if r.ExecutionStatus != "NEEDS-DECISION" {
+		t.Errorf("execution_status = %q, want NEEDS-DECISION", r.ExecutionStatus)
+	}
+	if r.PR != prURL {
+		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	}
+	if r.Ask == nil {
+		t.Fatal("ask is nil, expected structured block")
+	}
+	if r.Ask.Decision != "merge approach A or B?" {
+		t.Errorf("ask.decision = %q, want %q", r.Ask.Decision, "merge approach A or B?")
+	}
+	if r.Ask.Recommendation != "A (simpler)" {
+		t.Errorf("ask.recommendation = %q, want %q", r.Ask.Recommendation, "A (simpler)")
+	}
+	if r.Ask.Alternative != "B (more flexible)" {
+		t.Errorf("ask.alternative = %q, want %q", r.Ask.Alternative, "B (more flexible)")
+	}
+	if r.Ask.Context != "see discussion in PR" {
+		t.Errorf("ask.context = %q, want %q", r.Ask.Context, "see discussion in PR")
+	}
+}
+
+// TestExecutionStatusCmd_Run_NilAskWhenNoBlock verifies that ask is null (nil)
+// when notes contain no sentinel block, and pr is populated from the notes URL.
+func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
+	const wt = "/tmp/wt-no-ask"
+	const prURL = "https://github.com/mgt-insurance/agent-teams/pull/7"
+	notes := "pr: " + prURL + "\nSome plain prose without a structured ask block."
+
+	issues := []bd.Issue{
+		{
+			ID:          "at-noask",
+			Title:       "no-ask test",
+			Description: "worktree: " + wt,
+			Labels:      []string{"human", "gate:review"},
+			Notes:       notes,
+			Status:      "open",
+		},
+	}
+
+	bdClient := bd.NewClientWithExec("/fake/home", fakeListExec(issues))
+	buf := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   "/fake/home",
+		BD:     bdClient,
+		Stdout: buf,
+		Stderr: &bytes.Buffer{},
+	}
+	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var result []initiativeStatus
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &result); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result))
+	}
+	r := result[0]
+
+	if r.Ask != nil {
+		t.Errorf("ask = %+v, want nil (no sentinel block)", r.Ask)
+	}
+	if r.PR != prURL {
+		t.Errorf("pr = %q, want %q", r.PR, prURL)
 	}
 }
 

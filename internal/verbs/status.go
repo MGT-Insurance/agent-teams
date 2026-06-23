@@ -84,13 +84,24 @@ func (c *executionStatusCmd) Run(ctx *cli.Context, _ []string) error {
 			execStatus = computeExecutionStatus(iss.Labels, sessions, wt)
 		}
 
+		var ask *askBlockJSON
+		if b, ok := extractLatestAsk(iss.Notes); ok {
+			ask = &askBlockJSON{
+				Decision:       b.decision,
+				Recommendation: b.recommendation,
+				Alternative:    b.alternative,
+				Context:        b.context,
+			}
+		}
+
 		out = append(out, initiativeStatus{
 			ID:              iss.ID,
 			Title:           iss.Title,
 			Worktree:        wt,
 			Labels:          iss.Labels,
 			ExecutionStatus: execStatus,
-			Notes:           iss.Notes,
+			Ask:             ask,
+			PR:              extractPrURL(iss.Notes),
 		})
 	}
 
@@ -103,13 +114,38 @@ func (c *executionStatusCmd) Run(ctx *cli.Context, _ []string) error {
 }
 
 // initiativeStatus is the per-initiative entry in the emitted JSON array.
+//
+// Emitted shape:
+//
+//	{
+//	  "id":               "at-abc",
+//	  "title":            "...",
+//	  "worktree":         "/path/to/wt",
+//	  "labels":           ["human","gate:review"],
+//	  "execution_status": "REVIEWABLE",
+//	  "ask":              { "decision": "...", "recommendation": "...", "alternative": "...", "context": "..." },
+//	  "pr":               "https://github.com/..."   // empty string when absent
+//	}
+//
+// ask is null when no structured ateam-ask block is present in notes.
+// pr is the first GitHub PR URL found in notes, or "".
+// The raw notes field is intentionally omitted — consumers use ask and pr.
 type initiativeStatus struct {
-	ID              string   `json:"id"`
-	Title           string   `json:"title"`
-	Worktree        string   `json:"worktree"`
-	Labels          []string `json:"labels"`
-	ExecutionStatus string   `json:"execution_status"`
-	Notes           string   `json:"notes"`
+	ID              string        `json:"id"`
+	Title           string        `json:"title"`
+	Worktree        string        `json:"worktree"`
+	Labels          []string      `json:"labels"`
+	ExecutionStatus string        `json:"execution_status"`
+	Ask             *askBlockJSON `json:"ask"`
+	PR              string        `json:"pr"`
+}
+
+// askBlockJSON is the JSON-serialisable form of an askBlock.
+type askBlockJSON struct {
+	Decision       string `json:"decision"`
+	Recommendation string `json:"recommendation"`
+	Alternative    string `json:"alternative"`
+	Context        string `json:"context,omitempty"`
 }
 
 // computeExecutionStatus returns the execution-state for one initiative, given
