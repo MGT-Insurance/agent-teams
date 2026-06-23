@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterQuery registers the read/query verbs:
-// ws, list, list-json, human-list, show, learnings, prime.
+// ws, list, list-json, human-list, show, learnings, recall, prime, roles.
 //
 // NOTE: ws is also special-cased in main before workspace initialization is
 // checked; it is registered here for completeness and usage listing.
@@ -24,7 +24,9 @@ func RegisterQuery(reg cli.Registry) {
 	reg.Register(&humanListCmd{})
 	reg.Register(&showCmd{})
 	reg.Register(&learningsCmd{})
+	reg.Register(&recallCmd{})
 	reg.Register(&primeCmd{})
+	reg.Register(&rolesCmd{})
 }
 
 // wsCmd prints the workspace home path.
@@ -315,12 +317,17 @@ func (c *showCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// learningsCmd prints full bodies of memories whose keys are prefixed with
-// <role>: (e.g. "implementer:"). It calls `bd memories --json` to get a flat
-// {key: body} map with untruncated bodies, then filters to keys with the
-// requested role prefix. This avoids both the one-line truncation and the
-// cross-role bleed that `bd memories <role>` (substring match over key+body)
-// produces.
+// learningsCmd prints full bodies of memories for a role. It prefers the HOT
+// layer (keys with prefix `role+":hot:"`). If the role has zero hot keys, it
+// falls back to ALL `role:` keys (including any hot-prefixed ones), preserving
+// backward compatibility for roles that have not yet been triaged into hot/cold.
+//
+// Invariant: when hotKeys is empty, allRoleKeys contains EVERY key under the
+// role: namespace (hot included), so the fallback always emits the complete set.
+//
+// It calls `bd memories --json` to get a flat {key: body} map with untruncated
+// bodies. Hot bodies are deliberately condensed; no read-time truncation is
+// applied.
 type learningsCmd struct{}
 
 func (c *learningsCmd) Name() string { return "learnings" }
@@ -333,7 +340,8 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 		return cli.Usagef("ateam learnings: missing <role>")
 	}
 	role := args[0]
-	prefix := role + ":"
+	hotPrefix := role + ":hot:"
+	rolePrefix := role + ":"
 
 	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
 	var raw map[string]any
@@ -341,13 +349,81 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 		return err
 	}
 
-	// Collect keys with the "<role>:" prefix whose values are strings.
+	// Collect hot keys (role+":hot:") first. If any exist, serve only those.
+	// If none exist, fall back to allRoleKeys which contains EVERY role: key
+	// (hot included), making the zero-hot fallback spec-exact.
+	var hotKeys []string
+	var allRoleKeys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if strings.HasPrefix(k, hotPrefix) {
+			hotKeys = append(hotKeys, k)
+		}
+		if strings.HasPrefix(k, rolePrefix) {
+			allRoleKeys = append(allRoleKeys, k)
+		}
+	}
+
+	var keys []string
+	if len(hotKeys) > 0 {
+		keys = hotKeys
+	} else {
+		keys = allRoleKeys
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	sort.Strings(keys)
+	for i, k := range keys {
+		fmt.Fprintln(ctx.Stdout, k)
+		fmt.Fprintln(ctx.Stdout, raw[k].(string))
+		if i < len(keys)-1 {
+			fmt.Fprintln(ctx.Stdout)
+		}
+	}
+	return nil
+}
+
+// recallCmd performs a substring search over a role's memories (both hot and
+// cold), printing key + body for each match. It is read-only and never
+// auto-injected; it is invoked on demand to surface cold memories.
+type recallCmd struct{}
+
+func (c *recallCmd) Name() string { return "recall" }
+
+func (c *recallCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam recall: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam recall: missing <role>")
+	}
+	if len(args) < 2 || args[1] == "" {
+		return cli.Usagef("ateam recall: missing <query>")
+	}
+	role := args[0]
+	query := strings.ToLower(args[1])
+	rolePrefix := role + ":"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
 	var keys []string
 	for k, v := range raw {
-		if strings.HasPrefix(k, prefix) {
-			if _, ok := v.(string); ok {
-				keys = append(keys, k)
-			}
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if !strings.HasPrefix(k, rolePrefix) {
+			continue
+		}
+		body := v.(string)
+		if strings.Contains(strings.ToLower(k), query) || strings.Contains(strings.ToLower(body), query) {
+			keys = append(keys, k)
 		}
 	}
 	if len(keys) == 0 {
@@ -419,4 +495,49 @@ func formatBody(s string) string {
 	}
 	runes := []rune(s)
 	return string(runes[:limit]) + "…"
+}
+
+// rolesCmd lists the distinct role namespaces present in global workspace
+// memories. For every string-valued key containing a ':', the substring
+// BEFORE the first ':' is taken as the role. Keys without a ':' and
+// non-string values (e.g. schema_version) are excluded. Roles are deduped,
+// sorted, and printed one per line. A key like `dri:hot:slug` yields role
+// "dri" — hot keys collapse to the same namespace as cold keys.
+type rolesCmd struct{}
+
+func (c *rolesCmd) Name() string { return "roles" }
+
+func (c *rolesCmd) Run(ctx *cli.Context, _ []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam roles: no context")
+	}
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	seen := make(map[string]struct{})
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		idx := strings.Index(k, ":")
+		if idx < 0 {
+			continue
+		}
+		role := k[:idx]
+		seen[role] = struct{}{}
+	}
+
+	roles := make([]string, 0, len(seen))
+	for r := range seen {
+		roles = append(roles, r)
+	}
+	sort.Strings(roles)
+
+	for _, r := range roles {
+		fmt.Fprintln(ctx.Stdout, r)
+	}
+	return nil
 }

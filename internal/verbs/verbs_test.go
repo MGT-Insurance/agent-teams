@@ -9,11 +9,12 @@ import (
 
 var allVerbs = []string{
 	// Track A
-	"ws", "list", "list-json", "human-list", "show", "learnings", "prime",
+	"ws", "list", "list-json", "human-list", "show", "learnings", "recall", "prime", "roles",
 	// Track B
 	"audit", "resume-match", "resume-match-closed",
 	// Track C
 	"register", "note", "gate", "clear-gate", "learn", "close", "reopen", "sync",
+	"forget", "condense",
 	// Track D
 	"new-initiative", "dispatch", "resume",
 	// Track GO

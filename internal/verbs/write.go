@@ -2,8 +2,10 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -11,7 +13,7 @@ import (
 )
 
 // RegisterWrite registers the write verbs:
-// register, note, gate, clear-gate, learn, close, reopen, sync.
+// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense.
 func RegisterWrite(reg cli.Registry) {
 	reg.Register(&registerCmd{})
 	reg.Register(&noteCmd{})
@@ -21,6 +23,8 @@ func RegisterWrite(reg cli.Registry) {
 	reg.Register(&closeCmd{})
 	reg.Register(&reopenCmd{})
 	reg.Register(&syncCmd{})
+	reg.Register(&forgetCmd{})
+	reg.Register(&condenseCmd{})
 }
 
 // parseFlag parses a single --flag value or --flag=value token from args[i].
@@ -464,6 +468,126 @@ func (c *syncCmd) Run(ctx *cli.Context, args []string) error {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
 	return err
+}
+
+// ── forget ────────────────────────────────────────────────────────────────────
+
+// forgetCmd removes a memory by key. The key is formed as <role>:<slug>.
+// Callers pass slug as "hot:<name>" to target the hot-tier key <role>:hot:<name>.
+// This serves both hot demotion cleanup and cold eviction.
+type forgetCmd struct{}
+
+func (c *forgetCmd) Name() string { return "forget" }
+
+func (c *forgetCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam forget: no context")
+	}
+	role, slug, err := parseForgetArgs(args)
+	if err != nil {
+		return err
+	}
+	key := role + ":" + slug
+	out, runErr := ctx.BD.Run("forget", key)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return runErr
+}
+
+// parseForgetArgs parses <role> <slug> positional args.
+func parseForgetArgs(args []string) (role, slug string, err error) {
+	if len(args) == 0 || args[0] == "" {
+		return "", "", cli.Usagef("ateam forget: missing <role>")
+	}
+	if len(args) < 2 || args[1] == "" {
+		return "", "", cli.Usagef("ateam forget: missing <slug>")
+	}
+	return args[0], args[1], nil
+}
+
+// ── condense ──────────────────────────────────────────────────────────────────
+
+// condenseBudgetTokens is the hot-tier token budget the condense agent targets.
+const condenseBudgetTokens = 6000
+
+// condenseInstructionContract is the instruction contract emitted to the
+// consuming condense agent. The agent applies the result DIRECTLY and
+// autonomously via ateam learn / ateam forget — no human review gate.
+const condenseInstructionContract = `Condense the memories above into a hot tier for this role.
+
+Rules:
+- PROMOTE or REFRESH high-signal or repeatedly-learned items into hot (key: <role>:hot:<slug>) via: ateam learn <role> hot:<slug> --file <f>
+- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam forget <role> hot:<slug>
+- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam forget <role> <slug>
+- Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
+- Apply ALL changes AUTONOMOUSLY with no human review gate
+- After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"
+- v1 has NO eviction floor — trust Dolt history for recoverability`
+
+// condenseMemory is a single memory record in the condense packet.
+type condenseMemory struct {
+	Key  string `json:"key"`
+	Body string `json:"body"`
+}
+
+// condensePacket is the full structured packet emitted to stdout.
+type condensePacket struct {
+	Role      string           `json:"role"`
+	Memories  []condenseMemory `json:"memories"`
+	HotBudget int              `json:"hot_budget_tokens"`
+	Contract  string           `json:"instruction_contract"`
+}
+
+// condenseCmd emits a structured packet of all role: memories to stdout.
+// It is DETERMINISTIC — no LLM call, no memory writes.
+type condenseCmd struct{}
+
+func (c *condenseCmd) Name() string { return "condense" }
+
+func (c *condenseCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam condense: no context")
+	}
+	if len(args) == 0 || args[0] == "" {
+		return cli.Usagef("ateam condense: missing <role>")
+	}
+	role := args[0]
+	prefix := role + ":"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	// Collect all role: keys (both hot and cold tiers) whose values are strings.
+	var keys []string
+	for k, v := range raw {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := v.(string); ok {
+				keys = append(keys, k)
+			}
+		}
+	}
+
+	// Sort for determinism.
+	sort.Strings(keys)
+
+	memories := make([]condenseMemory, 0, len(keys))
+	for _, k := range keys {
+		memories = append(memories, condenseMemory{Key: k, Body: raw[k].(string)})
+	}
+
+	packet := condensePacket{
+		Role:      role,
+		Memories:  memories,
+		HotBudget: condenseBudgetTokens,
+		Contract:  condenseInstructionContract,
+	}
+
+	enc := json.NewEncoder(ctx.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(packet)
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────────
