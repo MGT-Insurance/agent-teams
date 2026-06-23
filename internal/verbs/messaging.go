@@ -30,11 +30,20 @@ type agentsJSONFunc func() ([]agentSession, error)
 // Injected so tests can substitute a fake.
 type resumeInitiativeFunc func(ctx *cli.Context, id string) error
 
-// agentSession is the subset of fields from `claude agents --json` that
-// send needs: cwd to match against the recipient's worktree.
+// agentSession is the subset of fields from `claude agents --json` relevant
+// to ateam verbs.
+//
+// Field availability by session kind (from contract agent-teams-j9s §1):
+//   - Every session:    CWD, Kind, Status (busy|idle|waiting), SessionID, StartedAt.
+//   - Background only:  ID, Name, State (working|done).
+//     Interactive sessions have no State/Name/ID; JSON absence is fine — Go
+//     leaves the fields at their zero values ("").
 type agentSession struct {
-	CWD  string `json:"cwd"`
-	Name string `json:"name"`
+	CWD    string `json:"cwd"`
+	Kind   string `json:"kind"`   // "interactive" | "background"
+	Status string `json:"status"` // "busy" | "idle" | "waiting"
+	Name   string `json:"name"`   // background sessions only
+	State  string `json:"state"`  // "working" | "done"; background sessions only
 }
 
 // defaultAgentsJSON runs `claude agents --json` and parses the result.

@@ -20,6 +20,8 @@ var allVerbs = []string{
 	"worktree-setup",
 	// Track R
 	"route-pr-event",
+	// Track S
+	"execution-status",
 }
 
 func buildRegistry() cli.Registry {
@@ -30,6 +32,7 @@ func buildRegistry() cli.Registry {
 	verbs.RegisterDispatch(reg)
 	verbs.RegisterWorktreeSetup(reg)
 	verbs.RegisterRouteEvent(reg)
+	verbs.RegisterStatus(reg)
 	return reg
 }
 
