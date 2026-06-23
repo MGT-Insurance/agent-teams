@@ -317,17 +317,17 @@ func (c *showCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// learningsCmd prints full bodies of memories for a role. It prefers the HOT
-// layer (keys with prefix `role+":hot:"`). If the role has zero hot keys, it
-// falls back to ALL `role:` keys (including any hot-prefixed ones), preserving
-// backward compatibility for roles that have not yet been triaged into hot/cold.
+// learningsCmd prints full bodies of memories for a role. It serves the union
+// of HOT keys (prefix `role+":hot:"`) and FRESH keys (prefix `role+":fresh:"`).
+// If both sets are empty, it falls back to ALL `role:` keys, preserving
+// backward compatibility for roles that have not yet been triaged.
 //
-// Invariant: when hotKeys is empty, allRoleKeys contains EVERY key under the
-// role: namespace (hot included), so the fallback always emits the complete set.
+// Invariant: when hotKeys and freshKeys are both empty, allRoleKeys contains
+// EVERY key under the role: namespace, so the fallback always emits the
+// complete set.
 //
 // It calls `bd memories --json` to get a flat {key: body} map with untruncated
-// bodies. Hot bodies are deliberately condensed; no read-time truncation is
-// applied.
+// bodies. No read-time truncation is applied.
 type learningsCmd struct{}
 
 func (c *learningsCmd) Name() string { return "learnings" }
@@ -341,6 +341,7 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 	}
 	role := args[0]
 	hotPrefix := role + ":hot:"
+	freshPrefix := role + ":fresh:"
 	rolePrefix := role + ":"
 
 	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
@@ -349,10 +350,9 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 		return err
 	}
 
-	// Collect hot keys (role+":hot:") first. If any exist, serve only those.
-	// If none exist, fall back to allRoleKeys which contains EVERY role: key
-	// (hot included), making the zero-hot fallback spec-exact.
+	// Collect hot, fresh, and all-role keys in one pass.
 	var hotKeys []string
+	var freshKeys []string
 	var allRoleKeys []string
 	for k, v := range raw {
 		if _, ok := v.(string); !ok {
@@ -361,14 +361,31 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 		if strings.HasPrefix(k, hotPrefix) {
 			hotKeys = append(hotKeys, k)
 		}
+		if strings.HasPrefix(k, freshPrefix) {
+			freshKeys = append(freshKeys, k)
+		}
 		if strings.HasPrefix(k, rolePrefix) {
 			allRoleKeys = append(allRoleKeys, k)
 		}
 	}
 
+	// Served set = union(hotKeys, freshKeys). Fall back to allRoleKeys when both
+	// are empty, preserving zero-tier backward-compat behavior.
 	var keys []string
-	if len(hotKeys) > 0 {
-		keys = hotKeys
+	if len(hotKeys) > 0 || len(freshKeys) > 0 {
+		seen := make(map[string]struct{}, len(hotKeys)+len(freshKeys))
+		for _, k := range hotKeys {
+			if _, dup := seen[k]; !dup {
+				keys = append(keys, k)
+				seen[k] = struct{}{}
+			}
+		}
+		for _, k := range freshKeys {
+			if _, dup := seen[k]; !dup {
+				keys = append(keys, k)
+				seen[k] = struct{}{}
+			}
+		}
 	} else {
 		keys = allRoleKeys
 	}

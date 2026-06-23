@@ -565,3 +565,107 @@ func TestRecall_CaseInsensitiveMatch(t *testing.T) {
 		t.Errorf("expected case-insensitive match; got:\n%s", out)
 	}
 }
+
+// ── learnings fresh-tier tests (B2: hot UNION fresh, zero-tier fallback) ──────
+
+// TestLearnings_FreshOnlyServed verifies that a role with only fresh: keys (no
+// hot: keys) serves those fresh keys.
+func TestLearnings_FreshOnlyServed(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"implementer:fresh:tip-a": "fresh body a",
+				"implementer:fresh:tip-b": "fresh body b",
+				"implementer:old-cold":    "cold body — must not appear",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsCmd{}
+
+	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "implementer:fresh:tip-a") {
+		t.Errorf("expected fresh:tip-a in output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "implementer:fresh:tip-b") {
+		t.Errorf("expected fresh:tip-b in output; got:\n%s", out)
+	}
+	if strings.Contains(out, "implementer:old-cold") {
+		t.Errorf("cold key must not appear when fresh keys exist; got:\n%s", out)
+	}
+}
+
+// TestLearnings_HotAndFreshUnion verifies that when both hot: and fresh: keys
+// exist, the served set is their union (both appear in output).
+func TestLearnings_HotAndFreshUnion(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:hot:condensed":  "hot body",
+				"dri:fresh:new-tip":  "fresh body",
+				"dri:cold-stale":     "cold body — must not appear",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsCmd{}
+
+	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "dri:hot:condensed") {
+		t.Errorf("expected hot key in union output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "dri:fresh:new-tip") {
+		t.Errorf("expected fresh key in union output; got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:cold-stale") {
+		t.Errorf("cold key must not appear when hot+fresh keys exist; got:\n%s", out)
+	}
+}
+
+// TestLearnings_BothEmptyFallsBackToAllRoleKeys verifies that when a role has
+// neither hot: nor fresh: keys, all role: keys are served (zero-tier fallback).
+func TestLearnings_BothEmptyFallsBackToAllRoleKeys(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"planner:alpha": "body alpha",
+				"planner:beta":  "body beta",
+				"dri:hot:other": "should not appear",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsCmd{}
+
+	if err := cmd.Run(ctx, []string{"planner"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+
+	if !strings.Contains(out, "planner:alpha") {
+		t.Errorf("expected planner:alpha in zero-tier fallback; got:\n%s", out)
+	}
+	if !strings.Contains(out, "planner:beta") {
+		t.Errorf("expected planner:beta in zero-tier fallback; got:\n%s", out)
+	}
+	if strings.Contains(out, "dri:") {
+		t.Errorf("dri: keys must not appear in planner output; got:\n%s", out)
+	}
+}
