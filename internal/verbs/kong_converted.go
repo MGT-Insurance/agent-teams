@@ -109,10 +109,7 @@ func (c *costKong) Run(ctx *cli.Context) error {
 // renderJSONKong and renderTableKong delegate to the same internal helpers used
 // by the legacy costCmd in cost.go (buildJSONReport).
 func renderJSONKong(ctx *cli.Context, r cost.Report) error {
-	out := buildJSONReport(r)
-	enc := json.NewEncoder(ctx.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return renderJSON(ctx, r)
 }
 
 func renderTableKong(ctx *cli.Context, r cost.Report) error {
@@ -190,7 +187,7 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 				return cli.Usagef("ateam gate: context-file not found: %s", c.ContextFile)
 			}
 			// TrimRight mirrors buildAskBlock behaviour.
-			if trimmed := len(trimRight(string(data), "\n")); trimmed > 280 {
+			if trimmed := len(strings.TrimRight(string(data), "\n")); trimmed > 280 {
 				return cli.Usagef("ateam gate: --context-file content exceeds 280 chars (got %d)", trimmed)
 			}
 		}
@@ -262,25 +259,6 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
 	return runErr
-}
-
-// trimRight mirrors strings.TrimRight for use in Validate without importing strings.
-func trimRight(s, cutset string) string {
-	for i := len(s); i > 0; {
-		r := rune(s[i-1])
-		found := false
-		for _, c := range cutset {
-			if r == c {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return s[:i]
-		}
-		i--
-	}
-	return ""
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────
@@ -555,14 +533,7 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 // freshDrainKong is the kong-converted form of fresh-drain.
 // Takes a positional <role>.
 type freshDrainKong struct {
-	Role string `arg:"" name:"role" optional:"" help:"Role whose fresh: memories to drain to cold."`
-}
-
-func (c *freshDrainKong) Validate() error {
-	if c.Role == "" {
-		return cli.Usagef("ateam fresh-drain: missing <role>")
-	}
-	return nil
+	Role string `arg:"" name:"role" required:"" help:"Role whose fresh: memories to drain to cold."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.

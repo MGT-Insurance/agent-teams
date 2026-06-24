@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // TestFreshDrain_DrainsFreshToCold verifies that fresh: keys are promoted to
@@ -127,14 +129,17 @@ func TestFreshDrain_IdempotentNoop(t *testing.T) {
 	}
 }
 
-// TestFreshDrain_MissingRole verifies usage error when role arg is missing.
+// TestFreshDrain_MissingRole verifies kong enforces the required <role> positional
+// at parse time (exit-2 parity: kong.ParseError → ExitCode 2).
 func TestFreshDrain_MissingRole(t *testing.T) {
-	err := (&freshDrainKong{}).Validate()
-	if err == nil {
-		t.Fatal("expected usage error, got nil")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
 	}
-	if !strings.Contains(err.Error(), "missing <role>") {
-		t.Errorf("expected 'missing <role>' in error; got: %v", err)
+	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
+	_, parseErr := p.Parse([]string{"fresh-drain"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>, got nil")
 	}
 }
 

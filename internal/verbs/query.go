@@ -125,14 +125,7 @@ func (c *showKong) Run(ctx *cli.Context) error {
 
 // learningsKong prints full bodies of memories for a role.
 type learningsKong struct {
-	Role string `arg:"" name:"role" help:"Role namespace to fetch memories for." optional:""`
-}
-
-func (c *learningsKong) Validate() error {
-	if c.Role == "" {
-		return cli.Usagef("ateam learnings: <role> is required")
-	}
-	return nil
+	Role string `arg:"" name:"role" help:"Role namespace to fetch memories for." required:""`
 }
 
 func (c *learningsKong) Run(ctx *cli.Context) error {
@@ -144,18 +137,8 @@ func (c *learningsKong) Run(ctx *cli.Context) error {
 
 // recallKong performs a substring search over a role's memories.
 type recallKong struct {
-	Role  string `arg:"" name:"role"  optional:"" help:"Role namespace to search."`
-	Query string `arg:"" name:"query" optional:"" help:"Substring to search for."`
-}
-
-func (c *recallKong) Validate() error {
-	if c.Role == "" {
-		return cli.Usagef("ateam recall: <role> is required")
-	}
-	if c.Query == "" {
-		return cli.Usagef("ateam recall: <query> is required")
-	}
-	return nil
+	Role  string `arg:"" name:"role"  required:"" help:"Role namespace to search."`
+	Query string `arg:"" name:"query" required:"" help:"Substring to search for."`
 }
 
 func (c *recallKong) Run(ctx *cli.Context) error {

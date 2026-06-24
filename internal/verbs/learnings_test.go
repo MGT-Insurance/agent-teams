@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // TestLearnings_OnlyRoleKeys verifies that only keys with the requested role
@@ -222,13 +224,17 @@ func TestLearnings_BlankLineBetweenEntries(t *testing.T) {
 	}
 }
 
-// TestLearnings_MissingRoleReturnsUsageError verifies missing <role> arg returns
-// a usage error with exit code 2.
+// TestLearnings_MissingRoleReturnsUsageError verifies kong enforces the required
+// <role> positional at parse time (exit-2 parity: kong.ParseError → ExitCode 2).
 func TestLearnings_MissingRoleReturnsUsageError(t *testing.T) {
-	// Validate() on an empty Role returns UsageError.
-	err := (&learningsKong{}).Validate()
-	if err == nil {
-		t.Fatal("expected usage error, got nil")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	p.AddVerb("learnings", "Print role memories.", &learningsKong{})
+	_, parseErr := p.Parse([]string{"learnings"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>, got nil")
 	}
 }
 
@@ -503,19 +509,31 @@ func TestRecall_HotAndColdSearched(t *testing.T) {
 	}
 }
 
-// TestRecall_MissingRoleReturnsUsageError verifies missing <role> arg returns error.
+// TestRecall_MissingRoleReturnsUsageError verifies kong enforces the required
+// <role> positional at parse time.
 func TestRecall_MissingRoleReturnsUsageError(t *testing.T) {
-	err := (&recallKong{}).Validate()
-	if err == nil {
-		t.Fatal("expected usage error, got nil")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	p.AddVerb("recall", "Search role memories.", &recallKong{})
+	_, parseErr := p.Parse([]string{"recall"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>, got nil")
 	}
 }
 
-// TestRecall_MissingQueryReturnsUsageError verifies missing <query> arg returns error.
+// TestRecall_MissingQueryReturnsUsageError verifies kong enforces the required
+// <query> positional at parse time when only <role> is provided.
 func TestRecall_MissingQueryReturnsUsageError(t *testing.T) {
-	err := (&recallKong{Role: "dri"}).Validate()
-	if err == nil {
-		t.Fatal("expected usage error for missing query, got nil")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	p.AddVerb("recall", "Search role memories.", &recallKong{})
+	_, parseErr := p.Parse([]string{"recall", "dri"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <query>, got nil")
 	}
 }
 
