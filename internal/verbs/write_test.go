@@ -1079,6 +1079,27 @@ func TestSync_NilContext(t *testing.T) {
 	}
 }
 
+func TestSync_CommitRealErrorAbortsBeforePull(t *testing.T) {
+	// commit fails with a real (non-"Nothing to commit") error — sync must
+	// return the error immediately and NOT proceed to pull or push.
+	commitErr := fmt.Errorf("bd dolt commit: exit status 1\ndisk full")
+	ctx, calls := newCtx(t, []fakeResp{
+		{errOut: "disk full", err: commitErr},
+	})
+	err := (&syncCmd{}).Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error when commit fails with real error")
+	}
+	if !strings.Contains(err.Error(), "disk full") {
+		t.Errorf("error %q should contain 'disk full'", err.Error())
+	}
+	// Only the commit call must have been made — pull and push must be skipped.
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 call (commit only), got %d: %v — pull/push must not run after commit failure", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 0, []string{"dolt", "commit"})
+}
+
 // ── integration: register + gate/clear-gate via temp workspace ─────────────────
 
 // TestRegisterGateRoundtrip runs register → gate → clear-gate against a fake
