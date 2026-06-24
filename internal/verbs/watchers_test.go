@@ -231,3 +231,146 @@ func TestWatchers_AgentsError_SessionUnknown(t *testing.T) {
 		t.Errorf("expected 'unknown' for live-session when agents fail; got:\n%s", out)
 	}
 }
+
+// ── edge-case tests (tester-authored) ─────────────────────────────────────────
+
+// TestWatcherState_GarbagePidfile: pidfile contains non-numeric content → STALE-PIDFILE, pid=0.
+func TestWatcherState_GarbagePidfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "at-garbage.watcher.pid")
+	if err := os.WriteFile(path, []byte("not-a-number\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	state, pid := watcherState(path)
+	if state != "STALE-PIDFILE" {
+		t.Errorf("state = %q, want STALE-PIDFILE", state)
+	}
+	if pid != 0 {
+		t.Errorf("pid = %d, want 0 for garbage content", pid)
+	}
+}
+
+// TestWatcherState_NegativePid: pidfile contains a negative pid → STALE-PIDFILE, pid=0.
+func TestWatcherState_NegativePid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "at-neg.watcher.pid")
+	if err := os.WriteFile(path, []byte("-42"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	state, pid := watcherState(path)
+	if state != "STALE-PIDFILE" {
+		t.Errorf("state = %q, want STALE-PIDFILE for negative pid", state)
+	}
+	if pid != 0 {
+		t.Errorf("pid = %d, want 0 for negative pid", pid)
+	}
+}
+
+// TestWatcherState_ZeroPid: pidfile contains "0" → STALE-PIDFILE, pid=0.
+func TestWatcherState_ZeroPid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "at-zero.watcher.pid")
+	if err := os.WriteFile(path, []byte("0"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	state, pid := watcherState(path)
+	if state != "STALE-PIDFILE" {
+		t.Errorf("state = %q, want STALE-PIDFILE for zero pid", state)
+	}
+	if pid != 0 {
+		t.Errorf("pid = %d, want 0 for zero pid", pid)
+	}
+}
+
+// TestWatcherState_OrphanAlive: an orphaned pidfile whose pid IS still alive
+// (simulated by using os.Getpid()) still reports STALE (not OK) when the
+// initiative is not open — the STALE row for orphans is set unconditionally
+// in Run, not via watcherState. watcherState itself returns OK for a live pid;
+// the test confirms the Run-level orphan scan overrides state to "STALE".
+func TestWatchers_OrphanAlive_ReportedAsStale(t *testing.T) {
+	home := t.TempDir()
+	mailboxDir := filepath.Join(home, "mailbox")
+	selfPid := os.Getpid()
+
+	// Write a pidfile for a non-open initiative with the current (alive) process pid.
+	writePidfile(t, mailboxDir, "at-orphan-alive", selfPid)
+
+	// Open initiatives do NOT include "at-orphan-alive".
+	issues := []bd.Issue{{ID: "at-other", Title: "Other", Description: "worktree: /wt/other\n"}}
+
+	cmd := &watchersCmd{
+		agentsFunc:      fakeAgents(nil),
+		initiativesFunc: fakeIssues(issues),
+	}
+
+	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "at-orphan-alive") {
+		t.Errorf("expected orphan id in output; got:\n%s", out)
+	}
+	if !strings.Contains(out, "STALE") {
+		t.Errorf("expected STALE state for orphan with alive pid; got:\n%s", out)
+	}
+	// The live pid must appear in the output row.
+	if !strings.Contains(out, fmt.Sprintf("%d", selfPid)) {
+		t.Errorf("expected live pid %d in orphan row; got:\n%s", selfPid, out)
+	}
+}
+
+// TestWatchers_EmptyOpenSet_WithOrphans: no open initiatives, but orphan pidfiles
+// are present → verb succeeds, header is printed, STALE rows appear for orphans.
+func TestWatchers_EmptyOpenSet_WithOrphans(t *testing.T) {
+	home := t.TempDir()
+	mailboxDir := filepath.Join(home, "mailbox")
+
+	writePidfile(t, mailboxDir, "at-closed-1", 9999998)
+	writePidfile(t, mailboxDir, "at-closed-2", 9999997)
+
+	cmd := &watchersCmd{
+		agentsFunc:      fakeAgents(nil),
+		initiativesFunc: fakeIssues(nil), // empty open set
+	}
+
+	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "at-closed-1") {
+		t.Errorf("expected at-closed-1 orphan row; got:\n%s", out)
+	}
+	if !strings.Contains(out, "at-closed-2") {
+		t.Errorf("expected at-closed-2 orphan row; got:\n%s", out)
+	}
+	if !strings.Contains(out, "STALE") {
+		t.Errorf("expected STALE state for orphan rows; got:\n%s", out)
+	}
+}
+
+// TestWatchers_InitiativesError: when the injected initiativesFunc returns an error,
+// Run propagates it and does not panic or produce partial output.
+func TestWatchers_InitiativesError(t *testing.T) {
+	home := t.TempDir()
+
+	cmd := &watchersCmd{
+		agentsFunc:      fakeAgents(nil),
+		initiativesFunc: func() ([]bd.Issue, error) { return nil, fmt.Errorf("bd list failed") },
+	}
+
+	ctx, _ := makeWatchersCtx(&fakeBD{}, home)
+	err := cmd.Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error when initiativesFunc fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "bd list failed") {
+		t.Errorf("error = %q; want to contain 'bd list failed'", err.Error())
+	}
+}
