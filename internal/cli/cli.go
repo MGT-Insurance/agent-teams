@@ -5,6 +5,8 @@ package cli
 import (
 	"fmt"
 	"io"
+
+	"github.com/alecthomas/kong"
 )
 
 // Context carries per-invocation state passed to every Command.Run call.
@@ -48,6 +50,77 @@ func (r Registry) Register(cmd Command) {
 func (r Registry) Lookup(name string) (Command, bool) {
 	c, ok := r[name]
 	return c, ok
+}
+
+// Parser accumulates verb registrations and builds a *kong.Kong lazily on first
+// Parse call. This deferred build is required because kong.DynamicCommand only
+// takes effect when passed to kong.New — applying it after New is a no-op.
+type Parser struct {
+	opts  []kong.Option // base options (Name, Description, Exit, Writers…)
+	verbs []kong.Option // DynamicCommand options accumulated via AddVerb/AddBridgeVerb
+	built *kong.Kong    // non-nil after first Parse call
+}
+
+// NewParser creates a Parser that defers kong.New until Parse is called.
+// opts are applied to kong.New along with defaults (Name, Description) and any
+// registered verb options. The Exit option, if needed, must be supplied here.
+func NewParser(opts ...kong.Option) (*Parser, error) {
+	return &Parser{opts: opts}, nil
+}
+
+// AddVerb registers a kong-tagged verb struct under name with a one-line help
+// string. cmd must be a pointer to a struct whose Run(*Context) error method
+// kong will invoke via kctx.Run(cliCtx). Must be called before Parse.
+func (p *Parser) AddVerb(name, help string, cmd any) {
+	p.verbs = append(p.verbs, kong.DynamicCommand(name, help, "", cmd))
+}
+
+// AddBridgeVerb wraps an old-style Command in a passthrough kong command so
+// unconverted verbs work unmodified alongside converted ones.
+// Must be called before Parse.
+func (p *Parser) AddBridgeVerb(cmd Command) {
+	bridge := &bridgeCmd{cmd: cmd}
+	p.verbs = append(p.verbs, kong.DynamicCommand(cmd.Name(), "", "", bridge))
+}
+
+// build constructs the *kong.Kong parser from accumulated options. Called once
+// on the first Parse.
+func (p *Parser) build() (*kong.Kong, error) {
+	var root struct{}
+	defaults := []kong.Option{
+		kong.Name("ateam"),
+		kong.Description("agent-teams workspace CLI"),
+		kong.Exit(func(int) {}), // default no-op exit; callers override via opts
+	}
+	// Merge: defaults first so callers can override (e.g. custom Exit).
+	all := append(defaults, p.opts...)
+	all = append(all, p.verbs...)
+	return kong.New(&root, all...)
+}
+
+// Parse builds the kong parser (if not already built) and parses args.
+func (p *Parser) Parse(args []string) (*kong.Context, error) {
+	if p.built == nil {
+		k, err := p.build()
+		if err != nil {
+			return nil, err
+		}
+		p.built = k
+	}
+	return p.built.Parse(args)
+}
+
+// bridgeCmd wraps a legacy cli.Command so that kong can dispatch it via
+// DynamicCommand while the verb still receives its raw remaining args.
+// The Args field captures everything after the verb token.
+type bridgeCmd struct {
+	cmd  Command
+	Args []string `arg:"" optional:"" passthrough:""`
+}
+
+// Run satisfies kong's runner interface. ctx is injected via kong.Bind.
+func (b *bridgeCmd) Run(ctx *Context) error {
+	return b.cmd.Run(ctx, b.Args)
 }
 
 // ExitCode maps an error returned by Command.Run to a process exit code.

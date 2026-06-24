@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -85,3 +86,78 @@ type testCmd struct{ name string }
 
 func (c *testCmd) Name() string                         { return c.name }
 func (c *testCmd) Run(_ *cli.Context, _ []string) error { return nil }
+
+// ── Parser / kong contract tests ──────────────────────────────────────────────
+
+// TestParserHelpExitsZero confirms that --help triggers Exit(0) (help was shown).
+func TestParserHelpExitsZero(t *testing.T) {
+	var exitCode *int
+	p, err := cli.NewParser(kong.Exit(func(code int) { exitCode = &code }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddVerb("myverb", "a test verb", &trivialKongVerb{})
+
+	_, _ = p.Parse([]string{"--help"})
+	if exitCode == nil {
+		t.Error("Exit was not called; expected help to trigger Exit(0)")
+	} else if *exitCode != 0 {
+		t.Errorf("Exit(%d), want Exit(0)", *exitCode)
+	}
+}
+
+// TestParserBridgeDispatch confirms AddBridgeVerb forwards raw args to the legacy cmd.
+func TestParserBridgeDispatch(t *testing.T) {
+	var got []string
+	bridge := &captureCmd{name: "cap", fn: func(args []string) error {
+		got = args
+		return nil
+	}}
+
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddBridgeVerb(bridge)
+
+	kctx, parseErr := p.Parse([]string{"cap", "arg1", "arg2"})
+	if parseErr != nil {
+		t.Fatalf("Parse: %v", parseErr)
+	}
+	cliCtx := &cli.Context{}
+	kctx.Bind(cliCtx)
+	if runErr := kctx.Run(cliCtx); runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if len(got) != 2 || got[0] != "arg1" || got[1] != "arg2" {
+		t.Errorf("forwarded args = %v, want [arg1 arg2]", got)
+	}
+}
+
+// TestParserUnknownVerbError confirms that an unknown verb produces a parse error.
+func TestParserUnknownVerbError(t *testing.T) {
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddVerb("known", "a known verb", &trivialKongVerb{})
+
+	_, parseErr := p.Parse([]string{"unknown-xyzzy"})
+	if parseErr == nil {
+		t.Error("expected parse error for unknown verb, got nil")
+	}
+}
+
+// trivialKongVerb is the minimal kong-style verb struct with Run(*cli.Context) error.
+type trivialKongVerb struct{}
+
+func (v *trivialKongVerb) Run(ctx *cli.Context) error { return nil }
+
+// captureCmd is a legacy cli.Command that records args passed to Run.
+type captureCmd struct {
+	name string
+	fn   func([]string) error
+}
+
+func (c *captureCmd) Name() string                            { return c.name }
+func (c *captureCmd) Run(_ *cli.Context, args []string) error { return c.fn(args) }
