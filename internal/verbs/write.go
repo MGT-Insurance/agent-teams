@@ -500,6 +500,11 @@ func (c *syncCmd) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
 	}
+	if out, err := ctx.BD.Run("dolt", "commit"); err != nil && !strings.Contains(err.Error(), "Nothing to commit") {
+		return err
+	} else if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	if out, err := ctx.BD.Run("dolt", "pull"); err != nil {
 		return err
 	} else if out != "" {
