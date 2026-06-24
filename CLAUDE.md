@@ -53,18 +53,36 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+go build ./...                     # compile everything
+go vet ./...                       # static checks
+go test ./...                      # Go unit tests
+gofmt -l <files>                   # must be empty (formatting gate)
+sh scripts/build-binaries.sh       # rebuild the 4 committed ateam binaries (see Release protocol)
+
+# Shell-level hook/CLI tests live in tests/ — run individually:
+bash tests/<name>.test.sh
 ```
+
+Note: `tests/ateam.test.sh` case10 (bd dolt sync against an empty remote) is a known pre-existing failure unrelated to most changes — confirm it also fails at your merge-base before treating it as a regression.
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Two shipped artifacts in one repo:
+
+- **`ateam` CLI** (Go). Entry point `cmd/ateam/`; verbs in `internal/verbs/` (each `RegisterX(reg)` wired in `cmd/ateam/main.go`); shared CLI plumbing in `internal/cli/`; beads access in `internal/bd/`; the global workspace in `internal/workspace/`. `ateam` is the ONLY sanctioned interface to the global `~/.agent-teams` workspace.
+- **The `agent-teams` Claude Code plugin** under `plugins/agent-teams/` — the `/dri` playbook, role agents, hooks, and skills. It ships the CLI as **prebuilt per-platform binaries** committed in `plugins/agent-teams/bin/` (`ateam-{darwin,linux}-{amd64,arm64}`); `bin/ateam` is a POSIX wrapper that execs the right one. **These committed binaries — not your local `go build` — are what run when the plugin is installed.**
+
+There is also a `dashboard/` (Node/TS) initiative dashboard.
+
+**Two beads databases — never confuse them** (see `plugins/agent-teams/CLAUDE.md` for the cardinal rule): the PROJECT repo's `.beads` holds ALL work beads (plain `bd create`); the GLOBAL `~/.agent-teams` holds ONLY initiative-tracking beads + role memories, reached ONLY via `ateam`.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- **Beads-first** for all task tracking; `bd remember` for project facts; never MEMORY.md. Memory routing for role/user learnings goes through `ateam learn` (see `plugins/agent-teams/CLAUDE.md`).
+- **🚨 Release protocol — rebuild binaries + bump version on ANY CLI change.** The committed binaries in `plugins/agent-teams/bin/` are what run at install time, and `claude plugin update` only picks up changes when the version changes. So whenever you change `ateam`'s behavior (new/changed/removed verb, flags, or output) OR any plugin content (skills, agents, hooks):
+  1. `sh scripts/build-binaries.sh` and commit the updated `plugins/agent-teams/bin/`.
+  2. Bump the version in BOTH `.claude-plugin/marketplace.json` and `plugins/agent-teams/.claude-plugin/plugin.json` (keep them identical).
+  3. For a new/renamed verb, add it to `UsageText` in `internal/cli/cli.go`.
+
+  **No rebuild = the deployed `ateam` silently lacks your change; no version bump = installed sessions never pick it up.** A source-only PR that adds a verb is INCOMPLETE. (Detailed rationale in `cmd/ateam/CLAUDE.md` and `plugins/agent-teams/CLAUDE.md`.)
