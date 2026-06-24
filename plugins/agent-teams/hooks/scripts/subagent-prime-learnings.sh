@@ -12,5 +12,8 @@ agent_type=$(printf '%s' "$input" | jq -r '.agent_type // empty' 2>/dev/null || 
 
 [ -n "$agent_type" ] || exit 0
 
+# Pull must go through ateam/bd: bd's flock on .beads/embeddeddolt/.lock serializes
+# parallel subagent pulls; shelling 'dolt' directly would bypass it and hit the manifest race.
+"$ATEAM" pull || true
 "$ATEAM" learnings "$agent_type" || true
 exit 0
