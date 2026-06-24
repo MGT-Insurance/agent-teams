@@ -83,7 +83,13 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 
 ## Phase 5 — Deliver
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing the initiative (`merged: <PR URL>`). Absent that confirmation: status note `delivered` with the PR link, leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it — and **MANDATORY: raise a REVIEW gate**:
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing the initiative (`merged: <PR URL>`). After closing, run the local-main update helper against the initiative's own repo (fail-soft — a failure does NOT block completion):
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/update-local-main.sh" "$PWD"
+```
+
+Absent that confirmation: status note `delivered` with the PR link, leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it — and **MANDATORY: raise a REVIEW gate**:
 
 ```bash
 # write note to temp file (no \n# in command string)
