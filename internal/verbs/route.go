@@ -21,13 +21,70 @@ func RegisterRouteEvent(reg cli.Registry) {
 	reg.Register(&routePREventCommand{runner: defaultAteamRunner})
 }
 
-// RegisterRouteEventKong registers route verbs onto p. Initially bridges all
-// verbs from RegisterRouteEvent; ring-track conversion replaces each bridge with
-// a native kong struct in this function without touching any other file.
-// Note: routePREventCommand has an injected runner field — mark it kong:"-"
-// when converting to a native struct.
+// routePREventKong is the kong-native form of route-pr-event.
+// runner is injected via RegisterRouteEventKong (kong:"-" so kong ignores it).
+type routePREventKong struct {
+	Repo       string       `name:"repo"        help:"Owner/repo (e.g. owner/myrepo)."     required:""`
+	PRNumber   int          `name:"pr-number"   help:"Pull request number (positive int)."  required:""`
+	HeadBranch string       `name:"head-branch" help:"Head branch of the pull request."     required:""`
+	Transition PRTransition `name:"transition"  help:"PR event transition."                 required:"" enum:"ci_failed,changes_requested,review_requested,bot_findings,approved,merged,stale,other"`
+	BodyFile   string       `name:"body-file"   help:"Path to the event body file."         required:""`
+	PRURL      string       `name:"pr-url"      help:"Full PR URL (optional, for logging)."`
+	runner     ateamRunner  `kong:"-"`
+}
+
+// Validate is called by kong after parsing. Enforces --pr-number > 0.
+func (c *routePREventKong) Validate() error {
+	if c.PRNumber <= 0 {
+		return cli.Usagef("ateam route-pr-event: --pr-number must be a positive integer, got %d", c.PRNumber)
+	}
+	return nil
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *routePREventKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam route-pr-event: nil context")
+	}
+	if _, statErr := os.Stat(c.BodyFile); statErr != nil {
+		return cli.Usagef("ateam route-pr-event: body-file not found: %s", c.BodyFile)
+	}
+
+	event := PREvent{
+		Repo:       c.Repo,
+		PRNumber:   c.PRNumber,
+		PRURL:      c.PRURL,
+		Transition: c.Transition,
+	}
+
+	result, err := matchInitiative(ctx, event, c.HeadBranch)
+	if err != nil {
+		return fmt.Errorf("ateam route-pr-event: match: %w", err)
+	}
+
+	cmd := &routePREventCommand{runner: c.runner}
+	switch {
+	case result.How == MatchPRField || result.How == MatchBranch:
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via send\n",
+			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
+		if err := c.runner("send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd"); err != nil {
+			return fmt.Errorf("ateam route-pr-event: send: %w", err)
+		}
+		return nil
+
+	case c.Transition == TransitionReviewRequested:
+		return cmd.spawnReviewInitiative(ctx, event)
+
+	default:
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: unowned %s for %s#%d — no owning initiative; skipping\n",
+			c.Transition, c.Repo, c.PRNumber)
+		return nil
+	}
+}
+
+// RegisterRouteEventKong registers route-pr-event as a native kong verb onto p.
 func RegisterRouteEventKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterRouteEvent)
+	p.AddVerb("route-pr-event", "Route a PR event to an owning initiative.", &routePREventKong{runner: defaultAteamRunner})
 }
 
 // routePREventCommand implements the route-pr-event verb.
