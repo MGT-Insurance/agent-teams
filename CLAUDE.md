@@ -70,7 +70,7 @@ Note: `tests/ateam.test.sh` case10 (bd dolt sync against an empty remote) is a k
 
 Two shipped artifacts in one repo:
 
-- **`ateam` CLI** (Go). Entry point `cmd/ateam/`; verbs in `internal/verbs/` (each `RegisterX(reg)` wired in `cmd/ateam/main.go`); shared CLI plumbing in `internal/cli/`; beads access in `internal/bd/`; the global workspace in `internal/workspace/`. `ateam` is the ONLY sanctioned interface to the global `~/.agent-teams` workspace.
+- **`ateam` CLI** (Go). Entry point `cmd/ateam/`; verbs in `internal/verbs/` (each as a kong struct with `Run(*cli.Context) error`, wired via `RegisterAllKong` in `internal/verbs/kong_converted.go`); shared CLI plumbing in `internal/cli/`; beads access in `internal/bd/`; the global workspace in `internal/workspace/`. `ateam` is the ONLY sanctioned interface to the global `~/.agent-teams` workspace. Uses [kong](https://github.com/alecthomas/kong) for flag/arg parsing and help generation.
 - **The `agent-teams` Claude Code plugin** under `plugins/agent-teams/` — the `/dri` playbook, role agents, hooks, and skills. It ships the CLI as **prebuilt per-platform binaries** committed in `plugins/agent-teams/bin/` (`ateam-{darwin,linux}-{amd64,arm64}`); `bin/ateam` is a POSIX wrapper that execs the right one. **These committed binaries — not your local `go build` — are what run when the plugin is installed.**
 
 There is also a `dashboard/` (Node/TS) initiative dashboard.
@@ -83,6 +83,6 @@ There is also a `dashboard/` (Node/TS) initiative dashboard.
 - **🚨 Release protocol — rebuild binaries + bump version on ANY CLI change.** The committed binaries in `plugins/agent-teams/bin/` are what run at install time, and `claude plugin update` only picks up changes when the version changes. So whenever you change `ateam`'s behavior (new/changed/removed verb, flags, or output) OR any plugin content (skills, agents, hooks):
   1. `sh scripts/build-binaries.sh` and commit the updated `plugins/agent-teams/bin/`.
   2. Bump the version in BOTH `.claude-plugin/marketplace.json` and `plugins/agent-teams/.claude-plugin/plugin.json` (keep them identical).
-  3. For a new/renamed verb, add it to `UsageText` in `internal/cli/cli.go`.
+  3. For a new verb, add the kong struct and wire it in `RegisterAllKong`. Help text is generated from kong struct tags — no separate `UsageText` entry required.
 
   **No rebuild = the deployed `ateam` silently lacks your change; no version bump = installed sessions never pick it up.** A source-only PR that adds a verb is INCOMPLETE. (Detailed rationale in `cmd/ateam/CLAUDE.md` and `plugins/agent-teams/CLAUDE.md`.)

@@ -11,14 +11,14 @@ import (
 type PRTransition string
 
 const (
-	TransitionCIFailed          PRTransition = "ci_failed"
-	TransitionChangesRequested  PRTransition = "changes_requested"
-	TransitionReviewRequested   PRTransition = "review_requested"
-	TransitionBotFindings       PRTransition = "bot_findings"
-	TransitionApproved          PRTransition = "approved"
-	TransitionMerged            PRTransition = "merged"
-	TransitionStale             PRTransition = "stale"
-	TransitionOther             PRTransition = "other"
+	TransitionCIFailed         PRTransition = "ci_failed"
+	TransitionChangesRequested PRTransition = "changes_requested"
+	TransitionReviewRequested  PRTransition = "review_requested"
+	TransitionBotFindings      PRTransition = "bot_findings"
+	TransitionApproved         PRTransition = "approved"
+	TransitionMerged           PRTransition = "merged"
+	TransitionStale            PRTransition = "stale"
+	TransitionOther            PRTransition = "other"
 )
 
 // PREvent carries the structured event data from the pr-shepherd fork.

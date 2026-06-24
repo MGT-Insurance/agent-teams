@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
@@ -57,23 +58,35 @@ func captureArgs(calls *[][]string) bd.ExecFunc {
 	}
 }
 
+// runQ dispatches a query verb through a cli.Parser backed by RegisterQueryKong.
+// tokens are appended after the verb name: runQ(t, "show", ctx, "at-id").
+// Returns the error from kctx.Run.
+func runQ(t *testing.T, verb string, ctx *cli.Context, tokens ...string) error {
+	t.Helper()
+	p, err := cli.NewParser(kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	verbs.RegisterQueryKong(p)
+	args := append([]string{verb}, tokens...)
+	kctx, parseErr := p.Parse(args)
+	if parseErr != nil {
+		return parseErr
+	}
+	kctx.Bind(ctx)
+	return kctx.Run(ctx)
+}
+
 // ── ws ────────────────────────────────────────────────────────────────────────
 
 func TestWsPrintsHome(t *testing.T) {
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, ok := reg.Lookup("ws")
-	if !ok {
-		t.Fatal("ws not registered")
-	}
-
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{
 		Home:   "/my/workspace",
 		Stdout: out,
 		Stderr: &bytes.Buffer{},
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "ws", ctx); err != nil {
 		t.Fatalf("ws.Run: %v", err)
 	}
 	if got := out.String(); got != "/my/workspace\n" {
@@ -82,10 +95,7 @@ func TestWsPrintsHome(t *testing.T) {
 }
 
 func TestWsNilCtxReturnsError(t *testing.T) {
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("ws")
-	if err := cmd.Run(nil, nil); err == nil {
+	if err := runQ(t, "ws", nil); err == nil {
 		t.Error("expected error for nil ctx, got nil")
 	}
 }
@@ -98,10 +108,7 @@ func TestListCallsBDArgs(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "list", ctx); err != nil {
 		t.Fatalf("list.Run: %v", err)
 	}
 
@@ -120,10 +127,7 @@ func TestListWritesOutput(t *testing.T) {
 	ctx, out := newCtx(t, "/ws", map[string][]byte{
 		"list": []byte("● issue-1 · My Issue   [● P1 · OPEN]\n"),
 	})
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "list", ctx); err != nil {
 		t.Fatalf("list.Run: %v", err)
 	}
 	if out.Len() == 0 {
@@ -147,10 +151,7 @@ func TestListJSONCallsBDArgs(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("list-json")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "list-json", ctx); err != nil {
 		t.Fatalf("list-json.Run: %v", err)
 	}
 
@@ -178,10 +179,7 @@ func TestListJSONEmitsValidJSON(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("list-json")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "list-json", ctx); err != nil {
 		t.Fatalf("list-json.Run: %v", err)
 	}
 
@@ -210,10 +208,7 @@ func TestHumanListCallsBDArgs(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -257,10 +252,7 @@ func TestHumanListReviewGate(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -282,10 +274,7 @@ func TestHumanListQuestionGate(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -305,10 +294,7 @@ func TestHumanListBackwardCompatHumanOnly(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -327,10 +313,7 @@ func TestHumanListEmptyNoteOmitsNoteLine(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -355,10 +338,7 @@ func TestHumanListStructuredAskRendered(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -392,10 +372,7 @@ func TestHumanListStructuredAskLastBlockWins(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -419,10 +396,7 @@ func TestHumanListNoStructuredBlockFallsBackToRawNotes(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -440,10 +414,7 @@ func TestHumanListMalformedBlockFallsBackToRawNotes(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -462,10 +433,7 @@ func TestHumanListStructuredAskContextOmittedWhenEmpty(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -488,10 +456,7 @@ func TestHumanListFallbackMultiBlockShowsOnlyLast(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -520,10 +485,7 @@ func TestHumanListFallbackLongBlockTruncated(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -555,10 +517,7 @@ func TestHumanListFallbackSingleBlockNoTruncation(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -580,10 +539,7 @@ func TestHumanListStructuredAskPathUnchanged(t *testing.T) {
 	}
 	ctx, out := newHumanListCtx(t, issues)
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("human-list")
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := runQ(t, "human-list", ctx); err != nil {
 		t.Fatalf("human-list.Run: %v", err)
 	}
 
@@ -608,11 +564,8 @@ func TestHumanListStructuredAskPathUnchanged(t *testing.T) {
 
 func TestShowMissingIDReturnsUsageError(t *testing.T) {
 	ctx, _ := newCtx(t, "/ws", nil)
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("show")
-
-	err := cmd.Run(ctx, nil)
+	// show requires <id>; omitting it triggers Validate() → UsageError (exit 2).
+	err := runQ(t, "show", ctx)
 	if err == nil {
 		t.Fatal("expected UsageError, got nil")
 	}
@@ -623,11 +576,8 @@ func TestShowMissingIDReturnsUsageError(t *testing.T) {
 
 func TestShowEmptyIDReturnsUsageError(t *testing.T) {
 	ctx, _ := newCtx(t, "/ws", nil)
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("show")
-
-	err := cmd.Run(ctx, []string{""})
+	// Passing empty string triggers Validate() → UsageError (exit 2).
+	err := runQ(t, "show", ctx, "")
 	if err == nil {
 		t.Fatal("expected UsageError, got nil")
 	}
@@ -642,10 +592,7 @@ func TestShowCallsBDArgs(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("show")
-	if err := cmd.Run(ctx, []string{"at-abc123"}); err != nil {
+	if err := runQ(t, "show", ctx, "at-abc123"); err != nil {
 		t.Fatalf("show.Run: %v", err)
 	}
 
@@ -664,11 +611,8 @@ func TestShowCallsBDArgs(t *testing.T) {
 
 func TestLearningsMissingRoleReturnsUsageError(t *testing.T) {
 	ctx, _ := newCtx(t, "/ws", nil)
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("learnings")
-
-	err := cmd.Run(ctx, nil)
+	// learnings requires <role>; omitting it triggers Validate() → UsageError (exit 2).
+	err := runQ(t, "learnings", ctx)
 	if err == nil {
 		t.Fatal("expected UsageError, got nil")
 	}
@@ -692,10 +636,7 @@ func TestLearningsCallsBDArgs(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("learnings")
-	if err := cmd.Run(ctx, []string{"planner"}); err != nil {
+	if err := runQ(t, "learnings", ctx, "planner"); err != nil {
 		t.Fatalf("learnings.Run: %v", err)
 	}
 
@@ -720,10 +661,7 @@ func TestLearningsWritesOutput(t *testing.T) {
 	out := &bytes.Buffer{}
 	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
 
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	cmd, _ := reg.Lookup("learnings")
-	if err := cmd.Run(ctx, []string{"planner"}); err != nil {
+	if err := runQ(t, "learnings", ctx, "planner"); err != nil {
 		t.Fatalf("learnings.Run: %v", err)
 	}
 	if out.Len() == 0 {

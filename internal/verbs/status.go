@@ -42,77 +42,11 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// RegisterStatus adds the execution-status verb to reg.
-func RegisterStatus(reg cli.Registry) {
-	reg.Register(&executionStatusCmd{agentsFunc: defaultAgentsJSON})
-}
-
-// executionStatusCmd implements `ateam execution-status`.
-type executionStatusCmd struct {
-	// agentsFunc is injected so tests can substitute a fake without touching os/exec.
-	agentsFunc agentsJSONFunc
-}
-
-func (c *executionStatusCmd) Name() string { return "execution-status" }
-
-// Run implements: ateam execution-status
-//
-// Reads all open initiatives, joins them to live claude sessions by worktree
-// cwd, computes execution-state per contract agent-teams-j9s §1, and emits a
-// JSON array to stdout.
-func (c *executionStatusCmd) Run(ctx *cli.Context, _ []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam execution-status: nil context")
-	}
-
-	// Load all open initiatives.
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
-		return fmt.Errorf("ateam execution-status: list initiatives: %w", err)
-	}
-
-	// Load live sessions. Graceful degrade: on failure emit "unknown" for all.
-	sessions, agentsErr := c.agentsFunc()
-
-	// Build output entries.
-	out := make([]initiativeStatus, 0, len(issues))
-	for _, iss := range issues {
-		wt := worktreePath(iss.Description)
-
-		var execStatus string
-		if agentsErr != nil {
-			execStatus = "unknown"
-		} else {
-			execStatus = computeExecutionStatus(iss.Labels, sessions, wt)
-		}
-
-		var ask *askBlockJSON
-		if b, ok := extractLatestAsk(iss.Notes); ok {
-			ask = &askBlockJSON{
-				Decision:       b.decision,
-				Recommendation: b.recommendation,
-				Alternative:    b.alternative,
-				Context:        b.context,
-			}
-		}
-
-		out = append(out, initiativeStatus{
-			ID:              iss.ID,
-			Title:           iss.Title,
-			Worktree:        wt,
-			Labels:          iss.Labels,
-			ExecutionStatus: execStatus,
-			Ask:             ask,
-			PR:              extractPrURL(iss.Notes),
-		})
-	}
-
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return fmt.Errorf("ateam execution-status: marshal: %w", err)
-	}
-	fmt.Fprintln(ctx.Stdout, string(raw))
-	return nil
+// RegisterStatusKong registers status verbs onto p using native kong structs.
+func RegisterStatusKong(p *cli.Parser) {
+	p.AddVerb("execution-status", "Emit JSON array of open initiatives with execution state.", &executionStatusKong{
+		agentsFunc: defaultAgentsJSON,
+	})
 }
 
 // initiativeStatus is the per-initiative entry in the emitted JSON array.
@@ -190,6 +124,67 @@ func hasLabel(labels []string, label string) bool {
 		}
 	}
 	return false
+}
+
+// ── native kong struct ────────────────────────────────────────────────────────
+
+// executionStatusKong is the kong-converted form of executionStatusCmd.
+type executionStatusKong struct {
+	// agentsFunc is injected so tests can substitute a fake; kong must ignore it.
+	agentsFunc agentsJSONFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *executionStatusKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam execution-status: nil context")
+	}
+
+	var issues []bd.Issue
+	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+		return fmt.Errorf("ateam execution-status: list initiatives: %w", err)
+	}
+
+	sessions, agentsErr := c.agentsFunc()
+
+	out := make([]initiativeStatus, 0, len(issues))
+	for _, iss := range issues {
+		wt := worktreePath(iss.Description)
+
+		var execStatus string
+		if agentsErr != nil {
+			execStatus = "unknown"
+		} else {
+			execStatus = computeExecutionStatus(iss.Labels, sessions, wt)
+		}
+
+		var ask *askBlockJSON
+		if b, ok := extractLatestAsk(iss.Notes); ok {
+			ask = &askBlockJSON{
+				Decision:       b.decision,
+				Recommendation: b.recommendation,
+				Alternative:    b.alternative,
+				Context:        b.context,
+			}
+		}
+
+		out = append(out, initiativeStatus{
+			ID:              iss.ID,
+			Title:           iss.Title,
+			Worktree:        wt,
+			Labels:          iss.Labels,
+			ExecutionStatus: execStatus,
+			Ask:             ask,
+			PR:              extractPrURL(iss.Notes),
+		})
+	}
+
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("ateam execution-status: marshal: %w", err)
+	}
+	fmt.Fprintln(ctx.Stdout, string(raw))
+	return nil
 }
 
 // isActivelyWorking reports whether any session in sessions has a cwd matching

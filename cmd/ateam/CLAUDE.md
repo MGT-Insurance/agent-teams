@@ -16,9 +16,6 @@ changes output that callers parse. When it does, before the change is done:
    `plugins/agent-teams/.claude-plugin/plugin.json` — keep them identical.
    `claude plugin update` keys off the version; no bump = installed sessions keep
    the cached old copy and silently never see your change.
-3. **New/renamed verb:** add it to `UsageText` in `internal/cli/cli.go`
-   (hand-maintained; registration alone does not list it in help, and no test
-   covers the gap).
 
 **No rebuild = the deployed `ateam` silently lacks your change.** A PR that edits
 this package but leaves `plugins/agent-teams/bin/` and the version untouched is
@@ -27,6 +24,7 @@ INCOMPLETE — verify the rebuilt binary carries your change
 
 ## Adding a verb (mechanics)
 
-Implement in `internal/verbs/<verb>.go` with a `RegisterX(reg)`, wire that
-`RegisterX(reg)` call into `run()` in `main.go`, add the verb to `UsageText`,
-then follow the ship steps above.
+Implement in `internal/verbs/<verb>.go` as a kong struct with a `Run(*cli.Context) error`
+method and struct tags for flags/args/help. Wire it in `RegisterAllKong` (see
+`internal/verbs/kong_converted.go`). kong generates help from struct tags — no
+separate UsageText entry is required.

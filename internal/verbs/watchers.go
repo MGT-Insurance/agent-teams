@@ -17,33 +17,31 @@ import (
 // Injected so tests can supply a fake and avoid shelling to real bd.
 type openInitiativesFunc func() ([]bd.Issue, error)
 
-// RegisterWatchers adds the watchers verb to reg.
-func RegisterWatchers(reg cli.Registry) {
-	reg.Register(&watchersCmd{
+// RegisterWatchersKong registers watcher verbs onto p using native kong structs.
+func RegisterWatchersKong(p *cli.Parser) {
+	p.AddVerb("watchers", "Show watcher state for all open initiatives.", &watchersKong{
 		agentsFunc:      defaultAgentsJSON,
-		initiativesFunc: nil, // nil signals: use ctx.BD at runtime
+		initiativesFunc: nil,
 	})
 }
 
-// watchersCmd implements `ateam watchers`.
-type watchersCmd struct {
-	// agentsFunc is injected so tests can substitute a fake without touching os/exec.
-	agentsFunc agentsJSONFunc
-	// initiativesFunc is injected so tests can supply open initiatives without
-	// shelling to bd. When nil, Run loads from ctx.BD.
-	initiativesFunc openInitiativesFunc
+// ── kong struct ────────────────────────────────────────────────────────────────
+
+// watchersKong implements `ateam watchers`.
+// agentsFunc and initiativesFunc are DI fields; kong must ignore them.
+type watchersKong struct {
+	agentsFunc      agentsJSONFunc      `kong:"-"`
+	initiativesFunc openInitiativesFunc `kong:"-"`
 }
 
-func (c *watchersCmd) Name() string { return "watchers" }
-
-// Run implements: ateam watchers
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
 // For each open initiative: reads its watcher pidfile, checks liveness, and
 // joins against live Claude sessions. Also scans mailbox/*.watcher.pid for
 // pidfiles whose initiative id is not in the open set (orphaned/stale).
 //
 // Output columns: id, title, watcher-state, pid, live-session.
-func (c *watchersCmd) Run(ctx *cli.Context, _ []string) error {
+func (c *watchersKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam watchers: nil context")
 	}
@@ -106,20 +104,17 @@ func (c *watchersCmd) Run(ctx *cli.Context, _ []string) error {
 	// Orphan scan: pidfiles for non-open initiatives.
 	orphans, err := filepath.Glob(filepath.Join(mailboxDir, "*.watcher.pid"))
 	if err != nil {
-		// Glob only errors on malformed patterns; treat as no orphans.
 		orphans = nil
 	}
 	for _, pidFile := range orphans {
 		base := filepath.Base(pidFile)
-		// Strip ".watcher.pid" suffix to get the initiative id.
 		id := strings.TrimSuffix(base, ".watcher.pid")
 		if _, open := openIDs[id]; open {
 			continue // already reported above
 		}
-		// Orphaned pidfile — initiative is not open. Either way it is an anomaly
-		// (a watcher must not exist for a non-open initiative), so never "OK":
-		//   - pid alive -> ORPHAN-RUNNING (a live watcher with no open initiative; needs killing)
-		//   - pid dead/invalid -> STALE-PIDFILE (a leftover file; needs cleanup)
+		// Orphaned pidfile: watcher must not exist for a non-open initiative.
+		//   - pid alive -> ORPHAN-RUNNING (needs killing)
+		//   - pid dead/invalid -> STALE-PIDFILE (needs cleanup)
 		baseState, pid := watcherState(pidFile)
 		orphanState := "STALE-PIDFILE"
 		if baseState == "OK" {

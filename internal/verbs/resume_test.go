@@ -53,23 +53,19 @@ func TestWorktreePath_TrailingCR(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: nil context --------------------------------------------
+// ---- resumeKong: nil context -----------------------------------------------
 
 func TestResume_NilContext(t *testing.T) {
-	cmd := &resumeCommand{}
-	err := cmd.Run(nil, []string{"at-abc"})
+	err := (&resumeKong{ID: "at-abc"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context, got nil")
 	}
 }
 
-// ---- resumeCommand: missing arg --------------------------------------------
+// ---- resumeKong: missing arg -----------------------------------------------
 
 func TestResume_MissingArg(t *testing.T) {
-	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
-	cmd := &resumeCommand{}
-
-	err := cmd.Run(ctx, []string{})
+	err := (&resumeKong{}).Validate()
 	if err == nil {
 		t.Fatal("expected UsageError for missing arg, got nil")
 	}
@@ -79,10 +75,7 @@ func TestResume_MissingArg(t *testing.T) {
 }
 
 func TestResume_EmptyArg(t *testing.T) {
-	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
-	cmd := &resumeCommand{}
-
-	err := cmd.Run(ctx, []string{""})
+	err := (&resumeKong{ID: ""}).Validate()
 	if err == nil {
 		t.Fatal("expected UsageError for empty arg, got nil")
 	}
@@ -91,7 +84,7 @@ func TestResume_EmptyArg(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: unknown id ---------------------------------------------
+// ---- resumeKong: unknown id ------------------------------------------------
 
 func TestResume_UnknownID(t *testing.T) {
 	fbd := &fakeBD{
@@ -100,9 +93,8 @@ func TestResume_UnknownID(t *testing.T) {
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{}
 
-	err := cmd.Run(ctx, []string{"at-nosuchid"})
+	err := (&resumeKong{ID: "at-nosuchid"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for unknown id, got nil")
 	}
@@ -114,7 +106,7 @@ func TestResume_UnknownID(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: closed initiative --------------------------------------
+// ---- resumeKong: closed initiative -----------------------------------------
 
 func TestResume_ClosedInitiative(t *testing.T) {
 	fbd := &fakeBD{
@@ -129,9 +121,8 @@ func TestResume_ClosedInitiative(t *testing.T) {
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{}
 
-	err := cmd.Run(ctx, []string{"at-closed1"})
+	err := (&resumeKong{ID: "at-closed1"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for closed initiative, got nil")
 	}
@@ -143,7 +134,7 @@ func TestResume_ClosedInitiative(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: missing worktree line ----------------------------------
+// ---- resumeKong: missing worktree line -------------------------------------
 
 func TestResume_NoWorktreeLine(t *testing.T) {
 	fbd := &fakeBD{
@@ -158,9 +149,8 @@ func TestResume_NoWorktreeLine(t *testing.T) {
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{}
 
-	err := cmd.Run(ctx, []string{"at-nowt1"})
+	err := (&resumeKong{ID: "at-nowt1"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for missing worktree line, got nil")
 	}
@@ -172,7 +162,7 @@ func TestResume_NoWorktreeLine(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: worktree path does not exist ---------------------------
+// ---- resumeKong: worktree path does not exist ------------------------------
 
 func TestResume_MissingWorktreePath(t *testing.T) {
 	missingPath := "/no/such/worktree/path/ever"
@@ -188,9 +178,8 @@ func TestResume_MissingWorktreePath(t *testing.T) {
 		},
 	}
 	ctx, _, stderr := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{}
 
-	err := cmd.Run(ctx, []string{"at-nowt2"})
+	err := (&resumeKong{ID: "at-nowt2"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for missing worktree path, got nil")
 	}
@@ -202,7 +191,7 @@ func TestResume_MissingWorktreePath(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: claude not in PATH -------------------------------------
+// ---- resumeKong: claude not in PATH ----------------------------------------
 
 func TestResume_MissingClaude(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err == nil {
@@ -221,9 +210,9 @@ func TestResume_MissingClaude(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{launch: launchBGSession}
+	cmd := &resumeKong{ID: "at-noclaude", launch: launchBGSession}
 
-	err := cmd.Run(ctx, []string{"at-noclaude"})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected DepError, got nil")
 	}
@@ -232,7 +221,7 @@ func TestResume_MissingClaude(t *testing.T) {
 	}
 }
 
-// ---- resumeCommand: happy path (stubbed launch) ----------------------------
+// ---- resumeKong: happy path (stubbed launch) --------------------------------
 
 func TestResume_HappyPath(t *testing.T) {
 	dir := t.TempDir()
@@ -250,7 +239,8 @@ func TestResume_HappyPath(t *testing.T) {
 
 	var launchedDir, launchedArg string
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &resumeCommand{
+	cmd := &resumeKong{
+		ID: "at-happy1",
 		launch: func(_ *cli.Context, d, arg string) error {
 			launchedDir = d
 			launchedArg = arg
@@ -258,7 +248,7 @@ func TestResume_HappyPath(t *testing.T) {
 		},
 	}
 
-	if err := cmd.Run(ctx, []string{"at-happy1"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if launchedDir != dir {

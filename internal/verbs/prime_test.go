@@ -23,9 +23,9 @@ func TestPrime_OnlyUserKeys(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -57,9 +57,9 @@ func TestPrime_SchemaVersionNeverLeaks(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -81,9 +81,9 @@ func TestPrime_EmptyUserSet(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil error for empty user set; got: %v", err)
 	}
 	if stdout.Len() > 0 {
@@ -109,9 +109,9 @@ func TestPrime_Cap12_KeySortDeterminism(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -159,9 +159,9 @@ func TestPrime_Truncation(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -213,9 +213,9 @@ func TestPrime_MultibyteTruncation(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -254,9 +254,9 @@ func TestPrime_ShortBodyNoEllipsis(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -276,9 +276,9 @@ func TestPrime_SlugRendering(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -299,9 +299,9 @@ func TestPrime_BDErrorPropagates(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	err := cmd.Run(ctx, nil)
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error from bd failure; got nil")
 	}
@@ -312,8 +312,8 @@ func TestPrime_BDErrorPropagates(t *testing.T) {
 
 // TestPrime_NilContext verifies nil context returns an error.
 func TestPrime_NilContext(t *testing.T) {
-	cmd := &primeCmd{}
-	err := cmd.Run(nil, nil)
+	cmd := &primeKong{}
+	err := cmd.Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context; got nil")
 	}
@@ -329,9 +329,9 @@ func TestPrime_OutputHeader(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &primeCmd{}
+	cmd := &primeKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

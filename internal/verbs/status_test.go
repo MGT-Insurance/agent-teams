@@ -208,11 +208,11 @@ func TestIsActivelyWorking_TrailingSlash(t *testing.T) {
 	const wt = "/home/agent/worktrees/my-initiative"
 
 	tests := []struct {
-		name    string
-		cwdFn   func() string // session cwd
-		wtFn    func() string // worktree path passed to isActivelyWorking
-		status  string
-		want    bool
+		name   string
+		cwdFn  func() string // session cwd
+		wtFn   func() string // worktree path passed to isActivelyWorking
+		status string
+		want   bool
 	}{
 		{
 			name:   "session cwd has trailing slash, worktree does not",
@@ -344,7 +344,7 @@ func TestAgentSessionDecode(t *testing.T) {
 	}
 }
 
-// ── executionStatusCmd.Run (integration-level) ────────────────────────────────
+// ── executionStatusKong.Run (integration-level) ───────────────────────────────
 
 // fakeListJSON builds a bd.Client exec func that returns a JSON array of issues.
 func fakeListExec(issues []bd.Issue) func(name string, args ...string) ([]byte, []byte, error) {
@@ -355,8 +355,8 @@ func fakeListExec(issues []bd.Issue) func(name string, args ...string) ([]byte, 
 }
 
 func TestExecutionStatusCmd_Run_NilCtx(t *testing.T) {
-	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
-	err := cmd.Run(nil, nil)
+	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+	err := cmd.Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}
@@ -384,11 +384,11 @@ func TestExecutionStatusCmd_Run_GracefulDegrade(t *testing.T) {
 	}
 
 	agentsErr := fmt.Errorf("claude not in PATH")
-	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) {
+	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) {
 		return nil, agentsErr
 	}}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -459,11 +459,11 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 		Stderr: &bytes.Buffer{},
 	}
 
-	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) {
+	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) {
 		return fakeSessions, nil
 	}}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -543,9 +543,9 @@ func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
 		Stdout: buf,
 		Stderr: &bytes.Buffer{},
 	}
-	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -607,9 +607,9 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 		Stdout: buf,
 		Stderr: &bytes.Buffer{},
 	}
-	cmd := &executionStatusCmd{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -710,4 +710,3 @@ func TestExtractLatestAsk_UnclosedThenValid(t *testing.T) {
 		t.Errorf("context = %q, want valid-ctx", got.context)
 	}
 }
-

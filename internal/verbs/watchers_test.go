@@ -101,13 +101,13 @@ func TestWatchers_OK_Row(t *testing.T) {
 	issues := []bd.Issue{{ID: "at-ok", Title: "My open initiative", Description: "worktree: " + wt + "\n"}}
 	sessions := []agentSession{{CWD: wt, Kind: "background", Status: "busy"}}
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(sessions),
 		initiativesFunc: fakeIssues(issues),
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -129,13 +129,13 @@ func TestWatchers_MissingWatcher_Row(t *testing.T) {
 
 	issues := []bd.Issue{{ID: "at-missing", Title: "No watcher", Description: "worktree: " + wt + "\n"}}
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(nil),
 		initiativesFunc: fakeIssues(issues),
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -155,13 +155,13 @@ func TestWatchers_StalePidfile_Row(t *testing.T) {
 
 	issues := []bd.Issue{{ID: "at-stale", Title: "Stale watcher", Description: "worktree: " + wt + "\n"}}
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(nil),
 		initiativesFunc: fakeIssues(issues),
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -180,13 +180,13 @@ func TestWatchers_OrphanedPidfile_Row(t *testing.T) {
 	// Open initiatives do NOT include "at-orphan".
 	issues := []bd.Issue{{ID: "at-other", Title: "Other initiative", Description: "worktree: /wt/other\n"}}
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(nil),
 		initiativesFunc: fakeIssues(issues),
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -205,8 +205,8 @@ func TestWatchers_OrphanedPidfile_Row(t *testing.T) {
 }
 
 func TestWatchers_NilContext(t *testing.T) {
-	cmd := &watchersCmd{agentsFunc: defaultAgentsJSON}
-	err := cmd.Run(nil, nil)
+	cmd := &watchersKong{agentsFunc: defaultAgentsJSON}
+	err := cmd.Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context, got nil")
 	}
@@ -218,13 +218,13 @@ func TestWatchers_AgentsError_SessionUnknown(t *testing.T) {
 
 	issues := []bd.Issue{{ID: "at-agents-err", Title: "Agents error", Description: "worktree: " + wt + "\n"}}
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      func() ([]agentSession, error) { return nil, fmt.Errorf("claude not found") },
 		initiativesFunc: fakeIssues(issues),
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -302,13 +302,13 @@ func TestWatchers_OrphanAlive_ReportedAsRunning(t *testing.T) {
 	// Open initiatives do NOT include "at-orphan-alive".
 	issues := []bd.Issue{{ID: "at-other", Title: "Other", Description: "worktree: /wt/other\n"}}
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(nil),
 		initiativesFunc: fakeIssues(issues),
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -334,13 +334,13 @@ func TestWatchers_EmptyOpenSet_WithOrphans(t *testing.T) {
 	writePidfile(t, mailboxDir, "at-closed-1", 9999998)
 	writePidfile(t, mailboxDir, "at-closed-2", 9999997)
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(nil),
 		initiativesFunc: fakeIssues(nil), // empty open set
 	}
 
 	ctx, stdout := makeWatchersCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -361,13 +361,13 @@ func TestWatchers_EmptyOpenSet_WithOrphans(t *testing.T) {
 func TestWatchers_InitiativesError(t *testing.T) {
 	home := t.TempDir()
 
-	cmd := &watchersCmd{
+	cmd := &watchersKong{
 		agentsFunc:      fakeAgents(nil),
 		initiativesFunc: func() ([]bd.Issue, error) { return nil, fmt.Errorf("bd list failed") },
 	}
 
 	ctx, _ := makeWatchersCtx(&fakeBD{}, home)
-	err := cmd.Run(ctx, nil)
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error when initiativesFunc fails, got nil")
 	}

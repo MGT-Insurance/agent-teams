@@ -189,59 +189,53 @@ func TestRenderTable_ZeroReport(t *testing.T) {
 	}
 }
 
-// ── flag parsing tests (via costCmd.Run with fake dirs) ───────────────────────
+// ── kong dispatch tests ───────────────────────────────────────────────────────
 
-// costCmdWithDirs is a testable variant that accepts injected dirs so we can
-// call Run without touching ~/.claude. We accomplish this by calling buildJSONReport
-// directly with a known report; for flag-parsing we just verify the error types.
-
-func runCostCmd(args []string) error {
-	// Use a costCmd but let it fail at Attribute (dirs don't exist) — we only
-	// care about flag parse errors and missing-id errors here.
-	cmd := &costCmd{}
+// runCostKong dispatches cost through a cli.Parser backed by RegisterCostKong.
+func runCostKong(args []string) error {
+	p, err := cli.NewParser()
+	if err != nil {
+		return err
+	}
+	RegisterCostKong(p)
+	kctx, parseErr := p.Parse(append([]string{"cost"}, args...))
+	if parseErr != nil {
+		return parseErr
+	}
 	var buf bytes.Buffer
 	ctx := &cli.Context{Stdout: &buf, Stderr: &buf}
-	return cmd.Run(ctx, args)
+	kctx.Bind(ctx)
+	return kctx.Run(ctx)
 }
 
 func TestCostCmd_MissingID(t *testing.T) {
-	err := runCostCmd([]string{})
+	// kong requires the <initiative-id> positional; omitting it is a parse error.
+	err := runCostKong([]string{})
 	if err == nil {
 		t.Fatal("expected error for missing id")
-	}
-	if _, ok := err.(*cli.UsageError); !ok {
-		t.Errorf("expected *cli.UsageError, got %T: %v", err, err)
 	}
 }
 
 func TestCostCmd_MissingIDWithJSONFlag(t *testing.T) {
-	err := runCostCmd([]string{"--json"})
+	// --json without <id> is still a parse error for the required positional.
+	err := runCostKong([]string{"--json"})
 	if err == nil {
 		t.Fatal("expected error for missing id with --json")
-	}
-	if _, ok := err.(*cli.UsageError); !ok {
-		t.Errorf("expected *cli.UsageError, got %T: %v", err, err)
 	}
 }
 
 func TestCostCmd_UnknownFlag(t *testing.T) {
-	err := runCostCmd([]string{"--bogus-flag"})
+	// kong rejects unknown flags as a parse error.
+	err := runCostKong([]string{"--bogus-flag"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
-	}
-	// flag.ContinueOnError returns error from Parse, we return cli.Silent(2).
-	if _, ok := err.(*cli.SilentError); !ok {
-		t.Errorf("expected *cli.SilentError for bad flag, got %T: %v", err, err)
 	}
 }
 
 // TestCostCmd_IDBeforeFlag verifies the primary use case: "ateam cost <id> --json"
-// where the positional id comes BEFORE the flag. The pre-scan loop in Run must
-// route "at-qek" to positionals and "--json" to flagArgs so flag.Parse sees a
-// valid flag, the id is recognised, and the command proceeds past flag/id
-// validation (failing only at Attribute due to missing dirs, not a UsageError).
+// where the positional comes BEFORE the flag. kong handles this natively.
 func TestCostCmd_IDBeforeFlag(t *testing.T) {
-	err := runCostCmd([]string{"at-qek", "--json"})
+	err := runCostKong([]string{"at-qek", "--json"})
 	// Attribute will fail because ~/.claude/{jobs,projects} may not contain
 	// the fixture data, but it must NOT be a UsageError (missing-id) or a
 	// SilentError (bad-flag). Either nil (dirs happen to exist and are empty)
@@ -250,9 +244,9 @@ func TestCostCmd_IDBeforeFlag(t *testing.T) {
 		return // dirs were empty / session not found → zero report, no error
 	}
 	if _, ok := err.(*cli.UsageError); ok {
-		t.Errorf("id-before-flag must not produce UsageError; pre-scan failed: %v", err)
+		t.Errorf("id-before-flag must not produce UsageError; got: %v", err)
 	}
 	if _, ok := err.(*cli.SilentError); ok {
-		t.Errorf("id-before-flag must not produce SilentError; flag parse failed: %v", err)
+		t.Errorf("id-before-flag must not produce SilentError; got: %v", err)
 	}
 }

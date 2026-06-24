@@ -10,12 +10,11 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// RegisterMatch registers the JSON-parsing verbs:
-// audit, resume-match, resume-match-closed.
-func RegisterMatch(reg cli.Registry) {
-	reg.Register(&auditCommand{})
-	reg.Register(&resumeMatchCommand{})
-	reg.Register(&resumeMatchClosedCommand{})
+// RegisterMatchKong registers match verbs onto p using native kong structs.
+func RegisterMatchKong(p *cli.Parser) {
+	p.AddVerb("audit", "Audit global workspace for leaked work beads.", &auditKong{})
+	p.AddVerb("resume-match", "Find the open initiative for a worktree path.", &resumeMatchKong{})
+	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
 }
 
 // hasWorktreeLine reports whether any line in description starts with "worktree:".
@@ -72,19 +71,18 @@ func matchAllByWorktree(issues []bd.Issue, path string) []bd.Issue {
 	return out
 }
 
-// ── audit ─────────────────────────────────────────────────────────────────────
+// ── kong structs ──────────────────────────────────────────────────────────────
 
-type auditCommand struct{}
+// auditKong is the kong-converted form of auditCommand.
+type auditKong struct{}
 
-func (c *auditCommand) Name() string { return "audit" }
-
-func (c *auditCommand) Run(ctx *cli.Context, _ []string) error {
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *auditKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam audit: nil context")
 	}
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--all", "--json"); err != nil {
-		// bd error: treat like no issues (match bash `|| true` behavior).
 		issues = nil
 	}
 
@@ -105,55 +103,45 @@ func (c *auditCommand) Run(ctx *cli.Context, _ []string) error {
 	return cli.Silent(1)
 }
 
-// ── resume-match ──────────────────────────────────────────────────────────────
+// resumeMatchKong is the kong-converted form of resumeMatchCommand.
+type resumeMatchKong struct {
+	WorktreePath string `arg:"" name:"worktree-path" help:"Absolute path to the worktree directory."`
+}
 
-type resumeMatchCommand struct{}
-
-func (c *resumeMatchCommand) Name() string { return "resume-match" }
-
-func (c *resumeMatchCommand) Run(ctx *cli.Context, args []string) error {
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam resume-match: nil context")
 	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam resume-match: missing <worktree-path>")
-	}
-	path := args[0]
 
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
-		// bd error: print nothing and exit 0 (bash swallows errors).
 		return nil
 	}
 
-	if match := matchByWorktree(issues, path); match != nil {
+	if match := matchByWorktree(issues, c.WorktreePath); match != nil {
 		fmt.Fprintln(ctx.Stdout, match.ID)
 	}
 	return nil
 }
 
-// ── resume-match-closed ───────────────────────────────────────────────────────
+// resumeMatchClosedKong is the kong-converted form of resumeMatchClosedCommand.
+type resumeMatchClosedKong struct {
+	WorktreePath string `arg:"" name:"worktree-path" help:"Absolute path to the worktree directory."`
+}
 
-type resumeMatchClosedCommand struct{}
-
-func (c *resumeMatchClosedCommand) Name() string { return "resume-match-closed" }
-
-func (c *resumeMatchClosedCommand) Run(ctx *cli.Context, args []string) error {
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resumeMatchClosedKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam resume-match-closed: nil context")
 	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam resume-match-closed: missing <worktree-path>")
-	}
-	path := args[0]
 
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=closed", "--json"); err != nil {
-		// bd error: print nothing and exit 0.
 		return nil
 	}
 
-	matches := matchAllByWorktree(issues, path)
+	matches := matchAllByWorktree(issues, c.WorktreePath)
 	if len(matches) > 0 {
 		fmt.Fprintln(ctx.Stdout, matches[0].ID)
 	}

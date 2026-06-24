@@ -13,7 +13,7 @@ import (
 
 // fakeWTGit implements wtGitRunner for tests.
 type fakeWTGit struct {
-	repoRootFn func(dir string) (string, error)
+	repoRootFn  func(dir string) (string, error)
 	commonDirFn func(dir string) (string, error)
 }
 
@@ -75,10 +75,9 @@ func TestWorktreeSetup_NoHookConfigured(t *testing.T) {
 	}
 
 	ctx, stdout, stderr := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
 
@@ -118,10 +117,9 @@ func TestWorktreeSetup_ScriptSucceeds(t *testing.T) {
 	writeHookFile(t, home, repoKey, scriptPath)
 
 	ctx, _, stderr := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
 	if stderr.String() != "" {
@@ -174,10 +172,9 @@ func TestWorktreeSetup_RepoKeyFromMainCheckout(t *testing.T) {
 	writeHookFile(t, home, mainKey, scriptPath)
 
 	ctx, stdout, stderr := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
 	// If the key had been derived from worktreeRoot instead, the hook file
@@ -222,11 +219,10 @@ func TestWorktreeSetup_ScriptFails(t *testing.T) {
 	writeHookFile(t, home, repoKey, scriptPath)
 
 	ctx, _, stderr := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
 	// Must still return nil (non-fatal).
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil (hook failure is non-fatal), got: %v", err)
 	}
 
@@ -260,10 +256,9 @@ func TestWorktreeSetup_ConfiguredScriptMissing(t *testing.T) {
 	writeHookFile(t, home, repoKey, missingScript)
 
 	ctx, _, stderr := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil (missing script is non-fatal), got: %v", err)
 	}
 
@@ -289,9 +284,9 @@ func TestWorktreeSetup_NotAGitWorktree(t *testing.T) {
 	}
 
 	ctx, _, _ := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected UsageError for non-worktree path, got nil")
 	}
@@ -318,9 +313,9 @@ func TestWorktreeSetup_CommonDirFails(t *testing.T) {
 	}
 
 	ctx, _, _ := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	err := cmd.Run(ctx, []string{wtDir})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected UsageError when CommonDir fails, got nil")
 	}
@@ -342,10 +337,9 @@ func TestWorktreeSetup_DefaultCwd(t *testing.T) {
 
 	// No hook configured — just verifies default-cwd path reaches the hook-check.
 	ctx, stdout, _ := makeWTCtx(home)
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner} // WtPath="" = use cwd
 
-	err := cmd.Run(ctx, []string{}) // empty args = use cwd
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "no worktree-setup hook configured for") {
@@ -357,9 +351,8 @@ func TestWorktreeSetup_DefaultCwd(t *testing.T) {
 
 func TestWorktreeSetup_NilCtx(t *testing.T) {
 	fg := &fakeWTGit{}
-	cmd := &worktreeSetupCommand{git: fg, runner: defaultCmdRunner}
-	err := cmd.Run(nil, nil)
-	if err == nil {
+	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner}
+	if err := cmd.Run(nil); err == nil {
 		t.Fatal("expected error for nil ctx, got nil")
 	}
 }
