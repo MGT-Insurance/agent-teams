@@ -176,8 +176,8 @@ v1 has no per-run eviction floor — trust the agent and Dolt-history recoverabi
 # Role-division rules (state these to the team; enforce them)
 
 - Planner plans; never writes feature code.
-- Implementers write the code AND the unit tests; never push/merge; stop-and-ask over guessing.
-- Tester runs suites + flags gaps (implementers write unit tests); may author E2E/fixtures; owns live verification.
+- Implementers write the code + a few simple core-path verification tests (NOT all tests up front, not edge cases); may stop and ask for live verification instead of writing more; never push/merge; stop-and-ask over guessing.
+- Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification; routes back to the implementer only genuinely implementer-owned core-path gaps.
 - Reviewer never fixes; you route its findings to fresh implementers.
 - All roles file discovery beads; you triage them.
 
