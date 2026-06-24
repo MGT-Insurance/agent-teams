@@ -116,8 +116,15 @@ func (c *watchersCmd) Run(ctx *cli.Context, _ []string) error {
 		if _, open := openIDs[id]; open {
 			continue // already reported above
 		}
-		// Orphaned pidfile — initiative is not open.
-		_, pid := watcherState(pidFile)
+		// Orphaned pidfile — initiative is not open. Either way it is an anomaly
+		// (a watcher must not exist for a non-open initiative), so never "OK":
+		//   - pid alive -> ORPHAN-RUNNING (a live watcher with no open initiative; needs killing)
+		//   - pid dead/invalid -> STALE-PIDFILE (a leftover file; needs cleanup)
+		baseState, pid := watcherState(pidFile)
+		orphanState := "STALE-PIDFILE"
+		if baseState == "OK" {
+			orphanState = "ORPHAN-RUNNING"
+		}
 		pidStr := "-"
 		if pid > 0 {
 			pidStr = strconv.Itoa(pid)
@@ -127,7 +134,7 @@ func (c *watchersCmd) Run(ctx *cli.Context, _ []string) error {
 			liveSession = "no" // orphan: no worktree to match against
 		}
 		fmt.Fprintf(ctx.Stdout, "%-20s %-36s %-16s %-8s %s\n",
-			id, "<orphan>", "STALE", pidStr, liveSession)
+			id, "<orphan>", orphanState, pidStr, liveSession)
 	}
 
 	return nil

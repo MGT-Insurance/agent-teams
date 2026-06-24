@@ -194,8 +194,10 @@ func TestWatchers_OrphanedPidfile_Row(t *testing.T) {
 	if !strings.Contains(out, "at-orphan") {
 		t.Errorf("expected orphan id in output; got:\n%s", out)
 	}
-	if !strings.Contains(out, "STALE") {
-		t.Errorf("expected STALE state in orphan row; got:\n%s", out)
+	// Orphan pidfile with an alive pid is a live watcher for a non-open
+	// initiative -> ORPHAN-RUNNING (never OK, never plain STALE-PIDFILE).
+	if !strings.Contains(out, "ORPHAN-RUNNING") {
+		t.Errorf("expected ORPHAN-RUNNING state in alive-orphan row; got:\n%s", out)
 	}
 	if !strings.Contains(out, "<orphan>") {
 		t.Errorf("expected <orphan> title in output; got:\n%s", out)
@@ -285,12 +287,11 @@ func TestWatcherState_ZeroPid(t *testing.T) {
 	}
 }
 
-// TestWatcherState_OrphanAlive: an orphaned pidfile whose pid IS still alive
-// (simulated by using os.Getpid()) still reports STALE (not OK) when the
-// initiative is not open — the STALE row for orphans is set unconditionally
-// in Run, not via watcherState. watcherState itself returns OK for a live pid;
-// the test confirms the Run-level orphan scan overrides state to "STALE".
-func TestWatchers_OrphanAlive_ReportedAsStale(t *testing.T) {
+// TestWatchers_OrphanAlive_ReportedAsRunning: an orphaned pidfile whose pid IS
+// still alive (simulated via os.Getpid()) is a live watcher for a non-open
+// initiative. It must read ORPHAN-RUNNING — never OK (it is an anomaly) and
+// never STALE-PIDFILE (that label is reserved for a dead/leftover pidfile).
+func TestWatchers_OrphanAlive_ReportedAsRunning(t *testing.T) {
 	home := t.TempDir()
 	mailboxDir := filepath.Join(home, "mailbox")
 	selfPid := os.Getpid()
@@ -315,8 +316,8 @@ func TestWatchers_OrphanAlive_ReportedAsStale(t *testing.T) {
 	if !strings.Contains(out, "at-orphan-alive") {
 		t.Errorf("expected orphan id in output; got:\n%s", out)
 	}
-	if !strings.Contains(out, "STALE") {
-		t.Errorf("expected STALE state for orphan with alive pid; got:\n%s", out)
+	if !strings.Contains(out, "ORPHAN-RUNNING") {
+		t.Errorf("expected ORPHAN-RUNNING state for orphan with alive pid; got:\n%s", out)
 	}
 	// The live pid must appear in the output row.
 	if !strings.Contains(out, fmt.Sprintf("%d", selfPid)) {
