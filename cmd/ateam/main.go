@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -97,7 +98,11 @@ func run(args []string) int {
 
 	runErr := kctx.Run(cliCtx)
 	if runErr != nil {
-		if _, silent := runErr.(*cli.SilentError); !silent {
+		// errors.As: kong wraps the verb's returned error, so a direct type
+		// assertion would miss a *SilentError and double-print output the verb
+		// already wrote.
+		var silent *cli.SilentError
+		if !errors.As(runErr, &silent) {
 			fmt.Fprintln(stderr, runErr.Error())
 		}
 	}

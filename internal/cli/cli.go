@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -135,21 +136,27 @@ func ExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	switch e := err.(type) {
-	case *UsageError:
-		_ = e
-		return 2
-	case *DepError:
-		_ = e
-		return 3
-	case *WorkspaceError:
-		_ = e
-		return 4
-	case *SilentError:
-		return e.Code
-	default:
-		return 1
+	// errors.As-unwrap: kong's kctx.Run wraps the error a verb's Run returns, so
+	// a plain type switch no longer matches our typed errors and everything would
+	// collapse to exit 1. Walk the chain instead. SilentError first so an explicit
+	// code wins.
+	var silent *SilentError
+	if errors.As(err, &silent) {
+		return silent.Code
 	}
+	var usage *UsageError
+	if errors.As(err, &usage) {
+		return 2
+	}
+	var dep *DepError
+	if errors.As(err, &dep) {
+		return 3
+	}
+	var ws *WorkspaceError
+	if errors.As(err, &ws) {
+		return 4
+	}
+	return 1
 }
 
 // UsageError signals a missing/unknown flag, missing positional, unknown verb,
