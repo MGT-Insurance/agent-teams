@@ -135,6 +135,6 @@ func Silent(code int) *SilentError {
 const UsageText = "Usage: ateam <verb> [args]\n" +
 	"Verbs: ws | list | list-json | human-list | audit | resume-match | resume-match-closed\n" +
 	"       register | note | gate | clear-gate | learn | learnings | prime\n" +
-	"       show | close | reopen | sync | new-initiative | dispatch | resume | cost\n" +
+	"       show | close | reopen | pull | sync | new-initiative | dispatch | resume | cost\n" +
 	"       worktree-setup | send | inbox | route-pr-event | execution-status\n" +
 	"       fresh-drain | condense-lock\n"

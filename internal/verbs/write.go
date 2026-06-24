@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterWrite registers the write verbs:
-// register, note, gate, clear-gate, learn, close, reopen, sync, forget, condense,
+// register, note, gate, clear-gate, learn, close, reopen, pull, sync, forget, condense,
 // fresh-drain, condense-lock.
 func RegisterWrite(reg cli.Registry) {
 	reg.Register(&registerCmd{})
@@ -23,6 +23,7 @@ func RegisterWrite(reg cli.Registry) {
 	reg.Register(&learnCmd{})
 	reg.Register(&closeCmd{})
 	reg.Register(&reopenCmd{})
+	reg.Register(&pullCmd{})
 	reg.Register(&syncCmd{})
 	reg.Register(&forgetCmd{})
 	reg.Register(&condenseCmd{})
@@ -472,6 +473,23 @@ func (c *reopenCmd) Run(ctx *cli.Context, args []string) error {
 	return err
 }
 
+// ── pull ──────────────────────────────────────────────────────────────────────
+
+type pullCmd struct{}
+
+func (c *pullCmd) Name() string { return "pull" }
+
+func (c *pullCmd) Run(ctx *cli.Context, args []string) error {
+	if ctx == nil {
+		return cli.Usagef("ateam pull: no context")
+	}
+	out, err := ctx.BD.Run("dolt", "pull")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
 // ── sync ──────────────────────────────────────────────────────────────────────
 
 type syncCmd struct{}
@@ -482,7 +500,32 @@ func (c *syncCmd) Run(ctx *cli.Context, args []string) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
 	}
+	if out, err := ctx.BD.Run("dolt", "pull"); err != nil {
+		return err
+	} else if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	out, err := ctx.BD.Run("dolt", "push")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err == nil {
+		return nil
+	}
+	// Bounded non-ff retry: if push fails with a non-fast-forward error (dolt
+	// emits "non-fast-forward" in stderr, which bd.Client.Run appends to the
+	// returned error), pull again to absorb the remote advance and retry the
+	// push exactly once. Any other push error (e.g. auth) is returned immediately
+	// without retry since the non-fast-forward substring won't match.
+	if !strings.Contains(err.Error(), "non-fast-forward") {
+		return err
+	}
+	if out, pullErr := ctx.BD.Run("dolt", "pull"); pullErr != nil {
+		return pullErr
+	} else if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	out, err = ctx.BD.Run("dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
