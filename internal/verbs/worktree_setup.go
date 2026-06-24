@@ -12,14 +12,6 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 )
 
-// RegisterWorktreeSetup registers the worktree-setup verb.
-func RegisterWorktreeSetup(reg cli.Registry) {
-	reg.Register(&worktreeSetupCommand{
-		git:    gitutil.New(),
-		runner: defaultCmdRunner,
-	})
-}
-
 // RegisterWorktreeSetupKong registers worktree-setup verbs onto p using a native
 // kong struct.
 func RegisterWorktreeSetupKong(p *cli.Parser) {
@@ -47,92 +39,7 @@ type wtGitRunner interface {
 	CommonDir(dir string) (string, error)
 }
 
-type worktreeSetupCommand struct {
-	git    wtGitRunner
-	runner cmdRunner
-}
-
-func (c *worktreeSetupCommand) Name() string { return "worktree-setup" }
-
-// Run implements: worktree-setup [<wtPath>]
-//
-// wtPath defaults to cwd. Resolves repoRoot via git.RepoRoot(wtPath) and
-// srcCheckout via dirname(git.CommonDir(wtPath)). Looks up a hook file at
-// <ctx.Home>/worktree-hooks/<repo-key>. If present, runs the script
-// <hookScript> <wtPath> <srcCheckout>. Hook failures are non-fatal (exit 0).
-// Only genuine precondition errors (not a git worktree) return a UsageError.
-func (c *worktreeSetupCommand) Run(ctx *cli.Context, args []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam worktree-setup: not implemented")
-	}
-
-	// 1. Resolve wtPath.
-	wtPath := ""
-	if len(args) > 0 {
-		wtPath = args[0]
-	}
-	if wtPath == "" {
-		var err error
-		wtPath, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("worktree-setup: cannot determine cwd: %w", err)
-		}
-	}
-	// Resolve to absolute path.
-	absWtPath, err := filepath.Abs(wtPath)
-	if err != nil {
-		return fmt.Errorf("worktree-setup: cannot resolve path %q: %w", wtPath, err)
-	}
-	wtPath = absWtPath
-
-	// 2. Resolve srcCheckout. Failures here are precondition errors.
-	// RepoRoot is called as a git-repo presence check; its value is not used
-	// because for a worktree it returns the worktree path, not the main checkout.
-	if _, err := c.git.RepoRoot(wtPath); err != nil {
-		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
-	}
-	commonDir, err := c.git.CommonDir(wtPath)
-	if err != nil {
-		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
-	}
-	srcCheckout := filepath.Dir(commonDir)
-
-	// 3. repo-key = Slugify(basename(srcCheckout)) — the MAIN checkout, not the
-	// worktree. RepoRoot(wtPath) of a git worktree returns the worktree's own
-	// path, giving a unique per-worktree key that never matches the registered
-	// hook. srcCheckout (dirname of commonDir) always points to the main repo.
-	repoKey := gitutil.Slugify(filepath.Base(srcCheckout))
-
-	// 4. Look up hook file.
-	hookFile := filepath.Join(ctx.Home, "worktree-hooks", repoKey)
-	data, err := os.ReadFile(hookFile)
-	if err != nil {
-		// No hook configured — not an error.
-		fmt.Fprintf(ctx.Stdout, "no worktree-setup hook configured for %s\n", repoKey)
-		return nil
-	}
-
-	scriptPath := strings.TrimSpace(string(data))
-
-	// 5. Verify script exists.
-	if _, statErr := os.Stat(scriptPath); statErr != nil {
-		loudHookWarning(ctx.Stderr, scriptPath, -1, "script not found at configured path")
-		return nil
-	}
-
-	// 6. Run the script.
-	runErr := c.runner(scriptPath, []string{wtPath, srcCheckout}, ctx.Stdout, ctx.Stderr)
-	if runErr != nil {
-		exitCode := 1
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		}
-		loudHookWarning(ctx.Stderr, scriptPath, exitCode, runErr.Error())
-	}
-	return nil
-}
-
-// ── native kong struct ────────────────────────────────────────────────────────
+// ── kong struct ───────────────────────────────────────────────────────────────
 
 // worktreeSetupKong is the kong-converted form of worktreeSetupCommand.
 type worktreeSetupKong struct {
@@ -145,11 +52,58 @@ type worktreeSetupKong struct {
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
-	args := []string{}
-	if c.WtPath != "" {
-		args = []string{c.WtPath}
+	if ctx == nil {
+		return fmt.Errorf("ateam worktree-setup: not implemented")
 	}
-	return (&worktreeSetupCommand{git: c.git, runner: c.runner}).Run(ctx, args)
+
+	wtPath := c.WtPath
+	if wtPath == "" {
+		var err error
+		wtPath, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("worktree-setup: cannot determine cwd: %w", err)
+		}
+	}
+	absWtPath, err := filepath.Abs(wtPath)
+	if err != nil {
+		return fmt.Errorf("worktree-setup: cannot resolve path %q: %w", wtPath, err)
+	}
+	wtPath = absWtPath
+
+	if _, err := c.git.RepoRoot(wtPath); err != nil {
+		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
+	}
+	commonDir, err := c.git.CommonDir(wtPath)
+	if err != nil {
+		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
+	}
+	srcCheckout := filepath.Dir(commonDir)
+
+	repoKey := gitutil.Slugify(filepath.Base(srcCheckout))
+
+	hookFile := filepath.Join(ctx.Home, "worktree-hooks", repoKey)
+	data, err := os.ReadFile(hookFile)
+	if err != nil {
+		fmt.Fprintf(ctx.Stdout, "no worktree-setup hook configured for %s\n", repoKey)
+		return nil
+	}
+
+	scriptPath := strings.TrimSpace(string(data))
+
+	if _, statErr := os.Stat(scriptPath); statErr != nil {
+		loudHookWarning(ctx.Stderr, scriptPath, -1, "script not found at configured path")
+		return nil
+	}
+
+	runErr := c.runner(scriptPath, []string{wtPath, srcCheckout}, ctx.Stdout, ctx.Stderr)
+	if runErr != nil {
+		exitCode := 1
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+		loudHookWarning(ctx.Stderr, scriptPath, exitCode, runErr.Error())
+	}
+	return nil
 }
 
 // loudHookWarning writes a clearly-marked multi-line warning to w. exitCode -1

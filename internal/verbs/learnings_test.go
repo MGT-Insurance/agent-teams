@@ -23,9 +23,9 @@ func TestLearnings_OnlyRoleKeys(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -71,9 +71,9 @@ func TestLearnings_FullBodyNoCrossRoleBleed(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -100,9 +100,9 @@ func TestLearnings_SchemaVersionNeverLeaks(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -123,9 +123,9 @@ func TestLearnings_MultiLineBody(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -152,9 +152,9 @@ func TestLearnings_EmptyRoleSet(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil error for empty role set; got: %v", err)
 	}
 	if stdout.Len() > 0 {
@@ -176,9 +176,9 @@ func TestLearnings_SortedKeys(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -208,9 +208,9 @@ func TestLearnings_BlankLineBetweenEntries(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -225,11 +225,8 @@ func TestLearnings_BlankLineBetweenEntries(t *testing.T) {
 // TestLearnings_MissingRoleReturnsUsageError verifies missing <role> arg returns
 // a usage error with exit code 2.
 func TestLearnings_MissingRoleReturnsUsageError(t *testing.T) {
-	fbd := &fakeBD{}
-	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
-
-	err := cmd.Run(ctx, nil)
+	// Validate() on an empty Role returns UsageError.
+	err := (&learningsKong{}).Validate()
 	if err == nil {
 		t.Fatal("expected usage error, got nil")
 	}
@@ -237,8 +234,7 @@ func TestLearnings_MissingRoleReturnsUsageError(t *testing.T) {
 
 // TestLearnings_NilContextReturnsError verifies nil context returns an error.
 func TestLearnings_NilContextReturnsError(t *testing.T) {
-	cmd := &learningsCmd{}
-	err := cmd.Run(nil, []string{"implementer"})
+	err := (&learningsKong{Role: "implementer"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context; got nil")
 	}
@@ -252,9 +248,7 @@ func TestLearnings_BDErrorPropagates(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
-
-	err := cmd.Run(ctx, []string{"implementer"})
+	err := (&learningsKong{Role: "implementer"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error from bd failure; got nil")
 	}
@@ -278,9 +272,9 @@ func TestLearnings_HotLayerPreferred(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "dri"}
 
-	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -312,9 +306,9 @@ func TestLearnings_ZeroHotFallback(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -347,9 +341,9 @@ func TestLearnings_ZeroHotFallbackEmitsAllRoleKeys(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "dri"}
 
-	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -377,9 +371,9 @@ func TestRecall_MatchByKey(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
+	cmd := &recallKong{Role: "dri", Query: "deploy"}
 
-	if err := cmd.Run(ctx, []string{"dri", "deploy"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -409,9 +403,9 @@ func TestRecall_MatchByBody(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
+	cmd := &recallKong{Role: "dri", Query: "rebase"}
 
-	if err := cmd.Run(ctx, []string{"dri", "rebase"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -437,9 +431,9 @@ func TestRecall_NoMatch(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
+	cmd := &recallKong{Role: "dri", Query: "xyzzy-not-present"}
 
-	if err := cmd.Run(ctx, []string{"dri", "xyzzy-not-present"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if stdout.Len() > 0 {
@@ -461,9 +455,9 @@ func TestRecall_RolePrefixIsolation(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
+	cmd := &recallKong{Role: "dri", Query: "thing"}
 
-	if err := cmd.Run(ctx, []string{"dri", "thing"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -493,9 +487,9 @@ func TestRecall_HotAndColdSearched(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
+	cmd := &recallKong{Role: "dri", Query: "keyword"}
 
-	if err := cmd.Run(ctx, []string{"dri", "keyword"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -511,11 +505,7 @@ func TestRecall_HotAndColdSearched(t *testing.T) {
 
 // TestRecall_MissingRoleReturnsUsageError verifies missing <role> arg returns error.
 func TestRecall_MissingRoleReturnsUsageError(t *testing.T) {
-	fbd := &fakeBD{}
-	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
-
-	err := cmd.Run(ctx, nil)
+	err := (&recallKong{}).Validate()
 	if err == nil {
 		t.Fatal("expected usage error, got nil")
 	}
@@ -523,11 +513,7 @@ func TestRecall_MissingRoleReturnsUsageError(t *testing.T) {
 
 // TestRecall_MissingQueryReturnsUsageError verifies missing <query> arg returns error.
 func TestRecall_MissingQueryReturnsUsageError(t *testing.T) {
-	fbd := &fakeBD{}
-	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
-
-	err := cmd.Run(ctx, []string{"dri"})
+	err := (&recallKong{Role: "dri"}).Validate()
 	if err == nil {
 		t.Fatal("expected usage error for missing query, got nil")
 	}
@@ -535,8 +521,7 @@ func TestRecall_MissingQueryReturnsUsageError(t *testing.T) {
 
 // TestRecall_NilContextReturnsError verifies nil context returns an error.
 func TestRecall_NilContextReturnsError(t *testing.T) {
-	cmd := &recallCmd{}
-	err := cmd.Run(nil, []string{"dri", "something"})
+	err := (&recallKong{Role: "dri", Query: "something"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context; got nil")
 	}
@@ -554,9 +539,9 @@ func TestRecall_CaseInsensitiveMatch(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &recallCmd{}
+	cmd := &recallKong{Role: "dri", Query: "uppercase"}
 
-	if err := cmd.Run(ctx, []string{"dri", "uppercase"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -583,9 +568,9 @@ func TestLearnings_FreshOnlyServed(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -617,9 +602,9 @@ func TestLearnings_HotAndFreshUnion(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "dri"}
 
-	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -651,9 +636,9 @@ func TestLearnings_BothEmptyFallsBackToAllRoleKeys(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &learningsCmd{}
+	cmd := &learningsKong{Role: "planner"}
 
-	if err := cmd.Run(ctx, []string{"planner"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

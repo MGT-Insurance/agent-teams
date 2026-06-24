@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -414,13 +415,39 @@ func (c *pullKong) Run(ctx *cli.Context) error {
 // ── sync ──────────────────────────────────────────────────────────────────────
 
 // syncKong is the kong-converted form of sync. No arguments.
-// Delegates entirely to the legacy syncCmd.Run to avoid duplicating the
-// bounded non-ff retry logic.
 type syncKong struct{}
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *syncKong) Run(ctx *cli.Context) error {
-	return (&syncCmd{}).Run(ctx, nil)
+	if ctx == nil {
+		return cli.Usagef("ateam sync: no context")
+	}
+	if out, err := ctx.BD.Run("dolt", "pull"); err != nil {
+		return err
+	} else if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	out, err := ctx.BD.Run("dolt", "push")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err == nil {
+		return nil
+	}
+	// Bounded non-ff retry: pull to absorb the remote advance, then retry push once.
+	if !strings.Contains(err.Error(), "non-fast-forward") {
+		return err
+	}
+	if out, pullErr := ctx.BD.Run("dolt", "pull"); pullErr != nil {
+		return pullErr
+	} else if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	out, err = ctx.BD.Run("dolt", "push")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
 }
 
 // ── forget ────────────────────────────────────────────────────────────────────
@@ -447,46 +474,144 @@ func (c *forgetKong) Run(ctx *cli.Context) error {
 
 // ── condense ──────────────────────────────────────────────────────────────────
 
+// condenseBudgetTokens is the hot-tier token budget the condense agent targets.
+const condenseBudgetTokens = 6000
+
+// condenseInstructionContract is the instruction contract emitted to the
+// consuming condense agent. The agent applies the result DIRECTLY and
+// autonomously via ateam learn / ateam forget — no human review gate.
+const condenseInstructionContract = `Condense the memories above into a hot tier for this role.
+
+Rules:
+- PROMOTE or REFRESH high-signal or repeatedly-learned items into hot (key: <role>:hot:<slug>) via: ateam learn <role> hot:<slug> --file <f>
+- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
+- Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam learn <role> cold:<slug> --file <f> (for rewrites) or ateam forget <role> <slug> (for evictions)
+- Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
+- Apply ALL changes AUTONOMOUSLY with no human review gate
+- After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"
+- v1 has NO eviction floor — trust Dolt history for recoverability`
+
+// condenseMemory is a single memory record in the condense packet.
+type condenseMemory struct {
+	Key  string `json:"key"`
+	Body string `json:"body"`
+}
+
+// condensePacket is the full structured packet emitted to stdout.
+type condensePacket struct {
+	Role      string           `json:"role"`
+	Memories  []condenseMemory `json:"memories"`
+	HotBudget int              `json:"hot_budget_tokens"`
+	Contract  string           `json:"instruction_contract"`
+}
+
 // condenseKong is the kong-converted form of condense.
-// Takes a positional <role>; delegates to legacy condenseCmd.Run to avoid
-// duplicating the packet-building logic.
+// Takes a positional <role>.
 type condenseKong struct {
 	Role string `arg:"" name:"role" help:"Role to condense memories for."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *condenseKong) Run(ctx *cli.Context) error {
-	return (&condenseCmd{}).Run(ctx, []string{c.Role})
+	if ctx == nil {
+		return fmt.Errorf("ateam condense: no context")
+	}
+	prefix := c.Role + ":"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	var keys []string
+	for k, v := range raw {
+		if strings.HasPrefix(k, prefix) {
+			if _, ok := v.(string); ok {
+				keys = append(keys, k)
+			}
+		}
+	}
+	sort.Strings(keys)
+
+	memories := make([]condenseMemory, 0, len(keys))
+	for _, k := range keys {
+		memories = append(memories, condenseMemory{Key: k, Body: raw[k].(string)})
+	}
+
+	packet := condensePacket{
+		Role:      c.Role,
+		Memories:  memories,
+		HotBudget: condenseBudgetTokens,
+		Contract:  condenseInstructionContract,
+	}
+
+	enc := json.NewEncoder(ctx.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(packet)
 }
 
 // ── fresh-drain ───────────────────────────────────────────────────────────────
 
 // freshDrainKong is the kong-converted form of fresh-drain.
-// Takes a positional <role>; delegates to legacy freshDrainCmd.Run to avoid
-// duplicating the drain logic.
+// Takes a positional <role>.
 type freshDrainKong struct {
-	Role string `arg:"" name:"role" help:"Role whose fresh: memories to drain to cold."`
+	Role string `arg:"" name:"role" optional:"" help:"Role whose fresh: memories to drain to cold."`
+}
+
+func (c *freshDrainKong) Validate() error {
+	if c.Role == "" {
+		return cli.Usagef("ateam fresh-drain: missing <role>")
+	}
+	return nil
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *freshDrainKong) Run(ctx *cli.Context) error {
-	return (&freshDrainCmd{}).Run(ctx, []string{c.Role})
+	if ctx == nil {
+		return fmt.Errorf("ateam fresh-drain: no context")
+	}
+	freshPrefix := c.Role + ":fresh:"
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	var freshKeys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		if strings.HasPrefix(k, freshPrefix) {
+			freshKeys = append(freshKeys, k)
+		}
+	}
+	sort.Strings(freshKeys)
+
+	for _, k := range freshKeys {
+		slug := k[len(freshPrefix):]
+		body := raw[k].(string)
+		coldKey := c.Role + ":" + slug
+
+		if _, err := ctx.BD.Run("remember", "--key="+coldKey, body); err != nil {
+			return err
+		}
+		if _, err := ctx.BD.Run("forget", k); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(ctx.Stdout, "fresh-drain %s: drained %d\n", c.Role, len(freshKeys))
+	return nil
 }
 
 // ── registration helpers ──────────────────────────────────────────────────────
 
-// RegisterWriteKong registers the write-track verbs onto p. reopen and register
-// (LOOP verbs) plus note, gate, clear-gate, learn, close, pull, sync, forget,
-// condense, and fresh-drain (rtix verbs) use native kong structs; condense-lock
-// is registered natively via RegisterCondenseLock (lock.go). The remaining write
-// verbs are bridged. cost is NOT registered here — it lives in RegisterCostKong
-// (cost.go).
+// RegisterWriteKong registers the write-track verbs onto p using native kong
+// structs. cost is NOT registered here — it lives in RegisterCostKong (cost.go).
 func RegisterWriteKong(p *cli.Parser) {
-	// LOOP-converted native verbs.
 	p.AddVerb("reopen", "Reopen a closed initiative.", &reopenKong{})
 	p.AddVerb("register", "Register a new initiative from a body file.", &registerKong{})
-
-	// rtix-converted native verbs.
 	p.AddVerb("note", "Add a note to an initiative.", &noteKong{})
 	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
@@ -497,76 +622,19 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("forget", "Delete a role memory by key.", &forgetKong{})
 	p.AddVerb("condense", "Emit a structured memory packet for a role.", &condenseKong{})
 	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
-
-	// condense-lock is natively converted; register it via its own file.
 	RegisterCondenseLock(p)
-
-	// Bridge the remaining write verbs (legacy cli.Command, passthrough args).
-	for _, cmd := range legacyWriteVerbs() {
-		p.AddBridgeVerb(cmd)
-	}
 }
 
-// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the natively
-// converted ones so they can be bridged onto the kong parser.
-// cost is excluded because it lives in a separate file (cost.go) and is
-// registered independently via RegisterCostKong.
-func legacyWriteVerbs() []cli.Command {
-	reg := make(cli.Registry)
-	RegisterWrite(reg)
-	skip := map[string]bool{
-		"reopen":        true,
-		"register":      true,
-		"note":          true,
-		"gate":          true,
-		"clear-gate":    true,
-		"learn":         true,
-		"close":         true,
-		"pull":          true,
-		"sync":          true,
-		"forget":        true,
-		"condense":      true,
-		"fresh-drain":   true,
-		"condense-lock": true,
-	}
-	out := make([]cli.Command, 0, len(reg)-len(skip))
-	for name, cmd := range reg {
-		if !skip[name] {
-			out = append(out, cmd)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
-	return out
-}
-
-// RegisterAllKong is the FROZEN dispatcher called by main.go. It delegates to
-// per-track RegisterXKong functions — one per existing RegisterX file. This
-// function must never be edited again after the loop closes; ring-track
-// conversion beads edit ONLY their own RegisterXKong inside their own file.
+// RegisterAllKong is the FROZEN dispatcher called by main.go.
 func RegisterAllKong(p *cli.Parser) {
-	RegisterWriteKong(p)         // write.go + kong_converted.go (3 native + bridges)
-	RegisterCostKong(p)          // cost.go  (native kong struct)
-	RegisterQueryKong(p)         // query.go
-	RegisterMatchKong(p)         // match.go
-	RegisterDispatchKong(p)      // dispatch.go
-	RegisterWorktreeSetupKong(p) // worktree_setup.go
-	RegisterMessagingKong(p)     // messaging.go
-	RegisterRouteEventKong(p)    // route.go
-	RegisterStatusKong(p)        // status.go
-	RegisterWatchersKong(p)      // watchers.go
-}
-
-// bridgeTrack registers all commands from registerFn as bridge verbs on p.
-// Called by per-track RegisterXKong functions while verbs are still unconverted.
-func bridgeTrack(p *cli.Parser, registerFn func(cli.Registry)) {
-	reg := make(cli.Registry)
-	registerFn(reg)
-	cmds := make([]cli.Command, 0, len(reg))
-	for _, cmd := range reg {
-		cmds = append(cmds, cmd)
-	}
-	sort.Slice(cmds, func(i, j int) bool { return cmds[i].Name() < cmds[j].Name() })
-	for _, cmd := range cmds {
-		p.AddBridgeVerb(cmd)
-	}
+	RegisterWriteKong(p)
+	RegisterCostKong(p)
+	RegisterQueryKong(p)
+	RegisterMatchKong(p)
+	RegisterDispatchKong(p)
+	RegisterWorktreeSetupKong(p)
+	RegisterMessagingKong(p)
+	RegisterRouteEventKong(p)
+	RegisterStatusKong(p)
+	RegisterWatchersKong(p)
 }

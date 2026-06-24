@@ -51,7 +51,7 @@ func TestCondenseLockKong_SecondAcquireHeld(t *testing.T) {
 	// Inject a frozen clock so the lock is never stale.
 	inner := &condenseLockCmd{nowFn: func() time.Time { return time.Now() }}
 	ctx2, _, _ := makeCtx(&fakeBD{}, home)
-	err := inner.Run(ctx2, []string{"acquire"})
+	err := inner.acquire(ctx2, condenseLockPath(home))
 	if err == nil {
 		t.Fatal("expected held error; got nil")
 	}

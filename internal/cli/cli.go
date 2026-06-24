@@ -1,5 +1,5 @@
-// Package cli defines the Command interface, execution Context, typed exit
-// errors, and verb Registry used by the ateam binary.
+// Package cli defines the execution Context, typed exit errors, and verb Parser
+// used by the ateam binary.
 package cli
 
 import (
@@ -25,40 +25,12 @@ type BDRunner interface {
 	RunJSON(dst any, args ...string) error
 }
 
-// Command is implemented by every ateam verb.
-type Command interface {
-	// Name returns the verb string (e.g. "list", "resume-match").
-	Name() string
-	// Run executes the verb. args contains everything after the verb token.
-	// Return a typed error to control the exit code; nil -> exit 0.
-	Run(ctx *Context, args []string) error
-}
-
-// Registry maps verb names to their Commands. Built once in main; never mutated
-// after initial population.
-type Registry map[string]Command
-
-// Register adds cmd to r keyed by cmd.Name(). Panics on duplicate registration
-// (programming error, not a runtime condition).
-func (r Registry) Register(cmd Command) {
-	if _, exists := r[cmd.Name()]; exists {
-		panic(fmt.Sprintf("cli: duplicate verb registration: %q", cmd.Name()))
-	}
-	r[cmd.Name()] = cmd
-}
-
-// Lookup returns the Command for name and true, or nil and false.
-func (r Registry) Lookup(name string) (Command, bool) {
-	c, ok := r[name]
-	return c, ok
-}
-
 // Parser accumulates verb registrations and builds a *kong.Kong lazily on first
 // Parse call. This deferred build is required because kong.DynamicCommand only
 // takes effect when passed to kong.New — applying it after New is a no-op.
 type Parser struct {
 	opts  []kong.Option // base options (Name, Description, Exit, Writers…)
-	verbs []kong.Option // DynamicCommand options accumulated via AddVerb/AddBridgeVerb
+	verbs []kong.Option // DynamicCommand options accumulated via AddVerb
 	built *kong.Kong    // non-nil after first Parse call
 }
 
@@ -74,14 +46,6 @@ func NewParser(opts ...kong.Option) (*Parser, error) {
 // kong will invoke via kctx.Run(cliCtx). Must be called before Parse.
 func (p *Parser) AddVerb(name, help string, cmd any) {
 	p.verbs = append(p.verbs, kong.DynamicCommand(name, help, "", cmd))
-}
-
-// AddBridgeVerb wraps an old-style Command in a passthrough kong command so
-// unconverted verbs work unmodified alongside converted ones.
-// Must be called before Parse.
-func (p *Parser) AddBridgeVerb(cmd Command) {
-	bridge := &bridgeCmd{cmd: cmd}
-	p.verbs = append(p.verbs, kong.DynamicCommand(cmd.Name(), "", "", bridge))
 }
 
 // build constructs the *kong.Kong parser from accumulated options. Called once
@@ -111,22 +75,11 @@ func (p *Parser) Parse(args []string) (*kong.Context, error) {
 	return p.built.Parse(args)
 }
 
-// bridgeCmd wraps a legacy cli.Command so that kong can dispatch it via
-// DynamicCommand while the verb still receives its raw remaining args.
-// The Args field captures everything after the verb token.
-type bridgeCmd struct {
-	cmd  Command
-	Args []string `arg:"" optional:"" passthrough:""`
-}
-
-// Run satisfies kong's runner interface. ctx is injected via kong.Bind.
-func (b *bridgeCmd) Run(ctx *Context) error {
-	return b.cmd.Run(ctx, b.Args)
-}
-
-// ExitCode maps an error returned by Command.Run to a process exit code.
+// ExitCode maps an error returned by a verb's Run (or a kong parse error) to a
+// process exit code.
 //
 //	nil               -> 0
+//	*kong.ParseError  -> 2 (parse/validation failure, always usage-level)
 //	*UsageError       -> 2
 //	*DepError         -> 3
 //	*WorkspaceError   -> 4
@@ -155,6 +108,12 @@ func ExitCode(err error) int {
 	var ws *WorkspaceError
 	if errors.As(err, &ws) {
 		return 4
+	}
+	// kong.ParseError represents missing/unknown flags, missing positionals, enum
+	// violations, and Validate() failures — all are usage-level errors (exit 2).
+	var kpe *kong.ParseError
+	if errors.As(err, &kpe) {
+		return 2
 	}
 	return 1
 }
@@ -210,11 +169,3 @@ func (e *SilentError) Error() string { return fmt.Sprintf("exit %d", e.Code) }
 func Silent(code int) *SilentError {
 	return &SilentError{Code: code}
 }
-
-// UsageText is printed to stderr for an empty or unknown verb.
-const UsageText = "Usage: ateam <verb> [args]\n" +
-	"Verbs: ws | list | list-json | human-list | audit | resume-match | resume-match-closed\n" +
-	"       register | note | gate | clear-gate | learn | learnings | prime\n" +
-	"       show | close | reopen | pull | sync | new-initiative | dispatch | resume | cost\n" +
-	"       worktree-setup | send | inbox | route-pr-event | execution-status\n" +
-	"       watchers | fresh-drain | condense-lock\n"

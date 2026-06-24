@@ -3,9 +3,7 @@ package verbs
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
-	"os"
 	"sort"
 	"text/tabwriter"
 
@@ -13,68 +11,12 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cost"
 )
 
-// RegisterCost registers the cost verb.
-func RegisterCost(reg cli.Registry) {
-	reg.Register(&costCmd{})
-}
-
 // RegisterCostKong registers the cost verb onto p using its native kong struct.
 // costKong is defined in kong_converted.go (LOOP bead ownership) because cost was
 // one of the 3 verbs converted as the loop proof. The ring-track enh bead for
 // single-verb files (illp) may move costKong here and remove this note.
 func RegisterCostKong(p *cli.Parser) {
 	p.AddVerb("cost", "Report estimated token cost for an initiative.", &costKong{})
-}
-
-// costCmd implements: ateam cost <initiative-id> [--json]
-type costCmd struct{}
-
-func (c *costCmd) Name() string { return "cost" }
-
-func (c *costCmd) Run(ctx *cli.Context, args []string) error {
-	// Use flag.NewFlagSet to handle -h and unknown flags, but do a pre-scan to
-	// collect --json and positionals separately. flag.Parse stops at the first
-	// non-flag argument, so "cost <id> --json" would leave --json unconsumed if
-	// we fed args directly.
-	var positionals []string
-	var flagArgs []string
-	for _, a := range args {
-		if a == "--json" || a == "-json" {
-			flagArgs = append(flagArgs, "--json")
-		} else if len(a) > 0 && a[0] == '-' {
-			flagArgs = append(flagArgs, a) // unknown flag — let fs.Parse reject it
-		} else {
-			positionals = append(positionals, a)
-		}
-	}
-
-	fs := flag.NewFlagSet("cost", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(flagArgs); err != nil {
-		return cli.Silent(2)
-	}
-
-	if len(positionals) == 0 || positionals[0] == "" {
-		return cli.Usagef("ateam cost: missing <initiative-id>")
-	}
-	id := positionals[0]
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("ateam cost: %w", err)
-	}
-	jobsDir := home + "/.claude/jobs"
-	projectsDir := home + "/.claude/projects"
-
-	report, err := cost.Attribute(id, jobsDir, projectsDir)
-	if err != nil {
-		return fmt.Errorf("ateam cost: %w", err)
-	}
-
-	if *jsonOut {
-		return renderJSON(ctx, report)
-	}
-	return renderTable(ctx, report)
 }
 
 // ── JSON output ───────────────────────────────────────────────────────────────

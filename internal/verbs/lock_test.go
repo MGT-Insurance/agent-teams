@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -32,7 +32,7 @@ func TestCondenseLock_AcquireCreatesLockFile(t *testing.T) {
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	cmd := newLockCmd(time.Now())
 
-	if err := cmd.Run(ctx, []string{"acquire"}); err != nil {
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
 		t.Fatalf("acquire failed: %v", err)
 	}
 
@@ -50,13 +50,13 @@ func TestCondenseLock_SecondAcquireReturnsHeld(t *testing.T) {
 	cmd := newLockCmd(now)
 
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	if err := cmd.Run(ctx, []string{"acquire"}); err != nil {
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
 		t.Fatalf("first acquire failed: %v", err)
 	}
 
 	// Second acquire should fail with condenseLockHeldCode.
 	ctx2, _, _ := makeCtx(&fakeBD{}, home)
-	err := cmd.Run(ctx2, []string{"acquire"})
+	err := cmd.acquire(ctx2, condenseLockPath(home))
 	if err == nil {
 		t.Fatal("expected held error on second acquire; got nil")
 	}
@@ -76,10 +76,10 @@ func TestCondenseLock_ReleaseRemovesLock(t *testing.T) {
 	cmd := newLockCmd(time.Now())
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 
-	if err := cmd.Run(ctx, []string{"acquire"}); err != nil {
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
 		t.Fatalf("acquire failed: %v", err)
 	}
-	if err := cmd.Run(ctx, []string{"release"}); err != nil {
+	if err := cmd.release(condenseLockPath(home)); err != nil {
 		t.Fatalf("release failed: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestCondenseLock_ReleaseRemovesLock(t *testing.T) {
 	}
 
 	// Subsequent acquire must succeed.
-	if err := cmd.Run(ctx, []string{"acquire"}); err != nil {
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
 		t.Fatalf("re-acquire after release failed: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func TestCondenseLock_StaleTimestampIsStolen(t *testing.T) {
 	cmd := newLockCmd(now)
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 
-	if err := cmd.Run(ctx, []string{"acquire"}); err != nil {
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
 		t.Fatalf("acquire on stale lock failed: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestCondenseLock_StaleTimestampIsStolen(t *testing.T) {
 
 	// Second acquire against the freshly-stolen lock must return held.
 	ctx2, _, _ := makeCtx(&fakeBD{}, home)
-	err := cmd.Run(ctx2, []string{"acquire"})
+	err := cmd.acquire(ctx2, condenseLockPath(home))
 	if err == nil {
 		t.Fatal("expected held after steal; got nil")
 	}
@@ -130,42 +130,44 @@ func TestCondenseLock_StaleTimestampIsStolen(t *testing.T) {
 // TestCondenseLock_ReleaseIdempotent verifies release on a missing lock is a no-op.
 func TestCondenseLock_ReleaseIdempotent(t *testing.T) {
 	home := t.TempDir()
-	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	cmd := newLockCmd(time.Now())
 
-	if err := cmd.Run(ctx, []string{"release"}); err != nil {
+	if err := cmd.release(condenseLockPath(home)); err != nil {
 		t.Fatalf("release on non-existent lock should be a no-op; got: %v", err)
 	}
 }
 
-// TestCondenseLock_MissingActionReturnsUsageError verifies usage error when
-// action is omitted.
-func TestCondenseLock_MissingActionReturnsUsageError(t *testing.T) {
-	home := t.TempDir()
-	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	err := (&condenseLockCmd{}).Run(ctx, nil)
-	if err == nil {
-		t.Fatal("expected usage error for missing action; got nil")
+// TestCondenseLock_MissingActionReturnsParseError verifies parse error when
+// action is omitted (kong enforces the required positional at parse time).
+func TestCondenseLock_MissingActionReturnsParseError(t *testing.T) {
+	p, err := cli.NewParser(kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	RegisterCondenseLock(p)
+	_, parseErr := p.Parse([]string{"condense-lock"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing action; got nil")
 	}
 }
 
-// TestCondenseLock_UnknownActionReturnsUsageError verifies usage error for
-// unknown action.
-func TestCondenseLock_UnknownActionReturnsUsageError(t *testing.T) {
-	home := t.TempDir()
-	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	err := (&condenseLockCmd{}).Run(ctx, []string{"badaction"})
-	if err == nil {
-		t.Fatal("expected usage error for unknown action; got nil")
+// TestCondenseLock_UnknownActionReturnsParseError verifies parse error for
+// unknown action (kong enforces the enum constraint at parse time).
+func TestCondenseLock_UnknownActionReturnsParseError(t *testing.T) {
+	p, err := cli.NewParser(kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
 	}
-	if !strings.Contains(err.Error(), "unknown action") {
-		t.Errorf("error should mention 'unknown action'; got: %v", err)
+	RegisterCondenseLock(p)
+	_, parseErr := p.Parse([]string{"condense-lock", "badaction"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for unknown action; got nil")
 	}
 }
 
 // TestCondenseLock_NilContextReturnsError verifies nil context returns an error.
 func TestCondenseLock_NilContextReturnsError(t *testing.T) {
-	err := (&condenseLockCmd{}).Run(nil, []string{"acquire"})
+	err := (&condenseLockKong{Action: "acquire"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context; got nil")
 	}
@@ -196,7 +198,7 @@ func TestCondenseLock_LockFileContainsTimestamp(t *testing.T) {
 	cmd := newLockCmd(fixed)
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 
-	if err := cmd.Run(ctx, []string{"acquire"}); err != nil {
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
 		t.Fatalf("acquire failed: %v", err)
 	}
 

@@ -84,75 +84,6 @@ func stdoutOf(ctx *cli.Context) string {
 	return ctx.Stdout.(*bytes.Buffer).String()
 }
 
-// ── parseRegisterFlags ────────────────────────────────────────────────────────
-
-func TestParseRegisterFlags_BothForms(t *testing.T) {
-	tests := []struct {
-		name      string
-		args      []string
-		wantTitle string
-		wantFile  string
-	}{
-		{
-			name:      "space form",
-			args:      []string{"--title", "My Init", "--file", "/tmp/body.md"},
-			wantTitle: "My Init",
-			wantFile:  "/tmp/body.md",
-		},
-		{
-			name:      "equals form",
-			args:      []string{"--title=My Init", "--file=/tmp/body.md"},
-			wantTitle: "My Init",
-			wantFile:  "/tmp/body.md",
-		},
-		{
-			name:      "mixed forms",
-			args:      []string{"--title", "Foo", "--file=/tmp/x.md"},
-			wantTitle: "Foo",
-			wantFile:  "/tmp/x.md",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			title, file, err := parseRegisterFlags(tt.args)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if title != tt.wantTitle {
-				t.Errorf("title = %q, want %q", title, tt.wantTitle)
-			}
-			if file != tt.wantFile {
-				t.Errorf("file = %q, want %q", file, tt.wantFile)
-			}
-		})
-	}
-}
-
-func TestParseRegisterFlags_Errors(t *testing.T) {
-	tests := []struct {
-		name    string
-		args    []string
-		wantMsg string
-	}{
-		{
-			name:    "unknown flag",
-			args:    []string{"--title=x", "--file=y", "--extra=z"},
-			wantMsg: "unknown flag",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := parseRegisterFlags(tt.args)
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !strings.Contains(err.Error(), tt.wantMsg) {
-				t.Errorf("error %q does not contain %q", err.Error(), tt.wantMsg)
-			}
-		})
-	}
-}
-
 // ── register ──────────────────────────────────────────────────────────────────
 
 func TestRegister_PrintsID(t *testing.T) {
@@ -161,8 +92,8 @@ func TestRegister_PrintsID(t *testing.T) {
 	jsonOut, _ := json.Marshal(issue)
 
 	ctx, calls := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
-	cmd := &registerCmd{}
-	err := cmd.Run(ctx, []string{"--title", "My Init", "--file", bodyFile})
+	cmd := &registerKong{Title: "My Init", File: bodyFile}
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,8 +126,8 @@ func TestRegister_EqualsForm(t *testing.T) {
 	jsonOut, _ := json.Marshal(issue)
 
 	ctx, _ := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
-	cmd := &registerCmd{}
-	err := cmd.Run(ctx, []string{"--title=T", "--file=" + bodyFile})
+	cmd := &registerKong{Title: "T", File: bodyFile}
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,31 +138,34 @@ func TestRegister_EqualsForm(t *testing.T) {
 }
 
 func TestRegister_MissingTitle(t *testing.T) {
-	bodyFile := makeTempFile(t, "body")
-	ctx, _ := newCtx(t, nil)
-	err := (&registerCmd{}).Run(ctx, []string{"--file", bodyFile})
-	if err == nil {
-		t.Fatal("expected error for missing --title")
+	// kong enforces required:"" at parse time; verify via parser.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := err.(*cli.UsageError); !ok {
-		t.Errorf("expected UsageError, got %T: %v", err, err)
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"register", "--file", "/tmp/f.md"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing --title")
 	}
 }
 
 func TestRegister_MissingFile(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	err := (&registerCmd{}).Run(ctx, []string{"--title", "T"})
-	if err == nil {
-		t.Fatal("expected error for missing --file")
+	// kong enforces required:"" at parse time; verify via parser.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := err.(*cli.UsageError); !ok {
-		t.Errorf("expected UsageError, got %T: %v", err, err)
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"register", "--title", "T"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing --file")
 	}
 }
 
 func TestRegister_FileNotFound(t *testing.T) {
 	ctx, _ := newCtx(t, nil)
-	err := (&registerCmd{}).Run(ctx, []string{"--title", "T", "--file", "/nonexistent/path.md"})
+	err := (&registerKong{Title: "T", File: "/nonexistent/path.md"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -244,7 +178,7 @@ func TestRegister_EmptyID(t *testing.T) {
 	bodyFile := makeTempFile(t, "body")
 	// bd returns JSON with no id field → issue.ID will be ""
 	ctx, _ := newCtx(t, []fakeResp{{stdout: `{}`}})
-	err := (&registerCmd{}).Run(ctx, []string{"--title", "T", "--file", bodyFile})
+	err := (&registerKong{Title: "T", File: bodyFile}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error when bd returns empty id")
 	}
@@ -264,7 +198,7 @@ func TestRegister_EmptyID(t *testing.T) {
 func TestNote_CallsBDNote(t *testing.T) {
 	f := makeTempFile(t, "note content")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file", f})
+	err := (&noteKong{ID: "at-1", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -274,7 +208,7 @@ func TestNote_CallsBDNote(t *testing.T) {
 func TestNote_EqualsForm(t *testing.T) {
 	f := makeTempFile(t, "note")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file=" + f})
+	err := (&noteKong{ID: "at-1", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -282,20 +216,34 @@ func TestNote_EqualsForm(t *testing.T) {
 }
 
 func TestNote_MissingID(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	err := (&noteCmd{}).Run(ctx, nil)
-	assertUsageError(t, err, "missing <id>")
+	// ID is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"note"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <id>")
+	}
 }
 
 func TestNote_MissingFile(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	err := (&noteCmd{}).Run(ctx, []string{"at-1"})
-	assertUsageError(t, err, "--file required")
+	// File is required:""; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"note", "at-1"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing --file")
+	}
 }
 
 func TestNote_FileNotFound(t *testing.T) {
 	ctx, _ := newCtx(t, nil)
-	err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file", "/no/such/file"})
+	err := (&noteKong{ID: "at-1", File: "/no/such/file"}).Run(ctx)
 	assertUsageError(t, err, "file not found")
 }
 
@@ -305,7 +253,7 @@ func TestGate_NoteAndLabel(t *testing.T) {
 	// No --kind: defaults to question => 3 calls (note, label add human, label add gate:question)
 	f := makeTempFile(t, "question")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f})
+	err := (&gateKong{ID: "at-2", File: f, Kind: "question"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -320,7 +268,7 @@ func TestGate_NoteAndLabel(t *testing.T) {
 func TestGate_KindReview(t *testing.T) {
 	f := makeTempFile(t, "pr ready")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f, "--kind", "review"})
+	err := (&gateKong{ID: "at-2", File: f, Kind: "review"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +283,7 @@ func TestGate_KindReview(t *testing.T) {
 func TestGate_KindReviewEqualsForm(t *testing.T) {
 	f := makeTempFile(t, "pr ready")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file=" + f, "--kind=review"})
+	err := (&gateKong{ID: "at-2", File: f, Kind: "review"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -345,7 +293,7 @@ func TestGate_KindReviewEqualsForm(t *testing.T) {
 func TestGate_KindQuestionExplicit(t *testing.T) {
 	f := makeTempFile(t, "question")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f, "--kind", "question"})
+	err := (&gateKong{ID: "at-2", File: f, Kind: "question"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,16 +301,27 @@ func TestGate_KindQuestionExplicit(t *testing.T) {
 }
 
 func TestGate_KindBogus(t *testing.T) {
+	// enum:"review,question" is enforced at parse time; verify via parser.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
 	f := makeTempFile(t, "question")
-	ctx, _ := newCtx(t, nil)
-	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f, "--kind=bogus"})
-	assertUsageError(t, err, "review or question")
+	_, parseErr := p.Parse([]string{"gate", "at-2", "--file", f, "--kind=bogus"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for bogus kind")
+	}
+	// kong reports: "--kind must be one of "review","question" but got "bogus""
+	if !strings.Contains(parseErr.Error(), "review") || !strings.Contains(parseErr.Error(), "question") {
+		t.Errorf("error = %q, want kind enum violation message", parseErr.Error())
+	}
 }
 
 func TestGate_EqualsForm(t *testing.T) {
 	f := makeTempFile(t, "question")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file=" + f})
+	err := (&gateKong{ID: "at-2", File: f, Kind: "question"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,13 +331,23 @@ func TestGate_EqualsForm(t *testing.T) {
 }
 
 func TestGate_MissingID(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&gateCmd{}).Run(ctx, nil), "missing <id>")
+	// ID is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"gate"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <id>")
+	}
 }
 
 func TestGate_MissingFile(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&gateCmd{}).Run(ctx, []string{"at-2"}), "--file required")
+	// Validate() enforces --file required when no structured form used.
+	g := &gateKong{ID: "at-2", Kind: "question"}
+	err := g.Validate(nil)
+	assertUsageError(t, err, "--file required")
 }
 
 // ── gate: structured-ask flags ────────────────────────────────────────────────
@@ -386,12 +355,13 @@ func TestGate_MissingFile(t *testing.T) {
 func TestGate_StructuredAsk_WriteSentinelBlock(t *testing.T) {
 	// Structured form: 3 bd calls (note with sentinel content, label add human, label add gate:question)
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&gateCmd{}).Run(ctx, []string{
-		"at-s1",
-		"--decision", "Should we use approach A?",
-		"--recommendation", "Yes, use approach A",
-		"--alternative", "Use approach B instead",
-	})
+	err := (&gateKong{
+		ID:             "at-s1",
+		Decision:       "Should we use approach A?",
+		Recommendation: "Yes, use approach A",
+		Alternative:    "Use approach B instead",
+		Kind:           "question",
+	}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -443,25 +413,17 @@ func TestGate_StructuredAsk_SentinelFormat(t *testing.T) {
 	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
 
 	contextFile := makeTempFile(t, "some optional context here")
-	err := (&gateCmd{}).Run(ctx, []string{
-		"at-s2",
-		"--decision", "Which design to pick?",
-		"--recommendation", "Design A",
-		"--alternative", "Design B",
-		"--context-file", contextFile,
-		"--kind", "review",
-	})
+	err := (&gateKong{
+		ID:             "at-s2",
+		Decision:       "Which design to pick?",
+		Recommendation: "Design A",
+		Alternative:    "Design B",
+		ContextFile:    contextFile,
+		Kind:           "review",
+	}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// The temp file should have been cleaned up by the time we get here, so we
-	// capture via the note call's file arg above. But since defer runs after
-	// Run returns, the file is gone — we need to capture content inside the
-	// fake exec. Let's re-test by reading the file DURING the fake exec; we
-	// already captured capturedFile path above but the deferred Remove() runs
-	// after Run returns. Read it from the call args instead via a helper that
-	// reads content before cleanup.
 
 	// Re-do with a content-capturing exec to read file before deferred Remove.
 	var capturedContent string
@@ -488,14 +450,14 @@ func TestGate_StructuredAsk_SentinelFormat(t *testing.T) {
 	ctx2 := &cli.Context{Home: t.TempDir(), BD: client2, Stdout: &stdout2, Stderr: &stderr2}
 
 	contextFile2 := makeTempFile(t, "some optional context here")
-	if err := (&gateCmd{}).Run(ctx2, []string{
-		"at-s2",
-		"--decision", "Which design to pick?",
-		"--recommendation", "Design A",
-		"--alternative", "Design B",
-		"--context-file", contextFile2,
-		"--kind", "review",
-	}); err != nil {
+	if err := (&gateKong{
+		ID:             "at-s2",
+		Decision:       "Which design to pick?",
+		Recommendation: "Design A",
+		Alternative:    "Design B",
+		ContextFile:    contextFile2,
+		Kind:           "review",
+	}).Run(ctx2); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -529,12 +491,13 @@ func TestGate_StructuredAsk_WithoutContext(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
 
-	if err := (&gateCmd{}).Run(ctx, []string{
-		"at-s3",
-		"--decision", "Go or no-go?",
-		"--recommendation", "Go",
-		"--alternative", "No-go",
-	}); err != nil {
+	if err := (&gateKong{
+		ID:             "at-s3",
+		Decision:       "Go or no-go?",
+		Recommendation: "Go",
+		Alternative:    "No-go",
+		Kind:           "question",
+	}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -545,29 +508,41 @@ func TestGate_StructuredAsk_WithoutContext(t *testing.T) {
 }
 
 func TestGate_StructuredAsk_DecisionTooLong(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
 	long := strings.Repeat("x", 121)
-	err := (&gateCmd{}).Run(ctx, []string{"at-s4", "--decision", long, "--recommendation", "r", "--alternative", "a"})
+	g := &gateKong{
+		ID:             "at-s4",
+		Decision:       long,
+		Recommendation: "r",
+		Alternative:    "a",
+		Kind:           "question",
+	}
+	err := g.Validate(nil)
 	assertUsageError(t, err, "exceeds 120 chars")
 }
 
 func TestGate_StructuredAsk_EmptyDecision(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
 	// Using another structured flag but empty --decision triggers the required check.
-	err := (&gateCmd{}).Run(ctx, []string{"at-s5", "--recommendation", "r", "--alternative", "a"})
+	g := &gateKong{
+		ID:             "at-s5",
+		Recommendation: "r",
+		Alternative:    "a",
+		Kind:           "question",
+	}
+	err := g.Validate(nil)
 	assertUsageError(t, err, "--decision required")
 }
 
 func TestGate_StructuredAsk_ContextTooLong(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	longContext := makeTempFile(t, strings.Repeat("y", 281))
-	err := (&gateCmd{}).Run(ctx, []string{
-		"at-s6",
-		"--decision", "A short decision",
-		"--recommendation", "r",
-		"--alternative", "a",
-		"--context-file", longContext,
-	})
+	contextFile := makeTempFile(t, strings.Repeat("y", 281))
+	g := &gateKong{
+		ID:             "at-s6",
+		Decision:       "A short decision",
+		Recommendation: "r",
+		Alternative:    "a",
+		ContextFile:    contextFile,
+		Kind:           "question",
+	}
+	err := g.Validate(nil)
 	assertUsageError(t, err, "exceeds 280 chars")
 }
 
@@ -597,13 +572,14 @@ func TestGate_StructuredAsk_ContextExactLimit(t *testing.T) {
 
 	exactContext := strings.Repeat("z", 280)
 	contextFile := makeTempFile(t, exactContext)
-	if err := (&gateCmd{}).Run(ctx, []string{
-		"at-s7",
-		"--decision", "Boundary check",
-		"--recommendation", "r",
-		"--alternative", "a",
-		"--context-file", contextFile,
-	}); err != nil {
+	if err := (&gateKong{
+		ID:             "at-s7",
+		Decision:       "Boundary check",
+		Recommendation: "r",
+		Alternative:    "a",
+		ContextFile:    contextFile,
+		Kind:           "question",
+	}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error for 280-char context: %v", err)
 	}
 	if !strings.Contains(capturedContent, exactContext) {
@@ -613,9 +589,19 @@ func TestGate_StructuredAsk_ContextExactLimit(t *testing.T) {
 
 func TestGate_StructuredAsk_MutuallyExclusiveWithFile(t *testing.T) {
 	f := makeTempFile(t, "prose")
-	ctx, _ := newCtx(t, nil)
-	err := (&gateCmd{}).Run(ctx, []string{"at-s8", "--file", f, "--decision", "d"})
-	assertUsageError(t, err, "mutually exclusive")
+	// xor enforcement is at parse time; test via parser.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"gate", "at-s8", "--file", f, "--decision", "d"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for --file + structured flag together")
+	}
+	if !strings.Contains(parseErr.Error(), "mutually exclusive") && !strings.Contains(parseErr.Error(), "can't be used together") {
+		t.Errorf("error = %q, want mutual exclusion message", parseErr.Error())
+	}
 }
 
 func TestGate_StructuredAsk_SetsHumanAndGateKind(t *testing.T) {
@@ -634,13 +620,13 @@ func TestGate_StructuredAsk_SetsHumanAndGateKind(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
 
-	if err := (&gateCmd{}).Run(ctx, []string{
-		"at-s9",
-		"--decision", "Should we proceed?",
-		"--recommendation", "Yes",
-		"--alternative", "No",
-		"--kind", "review",
-	}); err != nil {
+	if err := (&gateKong{
+		ID:             "at-s9",
+		Decision:       "Should we proceed?",
+		Recommendation: "Yes",
+		Alternative:    "No",
+		Kind:           "review",
+	}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(*calls) != 3 {
@@ -656,7 +642,7 @@ func TestClearGate_WithFile(t *testing.T) {
 	// 4 calls: comment, label remove human, label remove gate:review, label remove gate:question
 	f := makeTempFile(t, "response")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file", f})
+	err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -672,7 +658,7 @@ func TestClearGate_WithFile(t *testing.T) {
 func TestClearGate_WithoutFile(t *testing.T) {
 	// 3 calls: label remove human, label remove gate:review, label remove gate:question
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&clearGateCmd{}).Run(ctx, []string{"at-3"})
+	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -687,7 +673,7 @@ func TestClearGate_WithoutFile(t *testing.T) {
 func TestClearGate_EqualsForm(t *testing.T) {
 	f := makeTempFile(t, "response")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file=" + f})
+	err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -698,64 +684,30 @@ func TestClearGate_EqualsForm(t *testing.T) {
 }
 
 func TestClearGate_MissingID(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&clearGateCmd{}).Run(ctx, nil), "missing <id>")
+	// ID is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"clear-gate"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <id>")
+	}
 }
 
 func TestClearGate_FileNotFound(t *testing.T) {
 	ctx, _ := newCtx(t, nil)
-	err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file", "/no/such"})
+	err := (&clearGateKong{ID: "at-3", File: "/no/such"}).Run(ctx)
 	assertUsageError(t, err, "file not found")
 }
 
-// ── parseLearnFlags ───────────────────────────────────────────────────────────
-
-func TestParseLearnFlags_BothForms(t *testing.T) {
-	tests := []struct {
-		name     string
-		args     []string
-		wantRole string
-		wantSlug string
-		wantFile string
-	}{
-		{
-			name:     "space form",
-			args:     []string{"planner", "design-heuristics", "--file", "/tmp/f.md"},
-			wantRole: "planner",
-			wantSlug: "design-heuristics",
-			wantFile: "/tmp/f.md",
-		},
-		{
-			name:     "equals form",
-			args:     []string{"planner", "design-heuristics", "--file=/tmp/f.md"},
-			wantRole: "planner",
-			wantSlug: "design-heuristics",
-			wantFile: "/tmp/f.md",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			role, slug, file, err := parseLearnFlags(tt.args)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if role != tt.wantRole {
-				t.Errorf("role = %q, want %q", role, tt.wantRole)
-			}
-			if slug != tt.wantSlug {
-				t.Errorf("slug = %q, want %q", slug, tt.wantSlug)
-			}
-			if file != tt.wantFile {
-				t.Errorf("file = %q, want %q", file, tt.wantFile)
-			}
-		})
-	}
-}
+// ── learn ─────────────────────────────────────────────────────────────────────
 
 func TestLearn_CallsBDRemember(t *testing.T) {
 	f := makeTempFile(t, "learned content here")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&learnCmd{}).Run(ctx, []string{"planner", "design-heuristics", "--file", f})
+	err := (&learnKong{Role: "planner", Slug: "design-heuristics", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -781,7 +733,7 @@ func TestLearn_CallsBDRemember(t *testing.T) {
 func TestLearn_DefaultSlugGetsFreshPrefix(t *testing.T) {
 	f := makeTempFile(t, "body")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "foo", "--file", f}); err != nil {
+	if err := (&learnKong{Role: "implementer", Slug: "foo", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := (*calls)[0].args[1]; got != "--key=implementer:fresh:foo" {
@@ -792,7 +744,7 @@ func TestLearn_DefaultSlugGetsFreshPrefix(t *testing.T) {
 func TestLearn_HotSlugPassthrough(t *testing.T) {
 	f := makeTempFile(t, "body")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "hot:foo", "--file", f}); err != nil {
+	if err := (&learnKong{Role: "implementer", Slug: "hot:foo", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := (*calls)[0].args[1]; got != "--key=implementer:hot:foo" {
@@ -803,7 +755,7 @@ func TestLearn_HotSlugPassthrough(t *testing.T) {
 func TestLearn_FreshSlugPassthrough(t *testing.T) {
 	f := makeTempFile(t, "body")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "fresh:foo", "--file", f}); err != nil {
+	if err := (&learnKong{Role: "implementer", Slug: "fresh:foo", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Must not produce implementer:fresh:fresh:foo.
@@ -813,88 +765,55 @@ func TestLearn_FreshSlugPassthrough(t *testing.T) {
 }
 
 func TestLearn_MissingRole(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&learnCmd{}).Run(ctx, nil), "missing <role>")
+	// Role is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"learn"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>")
+	}
 }
 
 func TestLearn_MissingSlug(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&learnCmd{}).Run(ctx, []string{"planner"}), "missing <slug>")
+	// Slug is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"learn", "planner"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <slug>")
+	}
 }
 
 func TestLearn_MissingFile(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&learnCmd{}).Run(ctx, []string{"planner", "slug"}), "--file required")
+	// File is required:""; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"learn", "planner", "slug"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing --file")
+	}
 }
 
 func TestLearn_FileNotFound(t *testing.T) {
 	ctx, _ := newCtx(t, nil)
-	err := (&learnCmd{}).Run(ctx, []string{"planner", "slug", "--file", "/no/such/file"})
+	err := (&learnKong{Role: "planner", Slug: "slug", File: "/no/such/file"}).Run(ctx)
 	assertUsageError(t, err, "file not found")
 }
 
-// ── parseCloseFlags ───────────────────────────────────────────────────────────
-
-func TestParseCloseFlags_AllForms(t *testing.T) {
-	tests := []struct {
-		name       string
-		args       []string
-		wantID     string
-		wantReason string
-		wantFile   string
-	}{
-		{
-			name:   "bare id",
-			args:   []string{"at-1"},
-			wantID: "at-1",
-		},
-		{
-			name:       "reason space form",
-			args:       []string{"at-1", "--reason", "done"},
-			wantID:     "at-1",
-			wantReason: "done",
-		},
-		{
-			name:       "reason equals form",
-			args:       []string{"at-1", "--reason=done"},
-			wantID:     "at-1",
-			wantReason: "done",
-		},
-		{
-			name:     "file space form",
-			args:     []string{"at-1", "--file", "/tmp/r.md"},
-			wantID:   "at-1",
-			wantFile: "/tmp/r.md",
-		},
-		{
-			name:     "file equals form",
-			args:     []string{"at-1", "--file=/tmp/r.md"},
-			wantID:   "at-1",
-			wantFile: "/tmp/r.md",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			id, reason, file, err := parseCloseFlags(tt.args)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if id != tt.wantID {
-				t.Errorf("id = %q, want %q", id, tt.wantID)
-			}
-			if reason != tt.wantReason {
-				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
-			}
-			if file != tt.wantFile {
-				t.Errorf("file = %q, want %q", file, tt.wantFile)
-			}
-		})
-	}
-}
+// ── close ─────────────────────────────────────────────────────────────────────
 
 func TestClose_BareID(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&closeCmd{}).Run(ctx, []string{"at-5"})
+	err := (&closeKong{ID: "at-5"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -903,7 +822,7 @@ func TestClose_BareID(t *testing.T) {
 
 func TestClose_WithReason(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&closeCmd{}).Run(ctx, []string{"at-5", "--reason", "shipped"})
+	err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -912,7 +831,7 @@ func TestClose_WithReason(t *testing.T) {
 
 func TestClose_WithReasonEqualsForm(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&closeCmd{}).Run(ctx, []string{"at-5", "--reason=shipped"})
+	err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -923,7 +842,7 @@ func TestClose_WithFile(t *testing.T) {
 	content := "reason from file"
 	f := makeTempFile(t, content)
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&closeCmd{}).Run(ctx, []string{"at-5", "--file", f})
+	err := (&closeKong{ID: "at-5", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -932,15 +851,23 @@ func TestClose_WithFile(t *testing.T) {
 }
 
 func TestClose_MissingID(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&closeCmd{}).Run(ctx, nil), "missing <id>")
+	// ID is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"close"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <id>")
+	}
 }
 
 // ── reopen ────────────────────────────────────────────────────────────────────
 
 func TestReopen_CallsBDReopen(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	err := (&reopenCmd{}).Run(ctx, []string{"at-6"})
+	err := (&reopenKong{ID: "at-6"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -948,15 +875,23 @@ func TestReopen_CallsBDReopen(t *testing.T) {
 }
 
 func TestReopen_MissingID(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	assertUsageError(t, (&reopenCmd{}).Run(ctx, nil), "missing <id>")
+	// ID is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"reopen"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <id>")
+	}
 }
 
 // ── pull ──────────────────────────────────────────────────────────────────────
 
 func TestPull_CallsBDDoltPull(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "pull complete"}})
-	err := (&pullCmd{}).Run(ctx, nil)
+	err := (&pullKong{}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -967,7 +902,7 @@ func TestPull_CallsBDDoltPull(t *testing.T) {
 }
 
 func TestPull_NilContext(t *testing.T) {
-	err := (&pullCmd{}).Run(nil, nil)
+	err := (&pullKong{}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}
@@ -981,7 +916,7 @@ func TestSync_CallsBDDoltPullThenPush(t *testing.T) {
 		{stdout: "pull complete"},
 		{stdout: "push complete"},
 	})
-	err := (&syncCmd{}).Run(ctx, nil)
+	err := (&syncKong{}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1001,7 +936,7 @@ func TestSync_RetriesPushOnceAfterNonFF(t *testing.T) {
 		{stdout: "pull complete"}, // retry pull
 		{stdout: "push complete"}, // retry push: success
 	})
-	err := (&syncCmd{}).Run(ctx, nil)
+	err := (&syncKong{}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error on retry success: %v", err)
 	}
@@ -1023,7 +958,7 @@ func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
 		{stdout: "pull complete"},
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")},
 	})
-	err := (&syncCmd{}).Run(ctx, nil)
+	err := (&syncKong{}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error when retry push also fails")
 	}
@@ -1040,7 +975,7 @@ func TestSync_NoRetryOnNonFFUnrelatedError(t *testing.T) {
 		{stdout: ""},
 		{errOut: "Permission denied", err: fmt.Errorf("bd dolt push: exit status 1\nPermission denied")},
 	})
-	err := (&syncCmd{}).Run(ctx, nil)
+	err := (&syncKong{}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error from push failure")
 	}
@@ -1050,7 +985,7 @@ func TestSync_NoRetryOnNonFFUnrelatedError(t *testing.T) {
 }
 
 func TestSync_NilContext(t *testing.T) {
-	err := (&syncCmd{}).Run(nil, nil)
+	err := (&syncKong{}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}
@@ -1094,7 +1029,7 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	ctx := &cli.Context{Home: dir, BD: client, Stdout: &stdout, Stderr: &bytes.Buffer{}}
 
 	// register
-	if err := (&registerCmd{}).Run(ctx, []string{"--title", "Round Trip Init", "--file", bodyFile}); err != nil {
+	if err := (&registerKong{Title: "Round Trip Init", File: bodyFile}).Run(ctx); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	gotID := strings.TrimSpace(stdout.String())
@@ -1103,12 +1038,12 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	}
 
 	// gate (default kind=question)
-	if err := (&gateCmd{}).Run(ctx, []string{"at-round1", "--file", questionFile}); err != nil {
+	if err := (&gateKong{ID: "at-round1", File: questionFile, Kind: "question"}).Run(ctx); err != nil {
 		t.Fatalf("gate: %v", err)
 	}
 
 	// clear-gate with file
-	if err := (&clearGateCmd{}).Run(ctx, []string{"at-round1", "--file", responseFile}); err != nil {
+	if err := (&clearGateKong{ID: "at-round1", File: responseFile}).Run(ctx); err != nil {
 		t.Fatalf("clear-gate: %v", err)
 	}
 
@@ -1144,7 +1079,7 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 func TestNote_ForwardsBDStdout(t *testing.T) {
 	f := makeTempFile(t, "note content")
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Note added to at-1"}})
-	if err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file", f}); err != nil {
+	if err := (&noteKong{ID: "at-1", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1156,7 +1091,7 @@ func TestNote_ForwardsBDStdout(t *testing.T) {
 func TestNote_NoBlankLineWhenEmpty(t *testing.T) {
 	f := makeTempFile(t, "note content")
 	ctx, _ := newCtx(t, []fakeResp{{stdout: ""}})
-	if err := (&noteCmd{}).Run(ctx, []string{"at-1", "--file", f}); err != nil {
+	if err := (&noteKong{ID: "at-1", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if stdoutOf(ctx) != "" {
@@ -1171,7 +1106,7 @@ func TestGate_ForwardsBothOutputs(t *testing.T) {
 		{stdout: "✓ Added label 'human'"},
 		{stdout: "✓ Added label 'gate:question'"},
 	})
-	if err := (&gateCmd{}).Run(ctx, []string{"at-2", "--file", f}); err != nil {
+	if err := (&gateKong{ID: "at-2", File: f, Kind: "question"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := stdoutOf(ctx)
@@ -1200,7 +1135,7 @@ func TestClearGate_WithFile_ForwardsBothOutputs(t *testing.T) {
 		{stdout: "✓ Removed label 'gate:review'"},
 		{stdout: "✓ Removed label 'gate:question'"},
 	})
-	if err := (&clearGateCmd{}).Run(ctx, []string{"at-3", "--file", f}); err != nil {
+	if err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := stdoutOf(ctx)
@@ -1223,7 +1158,7 @@ func TestClearGate_WithoutFile_ForwardsLabelOutput(t *testing.T) {
 		{stdout: "✓ Removed label 'gate:review'"},
 		{stdout: "✓ Removed label 'gate:question'"},
 	})
-	if err := (&clearGateCmd{}).Run(ctx, []string{"at-3"}); err != nil {
+	if err := (&clearGateKong{ID: "at-3"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1235,7 +1170,7 @@ func TestClearGate_WithoutFile_ForwardsLabelOutput(t *testing.T) {
 func TestLearn_ForwardsBDStdout(t *testing.T) {
 	f := makeTempFile(t, "learned content")
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Stored planner:slug"}})
-	if err := (&learnCmd{}).Run(ctx, []string{"planner", "slug", "--file", f}); err != nil {
+	if err := (&learnKong{Role: "planner", Slug: "slug", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1247,7 +1182,7 @@ func TestLearn_ForwardsBDStdout(t *testing.T) {
 func TestLearn_ColdSlugWritesBareKey(t *testing.T) {
 	f := makeTempFile(t, "cold body")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	if err := (&learnCmd{}).Run(ctx, []string{"implementer", "cold:foo", "--file", f}); err != nil {
+	if err := (&learnKong{Role: "implementer", Slug: "cold:foo", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// cold:<slug> must produce role:<slug> — no tier tag, no fresh: prefix.
@@ -1259,7 +1194,7 @@ func TestLearn_ColdSlugWritesBareKey(t *testing.T) {
 func TestLearn_ColdSlugNotDoublePrefixed(t *testing.T) {
 	f := makeTempFile(t, "cold body")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
-	if err := (&learnCmd{}).Run(ctx, []string{"dri", "cold:some-insight", "--file", f}); err != nil {
+	if err := (&learnKong{Role: "dri", Slug: "cold:some-insight", File: f}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := (*calls)[0].args[1]
@@ -1271,7 +1206,7 @@ func TestLearn_ColdSlugNotDoublePrefixed(t *testing.T) {
 
 func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
-	if err := (&closeCmd{}).Run(ctx, []string{"at-5"}); err != nil {
+	if err := (&closeKong{ID: "at-5"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1282,7 +1217,7 @@ func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 
 func TestClose_WithReason_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
-	if err := (&closeCmd{}).Run(ctx, []string{"at-5", "--reason", "shipped"}); err != nil {
+	if err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1293,7 +1228,7 @@ func TestClose_WithReason_ForwardsBDStdout(t *testing.T) {
 
 func TestReopen_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Reopened at-6"}})
-	if err := (&reopenCmd{}).Run(ctx, []string{"at-6"}); err != nil {
+	if err := (&reopenKong{ID: "at-6"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1303,8 +1238,8 @@ func TestReopen_ForwardsBDStdout(t *testing.T) {
 }
 
 func TestSync_ForwardsBDStdout(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "push complete"}})
-	if err := (&syncCmd{}).Run(ctx, nil); err != nil {
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "pull complete"}, {stdout: "push complete"}})
+	if err := (&syncKong{}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1318,7 +1253,7 @@ func TestRegister_PrintsOnlyID(t *testing.T) {
 	issue := bd.Issue{ID: "at-only", Title: "T"}
 	jsonOut, _ := json.Marshal(issue)
 	ctx, _ := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
-	if err := (&registerCmd{}).Run(ctx, []string{"--title", "T", "--file", bodyFile}); err != nil {
+	if err := (&registerKong{Title: "T", File: bodyFile}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// register must print exactly the bare id, not the full JSON
@@ -1412,7 +1347,7 @@ func TestNoteKong_RunCallsBDNote(t *testing.T) {
 }
 
 // TestCloseKong_FilePrecedenceOverReason verifies --file overrides --reason
-// (preserved from legacy closeCmd behaviour).
+// (preserved from legacy closeKong behaviour).
 func TestCloseKong_FilePrecedenceOverReason(t *testing.T) {
 	content := "reason from file"
 	f := makeTempFile(t, content)
@@ -1502,7 +1437,7 @@ func containsArgPrefix(args []string, prefix string) bool {
 
 func TestForget_ColdKeyFormed(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:stale-slug"}})
-	err := (&forgetCmd{}).Run(ctx, []string{"dri", "stale-slug"})
+	err := (&forgetKong{Role: "dri", Slug: "stale-slug"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1512,7 +1447,7 @@ func TestForget_ColdKeyFormed(t *testing.T) {
 func TestForget_HotKeyFormed(t *testing.T) {
 	// Callers pass slug as "hot:<name>" to target the hot-tier key.
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:hot:hot-item"}})
-	err := (&forgetCmd{}).Run(ctx, []string{"dri", "hot:hot-item"})
+	err := (&forgetKong{Role: "dri", Slug: "hot:hot-item"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1520,19 +1455,33 @@ func TestForget_HotKeyFormed(t *testing.T) {
 }
 
 func TestForget_MissingRole(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	err := (&forgetCmd{}).Run(ctx, nil)
-	assertUsageError(t, err, "missing <role>")
+	// Role is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"forget"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>")
+	}
 }
 
 func TestForget_MissingSlug(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-	err := (&forgetCmd{}).Run(ctx, []string{"dri"})
-	assertUsageError(t, err, "missing <slug>")
+	// Slug is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"forget", "dri"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <slug>")
+	}
 }
 
 func TestForget_NilContext(t *testing.T) {
-	err := (&forgetCmd{}).Run(nil, []string{"dri", "slug"})
+	err := (&forgetKong{Role: "dri", Slug: "slug"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}
@@ -1540,7 +1489,7 @@ func TestForget_NilContext(t *testing.T) {
 
 func TestForget_ForwardsBDOutput(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Deleted dri:foo"}})
-	if err := (&forgetCmd{}).Run(ctx, []string{"dri", "foo"}); err != nil {
+	if err := (&forgetKong{Role: "dri", Slug: "foo"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.TrimSpace(stdoutOf(ctx))
@@ -1551,7 +1500,7 @@ func TestForget_ForwardsBDOutput(t *testing.T) {
 
 // ── condense ──────────────────────────────────────────────────────────────────
 
-// condensePacketFor runs condenseCmd with a fakeBD returning the given memories
+// condensePacketFor runs condenseKong with a fakeBD returning the given memories
 // map and parses the JSON packet from stdout.
 func condensePacketFor(t *testing.T, role string, memories map[string]any) condensePacket {
 	t.Helper()
@@ -1563,7 +1512,7 @@ func condensePacketFor(t *testing.T, role string, memories map[string]any) conde
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	if err := (&condenseCmd{}).Run(ctx, []string{role}); err != nil {
+	if err := (&condenseKong{Role: role}).Run(ctx); err != nil {
 		t.Fatalf("condense.Run: %v", err)
 	}
 	var pkt condensePacket
@@ -1641,7 +1590,7 @@ func TestCondense_ZeroWritesOccur(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	if err := (&condenseCmd{}).Run(ctx, []string{"dri"}); err != nil {
+	if err := (&condenseKong{Role: "dri"}).Run(ctx); err != nil {
 		t.Fatalf("condense.Run: %v", err)
 	}
 	for _, c := range calls {
@@ -1666,19 +1615,20 @@ func TestCondense_MemoriesSorted(t *testing.T) {
 }
 
 func TestCondense_MissingRole(t *testing.T) {
-	fbd := &fakeBD{}
-	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	err := (&condenseCmd{}).Run(ctx, nil)
-	if err == nil {
-		t.Fatal("expected usage error for missing role")
+	// Role is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := err.(*cli.UsageError); !ok {
-		t.Errorf("expected *cli.UsageError, got %T: %v", err, err)
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"condense"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>")
 	}
 }
 
 func TestCondense_NilContext(t *testing.T) {
-	err := (&condenseCmd{}).Run(nil, []string{"dri"})
+	err := (&condenseKong{Role: "dri"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}

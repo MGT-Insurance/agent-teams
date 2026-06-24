@@ -49,32 +49,11 @@ type condenseLockCmd struct {
 	nowFn func() time.Time
 }
 
-func (c *condenseLockCmd) Name() string { return "condense-lock" }
-
 func (c *condenseLockCmd) now() time.Time {
 	if c.nowFn != nil {
 		return c.nowFn()
 	}
 	return time.Now()
-}
-
-func (c *condenseLockCmd) Run(ctx *cli.Context, args []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam condense-lock: no context")
-	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam condense-lock: missing acquire|release")
-	}
-	action := args[0]
-	path := condenseLockPath(ctx.Home)
-	switch action {
-	case "acquire":
-		return c.acquire(ctx, path)
-	case "release":
-		return c.release(path)
-	default:
-		return cli.Usagef("ateam condense-lock: unknown action %q (want acquire or release)", action)
-	}
 }
 
 // acquire tries to create the lock file atomically. On collision it reads the
@@ -161,5 +140,17 @@ type condenseLockKong struct {
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *condenseLockKong) Run(ctx *cli.Context) error {
-	return (&condenseLockCmd{}).Run(ctx, []string{c.Action})
+	if ctx == nil {
+		return fmt.Errorf("ateam condense-lock: no context")
+	}
+	path := condenseLockPath(ctx.Home)
+	impl := &condenseLockCmd{}
+	switch c.Action {
+	case "acquire":
+		return impl.acquire(ctx, path)
+	case "release":
+		return impl.release(path)
+	default:
+		return cli.Usagef("ateam condense-lock: unknown action %q (want acquire or release)", c.Action)
+	}
 }
