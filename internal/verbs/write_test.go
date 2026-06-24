@@ -3,6 +3,7 @@ package verbs
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -951,15 +952,101 @@ func TestReopen_MissingID(t *testing.T) {
 	assertUsageError(t, (&reopenCmd{}).Run(ctx, nil), "missing <id>")
 }
 
+// ── pull ──────────────────────────────────────────────────────────────────────
+
+func TestPull_CallsBDDoltPull(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "pull complete"}})
+	err := (&pullCmd{}).Run(ctx, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 0, []string{"dolt", "pull"})
+}
+
+func TestPull_NilContext(t *testing.T) {
+	err := (&pullCmd{}).Run(nil, nil)
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
 // ── sync ──────────────────────────────────────────────────────────────────────
 
-func TestSync_CallsBDDoltPush(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "push complete"}})
+func TestSync_CallsBDDoltPullThenPush(t *testing.T) {
+	// sync must pull first, then push — order matters.
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "pull complete"},
+		{stdout: "push complete"},
+	})
 	err := (&syncCmd{}).Run(ctx, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"dolt", "push"})
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 calls (pull then push), got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 0, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 1, []string{"dolt", "push"})
+}
+
+func TestSync_RetriesPushOnceAfterNonFF(t *testing.T) {
+	// First push fails with a non-fast-forward error; sync should pull again
+	// and retry the push exactly once, succeeding on the retry.
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "pull complete"},                                           // initial pull
+		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")}, // first push: non-ff
+		{stdout: "pull complete"},                                           // retry pull
+		{stdout: "push complete"},                                           // retry push: success
+	})
+	err := (&syncCmd{}).Run(ctx, nil)
+	if err != nil {
+		t.Fatalf("unexpected error on retry success: %v", err)
+	}
+	if len(*calls) != 4 {
+		t.Fatalf("expected 4 calls (pull, push[non-ff], pull, push), got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 0, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 1, []string{"dolt", "push"})
+	assertArgs(t, *calls, 2, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 3, []string{"dolt", "push"})
+}
+
+func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
+	// Both push attempts fail with non-ff; the error must be returned and
+	// sync must NOT retry more than once (total push calls == 2).
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "pull complete"},
+		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")},
+		{stdout: "pull complete"},
+		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")},
+	})
+	err := (&syncCmd{}).Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error when retry push also fails")
+	}
+	// Must not have retried more than once: exactly 4 calls total.
+	if len(*calls) != 4 {
+		t.Fatalf("expected 4 calls (pull, push, pull, push), got %d — retry loop may be unbounded", len(*calls))
+	}
+}
+
+func TestSync_NoRetryOnNonFFUnrelatedError(t *testing.T) {
+	// Push fails with a non-retryable error (e.g. auth) — sync must return
+	// immediately without retrying.
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: ""},
+		{errOut: "Permission denied", err: fmt.Errorf("bd dolt push: exit status 1\nPermission denied")},
+	})
+	err := (&syncCmd{}).Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error from push failure")
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 calls (pull, push), got %d — non-ff check may be too broad", len(*calls))
+	}
 }
 
 func TestSync_NilContext(t *testing.T) {
