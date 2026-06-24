@@ -137,4 +137,4 @@ const UsageText = "Usage: ateam <verb> [args]\n" +
 	"       register | note | gate | clear-gate | learn | learnings | prime\n" +
 	"       show | close | reopen | pull | sync | new-initiative | dispatch | resume | cost\n" +
 	"       worktree-setup | send | inbox | route-pr-event | execution-status\n" +
-	"       fresh-drain | condense-lock\n"
+	"       watchers | fresh-drain | condense-lock\n"
