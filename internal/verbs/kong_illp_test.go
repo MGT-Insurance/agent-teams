@@ -116,7 +116,7 @@ func TestWatchersKong_NilContextErrors(t *testing.T) {
 // fakeWtGit satisfies the wtGitRunner interface used by worktreeSetupKong.
 type fakeWtGit struct{}
 
-func (f *fakeWtGit) RepoRoot(dir string) (string, error) { return dir, nil }
+func (f *fakeWtGit) RepoRoot(dir string) (string, error)  { return dir, nil }
 func (f *fakeWtGit) CommonDir(dir string) (string, error) { return dir + "/.git", nil }
 
 // TestWorktreeSetupKong_NilContextErrors verifies nil context returns an error.

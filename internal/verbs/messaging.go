@@ -249,7 +249,6 @@ func hasLiveSession(sessions []agentSession, worktreePath string) bool {
 	return false
 }
 
-
 // gitUserName returns the current git user.name (best-effort; empty on error).
 func gitUserName() string {
 	cmd := exec.Command("git", "config", "--get", "user.name")

@@ -208,11 +208,11 @@ func TestIsActivelyWorking_TrailingSlash(t *testing.T) {
 	const wt = "/home/agent/worktrees/my-initiative"
 
 	tests := []struct {
-		name    string
-		cwdFn   func() string // session cwd
-		wtFn    func() string // worktree path passed to isActivelyWorking
-		status  string
-		want    bool
+		name   string
+		cwdFn  func() string // session cwd
+		wtFn   func() string // worktree path passed to isActivelyWorking
+		status string
+		want   bool
 	}{
 		{
 			name:   "session cwd has trailing slash, worktree does not",
@@ -710,4 +710,3 @@ func TestExtractLatestAsk_UnclosedThenValid(t *testing.T) {
 		t.Errorf("context = %q, want valid-ctx", got.context)
 	}
 }
-

@@ -185,7 +185,6 @@ func (c *rolesKong) Run(ctx *cli.Context) error {
 	return runRoles(ctx)
 }
 
-
 // lastNoteBlockLines is the maximum number of lines rendered from the fallback
 // note block before a truncation indicator is prepended.
 const lastNoteBlockLines = 10

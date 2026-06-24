@@ -13,7 +13,7 @@ import (
 
 // fakeWTGit implements wtGitRunner for tests.
 type fakeWTGit struct {
-	repoRootFn func(dir string) (string, error)
+	repoRootFn  func(dir string) (string, error)
 	commonDirFn func(dir string) (string, error)
 }
 

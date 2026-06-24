@@ -594,9 +594,9 @@ func TestLearnings_HotAndFreshUnion(t *testing.T) {
 		runJSONFn: func(dst any, args ...string) error {
 			m := dst.(*map[string]any)
 			*m = map[string]any{
-				"dri:hot:condensed":  "hot body",
-				"dri:fresh:new-tip":  "fresh body",
-				"dri:cold-stale":     "cold body — must not appear",
+				"dri:hot:condensed": "hot body",
+				"dri:fresh:new-tip": "fresh body",
+				"dri:cold-stale":    "cold body — must not appear",
 			}
 			return nil
 		},
