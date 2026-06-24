@@ -19,9 +19,6 @@
 # NOTE: intentionally NO `set -e` / `set -euo pipefail` — fail-soft requires that
 # every git command failure is explicitly caught; set -e would propagate failures
 # before our catch logic runs.
-# We still set -u to catch typos in variable names (a separate safety), but only
-# after we've finished quoting all references properly.
-# shellcheck disable=SC2317  # directives below are for clarity; SC doesn't affect runtime.
 
 PREFIX="update-local-main"
 
