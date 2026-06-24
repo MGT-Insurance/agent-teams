@@ -20,6 +20,12 @@
 # every git command failure is explicitly caught; set -e would propagate failures
 # before our catch logic runs.
 
+# Never prompt for credentials: an HTTPS remote with an expired token would
+# otherwise hang the network ops below indefinitely and block teardown/close —
+# a worse fail-soft violation than a non-zero exit. With prompting off, an
+# auth failure returns non-zero immediately and is caught like any other error.
+export GIT_TERMINAL_PROMPT=0
+
 PREFIX="update-local-main"
 
 # ── Resolve target path ──────────────────────────────────────────────────────
