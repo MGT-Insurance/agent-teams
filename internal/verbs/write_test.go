@@ -975,9 +975,10 @@ func TestPull_NilContext(t *testing.T) {
 
 // ── sync ──────────────────────────────────────────────────────────────────────
 
-func TestSync_CallsBDDoltPullThenPush(t *testing.T) {
-	// sync must pull first, then push — order matters.
+func TestSync_CallsCommitThenPullThenPush(t *testing.T) {
+	// sync must commit first (to clear any dirty working set), then pull, then push.
 	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: ""}, // commit: no-op when clean
 		{stdout: "pull complete"},
 		{stdout: "push complete"},
 	})
@@ -985,39 +986,60 @@ func TestSync_CallsBDDoltPullThenPush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 calls (pull then push), got %d", len(*calls))
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 calls (commit, pull, push), got %d", len(*calls))
 	}
-	assertArgs(t, *calls, 0, []string{"dolt", "pull"})
-	assertArgs(t, *calls, 1, []string{"dolt", "push"})
+	assertArgs(t, *calls, 0, []string{"dolt", "commit"})
+	assertArgs(t, *calls, 1, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 2, []string{"dolt", "push"})
+}
+
+func TestSync_CommitNothingToCommitIsSuccess(t *testing.T) {
+	// "Nothing to commit" from dolt commit exits 0 in bd 1.0.5, so Run returns
+	// ("", nil). Guard: even if surfaced as error, sync must proceed to pull+push.
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "Nothing to commit.", err: nil}, // clean WS: no-op, no error
+		{stdout: "pull complete"},
+		{stdout: "push complete"},
+	})
+	err := (&syncCmd{}).Run(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected success when commit is a no-op, got: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 calls (commit, pull, push), got %d", len(*calls))
+	}
 }
 
 func TestSync_RetriesPushOnceAfterNonFF(t *testing.T) {
 	// First push fails with a non-fast-forward error; sync should pull again
 	// and retry the push exactly once, succeeding on the retry.
 	ctx, calls := newCtx(t, []fakeResp{
-		{stdout: "pull complete"},                                           // initial pull
+		{stdout: ""},              // commit: no-op
+		{stdout: "pull complete"}, // initial pull
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")}, // first push: non-ff
-		{stdout: "pull complete"},                                           // retry pull
-		{stdout: "push complete"},                                           // retry push: success
+		{stdout: "pull complete"}, // retry pull
+		{stdout: "push complete"}, // retry push: success
 	})
 	err := (&syncCmd{}).Run(ctx, nil)
 	if err != nil {
 		t.Fatalf("unexpected error on retry success: %v", err)
 	}
-	if len(*calls) != 4 {
-		t.Fatalf("expected 4 calls (pull, push[non-ff], pull, push), got %d", len(*calls))
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 calls (commit, pull, push[non-ff], pull, push), got %d", len(*calls))
 	}
-	assertArgs(t, *calls, 0, []string{"dolt", "pull"})
-	assertArgs(t, *calls, 1, []string{"dolt", "push"})
-	assertArgs(t, *calls, 2, []string{"dolt", "pull"})
-	assertArgs(t, *calls, 3, []string{"dolt", "push"})
+	assertArgs(t, *calls, 0, []string{"dolt", "commit"})
+	assertArgs(t, *calls, 1, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 2, []string{"dolt", "push"})
+	assertArgs(t, *calls, 3, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 4, []string{"dolt", "push"})
 }
 
 func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
 	// Both push attempts fail with non-ff; the error must be returned and
 	// sync must NOT retry more than once (total push calls == 2).
 	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: ""}, // commit: no-op
 		{stdout: "pull complete"},
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")},
 		{stdout: "pull complete"},
@@ -1027,9 +1049,9 @@ func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when retry push also fails")
 	}
-	// Must not have retried more than once: exactly 4 calls total.
-	if len(*calls) != 4 {
-		t.Fatalf("expected 4 calls (pull, push, pull, push), got %d — retry loop may be unbounded", len(*calls))
+	// Must not have retried more than once: exactly 5 calls total (commit, pull, push, pull, push).
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 calls (commit, pull, push, pull, push), got %d — retry loop may be unbounded", len(*calls))
 	}
 }
 
@@ -1037,15 +1059,16 @@ func TestSync_NoRetryOnNonFFUnrelatedError(t *testing.T) {
 	// Push fails with a non-retryable error (e.g. auth) — sync must return
 	// immediately without retrying.
 	ctx, calls := newCtx(t, []fakeResp{
-		{stdout: ""},
+		{stdout: ""}, // commit: no-op
+		{stdout: ""}, // pull
 		{errOut: "Permission denied", err: fmt.Errorf("bd dolt push: exit status 1\nPermission denied")},
 	})
 	err := (&syncCmd{}).Run(ctx, nil)
 	if err == nil {
 		t.Fatal("expected error from push failure")
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 calls (pull, push), got %d — non-ff check may be too broad", len(*calls))
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 calls (commit, pull, push), got %d — non-ff check may be too broad", len(*calls))
 	}
 }
 
@@ -1054,6 +1077,27 @@ func TestSync_NilContext(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}
+}
+
+func TestSync_CommitRealErrorAbortsBeforePull(t *testing.T) {
+	// commit fails with a real (non-"Nothing to commit") error — sync must
+	// return the error immediately and NOT proceed to pull or push.
+	commitErr := fmt.Errorf("bd dolt commit: exit status 1\ndisk full")
+	ctx, calls := newCtx(t, []fakeResp{
+		{errOut: "disk full", err: commitErr},
+	})
+	err := (&syncCmd{}).Run(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error when commit fails with real error")
+	}
+	if !strings.Contains(err.Error(), "disk full") {
+		t.Errorf("error %q should contain 'disk full'", err.Error())
+	}
+	// Only the commit call must have been made — pull and push must be skipped.
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 call (commit only), got %d: %v — pull/push must not run after commit failure", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 0, []string{"dolt", "commit"})
 }
 
 // ── integration: register + gate/clear-gate via temp workspace ─────────────────
@@ -1303,7 +1347,11 @@ func TestReopen_ForwardsBDStdout(t *testing.T) {
 }
 
 func TestSync_ForwardsBDStdout(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "push complete"}})
+	ctx, _ := newCtx(t, []fakeResp{
+		{stdout: ""}, // commit: no-op
+		{stdout: ""}, // pull
+		{stdout: "push complete"},
+	})
 	if err := (&syncCmd{}).Run(ctx, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
