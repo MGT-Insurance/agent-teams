@@ -57,6 +57,10 @@ backup/
 # Passive JSONL export (disabled via export.auto=false; Dolt remote is source of truth)
 issues.jsonl
 
+# Passive audit-trail export (source of truth is the Dolt events table, synced via
+# refs/dolt/data). Tracking it kept the working tree perpetually dirty after every bd op.
+interactions.jsonl
+
 # Per-project environment file (Dolt connection config, GH#2520)
 .env
 
