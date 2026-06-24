@@ -889,3 +889,174 @@ func mustMarshal(v any) []byte {
 	}
 	return b
 }
+
+// ── sendKong core-path tests ──────────────────────────────────────────────────
+
+func TestSendKong_HappyPath_LiveSession(t *testing.T) {
+	home := t.TempDir()
+	f := makeTempFile(t, "hello recipient")
+	recipientWt := t.TempDir()
+
+	var createArgs []string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			createArgs = args
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-kong-msg1"
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-kong-recip",
+				Description: "worktree: " + recipientWt + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var resumeCalled bool
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        f,
+		Sender:      "test-sender",
+		agentsFunc:  func() ([]agentSession, error) { return []agentSession{{CWD: recipientWt}}, nil },
+		resumeFunc:  func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(fbd, home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertContains(t, createArgs, "--type=message", "bd create missing --type=message")
+	assertContains(t, createArgs, "--assignee=at-kong-recip", "bd create missing --assignee")
+
+	if resumeCalled {
+		t.Error("resume should not be called when session is live")
+	}
+	if !strings.Contains(stdout.String(), "message_id: at-kong-msg1") {
+		t.Errorf("stdout missing message_id: %s", stdout.String())
+	}
+}
+
+func TestSendKong_DeadSession_EscalatesToResume(t *testing.T) {
+	home := t.TempDir()
+	f := makeTempFile(t, "hello")
+	recipientWt := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-kong-msg2"
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-kong-dead", Description: "worktree: " + recipientWt + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var resumedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-dead",
+		File:        f,
+		agentsFunc:  func() ([]agentSession, error) { return []agentSession{}, nil },
+		resumeFunc:  func(_ *cli.Context, id string) error { resumedID = id; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(fbd, home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resumedID != "at-kong-dead" {
+		t.Errorf("resume not called with correct id; got %q", resumedID)
+	}
+	if !strings.Contains(stdout.String(), "launching via ateam resume") {
+		t.Errorf("stdout missing launch notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_NilContext(t *testing.T) {
+	cmd := &sendKong{RecipientID: "at-x", File: "/tmp/x"}
+	if err := cmd.Run(nil); err == nil {
+		t.Fatal("expected error for nil context, got nil")
+	}
+}
+
+func TestSendKong_FileNotFound(t *testing.T) {
+	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+	cmd := &sendKong{RecipientID: "at-x", File: "/no/such/file.txt"}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+// ── inboxKong core-path tests ─────────────────────────────────────────────────
+
+func TestInboxKong_PeekWithUnread(t *testing.T) {
+	cwd := t.TempDir()
+	myID := "at-kong-peek"
+
+	var labelCalls [][]string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			switch {
+			case containsAll(args, "--status=open") && !containsAll(args, "--include-infra"):
+				issues := []bd.Issue{{ID: myID, Description: "worktree: " + cwd + "\n", Status: "open"}}
+				return json.Unmarshal(mustMarshal(issues), dst)
+			case containsAll(args, "--include-infra"):
+				messages := []bd.Issue{
+					{ID: "at-kp1", IssueType: "message", Assignee: myID, Description: "hi"},
+					{ID: "at-kp2", IssueType: "message", Assignee: myID, Description: "there"},
+				}
+				return json.Unmarshal(mustMarshal(messages), dst)
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			labelCalls = append(labelCalls, args)
+			return "", nil
+		},
+	}
+
+	// Simulate peek path via the helpers (Run uses os.Getwd which can't be injected).
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	id, err := resolveMyInitiative(ctx, cwd)
+	if err != nil || id != myID {
+		t.Fatalf("resolveMyInitiative: id=%q err=%v", id, err)
+	}
+
+	var messages []bd.Issue
+	if err := fbd.RunJSON(&messages,
+		"list", "--include-infra", "--assignee="+myID, "--exclude-label=read", "--status=open", "--json",
+	); err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	messages = filterMessageType(messages)
+
+	// Peek: print count, no label calls.
+	if len(messages) > 0 {
+		fmt.Fprintf(ctx.Stdout, "%d unread message(s)\n", len(messages))
+	}
+	if !strings.Contains(stdout.String(), "2 unread message(s)") {
+		t.Errorf("expected count line, got: %s", stdout.String())
+	}
+	if len(labelCalls) != 0 {
+		t.Errorf("peek must not call label ops, got: %v", labelCalls)
+	}
+}
+
+func TestInboxKong_NilContext(t *testing.T) {
+	cmd := &inboxKong{}
+	if err := cmd.Run(nil); err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}

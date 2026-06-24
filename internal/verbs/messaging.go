@@ -20,13 +20,181 @@ func RegisterMessaging(reg cli.Registry) {
 	reg.Register(&inboxCmd{})
 }
 
-// RegisterMessagingKong registers messaging verbs onto p. Initially bridges all
-// verbs from RegisterMessaging; ring-track conversion replaces each bridge with a
-// native kong struct in this function without touching any other file.
-// Note: sendCmd has injected agentsFunc/resumeFunc fields — mark those kong:"-"
-// when converting to native structs.
+// RegisterMessagingKong registers messaging verbs onto p using native kong structs.
 func RegisterMessagingKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterMessaging)
+	p.AddVerb("send", "Send a message to a recipient initiative.", &sendKong{
+		agentsFunc: defaultAgentsJSON,
+		resumeFunc: defaultResume,
+	})
+	p.AddVerb("inbox", "Read and consume unread messages for this initiative.", &inboxKong{})
+}
+
+// ── sendKong ──────────────────────────────────────────────────────────────────
+
+// sendKong is the kong-native form of sendCmd.
+// DI fields (agentsFunc, resumeFunc) are tagged kong:"-" so kong ignores them;
+// tests substitute fakes without touching the struct registration.
+type sendKong struct {
+	RecipientID string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
+	File        string `name:"file"   help:"Path to the message body file (required)." required:""`
+	Sender      string `name:"sender" help:"Sender identifier (default: git user.name)."`
+	Thread      string `name:"thread" help:"Optional thread identifier label."`
+
+	agentsFunc agentsJSONFunc       `kong:"-"`
+	resumeFunc resumeInitiativeFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *sendKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam send: nil context")
+	}
+
+	// File must exist.
+	if _, err := os.Stat(c.File); err != nil {
+		return cli.Usagef("ateam send: file not found: %s", c.File)
+	}
+
+	sender := c.Sender
+	if sender == "" {
+		sender = gitUserName()
+	}
+
+	createArgs := []string{
+		"create",
+		"--type=message",
+		"--assignee=" + c.RecipientID,
+		"--notes=from: " + sender,
+		"--labels=delivery:pending",
+		"--body-file=" + c.File,
+		"--title=message from " + sender,
+		"--json",
+	}
+	if c.Thread != "" {
+		createArgs = append(createArgs, "--labels=thread:"+c.Thread)
+	}
+
+	var issue bd.Issue
+	if err := ctx.BD.RunJSON(&issue, createArgs...); err != nil {
+		return fmt.Errorf("ateam send: create message bead: %w", err)
+	}
+	if issue.ID == "" {
+		return fmt.Errorf("ateam send: bd create returned no id")
+	}
+
+	doorbellDir := filepath.Join(ctx.Home, "mailbox")
+	if err := os.MkdirAll(doorbellDir, 0o755); err != nil {
+		return fmt.Errorf("ateam send: create mailbox dir: %w", err)
+	}
+	doorbellPath := filepath.Join(doorbellDir, c.RecipientID+".wake")
+	if err := touchFile(doorbellPath); err != nil {
+		return fmt.Errorf("ateam send: touch doorbell: %w", err)
+	}
+
+	fmt.Fprintf(ctx.Stdout, "message_id: %s\n", issue.ID)
+	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
+
+	wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	if liveErr != nil {
+		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
+		return nil
+	}
+
+	sessions, agentsErr := c.agentsFunc()
+	if agentsErr != nil {
+		fmt.Fprintf(ctx.Stdout, "note: could not query live sessions (%v); message delivered via doorbell\n", agentsErr)
+		return nil
+	}
+
+	want := strings.TrimRight(wtPath, "/")
+	fmt.Fprintf(ctx.Stdout, "liveness: recipient worktree=%q; %d session(s) reported by claude agents --json\n", want, len(sessions))
+	for i, s := range sessions {
+		fmt.Fprintf(ctx.Stdout, "liveness:   session[%d] cwd=%q kind=%q status=%q match=%t\n",
+			i, s.CWD, s.Kind, s.Status, strings.TrimRight(s.CWD, "/") == want)
+	}
+
+	if hasLiveSession(sessions, wtPath) {
+		fmt.Fprintf(ctx.Stdout, "recipient session is live; doorbell will wake it\n")
+		return nil
+	}
+
+	fmt.Fprintf(ctx.Stdout, "recipient session not live; launching via ateam resume\n")
+	if err := c.resumeFunc(ctx, c.RecipientID); err != nil {
+		return fmt.Errorf("ateam send: resume escalation: %w", err)
+	}
+	return nil
+}
+
+// ── inboxKong ─────────────────────────────────────────────────────────────────
+
+// inboxKong is the kong-native form of inboxCmd.
+type inboxKong struct {
+	JSON bool `name:"json" help:"Output messages as JSON instead of a system-reminder block."`
+	Peek bool `name:"peek" help:"Print unread count without consuming messages."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *inboxKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam inbox: nil context")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("ateam inbox: getwd: %w", err)
+	}
+
+	myID, err := resolveMyInitiative(ctx, cwd)
+	if err != nil {
+		return nil
+	}
+
+	var messages []bd.Issue
+	if err := ctx.BD.RunJSON(&messages,
+		"list",
+		"--include-infra",
+		"--assignee="+myID,
+		"--exclude-label=read",
+		"--status=open",
+		"--json",
+	); err != nil {
+		return fmt.Errorf("ateam inbox: query: %w", err)
+	}
+
+	messages = filterMessageType(messages)
+
+	if c.Peek {
+		if len(messages) == 0 {
+			fmt.Fprintln(ctx.Stdout, "no unread mail")
+		} else {
+			fmt.Fprintf(ctx.Stdout, "%d unread message(s)\n", len(messages))
+		}
+		return nil
+	}
+
+	if len(messages) == 0 {
+		fmt.Fprintln(ctx.Stdout, "no unread mail")
+		return nil
+	}
+
+	if c.JSON {
+		raw, err := json.Marshal(messages)
+		if err != nil {
+			return fmt.Errorf("ateam inbox: marshal: %w", err)
+		}
+		fmt.Fprintln(ctx.Stdout, string(raw))
+	} else {
+		printMessagesBlock(ctx, messages)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, msg := range messages {
+		if err := markMessageRead(ctx, msg.ID, myID, now); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam inbox: mark read %s: %v\n", msg.ID, err)
+		}
+	}
+
+	return nil
 }
 
 // ── send ──────────────────────────────────────────────────────────────────────
