@@ -25,6 +25,15 @@ func RegisterWatchers(reg cli.Registry) {
 	})
 }
 
+// RegisterWatchersKong registers watcher verbs onto p. Initially bridges all
+// verbs from RegisterWatchers; ring-track conversion replaces each bridge with a
+// native kong struct in this function without touching any other file.
+// Note: watchersCmd has injected agentsFunc/initiativesFunc fields — mark those
+// kong:"-" when converting to a native struct.
+func RegisterWatchersKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterWatchers)
+}
+
 // watchersCmd implements `ateam watchers`.
 type watchersCmd struct {
 	// agentsFunc is injected so tests can substitute a fake without touching os/exec.

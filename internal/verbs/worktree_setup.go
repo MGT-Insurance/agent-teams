@@ -20,6 +20,15 @@ func RegisterWorktreeSetup(reg cli.Registry) {
 	})
 }
 
+// RegisterWorktreeSetupKong registers worktree-setup verbs onto p. Initially
+// bridges all verbs from RegisterWorktreeSetup; ring-track conversion replaces
+// each bridge with a native kong struct in this function without touching any
+// other file. Note: worktreeSetupCommand has injected git/runner fields — mark
+// those kong:"-" when converting to a native struct.
+func RegisterWorktreeSetupKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterWorktreeSetup)
+}
+
 // cmdRunner is the signature for running an external command, streaming
 // stdout/stderr to the provided writers. Injected for testing.
 type cmdRunner func(name string, args []string, stdout, stderr interface{ Write([]byte) (int, error) }) error

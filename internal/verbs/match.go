@@ -18,6 +18,13 @@ func RegisterMatch(reg cli.Registry) {
 	reg.Register(&resumeMatchClosedCommand{})
 }
 
+// RegisterMatchKong registers match verbs onto p. Initially bridges all verbs
+// from RegisterMatch; ring-track conversion replaces each bridge with a native
+// kong struct in this function without touching any other file.
+func RegisterMatchKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterMatch)
+}
+
 // hasWorktreeLine reports whether any line in description starts with "worktree:".
 func hasWorktreeLine(description string) bool {
 	for _, line := range strings.Split(description, "\n") {

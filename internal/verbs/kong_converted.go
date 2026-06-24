@@ -115,17 +115,14 @@ func renderTableKong(ctx *cli.Context, r cost.Report) error {
 
 // ── registration helpers ──────────────────────────────────────────────────────
 
-// RegisterWriteKong registers the write verbs onto p. The 3 converted verbs
-// (reopen, register, cost) use native kong structs; the remaining write verbs
-// are bridged from the legacy cli.Command implementations.
-//
-// cost is registered here even though it lives in cost.go because the LOOP bead
-// owns all 3 converted verbs from a single registration point.
+// RegisterWriteKong registers the write-track verbs onto p. reopen and register
+// use native kong structs; the remaining write verbs (note, gate, learn, close,
+// pull, sync, condense, condense-lock, etc.) are bridged. cost is NOT registered
+// here — it lives in RegisterCostKong (cost.go).
 func RegisterWriteKong(p *cli.Parser) {
-	// Native kong verbs.
+	// Native kong verbs (write-track converted verbs).
 	p.AddVerb("reopen", "Reopen a closed initiative.", &reopenKong{})
 	p.AddVerb("register", "Register a new initiative from a body file.", &registerKong{})
-	p.AddVerb("cost", "Report estimated token cost for an initiative.", &costKong{})
 
 	// Bridge the remaining write verbs (legacy cli.Command, passthrough args).
 	for _, cmd := range legacyWriteVerbs() {
@@ -133,48 +130,43 @@ func RegisterWriteKong(p *cli.Parser) {
 	}
 }
 
-// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the 3 converted
-// ones so they can be bridged onto the kong parser.
+// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the 2 natively
+// converted ones (reopen, register) so they can be bridged onto the kong parser.
+// cost is excluded because it lives in a separate file (cost.go) and is
+// registered independently via RegisterCostKong.
 func legacyWriteVerbs() []cli.Command {
-	// Build a temporary registry to harvest the commands, then remove converted.
 	reg := make(cli.Registry)
 	RegisterWrite(reg)
-	converted := map[string]bool{"reopen": true, "register": true, "cost": true}
-	out := make([]cli.Command, 0, len(reg)-3)
+	skip := map[string]bool{"reopen": true, "register": true}
+	out := make([]cli.Command, 0, len(reg)-len(skip))
 	for name, cmd := range reg {
-		if !converted[name] {
+		if !skip[name] {
 			out = append(out, cmd)
 		}
 	}
-	// Sort for determinism (panics on duplicate DynamicCommand are order-sensitive).
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out
 }
 
-// RegisterAllKong registers every ateam verb onto p using the following strategy:
-//   - Converted verbs (reopen, register, cost) use native kong structs with typed flags.
-//   - All other verbs are bridged from their legacy cli.Command implementations via
-//     AddBridgeVerb, which forwards raw remaining args to cmd.Run(ctx, args).
-//
-// This is the single call main.go uses to populate the kong parser.
-// The ws verb is also registered here (bridged); main.go special-cases it
-// BEFORE reaching kong dispatch to preserve the pre-init print behavior.
+// RegisterAllKong is the FROZEN dispatcher called by main.go. It delegates to
+// per-track RegisterXKong functions — one per existing RegisterX file. This
+// function must never be edited again after the loop closes; ring-track
+// conversion beads edit ONLY their own RegisterXKong inside their own file.
 func RegisterAllKong(p *cli.Parser) {
-	// Converted (native kong structs).
-	RegisterWriteKong(p)
-
-	// All remaining tracks — fully bridged.
-	bridgeTrack(p, func(r cli.Registry) { RegisterQuery(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterMatch(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterDispatch(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterWorktreeSetup(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterMessaging(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterRouteEvent(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterStatus(r) })
-	bridgeTrack(p, func(r cli.Registry) { RegisterWatchers(r) })
+	RegisterWriteKong(p)         // write.go + kong_converted.go (3 native + bridges)
+	RegisterCostKong(p)          // cost.go  (native kong struct)
+	RegisterQueryKong(p)         // query.go
+	RegisterMatchKong(p)         // match.go
+	RegisterDispatchKong(p)      // dispatch.go
+	RegisterWorktreeSetupKong(p) // worktree_setup.go
+	RegisterMessagingKong(p)     // messaging.go
+	RegisterRouteEventKong(p)    // route.go
+	RegisterStatusKong(p)        // status.go
+	RegisterWatchersKong(p)      // watchers.go
 }
 
 // bridgeTrack registers all commands from registerFn as bridge verbs on p.
+// Called by per-track RegisterXKong functions while verbs are still unconverted.
 func bridgeTrack(p *cli.Parser, registerFn func(cli.Registry)) {
 	reg := make(cli.Registry)
 	registerFn(reg)

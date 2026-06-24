@@ -18,6 +18,14 @@ func RegisterCost(reg cli.Registry) {
 	reg.Register(&costCmd{})
 }
 
+// RegisterCostKong registers the cost verb onto p using its native kong struct.
+// costKong is defined in kong_converted.go (LOOP bead ownership) because cost was
+// one of the 3 verbs converted as the loop proof. The ring-track enh bead for
+// single-verb files (illp) may move costKong here and remove this note.
+func RegisterCostKong(p *cli.Parser) {
+	p.AddVerb("cost", "Report estimated token cost for an initiative.", &costKong{})
+}
+
 // costCmd implements: ateam cost <initiative-id> [--json]
 type costCmd struct{}
 

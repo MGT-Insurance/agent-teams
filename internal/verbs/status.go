@@ -47,6 +47,15 @@ func RegisterStatus(reg cli.Registry) {
 	reg.Register(&executionStatusCmd{agentsFunc: defaultAgentsJSON})
 }
 
+// RegisterStatusKong registers status verbs onto p. Initially bridges all verbs
+// from RegisterStatus; ring-track conversion replaces each bridge with a native
+// kong struct in this function without touching any other file.
+// Note: executionStatusCmd has an injected agentsFunc field — mark it kong:"-"
+// when converting to a native struct.
+func RegisterStatusKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterStatus)
+}
+
 // executionStatusCmd implements `ateam execution-status`.
 type executionStatusCmd struct {
 	// agentsFunc is injected so tests can substitute a fake without touching os/exec.

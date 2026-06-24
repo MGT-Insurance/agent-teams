@@ -29,6 +29,13 @@ func RegisterQuery(reg cli.Registry) {
 	reg.Register(&rolesCmd{})
 }
 
+// RegisterQueryKong registers query verbs onto p. Initially bridges all verbs
+// from RegisterQuery; ring-track conversion replaces each bridge with a native
+// kong struct in this function without touching any other file.
+func RegisterQueryKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterQuery)
+}
+
 // wsCmd prints the workspace home path.
 type wsCmd struct{}
 

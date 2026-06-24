@@ -20,6 +20,15 @@ func RegisterMessaging(reg cli.Registry) {
 	reg.Register(&inboxCmd{})
 }
 
+// RegisterMessagingKong registers messaging verbs onto p. Initially bridges all
+// verbs from RegisterMessaging; ring-track conversion replaces each bridge with a
+// native kong struct in this function without touching any other file.
+// Note: sendCmd has injected agentsFunc/resumeFunc fields — mark those kong:"-"
+// when converting to native structs.
+func RegisterMessagingKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterMessaging)
+}
+
 // ── send ──────────────────────────────────────────────────────────────────────
 
 // agentsJSONFunc is the function type for querying live bg sessions.

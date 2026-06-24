@@ -21,6 +21,15 @@ func RegisterRouteEvent(reg cli.Registry) {
 	reg.Register(&routePREventCommand{runner: defaultAteamRunner})
 }
 
+// RegisterRouteEventKong registers route verbs onto p. Initially bridges all
+// verbs from RegisterRouteEvent; ring-track conversion replaces each bridge with
+// a native kong struct in this function without touching any other file.
+// Note: routePREventCommand has an injected runner field — mark it kong:"-"
+// when converting to a native struct.
+func RegisterRouteEventKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterRouteEvent)
+}
+
 // routePREventCommand implements the route-pr-event verb.
 type routePREventCommand struct {
 	runner ateamRunner

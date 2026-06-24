@@ -23,6 +23,15 @@ func RegisterDispatch(reg cli.Registry) {
 	reg.Register(&resumeCommand{launch: launchBGSession})
 }
 
+// RegisterDispatchKong registers dispatch verbs onto p. Initially bridges all
+// verbs from RegisterDispatch; ring-track conversion replaces each bridge with a
+// native kong struct in this function without touching any other file.
+// Note: dispatchCommand and resumeCommand have injected launchFunc fields —
+// mark those kong:"-" when converting to native structs.
+func RegisterDispatchKong(p *cli.Parser) {
+	bridgeTrack(p, RegisterDispatch)
+}
+
 // ---- new-initiative --------------------------------------------------------
 
 type newInitiativeCommand struct{}
