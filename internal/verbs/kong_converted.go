@@ -1,7 +1,11 @@
-// kong_converted.go holds the 3 representative verbs converted to kong structs
-// for the LOOP bead (agent-teams-f738). This file is owned by the LOOP track;
-// enh tracks that convert additional verbs in their respective files must NOT
-// re-convert reopen, register, or cost (they live here now).
+// kong_converted.go holds the verbs converted to native kong structs.
+// LOOP bead (agent-teams-f738): reopen, register, cost.
+// rtix bead (agent-teams-rtix): note, gate, clear-gate, learn, close,
+//
+//	pull, sync, forget, condense, fresh-drain.
+//
+// Ownership rule: enh tracks that convert additional verbs in their respective
+// files must NOT re-convert any verb that already lives here.
 package verbs
 
 import (
@@ -10,6 +14,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/cost"
@@ -113,16 +118,384 @@ func renderTableKong(ctx *cli.Context, r cost.Report) error {
 	return renderTable(ctx, r)
 }
 
+// ── note ─────────────────────────────────────────────────────────────────────
+
+// noteKong is the kong-converted form of note.
+// Takes a positional <id> and a required --file flag.
+type noteKong struct {
+	ID   string `arg:"" name:"id"   help:"Initiative ID."`
+	File string `name:"file"        help:"Path to note file (required)." required:""`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *noteKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam note: no context")
+	}
+	if _, err := os.Stat(c.File); err != nil {
+		return cli.Usagef("ateam note: file not found: %s", c.File)
+	}
+	out, err := ctx.BD.Run("note", c.ID, "--file="+c.File)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
+// ── gate ─────────────────────────────────────────────────────────────────────
+
+// gateKong is the kong-converted form of gate.
+// Dual mutually-exclusive paths via xor:"gateform":
+//   - Prose: --file <path>
+//   - Structured: --decision <text> [--recommendation <text>]
+//     [--alternative <text>] [--context-file <path>]
+//
+// Length constraints (--decision ≤120, --context-file content ≤280) and the
+// "at least one form required" invariant are enforced in Validate.
+type gateKong struct {
+	ID string `arg:"" name:"id" help:"Initiative ID."`
+
+	// Prose form.
+	File string `name:"file" xor:"gateform" help:"Path to prose note file (mutually exclusive with structured flags)."`
+
+	// Structured form flags.
+	Decision       string `name:"decision"       xor:"gateform" help:"Decision question (≤120 chars, required in structured form)."`
+	Recommendation string `name:"recommendation" xor:"gateform" help:"Recommended answer."`
+	Alternative    string `name:"alternative"    xor:"gateform" help:"Alternative answer."`
+	ContextFile    string `name:"context-file"   xor:"gateform" help:"Path to optional context file (content ≤280 chars)."`
+
+	// Kind applies to both forms.
+	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`
+}
+
+// Validate enforces constraints not expressible as tags:
+//   - If structured flags are used: --decision required; --decision ≤120 chars; context-file content ≤280 chars.
+//   - If neither form is provided: --file required error.
+//   - Prose form: file must exist.
+func (c *gateKong) Validate(_ *kong.Context) error {
+	structuredUsed := c.Decision != "" || c.Recommendation != "" ||
+		c.Alternative != "" || c.ContextFile != ""
+
+	if structuredUsed {
+		if c.Decision == "" {
+			return cli.Usagef("ateam gate: --decision required when using structured form")
+		}
+		if len(c.Decision) > 120 {
+			return cli.Usagef("ateam gate: --decision exceeds 120 chars (got %d)", len(c.Decision))
+		}
+		if c.ContextFile != "" {
+			data, err := os.ReadFile(c.ContextFile)
+			if err != nil {
+				return cli.Usagef("ateam gate: context-file not found: %s", c.ContextFile)
+			}
+			// TrimRight mirrors buildAskBlock behaviour.
+			if trimmed := len(trimRight(string(data), "\n")); trimmed > 280 {
+				return cli.Usagef("ateam gate: --context-file content exceeds 280 chars (got %d)", trimmed)
+			}
+		}
+		return nil
+	}
+
+	// Prose form: --file must be supplied.
+	if c.File == "" {
+		return cli.Usagef("ateam gate: --file required")
+	}
+	if _, err := os.Stat(c.File); err != nil {
+		return cli.Usagef("ateam gate: file not found: %s", c.File)
+	}
+	return nil
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *gateKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam gate: no context")
+	}
+
+	noteFile := c.File
+	structuredUsed := c.Decision != "" || c.Recommendation != "" ||
+		c.Alternative != "" || c.ContextFile != ""
+
+	if structuredUsed {
+		ask := &gateAsk{
+			decision:       c.Decision,
+			recommendation: c.Recommendation,
+			alternative:    c.Alternative,
+			contextFile:    c.ContextFile,
+		}
+		block, buildErr := buildAskBlock(ask)
+		if buildErr != nil {
+			return buildErr
+		}
+		tmp, tmpErr := os.CreateTemp("", "ateam-gate-ask-*")
+		if tmpErr != nil {
+			return fmt.Errorf("ateam gate: create temp file: %w", tmpErr)
+		}
+		tmpPath := tmp.Name()
+		if _, writeErr := tmp.WriteString(block); writeErr != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("ateam gate: write temp file: %w", writeErr)
+		}
+		tmp.Close()
+		defer os.Remove(tmpPath)
+		noteFile = tmpPath
+	}
+
+	out, runErr := ctx.BD.Run("note", c.ID, "--file="+noteFile)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	out, runErr = ctx.BD.Run("label", "add", c.ID, "human")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if runErr != nil {
+		return runErr
+	}
+	out, runErr = ctx.BD.Run("label", "add", c.ID, "gate:"+c.Kind)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return runErr
+}
+
+// trimRight mirrors strings.TrimRight for use in Validate without importing strings.
+func trimRight(s, cutset string) string {
+	for i := len(s); i > 0; {
+		r := rune(s[i-1])
+		found := false
+		for _, c := range cutset {
+			if r == c {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return s[:i]
+		}
+		i--
+	}
+	return ""
+}
+
+// ── clear-gate ────────────────────────────────────────────────────────────────
+
+// clearGateKong is the kong-converted form of clear-gate.
+// Takes a positional <id> and an optional --file flag.
+type clearGateKong struct {
+	ID   string `arg:"" name:"id"  help:"Initiative ID."`
+	File string `name:"file"       help:"Path to response file (optional)."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *clearGateKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam clear-gate: no context")
+	}
+	if c.File != "" {
+		if _, err := os.Stat(c.File); err != nil {
+			return cli.Usagef("ateam clear-gate: file not found: %s", c.File)
+		}
+		out, err := ctx.BD.Run("comment", c.ID, "--file="+c.File)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	out, err := ctx.BD.Run("label", "remove", c.ID, "human")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err != nil {
+		return err
+	}
+	out, err = ctx.BD.Run("label", "remove", c.ID, "gate:review")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err != nil {
+		return err
+	}
+	out, err = ctx.BD.Run("label", "remove", c.ID, "gate:question")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
+// ── learn ─────────────────────────────────────────────────────────────────────
+
+// learnKong is the kong-converted form of learn.
+// Takes positional <role> and <slug>, and a required --file flag.
+type learnKong struct {
+	Role string `arg:"" name:"role" help:"Role name (e.g. planner, implementer)."`
+	Slug string `arg:"" name:"slug" help:"Memory slug; prefix with hot:, fresh:, or cold: to target a tier."`
+	File string `name:"file" help:"Path to file containing memory content (required)." required:""`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *learnKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam learn: no context")
+	}
+	data, err := os.ReadFile(c.File)
+	if err != nil {
+		return cli.Usagef("ateam learn: file not found: %s", c.File)
+	}
+	key := learnKey(c.Role, c.Slug)
+	out, runErr := ctx.BD.Run("remember", "--key="+key, string(data))
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return runErr
+}
+
+// ── close ─────────────────────────────────────────────────────────────────────
+
+// closeKong is the kong-converted form of close.
+// --file takes precedence over --reason when both are provided (preserved from
+// legacy parseCloseFlags behaviour). Validation: no additional constraints.
+type closeKong struct {
+	ID     string `arg:"" name:"id"  help:"Initiative ID."`
+	Reason string `name:"reason"     help:"Close reason text."`
+	File   string `name:"file"       help:"Path to file containing close reason (takes precedence over --reason)."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *closeKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam close: no context")
+	}
+	reason := c.Reason
+	if c.File != "" {
+		data, err := os.ReadFile(c.File)
+		if err != nil {
+			return cli.Usagef("ateam close: file not found: %s", c.File)
+		}
+		reason = string(data)
+	}
+	if reason != "" {
+		out, err := ctx.BD.Run("close", c.ID, "--reason="+reason)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+		return err
+	}
+	out, err := ctx.BD.Run("close", c.ID)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
+// ── pull ──────────────────────────────────────────────────────────────────────
+
+// pullKong is the kong-converted form of pull. No arguments.
+type pullKong struct{}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *pullKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam pull: no context")
+	}
+	out, err := ctx.BD.Run("dolt", "pull")
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
+// ── sync ──────────────────────────────────────────────────────────────────────
+
+// syncKong is the kong-converted form of sync. No arguments.
+// Delegates entirely to the legacy syncCmd.Run to avoid duplicating the
+// bounded non-ff retry logic.
+type syncKong struct{}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *syncKong) Run(ctx *cli.Context) error {
+	return (&syncCmd{}).Run(ctx, nil)
+}
+
+// ── forget ────────────────────────────────────────────────────────────────────
+
+// forgetKong is the kong-converted form of forget.
+// Takes positional <role> and <slug>; key is formed as role:slug.
+type forgetKong struct {
+	Role string `arg:"" name:"role" help:"Role name."`
+	Slug string `arg:"" name:"slug" help:"Memory slug (e.g. hot:name targets role:hot:name)."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *forgetKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam forget: no context")
+	}
+	key := c.Role + ":" + c.Slug
+	out, err := ctx.BD.Run("forget", key)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
+// ── condense ──────────────────────────────────────────────────────────────────
+
+// condenseKong is the kong-converted form of condense.
+// Takes a positional <role>; delegates to legacy condenseCmd.Run to avoid
+// duplicating the packet-building logic.
+type condenseKong struct {
+	Role string `arg:"" name:"role" help:"Role to condense memories for."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *condenseKong) Run(ctx *cli.Context) error {
+	return (&condenseCmd{}).Run(ctx, []string{c.Role})
+}
+
+// ── fresh-drain ───────────────────────────────────────────────────────────────
+
+// freshDrainKong is the kong-converted form of fresh-drain.
+// Takes a positional <role>; delegates to legacy freshDrainCmd.Run to avoid
+// duplicating the drain logic.
+type freshDrainKong struct {
+	Role string `arg:"" name:"role" help:"Role whose fresh: memories to drain to cold."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *freshDrainKong) Run(ctx *cli.Context) error {
+	return (&freshDrainCmd{}).Run(ctx, []string{c.Role})
+}
+
 // ── registration helpers ──────────────────────────────────────────────────────
 
 // RegisterWriteKong registers the write-track verbs onto p. reopen and register
-// use native kong structs; the remaining write verbs (note, gate, learn, close,
-// pull, sync, condense, condense-lock, etc.) are bridged. cost is NOT registered
-// here — it lives in RegisterCostKong (cost.go).
+// (LOOP verbs) plus note, gate, clear-gate, learn, close, pull, sync, forget,
+// condense, and fresh-drain (rtix verbs) use native kong structs. condense-lock
+// is bridged (its own lock.go bead). cost is NOT registered here — it lives in
+// RegisterCostKong (cost.go).
 func RegisterWriteKong(p *cli.Parser) {
-	// Native kong verbs (write-track converted verbs).
+	// LOOP-converted native verbs.
 	p.AddVerb("reopen", "Reopen a closed initiative.", &reopenKong{})
 	p.AddVerb("register", "Register a new initiative from a body file.", &registerKong{})
+
+	// rtix-converted native verbs.
+	p.AddVerb("note", "Add a note to an initiative.", &noteKong{})
+	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{})
+	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
+	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})
+	p.AddVerb("close", "Close an initiative.", &closeKong{})
+	p.AddVerb("pull", "Pull the remote beads database (dolt pull).", &pullKong{})
+	p.AddVerb("sync", "Pull then push the beads database (bounded non-ff retry).", &syncKong{})
+	p.AddVerb("forget", "Delete a role memory by key.", &forgetKong{})
+	p.AddVerb("condense", "Emit a structured memory packet for a role.", &condenseKong{})
+	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
 
 	// Bridge the remaining write verbs (legacy cli.Command, passthrough args).
 	for _, cmd := range legacyWriteVerbs() {
@@ -130,14 +503,27 @@ func RegisterWriteKong(p *cli.Parser) {
 	}
 }
 
-// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the 2 natively
-// converted ones (reopen, register) so they can be bridged onto the kong parser.
+// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the natively
+// converted ones so they can be bridged onto the kong parser.
 // cost is excluded because it lives in a separate file (cost.go) and is
 // registered independently via RegisterCostKong.
 func legacyWriteVerbs() []cli.Command {
 	reg := make(cli.Registry)
 	RegisterWrite(reg)
-	skip := map[string]bool{"reopen": true, "register": true}
+	skip := map[string]bool{
+		"reopen":      true,
+		"register":    true,
+		"note":        true,
+		"gate":        true,
+		"clear-gate":  true,
+		"learn":       true,
+		"close":       true,
+		"pull":        true,
+		"sync":        true,
+		"forget":      true,
+		"condense":    true,
+		"fresh-drain": true,
+	}
 	out := make([]cli.Command, 0, len(reg)-len(skip))
 	for name, cmd := range reg {
 		if !skip[name] {

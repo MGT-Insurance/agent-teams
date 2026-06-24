@@ -996,10 +996,10 @@ func TestSync_RetriesPushOnceAfterNonFF(t *testing.T) {
 	// First push fails with a non-fast-forward error; sync should pull again
 	// and retry the push exactly once, succeeding on the retry.
 	ctx, calls := newCtx(t, []fakeResp{
-		{stdout: "pull complete"},                                           // initial pull
+		{stdout: "pull complete"}, // initial pull
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")}, // first push: non-ff
-		{stdout: "pull complete"},                                           // retry pull
-		{stdout: "push complete"},                                           // retry push: success
+		{stdout: "pull complete"}, // retry pull
+		{stdout: "push complete"}, // retry push: success
 	})
 	err := (&syncCmd{}).Run(ctx, nil)
 	if err != nil {
@@ -1326,6 +1326,126 @@ func TestRegister_PrintsOnlyID(t *testing.T) {
 	if got != "at-only" {
 		t.Errorf("register stdout = %q, want bare id %q", got, "at-only")
 	}
+}
+
+// ── kong verb core-path tests ─────────────────────────────────────────────────
+
+// TestGateKong_XorRejectsFileAndDecision verifies kong's xor enforcement fires
+// when --file and --decision are both supplied (should exit 2).
+func TestGateKong_XorRejectsFileAndDecision(t *testing.T) {
+	f := makeTempFile(t, "prose")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"gate", "at-1", "--file", f, "--decision", "d"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for --file + --decision together")
+	}
+	if !strings.Contains(parseErr.Error(), "can't be used together") {
+		t.Errorf("error = %q, want 'can't be used together'", parseErr.Error())
+	}
+}
+
+// TestGateKong_ValidateDecisionTooLong verifies Validate fires for --decision > 120.
+func TestGateKong_ValidateDecisionTooLong(t *testing.T) {
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	long := strings.Repeat("x", 121)
+	_, parseErr := p.Parse([]string{"gate", "at-1", "--decision", long, "--recommendation", "r", "--alternative", "a"})
+	if parseErr == nil {
+		t.Fatal("expected validation error for --decision > 120 chars")
+	}
+	if !strings.Contains(parseErr.Error(), "exceeds 120 chars") {
+		t.Errorf("error = %q, want 'exceeds 120 chars'", parseErr.Error())
+	}
+}
+
+// TestGateKong_ValidateMissingDecision verifies Validate fires when structured
+// flags are used but --decision is absent.
+func TestGateKong_ValidateMissingDecision(t *testing.T) {
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"gate", "at-1", "--recommendation", "r", "--alternative", "a"})
+	if parseErr == nil {
+		t.Fatal("expected validation error for missing --decision in structured form")
+	}
+	if !strings.Contains(parseErr.Error(), "--decision required") {
+		t.Errorf("error = %q, want '--decision required'", parseErr.Error())
+	}
+}
+
+// TestGateKong_ValidateFileMissing verifies Validate fires when neither --file
+// nor any structured flag is provided.
+func TestGateKong_ValidateFileMissing(t *testing.T) {
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"gate", "at-1"})
+	if parseErr == nil {
+		t.Fatal("expected validation error when no form is supplied")
+	}
+	if !strings.Contains(parseErr.Error(), "--file required") {
+		t.Errorf("error = %q, want '--file required'", parseErr.Error())
+	}
+}
+
+// TestNoteKong_RunCallsBDNote verifies the kong noteKong struct calls bd note
+// with the correct arguments.
+func TestNoteKong_RunCallsBDNote(t *testing.T) {
+	f := makeTempFile(t, "note body")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	cmd := &noteKong{ID: "at-1", File: f}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"note", "at-1", "--file=" + f})
+}
+
+// TestCloseKong_FilePrecedenceOverReason verifies --file overrides --reason
+// (preserved from legacy closeCmd behaviour).
+func TestCloseKong_FilePrecedenceOverReason(t *testing.T) {
+	content := "reason from file"
+	f := makeTempFile(t, content)
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	cmd := &closeKong{ID: "at-5", Reason: "inline reason", File: f}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=" + content})
+}
+
+// TestLearnKong_AppliesFreshPrefix verifies learnKong uses the learnKey helper
+// to prepend the fresh: tier prefix for bare slugs.
+func TestLearnKong_AppliesFreshPrefix(t *testing.T) {
+	f := makeTempFile(t, "learning content")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	cmd := &learnKong{Role: "planner", Slug: "tip", File: f}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := (*calls)[0].args[1]; got != "--key=planner:fresh:tip" {
+		t.Errorf("key = %q, want --key=planner:fresh:tip", got)
+	}
+}
+
+// TestForgetKong_KeyFormed verifies forgetKong concatenates role:slug.
+func TestForgetKong_KeyFormed(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	cmd := &forgetKong{Role: "dri", Slug: "hot:old-item"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 0, []string{"forget", "dri:hot:old-item"})
 }
 
 // ── assertion helpers ─────────────────────────────────────────────────────────
