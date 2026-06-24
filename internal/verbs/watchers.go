@@ -25,13 +25,12 @@ func RegisterWatchers(reg cli.Registry) {
 	})
 }
 
-// RegisterWatchersKong registers watcher verbs onto p. Initially bridges all
-// verbs from RegisterWatchers; ring-track conversion replaces each bridge with a
-// native kong struct in this function without touching any other file.
-// Note: watchersCmd has injected agentsFunc/initiativesFunc fields — mark those
-// kong:"-" when converting to a native struct.
+// RegisterWatchersKong registers watcher verbs onto p using native kong structs.
 func RegisterWatchersKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterWatchers)
+	p.AddVerb("watchers", "Show watcher state for all open initiatives.", &watchersKong{
+		agentsFunc:      defaultAgentsJSON,
+		initiativesFunc: nil,
+	})
 }
 
 // watchersCmd implements `ateam watchers`.
@@ -147,6 +146,23 @@ func (c *watchersCmd) Run(ctx *cli.Context, _ []string) error {
 	}
 
 	return nil
+}
+
+// ── native kong struct ────────────────────────────────────────────────────────
+
+// watchersKong is the kong-converted form of watchersCmd.
+type watchersKong struct {
+	// DI fields: kong must ignore these.
+	agentsFunc      agentsJSONFunc      `kong:"-"`
+	initiativesFunc openInitiativesFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *watchersKong) Run(ctx *cli.Context) error {
+	return (&watchersCmd{
+		agentsFunc:      c.agentsFunc,
+		initiativesFunc: c.initiativesFunc,
+	}).Run(ctx, nil)
 }
 
 // watcherState reads the pidfile at path and returns the watcher state plus

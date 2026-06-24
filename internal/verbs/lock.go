@@ -26,6 +26,12 @@ const condenseLockHeldCode = 5
 // as stale and stolen by a new acquire. Exported only for unit-test injection.
 const condenseLockStaleAge = 600 * time.Second
 
+// RegisterCondenseLock registers the condense-lock verb onto p using a native
+// kong struct.
+func RegisterCondenseLock(p *cli.Parser) {
+	p.AddVerb("condense-lock", "Acquire or release the advisory condense lock.", &condenseLockKong{})
+}
+
 // condenseLockCmd implements `ateam condense-lock acquire|release`.
 //
 // acquire: atomically creates the lock file (O_CREATE|O_EXCL). If the file
@@ -143,4 +149,17 @@ func parseLockTimestamp(content string) (int64, error) {
 		return 0, fmt.Errorf("unexpected lock format")
 	}
 	return strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
+}
+
+// ── native kong struct ────────────────────────────────────────────────────────
+
+// condenseLockKong is the kong-converted form of condenseLockCmd.
+// Action is a required positional enum: acquire or release.
+type condenseLockKong struct {
+	Action string `arg:"" name:"action" enum:"acquire,release" help:"Lock action: acquire or release."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *condenseLockKong) Run(ctx *cli.Context) error {
+	return (&condenseLockCmd{}).Run(ctx, []string{c.Action})
 }

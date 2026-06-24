@@ -477,9 +477,10 @@ func (c *freshDrainKong) Run(ctx *cli.Context) error {
 
 // RegisterWriteKong registers the write-track verbs onto p. reopen and register
 // (LOOP verbs) plus note, gate, clear-gate, learn, close, pull, sync, forget,
-// condense, and fresh-drain (rtix verbs) use native kong structs. condense-lock
-// is bridged (its own lock.go bead). cost is NOT registered here — it lives in
-// RegisterCostKong (cost.go).
+// condense, and fresh-drain (rtix verbs) use native kong structs; condense-lock
+// is registered natively via RegisterCondenseLock (lock.go). The remaining write
+// verbs are bridged. cost is NOT registered here — it lives in RegisterCostKong
+// (cost.go).
 func RegisterWriteKong(p *cli.Parser) {
 	// LOOP-converted native verbs.
 	p.AddVerb("reopen", "Reopen a closed initiative.", &reopenKong{})
@@ -497,6 +498,9 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("condense", "Emit a structured memory packet for a role.", &condenseKong{})
 	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
 
+	// condense-lock is natively converted; register it via its own file.
+	RegisterCondenseLock(p)
+
 	// Bridge the remaining write verbs (legacy cli.Command, passthrough args).
 	for _, cmd := range legacyWriteVerbs() {
 		p.AddBridgeVerb(cmd)
@@ -511,18 +515,19 @@ func legacyWriteVerbs() []cli.Command {
 	reg := make(cli.Registry)
 	RegisterWrite(reg)
 	skip := map[string]bool{
-		"reopen":      true,
-		"register":    true,
-		"note":        true,
-		"gate":        true,
-		"clear-gate":  true,
-		"learn":       true,
-		"close":       true,
-		"pull":        true,
-		"sync":        true,
-		"forget":      true,
-		"condense":    true,
-		"fresh-drain": true,
+		"reopen":        true,
+		"register":      true,
+		"note":          true,
+		"gate":          true,
+		"clear-gate":    true,
+		"learn":         true,
+		"close":         true,
+		"pull":          true,
+		"sync":          true,
+		"forget":        true,
+		"condense":      true,
+		"fresh-drain":   true,
+		"condense-lock": true,
 	}
 	out := make([]cli.Command, 0, len(reg)-len(skip))
 	for name, cmd := range reg {

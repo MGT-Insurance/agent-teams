@@ -20,13 +20,13 @@ func RegisterWorktreeSetup(reg cli.Registry) {
 	})
 }
 
-// RegisterWorktreeSetupKong registers worktree-setup verbs onto p. Initially
-// bridges all verbs from RegisterWorktreeSetup; ring-track conversion replaces
-// each bridge with a native kong struct in this function without touching any
-// other file. Note: worktreeSetupCommand has injected git/runner fields — mark
-// those kong:"-" when converting to a native struct.
+// RegisterWorktreeSetupKong registers worktree-setup verbs onto p using a native
+// kong struct.
 func RegisterWorktreeSetupKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterWorktreeSetup)
+	p.AddVerb("worktree-setup", "Run repo-specific worktree-setup hook for the given worktree.", &worktreeSetupKong{
+		git:    gitutil.New(),
+		runner: defaultCmdRunner,
+	})
 }
 
 // cmdRunner is the signature for running an external command, streaming
@@ -130,6 +130,26 @@ func (c *worktreeSetupCommand) Run(ctx *cli.Context, args []string) error {
 		loudHookWarning(ctx.Stderr, scriptPath, exitCode, runErr.Error())
 	}
 	return nil
+}
+
+// ── native kong struct ────────────────────────────────────────────────────────
+
+// worktreeSetupKong is the kong-converted form of worktreeSetupCommand.
+type worktreeSetupKong struct {
+	// DI fields: kong must ignore these.
+	git    wtGitRunner `kong:"-"`
+	runner cmdRunner   `kong:"-"`
+
+	WtPath string `arg:"" name:"wtPath" optional:"" help:"Worktree path (defaults to cwd)."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
+	args := []string{}
+	if c.WtPath != "" {
+		args = []string{c.WtPath}
+	}
+	return (&worktreeSetupCommand{git: c.git, runner: c.runner}).Run(ctx, args)
 }
 
 // loudHookWarning writes a clearly-marked multi-line warning to w. exitCode -1

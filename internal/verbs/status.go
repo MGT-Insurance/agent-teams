@@ -47,13 +47,11 @@ func RegisterStatus(reg cli.Registry) {
 	reg.Register(&executionStatusCmd{agentsFunc: defaultAgentsJSON})
 }
 
-// RegisterStatusKong registers status verbs onto p. Initially bridges all verbs
-// from RegisterStatus; ring-track conversion replaces each bridge with a native
-// kong struct in this function without touching any other file.
-// Note: executionStatusCmd has an injected agentsFunc field — mark it kong:"-"
-// when converting to a native struct.
+// RegisterStatusKong registers status verbs onto p using native kong structs.
 func RegisterStatusKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterStatus)
+	p.AddVerb("execution-status", "Emit JSON array of open initiatives with execution state.", &executionStatusKong{
+		agentsFunc: defaultAgentsJSON,
+	})
 }
 
 // executionStatusCmd implements `ateam execution-status`.
@@ -199,6 +197,19 @@ func hasLabel(labels []string, label string) bool {
 		}
 	}
 	return false
+}
+
+// ── native kong struct ────────────────────────────────────────────────────────
+
+// executionStatusKong is the kong-converted form of executionStatusCmd.
+type executionStatusKong struct {
+	// agentsFunc is injected so tests can substitute a fake; kong must ignore it.
+	agentsFunc agentsJSONFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *executionStatusKong) Run(ctx *cli.Context) error {
+	return (&executionStatusCmd{agentsFunc: c.agentsFunc}).Run(ctx, nil)
 }
 
 // isActivelyWorking reports whether any session in sessions has a cwd matching
