@@ -116,13 +116,16 @@ func renderTableKong(ctx *cli.Context, r cost.Report) error {
 // ── registration helpers ──────────────────────────────────────────────────────
 
 // RegisterWriteKong registers the write-track verbs onto p. reopen and register
-// use native kong structs; the remaining write verbs (note, gate, learn, close,
-// pull, sync, condense, condense-lock, etc.) are bridged. cost is NOT registered
-// here — it lives in RegisterCostKong (cost.go).
+// use native kong structs; condense-lock is registered natively via
+// RegisterCondenseLock (lock.go); the remaining write verbs are bridged.
+// cost is NOT registered here — it lives in RegisterCostKong (cost.go).
 func RegisterWriteKong(p *cli.Parser) {
 	// Native kong verbs (write-track converted verbs).
 	p.AddVerb("reopen", "Reopen a closed initiative.", &reopenKong{})
 	p.AddVerb("register", "Register a new initiative from a body file.", &registerKong{})
+
+	// condense-lock is now natively converted; register it via its own file.
+	RegisterCondenseLock(p)
 
 	// Bridge the remaining write verbs (legacy cli.Command, passthrough args).
 	for _, cmd := range legacyWriteVerbs() {
@@ -130,14 +133,14 @@ func RegisterWriteKong(p *cli.Parser) {
 	}
 }
 
-// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the 2 natively
-// converted ones (reopen, register) so they can be bridged onto the kong parser.
-// cost is excluded because it lives in a separate file (cost.go) and is
-// registered independently via RegisterCostKong.
+// legacyWriteVerbs returns all write-track cli.Commands EXCEPT the natively
+// converted ones (reopen, register, condense-lock) so they can be bridged onto
+// the kong parser. cost is excluded because it lives in a separate file (cost.go)
+// and is registered independently via RegisterCostKong.
 func legacyWriteVerbs() []cli.Command {
 	reg := make(cli.Registry)
 	RegisterWrite(reg)
-	skip := map[string]bool{"reopen": true, "register": true}
+	skip := map[string]bool{"reopen": true, "register": true, "condense-lock": true}
 	out := make([]cli.Command, 0, len(reg)-len(skip))
 	for name, cmd := range reg {
 		if !skip[name] {

@@ -18,11 +18,11 @@ func RegisterMatch(reg cli.Registry) {
 	reg.Register(&resumeMatchClosedCommand{})
 }
 
-// RegisterMatchKong registers match verbs onto p. Initially bridges all verbs
-// from RegisterMatch; ring-track conversion replaces each bridge with a native
-// kong struct in this function without touching any other file.
+// RegisterMatchKong registers match verbs onto p using native kong structs.
 func RegisterMatchKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterMatch)
+	p.AddVerb("audit", "Audit global workspace for leaked work beads.", &auditKong{})
+	p.AddVerb("resume-match", "Find the open initiative for a worktree path.", &resumeMatchKong{})
+	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
 }
 
 // hasWorktreeLine reports whether any line in description starts with "worktree:".
@@ -165,4 +165,34 @@ func (c *resumeMatchClosedCommand) Run(ctx *cli.Context, args []string) error {
 		fmt.Fprintln(ctx.Stdout, matches[0].ID)
 	}
 	return nil
+}
+
+// ── native kong structs ───────────────────────────────────────────────────────
+
+// auditKong is the kong-converted form of auditCommand.
+type auditKong struct{}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *auditKong) Run(ctx *cli.Context) error {
+	return (&auditCommand{}).Run(ctx, nil)
+}
+
+// resumeMatchKong is the kong-converted form of resumeMatchCommand.
+type resumeMatchKong struct {
+	WorktreePath string `arg:"" name:"worktree-path" help:"Absolute path to the worktree directory."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resumeMatchKong) Run(ctx *cli.Context) error {
+	return (&resumeMatchCommand{}).Run(ctx, []string{c.WorktreePath})
+}
+
+// resumeMatchClosedKong is the kong-converted form of resumeMatchClosedCommand.
+type resumeMatchClosedKong struct {
+	WorktreePath string `arg:"" name:"worktree-path" help:"Absolute path to the worktree directory."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resumeMatchClosedKong) Run(ctx *cli.Context) error {
+	return (&resumeMatchClosedCommand{}).Run(ctx, []string{c.WorktreePath})
 }
