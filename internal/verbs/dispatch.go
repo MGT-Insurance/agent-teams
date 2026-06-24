@@ -16,7 +16,9 @@ import (
 
 // RegisterDispatchKong registers dispatch verbs onto p using native kong structs.
 func RegisterDispatchKong(p *cli.Parser) {
-	p.AddVerb("new-initiative", "Spawn a background DRI session in <directory>.", &newInitiativeKong{})
+	p.AddVerb("new-initiative", "Spawn a background DRI session in <directory>.", &newInitiativeKong{
+		launch: launchBGSession,
+	})
 	p.AddVerb("dispatch", "Create a worktree, register an initiative, and optionally launch a DRI session.", &dispatchKong{
 		git:    gitutil.New(),
 		launch: launchBGSession,
@@ -33,6 +35,10 @@ func RegisterDispatchKong(p *cli.Parser) {
 type newInitiativeKong struct {
 	Dir     string   `arg:"" name:"directory" help:"Directory to run the DRI session in."`
 	DriArgs []string `arg:"" name:"dri-arg" optional:"" help:"Initiative id or problem statement words."`
+
+	// launch is injected at registration time; kong:"-" keeps kong from treating
+	// it as a flag. Tests stub it so they never exec a real `claude --bg` session.
+	launch launchFunc `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -58,7 +64,11 @@ func (c *newInitiativeKong) Run(ctx *cli.Context) error {
 	if driArg == "" {
 		return cli.Usagef("ateam new-initiative: missing <dri-arg> (initiative id or problem statement)")
 	}
-	return launchBGSession(ctx, dir, driArg)
+	launch := c.launch
+	if launch == nil {
+		launch = launchBGSession
+	}
+	return launch(ctx, dir, driArg)
 }
 
 // ---- dispatch (kong) --------------------------------------------------------

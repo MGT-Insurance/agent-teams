@@ -923,34 +923,28 @@ func TestNewInitiativeKong_DriArgJoined(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
 
-	// newInitiativeKong.Run delegates to newInitiativeCommand.Run, which calls
-	// launchBGSession — but claude won't be in PATH in CI. We just want to
-	// confirm the "not a directory" path is never hit for a real dir.
-	// Use a stub to capture what would be launched.
-	type captured struct{ dir, arg string }
-	var got captured
-	origLaunch := launchBGSession
-	_ = origLaunch // reference so the compiler is happy
-
+	// Inject a stub launcher so the test NEVER execs a real `claude --bg`
+	// session (an un-stubbed launch leaks a detached session into dir, which
+	// t.TempDir() then deletes — orphaning it; see agent-teams-wwyd).
+	var gotDir, gotArg string
 	cmd := &newInitiativeKong{
 		Dir:     dir,
 		DriArgs: []string{"the", "problem", "statement"},
+		launch: func(_ *cli.Context, d, arg string) error {
+			gotDir, gotArg = d, arg
+			return nil
+		},
 	}
-	// Override the internal launchBGSession to capture args.
-	// We do this by routing through newInitiativeCommand whose Run calls
-	// launchBGSession directly. We can't easily intercept that without a
-	// package-level var, so just verify the delegation path is correct by
-	// confirming the failure is "claude not found" (DepError exit 3) if claude
-	// is absent, or no error if claude happens to be present but we won't
-	// assert success.
-	runErr := cmd.Run(ctx)
-	if runErr != nil {
-		// Accept only DepError (claude missing) — any other error is a bug.
-		if cli.ExitCode(runErr) != 3 {
-			t.Errorf("unexpected error (want nil or exit 3 DepError): %v", runErr)
-		}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	_ = got
+	if gotArg != "the problem statement" {
+		t.Errorf("driArg = %q, want %q", gotArg, "the problem statement")
+	}
+	if gotDir != dir {
+		t.Errorf("dir = %q, want %q", gotDir, dir)
+	}
 }
 
 // TestResumeKong_DelegatesLaunch verifies that resumeKong.Run passes the
