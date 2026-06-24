@@ -23,13 +23,90 @@ func RegisterDispatch(reg cli.Registry) {
 	reg.Register(&resumeCommand{launch: launchBGSession})
 }
 
-// RegisterDispatchKong registers dispatch verbs onto p. Initially bridges all
-// verbs from RegisterDispatch; ring-track conversion replaces each bridge with a
-// native kong struct in this function without touching any other file.
-// Note: dispatchCommand and resumeCommand have injected launchFunc fields —
-// mark those kong:"-" when converting to native structs.
+// RegisterDispatchKong registers dispatch verbs onto p using native kong structs.
 func RegisterDispatchKong(p *cli.Parser) {
-	bridgeTrack(p, RegisterDispatch)
+	p.AddVerb("new-initiative", "Spawn a background DRI session in <directory>.", &newInitiativeKong{})
+	p.AddVerb("dispatch", "Create a worktree, register an initiative, and optionally launch a DRI session.", &dispatchKong{
+		git:    gitutil.New(),
+		launch: launchBGSession,
+	})
+	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
+		launch: launchBGSession,
+	})
+}
+
+// ---- new-initiative (kong) --------------------------------------------------
+
+// newInitiativeKong is the kong-native form of new-initiative.
+// <directory> is required; remaining args form the problem statement / initiative id.
+type newInitiativeKong struct {
+	Dir     string   `arg:"" name:"directory" help:"Directory to run the DRI session in."`
+	DriArgs []string `arg:"" name:"dri-arg" optional:"" help:"Initiative id or problem statement words."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *newInitiativeKong) Run(ctx *cli.Context) error {
+	args := append([]string{c.Dir}, c.DriArgs...)
+	return (&newInitiativeCommand{}).Run(ctx, args)
+}
+
+// ---- dispatch (kong) --------------------------------------------------------
+
+// dispatchKong is the kong-native form of dispatch.
+// git and launch are injected at registration time; kong:"-" keeps kong from
+// treating them as flags.
+type dispatchKong struct {
+	Problem    string `name:"problem"     help:"One-line problem statement (required)." required:""`
+	Repo       string `name:"repo"        help:"Target directory to resolve repo from (default: cwd)."`
+	BaseBranch string `name:"base-branch" help:"Override base branch (default: detected)."`
+	Slug       string `name:"slug"        help:"Kebab-case slug (default: derived from --problem)."`
+	BodyFile   string `name:"body-file"   help:"Path to file whose content is appended to the initiative body after schema lines."`
+	IDOnly     bool   `name:"id-only"     help:"Print only the initiative id."`
+	NoLaunch   bool   `name:"no-launch"   help:"Create worktree and register, but do not launch claude bg session."`
+
+	git    gitRunner  `kong:"-"`
+	launch launchFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *dispatchKong) Run(ctx *cli.Context) error {
+	cmd := &dispatchCommand{git: c.git, launch: c.launch}
+	args := []string{"--problem", c.Problem}
+	if c.Repo != "" {
+		args = append(args, "--repo", c.Repo)
+	}
+	if c.BaseBranch != "" {
+		args = append(args, "--base-branch", c.BaseBranch)
+	}
+	if c.Slug != "" {
+		args = append(args, "--slug", c.Slug)
+	}
+	if c.BodyFile != "" {
+		args = append(args, "--body-file", c.BodyFile)
+	}
+	if c.IDOnly {
+		args = append(args, "--id-only")
+	}
+	if c.NoLaunch {
+		args = append(args, "--no-launch")
+	}
+	return cmd.Run(ctx, args)
+}
+
+// ---- resume (kong) ----------------------------------------------------------
+
+// resumeKong is the kong-native form of resume.
+// launch is injected at registration time; kong:"-" keeps kong from treating it
+// as a flag.
+type resumeKong struct {
+	ID string `arg:"" name:"id" help:"Initiative ID to resume."`
+
+	launch launchFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resumeKong) Run(ctx *cli.Context) error {
+	return (&resumeCommand{launch: c.launch}).Run(ctx, []string{c.ID})
 }
 
 // ---- new-initiative --------------------------------------------------------
