@@ -153,8 +153,16 @@ func (c *sendCmd) Run(ctx *cli.Context, args []string) error {
 		return nil
 	}
 
+	want := strings.TrimRight(wtPath, "/")
+	fmt.Fprintf(ctx.Stdout, "liveness: recipient worktree=%q; %d session(s) reported by claude agents --json\n", want, len(sessions))
+	for i, s := range sessions {
+		fmt.Fprintf(ctx.Stdout, "liveness:   session[%d] cwd=%q kind=%q status=%q match=%t\n",
+			i, s.CWD, s.Kind, s.Status, strings.TrimRight(s.CWD, "/") == want)
+	}
+
 	if hasLiveSession(sessions, wtPath) {
 		// Session is live; the doorbell will wake it.
+		fmt.Fprintf(ctx.Stdout, "recipient session is live; doorbell will wake it\n")
 		return nil
 	}
 
