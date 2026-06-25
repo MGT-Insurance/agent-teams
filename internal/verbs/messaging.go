@@ -210,11 +210,13 @@ type resumeInitiativeFunc func(ctx *cli.Context, id string) error
 //     Interactive sessions have no State/Name/ID; JSON absence is fine — Go
 //     leaves the fields at their zero values ("").
 type agentSession struct {
-	CWD    string `json:"cwd"`
-	Kind   string `json:"kind"`   // "interactive" | "background"
-	Status string `json:"status"` // "busy" | "idle" | "waiting"
-	Name   string `json:"name"`   // background sessions only
-	State  string `json:"state"`  // "working" | "done"; background sessions only
+	CWD       string `json:"cwd"`
+	Kind      string `json:"kind"`      // "interactive" | "background"
+	Status    string `json:"status"`    // "busy" | "idle" | "waiting"
+	Name      string `json:"name"`      // background sessions only
+	State     string `json:"state"`     // "working" | "done"; background sessions only
+	ID        string `json:"id"`        // short id for background sessions; used by claude stop
+	SessionID string `json:"sessionId"` // full session id present on all sessions
 }
 
 // defaultAgentsJSON runs `claude agents --json` and parses the result.
