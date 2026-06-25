@@ -26,6 +26,37 @@ There are **two separate beads databases**, and putting the wrong beads in the w
 
 **Skills:** `/dri <problem>` — run/resume an initiative as DRI. `/dri-dispatch <problem>` — register a new initiative and hand it to a hands-off background DRI. `/initiatives` — machine-wide initiative dashboard. `/setup-agent-teams` — one-time machine setup.
 
+## Debugging hooks, watchers & messaging
+
+**Read this before reading the hook scripts** — it captures what they do and how to diagnose them from logs alone.
+
+**Hooks & cwd.** `plugins/agent-teams/hooks/hooks.json` wires per-event scripts: SessionStart → `session-start-pull.sh` (`ateam pull`), `prime-user-memories.sh` (`ateam prime`), `session-start-inbox.sh` (drain mail); UserPromptSubmit → `inbox-drain.sh`; SubagentStart → `subagent-prime-learnings.sh`; compact → `compact-recovery.sh`; **Stop → `wake-watcher.sh`** (`async`, `asyncRewake`, 24h timeout). The harness runs each hook by spawning `/bin/sh` with the child **cwd set to the session's worktree**.
+
+**The debug log.** Every hook writes lifecycle events to `~/.agent-teams/debug/hooks.log` (via `lib/hook-debug-log.sh`), 6 TAB-separated columns:
+```
+<iso8601-utc>  <session_id>  <script>  <initiative_id>  <event>  <detail>
+```
+- `start` — logged before any guard, so it appears even if `bd`/`jq` are missing.
+- `exit` — `detail="code=<n> reason=<why>"`; covers every exit incl. `set -e` failures (default reason `unexpected`).
+- `signal` — `detail=TERM|HUP|INT` (the process was asked to stop).
+- `note` — mid-run markers: pidfile claim/takeover, doorbell-seen, `alive elapsed=Ns`.
+
+Auto-rotates to `hooks.log.1` at ~5 MB. Tail it: `tail -f ~/.agent-teams/debug/hooks.log`.
+
+**Reading the log — diagnostic signatures:**
+- **`start` with NO later `exit`/`signal`** for that session → the hook was hard-killed (SIGKILL / async-child reap). This is the signature of the watcher-reaping failure.
+- **`exit reason=<x>`** → exited on its own; the reason names the path. `wake-watcher` reasons: `missing-deps`, `no-open-match`, `superseded`, `doorbell-fired`, `heartbeat-rearm`, `initiative-closed`.
+- **`signal=TERM`** → graceful kill (e.g. the singleton handoff killing a prior watcher).
+- **`wake-watcher` `alive elapsed=Ns` ticks** → how long the poll-loop survived; an abrupt stop with no exit pinpoints when it was reaped.
+
+**Wake/messaging mechanism.** `ateam send <id>` creates a `type=message` bead (assignee=`<id>`) in the global workspace **and** touches a doorbell `~/.agent-teams/mailbox/<id>.wake`. A live `wake-watcher.sh` poll-loop (one per initiative, singleton-guarded by `mailbox/<id>.watcher.pid`) checks the doorbell every 1s and `exit 2`s to wake the session, which drains mail via `ateam inbox`. **Mail is beads, not files** — reading is bead-driven (`inbox-drain.sh`/`session-start-inbox.sh`); the doorbell only controls *waking*.
+
+**Check watcher health:** `ateam watchers` — per-initiative state. `MISSING-WATCHER` = no pidfile/poll-loop; `STALE-PIDFILE` = pidfile names a dead pid. A live session with `MISSING-WATCHER` has a **dead doorbell** (nothing is polling it).
+
+**Known gotchas:**
+- **`ENOENT … posix_spawn '/bin/sh'`** on any hook = the session's cwd (its git worktree) was **deleted while the session is still alive**. The harness then can't spawn the shell, so *no* hook for that session runs — it is NOT a bug in the script. Remedy: don't delete a live session's worktree; reap orphans (`claude agents --json --all` → `claude stop <id>` for entries whose `cwd` no longer exists).
+- **`ateam send` reports session-liveness, not watcher-liveness** — its "doorbell will wake it" can be false when the session is alive but `ateam watchers` shows `MISSING-WATCHER`.
+
 ## Memory routing
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
