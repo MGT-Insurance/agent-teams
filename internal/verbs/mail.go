@@ -106,7 +106,7 @@ func mailFormatCreatedAt(raw string) string {
 	return t.UTC().Format("2006-01-02 15:04")
 }
 
-// RegisterMailKong registers the mail verb onto p.
+// RegisterMailKong registers the debug-mail verb onto p.
 func RegisterMailKong(p *cli.Parser) {
-	p.AddVerb("mail", "Show a read-only table of recent mail across all initiatives.", &mailKong{})
+	p.AddVerb("debug-mail", "DEBUG ONLY — read-only table of ALL initiatives' recent mail, for humans/agents debugging the system. Does NOT mark anything read and is NOT how you read your own mail (that happens automatically; run `ateam inbox`).", &mailKong{})
 }
