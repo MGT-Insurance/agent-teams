@@ -623,4 +623,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterRouteEventKong(p)
 	RegisterStatusKong(p)
 	RegisterWatchersKong(p)
+	RegisterReapOrphansKong(p)
 }
