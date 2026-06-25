@@ -25,21 +25,14 @@ func mailIssue(id, assignee, from, title string, labels []string, createdAt time
 	}
 }
 
-// mailFakeListBD returns a fakeBD whose RunJSON yields issues on any call
-// and whose Run records arguments for the read-only assertion.
-func mailFakeListBD(issues []bd.Issue) (*fakeBD, *[][]string) {
-	var calls [][]string
-	fbd := &fakeBD{
+// mailFakeListBD returns a fakeBD whose RunJSON yields the given issues.
+func mailFakeListBD(issues []bd.Issue) *fakeBD {
+	return &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
 			raw, _ := json.Marshal(issues)
 			return json.Unmarshal(raw, dst)
 		},
-		runFn: func(args ...string) (string, error) {
-			calls = append(calls, args)
-			return "", nil
-		},
 	}
-	return fbd, &calls
 }
 
 // ── core-path tests ───────────────────────────────────────────────────────────
@@ -56,7 +49,7 @@ func TestMail_NilContext(t *testing.T) {
 }
 
 func TestMail_EmptyList_PrintsNoMail(t *testing.T) {
-	fbd, _ := mailFakeListBD(nil)
+	fbd := mailFakeListBD(nil)
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	c := &mailKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
@@ -76,7 +69,7 @@ func TestMail_TableNewestFirst(t *testing.T) {
 	newest := mailIssue("at-m3", "init-c", "carol", "message from carol", nil,
 		time.Date(2026, 1, 3, 10, 0, 0, 0, time.UTC))
 
-	fbd, _ := mailFakeListBD([]bd.Issue{oldest, middle, newest})
+	fbd := mailFakeListBD([]bd.Issue{oldest, middle, newest})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	c := &mailKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
@@ -111,7 +104,7 @@ func TestMail_StatusDerivation(t *testing.T) {
 	pending := mailIssue("at-m-pend", "init-c", "carol", "pending msg",
 		[]string{"delivery:pending"}, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
-	fbd, _ := mailFakeListBD([]bd.Issue{acked, readMsg, pending})
+	fbd := mailFakeListBD([]bd.Issue{acked, readMsg, pending})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	c := &mailKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
@@ -126,6 +119,26 @@ func TestMail_StatusDerivation(t *testing.T) {
 	}
 }
 
+func TestMail_StatusDerivation_PrefixAck(t *testing.T) {
+	// delivery-acked-by:<token> prefix must trigger "acked" independently of
+	// the literal "delivery:acked" label — this guards the HasPrefix branch in
+	// mailStatus (mail.go ~line 78).
+	msg := mailIssue("at-m-pax", "init-d", "dave", "prefix acked msg",
+		[]string{"delivery-acked-by:init-x"}, time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC))
+
+	fbd := mailFakeListBD([]bd.Issue{msg})
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	c := &mailKong{Limit: 20}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "acked") {
+		t.Errorf("expected status 'acked' for delivery-acked-by: prefix label; got:\n%s", out)
+	}
+}
+
 func TestMail_LimitCapsRows(t *testing.T) {
 	var issues []bd.Issue
 	for i := 0; i < 10; i++ {
@@ -136,7 +149,7 @@ func TestMail_LimitCapsRows(t *testing.T) {
 		))
 	}
 
-	fbd, _ := mailFakeListBD(issues)
+	fbd := mailFakeListBD(issues)
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	c := &mailKong{Limit: 3}
 	if err := c.Run(ctx); err != nil {
