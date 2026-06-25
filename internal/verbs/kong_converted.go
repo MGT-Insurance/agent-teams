@@ -400,6 +400,21 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
 	}
+	// Commit the working set FIRST. `bd dolt pull` refuses a dirty working set
+	// (the events audit table dirties on every bd write), so an uncommitted WS
+	// would deadlock the pull ("local changes would be stomped by merge"). A
+	// clean WS yields "nothing to commit" — that is a no-op, not a failure; any
+	// other commit error aborts before we touch the remote.
+	if out, err := ctx.BD.Run("dolt", "commit"); err != nil {
+		if !strings.Contains(strings.ToLower(out+" "+err.Error()), "nothing to commit") {
+			return err
+		}
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+	} else if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	if out, err := ctx.BD.Run("dolt", "pull"); err != nil {
 		return err
 	} else if out != "" {
