@@ -51,7 +51,7 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 
 Sessions message each other through a durable, Dolt-synced mailbox — a message survives a crash and reaches a recipient on another machine after `bd dolt pull`.
 
-- **Send** — `ateam send <recipient-id> --file <body>` writes the message and rings a doorbell that wakes the recipient if it has gone idle. If no live session exists, it escalates to `ateam resume`.
+- **Send** — `ateam send <recipient-initiative-id> --file <body>` (the recipient is addressed by its **initiative id**) writes the message and rings a doorbell that wakes the recipient if it has gone idle. If no live session exists, it escalates to `ateam resume`.
 - **Receive** — `ateam inbox` drains unread messages, but you don't run it by hand: a hook fires it every turn and at session start, so incoming mail just appears in context.
 - **Debug** — `ateam debug-mail` prints a read-only table of every initiative's recent mail. It's an observability view for humans or agents debugging the system — it does not mark anything read, and is not how a session reads its own mail.
 
@@ -81,7 +81,8 @@ The plugin's slash commands wrap these `ateam` verbs; agents and the DRI also ca
 | `dispatch`, `resume`, `new-initiative` | human / DRI | launch or relaunch a background DRI session |
 | `list`, `show`, `human-list` | human / agent | inspect open initiatives and parked gates |
 | `register`, `gate`, `clear-gate`, `note`, `close` | DRI | initiative lifecycle |
-| `send`, `inbox`, `debug-mail` | agent | cross-session mail (`inbox` runs automatically; `debug-mail` is read-only) |
+| `send`, `inbox` | agent | cross-session mail (`inbox` drains automatically each turn) |
+| `debug-mail` | human / agent | read-only audit table of every initiative's recent mail (debugging) |
 | `learn`, `learnings`, `recall`, `forget` | role agents | role-memory read and write |
 | `condense`, `fresh-drain` | DRI | role-memory curation |
 | `sync`, `pull` | DRI | sync the global workspace |
