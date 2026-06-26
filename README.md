@@ -46,7 +46,14 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 - **Prime directive:** deliver a PR that solves the problem — investigating beats asking; asking beats delivering wrong.
 - **Lifecycle:** the DRI drives to an opened PR, then leaves the initiative open in an `awaiting-merge` state; a resume after the PR merges closes it out. Opening the PR is delivery — merging is yours.
 - **Role-memory model:** memories use a three-tier key convention — fresh (default write tier; accumulates between condense runs), hot (curated, auto-injected into every role session via `ateam learnings <role>`), and cold (searchable on demand via `ateam recall <role> <query>`; not auto-injected). `ateam learn <role> <slug>` writes fresh; `ateam condense <role>` curates hot; `ateam fresh-drain <role>` moves uncurated fresh into cold. Full mechanics in `plugins/agent-teams/CLAUDE.md`.
-- **Cross-session messaging:** `ateam send <id>` delivers a message to a running initiative session; `ateam inbox` drains received messages. The mailbox is durable and Dolt-synced — messages survive crashes and reach a recipient on another machine after `bd dolt pull`.
+
+## Cross-session messaging
+
+Sessions message each other through a durable, Dolt-synced mailbox — a message survives a crash and reaches a recipient on another machine after `bd dolt pull`.
+
+- **Send** — `ateam send <recipient-id> --file <body>` writes the message and rings a doorbell that wakes the recipient if it has gone idle. If no live session exists, it escalates to `ateam resume`.
+- **Receive** — `ateam inbox` drains unread messages, but you don't run it by hand: a hook fires it every turn and at session start, so incoming mail just appears in context.
+- **Debug** — `ateam debug-mail` prints a read-only table of every initiative's recent mail. It's an observability view for humans or agents debugging the system — it does not mark anything read, and is not how a session reads its own mail.
 
 ## Worktree setup hooks
 
@@ -64,6 +71,21 @@ The repo ships two artifacts:
 
 - **`ateam` Go CLI** (`cmd/ateam/`): the workspace CLI. Shipped as committed per-platform binaries in `plugins/agent-teams/bin/` (`ateam-{darwin,linux}-{amd64,arm64}`); `bin/ateam` is a POSIX wrapper that selects the right one.
 - **Claude Code plugin** (`plugins/agent-teams/`): the `/dri` playbook, role agents, hooks, and skills.
+
+### ateam command surface
+
+The plugin's slash commands wrap these `ateam` verbs; agents and the DRI also call them directly.
+
+| verb | run by | purpose |
+|------|--------|---------|
+| `dispatch`, `resume`, `new-initiative` | human / DRI | launch or relaunch a background DRI session |
+| `list`, `show`, `human-list` | human / agent | inspect open initiatives and parked gates |
+| `register`, `gate`, `clear-gate`, `note`, `close` | DRI | initiative lifecycle |
+| `send`, `inbox`, `debug-mail` | agent | cross-session mail (`inbox` runs automatically; `debug-mail` is read-only) |
+| `learn`, `learnings`, `recall`, `forget` | role agents | role-memory read and write |
+| `condense`, `fresh-drain` | DRI | role-memory curation |
+| `sync`, `pull` | DRI | sync the global workspace |
+| `worktree-setup` | agent | hydrate a fresh track worktree |
 
 **Build and test:**
 
