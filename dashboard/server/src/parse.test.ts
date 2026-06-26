@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   extractPrUrl,
+  extractLatestAsk,
   parseInitiative,
   parseAteamListJson,
   parseClaudeAgents,
@@ -481,7 +482,7 @@ describe("buildInbox", () => {
     expect(item?.kind).toBe("waiting");
   });
 
-  it("waiting item carries the latest notes line as question", () => {
+  it("waiting item nextAction is the first sentence of the latest notes line (no ask block)", () => {
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -489,8 +490,8 @@ describe("buildInbox", () => {
     );
     const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-v4e");
-    // Latest non-empty notes line of RAW_AT_V4E
-    expect(item?.question).toContain("awaiting-merge");
+    // RAW_AT_V4E.notes last line contains "awaiting-merge"; first sentence ends at the ".".
+    expect(item?.nextAction).toContain("awaiting-merge");
   });
 
   it("includes generic items (needsHuman=generic) when delivered + no session", () => {
@@ -1054,6 +1055,161 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
     const init = makeGateInit("e2", undefined, false);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe(false);
+  });
+});
+
+// ---- extractLatestAsk (agent-teams-1saz) ------------------------------------
+
+describe("extractLatestAsk", () => {
+  it("returns null when notes has no ask block", () => {
+    expect(extractLatestAsk("no ask block here")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(extractLatestAsk("")).toBeNull();
+  });
+
+  it("parses decision from a well-formed block", () => {
+    const notes = "<<<ateam-ask\ndecision: Should we deploy now?\n>>>";
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?" });
+  });
+
+  it("returns the LAST valid block when multiple blocks are present", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: First question.",
+      ">>>",
+      "some prose",
+      "<<<ateam-ask",
+      "decision: Second question.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question." });
+  });
+
+  it("skips an unclosed block at end of notes, keeps the last valid closed block", () => {
+    // The unclosed block comes AFTER a closed one; closeLine returns -1 for it.
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Closed block.",
+      ">>>",
+      "some intervening notes",
+      "<<<ateam-ask",
+      "decision: Unclosed — no close marker follows.",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block." });
+  });
+
+  it("skips blocks with empty decision", () => {
+    const notes = "<<<ateam-ask\nrecommendation: Do X.\n>>>";
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  it("ignores >>> embedded in prose (must be line-anchored)", () => {
+    const notes = "<<<ateam-ask\ndecision: X or >>> something\n>>>";
+    // The inline >>> in the decision value is prose; the real close is on its own line.
+    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something" });
+  });
+});
+
+// ---- buildInbox: updatedAt + nextAction (agent-teams-1saz) -------------------
+
+describe("buildInbox — updatedAt and nextAction", () => {
+  function makeInit(
+    id: string,
+    kind: "review" | "waiting" | "generic",
+    notes = "",
+    labels?: string[],
+  ): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-25T12:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: kind === "generic" || kind === "review" ? "https://github.com/org/repo/pull/1" : null,
+      labels,
+    };
+  }
+
+  it("review item has updatedAt from initiative.updated_at", () => {
+    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("review item nextAction is the constant string", () => {
+    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Review the PR and merge or send it back.");
+  });
+
+  it("generic item nextAction is the constant string", () => {
+    const init = makeInit("gen", "generic");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe(
+      "Delivered with no gate — open the worktree to see what's needed.",
+    );
+  });
+
+  it("generic item has updatedAt from initiative.updated_at", () => {
+    const init = makeInit("gen", "generic");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("waiting item: nextAction == decision when ask block present", () => {
+    const notes = [
+      "Starting the initiative.",
+      "<<<ateam-ask",
+      "decision: Should we use approach A or approach B?",
+      ">>>",
+    ].join("\n");
+    const init = { ...makeInit("w-ask", "waiting"), notes, labels: ["gate:question", "human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Should we use approach A or approach B?");
+  });
+
+  it("waiting item: fallback is first sentence of latest notes line (no ask block)", () => {
+    const notes =
+      "Early note.\nThis is the latest entry. It has more text after the period.";
+    const init = { ...makeInit("w-fb", "waiting"), notes, labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    // First sentence ends at the period before the space.
+    expect(inbox[0]?.nextAction).toBe("This is the latest entry.");
+  });
+
+  it("waiting item: fallback truncates at 120 chars when no sentence boundary", () => {
+    const longLine = "A".repeat(200);
+    const init = { ...makeInit("w-long", "waiting"), notes: longLine, labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect((inbox[0]?.nextAction ?? "").length).toBeLessThanOrEqual(120);
+  });
+
+  it("waiting item has updatedAt from initiative.updated_at", () => {
+    const init = { ...makeInit("w-ts", "waiting"), labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
   });
 });
 

@@ -131,10 +131,14 @@ export interface InboxItem {
   initiativeId: string;
   title: string;
   kind: "waiting" | "review" | "generic";
-  // For "waiting" items: the gate question text from notes (if available).
-  // For "review" items: describes the PR awaiting merge.
-  // For "generic" items: generic "needs your attention" text.
-  question: string;
+  // The one-sentence action for Eric right now.
+  //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
+  //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
+  //              or the first sentence of the latest non-empty notes line as fallback.
+  //   generic -> "Delivered with no gate — open the worktree to see what's needed."
+  nextAction: string;
+  // ISO-8601 timestamp from RawInitiative.updated_at — drives recency sort in the inbox.
+  updatedAt: string;
   worktree: string;
   prUrl: string | null;
 }

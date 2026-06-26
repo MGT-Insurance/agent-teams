@@ -333,6 +333,61 @@ export function buildOrphanSessions(
   );
 }
 
+// Parse the decision field from the interior of a single ateam-ask block body.
+// Returns the trimmed decision string, or "" when the field is absent/empty.
+function parseAskDecision(body: string): string {
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("decision:")) {
+      return trimmed.slice("decision:".length).trim();
+    }
+  }
+  return "";
+}
+
+// Pure helper: scan notes for the LAST valid <<<ateam-ask ... >>> sentinel block
+// and return {decision} when found, null otherwise.
+// Mirrors the Go implementation in internal/verbs/query.go (extractLatestAsk/parseAskBody).
+//
+// Grammar:
+//   open:  literal "<<<ateam-ask"
+//   close: ">>>" anchored at start of a line (or start of remaining text)
+//   A block is valid only if the decision field is non-empty; unclosed blocks are skipped.
+//   The LAST valid block wins.
+export function extractLatestAsk(notes: string): { decision: string } | null {
+  const OPEN = "<<<ateam-ask";
+
+  // Returns the index of the start of ">>>" that anchors to a line boundary,
+  // or -1 when no closing sentinel is found.
+  function closeLine(s: string): number {
+    if (s.startsWith(">>>")) return 0;
+    const idx = s.indexOf("\n>>>");
+    if (idx === -1) return -1;
+    return idx + 1; // position of the first ">" that starts ">>>"
+  }
+
+  let last: { decision: string } | null = null;
+  let remaining = notes;
+  for (;;) {
+    const start = remaining.indexOf(OPEN);
+    if (start === -1) break;
+    const after = remaining.slice(start + OPEN.length);
+    const end = closeLine(after);
+    if (end === -1) {
+      // Unclosed block — skip, advance past the open sentinel.
+      remaining = after;
+      continue;
+    }
+    const body = after.slice(0, end);
+    const decision = parseAskDecision(body);
+    if (decision) {
+      last = { decision };
+    }
+    remaining = after.slice(end + ">>>".length);
+  }
+  return last;
+}
+
 // Build InboxItem[] from already-built InitiativeNode[].
 // An item is in the inbox iff node.needsHuman !== false.
 //   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
@@ -353,24 +408,37 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "review",
-        question: `Review the PR: ${initiative.prUrl ?? "(no PR URL)"}`,
+        nextAction: "Review the PR and merge or send it back.",
+        updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });
     } else if (node.needsHuman === "waiting") {
       // Agent waiting on human input: explicit gate:question/human or session blocked.
-      // Question = latest non-empty notes line (may contain the gate question).
-      const question =
-        initiative.notes
-          .split("\n")
-          .filter((l) => l.trim())
-          .pop() ?? "(no question recorded)";
+      // nextAction = decision from the latest ask block, or first sentence of latest notes line.
+      const ask = extractLatestAsk(initiative.notes);
+      let nextAction: string;
+      if (ask) {
+        nextAction = ask.decision.slice(0, 120);
+      } else {
+        const lastLine =
+          initiative.notes
+            .split("\n")
+            .filter((l) => l.trim())
+            .pop() ?? "";
+        const sentenceEnd = lastLine.search(/(?<=[.!?])\s/);
+        nextAction =
+          sentenceEnd !== -1
+            ? lastLine.slice(0, sentenceEnd).trim()
+            : lastLine.slice(0, 120).trim() || "(no action recorded)";
+      }
 
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "waiting",
-        question,
+        nextAction,
+        updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });
@@ -380,7 +448,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "generic",
-        question: "Needs your attention",
+        nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+        updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
       });

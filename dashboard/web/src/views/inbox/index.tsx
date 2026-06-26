@@ -67,7 +67,7 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           <div className="inbox-row__action-slot">{actionSlot}</div>
         )}
       </div>
-      <p className="inbox-row__question">{item.question}</p>
+      <p className="inbox-row__next-action">{item.nextAction}</p>
     </div>
   );
 }
@@ -92,37 +92,11 @@ function DisconnectedBanner({ connectionState, error }: { connectionState: strin
   );
 }
 
-interface SectionProps {
-  title: string;
-  items: InboxItem[];
-  dataSection: string;
-}
-
-function InboxSection({ title, items, dataSection }: SectionProps) {
-  if (items.length === 0) return null;
-  return (
-    <section className="inbox-section" data-section={dataSection} aria-label={title}>
-      <h2 className="inbox-section__title">{title}</h2>
-      <ul className="inbox-list" aria-label={`${title} items`}>
-        {items.map((item) => (
-          <li key={item.initiativeId} className="inbox-list__item">
-            <InboxRow item={item} />
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
 
-  // "Review the PR": explicit gate:review label — authoritative review signal.
-  const reviewItems = inbox.filter((i) => i.kind === "review");
-  // "Waiting on you": agent is blocked/waiting on human input (explicit question gate or session blocked).
-  const waitingItems = inbox.filter((i) => i.kind === "waiting");
-  // "Delivered — needs you": PR delivered but no explicit gate (graceful degrade).
-  const genericItems = inbox.filter((i) => i.kind === "generic");
+  // Sort newest-updated-first. ISO-8601 Zulu strings compare correctly as strings.
+  const sorted = [...inbox].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const showBanner = connectionState !== "connected";
   const totalCount = inbox.length;
@@ -143,23 +117,13 @@ export default function InboxView() {
       {totalCount === 0 ? (
         <EmptyState />
       ) : (
-        <div className="inbox-sections">
-          <InboxSection
-            title="Review the PR"
-            items={reviewItems}
-            dataSection="review"
-          />
-          <InboxSection
-            title="Waiting on you"
-            items={waitingItems}
-            dataSection="waiting"
-          />
-          <InboxSection
-            title="Delivered — needs you"
-            items={genericItems}
-            dataSection="delivered"
-          />
-        </div>
+        <ul className="inbox-list" aria-label="Inbox items">
+          {sorted.map((item) => (
+            <li key={item.initiativeId} className="inbox-list__item">
+              <InboxRow item={item} />
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
