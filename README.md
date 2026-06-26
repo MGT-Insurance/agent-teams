@@ -102,6 +102,6 @@ bash tests/<name>.test.sh          # run individual shell-level tests
 **Release protocol — required on ANY CLI or plugin change:**
 
 1. Run `sh scripts/build-binaries.sh` and commit the updated `plugins/agent-teams/bin/`.
-2. Bump the version in BOTH `plugins/agent-teams/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (currently **0.31.0** — keep both files identical).
+2. Bump the version in BOTH `plugins/agent-teams/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (keep both files identical).
 
 `claude plugin update` keys off the version: no bump means installed sessions silently keep the old copy. A source-only PR that changes `ateam` behavior or plugin content without rebuilding binaries and bumping the version is incomplete.
