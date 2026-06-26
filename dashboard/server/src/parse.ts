@@ -1,6 +1,7 @@
 // Pure parsing functions over raw CLI output.
 // These are the riskiest logic — they are unit-tested against real fixtures.
 
+import { existsSync } from "node:fs";
 import type {
   RawInitiative,
   ParsedInitiative,
@@ -402,6 +403,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const { initiative } = node;
 
+    const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
+
     if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
       items.push({
@@ -412,26 +415,15 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
       });
     } else if (node.needsHuman === "waiting") {
       // Agent waiting on human input: explicit gate:question/human or session blocked.
-      // nextAction = decision from the latest ask block, or first sentence of latest notes line.
+      // nextAction = decision from the latest ask block, or constant fallback.
       const ask = extractLatestAsk(initiative.notes);
-      let nextAction: string;
-      if (ask) {
-        nextAction = ask.decision.slice(0, 120);
-      } else {
-        const lastLine =
-          initiative.notes
-            .split("\n")
-            .filter((l) => l.trim())
-            .pop() ?? "";
-        const sentenceEnd = lastLine.search(/(?<=[.!?])\s/);
-        nextAction =
-          sentenceEnd !== -1
-            ? lastLine.slice(0, sentenceEnd).trim()
-            : lastLine.slice(0, 120).trim() || "(no action recorded)";
-      }
+      const nextAction = ask
+        ? ask.decision.slice(0, 120)
+        : "Look at the session for more info.";
 
       items.push({
         initiativeId: initiative.id,
@@ -441,6 +433,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
       });
     } else {
       // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
@@ -452,6 +445,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
       });
     }
   }

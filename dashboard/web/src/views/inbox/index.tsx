@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
@@ -59,10 +60,6 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
             view PR ↗
           </a>
         )}
-        {/* PR chip on review and waiting items with a PR URL. */}
-        {(item.kind === "review" || item.kind === "waiting") && item.prUrl && (
-          <span className="inbox-row__pr-chip" aria-label="open PR">PR</span>
-        )}
         {actionSlot && (
           <div className="inbox-row__action-slot">{actionSlot}</div>
         )}
@@ -72,11 +69,11 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ message = "Nothing needs you right now." }: { message?: string }) {
   return (
     <div className="inbox-empty">
       <span className="inbox-empty__icon">✓</span>
-      <p className="inbox-empty__message">Nothing needs you right now.</p>
+      <p className="inbox-empty__message">{message}</p>
     </div>
   );
 }
@@ -94,12 +91,18 @@ function DisconnectedBanner({ connectionState, error }: { connectionState: strin
 
 export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
+  const [thisMachineOnly, setThisMachineOnly] = useState(true);
+
+  // Filter BEFORE sort (spec: filter then recency sort).
+  const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine) : inbox;
 
   // Sort newest-updated-first. ISO-8601 Zulu strings compare correctly as strings.
-  const sorted = [...inbox].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const sorted = [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const showBanner = connectionState !== "connected";
-  const totalCount = inbox.length;
+  const totalCount = sorted.length;
+  // true when the toggle hid all items (inbox non-empty but nothing on this machine).
+  const allOffMachine = thisMachineOnly && inbox.length > 0 && filtered.length === 0;
 
   return (
     <div className="inbox-view">
@@ -108,6 +111,15 @@ export default function InboxView() {
         {totalCount > 0 && (
           <span className="inbox-header__count" data-testid="inbox-count">{totalCount}</span>
         )}
+        <label className="inbox-header__toggle">
+          <input
+            type="checkbox"
+            checked={thisMachineOnly}
+            onChange={(e) => setThisMachineOnly(e.target.checked)}
+            data-testid="toggle-this-machine"
+          />
+          This machine only
+        </label>
       </header>
 
       {showBanner && (
@@ -115,7 +127,9 @@ export default function InboxView() {
       )}
 
       {totalCount === 0 ? (
-        <EmptyState />
+        <EmptyState
+          message={allOffMachine ? "Nothing on this machine needs you." : undefined}
+        />
       ) : (
         <ul className="inbox-list" aria-label="Inbox items">
           {sorted.map((item) => (

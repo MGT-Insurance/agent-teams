@@ -29,6 +29,18 @@
   padding: 1px 8px;
 }
 
+.inbox-header__toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
 /* Banner for disconnected / error states */
 .inbox-banner {
   padding: 8px 14px;
@@ -163,19 +175,6 @@
 
 .inbox-row__pr-link:hover {
   text-decoration: underline;
-}
-
-/* PR chip — shown on waiting items that also have an open PR (delivery is orthogonal). */
-.inbox-row__pr-chip {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: color-mix(in srgb, #a78bfa 20%, transparent);
-  color: #a78bfa;
-  flex-shrink: 0;
 }
 
 /* Future triage action slot — reserve space but invisible in v1 */

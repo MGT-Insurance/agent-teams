@@ -134,13 +134,16 @@ export interface InboxItem {
   // The one-sentence action for Eric right now.
   //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
   //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
-  //              or the first sentence of the latest non-empty notes line as fallback.
+  //              or "Look at the session for more info." when no structured ask block exists.
   //   generic -> "Delivered with no gate — open the worktree to see what's needed."
   nextAction: string;
   // ISO-8601 timestamp from RawInitiative.updated_at — drives recency sort in the inbox.
   updatedAt: string;
   worktree: string;
   prUrl: string | null;
+  // true when initiative.worktree is non-empty and exists on the local filesystem.
+  // Derived server-side (dashboard server runs locally); used for the "This machine only" toggle.
+  onThisMachine: boolean;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.

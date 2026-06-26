@@ -53,6 +53,7 @@ const waitingItem: InboxItem = {
   updatedAt: "2026-06-25T10:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
   prUrl: null,
+  onThisMachine: true,
 };
 
 // kind="review" — explicit gate:review label (AUTHORITATIVE; "review the PR")
@@ -64,6 +65,7 @@ const reviewItem: InboxItem = {
   updatedAt: "2026-06-25T12:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
+  onThisMachine: true,
 };
 
 // kind="generic" — delivered + no session (graceful degrade)
@@ -75,6 +77,7 @@ const genericItem: InboxItem = {
   updatedAt: "2026-06-25T08:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-3",
   prUrl: "https://github.com/org/repo/pull/99",
+  onThisMachine: true,
 };
 
 // kind="waiting" WITH a PR — agent blocked but initiative also has an open PR.
@@ -87,6 +90,19 @@ const waitingItemWithPr: InboxItem = {
   updatedAt: "2026-06-25T11:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-4",
   prUrl: "https://github.com/MGT-Insurance/midgard/pull/3551",
+  onThisMachine: true,
+};
+
+// Off-machine item — worktree lives on another machine.
+const offMachineItem: InboxItem = {
+  initiativeId: "init-5",
+  title: "Remote machine initiative",
+  kind: "generic",
+  nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  updatedAt: "2026-06-25T09:00:00Z",
+  worktree: "/Users/other/.worktrees/init-5",
+  prUrl: null,
+  onThisMachine: false,
 };
 
 beforeEach(() => {
@@ -219,16 +235,10 @@ describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => 
     expect(link.getAttribute("target")).toBe("_blank");
   });
 
-  it("renders the PR chip alongside the 'agent waiting' badge", () => {
-    renderInbox();
+  it("does not render a PR chip (chip removed — redundant with kind badge + view PR link)", () => {
     const { container } = renderInbox();
-    // Badge label
-    const badges = container.querySelectorAll(".inbox-row__badge");
-    const badge = Array.from(badges).find((el) => el.textContent?.match(/agent waiting/i));
-    expect(badge).toBeTruthy();
-    // PR chip
     const chip = container.querySelector(".inbox-row__pr-chip");
-    expect(chip).not.toBeNull();
+    expect(chip).toBeNull();
   });
 
   it("still renders the 'agent waiting' badge (PR chip does not replace the flavor badge)", () => {
@@ -271,10 +281,10 @@ describe("InboxView — kind='review' row", () => {
     expect(link.getAttribute("target")).toBe("_blank");
   });
 
-  it("renders a PR chip on a review item with a prUrl", () => {
+  it("does not render a PR chip on a review item (chip removed — redundant with kind badge + view PR link)", () => {
     const { container } = renderInbox();
     const chip = container.querySelector(".inbox-row__pr-chip");
-    expect(chip).not.toBeNull();
+    expect(chip).toBeNull();
   });
 
   it("navigates to /initiative/:id on row click", () => {
@@ -324,6 +334,52 @@ describe("InboxView — kind='generic' row", () => {
     renderInbox();
     const row = screen.getByRole("button", { name: /specialty quote api/i });
     expect(row.getAttribute("data-kind")).toBe("generic");
+  });
+});
+
+describe("InboxView — 'This machine only' toggle", () => {
+  it("toggle defaults to checked (on)", () => {
+    setInbox([waitingItem]);
+    renderInbox();
+    const toggle = screen.getByTestId("toggle-this-machine") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+  });
+
+  it("shows on-machine items with toggle on (default)", () => {
+    setInbox([waitingItem, offMachineItem]);
+    renderInbox();
+    expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
+    expect(screen.queryByText("Remote machine initiative")).toBeNull();
+  });
+
+  it("shows all items when toggle is switched off", () => {
+    setInbox([waitingItem, offMachineItem]);
+    renderInbox();
+    const toggle = screen.getByTestId("toggle-this-machine");
+    fireEvent.click(toggle);
+    expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
+    expect(screen.getByText("Remote machine initiative")).toBeTruthy();
+  });
+
+  it("shows off-machine empty state when toggle on and all items are off-machine", () => {
+    setInbox([offMachineItem]);
+    renderInbox();
+    expect(screen.getByText(/nothing on this machine needs you/i)).toBeTruthy();
+  });
+
+  it("count badge reflects only shown items (toggle on, one item hidden)", () => {
+    setInbox([waitingItem, offMachineItem]);
+    renderInbox();
+    // toggle is on; only waitingItem (onThisMachine=true) is shown
+    expect(screen.getByTestId("inbox-count").textContent).toBe("1");
+  });
+
+  it("count badge shows all items after toggle turned off", () => {
+    setInbox([waitingItem, offMachineItem]);
+    renderInbox();
+    const toggle = screen.getByTestId("toggle-this-machine");
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("inbox-count").textContent).toBe("2");
   });
 });
 

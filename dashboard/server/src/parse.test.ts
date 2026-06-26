@@ -1,6 +1,8 @@
 // Unit tests for the parser functions.
 // Fixtures are captured from real CLI output (ateam list-json + claude agents --json --all).
 
+import { mkdtempSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, it, expect } from "vitest";
 import {
   extractPrUrl,
@@ -482,7 +484,7 @@ describe("buildInbox", () => {
     expect(item?.kind).toBe("waiting");
   });
 
-  it("waiting item nextAction is the first sentence of the latest notes line (no ask block)", () => {
+  it("waiting item nextAction is the constant fallback when no ask block present", () => {
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -490,8 +492,7 @@ describe("buildInbox", () => {
     );
     const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-v4e");
-    // RAW_AT_V4E.notes last line contains "awaiting-merge"; first sentence ends at the ".".
-    expect(item?.nextAction).toContain("awaiting-merge");
+    expect(item?.nextAction).toBe("Look at the session for more info.");
   });
 
   it("includes generic items (needsHuman=generic) when delivered + no session", () => {
@@ -1187,22 +1188,21 @@ describe("buildInbox — updatedAt and nextAction", () => {
     expect(inbox[0]?.nextAction).toBe("Should we use approach A or approach B?");
   });
 
-  it("waiting item: fallback is first sentence of latest notes line (no ask block)", () => {
+  it("waiting item: fallback is constant when no ask block present", () => {
     const notes =
       "Early note.\nThis is the latest entry. It has more text after the period.";
     const init = { ...makeInit("w-fb", "waiting"), notes, labels: ["human"] };
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
-    // First sentence ends at the period before the space.
-    expect(inbox[0]?.nextAction).toBe("This is the latest entry.");
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
   });
 
-  it("waiting item: fallback truncates at 120 chars when no sentence boundary", () => {
+  it("waiting item: fallback is constant even when notes are very long (no ask block)", () => {
     const longLine = "A".repeat(200);
     const init = { ...makeInit("w-long", "waiting"), notes: longLine, labels: ["human"] };
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
-    expect((inbox[0]?.nextAction ?? "").length).toBeLessThanOrEqual(120);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
   });
 
   it("waiting item has updatedAt from initiative.updated_at", () => {
@@ -1210,6 +1210,60 @@ describe("buildInbox — updatedAt and nextAction", () => {
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
+// ---- buildInbox: onThisMachine (agent-teams-1l70) ----------------------------
+
+describe("buildInbox — onThisMachine", () => {
+  function makeWaitingInit(id: string, worktree: string): ParsedInitiative {
+    return {
+      id,
+      title: `Init ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+    };
+  }
+
+  it("onThisMachine=true when worktree path exists on disk", () => {
+    const tmp = mkdtempSync(`${tmpdir()}/at-test-`);
+    try {
+      const init = makeWaitingInit("tm-exists", tmp);
+      const nodes = buildInitiativeNodes([init], [], new Set(["tm-exists"]));
+      const inbox = buildInbox(nodes);
+      expect(inbox[0]?.onThisMachine).toBe(true);
+    } finally {
+      rmdirSync(tmp);
+    }
+  });
+
+  it("onThisMachine=false when worktree path doesn't exist", () => {
+    const init = makeWaitingInit("tm-missing", "/does/not/exist/xxyyzz-agent-teams-test");
+    const nodes = buildInitiativeNodes([init], [], new Set(["tm-missing"]));
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.onThisMachine).toBe(false);
+  });
+
+  it("onThisMachine=false when worktree is empty string", () => {
+    const init = makeWaitingInit("tm-empty", "");
+    const nodes = buildInitiativeNodes([init], [], new Set(["tm-empty"]));
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.onThisMachine).toBe(false);
   });
 });
 
