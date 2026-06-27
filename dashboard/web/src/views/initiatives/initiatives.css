@@ -174,23 +174,25 @@
   color: var(--color-accent);
 }
 
-/* Signal chips — fixed 3-column grid so each signal occupies the same slot in
-   every row (lit vs dim, arrow vs no-arrow don't shift the columns). */
+/* Signal chips — a compact vertical mini-column on the right. The stack
+   shrink-wraps to its widest child (always the "on machine" chip, which renders
+   in every row), so the column is a constant width across rows and stays narrow,
+   keeping the title primary. align-items: stretch makes all three chips share
+   that width, so lit/dim/arrow state never changes the footprint or alignment. */
 .init-row__signals {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  align-items: center;
-  gap: 6px;
-  width: 330px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: max-content;
   flex-shrink: 0;
 }
 
 .init-chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 100%;
-  gap: 4px;
+  justify-content: flex-start;
+  gap: 5px;
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 600;
@@ -241,4 +243,7 @@
 .init-chip__icon {
   font-size: 11px;
   line-height: 1;
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
 }
