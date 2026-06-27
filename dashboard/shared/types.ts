@@ -120,6 +120,11 @@ export interface InitiativeNode {
   // Two-dimension state model fields (agent-teams-3e6).
   delivery: DeliveryStatus;
   needsHuman: false | NeedsHumanFlavor;
+  // "On this machine" signal (at-gvv): true iff the initiative's worktree path
+  // exists on the host running the dashboard server. Worktree paths are
+  // host-specific while the registry syncs cross-machine, so this MUST be
+  // computed server-side via fs.existsSync — it cannot be derived client-side.
+  worktreeExists: boolean;
 }
 
 // An item in the inbox requiring Eric's attention.
@@ -157,6 +162,10 @@ export interface DrillInDetail extends ParsedInitiative {
 
 // The SSE payload shape pushed on each tick and returned by GET /api/snapshot.
 export interface SnapshotEvent {
+  // May include CLOSED/DONE initiatives in addition to open ones (at-gvv): the
+  // Initiatives tab offers a "show closed" toggle and filters client-side.
+  // Closed initiatives derive delivery="merged" -> needsHuman=false, so the
+  // inbox (which keys off needsHuman) is unaffected.
   initiatives: InitiativeNode[];
   // Background claude sessions that matched no registered initiative worktree.
   // Interactive sessions are excluded — these are only unregistered background processes.
