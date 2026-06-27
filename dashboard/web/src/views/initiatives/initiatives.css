@@ -243,6 +243,16 @@
   border-color: color-mix(in srgb, var(--color-ok) 35%, transparent);
 }
 
+/* Dormant — present but not live (session only: idle/done process still alive).
+   Reads as "there IS a session" via the session hue + dashed border, but clearly
+   weaker than the solid lit chip. */
+.init-chip--muted {
+  background: transparent;
+  color: color-mix(in srgb, var(--color-ok) 55%, var(--color-text-muted));
+  border-color: color-mix(in srgb, var(--color-ok) 30%, transparent);
+  border-style: dashed;
+}
+
 /* Dim — signal absent (tone class present but uncolored). */
 .init-chip--off {
   background: transparent;

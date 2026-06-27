@@ -4,6 +4,29 @@ import type { InitiativeNode } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import "./initiatives.css";
 
+// Persist a boolean toggle to localStorage (no server). Reads on init, writes on
+// change. localStorage access is wrapped so a blocked/unavailable store degrades
+// to in-memory state rather than throwing.
+function usePersistedBool(key: string, initial: boolean): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? initial : raw === "true";
+    } catch {
+      return initial;
+    }
+  });
+  const set = (v: boolean) => {
+    setValue(v);
+    try {
+      localStorage.setItem(key, String(v));
+    } catch {
+      /* storage unavailable — keep in-memory state */
+    }
+  };
+  return [value, set];
+}
+
 // Closed states — hidden unless "Show closed" is on. Status comes from the
 // registry as free TEXT, so compare case-insensitively.
 const CLOSED_STATUSES = new Set(["closed", "done"]);
@@ -12,19 +35,24 @@ function isClosed(node: InitiativeNode): boolean {
   return CLOSED_STATUSES.has(node.initiative.status.toLowerCase());
 }
 
-// Signal 3 — "has an existing session": a live session is present. Per the
-// SessionSignal model (shared/types.ts), "live" = working (busy/state=working)
-// OR waiting (status=waiting/state=blocked — e.g. a parked agent on a human
-// gate). Idle->ended and done/stopped sessions are NOT live and do not light.
-function hasLiveSession(node: InitiativeNode): boolean {
+// Signal 3 — "session" — three states:
+//   "on"     = LIVE: working (busy/state=working) or waiting (status=waiting/
+//              state=blocked, e.g. a parked agent on a human gate).
+//   "muted"  = DORMANT: a session process is matched but finished/idle
+//              (idle/done/stopped) — still alive, but not actively working.
+//   "off"    = NONE: no matched session process at all.
+function sessionLevel(node: InitiativeNode): ChipLevel {
   const s = node.session;
-  if (s === null) return false;
-  return (
+  if (s === null) return "off";
+  if (
     s.status === "busy" ||
     s.status === "waiting" ||
     s.state === "working" ||
     s.state === "blocked"
-  );
+  ) {
+    return "on";
+  }
+  return "muted";
 }
 
 // Phase token hue is keyed by phase so categories read at a glance: delivered
@@ -39,20 +67,25 @@ function phaseClass(phase: string): string {
 // machine=blue, pr=violet, session=green (see initiatives.css).
 type ChipTone = "machine" | "pr" | "session";
 
+// Chip intensity: "on" = present/lit, "muted" = present-but-dormant (session
+// only), "off" = absent. See initiatives.css.
+type ChipLevel = "on" | "muted" | "off";
+
 interface SignalChipProps {
-  active: boolean;
+  level: ChipLevel;
   tone: ChipTone;
   icon: string;
   label: string;
+  value: string; // aria value, e.g. "yes" | "no" | "live" | "dormant" | "none"
   title: string;
 }
 
-function SignalChip({ active, tone, icon, label, title }: SignalChipProps) {
+function SignalChip({ level, tone, icon, label, value, title }: SignalChipProps) {
   return (
     <span
-      className={`init-chip init-chip--${active ? "on" : "off"} init-chip--${tone}`}
+      className={`init-chip init-chip--${level} init-chip--${tone}`}
       title={title}
-      aria-label={`${label}: ${active ? "yes" : "no"}`}
+      aria-label={`${label}: ${value}`}
     >
       <span className="init-chip__icon" aria-hidden="true">{icon}</span>
       <span className="init-chip__label">{label}</span>
@@ -66,7 +99,9 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
 
   const onMachine = node.worktreeExists;
   const hasPr = node.delivery === "pr-open";
-  const running = hasLiveSession(node);
+  const sLevel = sessionLevel(node);
+  const sessionIcon = sLevel === "on" ? "●" : sLevel === "muted" ? "◐" : "○";
+  const sessionValue = sLevel === "on" ? "live" : sLevel === "muted" ? "dormant" : "none";
 
   function handleRowClick() {
     navigate(`/initiative/${initiative.id}`);
@@ -77,9 +112,15 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
     e.stopPropagation();
   }
 
-  const sessionTitle = node.session
-    ? `Running session: ${node.session.status}${node.session.state ? ` (${node.session.state})` : ""}`
-    : "No running session";
+  const sessionDetail = node.session
+    ? `${node.session.status}${node.session.state ? ` (${node.session.state})` : ""}`
+    : "";
+  const sessionTitle =
+    sLevel === "on"
+      ? `Live session: ${sessionDetail}`
+      : sLevel === "muted"
+        ? `Dormant session (process alive): ${sessionDetail}`
+        : "No session";
 
   return (
     <div
@@ -99,10 +140,11 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
       </div>
       <div className="init-row__signals">
         <SignalChip
-          active={onMachine}
+          level={onMachine ? "on" : "off"}
           tone="machine"
           icon="▣"
           label="on machine"
+          value={onMachine ? "yes" : "no"}
           title={onMachine ? "Worktree exists on this machine" : "Worktree not on this machine"}
         />
         {hasPr && initiative.prUrl ? (
@@ -120,18 +162,20 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           </a>
         ) : (
           <SignalChip
-            active={hasPr}
+            level={hasPr ? "on" : "off"}
             tone="pr"
             icon="⎘"
             label="PR"
+            value={hasPr ? "yes" : "no"}
             title={hasPr ? "Has an open PR" : "No open PR"}
           />
         )}
         <SignalChip
-          active={running}
+          level={sLevel}
           tone="session"
-          icon="●"
+          icon={sessionIcon}
           label="session"
+          value={sessionValue}
           title={sessionTitle}
         />
       </div>
@@ -161,8 +205,8 @@ function DisconnectedBanner({ connectionState, error }: { connectionState: strin
 export default function InitiativesView() {
   const { initiatives, connectionState, error } = useSnapshotContext();
   const [query, setQuery] = useState("");
-  const [showClosed, setShowClosed] = useState(false);
-  const [onlyOnMachine, setOnlyOnMachine] = useState(false);
+  const [showClosed, setShowClosed] = usePersistedBool("initiatives.showClosed", false);
+  const [onlyOnMachine, setOnlyOnMachine] = usePersistedBool("initiatives.onlyOnMachine", false);
 
   const q = query.trim().toLowerCase();
   const filtered = initiatives.filter((node) => {

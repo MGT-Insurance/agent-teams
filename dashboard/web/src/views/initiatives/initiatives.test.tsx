@@ -103,6 +103,7 @@ function setInitiatives(nodes: InitiativeNode[], extra: Partial<SnapshotState> =
 beforeEach(() => {
   mockNavigate.mockReset();
   setInitiatives([]);
+  localStorage.clear(); // toggles persist to localStorage — isolate tests
 });
 
 afterEach(() => {
@@ -255,32 +256,32 @@ describe("InitiativesView — signal chips", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it("lights 'session' when a working session is present", () => {
+  it("lights 'session' (live) when a working session is present", () => {
     setInitiatives([makeNode({ session: workingSession }, { id: "init-1", title: "Running" })]);
     renderView();
     const row = screen.getByRole("button", { name: /running/i });
-    const chip = within(row).getByLabelText("session: yes");
+    const chip = within(row).getByLabelText("session: live");
     expect(chip.classList.contains("init-chip--on")).toBe(true);
   });
 
-  it("lights 'session' when a waiting (parked) session is present", () => {
+  it("lights 'session' (live) when a waiting (parked) session is present", () => {
     setInitiatives([makeNode({ session: waitingSession }, { id: "init-1", title: "Parked" })]);
     renderView();
     const row = screen.getByRole("button", { name: /parked/i });
-    const chip = within(row).getByLabelText("session: yes");
+    const chip = within(row).getByLabelText("session: live");
     expect(chip.classList.contains("init-chip--on")).toBe(true);
   });
 
-  it("dims 'session' when there is no session", () => {
+  it("shows 'session' as off when there is no session", () => {
     setInitiatives([makeNode({ session: null }, { id: "init-1", title: "No session" })]);
     renderView();
     const row = screen.getByRole("button", { name: /no session/i });
-    const chip = within(row).getByLabelText("session: no");
+    const chip = within(row).getByLabelText("session: none");
     expect(chip.classList.contains("init-chip--off")).toBe(true);
   });
 
-  it("dims 'session' for an ended session (idle + done) — present but not live", () => {
-    const endedSession: SessionState = {
+  it("shows 'session' as muted/dormant for an idle+done session (present but not live)", () => {
+    const dormantSession: SessionState = {
       cwd: "/wt/init-1",
       kind: "background",
       startedAt: 0,
@@ -288,11 +289,13 @@ describe("InitiativesView — signal chips", () => {
       status: "idle",
       state: "done",
     };
-    setInitiatives([makeNode({ session: endedSession }, { id: "init-1", title: "Ended" })]);
+    setInitiatives([makeNode({ session: dormantSession }, { id: "init-1", title: "Dormant" })]);
     renderView();
-    const row = screen.getByRole("button", { name: /ended/i });
-    const chip = within(row).getByLabelText("session: no");
-    expect(chip.classList.contains("init-chip--off")).toBe(true);
+    const row = screen.getByRole("button", { name: /dormant/i });
+    const chip = within(row).getByLabelText("session: dormant");
+    expect(chip.classList.contains("init-chip--muted")).toBe(true);
+    expect(chip.classList.contains("init-chip--off")).toBe(false);
+    expect(chip.classList.contains("init-chip--on")).toBe(false);
   });
 });
 
@@ -307,6 +310,42 @@ describe("InitiativesView — phase token", () => {
     const active = screen.getByText("active");
     expect(delivered.classList.contains("init-row__phase--delivered")).toBe(true);
     expect(active.classList.contains("init-row__phase--active")).toBe(true);
+  });
+});
+
+describe("InitiativesView — toggle persistence", () => {
+  it("persists 'Show closed' across remounts via localStorage", () => {
+    setInitiatives([
+      makeNode({}, { id: "init-open", title: "Open one", status: "open" }),
+      makeNode({}, { id: "init-closed", title: "Closed one", status: "closed" }),
+    ]);
+    const { unmount } = renderView();
+    fireEvent.click(screen.getByRole("checkbox", { name: /show closed/i }));
+    expect(localStorage.getItem("initiatives.showClosed")).toBe("true");
+    unmount();
+
+    renderView();
+    expect(
+      (screen.getByRole("checkbox", { name: /show closed/i }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect(screen.getByText("Closed one")).toBeTruthy();
+  });
+
+  it("persists 'On this machine' across remounts via localStorage", () => {
+    setInitiatives([
+      makeNode({ worktreeExists: true }, { id: "init-here", title: "On this host" }),
+      makeNode({ worktreeExists: false }, { id: "init-elsewhere", title: "Other host" }),
+    ]);
+    const { unmount } = renderView();
+    fireEvent.click(screen.getByRole("checkbox", { name: /on this machine/i }));
+    expect(localStorage.getItem("initiatives.onlyOnMachine")).toBe("true");
+    unmount();
+
+    renderView();
+    expect(
+      (screen.getByRole("checkbox", { name: /on this machine/i }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect(screen.queryByText("Other host")).toBeNull();
   });
 });
 
