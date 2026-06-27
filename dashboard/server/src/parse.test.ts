@@ -1528,3 +1528,216 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
     expect(inbox[0]?.kind).toBe("waiting");
   });
 });
+
+// ---- extractLatestAsk: edge cases (agent-teams-oc3p) -------------------------
+//
+// Core-path tests (basic parsing, last-valid-wins for decision, unclosed blocks)
+// are in the earlier extractLatestAsk describe block.  This block covers the
+// non-happy paths specific to recommendation/alternative handling.
+
+describe("extractLatestAsk — recommendation/alternative edge cases (oc3p)", () => {
+  // 1. decision: key present but value blank → entire block is invalid (returns null).
+  //    Distinct from the existing "no decision key" test: here the key exists, value
+  //    is the empty string after trim.
+  it("block with blank decision: value (key present, value empty) → null (block invalid)", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision:   ",
+      "recommendation: Do the thing.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  // 2. recommendation: key present but value blank → recommendation == "" (not undefined).
+  it("blank recommendation: line (key present, value empty after trim) → recommendation == ''", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we proceed?",
+      "recommendation:  ",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+  });
+
+  // 3. recommendation present, alternative ABSENT → alternative == "".
+  it("recommendation present, alternative absent → alternative is empty string", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      "recommendation: Yes — metrics look good.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("Yes — metrics look good.");
+    expect(result?.alternative).toBe("");
+  });
+
+  // 4. alternative present, recommendation ABSENT → recommendation == "".
+  it("alternative present, recommendation absent → recommendation is empty string", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      "alternative: Wait 24h and rerun perf suite.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+    expect(result?.alternative).toBe("Wait 24h and rerun perf suite.");
+  });
+
+  // 5. Multiple blocks: last-valid-wins applies to recommendation too.
+  //    First block has a recommendation; second block has valid decision but no recommendation.
+  //    The SECOND block wins — its empty recommendation replaces the first block's.
+  it("last block wins: second valid block has no recommendation → recommendation == ''", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: First question.",
+      "recommendation: First rec.",
+      ">>>",
+      "some prose between blocks",
+      "<<<ateam-ask",
+      "decision: Second question.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.decision).toBe("Second question.");
+    expect(result?.recommendation).toBe("");
+  });
+
+  // 6. Whitespace trimming: extra leading/trailing spaces in recommendation value are stripped.
+  it("trims whitespace from recommendation value", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Do it?",
+      "recommendation:   Lots of leading spaces.   ",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("Lots of leading spaces.");
+  });
+
+  // 7. recommendation value containing a "decision:"-like substring must NOT
+  //    cross-contaminate the parsed decision field.
+  it("embedded 'decision:' substring in recommendation value does not cross-contaminate", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Override or not?",
+      "recommendation: The decision: to act was already made.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    // decision field must not pick up the "decision:" inside the recommendation value.
+    expect(result?.decision).toBe("Override or not?");
+    expect(result?.recommendation).toBe("The decision: to act was already made.");
+  });
+
+  // 8. Unclosed block with recommendation present and NO prior closed block → null.
+  //    The unclosed block is skipped entirely; there is nothing valid to return.
+  it("unclosed block with recommendation only (no prior closed block) → null", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Open question.",
+      "recommendation: Open rec.",
+      // deliberately NO >>>
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  // 9. Unclosed block with recommendation comes AFTER a closed valid block.
+  //    The unclosed block is skipped; the closed block is returned.
+  //    (Mirrors the existing "skips unclosed block at end" test but asserts recommendation
+  //    of the closed block is preserved, not contaminated by the unclosed one.)
+  it("unclosed block after valid closed block → closed block's recommendation preserved", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Closed question.",
+      "recommendation: Closed rec.",
+      ">>>",
+      "some prose",
+      "<<<ateam-ask",
+      "decision: Unclosed — different rec.",
+      "recommendation: Unclosed rec — must not appear.",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.decision).toBe("Closed question.");
+    expect(result?.recommendation).toBe("Closed rec.");
+  });
+});
+
+// ---- buildInbox: recommendation/alternative 120-char cap (agent-teams-oc3p) ----
+//
+// buildInbox slices recommendation and alternative to 120 chars before putting
+// them in the InboxItem.
+
+describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => {
+  function makeWaitingInitWithNotes(notes: string): ParsedInitiative {
+    return {
+      id: "cap-test",
+      title: "Cap test",
+      description: "worktree: /wt/cap-test",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/cap-test",
+      branch: "cap-test",
+      team: "t-cap-test",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+    };
+  }
+
+  it("recommendation longer than 120 chars is capped at 120", () => {
+    const longRec = "R".repeat(150);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we?",
+      `recommendation: ${longRec}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toHaveLength(120);
+    expect(inbox[0]?.recommendation).toBe(longRec.slice(0, 120));
+  });
+
+  it("alternative longer than 120 chars is capped at 120", () => {
+    const longAlt = "A".repeat(200);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      `alternative: ${longAlt}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.alternative).toHaveLength(120);
+    expect(inbox[0]?.alternative).toBe(longAlt.slice(0, 120));
+  });
+
+  it("values exactly 120 chars are not truncated", () => {
+    const exactly120 = "X".repeat(120);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Go?",
+      `recommendation: ${exactly120}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toHaveLength(120);
+    expect(inbox[0]?.recommendation).toBe(exactly120);
+  });
+});

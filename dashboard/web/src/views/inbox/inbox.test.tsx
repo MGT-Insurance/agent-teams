@@ -545,6 +545,72 @@ describe("InboxView — waiting row recommendation/alternative (agent-teams-oc3p
   });
 });
 
+describe("InboxView — waiting row recommendation/alternative edge cases (oc3p)", () => {
+  // These complement the core-path tests above by explicitly asserting the ABSENT
+  // secondary line is not rendered when only one of the two fields is set.
+
+  it("recommendation present, alternative empty → 'Alternative:' is NOT rendered", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "Roll back the canary and monitor error rates.",
+      alternative: "",
+    };
+    setInbox([item]);
+    renderInbox();
+    expect(screen.getByText(/^Recommended:/)).toBeTruthy();
+    expect(screen.queryByText(/^Alternative:/)).toBeNull();
+  });
+
+  it("alternative present, recommendation empty → 'Recommended:' is NOT rendered", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "",
+      alternative: "Enable for 10% of users and watch for 24h.",
+    };
+    setInbox([item]);
+    renderInbox();
+    expect(screen.getByText(/^Alternative:/)).toBeTruthy();
+    expect(screen.queryByText(/^Recommended:/)).toBeNull();
+  });
+
+  it("check row with non-empty recommendation → secondary line NOT rendered (kind guard)", () => {
+    // buildInbox always emits "" for check rows; but guard the render itself.
+    const item: InboxItem = {
+      ...checkItem,
+      // Force non-empty to confirm the kind guard fires — this won't come from
+      // buildInbox in practice, but the render must be gated on kind, not value.
+      recommendation: "This should not appear.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
+  });
+
+  it("generic row with non-empty recommendation → secondary line NOT rendered (kind guard)", () => {
+    const item: InboxItem = {
+      ...genericItem,
+      recommendation: "This should not appear.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
+  });
+
+  it("review row with non-empty recommendation → secondary line NOT rendered (kind guard)", () => {
+    // Stronger version of the existing review test — uses non-empty value.
+    const item: InboxItem = {
+      ...reviewItem,
+      recommendation: "This should not appear.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
+  });
+});
+
 describe("InboxView — disconnected states", () => {
   it("shows a reconnecting banner when connectionState is reconnecting", () => {
     setInbox([], { connectionState: "reconnecting" });
