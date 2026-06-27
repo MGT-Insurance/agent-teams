@@ -296,6 +296,20 @@ describe("InitiativesView — signal chips", () => {
   });
 });
 
+describe("InitiativesView — phase token", () => {
+  it("keys the phase class off the phase so categories style distinctly", () => {
+    setInitiatives([
+      makeNode({ phase: "delivered" }, { id: "init-1", title: "Shipped one" }),
+      makeNode({ phase: "active" }, { id: "init-2", title: "Working one" }),
+    ]);
+    renderView();
+    const delivered = screen.getByText("delivered");
+    const active = screen.getByText("active");
+    expect(delivered.classList.contains("init-row__phase--delivered")).toBe(true);
+    expect(active.classList.contains("init-row__phase--active")).toBe(true);
+  });
+});
+
 describe("InitiativesView — disconnected states", () => {
   it("shows a reconnecting banner when reconnecting", () => {
     setInitiatives([], { connectionState: "reconnecting" });

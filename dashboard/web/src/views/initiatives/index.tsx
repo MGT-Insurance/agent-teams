@@ -27,6 +27,14 @@ function hasLiveSession(node: InitiativeNode): boolean {
   );
 }
 
+// Phase token hue is keyed by phase so categories read at a glance: delivered
+// (shipped), parked (needs attention), and done (complete) each get their own
+// treatment; the in-progress phases keep the base accent. Normalized so the
+// free-text phase maps to a stable selector (see initiatives.css).
+function phaseClass(phase: string): string {
+  return `init-row__phase--${phase.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+}
+
 // Per-signal hue so the three chips are distinguishable when lit:
 // machine=blue, pr=violet, session=green (see initiatives.css).
 type ChipTone = "machine" | "pr" | "session";
@@ -87,7 +95,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
       <div className="init-row__main">
         <span className="init-row__title">{initiative.title}</span>
         <span className="init-row__id">{initiative.id}</span>
-        <span className="init-row__phase">{node.phase}</span>
+        <span className={`init-row__phase ${phaseClass(node.phase)}`}>{node.phase}</span>
       </div>
       <div className="init-row__signals">
         <SignalChip
