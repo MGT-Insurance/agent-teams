@@ -27,17 +27,22 @@ function hasLiveSession(node: InitiativeNode): boolean {
   );
 }
 
+// Per-signal hue so the three chips are distinguishable when lit:
+// machine=blue, pr=violet, session=green (see initiatives.css).
+type ChipTone = "machine" | "pr" | "session";
+
 interface SignalChipProps {
   active: boolean;
+  tone: ChipTone;
   icon: string;
   label: string;
   title: string;
 }
 
-function SignalChip({ active, icon, label, title }: SignalChipProps) {
+function SignalChip({ active, tone, icon, label, title }: SignalChipProps) {
   return (
     <span
-      className={`init-chip init-chip--${active ? "on" : "off"}`}
+      className={`init-chip init-chip--${active ? "on" : "off"} init-chip--${tone}`}
       title={title}
       aria-label={`${label}: ${active ? "yes" : "no"}`}
     >
@@ -87,6 +92,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
       <div className="init-row__signals">
         <SignalChip
           active={onMachine}
+          tone="machine"
           icon="▣"
           label="on machine"
           title={onMachine ? "Worktree exists on this machine" : "Worktree not on this machine"}
@@ -96,7 +102,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
             href={initiative.prUrl}
             target="_blank"
             rel="noreferrer"
-            className="init-chip init-chip--on init-chip--link"
+            className="init-chip init-chip--on init-chip--pr init-chip--link"
             onClick={handlePrLinkClick}
             title={`Open PR: ${initiative.prUrl}`}
             aria-label="open PR: yes"
@@ -107,6 +113,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
         ) : (
           <SignalChip
             active={hasPr}
+            tone="pr"
             icon="⎘"
             label="PR"
             title={hasPr ? "Has an open PR" : "No open PR"}
@@ -114,6 +121,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
         )}
         <SignalChip
           active={running}
+          tone="session"
           icon="●"
           label="session"
           title={sessionTitle}
@@ -146,10 +154,12 @@ export default function InitiativesView() {
   const { initiatives, connectionState, error } = useSnapshotContext();
   const [query, setQuery] = useState("");
   const [showClosed, setShowClosed] = useState(false);
+  const [onlyOnMachine, setOnlyOnMachine] = useState(false);
 
   const q = query.trim().toLowerCase();
   const filtered = initiatives.filter((node) => {
     if (!showClosed && isClosed(node)) return false;
+    if (onlyOnMachine && !node.worktreeExists) return false;
     if (q === "") return true;
     const { id, title } = node.initiative;
     return id.toLowerCase().includes(q) || title.toLowerCase().includes(q);
@@ -181,6 +191,14 @@ export default function InitiativesView() {
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search initiatives by id or title"
         />
+        <label className="initiatives-toggle">
+          <input
+            type="checkbox"
+            checked={onlyOnMachine}
+            onChange={(e) => setOnlyOnMachine(e.target.checked)}
+          />
+          On this machine
+        </label>
         <label className="initiatives-toggle">
           <input
             type="checkbox"

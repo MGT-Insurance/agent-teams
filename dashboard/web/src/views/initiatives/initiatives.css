@@ -6,6 +6,8 @@
   max-width: 900px;
   width: 100%;
   margin: 0 auto;
+  /* PR signal hue (no global token exists; violet, GitHub-PR-like). */
+  --chip-pr: #a371f7;
 }
 
 .initiatives-header {
@@ -195,14 +197,31 @@
   text-decoration: none;
 }
 
-/* Lit — signal present */
+/* Lit — signal present. Structure only; per-signal tone sets the hue below. */
 .init-chip--on {
-  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
-  color: var(--color-ok);
-  border-color: color-mix(in srgb, var(--color-ok) 30%, transparent);
+  border-style: solid;
 }
 
-/* Dim — signal absent */
+/* Per-signal hues — applied only when lit (compound with --on). */
+.init-chip--on.init-chip--machine {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.init-chip--on.init-chip--pr {
+  background: color-mix(in srgb, var(--chip-pr) 15%, transparent);
+  color: var(--chip-pr);
+  border-color: color-mix(in srgb, var(--chip-pr) 35%, transparent);
+}
+
+.init-chip--on.init-chip--session {
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
+  color: var(--color-ok);
+  border-color: color-mix(in srgb, var(--color-ok) 35%, transparent);
+}
+
+/* Dim — signal absent (tone class present but uncolored). */
 .init-chip--off {
   background: transparent;
   color: var(--color-text-muted);
@@ -211,7 +230,7 @@
 }
 
 .init-chip--link:hover {
-  background: color-mix(in srgb, var(--color-ok) 25%, transparent);
+  filter: brightness(1.25);
 }
 
 .init-chip__icon {

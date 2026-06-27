@@ -191,6 +191,28 @@ describe("InitiativesView — closed toggle", () => {
   });
 });
 
+describe("InitiativesView — on-this-machine filter", () => {
+  beforeEach(() =>
+    setInitiatives([
+      makeNode({ worktreeExists: true }, { id: "init-here", title: "On this host" }),
+      makeNode({ worktreeExists: false }, { id: "init-elsewhere", title: "Other host" }),
+    ])
+  );
+
+  it("shows all initiatives by default", () => {
+    renderView();
+    expect(screen.getByText("On this host")).toBeTruthy();
+    expect(screen.getByText("Other host")).toBeTruthy();
+  });
+
+  it("hides off-machine initiatives when 'On this machine' is on", () => {
+    renderView();
+    fireEvent.click(screen.getByRole("checkbox", { name: /on this machine/i }));
+    expect(screen.getByText("On this host")).toBeTruthy();
+    expect(screen.queryByText("Other host")).toBeNull();
+  });
+});
+
 describe("InitiativesView — signal chips", () => {
   it("lights 'on machine' when worktreeExists is true", () => {
     setInitiatives([makeNode({ worktreeExists: true }, { id: "init-1", title: "On machine" })]);
