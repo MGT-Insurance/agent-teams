@@ -105,6 +105,18 @@ const offMachineItem: InboxItem = {
   onThisMachine: false,
 };
 
+// kind="check" — session blocked but NO declared gate (soft tier; agent-teams-ja9c)
+const checkItem: InboxItem = {
+  initiativeId: "init-6",
+  title: "Idle background session maybe stuck",
+  kind: "check",
+  nextAction: "Look at the session for more info.",
+  updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) to prove tiering overrides recency
+  worktree: "/Users/ericlloyd/.worktrees/init-6",
+  prUrl: null,
+  onThisMachine: true,
+};
+
 beforeEach(() => {
   mockNavigate.mockReset();
   setInbox([]);
@@ -380,6 +392,90 @@ describe("InboxView — 'This machine only' toggle", () => {
     const toggle = screen.getByTestId("toggle-this-machine");
     fireEvent.click(toggle);
     expect(screen.getByTestId("inbox-count").textContent).toBe("2");
+  });
+});
+
+describe("InboxView — kind='check' row (agent-teams-ja9c)", () => {
+  beforeEach(() => setInbox([checkItem]));
+
+  it("renders the item title", () => {
+    renderInbox();
+    expect(screen.getByText("Idle background session maybe stuck")).toBeTruthy();
+  });
+
+  it("renders a 'check on it' badge (not orange 'agent waiting')", () => {
+    renderInbox();
+    const badge = screen.getByText(/^check on it$/i);
+    expect(badge.classList.contains("inbox-row__badge")).toBeTruthy();
+    expect(badge.classList.contains("inbox-row__badge--check")).toBeTruthy();
+    // Must NOT have the waiting badge class (orange).
+    expect(badge.classList.contains("inbox-row__badge--waiting")).toBe(false);
+  });
+
+  it("renders nextAction text", () => {
+    renderInbox();
+    expect(screen.getByText("Look at the session for more info.")).toBeTruthy();
+  });
+
+  it("row has data-kind='check' attribute", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /idle background session maybe stuck/i });
+    expect(row.getAttribute("data-kind")).toBe("check");
+  });
+
+  it("row has inbox-row--check class (muted style)", () => {
+    const { container } = renderInbox();
+    const row = container.querySelector(".inbox-row--check");
+    expect(row).not.toBeNull();
+    // Must NOT have the orange waiting class.
+    expect(row?.classList.contains("inbox-row--waiting")).toBe(false);
+  });
+
+  it("navigates to /initiative/:id on click", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /idle background session maybe stuck/i });
+    fireEvent.click(row);
+    expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-6");
+  });
+});
+
+describe("InboxView — tiered sort (agent-teams-ja9c)", () => {
+  it("check item sorts BELOW review/waiting/generic even when check has a newer updatedAt", () => {
+    // checkItem.updatedAt = 13:00, reviewItem.updatedAt = 12:00
+    // Tiering must override recency: review (tier 0) before check (tier 3).
+    setInbox([checkItem, reviewItem]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-6"); // check
+  });
+
+  it("tiered-then-recency: review < waiting < generic < check, recency desc within tier", () => {
+    // review:  12:00 (tier 0)
+    // waiting: 10:00 (tier 1)
+    // generic: 08:00 (tier 2)
+    // check:   13:00 (tier 3) — newest overall but lowest tier
+    setInbox([checkItem, genericItem, waitingItem, reviewItem]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review  tier 0
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-1"); // waiting tier 1
+    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-3"); // generic tier 2
+    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-6"); // check   tier 3
+  });
+
+  it("two check items sort by recency desc within the check tier", () => {
+    const olderCheck: InboxItem = {
+      ...checkItem,
+      initiativeId: "init-7",
+      title: "Older check item",
+      updatedAt: "2026-06-25T07:00:00Z",
+    };
+    setInbox([olderCheck, checkItem]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // newer 13:00
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-7"); // older 07:00
   });
 });
 

@@ -5,12 +5,14 @@ import { useSnapshotContext } from "../../SnapshotContext.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
-// review: AUTHORITATIVE gate:review label; "review the PR".
-// waiting: agent is paused, waiting for input (explicit question gate or session blocked).
+// review:  AUTHORITATIVE gate:review label; "review the PR".
+// waiting: explicit gate:question/human; agent declared a blocking question.
 // generic: delivered + no explicit gate; graceful degrade, no specific action asserted.
+// check:   session waiting/blocked but no declared gate; softer "check on it" tier.
 function rowBadgeLabel(kind: InboxItem["kind"]): string {
   if (kind === "review") return "review the PR";
   if (kind === "waiting") return "agent waiting";
+  if (kind === "check") return "check on it";
   return "needs you";
 }
 
@@ -93,11 +95,16 @@ export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
   const [thisMachineOnly, setThisMachineOnly] = useState(true);
 
-  // Filter BEFORE sort (spec: filter then recency sort).
+  // Filter BEFORE sort (spec: filter then sort).
   const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine) : inbox;
 
-  // Sort newest-updated-first. ISO-8601 Zulu strings compare correctly as strings.
-  const sorted = [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  // Tiered sort: real items (review, waiting, generic) above check items; recency desc within tier.
+  const tierRank: Record<InboxItem["kind"], number> = { review: 0, waiting: 1, generic: 2, check: 3 };
+  const sorted = [...filtered].sort((a, b) => {
+    const tierDiff = tierRank[a.kind] - tierRank[b.kind];
+    if (tierDiff !== 0) return tierDiff;
+    return b.updatedAt.localeCompare(a.updatedAt);
+  });
 
   const showBanner = connectionState !== "connected";
   const totalCount = sorted.length;

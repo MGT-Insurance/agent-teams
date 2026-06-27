@@ -125,6 +125,12 @@
   border-left: 3px solid var(--color-accent);
 }
 
+/* check: softer muted-blue border — visually distinct from orange "agent waiting" */
+.inbox-row--check {
+  border-left: 3px solid var(--color-text-muted);
+  opacity: 0.85;
+}
+
 .inbox-row__header {
   display: flex;
   align-items: center;
@@ -156,6 +162,11 @@
 .inbox-row__badge--generic {
   background: color-mix(in srgb, var(--color-accent) 15%, transparent);
   color: var(--color-accent);
+}
+
+.inbox-row__badge--check {
+  background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
+  color: var(--color-text-muted);
 }
 
 .inbox-row__title {

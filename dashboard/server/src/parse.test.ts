@@ -719,13 +719,13 @@ describe("deriveNeedsHuman", () => {
     expect(deriveNeedsHuman("pr-open", "none", "question")).toBe("waiting");
   });
 
-  // Session-based cases (gate=null)
-  it("session WAITING -> 'waiting' (most urgent; active initiative)", () => {
-    expect(deriveNeedsHuman("none", "waiting", null)).toBe("waiting");
+  // Session-based cases (gate=null) — no declared gate, softer "check" tier
+  it("session WAITING, no gate -> 'check' (soft tier; no declared ask)", () => {
+    expect(deriveNeedsHuman("none", "waiting", null)).toBe("check");
   });
 
-  it("session WAITING + delivered -> 'waiting' (most urgent; delivered initiative)", () => {
-    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("waiting");
+  it("session WAITING + delivered, no gate -> 'check' (soft tier; no declared ask)", () => {
+    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("check");
   });
 
   it("session WORKING -> false (refining after delivery, not in inbox)", () => {
@@ -820,19 +820,15 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.delivery).toBe("none");
   });
 
-  it("needsHuman is waiting when session is blocked (state=blocked) — the core blo fix", () => {
-    // Blocked session: status=waiting, state=blocked -> signal="waiting" -> needsHuman="waiting"
-    const parsed = parseInitiative(RAW_AT_2JH); // has prUrl but that's irrelevant
-    const nodes = buildInitiativeNodes([parsed], [BLOCKED_SESSION], new Set());
-    // BLOCKED_SESSION.cwd matches RAW_AT_2JH worktree? No — different path.
-    // Use a tweaked RAW so the worktree matches BLOCKED_SESSION.cwd.
+  it("session blocked (state=blocked) with no gate -> needsHuman='check' (soft tier, agent-teams-ja9c)", () => {
+    // Blocked session + NO gate: signal="waiting", gate=null -> needsHuman="check" (not "waiting")
     const raw: RawInitiative = { ...RAW_AT_2JH, description: RAW_AT_2JH.description.replace(
       "/Users/ericlloyd/.agent-teams-worktrees/specialty-quote-api",
       "/Users/ericlloyd/.agent-teams-worktrees/some-blocked-initiative",
     )};
-    const nodes2 = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
-    expect(nodes2[0]?.needsHuman).toBe("waiting");
-    expect(nodes2[0]?.activity).toBe("needs-human");
+    const nodes = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
+    expect(nodes[0]?.needsHuman).toBe("check");
+    expect(nodes[0]?.activity).toBe("needs-human");
   });
 });
 
@@ -874,11 +870,11 @@ describe("attention state: spec-required scenarios", () => {
     };
   }
 
-  it("session waiting/blocked -> needsHuman='waiting' (most urgent)", () => {
+  it("session waiting/blocked, no gate -> needsHuman='check' (soft tier, agent-teams-ja9c)", () => {
     const init = makeInit("blocked-1", false);
     const sess = makeSession("/wt/blocked-1", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
-    expect(nodes[0]?.needsHuman).toBe("waiting");
+    expect(nodes[0]?.needsHuman).toBe("check");
     expect(nodes[0]?.activity).toBe("needs-human");
   });
 
@@ -927,12 +923,12 @@ describe("attention state: spec-required scenarios", () => {
     expect(nodes[0]?.activity).toBe("done");
   });
 
-  it("inbox: waiting item has kind='waiting'", () => {
+  it("inbox: no-gate blocked session -> kind='check' (soft tier, agent-teams-ja9c)", () => {
     const init = makeInit("w-inbox", false);
     const sess = makeSession("/wt/w-inbox", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
-    expect(inbox[0]?.kind).toBe("waiting");
+    expect(inbox[0]?.kind).toBe("check");
   });
 
   it("inbox: generic item when delivered + ended (no explicit gate)", () => {
@@ -1346,5 +1342,86 @@ describe("buildOrphanSessions", () => {
     // Only the 2 bg sessions — interactive excluded.
     expect(orphans).toHaveLength(2);
     expect(orphans.every((s) => s.kind === "background")).toBe(true);
+  });
+});
+
+// ---- check flavor (agent-teams-ja9c) -----------------------------------------
+//
+// A session reporting waiting/blocked with NO explicit gate must produce kind="check"
+// (soft tier), NOT "waiting". A real gate:question must still produce "waiting"
+// even when the session is also blocked.
+
+describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
+  function makeInit(id: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T10:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+    };
+  }
+
+  function makeSession(id: string, status: string, state?: string): SessionState {
+    return {
+      sessionId: `sess-${id}`,
+      kind: "background",
+      cwd: `/wt/${id}`,
+      startedAt: 0,
+      status: status as "idle" | "busy" | "waiting",
+      state: state as "working" | "blocked" | "done" | "stopped" | undefined,
+    };
+  }
+
+  it("no-gate + state='blocked' → InboxItem.kind === 'check'", () => {
+    const init = makeInit("chk-blocked");
+    const sess = makeSession("chk-blocked", "idle", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("check");
+  });
+
+  it("no-gate + status='waiting' → InboxItem.kind === 'check'", () => {
+    const init = makeInit("chk-waiting");
+    const sess = makeSession("chk-waiting", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("check");
+  });
+
+  it("check item nextAction is the constant fallback string", () => {
+    const init = makeInit("chk-action");
+    const sess = makeSession("chk-action", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("gate:question + session also blocked → kind='waiting' (gate wins; gate checked first)", () => {
+    const init: ParsedInitiative = { ...makeInit("chk-q"), labels: ["gate:question", "human"] };
+    const sess = makeSession("chk-q", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
+  });
+
+  it("gate:question without blocked session → kind='waiting' (authoritative declared ask)", () => {
+    const init: ParsedInitiative = { ...makeInit("chk-q2"), labels: ["gate:question"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
   });
 });
