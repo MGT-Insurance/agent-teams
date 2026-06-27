@@ -71,6 +71,16 @@ const workingSession: SessionState = {
   state: "working",
 };
 
+// A parked agent blocked on a human gate — still a live, existing session.
+const waitingSession: SessionState = {
+  cwd: "/wt/init-1",
+  kind: "background",
+  startedAt: 0,
+  sessionId: "s2",
+  status: "waiting",
+  state: "blocked",
+};
+
 function makeNode(over: Partial<InitiativeNode> = {}, init: Partial<ParsedInitiative> = {}): InitiativeNode {
   return {
     initiative: makeInitiative(init),
@@ -227,6 +237,14 @@ describe("InitiativesView — signal chips", () => {
     setInitiatives([makeNode({ session: workingSession }, { id: "init-1", title: "Running" })]);
     renderView();
     const row = screen.getByRole("button", { name: /running/i });
+    const chip = within(row).getByLabelText("session: yes");
+    expect(chip.classList.contains("init-chip--on")).toBe(true);
+  });
+
+  it("lights 'session' when a waiting (parked) session is present", () => {
+    setInitiatives([makeNode({ session: waitingSession }, { id: "init-1", title: "Parked" })]);
+    renderView();
+    const row = screen.getByRole("button", { name: /parked/i });
     const chip = within(row).getByLabelText("session: yes");
     expect(chip.classList.contains("init-chip--on")).toBe(true);
   });

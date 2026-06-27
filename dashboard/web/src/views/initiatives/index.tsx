@@ -12,11 +12,18 @@ function isClosed(node: InitiativeNode): boolean {
   return CLOSED_STATUSES.has(node.initiative.status.toLowerCase());
 }
 
-// Signal 3 — a live session actively working (busy or state=working).
-function hasRunningSession(node: InitiativeNode): boolean {
+// Signal 3 — "has an existing session": a live session is present. Per the
+// SessionSignal model (shared/types.ts), "live" = working (busy/state=working)
+// OR waiting (status=waiting/state=blocked — e.g. a parked agent on a human
+// gate). Idle->ended and done/stopped sessions are NOT live and do not light.
+function hasLiveSession(node: InitiativeNode): boolean {
+  const s = node.session;
+  if (s === null) return false;
   return (
-    node.session !== null &&
-    (node.session.status === "busy" || node.session.state === "working")
+    s.status === "busy" ||
+    s.status === "waiting" ||
+    s.state === "working" ||
+    s.state === "blocked"
   );
 }
 
@@ -46,7 +53,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
 
   const onMachine = node.worktreeExists;
   const hasPr = node.delivery === "pr-open";
-  const running = hasRunningSession(node);
+  const running = hasLiveSession(node);
 
   function handleRowClick() {
     navigate(`/initiative/${initiative.id}`);
