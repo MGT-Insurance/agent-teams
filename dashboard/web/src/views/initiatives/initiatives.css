@@ -1,0 +1,220 @@
+.initiatives-view {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+  gap: 16px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.initiatives-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.initiatives-header__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.initiatives-header__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+/* Banner for disconnected / error states */
+.initiatives-banner {
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.initiatives-banner--warn {
+  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
+  color: var(--color-warn);
+  border: 1px solid color-mix(in srgb, var(--color-warn) 30%, transparent);
+}
+
+.initiatives-banner--error {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+  border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
+}
+
+/* Search + closed toggle */
+.initiatives-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.initiatives-search {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  outline: none;
+}
+
+.initiatives-search:focus {
+  border-color: var(--color-accent);
+}
+
+.initiatives-search::placeholder {
+  color: var(--color-text-muted);
+}
+
+.initiatives-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.initiatives-toggle input {
+  cursor: pointer;
+}
+
+/* Empty state */
+.initiatives-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 60px 0;
+  color: var(--color-text-muted);
+}
+
+.initiatives-empty__message {
+  font-size: 14px;
+}
+
+/* List */
+.initiatives-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.initiatives-list__item {
+  display: contents;
+}
+
+/* Row card */
+.init-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+}
+
+.init-row:hover,
+.init-row:focus-visible {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+}
+
+.init-row[data-closed="true"] {
+  opacity: 0.6;
+}
+
+.init-row__main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.init-row__title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.init-row__id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.init-row__phase {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+}
+
+/* Signal chips */
+.init-row__signals {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.init-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+/* Lit — signal present */
+.init-chip--on {
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
+  color: var(--color-ok);
+  border-color: color-mix(in srgb, var(--color-ok) 30%, transparent);
+}
+
+/* Dim — signal absent */
+.init-chip--off {
+  background: transparent;
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  opacity: 0.55;
+}
+
+.init-chip--link:hover {
+  background: color-mix(in srgb, var(--color-ok) 25%, transparent);
+}
+
+.init-chip__icon {
+  font-size: 11px;
+  line-height: 1;
+}
