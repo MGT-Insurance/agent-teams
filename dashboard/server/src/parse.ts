@@ -275,12 +275,18 @@ export function derivePhase(notes: string): string {
 // one initiative throws (e.g. malformed data from a freshly-registered entry), that
 // initiative degrades to a minimal safe node and a warning is logged.  The rest of
 // the snapshot is unaffected — the dashboard stays live.
+// existsFn checks whether a worktree path exists on the host. Injected so parse.ts
+// stays pure (no fs import); snapshot.ts passes fs.existsSync. Defaults to a no-op
+// that reports "not present" — keeps the many existing unit-test callers unchanged.
 export function buildInitiativeNodes(
   initiatives: ParsedInitiative[],
   sessions: SessionState[],
   humanGatedIds: Set<string>,
+  existsFn: (path: string) => boolean = () => false,
 ): InitiativeNode[] {
   return initiatives.map((initiative) => {
+    // "On this machine" signal (at-gvv): empty/missing worktree path => false.
+    const worktreeExists = initiative.worktree ? existsFn(initiative.worktree) : false;
     try {
       const session =
         sessions.find(
@@ -303,7 +309,7 @@ export function buildInitiativeNodes(
       const signal = deriveSessionSignal(session);
       const needsHuman = deriveNeedsHuman(delivery, signal, gate);
 
-      return { initiative, session, activity, phase, delivery, needsHuman };
+      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists };
     } catch (err) {
       console.warn(
         `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -316,6 +322,7 @@ export function buildInitiativeNodes(
         phase: "active",
         delivery: "none" as const,
         needsHuman: false as const,
+        worktreeExists,
       };
     }
   });

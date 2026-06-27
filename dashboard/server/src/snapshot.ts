@@ -1,7 +1,16 @@
 // Assembles SnapshotEvent from CLI data and manages the 2s poll loop.
 
+import { existsSync } from "node:fs";
+
 import type { SnapshotEvent } from "@agent-teams/shared";
-import { CliError, ateamListJson, ateamWs, claudeAgentsJson, bdHumanList } from "./cli.js";
+import {
+  CliError,
+  ateamListJson,
+  ateamWs,
+  claudeAgentsJson,
+  bdHumanList,
+  bdClosedInitiatives,
+} from "./cli.js";
 import {
   parseAteamListJson,
   parseClaudeAgents,
@@ -58,19 +67,32 @@ export async function buildSnapshot(): Promise<SnapshotEvent> {
   // ateam ws is a prerequisite for bdHumanList, so fetch it first.
   const ws = await ateamWs();
 
-  // Fetch initiatives, agents, and human-gated list in parallel.
-  const [listJsonRaw, agentsRaw, humanRaw] = await Promise.all([
+  // Fetch open initiatives, closed initiatives, agents, and human-gated list in parallel.
+  const [listJsonRaw, closedJsonRaw, agentsRaw, humanRaw] = await Promise.all([
     ateamListJson(),
+    bdClosedInitiatives(ws),
     claudeAgentsJson(),
     bdHumanList(ws),
   ]);
 
-  const initiatives = parseAteamListJson(listJsonRaw);
+  const openInitiatives = parseAteamListJson(listJsonRaw);
+  const closedInitiatives = parseAteamListJson(closedJsonRaw);
   const sessions = parseClaudeAgents(agentsRaw);
   const humanGatedRaw = parseBdList(humanRaw);
   const humanGatedIds = new Set(humanGatedRaw.map((b) => b.id));
 
-  const nodes = buildInitiativeNodes(initiatives, sessions, humanGatedIds);
+  // Concat open + closed before building nodes. Dedup defensively by id (a bead is
+  // either open or closed, never both, but guard anyway — open wins). Closed
+  // initiatives derive delivery="merged" -> needsHuman=false, so they never reach
+  // the inbox; they exist so the Initiatives tab can offer a "show closed" toggle.
+  const seen = new Set<string>();
+  const initiatives = [...openInitiatives, ...closedInitiatives].filter((i) => {
+    if (seen.has(i.id)) return false;
+    seen.add(i.id);
+    return true;
+  });
+
+  const nodes = buildInitiativeNodes(initiatives, sessions, humanGatedIds, existsSync);
   const unmatchedSessions = buildOrphanSessions(initiatives, sessions);
   // buildInbox consumes the already-built nodes (which carry needsHuman) to avoid re-deriving state.
   const inbox = buildInbox(nodes);
