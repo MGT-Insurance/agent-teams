@@ -174,17 +174,22 @@
   color: var(--color-accent);
 }
 
-/* Signal chips */
+/* Signal chips — fixed 3-column grid so each signal occupies the same slot in
+   every row (lit vs dim, arrow vs no-arrow don't shift the columns). */
 .init-row__signals {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   align-items: center;
   gap: 6px;
+  width: 330px;
   flex-shrink: 0;
 }
 
 .init-chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 100%;
   gap: 4px;
   font-family: var(--font-mono);
   font-size: 10px;
