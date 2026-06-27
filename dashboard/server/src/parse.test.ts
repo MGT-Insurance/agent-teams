@@ -1068,7 +1068,7 @@ describe("extractLatestAsk", () => {
 
   it("parses decision from a well-formed block", () => {
     const notes = "<<<ateam-ask\ndecision: Should we deploy now?\n>>>";
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?", recommendation: "", alternative: "" });
   });
 
   it("returns the LAST valid block when multiple blocks are present", () => {
@@ -1081,7 +1081,7 @@ describe("extractLatestAsk", () => {
       "decision: Second question.",
       ">>>",
     ].join("\n");
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question." });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question.", recommendation: "", alternative: "" });
   });
 
   it("skips an unclosed block at end of notes, keeps the last valid closed block", () => {
@@ -1094,7 +1094,7 @@ describe("extractLatestAsk", () => {
       "<<<ateam-ask",
       "decision: Unclosed — no close marker follows.",
     ].join("\n");
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block." });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block.", recommendation: "", alternative: "" });
   });
 
   it("skips blocks with empty decision", () => {
@@ -1105,7 +1105,29 @@ describe("extractLatestAsk", () => {
   it("ignores >>> embedded in prose (must be line-anchored)", () => {
     const notes = "<<<ateam-ask\ndecision: X or >>> something\n>>>";
     // The inline >>> in the decision value is prose; the real close is on its own line.
-    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something", recommendation: "", alternative: "" });
+  });
+
+  it("parses recommendation and alternative when present", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we roll back?",
+      "recommendation: Yes — error rate is above 5%.",
+      "alternative: Partial rollback to 10% traffic.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({
+      decision: "Should we roll back?",
+      recommendation: "Yes — error rate is above 5%.",
+      alternative: "Partial rollback to 10% traffic.",
+    });
+  });
+
+  it("returns empty strings for recommendation/alternative when fields are absent", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+    expect(result?.alternative).toBe("");
   });
 });
 
@@ -1206,6 +1228,87 @@ describe("buildInbox — updatedAt and nextAction", () => {
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
+// ---- buildInbox: recommendation/alternative passthrough (agent-teams-oc3p) ----
+
+describe("buildInbox — recommendation and alternative", () => {
+  function makeWaitingInit(notes: string): ParsedInitiative {
+    return {
+      id: "w-rec",
+      title: "Rec test",
+      description: "worktree: /wt/w-rec",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/w-rec",
+      branch: "w-rec",
+      team: "t-w-rec",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+    };
+  }
+
+  it("waiting item carries recommendation and alternative from ask block", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Ship or hold?",
+      "recommendation: Ship — tests are green.",
+      "alternative: Hold 24h and rerun perf suite.",
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toBe("Ship — tests are green.");
+    expect(inbox[0]?.alternative).toBe("Hold 24h and rerun perf suite.");
+  });
+
+  it("waiting item has empty recommendation/alternative when ask block omits them", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toBe("");
+    expect(inbox[0]?.alternative).toBe("");
+  });
+
+  it("non-waiting items always have empty recommendation/alternative", () => {
+    const reviewInit: ParsedInitiative = {
+      id: "rv",
+      title: "Review init",
+      description: "worktree: /wt/rv",
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/rv",
+      branch: "rv",
+      team: "t-rv",
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels: ["gate:review"],
+    };
+    const nodes = buildInitiativeNodes([reviewInit], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("review");
+    expect(inbox[0]?.recommendation).toBe("");
+    expect(inbox[0]?.alternative).toBe("");
   });
 });
 

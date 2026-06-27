@@ -67,6 +67,12 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
         )}
       </div>
       <p className="inbox-row__next-action">{item.nextAction}</p>
+      {item.kind === "waiting" && item.recommendation && (
+        <p className="inbox-row__secondary">Recommended: {item.recommendation}</p>
+      )}
+      {item.kind === "waiting" && item.alternative && (
+        <p className="inbox-row__secondary">Alternative: {item.alternative}</p>
+      )}
     </div>
   );
 }

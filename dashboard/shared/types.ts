@@ -143,6 +143,10 @@ export interface InboxItem {
   //   generic -> "Delivered with no gate — open the worktree to see what's needed."
   //   check   -> "Look at the session for more info." (soft check — no declared ask block)
   nextAction: string;
+  // Agent's recommendation and alternative for waiting rows; "" for all other kinds.
+  // Sourced from the recommendation:/alternative: fields in the latest <<<ateam-ask >>> block.
+  recommendation: string;
+  alternative: string;
   // ISO-8601 timestamp from RawInitiative.updated_at — drives recency sort in the inbox.
   updatedAt: string;
   worktree: string;

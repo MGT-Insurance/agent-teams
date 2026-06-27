@@ -334,20 +334,21 @@ export function buildOrphanSessions(
   );
 }
 
-// Parse the decision field from the interior of a single ateam-ask block body.
-// Returns the trimmed decision string, or "" when the field is absent/empty.
-function parseAskDecision(body: string): string {
+// Parse a named field from the interior of a single ateam-ask block body.
+// Returns the trimmed value string, or "" when the field is absent/empty.
+function parseAskField(body: string, field: string): string {
+  const prefix = `${field}:`;
   for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("decision:")) {
-      return trimmed.slice("decision:".length).trim();
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length).trim();
     }
   }
   return "";
 }
 
 // Pure helper: scan notes for the LAST valid <<<ateam-ask ... >>> sentinel block
-// and return {decision} when found, null otherwise.
+// and return {decision, recommendation, alternative} when found, null otherwise.
 // Mirrors the Go implementation in internal/verbs/query.go (extractLatestAsk/parseAskBody).
 //
 // Grammar:
@@ -355,7 +356,7 @@ function parseAskDecision(body: string): string {
 //   close: ">>>" anchored at start of a line (or start of remaining text)
 //   A block is valid only if the decision field is non-empty; unclosed blocks are skipped.
 //   The LAST valid block wins.
-export function extractLatestAsk(notes: string): { decision: string } | null {
+export function extractLatestAsk(notes: string): { decision: string; recommendation: string; alternative: string } | null {
   const OPEN = "<<<ateam-ask";
 
   // Returns the index of the start of ">>>" that anchors to a line boundary,
@@ -367,7 +368,7 @@ export function extractLatestAsk(notes: string): { decision: string } | null {
     return idx + 1; // position of the first ">" that starts ">>>"
   }
 
-  let last: { decision: string } | null = null;
+  let last: { decision: string; recommendation: string; alternative: string } | null = null;
   let remaining = notes;
   for (;;) {
     const start = remaining.indexOf(OPEN);
@@ -380,9 +381,13 @@ export function extractLatestAsk(notes: string): { decision: string } | null {
       continue;
     }
     const body = after.slice(0, end);
-    const decision = parseAskDecision(body);
+    const decision = parseAskField(body, "decision");
     if (decision) {
-      last = { decision };
+      last = {
+        decision,
+        recommendation: parseAskField(body, "recommendation"),
+        alternative: parseAskField(body, "alternative"),
+      };
     }
     remaining = after.slice(end + ">>>".length);
   }
@@ -413,6 +418,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         title: initiative.title,
         kind: "review",
         nextAction: "Review the PR and merge or send it back.",
+        recommendation: "",
+        alternative: "",
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
@@ -431,6 +438,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         title: initiative.title,
         kind: "waiting",
         nextAction,
+        recommendation: ask?.recommendation.slice(0, 120) ?? "",
+        alternative: ask?.alternative.slice(0, 120) ?? "",
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
@@ -443,6 +452,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         title: initiative.title,
         kind: "check",
         nextAction: "Look at the session for more info.",
+        recommendation: "",
+        alternative: "",
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
@@ -455,6 +466,8 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         title: initiative.title,
         kind: "generic",
         nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+        recommendation: "",
+        alternative: "",
         updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,

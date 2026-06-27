@@ -76,6 +76,8 @@ describe("snapshotReducer", () => {
           title: "Do a thing",
           kind: "waiting",
           nextAction: "Which approach?",
+          recommendation: "",
+          alternative: "",
           updatedAt: "2026-06-25T10:00:00Z",
           worktree: "/tmp/wt",
           prUrl: null,
