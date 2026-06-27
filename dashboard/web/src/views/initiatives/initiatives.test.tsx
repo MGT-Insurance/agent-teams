@@ -256,6 +256,22 @@ describe("InitiativesView — signal chips", () => {
     const chip = within(row).getByLabelText("session: no");
     expect(chip.classList.contains("init-chip--off")).toBe(true);
   });
+
+  it("dims 'session' for an ended session (idle + done) — present but not live", () => {
+    const endedSession: SessionState = {
+      cwd: "/wt/init-1",
+      kind: "background",
+      startedAt: 0,
+      sessionId: "s3",
+      status: "idle",
+      state: "done",
+    };
+    setInitiatives([makeNode({ session: endedSession }, { id: "init-1", title: "Ended" })]);
+    renderView();
+    const row = screen.getByRole("button", { name: /ended/i });
+    const chip = within(row).getByLabelText("session: no");
+    expect(chip.classList.contains("init-chip--off")).toBe(true);
+  });
 });
 
 describe("InitiativesView — disconnected states", () => {
