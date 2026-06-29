@@ -272,6 +272,28 @@ describe("buildInitiativeNodes", () => {
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
     expect(nodes[0]?.activity).toBe("busy");
   });
+
+  it("counts all matched background sessions and prefers an alive primary", () => {
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const wt = parsed.worktree;
+    const dead: SessionState = {
+      id: "d", cwd: wt, kind: "background", startedAt: 1, sessionId: "dead-0000", name: "x", state: "done",
+    };
+    const alive: SessionState = {
+      id: "a", cwd: wt, kind: "background", startedAt: 2, sessionId: "alive-0000", name: "x", status: "busy", state: "working",
+    };
+    // dead listed first — find() would have picked it; alive-preference overrides.
+    const nodes = buildInitiativeNodes([parsed], [dead, alive], new Set());
+    expect(nodes[0]?.sessionCount).toBe(2);
+    expect(nodes[0]?.session?.sessionId).toBe("alive-0000");
+  });
+
+  it("sessionCount is 0 when no background session matches", () => {
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const nodes = buildInitiativeNodes([parsed], [], new Set());
+    expect(nodes[0]?.sessionCount).toBe(0);
+    expect(nodes[0]?.session).toBeNull();
+  });
 });
 
 // ---- deriveActivity ---------------------------------------------------------

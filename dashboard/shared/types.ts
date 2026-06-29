@@ -44,12 +44,16 @@ export interface SessionState {
   kind: "background" | "interactive";
   startedAt: number; // epoch ms
   sessionId: string; // uuid
-  // "waiting" is added by agent-teams-blo: the session is paused, waiting on human input.
-  status: "idle" | "busy" | "waiting";
+  // Present ONLY while the process is alive (absent/null once it exits — per the
+  // Claude Code agent-view docs). "waiting" is added by agent-teams-blo: the
+  // session is paused, waiting on human input.
+  status?: "idle" | "busy" | "waiting";
   // background-only fields
   id?: string;
   name?: string;
-  state?: "working" | "blocked" | "done" | "stopped";
+  // Per Claude Code agent-view docs: working | blocked | done | failed | stopped.
+  // `failed` = the session errored. Absent on interactive sessions.
+  state?: "working" | "blocked" | "done" | "failed" | "stopped";
 }
 
 // Derived activity enum for constellation rendering.
@@ -125,6 +129,11 @@ export interface InitiativeNode {
   // host-specific while the registry syncs cross-machine, so this MUST be
   // computed server-side via fs.existsSync — it cannot be derived client-side.
   worktreeExists: boolean;
+  // Number of background session ENTRIES matched to this worktree (alive + dead,
+  // as listed by `claude agents --json --all`). >1 means multiple sessions on
+  // one worktree — a conflict the dashboard flags. `session` above is the chosen
+  // primary (prefers an alive one) for the per-row session chip.
+  sessionCount: number;
 }
 
 // An item in the inbox requiring Eric's attention.

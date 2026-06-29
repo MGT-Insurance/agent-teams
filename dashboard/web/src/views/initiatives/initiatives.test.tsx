@@ -81,6 +81,15 @@ const waitingSession: SessionState = {
   state: "blocked",
 };
 
+// Process has exited — `status` absent, lingering in `claude agents --all`. Dead.
+const deadSession: SessionState = {
+  cwd: "/wt/init-1",
+  kind: "background",
+  startedAt: 0,
+  sessionId: "s3",
+  state: "done",
+};
+
 function makeNode(over: Partial<InitiativeNode> = {}, init: Partial<ParsedInitiative> = {}): InitiativeNode {
   return {
     initiative: makeInitiative(init),
@@ -90,6 +99,7 @@ function makeNode(over: Partial<InitiativeNode> = {}, init: Partial<ParsedInitia
     delivery: "none",
     needsHuman: false,
     worktreeExists: false,
+    sessionCount: over.session ? 1 : 0,
     ...over,
   };
 }
@@ -167,7 +177,7 @@ describe("InitiativesView — search", () => {
   });
 });
 
-describe("InitiativesView — closed toggle", () => {
+describe("InitiativesView — completed toggle", () => {
   beforeEach(() =>
     setInitiatives([
       makeNode({}, { id: "init-open", title: "Open one", status: "open" }),
@@ -176,19 +186,33 @@ describe("InitiativesView — closed toggle", () => {
     ])
   );
 
-  it("hides closed and done initiatives by default", () => {
+  it("hides completed (closed/done, no live session) initiatives by default", () => {
     renderView();
     expect(screen.getByText("Open one")).toBeTruthy();
     expect(screen.queryByText("Closed one")).toBeNull();
     expect(screen.queryByText("Done one")).toBeNull();
   });
 
-  it("reveals closed and done initiatives when 'Show closed' is on", () => {
+  it("reveals completed initiatives when 'Show completed' is on", () => {
     renderView();
-    fireEvent.click(screen.getByRole("checkbox", { name: /show closed/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /show completed/i }));
     expect(screen.getByText("Open one")).toBeTruthy();
     expect(screen.getByText("Closed one")).toBeTruthy();
     expect(screen.getByText("Done one")).toBeTruthy();
+  });
+
+  it("keeps a closed initiative with ANY lingering session visible (not completed)", () => {
+    setInitiatives([
+      makeNode({ session: workingSession }, { id: "c-alive", title: "Closed alive", status: "closed" }),
+      makeNode({ session: deadSession }, { id: "c-dead", title: "Closed dead", status: "closed" }),
+      makeNode({}, { id: "c-none", title: "Closed quiet", status: "closed" }),
+    ]);
+    renderView();
+    // Show completed OFF: the two with a lingering session show; only the
+    // truly-gone one (closed + no session) is hidden as "completed".
+    expect(screen.getByText("Closed alive")).toBeTruthy();
+    expect(screen.getByText("Closed dead")).toBeTruthy();
+    expect(screen.queryByText("Closed quiet")).toBeNull();
   });
 });
 
@@ -256,46 +280,107 @@ describe("InitiativesView — signal chips", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it("lights 'session' (live) when a working session is present", () => {
-    setInitiatives([makeNode({ session: workingSession }, { id: "init-1", title: "Running" })]);
+  it("session chip = green 'running' for an open initiative with a live session", () => {
+    setInitiatives([makeNode({ session: workingSession }, { id: "i", title: "Running" })]);
     renderView();
-    const row = screen.getByRole("button", { name: /running/i });
-    const chip = within(row).getByLabelText("session: live");
-    expect(chip.classList.contains("init-chip--on")).toBe(true);
+    const chip = within(screen.getByRole("button", { name: /running/i })).getByLabelText("session: running");
+    expect(chip.classList.contains("init-chip--good")).toBe(true);
   });
 
-  it("lights 'session' (live) when a waiting (parked) session is present", () => {
-    setInitiatives([makeNode({ session: waitingSession }, { id: "init-1", title: "Parked" })]);
+  it("session chip = amber 'running (close it)' for a CLOSED initiative with a live session", () => {
+    setInitiatives([makeNode({ session: workingSession }, { id: "i", title: "ClosedRun", status: "closed" })]);
     renderView();
-    const row = screen.getByRole("button", { name: /parked/i });
-    const chip = within(row).getByLabelText("session: live");
-    expect(chip.classList.contains("init-chip--on")).toBe(true);
+    const chip = within(screen.getByRole("button", { name: /closedrun/i })).getByLabelText("session: running (close it)");
+    expect(chip.classList.contains("init-chip--warn")).toBe(true);
   });
 
-  it("shows 'session' as off when there is no session", () => {
-    setInitiatives([makeNode({ session: null }, { id: "init-1", title: "No session" })]);
+  it("session chip = amber 'dead' for an open + on-machine dead session", () => {
+    setInitiatives([makeNode({ session: deadSession, worktreeExists: true }, { id: "i", title: "DeadHere" })]);
     renderView();
-    const row = screen.getByRole("button", { name: /no session/i });
-    const chip = within(row).getByLabelText("session: none");
+    const chip = within(screen.getByRole("button", { name: /deadhere/i })).getByLabelText("session: dead");
+    expect(chip.classList.contains("init-chip--warn")).toBe(true);
+  });
+
+  it("session chip = muted 'dead' for an open dead session NOT on this machine", () => {
+    setInitiatives([makeNode({ session: deadSession, worktreeExists: false }, { id: "i", title: "DeadAway" })]);
+    renderView();
+    const chip = within(screen.getByRole("button", { name: /deadaway/i })).getByLabelText("session: dead");
+    expect(chip.classList.contains("init-chip--muted")).toBe(true);
+  });
+
+  it("session chip = off when there is no session", () => {
+    setInitiatives([makeNode({ session: null }, { id: "i", title: "NoSess" })]);
+    renderView();
+    const chip = within(screen.getByRole("button", { name: /nosess/i })).getByLabelText("session: none");
     expect(chip.classList.contains("init-chip--off")).toBe(true);
   });
+});
 
-  it("shows 'session' as muted/dormant for an idle+done session (present but not live)", () => {
-    const dormantSession: SessionState = {
-      cwd: "/wt/init-1",
-      kind: "background",
-      startedAt: 0,
-      sessionId: "s3",
-      status: "idle",
-      state: "done",
-    };
-    setInitiatives([makeNode({ session: dormantSession }, { id: "init-1", title: "Dormant" })]);
+describe("InitiativesView — row alerts (anomalies needing action)", () => {
+  const alertOf = (title: RegExp) =>
+    screen.getByRole("button", { name: title }).getAttribute("data-alert");
+
+  it("no alert for an open initiative with a healthy live session", () => {
+    setInitiatives([makeNode({ session: workingSession, worktreeExists: true }, { id: "i", title: "Healthy" })]);
     renderView();
-    const row = screen.getByRole("button", { name: /dormant/i });
-    const chip = within(row).getByLabelText("session: dormant");
-    expect(chip.classList.contains("init-chip--muted")).toBe(true);
-    expect(chip.classList.contains("init-chip--off")).toBe(false);
-    expect(chip.classList.contains("init-chip--on")).toBe(false);
+    expect(alertOf(/healthy/i)).toBeNull();
+  });
+
+  it("URGENT: open + on-machine + no session (stalled)", () => {
+    setInitiatives([makeNode({ session: null, worktreeExists: true }, { id: "i", title: "Stalled" })]);
+    renderView();
+    expect(alertOf(/stalled/i)).toBe("urgent");
+  });
+
+  it("LOW: open + on-machine + dead session", () => {
+    setInitiatives([makeNode({ session: deadSession, worktreeExists: true }, { id: "i", title: "OpenDead" })]);
+    renderView();
+    expect(alertOf(/opendead/i)).toBe("low");
+  });
+
+  it("MED: closed + alive session", () => {
+    setInitiatives([makeNode({ session: workingSession }, { id: "i", title: "ClosedAlive", status: "closed" })]);
+    renderView();
+    expect(alertOf(/closedalive/i)).toBe("med");
+  });
+
+  it("URGENT: closed + dead session", () => {
+    setInitiatives([makeNode({ session: deadSession }, { id: "i", title: "ClosedDead", status: "closed" })]);
+    renderView();
+    expect(alertOf(/closeddead/i)).toBe("urgent");
+  });
+
+  it("no alert for open + no session NOT on this machine (worked elsewhere)", () => {
+    setInitiatives([makeNode({ session: null, worktreeExists: false }, { id: "i", title: "Elsewhere" })]);
+    renderView();
+    expect(alertOf(/elsewhere/i)).toBeNull();
+  });
+
+  it("URGENT (wins): multiple sessions on one worktree, even on an otherwise-healthy row", () => {
+    setInitiatives([
+      makeNode(
+        { session: workingSession, worktreeExists: true, sessionCount: 2 },
+        { id: "i", title: "MultiSess" }
+      ),
+    ]);
+    renderView();
+    expect(alertOf(/multisess/i)).toBe("urgent");
+    const pop = within(screen.getByRole("button", { name: /multisess/i })).getByRole("tooltip");
+    expect(pop.textContent).toMatch(/2 sessions/i);
+  });
+
+  it("renders a why+action info popover on alerted rows only", () => {
+    setInitiatives([
+      makeNode({ session: workingSession, worktreeExists: true }, { id: "ok", title: "Healthy" }),
+      makeNode({ session: deadSession }, { id: "bad", title: "ClosedDead", status: "closed" }),
+    ]);
+    renderView();
+    // Healthy row has no info popover.
+    expect(within(screen.getByRole("button", { name: /healthy/i })).queryByRole("tooltip")).toBeNull();
+    // Alerted row explains why + what to do.
+    const pop = within(screen.getByRole("button", { name: /closeddead/i })).getByRole("tooltip");
+    expect(pop.textContent).toMatch(/why/i);
+    expect(pop.textContent).toMatch(/reap it/i);
   });
 });
 
@@ -314,19 +399,19 @@ describe("InitiativesView — phase token", () => {
 });
 
 describe("InitiativesView — toggle persistence", () => {
-  it("persists 'Show closed' across remounts via localStorage", () => {
+  it("persists 'Show completed' across remounts via localStorage", () => {
     setInitiatives([
       makeNode({}, { id: "init-open", title: "Open one", status: "open" }),
       makeNode({}, { id: "init-closed", title: "Closed one", status: "closed" }),
     ]);
     const { unmount } = renderView();
-    fireEvent.click(screen.getByRole("checkbox", { name: /show closed/i }));
-    expect(localStorage.getItem("initiatives.showClosed")).toBe("true");
+    fireEvent.click(screen.getByRole("checkbox", { name: /show completed/i }));
+    expect(localStorage.getItem("initiatives.showCompleted")).toBe("true");
     unmount();
 
     renderView();
     expect(
-      (screen.getByRole("checkbox", { name: /show closed/i }) as HTMLInputElement).checked
+      (screen.getByRole("checkbox", { name: /show completed/i }) as HTMLInputElement).checked
     ).toBe(true);
     expect(screen.getByText("Closed one")).toBeTruthy();
   });

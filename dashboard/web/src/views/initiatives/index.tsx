@@ -27,32 +27,103 @@ function usePersistedBool(key: string, initial: boolean): [boolean, (v: boolean)
   return [value, set];
 }
 
-// Closed states — hidden unless "Show closed" is on. Status comes from the
-// registry as free TEXT, so compare case-insensitively.
+// Closed states — status comes from the registry as free TEXT, compare lowercased.
 const CLOSED_STATUSES = new Set(["closed", "done"]);
 
 function isClosed(node: InitiativeNode): boolean {
   return CLOSED_STATUSES.has(node.initiative.status.toLowerCase());
 }
 
-// Signal 3 — "session" — three states:
-//   "on"     = LIVE: working (busy/state=working) or waiting (status=waiting/
-//              state=blocked, e.g. a parked agent on a human gate).
-//   "muted"  = DORMANT: a session process is matched but finished/idle
-//              (idle/done/stopped) — still alive, but not actively working.
-//   "off"    = NONE: no matched session process at all.
-function sessionLevel(node: InitiativeNode): ChipLevel {
+// Session "kind" — the only session distinction that matters (see truth table):
+//   "alive" = a matched background session whose process is still running
+//             (status present: busy/idle/waiting — pid alive).
+//   "dead"  = a matched entry whose process has exited (status null/absent;
+//             lingers in `claude agents --all` history). Won't receive messages.
+//   "none"  = no matched session entry at all.
+function sessionKind(node: InitiativeNode): "alive" | "dead" | "none" {
   const s = node.session;
-  if (s === null) return "off";
-  if (
-    s.status === "busy" ||
-    s.status === "waiting" ||
-    s.state === "working" ||
-    s.state === "blocked"
-  ) {
-    return "on";
+  if (s === null) return "none";
+  return s.status != null ? "alive" : "dead";
+}
+
+// "Completed" = closed AND the session is completely gone (no entry at all).
+// A closed initiative with ANY lingering session (alive or dead) is NOT
+// completed — it stays visible with a row alert until the session is reaped.
+function isCompleted(node: InitiativeNode): boolean {
+  return isClosed(node) && sessionKind(node) === "none";
+}
+
+// Row alert — an anomaly where action should be taken, ranked by urgency.
+// null = no alert. Urgency (most→least): urgent {open+none+on-machine (stalled),
+// closed+dead (reap it)} > med {closed+alive (close it)} > low {open+dead+
+// on-machine (session died)}. Off-machine open cases aren't locally actionable,
+// so they don't alert.
+type AlertLevel = "urgent" | "med" | "low";
+function rowAlert(node: InitiativeNode): AlertLevel | null {
+  // Multiple session entries on one worktree is a conflict — wins over the rest.
+  if (node.sessionCount > 1) return "urgent";
+  const kind = sessionKind(node);
+  const onMachine = node.worktreeExists;
+  if (isClosed(node)) {
+    if (kind === "dead") return "urgent"; // #7 reap the lingering session
+    if (kind === "alive") return "med"; //  #6 close the running session
+    return null; //                         #8 completed
   }
-  return "muted";
+  if (kind === "none" && onMachine) return "urgent"; // #4 stalled — nothing running
+  if (kind === "dead" && onMachine) return "low"; //    #2 session died, won't get messages
+  return null; //                                       #1 healthy, #3/#5 off-machine
+}
+
+// Why the row is alerted + what to do about it — surfaced via the row's info
+// popover. Returns null for non-alerted rows (mirrors rowAlert's cases).
+function alertInfo(node: InitiativeNode): { reason: string; action: string } | null {
+  if (node.sessionCount > 1)
+    return {
+      reason: `${node.sessionCount} sessions are attached to this worktree — a conflict.`,
+      action: "Stop the extras (claude stop) — only one session should run per worktree.",
+    };
+  const kind = sessionKind(node);
+  const onMachine = node.worktreeExists;
+  if (isClosed(node)) {
+    if (kind === "dead")
+      return {
+        reason: "Closed, but a finished session is still lingering in the agent list.",
+        action: "Reap it (claude stop) so it clears out.",
+      };
+    if (kind === "alive")
+      return {
+        reason: "Closed, but a session is still running on it.",
+        action: "Close the session — the work is done.",
+      };
+    return null;
+  }
+  if (kind === "none" && onMachine)
+    return {
+      reason: "Open with a worktree on this machine, but nothing is running — stalled.",
+      action: "Resume the session, or close the initiative if it's abandoned.",
+    };
+  if (kind === "dead" && onMachine)
+    return {
+      reason: "The session has exited — it won't receive messages.",
+      action: "Resume it, or close out the initiative.",
+    };
+  return null;
+}
+
+// Session chip presentation per the truth table: glyph by liveness
+// (● alive · ◐ dead · ○ none), color by health (good=healthy live, warn=
+// problematic and actionable, muted=dead-but-not-actionable, off=none).
+function sessionChip(node: InitiativeNode): { glyph: string; level: ChipLevel; value: string } {
+  const kind = sessionKind(node);
+  if (kind === "none") return { glyph: "○", level: "off", value: "none" };
+  if (kind === "alive") {
+    return isClosed(node)
+      ? { glyph: "●", level: "warn", value: "running (close it)" }
+      : { glyph: "●", level: "good", value: "running" };
+  }
+  // dead — amber when actionable (closed, or open+on-machine), else muted grey.
+  const actionable = isClosed(node) || node.worktreeExists;
+  return { glyph: "◐", level: actionable ? "warn" : "muted", value: "dead" };
 }
 
 // Phase token hue is keyed by phase so categories read at a glance: delivered
@@ -67,9 +138,9 @@ function phaseClass(phase: string): string {
 // machine=blue, pr=violet, session=green (see initiatives.css).
 type ChipTone = "machine" | "pr" | "session";
 
-// Chip intensity: "on" = present/lit, "muted" = present-but-dormant (session
-// only), "off" = absent. See initiatives.css.
-type ChipLevel = "on" | "muted" | "off";
+// Chip intensity. machine/PR use on|off; session uses good|warn|muted|off
+// (see sessionChip + initiatives.css).
+type ChipLevel = "on" | "good" | "warn" | "muted" | "off";
 
 interface SignalChipProps {
   level: ChipLevel;
@@ -99,9 +170,9 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
 
   const onMachine = node.worktreeExists;
   const hasPr = node.delivery === "pr-open";
-  const sLevel = sessionLevel(node);
-  const sessionIcon = sLevel === "on" ? "●" : sLevel === "muted" ? "◐" : "○";
-  const sessionValue = sLevel === "on" ? "live" : sLevel === "muted" ? "dormant" : "none";
+  const sess = sessionChip(node);
+  const alert = rowAlert(node);
+  const info = alertInfo(node);
 
   function handleRowClick() {
     navigate(`/initiative/${initiative.id}`);
@@ -112,21 +183,28 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
     e.stopPropagation();
   }
 
+  // status and/or state can be absent in the agent data — join only what's
+  // present so the tooltip never renders "undefined".
   const sessionDetail = node.session
-    ? `${node.session.status}${node.session.state ? ` (${node.session.state})` : ""}`
+    ? [node.session.status, node.session.state].filter(Boolean).join(" / ")
     : "";
+  const suffix = sessionDetail ? ` (${sessionDetail})` : "";
+  const kind = sessionKind(node);
   const sessionTitle =
-    sLevel === "on"
-      ? `Live session: ${sessionDetail}`
-      : sLevel === "muted"
-        ? `Dormant session (process alive): ${sessionDetail}`
-        : "No session";
+    kind === "none"
+      ? "No session"
+      : kind === "alive"
+        ? isClosed(node)
+          ? `Session still running on a closed initiative — close it${suffix}`
+          : `Live session${suffix}`
+        : `Dead session — process exited, won't receive messages${suffix}`;
 
   return (
     <div
       className="init-row"
       data-initiative-id={initiative.id}
       data-closed={isClosed(node) ? "true" : "false"}
+      data-alert={alert ?? undefined}
       onClick={handleRowClick}
       role="button"
       tabIndex={0}
@@ -171,13 +249,27 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           />
         )}
         <SignalChip
-          level={sLevel}
+          level={sess.level}
           tone="session"
-          icon={sessionIcon}
+          icon={sess.glyph}
           label="session"
-          value={sessionValue}
+          value={sess.value}
           title={sessionTitle}
         />
+      </div>
+      {/* Always-present fixed-width slot so the signals column holds the same
+          horizontal position on every row. Icon + popover render only when the
+          row is actually alerted, so non-alerted rows expose no tooltip. */}
+      <div className="init-row__info" data-tier={alert ?? undefined}>
+        {info && (
+          <>
+            <span className="init-row__info-icon" aria-hidden="true">i</span>
+            <span className="init-row__info-pop" role="tooltip">
+              <span className="init-row__info-why"><strong>Why:</strong> {info.reason}</span>
+              <span className="init-row__info-do"><strong>Do:</strong> {info.action}</span>
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -205,12 +297,12 @@ function DisconnectedBanner({ connectionState, error }: { connectionState: strin
 export default function InitiativesView() {
   const { initiatives, connectionState, error } = useSnapshotContext();
   const [query, setQuery] = useState("");
-  const [showClosed, setShowClosed] = usePersistedBool("initiatives.showClosed", false);
+  const [showCompleted, setShowCompleted] = usePersistedBool("initiatives.showCompleted", false);
   const [onlyOnMachine, setOnlyOnMachine] = usePersistedBool("initiatives.onlyOnMachine", false);
 
   const q = query.trim().toLowerCase();
   const filtered = initiatives.filter((node) => {
-    if (!showClosed && isClosed(node)) return false;
+    if (!showCompleted && isCompleted(node)) return false;
     if (onlyOnMachine && !node.worktreeExists) return false;
     if (q === "") return true;
     const { id, title } = node.initiative;
@@ -254,10 +346,10 @@ export default function InitiativesView() {
         <label className="initiatives-toggle">
           <input
             type="checkbox"
-            checked={showClosed}
-            onChange={(e) => setShowClosed(e.target.checked)}
+            checked={showCompleted}
+            onChange={(e) => setShowCompleted(e.target.checked)}
           />
-          Show closed
+          Show completed
         </label>
       </div>
 

@@ -287,11 +287,16 @@ export function buildInitiativeNodes(
   return initiatives.map((initiative) => {
     // "On this machine" signal (at-gvv): empty/missing worktree path => false.
     const worktreeExists = initiative.worktree ? existsFn(initiative.worktree) : false;
+    // All background session entries (alive + dead) matched to this worktree.
+    // sessionCount drives the "multiple sessions on one worktree" alert; the
+    // primary `session` prefers an alive entry (status present) so the chip
+    // reflects a running session over a dead corpse when both exist.
+    const matched = initiative.worktree
+      ? sessions.filter((s) => s.kind === "background" && s.cwd === initiative.worktree)
+      : [];
+    const sessionCount = matched.length;
+    const session = matched.find((s) => s.status != null) ?? matched[0] ?? null;
     try {
-      const session =
-        sessions.find(
-          (s) => s.kind === "background" && s.cwd === initiative.worktree,
-        ) ?? null;
 
       // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
       // labels is optional/missing on older entries — deriveExplicitGate handles that safely.
@@ -309,7 +314,7 @@ export function buildInitiativeNodes(
       const signal = deriveSessionSignal(session);
       const needsHuman = deriveNeedsHuman(delivery, signal, gate);
 
-      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists };
+      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount };
     } catch (err) {
       console.warn(
         `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -323,6 +328,7 @@ export function buildInitiativeNodes(
         delivery: "none" as const,
         needsHuman: false as const,
         worktreeExists,
+        sessionCount,
       };
     }
   });
