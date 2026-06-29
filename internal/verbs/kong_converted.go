@@ -67,11 +67,13 @@ func (c *registerKong) Run(ctx *cli.Context) error {
 
 	// Try to create a root epic in the project repo and append its id to the
 	// body. appendEpicToBody returns the original file path on any failure
-	// (fail-soft) or a temp file path + cleanup when it succeeds.
+	// (fail-soft) or a temp file path + cleanup + epicID when it succeeds.
 	bodyFile := c.File
+	var epicID string
 	if c.createEpic != nil {
-		if modPath, cleanup := appendEpicToBody(ctx, c.File, c.Title, c.createEpic); cleanup != nil {
+		if modPath, eid, cleanup := appendEpicToBody(ctx, c.File, c.Title, c.createEpic); cleanup != nil {
 			bodyFile = modPath
+			epicID = eid
 			defer cleanup()
 		}
 	}
@@ -89,6 +91,19 @@ func (c *registerKong) Run(ctx *cli.Context) error {
 	if issue.ID == "" {
 		return cli.Depf("ateam register: bd create returned no id (does this bd support --json on create?)")
 	}
+
+	// Label the root epic with the initiative ID (fail-soft).
+	if epicID != "" {
+		bodyBytes, _ := os.ReadFile(bodyFile)
+		repoPath := extractRepoPath(string(bodyBytes))
+		if repoPath != "" {
+			cmd := exec.Command("bd", "-C", repoPath, "label", "add", epicID, issue.ID)
+			if err := cmd.Run(); err != nil {
+				fmt.Fprintf(ctx.Stderr, "ateam register: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
+			}
+		}
+	}
+
 	fmt.Fprintln(ctx.Stdout, issue.ID)
 	return nil
 }
@@ -674,39 +689,60 @@ func extractRepoPath(body string) string {
 
 // appendEpicToBody reads the file at originalPath, extracts the project repo
 // path from the body, creates a root epic via creator, and returns a new temp
-// file path with "epic: <id>" appended plus a cleanup function to remove it.
-// Returns ("", nil) on any failure so callers fall back to the original file.
-func appendEpicToBody(ctx *cli.Context, originalPath, title string, creator epicCreatorFunc) (string, func()) {
+// file path with "epic: <id>" appended, the epicID, and a cleanup function to
+// remove it. Returns ("", "", nil) on any failure so callers fall back to the
+// original file.
+func appendEpicToBody(ctx *cli.Context, originalPath, title string, creator epicCreatorFunc) (path string, epicID string, cleanup func()) {
 	bodyBytes, err := os.ReadFile(originalPath)
 	if err != nil {
-		return "", nil
+		return "", "", nil
 	}
 	bodyStr := string(bodyBytes)
 	repoPath := extractRepoPath(bodyStr)
 	if repoPath == "" {
-		return "", nil
+		return "", "", nil
 	}
-	epicID, epicErr := creator(repoPath, title)
+	eid, epicErr := creator(repoPath, title)
 	if epicErr != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam register: warning: could not create root epic (fail-soft): %v\n", epicErr)
-		return "", nil
+		return "", "", nil
 	}
-	if epicID == "" {
-		return "", nil
+	if eid == "" {
+		return "", "", nil
 	}
-	modified := strings.TrimRight(bodyStr, "\n") + "\nepic: " + epicID + "\n"
+	modified := strings.TrimRight(bodyStr, "\n") + "\nepic: " + eid + "\n"
 	tmp, err := os.CreateTemp("", "ateam-register-*")
 	if err != nil {
-		return "", nil
+		return "", "", nil
 	}
 	if _, err := tmp.WriteString(modified); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
-		return "", nil
+		return "", "", nil
 	}
 	tmp.Close()
 	tmpPath := tmp.Name()
-	return tmpPath, func() { os.Remove(tmpPath) }
+	return tmpPath, eid, func() { os.Remove(tmpPath) }
+}
+
+// ── update-description ────────────────────────────────────────────────────────
+
+// updateDescriptionKong updates an initiative's description from a file.
+type updateDescriptionKong struct {
+	ID   string `arg:"" name:"id"   help:"Initiative ID to update."`
+	File string `name:"file" help:"Path to new description file (required)." required:""`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *updateDescriptionKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam update-description: no context")
+	}
+	out, err := ctx.BD.Run("update", c.ID, "--body-file="+c.File)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
 }
 
 // ── registration helpers ──────────────────────────────────────────────────────
@@ -728,6 +764,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("forget", "Delete a role memory by key.", &forgetKong{})
 	p.AddVerb("condense", "Emit a structured memory packet for a role.", &condenseKong{})
 	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
+	p.AddVerb("update-description", "Update an initiative's description from a file.", &updateDescriptionKong{})
 	RegisterCondenseLock(p)
 }
 
