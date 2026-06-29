@@ -39,9 +39,10 @@ function InboxAttachButton({ initiativeId, sessionId }: { initiativeId: string; 
       className="inbox-attach-btn"
       onClick={(e) => { void handleClick(e); }}
       disabled={state === "pending"}
-      title="Open terminal and attach to this session"
+      title="attach"
+      aria-label="Attach to session"
     >
-      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "attach"}
+      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
     </button>
   );
 }

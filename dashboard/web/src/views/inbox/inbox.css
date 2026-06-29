@@ -98,7 +98,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px 80px 14px 16px; /* right padding reserves space for the action-slot button */
+  padding: 14px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -189,27 +189,24 @@
   text-decoration: underline;
 }
 
-/* Action slot — pinned to upper-right corner, out of flex flow */
+/* Action slot — literal upper-right corner, out of flex flow */
 .inbox-row__action-slot {
   position: absolute;
-  top: 8px;
-  right: 12px;
+  top: 0;
+  right: 0;
 }
 
 .inbox-attach-btn {
-  font-size: 10px;
+  font-size: 11px;
   font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  line-height: 1;
   background: var(--color-accent-dim);
   color: var(--color-accent);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
-  border-radius: 3px;
-  padding: 2px 8px;
+  border: none;
+  border-radius: 0 5px 0 3px;
+  padding: 3px 5px;
   cursor: pointer;
   transition: background 0.15s;
-  white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .inbox-attach-btn:hover:not(:disabled) {

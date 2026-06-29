@@ -188,9 +188,10 @@ function RowAttachButton({ initiativeId, sessionId }: { initiativeId: string; se
         className="attach-btn attach-btn--row"
         onClick={(e) => { void handleClick(e); }}
         disabled={state === "pending"}
-        title="Open terminal and attach to this session"
+        title="attach"
+        aria-label="Attach to session"
       >
-        {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "attach"}
+        {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
       </button>
     </span>
   );
