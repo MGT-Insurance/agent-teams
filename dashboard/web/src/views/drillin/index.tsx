@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { DrillInDetail, SessionState } from "@agent-teams/shared";
 import { fetchInitiative, logsUrl, attachToInitiative } from "../../lib/api.js";
@@ -27,8 +26,8 @@ function StatusBadge({ status }: { status: string }) {
 
 // Streams raw chunked bytes from the logs endpoint into an xterm Terminal instance.
 // The endpoint is NOT SSE — it is a plain chunked HTTP response (binary).
-// We read Uint8Array chunks from the ReadableStream and write them directly into
-// the terminal so ANSI escapes and cursor positioning render faithfully.
+// We use a wide fixed column count (240) so ANSI cursor-positioning sequences
+// from the source terminal never overflow and cause text overlap ("mingling").
 function LogPane({
   initiativeId,
   session,
@@ -44,8 +43,11 @@ function LogPane({
     const container = containerRef.current;
     if (!container) return;
 
-    const fit = new FitAddon();
+    // 240 cols: wide enough that cursor-absolute-column sequences from the
+    // source terminal don't overflow and cause text from separate lines to
+    // land on the same row. The container scrolls horizontally.
     const term = new Terminal({
+      cols: 240,
       theme: {
         background: "#0d0f12",
         foreground: "#c8cdd5",
@@ -55,52 +57,40 @@ function LogPane({
       fontSize: 13,
       scrollback: 10_000,
     });
-    term.loadAddon(fit);
     termRef.current = term;
     term.open(container);
-
-    const ro = new ResizeObserver(() => { fit.fit(); });
-    ro.observe(container);
 
     const ac = new AbortController();
     abortRef.current = ac;
     // session.id is the short claude session id (8 lowercase hex); the full UUID fails.
     const url = logsUrl(initiativeId, session.id!);
 
-    // Fit after first paint so the container has real dimensions before the
-    // log stream starts; ANSI cursor-positioning in the stream requires the
-    // correct column count from byte 0, or text from different "lines" minces.
-    const rafId = requestAnimationFrame(() => {
-      fit.fit();
-      (async () => {
-        try {
-          const res = await fetch(url, { signal: ac.signal });
-          if (!res.ok) {
-            term.writeln(`\r\n\x1b[31mLog stream error: ${res.status} ${res.statusText}\x1b[0m`);
-            return;
-          }
-          if (!res.body) {
-            term.writeln("\r\n\x1b[33mNo response body — log stream unavailable.\x1b[0m");
-            return;
-          }
-          const reader = res.body.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            // value is Uint8Array; xterm.Terminal.write accepts Uint8Array directly.
-            term.write(value);
-          }
-        } catch (err) {
-          if (err instanceof Error && err.name === "AbortError") return;
-          const msg = err instanceof Error ? err.message : String(err);
-          term.writeln(`\r\n\x1b[31mLog stream failed: ${msg}\x1b[0m`);
+    (async () => {
+      try {
+        const res = await fetch(url, { signal: ac.signal });
+        if (!res.ok) {
+          term.writeln(`\r\n\x1b[31mLog stream error: ${res.status} ${res.statusText}\x1b[0m`);
+          return;
         }
-      })();
-    });
+        if (!res.body) {
+          term.writeln("\r\n\x1b[33mNo response body — log stream unavailable.\x1b[0m");
+          return;
+        }
+        const reader = res.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          // value is Uint8Array; xterm.Terminal.write accepts Uint8Array directly.
+          term.write(value);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        const msg = err instanceof Error ? err.message : String(err);
+        term.writeln(`\r\n\x1b[31mLog stream failed: ${msg}\x1b[0m`);
+      }
+    })();
 
     return () => {
-      cancelAnimationFrame(rafId);
-      ro.disconnect();
       ac.abort();
       term.dispose();
       termRef.current = null;

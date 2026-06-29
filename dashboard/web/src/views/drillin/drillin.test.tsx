@@ -4,25 +4,16 @@ import type { DrillInDetail, SessionState, WorkBead } from "@agent-teams/shared"
 
 // --- Mocks ---
 
-// xterm.js uses canvas APIs not present in jsdom; mock Terminal and FitAddon.
+// xterm.js uses canvas APIs not present in jsdom; mock the Terminal class.
 vi.mock("@xterm/xterm", () => {
   const Terminal = vi.fn(() => ({
     open: vi.fn(),
     write: vi.fn(),
     writeln: vi.fn(),
     dispose: vi.fn(),
-    loadAddon: vi.fn(),
   }));
   return { Terminal };
 });
-
-vi.mock("@xterm/addon-fit", () => {
-  const FitAddon = vi.fn(() => ({ fit: vi.fn() }));
-  return { FitAddon };
-});
-
-// jsdom doesn't implement ResizeObserver — stub it.
-vi.stubGlobal("ResizeObserver", vi.fn(() => ({ observe: vi.fn(), disconnect: vi.fn() })));
 
 // Mock the CSS import — jsdom doesn't process it.
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
