@@ -5,7 +5,7 @@
 //   GET  /api/initiatives/:id                 -> DrillInDetail
 //   GET  /api/initiatives/:id/logs?session=   -> raw claude logs bytes (chunked)
 //   POST /api/initiatives/:id/attach          -> { ok: true } (macOS terminal)
-//   POST /api/initiatives/:id/launch-session  -> { ok: true, log } | { error, detail?, log? }
+//   POST /api/initiatives/:id/launch-session  -> { ok: true } | { error }
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -14,12 +14,13 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
 import { CliError, claudeAgentsJson, bdLabeledBeads, spawnClaudeLogs } from "./cli.js";
-import { launchSession as doLaunchSession } from "./launch.js";
+import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
@@ -259,8 +260,23 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         json(res, 400, { error: "invalid initiative id" });
         return;
       }
-      const result = await doLaunchSession(id);
-      json(res, result.ok ? 200 : 502, result);
+      const snapshot = snapshots.getLatest() ?? (await buildSnapshot());
+      const node = snapshot.initiatives.find((n) => n.initiative.id === id);
+      if (!node) {
+        json(res, 404, { error: `initiative ${id} not found` });
+        return;
+      }
+      const worktree = node.initiative.worktree;
+      if (!worktree || !existsSync(worktree)) {
+        json(res, 400, { error: `initiative ${id} has no worktree on this machine` });
+        return;
+      }
+      try {
+        const result = await launchTerminal(worktree);
+        json(res, 200, result);
+      } catch (err) {
+        json(res, 502, { error: String(err) });
+      }
       return;
     }
 

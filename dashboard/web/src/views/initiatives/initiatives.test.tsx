@@ -21,7 +21,7 @@ vi.mock("../../SnapshotContext.js", () => ({
 // api is mocked so LaunchButton tests can control the resolved/rejected value.
 // vi.hoisted() ensures the variable is initialized before the mock factory runs
 // (vi.mock factories are hoisted to the top of the file by the transform).
-const mockLaunchSession = vi.hoisted(() => vi.fn<() => Promise<{ ok: true; log: string }>>());
+const mockLaunchSession = vi.hoisted(() => vi.fn<() => Promise<{ ok: true }>>());
 vi.mock("../../lib/api.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api.js")>();
   return { ...actual, launchSession: mockLaunchSession };
@@ -488,7 +488,7 @@ describe("LaunchButton — core paths", () => {
   });
 
   it("reaches ok state when launchSession resolves", async () => {
-    mockLaunchSession.mockResolvedValueOnce({ ok: true, log: "/home/.agent-teams/logs/launch-ok.log" });
+    mockLaunchSession.mockResolvedValueOnce({ ok: true });
     setInitiatives([makeStallNode("at-ok", "OK Launch")]);
     renderView();
 
@@ -562,7 +562,7 @@ describe("LaunchButton — edge cases", () => {
 
   it("ok state auto-resets to idle after 3s", async () => {
     vi.useFakeTimers();
-    mockLaunchSession.mockResolvedValueOnce({ ok: true, log: "/logs/ok.log" });
+    mockLaunchSession.mockResolvedValueOnce({ ok: true });
     setInitiatives([makeStallNode("at-reset-ok", "Reset OK")]);
     renderView();
 

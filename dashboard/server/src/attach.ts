@@ -22,7 +22,7 @@ export function isValidSessionId(id: string): boolean {
 
 // Escape a string for safe embedding inside an AppleScript double-quoted string.
 // Replaces backslash then double-quote so the value cannot break out of `do script "..."`.
-function escapeForAppleScript(value: string): string {
+export function escapeForAppleScript(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
