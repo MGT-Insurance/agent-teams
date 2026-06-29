@@ -108,7 +108,10 @@ export type SessionSignal = "working" | "waiting" | "ended" | "none";
 // - Explicit gate:question or human-only -> "waiting" (agent asking a question).
 // - Session waiting/blocked with NO gate -> "check" (softer, not a declared ask).
 // - Without a gate, delivered + ended/none -> "generic" (needs input; NOT review).
-export type NeedsHumanFlavor = "waiting" | "review" | "generic" | "check";
+// - "reap" (at-asi): zombie — a closed/merged initiative whose worktree is GONE
+//   (!worktreeExists) but a session is still alive (matched by the cwd snapshot).
+//   Fires DESPITE the merged short-circuit; the human reaps it via `claude stop`.
+export type NeedsHumanFlavor = "waiting" | "review" | "generic" | "check" | "reap";
 
 // TRUTH TABLE (agent-teams-0rl, updated agent-teams-ja9c):
 //   merged                            -> needsHuman=false (done, nothing needed)
@@ -150,10 +153,12 @@ export interface InitiativeNode {
 //   "generic" -> delivered + no explicit gate (graceful degrade; label "needs you")
 //   "check"   -> session waiting/blocked with NO explicit gate (softer tier; check on it)
 //                Sorted BELOW review/waiting/generic rows.
+//   "reap"    -> zombie (at-asi): closed/merged initiative whose worktree is gone but a
+//                session is still alive. Stop it via `claude stop`. Top of inbox.
 export interface InboxItem {
   initiativeId: string;
   title: string;
-  kind: "waiting" | "review" | "generic" | "check";
+  kind: "waiting" | "review" | "generic" | "check" | "reap";
   // The one-sentence action for Eric right now.
   //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
   //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
