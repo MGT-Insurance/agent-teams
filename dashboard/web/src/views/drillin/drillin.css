@@ -292,8 +292,8 @@
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: 4px;
-  overflow: auto;
-  /* xterm renders at fixed 240 cols; container scrolls horizontally */
+  overflow-x: auto;   /* pan wide 240-col content horizontally */
+  overflow-y: hidden; /* xterm owns vertical scrollback internally */
 }
 
 .attach-slot {
