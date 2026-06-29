@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InitiativeNode } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
-import { attachToInitiative } from "../../lib/api.js";
+import { attachToInitiative, launchSession } from "../../lib/api.js";
 import "./initiatives.css";
 
 // Persist a boolean toggle to localStorage (no server). Reads on init, writes on
@@ -191,9 +191,36 @@ function RowAttachButton({ initiativeId, sessionId }: { initiativeId: string; se
         title="attach"
         aria-label="Attach to session"
       >
-        {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
+        {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "attach"}
       </button>
     </span>
+  );
+}
+
+type LaunchState = "idle" | "pending" | "ok" | "err";
+
+function LaunchButton({ initiativeId }: { initiativeId: string }) {
+  const [state, setState] = useState<LaunchState>("idle");
+  const launch = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (state === "pending") return;
+    setState("pending");
+    try {
+      await launchSession(initiativeId);
+      setState("ok");
+      setTimeout(() => setState("idle"), 3000);
+    } catch {
+      setState("err");
+      setTimeout(() => setState("idle"), 3000);
+    }
+  };
+  const label = state === "idle" ? "launch" : state === "pending" ? "…" : state === "ok" ? "✓" : "✗";
+  return (
+    <div className="init-row__launch">
+      <button className="launch-btn" onClick={(e) => { void launch(e); }} title="Launch a new DRI session for this initiative">
+        {label}
+      </button>
+    </div>
   );
 }
 
@@ -290,9 +317,11 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
-      {sessionKind(node) === "alive" && node.session?.id && (
+      {sessionKind(node) === "alive" && node.session?.id ? (
         <RowAttachButton initiativeId={initiative.id} sessionId={node.session.id} />
-      )}
+      ) : node.worktreeExists && !isClosed(node) ? (
+        <LaunchButton initiativeId={initiative.id} />
+      ) : null}
       {/* Always-present fixed-width slot so the signals column holds the same
           horizontal position on every row. Icon + popover render only when the
           row is actually alerted, so non-alerted rows expose no tooltip. */}
