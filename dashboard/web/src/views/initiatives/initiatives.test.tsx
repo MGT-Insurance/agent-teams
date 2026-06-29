@@ -58,6 +58,7 @@ function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative 
     mode: "",
     goal: "",
     prUrl: null,
+    epic: null,
     ...over,
   };
 }
