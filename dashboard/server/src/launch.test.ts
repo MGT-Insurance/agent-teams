@@ -117,7 +117,7 @@ describe("launchSession — edge cases", () => {
     vi.useFakeTimers();
     const resultP = launchSession("at-timeout");
     // Don't emit close or error — child is still running.
-    await vi.advanceTimersByTimeAsync(3100);
+    await vi.advanceTimersByTimeAsync(8100);
     const result = await resultP;
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -129,7 +129,7 @@ describe("launchSession — edge cases", () => {
     vi.useFakeTimers();
     const resultP = launchSession("at-race");
     // Timeout fires first, settling with ok:true.
-    await vi.advanceTimersByTimeAsync(3100);
+    await vi.advanceTimersByTimeAsync(8100);
     // Late-arriving close event should be ignored.
     currentProc.emit("close", 1);
     const result = await resultP;

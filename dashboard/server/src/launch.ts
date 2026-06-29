@@ -12,10 +12,14 @@ export type LaunchResult =
   | { ok: true; log: string }
   | { ok: false; error: string; detail?: string; log?: string };
 
-// Fast-fail window in ms. `ateam resume` exits quickly on failures (exit 1/3)
-// and promptly on a successful `claude --bg` launch (exit 0). Anything still
-// alive after this window is treated as a successful background start.
-const LAUNCH_TIMEOUT_MS = 3000;
+// Fast-fail window in ms. On the FIRST invocation in a fresh node process the
+// ateam Go binary + embedded-Dolt init can take several seconds, so 3s was too
+// short: the timeout fired with empty output even for a closed/bogus initiative,
+// producing the exact silent-false-success we're fixing. Real failures always
+// exit non-zero within this window; successful launches resolve via close(0) and
+// never wait for it — so widening only affects the max latency of the rare
+// "child still alive" fallback path.
+const LAUNCH_TIMEOUT_MS = 8000;
 
 export function launchSession(id: string): Promise<LaunchResult> {
   const home = process.env["HOME"] ?? "/tmp";
