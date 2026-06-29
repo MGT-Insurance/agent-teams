@@ -16,8 +16,8 @@ import { readFile, stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { DrillInDetail } from "@agent-teams/shared";
-import { CliError, claudeAgentsJson, bdWorkBeads, spawnClaudeLogs } from "./cli.js";
+import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
+import { CliError, claudeAgentsJson, bdWorkBeads, bdEpicSubtree, spawnClaudeLogs } from "./cli.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
@@ -264,18 +264,23 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         const { initiative } = node;
 
         // Fetch all background sessions and work beads for this initiative.
-        const [agentsRaw, beadsRaw] = await Promise.all([
-          claudeAgentsJson(),
-          initiative.repo
-            ? bdWorkBeads(initiative.repo).catch((err: Error) => {
-                console.error(`[drill-in] bd work beads error for ${id}: ${err.message}`);
-                return "[]";
-              })
-            : Promise.resolve("[]"),
-        ]);
-
+        const agentsRaw = await claudeAgentsJson();
         const allSessions = parseClaudeAgents(agentsRaw);
-        const workBeads = parseBdList(beadsRaw);
+
+        // When the initiative has a root epic, filter to that epic's subtree;
+        // fall back to all-beads for legacy initiatives that have no epic field.
+        let workBeads: WorkBead[] = [];
+        if (initiative.repo) {
+          try {
+            if (initiative.epic) {
+              workBeads = await bdEpicSubtree(initiative.repo, initiative.epic);
+            } else {
+              workBeads = parseBdList(await bdWorkBeads(initiative.repo));
+            }
+          } catch (err) {
+            console.error(`[drill-in] bd work beads error for ${id}: ${(err as Error).message}`);
+          }
+        }
 
         // Sessions whose cwd matches this initiative's worktree.
         const sessions = allSessions.filter(

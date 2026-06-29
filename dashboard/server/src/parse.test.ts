@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { describe, it, expect } from "vitest";
 import {
   extractPrUrl,
+  extractEpic,
   extractLatestAsk,
   parseInitiative,
   parseAteamListJson,
@@ -134,6 +135,30 @@ describe("extractPrUrl", () => {
   });
 });
 
+// ---- extractEpic ------------------------------------------------------------
+
+describe("extractEpic", () => {
+  it("returns the epic id from description", () => {
+    expect(extractEpic("repo: /r\nepic: agent-teams-x6ce\nworktree: /wt", "")).toBe("agent-teams-x6ce");
+  });
+
+  it("falls back to notes when description has no epic line", () => {
+    expect(extractEpic("repo: /r\nworktree: /wt", "session 1\nepic: agent-teams-abcd\ndone")).toBe("agent-teams-abcd");
+  });
+
+  it("returns null when neither description nor notes has epic:", () => {
+    expect(extractEpic("repo: /r", "session 1")).toBeNull();
+  });
+
+  it("returns null for empty strings", () => {
+    expect(extractEpic("", "")).toBeNull();
+  });
+
+  it("description takes precedence over notes", () => {
+    expect(extractEpic("epic: desc-epic\n", "epic: notes-epic\n")).toBe("desc-epic");
+  });
+});
+
 // ---- parseInitiative --------------------------------------------------------
 
 describe("parseInitiative", () => {
@@ -174,6 +199,24 @@ describe("parseInitiative", () => {
     expect(parsed.id).toBe("at-v4e");
     expect(parsed.title).toBe(RAW_AT_V4E.title);
     expect(parsed.status).toBe("open");
+  });
+
+  it("extracts epic id from description when present", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\nepic: agent-teams-x6ce\n", notes: "" };
+    const parsed = parseInitiative(raw);
+    expect(parsed.epic).toBe("agent-teams-x6ce");
+  });
+
+  it("falls back to notes for epic when description lacks it", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\n", notes: "session 1\nepic: agent-teams-abcd\n" };
+    const parsed = parseInitiative(raw);
+    expect(parsed.epic).toBe("agent-teams-abcd");
+  });
+
+  it("sets epic to null for legacy initiatives without epic field", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\n", notes: "no epic here" };
+    const parsed = parseInitiative(raw);
+    expect(parsed.epic).toBeNull();
   });
 });
 
@@ -878,6 +921,7 @@ describe("attention state: spec-required scenarios", () => {
       mode: "bg",
       goal: "",
       prUrl: haspr ? `https://github.com/org/repo/pull/1` : null,
+      epic: null,
     };
   }
 
@@ -1009,6 +1053,7 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
       goal: "",
       labels,
       prUrl: haspr ? "https://github.com/org/repo/pull/1" : null,
+      epic: null,
     };
   }
 
@@ -1182,6 +1227,7 @@ describe("buildInbox — updatedAt and nextAction", () => {
       goal: "",
       prUrl: kind === "generic" || kind === "review" ? "https://github.com/org/repo/pull/1" : null,
       labels,
+      epic: null,
     };
   }
 
@@ -1277,6 +1323,7 @@ describe("buildInbox — recommendation and alternative", () => {
       goal: "",
       prUrl: null,
       labels: ["human"],
+      epic: null,
     };
   }
 
@@ -1325,6 +1372,7 @@ describe("buildInbox — recommendation and alternative", () => {
       goal: "",
       prUrl: "https://github.com/org/repo/pull/1",
       labels: ["gate:review"],
+      epic: null,
     };
     const nodes = buildInitiativeNodes([reviewInit], [], new Set());
     const inbox = buildInbox(nodes);
@@ -1358,6 +1406,7 @@ describe("buildInbox — onThisMachine", () => {
       goal: "",
       prUrl: null,
       labels: ["human"],
+      epic: null,
     };
   }
 
@@ -1493,6 +1542,7 @@ describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
       mode: "bg",
       goal: "",
       prUrl: null,
+      epic: null,
     };
   }
 
@@ -1563,6 +1613,7 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
       mode: "bg",
       goal: "",
       prUrl: null,
+      epic: null,
     };
   }
 
@@ -1781,6 +1832,7 @@ describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => 
       goal: "",
       prUrl: null,
       labels: ["human"],
+      epic: null,
     };
   }
 
