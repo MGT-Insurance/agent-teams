@@ -87,27 +87,30 @@ export type DeliveryStatus = "none" | "pr-open" | "merged";
 //   "none"    -> no matched session found
 export type SessionSignal = "working" | "waiting" | "ended" | "none";
 
-// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo, updated agent-teams-0rl).
-//   "waiting" -> session is blocked/waiting (agent paused on human input) OR explicit question gate.
-//                MOST URGENT — works for active OR delivered.
+// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo, updated agent-teams-0rl, agent-teams-ja9c).
+//   "waiting" -> explicit gate:question or human-only label (agent asking a question). AUTHORITATIVE.
 //   "review"  -> EXPLICIT gate:review label (AUTHORITATIVE — "review the PR").
 //                Wins over session signal; comes only from the gate label.
+//   "check"   -> session signal only (status=waiting OR state=blocked) with NO explicit gate.
+//                Softer tier — the session may be paused, but there is no declared gate.
+//                Sorted BELOW review/waiting/generic in the inbox.
 //   "generic" -> fallback: delivered + session ENDED or NONE (no explicit gate).
 //                "needs you" — graceful degrade; no specific action asserted.
 //   false     -> no action required
 //
-// KEY principles (updated agent-teams-0rl):
+// KEY principles (updated agent-teams-0rl, agent-teams-ja9c):
 // - "review" comes ONLY from explicit gate:review label — NOT inferred from session signal.
 // - Explicit gate:review wins over session signal (even working session).
 // - Explicit gate:question or human-only -> "waiting" (agent asking a question).
+// - Session waiting/blocked with NO gate -> "check" (softer, not a declared ask).
 // - Without a gate, delivered + ended/none -> "generic" (needs input; NOT review).
-export type NeedsHumanFlavor = "waiting" | "review" | "generic";
+export type NeedsHumanFlavor = "waiting" | "review" | "generic" | "check";
 
-// TRUTH TABLE (agent-teams-0rl):
+// TRUTH TABLE (agent-teams-0rl, updated agent-teams-ja9c):
 //   merged                            -> needsHuman=false (done, nothing needed)
 //   explicit gate:review              -> needsHuman="review" (AUTHORITATIVE; wins over session)
 //   explicit gate:question or human   -> needsHuman="waiting" (agent asking a question)
-//   else session WAITING/blocked      -> needsHuman="waiting" (active OR delivered; most urgent)
+//   else session WAITING/blocked      -> needsHuman="check" (no declared gate; softer tier)
 //   else session WORKING              -> needsHuman=false (working / refining, not in inbox)
 //   else delivered + session ENDED    -> needsHuman="generic" (needs input; NOT review anymore)
 //   else delivered + session NONE     -> needsHuman="generic" (graceful degrade; label "needs you")
@@ -137,20 +140,30 @@ export interface InitiativeNode {
 }
 
 // An item in the inbox requiring Eric's attention.
-// kind mirrors NeedsHumanFlavor (agent-teams-0rl):
-//   "waiting" -> session blocked/waiting or explicit gate:question/human (agent waiting on input)
+// kind mirrors NeedsHumanFlavor (agent-teams-0rl, agent-teams-ja9c):
+//   "waiting" -> explicit gate:question/human (agent waiting on input, declared ask)
 //   "review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
 //   "generic" -> delivered + no explicit gate (graceful degrade; label "needs you")
+//   "check"   -> session waiting/blocked with NO explicit gate (softer tier; check on it)
+//                Sorted BELOW review/waiting/generic rows.
 export interface InboxItem {
   initiativeId: string;
   title: string;
-  kind: "waiting" | "review" | "generic";
-  // For "waiting" items: the gate question text from notes (if available).
-  // For "review" items: describes the PR awaiting merge.
-  // For "generic" items: generic "needs your attention" text.
-  question: string;
+  kind: "waiting" | "review" | "generic" | "check";
+  // The one-sentence action for Eric right now.
+  //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
+  //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
+  //              or "Look at the session for more info." when no structured ask block exists.
+  //   generic -> "Delivered with no gate — open the worktree to see what's needed."
+  //   check   -> "Look at the session for more info." (soft check — no declared ask block)
+  nextAction: string;
+  // ISO-8601 timestamp from RawInitiative.updated_at — drives recency sort in the inbox.
+  updatedAt: string;
   worktree: string;
   prUrl: string | null;
+  // true when initiative.worktree is non-empty and exists on the local filesystem.
+  // Derived server-side (dashboard server runs locally); used for the "This machine only" toggle.
+  onThisMachine: boolean;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.

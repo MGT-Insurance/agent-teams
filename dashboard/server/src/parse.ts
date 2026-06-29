@@ -1,6 +1,7 @@
 // Pure parsing functions over raw CLI output.
 // These are the riskiest logic — they are unit-tested against real fixtures.
 
+import { existsSync } from "node:fs";
 import type {
   RawInitiative,
   ParsedInitiative,
@@ -187,15 +188,15 @@ export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKi
 //   merged                            -> false (done)
 //   explicit gate == "review"         -> "review"  (AUTHORITATIVE; wins over session)
 //   explicit gate == "question"       -> "waiting" (agent asking a question)
-//   else session WAITING/blocked      -> "waiting" (active OR delivered; MOST URGENT)
+//   else session WAITING/blocked      -> "check"   (no declared gate; softer tier)
 //   else session WORKING              -> false (refining — not in inbox)
 //   else delivered + session ENDED    -> "generic" (needs input; NOT "review" anymore)
 //   else delivered + session NONE     -> "generic" (graceful degrade; label "needs you")
 //   else active + session ENDED/NONE  -> false (idle/dormant, no PR)
 //
-// KEY CHANGE (agent-teams-0rl): "review" flavor now comes ONLY from an explicit
-// gate:review label — not from the delivered+ended session inference.
-// The delivered+ended path is DEMOTED to "generic".
+// KEY CHANGE (agent-teams-0rl): "review" flavor comes ONLY from explicit gate:review label.
+// KEY CHANGE (agent-teams-ja9c): session-only waiting/blocked with NO gate -> "check" (soft tier).
+// Gate checks come BEFORE signal check — gate:question wins over a blocked session.
 export function deriveNeedsHuman(
   delivery: DeliveryStatus,
   signal: SessionSignal,
@@ -206,8 +207,8 @@ export function deriveNeedsHuman(
   if (gate === "review") return "review";
   // Explicit gate:question (or legacy human-only) -> agent is waiting on your answer.
   if (gate === "question") return "waiting";
-  // Session waiting/blocked -> most urgent, regardless of delivery state.
-  if (signal === "waiting") return "waiting";
+  // Session waiting/blocked with NO gate -> soft "check" tier (not a declared ask).
+  if (signal === "waiting") return "check";
   // Working session -> refining (not in inbox).
   if (signal === "working") return false;
   // No active working session — check delivery for PR state.
@@ -346,11 +347,67 @@ export function buildOrphanSessions(
   );
 }
 
+// Parse the decision field from the interior of a single ateam-ask block body.
+// Returns the trimmed decision string, or "" when the field is absent/empty.
+function parseAskDecision(body: string): string {
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("decision:")) {
+      return trimmed.slice("decision:".length).trim();
+    }
+  }
+  return "";
+}
+
+// Pure helper: scan notes for the LAST valid <<<ateam-ask ... >>> sentinel block
+// and return {decision} when found, null otherwise.
+// Mirrors the Go implementation in internal/verbs/query.go (extractLatestAsk/parseAskBody).
+//
+// Grammar:
+//   open:  literal "<<<ateam-ask"
+//   close: ">>>" anchored at start of a line (or start of remaining text)
+//   A block is valid only if the decision field is non-empty; unclosed blocks are skipped.
+//   The LAST valid block wins.
+export function extractLatestAsk(notes: string): { decision: string } | null {
+  const OPEN = "<<<ateam-ask";
+
+  // Returns the index of the start of ">>>" that anchors to a line boundary,
+  // or -1 when no closing sentinel is found.
+  function closeLine(s: string): number {
+    if (s.startsWith(">>>")) return 0;
+    const idx = s.indexOf("\n>>>");
+    if (idx === -1) return -1;
+    return idx + 1; // position of the first ">" that starts ">>>"
+  }
+
+  let last: { decision: string } | null = null;
+  let remaining = notes;
+  for (;;) {
+    const start = remaining.indexOf(OPEN);
+    if (start === -1) break;
+    const after = remaining.slice(start + OPEN.length);
+    const end = closeLine(after);
+    if (end === -1) {
+      // Unclosed block — skip, advance past the open sentinel.
+      remaining = after;
+      continue;
+    }
+    const body = after.slice(0, end);
+    const decision = parseAskDecision(body);
+    if (decision) {
+      last = { decision };
+    }
+    remaining = after.slice(end + ">>>".length);
+  }
+  return last;
+}
+
 // Build InboxItem[] from already-built InitiativeNode[].
 // An item is in the inbox iff node.needsHuman !== false.
 //   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
-//   needsHuman="waiting" -> explicit gate:question/human, or session blocked/waiting
+//   needsHuman="waiting" -> explicit gate:question/human (declared ask; may have ask block)
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
+//   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
 // Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
 export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
   const items: InboxItem[] = [];
@@ -360,32 +417,49 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const { initiative } = node;
 
+    const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
+
     if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "review",
-        question: `Review the PR: ${initiative.prUrl ?? "(no PR URL)"}`,
+        nextAction: "Review the PR and merge or send it back.",
+        updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
       });
     } else if (node.needsHuman === "waiting") {
-      // Agent waiting on human input: explicit gate:question/human or session blocked.
-      // Question = latest non-empty notes line (may contain the gate question).
-      const question =
-        initiative.notes
-          .split("\n")
-          .filter((l) => l.trim())
-          .pop() ?? "(no question recorded)";
+      // Agent waiting on human input: explicit gate:question/human (declared ask).
+      // nextAction = decision from the latest ask block, or constant fallback.
+      const ask = extractLatestAsk(initiative.notes);
+      const nextAction = ask
+        ? ask.decision.slice(0, 120)
+        : "Look at the session for more info.";
 
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "waiting",
-        question,
+        nextAction,
+        updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
+      });
+    } else if (node.needsHuman === "check") {
+      // Session waiting/blocked with no explicit gate — soft "check on it" tier.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "check",
+        nextAction: "Look at the session for more info.",
+        updatedAt: initiative.updated_at,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+        onThisMachine,
       });
     } else {
       // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
@@ -393,9 +467,11 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "generic",
-        question: "Needs your attention",
+        nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+        updatedAt: initiative.updated_at,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
       });
     }
   }

@@ -143,7 +143,10 @@ func (c *noteKong) Run(ctx *cli.Context) error {
 // ── gate ─────────────────────────────────────────────────────────────────────
 
 // gateKong is the kong-converted form of gate.
-// Dual mutually-exclusive paths via xor:"gateform":
+// Two mutually-exclusive entry paths: prose (--file) vs structured
+// (--decision + optional companions). xor:"gateform" is placed only on
+// --file and --decision so they conflict with each other; --recommendation,
+// --alternative, and --context-file combine freely alongside --decision.
 //   - Prose: --file <path>
 //   - Structured: --decision <text> [--recommendation <text>]
 //     [--alternative <text>] [--context-file <path>]
@@ -154,13 +157,15 @@ type gateKong struct {
 	ID string `arg:"" name:"id" help:"Initiative ID."`
 
 	// Prose form.
-	File string `name:"file" xor:"gateform" help:"Path to prose note file (mutually exclusive with structured flags)."`
+	File string `name:"file" xor:"gateform" help:"Path to prose note file (mutually exclusive with --decision)."`
 
-	// Structured form flags.
+	// Structured form flags. Only --decision carries xor:"gateform" so --file
+	// and --decision remain mutually exclusive while the remaining flags
+	// combine freely alongside --decision.
 	Decision       string `name:"decision"       xor:"gateform" help:"Decision question (≤120 chars, required in structured form)."`
-	Recommendation string `name:"recommendation" xor:"gateform" help:"Recommended answer."`
-	Alternative    string `name:"alternative"    xor:"gateform" help:"Alternative answer."`
-	ContextFile    string `name:"context-file"   xor:"gateform" help:"Path to optional context file (content ≤280 chars)."`
+	Recommendation string `name:"recommendation"                help:"Recommended answer."`
+	Alternative    string `name:"alternative"                   help:"Alternative answer."`
+	ContextFile    string `name:"context-file"                  help:"Path to optional context file (content ≤280 chars)."`
 
 	// Kind applies to both forms.
 	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`

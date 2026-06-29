@@ -29,6 +29,18 @@
   padding: 1px 8px;
 }
 
+.inbox-header__toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
 /* Banner for disconnected / error states */
 .inbox-banner {
   padding: 8px 14px;
@@ -66,28 +78,6 @@
 
 .inbox-empty__message {
   font-size: 14px;
-}
-
-/* Section containers */
-.inbox-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.inbox-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.inbox-section__title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-text-muted);
-  margin: 0 0 4px 0;
 }
 
 /* Inbox list */
@@ -135,6 +125,12 @@
   border-left: 3px solid var(--color-accent);
 }
 
+/* check: softer muted-blue border — visually distinct from orange "agent waiting" */
+.inbox-row--check {
+  border-left: 3px solid var(--color-text-muted);
+  opacity: 0.85;
+}
+
 .inbox-row__header {
   display: flex;
   align-items: center;
@@ -168,6 +164,11 @@
   color: var(--color-accent);
 }
 
+.inbox-row__badge--check {
+  background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
+  color: var(--color-text-muted);
+}
+
 .inbox-row__title {
   font-size: 14px;
   font-weight: 500;
@@ -187,25 +188,12 @@
   text-decoration: underline;
 }
 
-/* PR chip — shown on waiting items that also have an open PR (delivery is orthogonal). */
-.inbox-row__pr-chip {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: color-mix(in srgb, #a78bfa 20%, transparent);
-  color: #a78bfa;
-  flex-shrink: 0;
-}
-
 /* Future triage action slot — reserve space but invisible in v1 */
 .inbox-row__action-slot {
   margin-left: auto;
 }
 
-.inbox-row__question {
+.inbox-row__next-action {
   font-size: 13px;
   color: var(--color-text-muted);
   line-height: 1.5;

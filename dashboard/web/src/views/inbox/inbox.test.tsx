@@ -49,9 +49,11 @@ const waitingItem: InboxItem = {
   initiativeId: "init-1",
   title: "Deploy canary to prod",
   kind: "waiting",
-  question: "Should we enable the feature flag for all users?",
+  nextAction: "Should we enable the feature flag for all users?",
+  updatedAt: "2026-06-25T10:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
   prUrl: null,
+  onThisMachine: true,
 };
 
 // kind="review" — explicit gate:review label (AUTHORITATIVE; "review the PR")
@@ -59,9 +61,11 @@ const reviewItem: InboxItem = {
   initiativeId: "init-2",
   title: "Refactor auth layer",
   kind: "review",
-  question: "Review the PR: https://github.com/org/repo/pull/42",
+  nextAction: "Review the PR and merge or send it back.",
+  updatedAt: "2026-06-25T12:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
+  onThisMachine: true,
 };
 
 // kind="generic" — delivered + no session (graceful degrade)
@@ -69,9 +73,11 @@ const genericItem: InboxItem = {
   initiativeId: "init-3",
   title: "Specialty quote API",
   kind: "generic",
-  question: "Needs your attention",
+  nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  updatedAt: "2026-06-25T08:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-3",
   prUrl: "https://github.com/org/repo/pull/99",
+  onThisMachine: true,
 };
 
 // kind="waiting" WITH a PR — agent blocked but initiative also has an open PR.
@@ -80,9 +86,35 @@ const waitingItemWithPr: InboxItem = {
   initiativeId: "init-4",
   title: "Specialty Products quote API",
   kind: "waiting",
-  question: "CI GREEN on PR #3551 after rename + py-SDK fix.",
+  nextAction: "Should we proceed with the rename?",
+  updatedAt: "2026-06-25T11:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-4",
   prUrl: "https://github.com/MGT-Insurance/midgard/pull/3551",
+  onThisMachine: true,
+};
+
+// Off-machine item — worktree lives on another machine.
+const offMachineItem: InboxItem = {
+  initiativeId: "init-5",
+  title: "Remote machine initiative",
+  kind: "generic",
+  nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  updatedAt: "2026-06-25T09:00:00Z",
+  worktree: "/Users/other/.worktrees/init-5",
+  prUrl: null,
+  onThisMachine: false,
+};
+
+// kind="check" — session blocked but NO declared gate (soft tier; agent-teams-ja9c)
+const checkItem: InboxItem = {
+  initiativeId: "init-6",
+  title: "Idle background session maybe stuck",
+  kind: "check",
+  nextAction: "Look at the session for more info.",
+  updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) to prove tiering overrides recency
+  worktree: "/Users/ericlloyd/.worktrees/init-6",
+  prUrl: null,
+  onThisMachine: true,
 };
 
 beforeEach(() => {
@@ -111,13 +143,64 @@ describe("InboxView — empty state", () => {
   });
 });
 
-describe("InboxView — Waiting on you section (kind='waiting')", () => {
-  beforeEach(() => setInbox([waitingItem]));
+describe("InboxView — flat list (no section headings)", () => {
+  beforeEach(() => setInbox([waitingItem, reviewItem, genericItem]));
 
-  it("renders the 'Waiting on you' section heading", () => {
+  it("renders all items in a single flat list (no section headings)", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
+    // No section headings should be present.
+    expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
+    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
+    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
   });
+
+  it("renders all item titles", () => {
+    renderInbox();
+    expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
+    expect(screen.getByText("Refactor auth layer")).toBeTruthy();
+    expect(screen.getByText("Specialty quote API")).toBeTruthy();
+  });
+
+  it("shows a count badge for three items", () => {
+    renderInbox();
+    expect(screen.getByTestId("inbox-count").textContent).toBe("3");
+  });
+
+  it("renders nextAction as the primary text on each row", () => {
+    const { container } = renderInbox();
+    const actions = container.querySelectorAll(".inbox-row__next-action");
+    const texts = Array.from(actions).map((el) => el.textContent);
+    expect(texts).toContain("Should we enable the feature flag for all users?");
+    expect(texts).toContain("Review the PR and merge or send it back.");
+    expect(texts).toContain("Delivered with no gate — open the worktree to see what's needed.");
+  });
+});
+
+describe("InboxView — recency sort (newest updatedAt first)", () => {
+  it("sorts items newest-first by updatedAt", () => {
+    // reviewItem: 12:00, waitingItemWithPr: 11:00, waitingItem: 10:00, genericItem: 08:00
+    setInbox([genericItem, waitingItem, reviewItem, waitingItemWithPr]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // reviewItem 12:00
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-4"); // waitingItemWithPr 11:00
+    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-1"); // waitingItem 10:00
+    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-3"); // genericItem 08:00
+  });
+
+  it("does not mutate the original inbox array order", () => {
+    const original = [genericItem, waitingItem, reviewItem];
+    setInbox(original);
+    renderInbox();
+    // The mockState.inbox should retain its original order.
+    expect(mockState.inbox[0]?.initiativeId).toBe("init-3");
+    expect(mockState.inbox[1]?.initiativeId).toBe("init-1");
+    expect(mockState.inbox[2]?.initiativeId).toBe("init-2");
+  });
+});
+
+describe("InboxView — kind='waiting' row", () => {
+  beforeEach(() => setInbox([waitingItem]));
 
   it("renders the item title", () => {
     renderInbox();
@@ -130,7 +213,7 @@ describe("InboxView — Waiting on you section (kind='waiting')", () => {
     expect(badge.classList.contains("inbox-row__badge")).toBeTruthy();
   });
 
-  it("renders the parked question prominently", () => {
+  it("renders nextAction prominently", () => {
     renderInbox();
     expect(screen.getByText("Should we enable the feature flag for all users?")).toBeTruthy();
   });
@@ -164,16 +247,10 @@ describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => 
     expect(link.getAttribute("target")).toBe("_blank");
   });
 
-  it("renders the PR chip alongside the 'agent waiting' badge", () => {
-    renderInbox();
+  it("does not render a PR chip (chip removed — redundant with kind badge + view PR link)", () => {
     const { container } = renderInbox();
-    // Badge label
-    const badges = container.querySelectorAll(".inbox-row__badge");
-    const badge = Array.from(badges).find((el) => el.textContent?.match(/agent waiting/i));
-    expect(badge).toBeTruthy();
-    // PR chip
     const chip = container.querySelector(".inbox-row__pr-chip");
-    expect(chip).not.toBeNull();
+    expect(chip).toBeNull();
   });
 
   it("still renders the 'agent waiting' badge (PR chip does not replace the flavor badge)", () => {
@@ -186,28 +263,10 @@ describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => 
     const row = screen.getByRole("button", { name: /specialty products quote api/i });
     expect(row.getAttribute("data-kind")).toBe("waiting");
   });
-
-  it("item is placed in the 'Waiting on you' section, not 'Review the PR' or 'Delivered — needs you'", () => {
-    renderInbox();
-    const waitingSection = screen.getByRole("region", { name: /waiting on you/i });
-    expect(waitingSection.querySelector("[data-kind='waiting']")).not.toBeNull();
-    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
-    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
-  });
 });
 
-describe("InboxView — Review the PR section (kind='review')", () => {
+describe("InboxView — kind='review' row", () => {
   beforeEach(() => setInbox([reviewItem]));
-
-  it("renders the 'Review the PR' section heading (authoritative gate:review)", () => {
-    renderInbox();
-    expect(screen.getByRole("region", { name: /review the pr/i })).toBeTruthy();
-  });
-
-  it("does NOT render 'Delivered — needs you' section for review items", () => {
-    renderInbox();
-    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
-  });
 
   it("renders the item title", () => {
     renderInbox();
@@ -216,17 +275,15 @@ describe("InboxView — Review the PR section (kind='review')", () => {
 
   it("renders a 'review the PR' badge for review kind", () => {
     const { container } = renderInbox();
-    // Use querySelector to avoid collision with the section heading "Review the PR"
     const badge = container.querySelector(".inbox-row__badge--review");
     expect(badge).not.toBeNull();
     expect(badge?.textContent?.toLowerCase()).toContain("review the pr");
   });
 
-  it("renders the question text", () => {
+  it("renders the nextAction text", () => {
     const { container } = renderInbox();
-    // The question paragraph contains "Review the PR: ..."
-    const question = container.querySelector(".inbox-row__question");
-    expect(question?.textContent).toMatch(/Review the PR/i);
+    const action = container.querySelector(".inbox-row__next-action");
+    expect(action?.textContent).toBe("Review the PR and merge or send it back.");
   });
 
   it("renders a link to the PR URL that opens in a new tab", () => {
@@ -236,10 +293,10 @@ describe("InboxView — Review the PR section (kind='review')", () => {
     expect(link.getAttribute("target")).toBe("_blank");
   });
 
-  it("renders a PR chip on a review item with a prUrl", () => {
+  it("does not render a PR chip on a review item (chip removed — redundant with kind badge + view PR link)", () => {
     const { container } = renderInbox();
     const chip = container.querySelector(".inbox-row__pr-chip");
-    expect(chip).not.toBeNull();
+    expect(chip).toBeNull();
   });
 
   it("navigates to /initiative/:id on row click", () => {
@@ -256,13 +313,8 @@ describe("InboxView — Review the PR section (kind='review')", () => {
   });
 });
 
-describe("InboxView — Delivered — needs you section (kind='generic')", () => {
+describe("InboxView — kind='generic' row", () => {
   beforeEach(() => setInbox([genericItem]));
-
-  it("renders the 'Delivered — needs you' section heading for generic items", () => {
-    renderInbox();
-    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
-  });
 
   it("renders the item title for generic kind", () => {
     renderInbox();
@@ -273,6 +325,14 @@ describe("InboxView — Delivered — needs you section (kind='generic')", () =>
     renderInbox();
     const badge = screen.getByText(/^needs you$/i);
     expect(badge.classList.contains("inbox-row__badge")).toBeTruthy();
+  });
+
+  it("renders the nextAction text for generic items", () => {
+    const { container } = renderInbox();
+    const action = container.querySelector(".inbox-row__next-action");
+    expect(action?.textContent).toBe(
+      "Delivered with no gate — open the worktree to see what's needed.",
+    );
   });
 
   it("renders a link to the PR URL for generic items (has prUrl)", () => {
@@ -289,68 +349,133 @@ describe("InboxView — Delivered — needs you section (kind='generic')", () =>
   });
 });
 
-describe("InboxView — all three sections together", () => {
-  beforeEach(() => setInbox([waitingItem, reviewItem, genericItem]));
+describe("InboxView — 'This machine only' toggle", () => {
+  it("toggle defaults to checked (on)", () => {
+    setInbox([waitingItem]);
+    renderInbox();
+    const toggle = screen.getByTestId("toggle-this-machine") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+  });
 
-  it("renders all items", () => {
+  it("shows on-machine items with toggle on (default)", () => {
+    setInbox([waitingItem, offMachineItem]);
     renderInbox();
     expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
-    expect(screen.getByText("Refactor auth layer")).toBeTruthy();
-    expect(screen.getByText("Specialty quote API")).toBeTruthy();
+    expect(screen.queryByText("Remote machine initiative")).toBeNull();
   });
 
-  it("shows a count badge for three items", () => {
+  it("shows all items when toggle is switched off", () => {
+    setInbox([waitingItem, offMachineItem]);
     renderInbox();
-    expect(screen.getByTestId("inbox-count").textContent).toBe("3");
+    const toggle = screen.getByTestId("toggle-this-machine");
+    fireEvent.click(toggle);
+    expect(screen.getByText("Deploy canary to prod")).toBeTruthy();
+    expect(screen.getByText("Remote machine initiative")).toBeTruthy();
   });
 
-  it("renders all three section headings", () => {
+  it("shows off-machine empty state when toggle on and all items are off-machine", () => {
+    setInbox([offMachineItem]);
     renderInbox();
-    expect(screen.getByRole("region", { name: /review the pr/i })).toBeTruthy();
-    expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
-    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
+    expect(screen.getByText(/nothing on this machine needs you/i)).toBeTruthy();
   });
 
-  it("review in 'Review the PR'; waiting in 'Waiting on you'; generic in 'Delivered — needs you'", () => {
+  it("count badge reflects only shown items (toggle on, one item hidden)", () => {
+    setInbox([waitingItem, offMachineItem]);
     renderInbox();
-    const reviewSection = screen.getByRole("region", { name: /review the pr/i });
-    const waitingSection = screen.getByRole("region", { name: /waiting on you/i });
-    const deliveredSection = screen.getByRole("region", { name: /delivered.*needs you/i });
-    expect(reviewSection.querySelector("[data-kind='review']")).not.toBeNull();
-    expect(reviewSection.querySelector("[data-kind='waiting']")).toBeNull();
-    expect(reviewSection.querySelector("[data-kind='generic']")).toBeNull();
-    expect(waitingSection.querySelector("[data-kind='waiting']")).not.toBeNull();
-    expect(waitingSection.querySelector("[data-kind='review']")).toBeNull();
-    expect(waitingSection.querySelector("[data-kind='generic']")).toBeNull();
-    expect(deliveredSection.querySelector("[data-kind='generic']")).not.toBeNull();
-    expect(deliveredSection.querySelector("[data-kind='review']")).toBeNull();
-    expect(deliveredSection.querySelector("[data-kind='waiting']")).toBeNull();
+    // toggle is on; only waitingItem (onThisMachine=true) is shown
+    expect(screen.getByTestId("inbox-count").textContent).toBe("1");
+  });
+
+  it("count badge shows all items after toggle turned off", () => {
+    setInbox([waitingItem, offMachineItem]);
+    renderInbox();
+    const toggle = screen.getByTestId("toggle-this-machine");
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("inbox-count").textContent).toBe("2");
   });
 });
 
-describe("InboxView — section visibility", () => {
-  it("shows only 'Waiting on you' section when inbox has only waiting items", () => {
-    setInbox([waitingItem]);
+describe("InboxView — kind='check' row (agent-teams-ja9c)", () => {
+  beforeEach(() => setInbox([checkItem]));
+
+  it("renders the item title", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /waiting on you/i })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
-    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
+    expect(screen.getByText("Idle background session maybe stuck")).toBeTruthy();
   });
 
-  it("shows only 'Review the PR' section when inbox has only review items", () => {
-    setInbox([reviewItem]);
+  it("renders a 'check on it' badge (not orange 'agent waiting')", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /review the pr/i })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
-    expect(screen.queryByRole("region", { name: /delivered.*needs you/i })).toBeNull();
+    const badge = screen.getByText(/^check on it$/i);
+    expect(badge.classList.contains("inbox-row__badge")).toBeTruthy();
+    expect(badge.classList.contains("inbox-row__badge--check")).toBeTruthy();
+    // Must NOT have the waiting badge class (orange).
+    expect(badge.classList.contains("inbox-row__badge--waiting")).toBe(false);
   });
 
-  it("shows only 'Delivered — needs you' section for generic items", () => {
-    setInbox([genericItem]);
+  it("renders nextAction text", () => {
     renderInbox();
-    expect(screen.getByRole("region", { name: /delivered.*needs you/i })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: /review the pr/i })).toBeNull();
-    expect(screen.queryByRole("region", { name: /waiting on you/i })).toBeNull();
+    expect(screen.getByText("Look at the session for more info.")).toBeTruthy();
+  });
+
+  it("row has data-kind='check' attribute", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /idle background session maybe stuck/i });
+    expect(row.getAttribute("data-kind")).toBe("check");
+  });
+
+  it("row has inbox-row--check class (muted style)", () => {
+    const { container } = renderInbox();
+    const row = container.querySelector(".inbox-row--check");
+    expect(row).not.toBeNull();
+    // Must NOT have the orange waiting class.
+    expect(row?.classList.contains("inbox-row--waiting")).toBe(false);
+  });
+
+  it("navigates to /initiative/:id on click", () => {
+    renderInbox();
+    const row = screen.getByRole("button", { name: /idle background session maybe stuck/i });
+    fireEvent.click(row);
+    expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-6");
+  });
+});
+
+describe("InboxView — tiered sort (agent-teams-ja9c)", () => {
+  it("check item sorts BELOW review/waiting/generic even when check has a newer updatedAt", () => {
+    // checkItem.updatedAt = 13:00, reviewItem.updatedAt = 12:00
+    // Tiering must override recency: review (tier 0) before check (tier 3).
+    setInbox([checkItem, reviewItem]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-6"); // check
+  });
+
+  it("tiered-then-recency: review < waiting < generic < check, recency desc within tier", () => {
+    // review:  12:00 (tier 0)
+    // waiting: 10:00 (tier 1)
+    // generic: 08:00 (tier 2)
+    // check:   13:00 (tier 3) — newest overall but lowest tier
+    setInbox([checkItem, genericItem, waitingItem, reviewItem]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review  tier 0
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-1"); // waiting tier 1
+    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-3"); // generic tier 2
+    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-6"); // check   tier 3
+  });
+
+  it("two check items sort by recency desc within the check tier", () => {
+    const olderCheck: InboxItem = {
+      ...checkItem,
+      initiativeId: "init-7",
+      title: "Older check item",
+      updatedAt: "2026-06-25T07:00:00Z",
+    };
+    setInbox([olderCheck, checkItem]);
+    const { container } = renderInbox();
+    const rows = container.querySelectorAll("[data-initiative-id]");
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // newer 13:00
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-7"); // older 07:00
   });
 });
 

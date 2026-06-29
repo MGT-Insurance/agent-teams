@@ -1,15 +1,18 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
-// review: AUTHORITATIVE gate:review label; "review the PR".
-// waiting: agent is paused, waiting for input (explicit question gate or session blocked).
+// review:  AUTHORITATIVE gate:review label; "review the PR".
+// waiting: explicit gate:question/human; agent declared a blocking question.
 // generic: delivered + no explicit gate; graceful degrade, no specific action asserted.
+// check:   session waiting/blocked but no declared gate; softer "check on it" tier.
 function rowBadgeLabel(kind: InboxItem["kind"]): string {
   if (kind === "review") return "review the PR";
   if (kind === "waiting") return "agent waiting";
+  if (kind === "check") return "check on it";
   return "needs you";
 }
 
@@ -59,24 +62,20 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
             view PR ↗
           </a>
         )}
-        {/* PR chip on review and waiting items with a PR URL. */}
-        {(item.kind === "review" || item.kind === "waiting") && item.prUrl && (
-          <span className="inbox-row__pr-chip" aria-label="open PR">PR</span>
-        )}
         {actionSlot && (
           <div className="inbox-row__action-slot">{actionSlot}</div>
         )}
       </div>
-      <p className="inbox-row__question">{item.question}</p>
+      <p className="inbox-row__next-action">{item.nextAction}</p>
     </div>
   );
 }
 
-function EmptyState() {
+function EmptyState({ message = "Nothing needs you right now." }: { message?: string }) {
   return (
     <div className="inbox-empty">
       <span className="inbox-empty__icon">✓</span>
-      <p className="inbox-empty__message">Nothing needs you right now.</p>
+      <p className="inbox-empty__message">{message}</p>
     </div>
   );
 }
@@ -92,40 +91,25 @@ function DisconnectedBanner({ connectionState, error }: { connectionState: strin
   );
 }
 
-interface SectionProps {
-  title: string;
-  items: InboxItem[];
-  dataSection: string;
-}
-
-function InboxSection({ title, items, dataSection }: SectionProps) {
-  if (items.length === 0) return null;
-  return (
-    <section className="inbox-section" data-section={dataSection} aria-label={title}>
-      <h2 className="inbox-section__title">{title}</h2>
-      <ul className="inbox-list" aria-label={`${title} items`}>
-        {items.map((item) => (
-          <li key={item.initiativeId} className="inbox-list__item">
-            <InboxRow item={item} />
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 export default function InboxView() {
   const { inbox, connectionState, error } = useSnapshotContext();
+  const [thisMachineOnly, setThisMachineOnly] = useState(true);
 
-  // "Review the PR": explicit gate:review label — authoritative review signal.
-  const reviewItems = inbox.filter((i) => i.kind === "review");
-  // "Waiting on you": agent is blocked/waiting on human input (explicit question gate or session blocked).
-  const waitingItems = inbox.filter((i) => i.kind === "waiting");
-  // "Delivered — needs you": PR delivered but no explicit gate (graceful degrade).
-  const genericItems = inbox.filter((i) => i.kind === "generic");
+  // Filter BEFORE sort (spec: filter then sort).
+  const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine) : inbox;
+
+  // Tiered sort: real items (review, waiting, generic) above check items; recency desc within tier.
+  const tierRank: Record<InboxItem["kind"], number> = { review: 0, waiting: 1, generic: 2, check: 3 };
+  const sorted = [...filtered].sort((a, b) => {
+    const tierDiff = tierRank[a.kind] - tierRank[b.kind];
+    if (tierDiff !== 0) return tierDiff;
+    return b.updatedAt.localeCompare(a.updatedAt);
+  });
 
   const showBanner = connectionState !== "connected";
-  const totalCount = inbox.length;
+  const totalCount = sorted.length;
+  // true when the toggle hid all items (inbox non-empty but nothing on this machine).
+  const allOffMachine = thisMachineOnly && inbox.length > 0 && filtered.length === 0;
 
   return (
     <div className="inbox-view">
@@ -134,6 +118,15 @@ export default function InboxView() {
         {totalCount > 0 && (
           <span className="inbox-header__count" data-testid="inbox-count">{totalCount}</span>
         )}
+        <label className="inbox-header__toggle">
+          <input
+            type="checkbox"
+            checked={thisMachineOnly}
+            onChange={(e) => setThisMachineOnly(e.target.checked)}
+            data-testid="toggle-this-machine"
+          />
+          This machine only
+        </label>
       </header>
 
       {showBanner && (
@@ -141,25 +134,17 @@ export default function InboxView() {
       )}
 
       {totalCount === 0 ? (
-        <EmptyState />
+        <EmptyState
+          message={allOffMachine ? "Nothing on this machine needs you." : undefined}
+        />
       ) : (
-        <div className="inbox-sections">
-          <InboxSection
-            title="Review the PR"
-            items={reviewItems}
-            dataSection="review"
-          />
-          <InboxSection
-            title="Waiting on you"
-            items={waitingItems}
-            dataSection="waiting"
-          />
-          <InboxSection
-            title="Delivered — needs you"
-            items={genericItems}
-            dataSection="delivered"
-          />
-        </div>
+        <ul className="inbox-list" aria-label="Inbox items">
+          {sorted.map((item) => (
+            <li key={item.initiativeId} className="inbox-list__item">
+              <InboxRow item={item} />
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

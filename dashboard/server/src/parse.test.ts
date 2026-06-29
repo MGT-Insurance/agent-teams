@@ -1,9 +1,12 @@
 // Unit tests for the parser functions.
 // Fixtures are captured from real CLI output (ateam list-json + claude agents --json --all).
 
+import { mkdtempSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, it, expect } from "vitest";
 import {
   extractPrUrl,
+  extractLatestAsk,
   parseInitiative,
   parseAteamListJson,
   parseClaudeAgents,
@@ -503,7 +506,7 @@ describe("buildInbox", () => {
     expect(item?.kind).toBe("waiting");
   });
 
-  it("waiting item carries the latest notes line as question", () => {
+  it("waiting item nextAction is the constant fallback when no ask block present", () => {
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -511,8 +514,7 @@ describe("buildInbox", () => {
     );
     const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-v4e");
-    // Latest non-empty notes line of RAW_AT_V4E
-    expect(item?.question).toContain("awaiting-merge");
+    expect(item?.nextAction).toBe("Look at the session for more info.");
   });
 
   it("includes generic items (needsHuman=generic) when delivered + no session", () => {
@@ -739,13 +741,13 @@ describe("deriveNeedsHuman", () => {
     expect(deriveNeedsHuman("pr-open", "none", "question")).toBe("waiting");
   });
 
-  // Session-based cases (gate=null)
-  it("session WAITING -> 'waiting' (most urgent; active initiative)", () => {
-    expect(deriveNeedsHuman("none", "waiting", null)).toBe("waiting");
+  // Session-based cases (gate=null) — no declared gate, softer "check" tier
+  it("session WAITING, no gate -> 'check' (soft tier; no declared ask)", () => {
+    expect(deriveNeedsHuman("none", "waiting", null)).toBe("check");
   });
 
-  it("session WAITING + delivered -> 'waiting' (most urgent; delivered initiative)", () => {
-    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("waiting");
+  it("session WAITING + delivered, no gate -> 'check' (soft tier; no declared ask)", () => {
+    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("check");
   });
 
   it("session WORKING -> false (refining after delivery, not in inbox)", () => {
@@ -840,19 +842,15 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.delivery).toBe("none");
   });
 
-  it("needsHuman is waiting when session is blocked (state=blocked) — the core blo fix", () => {
-    // Blocked session: status=waiting, state=blocked -> signal="waiting" -> needsHuman="waiting"
-    const parsed = parseInitiative(RAW_AT_2JH); // has prUrl but that's irrelevant
-    const nodes = buildInitiativeNodes([parsed], [BLOCKED_SESSION], new Set());
-    // BLOCKED_SESSION.cwd matches RAW_AT_2JH worktree? No — different path.
-    // Use a tweaked RAW so the worktree matches BLOCKED_SESSION.cwd.
+  it("session blocked (state=blocked) with no gate -> needsHuman='check' (soft tier, agent-teams-ja9c)", () => {
+    // Blocked session + NO gate: signal="waiting", gate=null -> needsHuman="check" (not "waiting")
     const raw: RawInitiative = { ...RAW_AT_2JH, description: RAW_AT_2JH.description.replace(
       "/Users/ericlloyd/.agent-teams-worktrees/specialty-quote-api",
       "/Users/ericlloyd/.agent-teams-worktrees/some-blocked-initiative",
     )};
-    const nodes2 = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
-    expect(nodes2[0]?.needsHuman).toBe("waiting");
-    expect(nodes2[0]?.activity).toBe("needs-human");
+    const nodes = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
+    expect(nodes[0]?.needsHuman).toBe("check");
+    expect(nodes[0]?.activity).toBe("needs-human");
   });
 });
 
@@ -894,11 +892,11 @@ describe("attention state: spec-required scenarios", () => {
     };
   }
 
-  it("session waiting/blocked -> needsHuman='waiting' (most urgent)", () => {
+  it("session waiting/blocked, no gate -> needsHuman='check' (soft tier, agent-teams-ja9c)", () => {
     const init = makeInit("blocked-1", false);
     const sess = makeSession("/wt/blocked-1", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
-    expect(nodes[0]?.needsHuman).toBe("waiting");
+    expect(nodes[0]?.needsHuman).toBe("check");
     expect(nodes[0]?.activity).toBe("needs-human");
   });
 
@@ -947,12 +945,12 @@ describe("attention state: spec-required scenarios", () => {
     expect(nodes[0]?.activity).toBe("done");
   });
 
-  it("inbox: waiting item has kind='waiting'", () => {
+  it("inbox: no-gate blocked session -> kind='check' (soft tier, agent-teams-ja9c)", () => {
     const init = makeInit("w-inbox", false);
     const sess = makeSession("/wt/w-inbox", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
-    expect(inbox[0]?.kind).toBe("waiting");
+    expect(inbox[0]?.kind).toBe("check");
   });
 
   it("inbox: generic item when delivered + ended (no explicit gate)", () => {
@@ -1076,6 +1074,214 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
     const init = makeGateInit("e2", undefined, false);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe(false);
+  });
+});
+
+// ---- extractLatestAsk (agent-teams-1saz) ------------------------------------
+
+describe("extractLatestAsk", () => {
+  it("returns null when notes has no ask block", () => {
+    expect(extractLatestAsk("no ask block here")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(extractLatestAsk("")).toBeNull();
+  });
+
+  it("parses decision from a well-formed block", () => {
+    const notes = "<<<ateam-ask\ndecision: Should we deploy now?\n>>>";
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?" });
+  });
+
+  it("returns the LAST valid block when multiple blocks are present", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: First question.",
+      ">>>",
+      "some prose",
+      "<<<ateam-ask",
+      "decision: Second question.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question." });
+  });
+
+  it("skips an unclosed block at end of notes, keeps the last valid closed block", () => {
+    // The unclosed block comes AFTER a closed one; closeLine returns -1 for it.
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Closed block.",
+      ">>>",
+      "some intervening notes",
+      "<<<ateam-ask",
+      "decision: Unclosed — no close marker follows.",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block." });
+  });
+
+  it("skips blocks with empty decision", () => {
+    const notes = "<<<ateam-ask\nrecommendation: Do X.\n>>>";
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  it("ignores >>> embedded in prose (must be line-anchored)", () => {
+    const notes = "<<<ateam-ask\ndecision: X or >>> something\n>>>";
+    // The inline >>> in the decision value is prose; the real close is on its own line.
+    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something" });
+  });
+});
+
+// ---- buildInbox: updatedAt + nextAction (agent-teams-1saz) -------------------
+
+describe("buildInbox — updatedAt and nextAction", () => {
+  function makeInit(
+    id: string,
+    kind: "review" | "waiting" | "generic",
+    notes = "",
+    labels?: string[],
+  ): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-25T12:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: kind === "generic" || kind === "review" ? "https://github.com/org/repo/pull/1" : null,
+      labels,
+    };
+  }
+
+  it("review item has updatedAt from initiative.updated_at", () => {
+    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("review item nextAction is the constant string", () => {
+    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Review the PR and merge or send it back.");
+  });
+
+  it("generic item nextAction is the constant string", () => {
+    const init = makeInit("gen", "generic");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe(
+      "Delivered with no gate — open the worktree to see what's needed.",
+    );
+  });
+
+  it("generic item has updatedAt from initiative.updated_at", () => {
+    const init = makeInit("gen", "generic");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("waiting item: nextAction == decision when ask block present", () => {
+    const notes = [
+      "Starting the initiative.",
+      "<<<ateam-ask",
+      "decision: Should we use approach A or approach B?",
+      ">>>",
+    ].join("\n");
+    const init = { ...makeInit("w-ask", "waiting"), notes, labels: ["gate:question", "human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Should we use approach A or approach B?");
+  });
+
+  it("waiting item: fallback is constant when no ask block present", () => {
+    const notes =
+      "Early note.\nThis is the latest entry. It has more text after the period.";
+    const init = { ...makeInit("w-fb", "waiting"), notes, labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("waiting item: fallback is constant even when notes are very long (no ask block)", () => {
+    const longLine = "A".repeat(200);
+    const init = { ...makeInit("w-long", "waiting"), notes: longLine, labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("waiting item has updatedAt from initiative.updated_at", () => {
+    const init = { ...makeInit("w-ts", "waiting"), labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
+// ---- buildInbox: onThisMachine (agent-teams-1l70) ----------------------------
+
+describe("buildInbox — onThisMachine", () => {
+  function makeWaitingInit(id: string, worktree: string): ParsedInitiative {
+    return {
+      id,
+      title: `Init ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+    };
+  }
+
+  it("onThisMachine=true when worktree path exists on disk", () => {
+    const tmp = mkdtempSync(`${tmpdir()}/at-test-`);
+    try {
+      const init = makeWaitingInit("tm-exists", tmp);
+      const nodes = buildInitiativeNodes([init], [], new Set(["tm-exists"]));
+      const inbox = buildInbox(nodes);
+      expect(inbox[0]?.onThisMachine).toBe(true);
+    } finally {
+      rmdirSync(tmp);
+    }
+  });
+
+  it("onThisMachine=false when worktree path doesn't exist", () => {
+    const init = makeWaitingInit("tm-missing", "/does/not/exist/xxyyzz-agent-teams-test");
+    const nodes = buildInitiativeNodes([init], [], new Set(["tm-missing"]));
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.onThisMachine).toBe(false);
+  });
+
+  it("onThisMachine=false when worktree is empty string", () => {
+    const init = makeWaitingInit("tm-empty", "");
+    const nodes = buildInitiativeNodes([init], [], new Set(["tm-empty"]));
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.onThisMachine).toBe(false);
   });
 });
 
@@ -1224,5 +1430,86 @@ describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
 
     const inbox = buildInbox(nodes);
     expect(inbox.some((i) => i.initiativeId === "at-closed")).toBe(false);
+  });
+});
+
+// ---- check flavor (agent-teams-ja9c) -----------------------------------------
+//
+// A session reporting waiting/blocked with NO explicit gate must produce kind="check"
+// (soft tier), NOT "waiting". A real gate:question must still produce "waiting"
+// even when the session is also blocked.
+
+describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
+  function makeInit(id: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T10:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+    };
+  }
+
+  function makeSession(id: string, status: string, state?: string): SessionState {
+    return {
+      sessionId: `sess-${id}`,
+      kind: "background",
+      cwd: `/wt/${id}`,
+      startedAt: 0,
+      status: status as "idle" | "busy" | "waiting",
+      state: state as "working" | "blocked" | "done" | "stopped" | undefined,
+    };
+  }
+
+  it("no-gate + state='blocked' → InboxItem.kind === 'check'", () => {
+    const init = makeInit("chk-blocked");
+    const sess = makeSession("chk-blocked", "idle", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("check");
+  });
+
+  it("no-gate + status='waiting' → InboxItem.kind === 'check'", () => {
+    const init = makeInit("chk-waiting");
+    const sess = makeSession("chk-waiting", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("check");
+  });
+
+  it("check item nextAction is the constant fallback string", () => {
+    const init = makeInit("chk-action");
+    const sess = makeSession("chk-action", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("gate:question + session also blocked → kind='waiting' (gate wins; gate checked first)", () => {
+    const init: ParsedInitiative = { ...makeInit("chk-q"), labels: ["gate:question", "human"] };
+    const sess = makeSession("chk-q", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
+  });
+
+  it("gate:question without blocked session → kind='waiting' (authoritative declared ask)", () => {
+    const init: ParsedInitiative = { ...makeInit("chk-q2"), labels: ["gate:question"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
   });
 });
