@@ -98,7 +98,11 @@ function LogPane({
     // Re-mount when the session changes (keyed on short id, not uuid).
   }, [initiativeId, session.id]);
 
-  return <div className="log-pane" ref={containerRef} />;
+  return (
+    <div className="log-pane-scroll">
+      <div className="log-pane" ref={containerRef} />
+    </div>
+  );
 }
 
 function AttachButton({
