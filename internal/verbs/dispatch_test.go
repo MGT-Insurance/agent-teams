@@ -980,3 +980,122 @@ func TestResumeKong_DelegatesLaunch(t *testing.T) {
 		t.Errorf("launch driArg = %q, want %q", launchedID, "at-rk1")
 	}
 }
+
+// ── dispatch: epic creation ───────────────────────────────────────────────────
+
+// TestDispatch_EpicCreatedAndAppendedToBody verifies that when createEpic
+// succeeds, "epic: <id>" is written into the initiative body before bd create.
+func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	expectedSlug := "epic-work"
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-epic-dispatch"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var epicRepoGot, epicTitleGot string
+	cmd := &dispatchKong{
+		Problem:  "Epic work",
+		Slug:     expectedSlug,
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		createEpic: func(repoPath, title string) (string, error) {
+			epicRepoGot = repoPath
+			epicTitleGot = title
+			return "at-root-epic", nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The epic creator must have been called with the resolved repo root.
+	if epicRepoGot != repoDir {
+		t.Errorf("createEpic repo = %q, want %q", epicRepoGot, repoDir)
+	}
+	if epicTitleGot != "Epic work" {
+		t.Errorf("createEpic title = %q, want %q", epicTitleGot, "Epic work")
+	}
+	// The body passed to bd create must contain the epic: line.
+	if !strings.Contains(gotBody, "epic: at-root-epic") {
+		t.Errorf("body missing 'epic: at-root-epic':\n%s", gotBody)
+	}
+	// The repo: line must still be present.
+	if !strings.Contains(gotBody, "repo: "+repoDir) {
+		t.Errorf("body missing 'repo:' line:\n%s", gotBody)
+	}
+}
+
+// TestDispatch_EpicCreation_FailSoft verifies that when createEpic returns an
+// error, dispatch still succeeds and registers the initiative without epic:.
+func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-no-epic"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		createEpic: func(_, _ string) (string, error) {
+			return "", fmt.Errorf("bd: simulated epic failure")
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("dispatch should succeed despite epic failure, got: %v", err)
+	}
+	// The body must NOT contain an epic: line.
+	if strings.Contains(gotBody, "epic:") {
+		t.Errorf("body must not contain 'epic:' when epic creation fails:\n%s", gotBody)
+	}
+	// A warning must be written to stderr.
+	if !strings.Contains(stderr.String(), "fail-soft") {
+		t.Errorf("stderr missing 'fail-soft' warning: %q", stderr.String())
+	}
+}
