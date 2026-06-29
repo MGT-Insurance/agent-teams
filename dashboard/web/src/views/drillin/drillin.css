@@ -287,20 +287,13 @@
   padding: 2px 6px;
 }
 
-/* Outer wrapper scrolls horizontally so the wide fixed-col xterm isn't clipped. */
-.log-pane-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
-  height: 400px;
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background: var(--color-bg);
-}
-
-/* Inner pane: overflow hidden so xterm fully owns vertical scrollback. */
 .log-pane {
   height: 400px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
   overflow: hidden;
+  /* xterm.js renders into this container */
 }
 
 .attach-slot {

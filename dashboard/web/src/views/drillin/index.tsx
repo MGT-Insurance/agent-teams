@@ -24,24 +24,10 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={cls}>{status}</span>;
 }
 
-// Strip only the ANSI sequences that wipe xterm's scrollback buffer.
-// All other sequences (cursor movement, colors) pass through unchanged so
-// content stays correctly positioned within the wide fixed-col terminal.
-function stripScrollbackClears(bytes: Uint8Array): Uint8Array {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  const cleaned = text
-    // ESC[2J / ESC[3J — erase entire screen (and scrollback for 3J)
-    .replace(/\x1b\[[23]J/g, "")
-    // Alt-screen buffer switches (ESC[?1049h/l, ESC[?47h/l, ESC[?1047h/l)
-    // — switching to alt-screen discards the main screen's scrollback
-    .replace(/\x1b\[\?(?:1049|47|1047)[hl]/g, "");
-  return new TextEncoder().encode(cleaned);
-}
-
 // Streams raw chunked bytes from the logs endpoint into an xterm Terminal instance.
 // The endpoint is NOT SSE — it is a plain chunked HTTP response (binary).
-// We use a wide fixed column count (300) so ANSI cursor-positioning sequences
-// from the source terminal never overflow and cause text overlap ("mingling").
+// We read Uint8Array chunks from the ReadableStream and write them directly into
+// the terminal so ANSI escapes and cursor positioning render faithfully.
 function LogPane({
   initiativeId,
   session,
@@ -57,12 +43,7 @@ function LogPane({
     const container = containerRef.current;
     if (!container) return;
 
-    // 300 cols: must be >= the source session's terminal width so ANSI
-    // cursor-absolute-column sequences don't overflow and mingle text.
-    // We can't query the source terminal's width, so we use a value wide
-    // enough to cover all realistic terminals; the container scrolls horizontally.
     const term = new Terminal({
-      cols: 300,
       theme: {
         background: "#0d0f12",
         foreground: "#c8cdd5",
@@ -95,7 +76,8 @@ function LogPane({
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          term.write(stripScrollbackClears(value));
+          // value is Uint8Array; xterm.Terminal.write accepts Uint8Array directly.
+          term.write(value);
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") return;
@@ -112,11 +94,7 @@ function LogPane({
     // Re-mount when the session changes (keyed on short id, not uuid).
   }, [initiativeId, session.id]);
 
-  return (
-    <div className="log-pane-scroll">
-      <div className="log-pane" ref={containerRef} />
-    </div>
-  );
+  return <div className="log-pane" ref={containerRef} />;
 }
 
 function AttachButton({
