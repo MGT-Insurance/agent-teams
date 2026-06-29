@@ -94,10 +94,11 @@
 
 /* Row card */
 .inbox-row {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px 16px;
+  padding: 14px 80px 14px 16px; /* right padding reserves space for the action-slot button */
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -188,9 +189,11 @@
   text-decoration: underline;
 }
 
-/* Future triage action slot — reserve space but invisible in v1 */
+/* Action slot — pinned to upper-right corner, out of flex flow */
 .inbox-row__action-slot {
-  margin-left: auto;
+  position: absolute;
+  top: 8px;
+  right: 12px;
 }
 
 .inbox-attach-btn {

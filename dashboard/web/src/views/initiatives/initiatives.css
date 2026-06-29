@@ -122,11 +122,12 @@
 
 /* Row card */
 .init-row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px;
+  padding: 12px 80px 12px 16px; /* right padding reserves space for the attach button */
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -390,11 +391,11 @@
   flex-shrink: 0;
 }
 
-/* Attach button slot (row-level) */
+/* Attach button slot (row-level) — pinned to upper-right, out of flex flow */
 .init-row__attach {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
+  position: absolute;
+  top: 8px;
+  right: 10px;
 }
 
 .attach-btn--row {
