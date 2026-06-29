@@ -34,6 +34,10 @@ export interface ParsedInitiative extends RawInitiative {
   mode: string;
   goal: string;
   prUrl: string | null;
+  // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
+  // Absent for legacy initiatives registered before at-e3m. Dashboard uses
+  // this to filter the drill-in work-bead list to just this initiative's subtree.
+  epic: string | null;
 }
 
 // Shape of one element from `claude agents --json --all`.
