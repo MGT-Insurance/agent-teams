@@ -58,7 +58,6 @@ function LogPane({
     term.loadAddon(fit);
     termRef.current = term;
     term.open(container);
-    fit.fit();
 
     const ro = new ResizeObserver(() => { fit.fit(); });
     ro.observe(container);
@@ -68,32 +67,39 @@ function LogPane({
     // session.id is the short claude session id (8 lowercase hex); the full UUID fails.
     const url = logsUrl(initiativeId, session.id!);
 
-    (async () => {
-      try {
-        const res = await fetch(url, { signal: ac.signal });
-        if (!res.ok) {
-          term.writeln(`\r\n\x1b[31mLog stream error: ${res.status} ${res.statusText}\x1b[0m`);
-          return;
+    // Fit after first paint so the container has real dimensions before the
+    // log stream starts; ANSI cursor-positioning in the stream requires the
+    // correct column count from byte 0, or text from different "lines" minces.
+    const rafId = requestAnimationFrame(() => {
+      fit.fit();
+      (async () => {
+        try {
+          const res = await fetch(url, { signal: ac.signal });
+          if (!res.ok) {
+            term.writeln(`\r\n\x1b[31mLog stream error: ${res.status} ${res.statusText}\x1b[0m`);
+            return;
+          }
+          if (!res.body) {
+            term.writeln("\r\n\x1b[33mNo response body — log stream unavailable.\x1b[0m");
+            return;
+          }
+          const reader = res.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            // value is Uint8Array; xterm.Terminal.write accepts Uint8Array directly.
+            term.write(value);
+          }
+        } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") return;
+          const msg = err instanceof Error ? err.message : String(err);
+          term.writeln(`\r\n\x1b[31mLog stream failed: ${msg}\x1b[0m`);
         }
-        if (!res.body) {
-          term.writeln("\r\n\x1b[33mNo response body — log stream unavailable.\x1b[0m");
-          return;
-        }
-        const reader = res.body.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          // value is Uint8Array; xterm.Terminal.write accepts Uint8Array directly.
-          term.write(value);
-        }
-      } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") return;
-        const msg = err instanceof Error ? err.message : String(err);
-        term.writeln(`\r\n\x1b[31mLog stream failed: ${msg}\x1b[0m`);
-      }
-    })();
+      })();
+    });
 
     return () => {
+      cancelAnimationFrame(rafId);
       ro.disconnect();
       ac.abort();
       term.dispose();
