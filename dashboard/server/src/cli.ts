@@ -85,7 +85,7 @@ export function bdClosedInitiatives(workspace: string): Promise<string> {
 
 // Returns raw JSON string from `bd -C <repo> list --label <label> --json`.
 export function bdLabeledBeads(repo: string, label: string): Promise<string> {
-  return runCli("bd", ["-C", repo, "list", "--label", label, "--json"]);
+  return runCli("bd", ["-C", repo, "list", "--label", label, "--status=all", "--json"]);
 }
 
 // Spawns `claude logs <sessionId>` and pipes raw bytes to the provided callback.
