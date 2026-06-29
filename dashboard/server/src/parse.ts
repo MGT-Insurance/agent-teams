@@ -276,17 +276,28 @@ export function derivePhase(notes: string): string {
 // one initiative throws (e.g. malformed data from a freshly-registered entry), that
 // initiative degrades to a minimal safe node and a warning is logged.  The rest of
 // the snapshot is unaffected — the dashboard stays live.
+// existsFn checks whether a worktree path exists on the host. Injected so parse.ts
+// stays pure (no fs import); snapshot.ts passes fs.existsSync. Defaults to a no-op
+// that reports "not present" — keeps the many existing unit-test callers unchanged.
 export function buildInitiativeNodes(
   initiatives: ParsedInitiative[],
   sessions: SessionState[],
   humanGatedIds: Set<string>,
+  existsFn: (path: string) => boolean = () => false,
 ): InitiativeNode[] {
   return initiatives.map((initiative) => {
+    // "On this machine" signal (at-gvv): empty/missing worktree path => false.
+    const worktreeExists = initiative.worktree ? existsFn(initiative.worktree) : false;
+    // All background session entries (alive + dead) matched to this worktree.
+    // sessionCount drives the "multiple sessions on one worktree" alert; the
+    // primary `session` prefers an alive entry (status present) so the chip
+    // reflects a running session over a dead corpse when both exist.
+    const matched = initiative.worktree
+      ? sessions.filter((s) => s.kind === "background" && s.cwd === initiative.worktree)
+      : [];
+    const sessionCount = matched.length;
+    const session = matched.find((s) => s.status != null) ?? matched[0] ?? null;
     try {
-      const session =
-        sessions.find(
-          (s) => s.kind === "background" && s.cwd === initiative.worktree,
-        ) ?? null;
 
       // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
       // labels is optional/missing on older entries — deriveExplicitGate handles that safely.
@@ -304,7 +315,7 @@ export function buildInitiativeNodes(
       const signal = deriveSessionSignal(session);
       const needsHuman = deriveNeedsHuman(delivery, signal, gate);
 
-      return { initiative, session, activity, phase, delivery, needsHuman };
+      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount };
     } catch (err) {
       console.warn(
         `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -317,6 +328,8 @@ export function buildInitiativeNodes(
         phase: "active",
         delivery: "none" as const,
         needsHuman: false as const,
+        worktreeExists,
+        sessionCount,
       };
     }
   });

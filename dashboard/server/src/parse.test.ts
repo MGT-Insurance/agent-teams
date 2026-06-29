@@ -275,6 +275,28 @@ describe("buildInitiativeNodes", () => {
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
     expect(nodes[0]?.activity).toBe("busy");
   });
+
+  it("counts all matched background sessions and prefers an alive primary", () => {
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const wt = parsed.worktree;
+    const dead: SessionState = {
+      id: "d", cwd: wt, kind: "background", startedAt: 1, sessionId: "dead-0000", name: "x", state: "done",
+    };
+    const alive: SessionState = {
+      id: "a", cwd: wt, kind: "background", startedAt: 2, sessionId: "alive-0000", name: "x", status: "busy", state: "working",
+    };
+    // dead listed first — find() would have picked it; alive-preference overrides.
+    const nodes = buildInitiativeNodes([parsed], [dead, alive], new Set());
+    expect(nodes[0]?.sessionCount).toBe(2);
+    expect(nodes[0]?.session?.sessionId).toBe("alive-0000");
+  });
+
+  it("sessionCount is 0 when no background session matches", () => {
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const nodes = buildInitiativeNodes([parsed], [], new Set());
+    expect(nodes[0]?.sessionCount).toBe(0);
+    expect(nodes[0]?.session).toBeNull();
+  });
 });
 
 // ---- deriveActivity ---------------------------------------------------------
@@ -1342,6 +1364,72 @@ describe("buildOrphanSessions", () => {
     // Only the 2 bg sessions — interactive excluded.
     expect(orphans).toHaveLength(2);
     expect(orphans.every((s) => s.kind === "background")).toBe(true);
+  });
+});
+
+// ---- buildInitiativeNodes: worktreeExists + closed initiatives (at-gvv) -----
+
+describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
+  function makeInit(id: string, worktree: string, status = "open"): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status,
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-15",
+      updated_at: "2026-06-15",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+    };
+  }
+
+  it("worktreeExists is true when existsFn returns true for the worktree", () => {
+    const init = makeInit("at-aaa", "/wt/at-aaa");
+    const nodes = buildInitiativeNodes([init], [], new Set(), (p) => p === "/wt/at-aaa");
+    expect(nodes[0]?.worktreeExists).toBe(true);
+  });
+
+  it("worktreeExists is false when existsFn returns false", () => {
+    const init = makeInit("at-bbb", "/wt/at-bbb");
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => false);
+    expect(nodes[0]?.worktreeExists).toBe(false);
+  });
+
+  it("worktreeExists is false for empty worktree path without calling existsFn", () => {
+    const init = makeInit("at-ccc", "");
+    // existsFn would return true for anything — empty path must short-circuit to false.
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => true);
+    expect(nodes[0]?.worktreeExists).toBe(false);
+  });
+
+  it("defaults worktreeExists to false when no existsFn is supplied", () => {
+    const init = makeInit("at-ddd", "/wt/at-ddd");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.worktreeExists).toBe(false);
+  });
+
+  it("closed initiatives appear in nodes (merged) but never enter the inbox", () => {
+    const open = makeInit("at-open", "/wt/at-open", "open");
+    const closed = makeInit("at-closed", "/wt/at-closed", "closed");
+    const nodes = buildInitiativeNodes([open, closed], [], new Set());
+
+    const closedNode = nodes.find((n) => n.initiative.id === "at-closed");
+    expect(closedNode).toBeDefined();
+    expect(closedNode?.delivery).toBe("merged");
+    expect(closedNode?.needsHuman).toBe(false);
+
+    const inbox = buildInbox(nodes);
+    expect(inbox.some((i) => i.initiativeId === "at-closed")).toBe(false);
   });
 });
 

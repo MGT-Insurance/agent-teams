@@ -271,7 +271,7 @@ export default function DrillInView() {
                   <td className="mono">{s.name ?? s.id ?? "—"}</td>
                   <td>{s.kind}</td>
                   <td>
-                    <StatusBadge status={s.status} />
+                    <StatusBadge status={s.status ?? "—"} />
                   </td>
                   <td>{s.state ?? "—"}</td>
                   <td className="mono session-id">{s.sessionId}</td>
