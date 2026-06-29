@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent, within, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
+import { render, screen, cleanup, fireEvent, within, waitFor, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { SnapshotState } from "../../hooks/useSnapshot.js";
 import type { InitiativeNode, ParsedInitiative, SessionState } from "@agent-teams/shared";
@@ -499,6 +499,111 @@ describe("LaunchButton — core paths", () => {
       expect(screen.queryByRole("button", { name: "✓" })).toBeTruthy();
     });
     // No error text should appear on success.
+    expect(screen.queryByText(/exited with code/i)).toBeNull();
+  });
+});
+
+describe("LaunchButton — edge cases", () => {
+  function makeStallNode(id: string, title: string): InitiativeNode {
+    return makeNode({ worktreeExists: true, session: null }, { id, title });
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("clicking while pending is a no-op: launchSession is called exactly once", async () => {
+    // Block launchSession from ever resolving so the button stays in pending state.
+    (mockLaunchSession as Mock).mockImplementation(() => new Promise(() => {}));
+    setInitiatives([makeStallNode("at-dbl", "Double Click")]);
+    renderView();
+
+    const launchBtn = screen.getByRole("button", { name: "launch" });
+    fireEvent.click(launchBtn);
+
+    // Second click while pending.
+    await waitFor(() => screen.getByRole("button", { name: "…" }));
+    fireEvent.click(screen.getByRole("button", { name: "…" }));
+
+    expect(mockLaunchSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("error title contains the full multi-line error message", async () => {
+    const fullMessage =
+      "ateam resume exited with code 1\ninitiative at-ggz is closed\nLog: /logs/launch.log";
+    mockLaunchSession.mockRejectedValueOnce(new Error(fullMessage));
+    setInitiatives([makeStallNode("at-title", "Title Check")]);
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "launch" }));
+
+    await waitFor(() => screen.getByRole("button", { name: "✗" }));
+    const errBtn = screen.getByRole("button", { name: "✗" });
+    // Title must carry the full multi-line message so it's inspectable on hover.
+    expect(errBtn.getAttribute("title")).toBe(fullMessage);
+  });
+
+  it("only the first error line renders inline; detail and Log lines do not", async () => {
+    const fullMessage =
+      "ateam resume exited with code 1\nextra detail\nLog: /logs/launch.log";
+    mockLaunchSession.mockRejectedValueOnce(new Error(fullMessage));
+    setInitiatives([makeStallNode("at-inline", "Inline Check")]);
+    renderView();
+
+    fireEvent.click(screen.getByRole("button", { name: "launch" }));
+
+    await waitFor(() => screen.getByRole("button", { name: "✗" }));
+    // First line is visible inline.
+    expect(screen.getByText("ateam resume exited with code 1")).toBeTruthy();
+    // Detail and Log lines must NOT be rendered as text nodes.
+    expect(screen.queryByText("extra detail")).toBeNull();
+    expect(screen.queryByText(/Log: \/logs/)).toBeNull();
+  });
+
+  it("ok state auto-resets to idle after 3s", async () => {
+    vi.useFakeTimers();
+    mockLaunchSession.mockResolvedValueOnce({ ok: true, log: "/logs/ok.log" });
+    setInitiatives([makeStallNode("at-reset-ok", "Reset OK")]);
+    renderView();
+
+    // Click and flush the launchSession microtask so we reach ok state.
+    // advanceTimersByTimeAsync advances clock AND flushes pending microtasks/promises
+    // between ticks; wrapping in act ensures React commits the resulting state updates.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "launch" }));
+      // No timers in first 50ms — this just drains the microtask queue.
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByRole("button", { name: "✓" })).toBeTruthy();
+
+    // Advance past the 3s ok→idle reset timer.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(screen.getByRole("button", { name: "launch" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "✓" })).toBeNull();
+  });
+
+  it("err state auto-resets to idle after 5s and clears the error message", async () => {
+    vi.useFakeTimers();
+    mockLaunchSession.mockRejectedValueOnce(
+      new Error("ateam resume exited with code 1"),
+    );
+    setInitiatives([makeStallNode("at-reset-err", "Reset Err")]);
+    renderView();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "launch" }));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.getByRole("button", { name: "✗" })).toBeTruthy();
+    expect(screen.getByText("ateam resume exited with code 1")).toBeTruthy();
+
+    // Advance past the 5s err→idle reset timer.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100);
+    });
+    expect(screen.getByRole("button", { name: "launch" })).toBeTruthy();
     expect(screen.queryByText(/exited with code/i)).toBeNull();
   });
 });
