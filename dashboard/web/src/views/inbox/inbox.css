@@ -94,6 +94,7 @@
 
 /* Row card */
 .inbox-row {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -188,9 +189,33 @@
   text-decoration: underline;
 }
 
-/* Future triage action slot — reserve space but invisible in v1 */
+/* Action slot — literal upper-right corner, out of flex flow */
 .inbox-row__action-slot {
-  margin-left: auto;
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.inbox-attach-btn {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: none;
+  border-radius: 0 5px 0 3px;
+  padding: 3px 5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.inbox-attach-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.inbox-attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .inbox-row__next-action {

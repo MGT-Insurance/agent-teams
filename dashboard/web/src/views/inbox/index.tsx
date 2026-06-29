@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
+import { attachToInitiative } from "../../lib/api.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
@@ -14,6 +15,36 @@ function rowBadgeLabel(kind: InboxItem["kind"]): string {
   if (kind === "waiting") return "agent waiting";
   if (kind === "check") return "check on it";
   return "needs you";
+}
+
+function InboxAttachButton({ initiativeId, sessionId }: { initiativeId: string; sessionId: string }) {
+  const [state, setState] = useState<"idle" | "pending" | "ok" | "err">("idle");
+
+  async function handleClick(e: React.MouseEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    if (state === "pending") return;
+    setState("pending");
+    try {
+      await attachToInitiative(initiativeId, sessionId);
+      setState("ok");
+      setTimeout(() => setState("idle"), 1500);
+    } catch {
+      setState("err");
+      setTimeout(() => setState("idle"), 3000);
+    }
+  }
+
+  return (
+    <button
+      className="inbox-attach-btn"
+      onClick={(e) => { void handleClick(e); }}
+      disabled={state === "pending"}
+      title="attach"
+      aria-label="Attach to session"
+    >
+      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
+    </button>
+  );
 }
 
 interface InboxRowProps {
@@ -155,7 +186,14 @@ export default function InboxView() {
         <ul className="inbox-list" aria-label="Inbox items">
           {sorted.map((item) => (
             <li key={item.initiativeId} className="inbox-list__item">
-              <InboxRow item={item} />
+              <InboxRow
+                item={item}
+                actionSlot={
+                  item.sessionId ? (
+                    <InboxAttachButton initiativeId={item.initiativeId} sessionId={item.sessionId} />
+                  ) : undefined
+                }
+              />
             </li>
           ))}
         </ul>

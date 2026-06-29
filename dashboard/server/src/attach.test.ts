@@ -1,8 +1,16 @@
 // Tests for the short claude session id validation and AppleScript injection guard in attach.ts.
 // `claude attach`/`claude logs` use the SHORT id (8 lowercase hex), not the full UUID.
 
-import { describe, it, expect } from "vitest";
-import { isValidSessionId } from "./attach.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { existsSync } from "node:fs";
+import { isValidSessionId, isItermInstalled } from "./attach.js";
+
+// Module-level mock: replace node:fs existsSync with a vi.fn() so tests can
+// control its return value per-test without the "Cannot redefine property" error.
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return { ...actual, existsSync: vi.fn() };
+});
 
 describe("isValidSessionId", () => {
   it("accepts a well-formed short claude session id", () => {
@@ -47,5 +55,21 @@ describe("isValidSessionId", () => {
 
   it("rejects non-hex characters", () => {
     expect(isValidSessionId("21bd9e9z")).toBe(false);
+  });
+});
+
+describe("isItermInstalled", () => {
+  afterEach(() => {
+    vi.mocked(existsSync).mockReset();
+  });
+
+  it("returns true when /Applications/iTerm.app exists", () => {
+    vi.mocked(existsSync).mockImplementation((p) => p === "/Applications/iTerm.app");
+    expect(isItermInstalled()).toBe(true);
+  });
+
+  it("returns false when neither iTerm.app path exists", () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    expect(isItermInstalled()).toBe(false);
   });
 });

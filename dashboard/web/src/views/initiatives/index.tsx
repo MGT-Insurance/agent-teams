@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InitiativeNode } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
+import { attachToInitiative } from "../../lib/api.js";
 import "./initiatives.css";
 
 // Persist a boolean toggle to localStorage (no server). Reads on init, writes on
@@ -164,6 +165,38 @@ function SignalChip({ level, tone, icon, label, value, title }: SignalChipProps)
   );
 }
 
+function RowAttachButton({ initiativeId, sessionId }: { initiativeId: string; sessionId: string }) {
+  const [state, setState] = useState<"idle" | "pending" | "ok" | "err">("idle");
+
+  async function handleClick(e: React.MouseEvent<HTMLButtonElement>) {
+    e.stopPropagation();
+    if (state === "pending") return;
+    setState("pending");
+    try {
+      await attachToInitiative(initiativeId, sessionId);
+      setState("ok");
+      setTimeout(() => setState("idle"), 1500);
+    } catch {
+      setState("err");
+      setTimeout(() => setState("idle"), 3000);
+    }
+  }
+
+  return (
+    <span className="init-row__attach">
+      <button
+        className="attach-btn attach-btn--row"
+        onClick={(e) => { void handleClick(e); }}
+        disabled={state === "pending"}
+        title="attach"
+        aria-label="Attach to session"
+      >
+        {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
+      </button>
+    </span>
+  );
+}
+
 function InitiativeRow({ node }: { node: InitiativeNode }) {
   const navigate = useNavigate();
   const { initiative } = node;
@@ -257,6 +290,9 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
+      {sessionKind(node) === "alive" && node.session?.id && (
+        <RowAttachButton initiativeId={initiative.id} sessionId={node.session.id} />
+      )}
       {/* Always-present fixed-width slot so the signals column holds the same
           horizontal position on every row. Icon + popover render only when the
           row is actually alerted, so non-alerted rows expose no tooltip. */}

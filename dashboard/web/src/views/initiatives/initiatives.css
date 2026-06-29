@@ -122,6 +122,7 @@
 
 /* Row card */
 .init-row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -388,4 +389,33 @@
   width: 12px;
   text-align: center;
   flex-shrink: 0;
+}
+
+/* Attach icon button — literal upper-right corner, out of flex flow */
+.init-row__attach {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.attach-btn--row {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: none;
+  border-radius: 0 5px 0 3px;
+  padding: 3px 5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.attach-btn--row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+.attach-btn--row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
