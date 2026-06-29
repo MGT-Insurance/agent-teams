@@ -156,7 +156,7 @@ describe("DrillInView", () => {
     expect(screen.getByText("Third note")).toBeTruthy();
     expect(screen.getByText("First note")).toBeTruthy();
 
-    // Sessions table shows session name — "planner" appears in both table and attach section
+    // Sessions table shows session name — "planner" appears in both table and toolbar attach
     const plannerEls = screen.getAllByText("planner");
     expect(plannerEls.length).toBeGreaterThanOrEqual(1);
 
@@ -185,7 +185,6 @@ describe("DrillInView", () => {
 
     expect(screen.getByText(/no live sessions/i)).toBeTruthy();
     expect(screen.getByText(/no background sessions — logs unavailable/i)).toBeTruthy();
-    expect(screen.getByText(/no background sessions to attach to/i)).toBeTruthy();
   });
 
   it("attach button calls attachToInitiative with correct args", async () => {
@@ -266,12 +265,12 @@ describe("DrillInView", () => {
 
     const items = screen.getAllByRole("listitem");
     const noteItems = items.filter((el) => el.className.includes("notes-item"));
-    // notesHistory has 3 entries; first rendered item (array[0] = "First note") gets label "3"
+    // notesHistory has 3 entries; most recent at top — "Third note" is index 0, label = 3
     expect(noteItems.length).toBe(3);
     expect(noteItems[0]?.textContent).toContain("3");
-    expect(noteItems[0]?.textContent).toContain("First note");
-    // Last rendered item (array[2] = "Third note") gets label "1"
+    expect(noteItems[0]?.textContent).toContain("Third note");
+    // Oldest ("First note") is last, label = 1
     expect(noteItems[2]?.textContent).toContain("1");
-    expect(noteItems[2]?.textContent).toContain("Third note");
+    expect(noteItems[2]?.textContent).toContain("First note");
   });
 });
