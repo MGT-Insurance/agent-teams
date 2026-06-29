@@ -204,3 +204,30 @@
   color: var(--color-text-muted);
   line-height: 1.5;
 }
+
+/* Inset box groups the agent's recommendation + alternative as a distinct
+   unit beneath the question line. */
+.inbox-row__suggestion {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 8px 12px;
+  background: color-mix(in srgb, var(--color-text-muted) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text-muted) 28%, transparent);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 4px;
+}
+
+/* Colored, weighted label distinguishes recommendation (endorsed) from
+   alternative (fallback) and from the plain question line above. */
+.inbox-row__secondary-label {
+  font-weight: 600;
+}
+
+.inbox-row__secondary--recommendation .inbox-row__secondary-label {
+  color: var(--color-ok);
+}
+
+.inbox-row__secondary--alternative .inbox-row__secondary-label {
+  color: var(--color-warn);
+}

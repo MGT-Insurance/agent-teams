@@ -499,8 +499,10 @@ describe("InboxView — waiting row recommendation/alternative (agent-teams-oc3p
       alternative: "",
     };
     setInbox([item]);
-    renderInbox();
-    expect(screen.getByText(/^Recommended: Roll back the canary and monitor error rates\.$/)).toBeTruthy();
+    const { container } = renderInbox();
+    // Label is a styled <span>, value a sibling text node — assert the line's full text in order.
+    const rec = container.querySelector(".inbox-row__secondary--recommendation");
+    expect(rec?.textContent).toMatch(/^Recommended: Roll back the canary and monitor error rates\.$/);
   });
 
   it("renders 'Alternative:' line when alternative is non-empty on a waiting row", () => {
@@ -510,8 +512,9 @@ describe("InboxView — waiting row recommendation/alternative (agent-teams-oc3p
       alternative: "Enable for 10% of users and watch for 24h.",
     };
     setInbox([item]);
-    renderInbox();
-    expect(screen.getByText(/^Alternative: Enable for 10% of users and watch for 24h\.$/)).toBeTruthy();
+    const { container } = renderInbox();
+    const alt = container.querySelector(".inbox-row__secondary--alternative");
+    expect(alt?.textContent).toMatch(/^Alternative: Enable for 10% of users and watch for 24h\.$/);
   });
 
   it("renders both secondary lines when both are present", () => {
