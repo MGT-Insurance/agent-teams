@@ -184,6 +184,8 @@ export interface WorkBead {
   status: string;
   priority: string;
   issue_type: string;
+  parent?: string;      // set on child beads; value is the parent epic's id
+  labels?: string[];    // initiative-id label lives here
 }
 
 // Full drill-in payload for a single initiative.

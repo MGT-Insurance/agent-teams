@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { DrillInDetail, SessionState } from "@agent-teams/shared";
 import { fetchInitiative, logsUrl, attachToInitiative } from "../../lib/api.js";
@@ -43,6 +44,7 @@ function LogPane({
     const container = containerRef.current;
     if (!container) return;
 
+    const fit = new FitAddon();
     const term = new Terminal({
       theme: {
         background: "#0d0f12",
@@ -53,8 +55,13 @@ function LogPane({
       fontSize: 13,
       scrollback: 10_000,
     });
+    term.loadAddon(fit);
     termRef.current = term;
     term.open(container);
+    fit.fit();
+
+    const ro = new ResizeObserver(() => { fit.fit(); });
+    ro.observe(container);
 
     const ac = new AbortController();
     abortRef.current = ac;
@@ -87,6 +94,7 @@ function LogPane({
     })();
 
     return () => {
+      ro.disconnect();
       ac.abort();
       term.dispose();
       termRef.current = null;
@@ -306,37 +314,70 @@ export default function DrillInView() {
         )}
       </section>
 
-      {/* Work beads */}
+      {/* Work beads — epics with nested children, then bare labeled beads */}
       <section className="drillin-section">
         <h2 className="section-title">Work Beads</h2>
         {detail.workBeads.length === 0 ? (
           <p className="section-empty">No beads for this initiative.</p>
-        ) : (
-          <table className="beads-table">
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>title</th>
-                <th>status</th>
-                <th>priority</th>
-                <th>type</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.workBeads.map((b) => (
-                <tr key={b.id} className="beads-row">
-                  <td className="mono">{b.id}</td>
-                  <td>{b.title}</td>
-                  <td>
-                    <StatusBadge status={b.status} />
-                  </td>
-                  <td>{b.priority}</td>
-                  <td>{b.issue_type}</td>
+        ) : (() => {
+          const epics = detail.workBeads.filter(b => b.issue_type === "epic");
+          const childrenByEpic = new Map<string, typeof detail.workBeads>();
+          for (const b of detail.workBeads) {
+            if (b.parent) {
+              const list = childrenByEpic.get(b.parent) ?? [];
+              list.push(b);
+              childrenByEpic.set(b.parent, list);
+            }
+          }
+          const epicIds = new Set(epics.map(e => e.id));
+          const bareBeads = detail.workBeads.filter(
+            b => b.issue_type !== "epic" && !b.parent
+          );
+          return (
+            <table className="beads-table">
+              <thead>
+                <tr>
+                  <th>id</th>
+                  <th>title</th>
+                  <th>status</th>
+                  <th>priority</th>
+                  <th>type</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {epics.map(epic => (
+                  <>
+                    <tr key={epic.id} className="beads-row beads-row--epic">
+                      <td className="mono">{epic.id}</td>
+                      <td className="beads-epic-title">{epic.title}</td>
+                      <td><StatusBadge status={epic.status} /></td>
+                      <td>{epic.priority}</td>
+                      <td>{epic.issue_type}</td>
+                    </tr>
+                    {(childrenByEpic.get(epic.id) ?? []).map(child => (
+                      <tr key={child.id} className="beads-row beads-row--child">
+                        <td className="mono beads-child-id"><span className="beads-tree-connector">└</span>{child.id}</td>
+                        <td className="beads-child-title">{child.title}</td>
+                        <td><StatusBadge status={child.status} /></td>
+                        <td>{child.priority}</td>
+                        <td>{child.issue_type}</td>
+                      </tr>
+                    ))}
+                  </>
+                ))}
+                {bareBeads.map(b => (
+                  <tr key={b.id} className="beads-row">
+                    <td className="mono">{b.id}</td>
+                    <td>{b.title}</td>
+                    <td><StatusBadge status={b.status} /></td>
+                    <td>{b.priority}</td>
+                    <td>{b.issue_type}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        })()}
       </section>
 
       {/* Logs pane */}

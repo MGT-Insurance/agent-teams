@@ -239,6 +239,33 @@
   border-bottom: none;
 }
 
+/* Epic rows */
+.beads-row--epic td {
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+}
+
+.beads-epic-title {
+  font-weight: 600;
+}
+
+/* Child rows — indented under their epic */
+.beads-row--child td {
+  color: var(--color-text) !important;
+}
+
+.beads-tree-connector {
+  color: var(--color-text-muted);
+  margin-right: 6px;
+}
+
+.beads-child-id {
+  padding-left: 20px;
+}
+
+.beads-child-title {
+  padding-left: 20px;
+}
+
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
