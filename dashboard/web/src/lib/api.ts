@@ -31,11 +31,26 @@ export async function attachToInitiative(id: string, sessionId: string): Promise
 }
 
 // POST /api/initiatives/:id/launch-session — spawn a new bg DRI session for the initiative.
-export async function launchSession(initiativeId: string): Promise<void> {
+// Returns { ok: true, log } on success. Throws with a message carrying the server's
+// error/detail (and log path if present) on failure, so callers can show a real reason.
+export async function launchSession(initiativeId: string): Promise<{ ok: true; log: string }> {
   const res = await fetch(`/api/initiatives/${encodeURIComponent(initiativeId)}/launch-session`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error(`launch-session failed: ${res.status}`);
+  const body = (await res.json()) as {
+    ok?: boolean;
+    log?: string;
+    error?: string;
+    detail?: string;
+  };
+  if (!res.ok) {
+    const msg = body.error ?? `launch-session failed: ${res.status}`;
+    const parts: string[] = [msg];
+    if (body.detail) parts.push(body.detail.trim());
+    if (body.log) parts.push(`Log: ${body.log}`);
+    throw new Error(parts.join("\n"));
+  }
+  return { ok: true, log: body.log ?? "" };
 }
 
 // Returns the URL for log streaming (piped into xterm.js by the drill-in view).

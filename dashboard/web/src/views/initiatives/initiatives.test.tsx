@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { SnapshotState } from "../../hooks/useSnapshot.js";
 import type { InitiativeNode, ParsedInitiative, SessionState } from "@agent-teams/shared";
@@ -17,6 +17,15 @@ const mockState: SnapshotState = {
 vi.mock("../../SnapshotContext.js", () => ({
   useSnapshotContext: () => mockState,
 }));
+
+// api is mocked so LaunchButton tests can control the resolved/rejected value.
+// vi.hoisted() ensures the variable is initialized before the mock factory runs
+// (vi.mock factories are hoisted to the top of the file by the transform).
+const mockLaunchSession = vi.hoisted(() => vi.fn<() => Promise<{ ok: true; log: string }>>());
+vi.mock("../../lib/api.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/api.js")>();
+  return { ...actual, launchSession: mockLaunchSession };
+});
 
 // useNavigate is mocked so we can assert navigation without a real router.
 const mockNavigate = vi.fn();
@@ -113,6 +122,7 @@ function setInitiatives(nodes: InitiativeNode[], extra: Partial<SnapshotState> =
 
 beforeEach(() => {
   mockNavigate.mockReset();
+  mockLaunchSession.mockReset();
   setInitiatives([]);
   localStorage.clear(); // toggles persist to localStorage — isolate tests
 });
@@ -446,5 +456,49 @@ describe("InitiativesView — disconnected states", () => {
     setInitiatives([], { connectionState: "error", error: "SSE stream closed" });
     renderView();
     expect(screen.getByText(/SSE stream closed/i)).toBeTruthy();
+  });
+});
+
+describe("LaunchButton — core paths", () => {
+  // The LaunchButton renders for open + on-machine + no-session rows.
+  function makeStallNode(id: string, title: string): InitiativeNode {
+    return makeNode({ worktreeExists: true, session: null }, { id, title });
+  }
+
+  it("reaches error state and surfaces reason when launchSession rejects", async () => {
+    mockLaunchSession.mockRejectedValueOnce(
+      new Error("ateam resume exited with code 1\nextra detail\nLog: /home/.agent-teams/logs/launch-x.log")
+    );
+    setInitiatives([makeStallNode("at-fail", "Fail Launch")]);
+    renderView();
+
+    // Idle: launch button visible.
+    const launchBtn = screen.getByRole("button", { name: "launch" });
+    fireEvent.click(launchBtn);
+
+    // After reject, button should flip to ✗ and show the first error line.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "✗" })).toBeTruthy();
+    });
+
+    const errBtn = screen.getByRole("button", { name: "✗" });
+    expect(errBtn.getAttribute("title")).toMatch(/exited with code 1/);
+    // First-line error text renders inline next to the button.
+    expect(screen.getByText(/ateam resume exited with code 1/)).toBeTruthy();
+  });
+
+  it("reaches ok state when launchSession resolves", async () => {
+    mockLaunchSession.mockResolvedValueOnce({ ok: true, log: "/home/.agent-teams/logs/launch-ok.log" });
+    setInitiatives([makeStallNode("at-ok", "OK Launch")]);
+    renderView();
+
+    const launchBtn = screen.getByRole("button", { name: "launch" });
+    fireEvent.click(launchBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "✓" })).toBeTruthy();
+    });
+    // No error text should appear on success.
+    expect(screen.queryByText(/exited with code/i)).toBeNull();
   });
 });

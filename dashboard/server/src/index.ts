@@ -5,6 +5,7 @@
 //   GET  /api/initiatives/:id                 -> DrillInDetail
 //   GET  /api/initiatives/:id/logs?session=   -> raw claude logs bytes (chunked)
 //   POST /api/initiatives/:id/attach          -> { ok: true } (macOS terminal)
+//   POST /api/initiatives/:id/launch-session  -> { ok: true, log } | { error, detail?, log? }
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -12,13 +13,13 @@
 // The static-serve fallback only activates when dashboard/web/dist/ exists.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
 import { CliError, claudeAgentsJson, bdLabeledBeads, spawnClaudeLogs } from "./cli.js";
+import { launchSession as doLaunchSession } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
@@ -258,13 +259,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         json(res, 400, { error: "invalid initiative id" });
         return;
       }
-      try {
-        const child = spawn("ateam", ["resume", id], { detached: true, stdio: "ignore" });
-        child.unref();
-        json(res, 200, { ok: true });
-      } catch (err) {
-        json(res, 500, { error: String(err) });
-      }
+      const result = await doLaunchSession(id);
+      json(res, result.ok ? 200 : 502, result);
       return;
     }
 

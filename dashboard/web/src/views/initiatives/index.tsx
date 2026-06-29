@@ -201,25 +201,43 @@ type LaunchState = "idle" | "pending" | "ok" | "err";
 
 function LaunchButton({ initiativeId }: { initiativeId: string }) {
   const [state, setState] = useState<LaunchState>("idle");
+  const [errMsg, setErrMsg] = useState<string>("");
+
   const launch = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (state === "pending") return;
     setState("pending");
+    setErrMsg("");
     try {
       await launchSession(initiativeId);
       setState("ok");
       setTimeout(() => setState("idle"), 3000);
-    } catch {
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : String(err));
       setState("err");
-      setTimeout(() => setState("idle"), 3000);
+      setTimeout(() => { setState("idle"); setErrMsg(""); }, 5000);
     }
   };
+
   const label = state === "idle" ? "launch" : state === "pending" ? "…" : state === "ok" ? "✓" : "✗";
+  // In error state, set the title to the full error so it's inspectable on hover.
+  const title =
+    state === "err" && errMsg ? errMsg : "Launch a new DRI session for this initiative";
+  // First line of error message — brief inline hint so the failure is legible at a glance.
+  const errFirst = errMsg.split("\n")[0] ?? "";
+
   return (
     <div className="init-row__launch">
-      <button className="launch-btn" onClick={(e) => { void launch(e); }} title="Launch a new DRI session for this initiative">
+      <button
+        className={`launch-btn${state === "err" ? " launch-btn--err" : ""}`}
+        onClick={(e) => { void launch(e); }}
+        title={title}
+      >
         {label}
       </button>
+      {state === "err" && errFirst && (
+        <span className="launch-btn__err-msg">{errFirst}</span>
+      )}
     </div>
   );
 }
