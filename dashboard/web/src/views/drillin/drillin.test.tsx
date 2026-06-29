@@ -106,6 +106,7 @@ const sampleDetail: DrillInDetail = {
   mode: "auto",
   goal: "Do the thing",
   prUrl: "https://github.com/org/repo/pull/42",
+  epic: null,
   // DrillInDetail extras
   notesHistory: ["First note", "Second note", "Third note"],
   sessions: [bgSession, interactiveSession],

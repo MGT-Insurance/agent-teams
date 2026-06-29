@@ -24,6 +24,18 @@ export function extractPrUrl(text: string): string | null {
   return m ? (m[0] ?? null) : null;
 }
 
+// Extract the root epic bead id from initiative description or notes.
+// Scans for a line matching `epic: <id>` — description is checked first,
+// then notes. Returns null when neither contains the field (legacy initiatives).
+const EPIC_RE = /^epic:\s*(\S+)/m;
+
+export function extractEpic(description: string, notes: string): string | null {
+  const dm = EPIC_RE.exec(description);
+  if (dm) return dm[1] ?? null;
+  const nm = EPIC_RE.exec(notes);
+  return nm ? (nm[1] ?? null) : null;
+}
+
 // Parse the `key: value` lines embedded in description text.
 // Returns a partial record; missing keys are empty string.
 function parseDescriptionFields(
@@ -74,6 +86,7 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     mode: fields["mode"] ?? "",
     goal: fields["goal"] ?? "",
     prUrl,
+    epic: extractEpic(description, notes),
   };
 }
 

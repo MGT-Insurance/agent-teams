@@ -3,6 +3,8 @@
 // Callers surface the error in the API response — do NOT swallow.
 
 import { spawn } from "node:child_process";
+import type { WorkBead } from "@agent-teams/shared";
+import { parseBdList } from "./parse.js";
 
 export class CliError extends Error {
   constructor(
@@ -86,6 +88,34 @@ export function bdClosedInitiatives(workspace: string): Promise<string> {
 // Returns raw JSON string from `bd -C <projectRepo> list --json`.
 export function bdWorkBeads(projectRepo: string): Promise<string> {
   return runCli("bd", ["-C", projectRepo, "list", "--json"]);
+}
+
+// Returns all descendant beads of the given root epic via BFS.
+// Each BFS step queries `bd -C <repo> list --parent <id> --json` to get direct
+// children; child epics are queued for further expansion. Visited ids are tracked
+// to prevent loops. Returns a flat deduplicated array of all descendants.
+export async function bdEpicSubtree(repo: string, epicId: string): Promise<WorkBead[]> {
+  const queue: string[] = [epicId];
+  const visited = new Set<string>();
+  const results: WorkBead[] = [];
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+
+    const raw = await runCli("bd", ["-C", repo, "list", "--parent", id, "--json"]);
+    const children = parseBdList(raw);
+    results.push(...children);
+
+    for (const child of children) {
+      if (child.issue_type === "epic") {
+        queue.push(child.id);
+      }
+    }
+  }
+
+  return results;
 }
 
 // Spawns `claude logs <sessionId>` and pipes raw bytes to the provided callback.

@@ -1714,3 +1714,157 @@ func TestCondense_RoleInPacket(t *testing.T) {
 		t.Errorf("packet Role = %q, want %q", pkt.Role, "implementer")
 	}
 }
+
+// ── register epic creation ─────────────────────────────────────────────────────
+
+// TestRegister_WithRepoLine_CreatesEpicAndAppends verifies that when the body
+// file contains a "repo: <path>" line, registerKong calls createEpic with that
+// path and appends "epic: <id>" to the body passed to bd create.
+func TestRegister_WithRepoLine_CreatesEpicAndAppends(t *testing.T) {
+	repoPath := t.TempDir()
+	body := "problem: my feature\nrepo: " + repoPath + "\nworktree: /tmp/wt\n"
+	bodyFile := makeTempFile(t, body)
+
+	// Fake bd create response for the global initiative.
+	issue := bd.Issue{ID: "at-init1", Title: "my feature"}
+	jsonOut, _ := json.Marshal(issue)
+
+	// Track the body file content passed to bd create.
+	var capturedBodyContent string
+	execFn, _ := fakeExec([]fakeResp{{stdout: string(jsonOut)}})
+	wrappedExec := func(name string, args ...string) ([]byte, []byte, error) {
+		// Intercept to capture body file content before delegating.
+		for _, a := range args {
+			if strings.HasPrefix(a, "--body-file=") {
+				path := strings.TrimPrefix(a, "--body-file=")
+				if b, err := os.ReadFile(path); err == nil {
+					capturedBodyContent = string(b)
+				}
+			}
+		}
+		return execFn(name, args...)
+	}
+	client := bd.NewClientWithExec(t.TempDir(), wrappedExec)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	// Inject fake epic creator that succeeds.
+	cmd := &registerKong{
+		Title: "my feature",
+		File:  bodyFile,
+		createEpic: func(gotRepo, gotTitle string) (string, error) {
+			if gotRepo != repoPath {
+				t.Errorf("createEpic repo = %q, want %q", gotRepo, repoPath)
+			}
+			if gotTitle != "my feature" {
+				t.Errorf("createEpic title = %q, want %q", gotTitle, "my feature")
+			}
+			return "at-epic1", nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Printed id must be the initiative id.
+	if got := strings.TrimSpace(stdout.String()); got != "at-init1" {
+		t.Errorf("stdout = %q, want %q", got, "at-init1")
+	}
+	// The body passed to bd create must contain the epic: line.
+	if !strings.Contains(capturedBodyContent, "epic: at-epic1") {
+		t.Errorf("body passed to bd create missing 'epic: at-epic1':\n%s", capturedBodyContent)
+	}
+	// The repo: line must still be present.
+	if !strings.Contains(capturedBodyContent, "repo: "+repoPath) {
+		t.Errorf("body missing 'repo:' line:\n%s", capturedBodyContent)
+	}
+}
+
+// TestRegister_EpicCreationFails_RegistrationSucceeds verifies fail-soft: when
+// createEpic returns an error, registration still completes and returns the id.
+func TestRegister_EpicCreationFails_RegistrationSucceeds(t *testing.T) {
+	repoPath := t.TempDir()
+	body := "problem: work\nrepo: " + repoPath + "\n"
+	bodyFile := makeTempFile(t, body)
+
+	issue := bd.Issue{ID: "at-failsoft", Title: "work"}
+	jsonOut, _ := json.Marshal(issue)
+	ctx, _ := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
+
+	cmd := &registerKong{
+		Title: "work",
+		File:  bodyFile,
+		createEpic: func(_, _ string) (string, error) {
+			return "", fmt.Errorf("bd: no beads db found")
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("expected success despite epic failure, got: %v", err)
+	}
+	if got := strings.TrimSpace(stdoutOf(ctx)); got != "at-failsoft" {
+		t.Errorf("stdout = %q, want %q", got, "at-failsoft")
+	}
+	// Warning must be written to stderr.
+	errOut := ctx.Stderr.(*bytes.Buffer).String()
+	if !strings.Contains(errOut, "fail-soft") {
+		t.Errorf("stderr missing 'fail-soft' warning: %q", errOut)
+	}
+}
+
+// TestRegister_NoRepoLine_SkipsEpicCreation verifies that when the body has no
+// "repo:" or "worktree:" line, createEpic is never called.
+func TestRegister_NoRepoLine_SkipsEpicCreation(t *testing.T) {
+	bodyFile := makeTempFile(t, "initiative body with no repo line\n")
+	issue := bd.Issue{ID: "at-norepo", Title: "T"}
+	jsonOut, _ := json.Marshal(issue)
+	ctx, calls := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
+
+	epicCalled := false
+	cmd := &registerKong{
+		Title: "T",
+		File:  bodyFile,
+		createEpic: func(_, _ string) (string, error) {
+			epicCalled = true
+			return "at-shouldnotbe", nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if epicCalled {
+		t.Error("createEpic should not be called when body has no repo: line")
+	}
+	// Still exactly 1 bd call (the initiative create).
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd call, got %d", len(*calls))
+	}
+}
+
+// TestRegister_WorktreeFallback_UsedWhenNoRepoLine verifies that when the body
+// has no "repo:" line but does have a "worktree:" line, extractRepoPath returns
+// the worktree path and epic creation is attempted with it.
+func TestRegister_WorktreeFallback_UsedWhenNoRepoLine(t *testing.T) {
+	wtPath := t.TempDir()
+	body := "problem: work\nworktree: " + wtPath + "\n"
+	bodyFile := makeTempFile(t, body)
+
+	issue := bd.Issue{ID: "at-wt1", Title: "work"}
+	jsonOut, _ := json.Marshal(issue)
+	ctx, _ := newCtx(t, []fakeResp{{stdout: string(jsonOut)}})
+
+	var gotRepo string
+	cmd := &registerKong{
+		Title: "work",
+		File:  bodyFile,
+		createEpic: func(repoPath, _ string) (string, error) {
+			gotRepo = repoPath
+			return "at-epic-wt", nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotRepo != wtPath {
+		t.Errorf("createEpic called with repo=%q, want worktree fallback %q", gotRepo, wtPath)
+	}
+}

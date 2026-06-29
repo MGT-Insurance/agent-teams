@@ -20,8 +20,9 @@ func RegisterDispatchKong(p *cli.Parser) {
 		launch: launchBGSession,
 	})
 	p.AddVerb("dispatch", "Create a worktree, register an initiative, and optionally launch a DRI session.", &dispatchKong{
-		git:    gitutil.New(),
-		launch: launchBGSession,
+		git:        gitutil.New(),
+		launch:     launchBGSession,
+		createEpic: createEpicInRepo,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
 		launch: launchBGSession,
@@ -74,8 +75,9 @@ func (c *newInitiativeKong) Run(ctx *cli.Context) error {
 // ---- dispatch (kong) --------------------------------------------------------
 
 // dispatchKong is the kong-native form of dispatch.
-// git and launch are injected at registration time; kong:"-" keeps kong from
-// treating them as flags.
+// git, launch, and createEpic are injected at registration time; kong:"-"
+// keeps kong from treating them as flags. Tests stub all three so they never
+// exec a real git/claude/bd binary.
 type dispatchKong struct {
 	Problem    string `name:"problem"     help:"One-line problem statement (required)." required:""`
 	Repo       string `name:"repo"        help:"Target directory to resolve repo from (default: cwd)."`
@@ -85,8 +87,9 @@ type dispatchKong struct {
 	IDOnly     bool   `name:"id-only"     help:"Print only the initiative id."`
 	NoLaunch   bool   `name:"no-launch"   help:"Create worktree and register, but do not launch claude bg session."`
 
-	git    gitRunner  `kong:"-"`
-	launch launchFunc `kong:"-"`
+	git        gitRunner       `kong:"-"`
+	launch     launchFunc      `kong:"-"`
+	createEpic epicCreatorFunc `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -155,6 +158,16 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		"branch: " + resolvedSlug + "\n" +
 		"team: " + team + "\n" +
 		"mode: bg\n"
+
+	// Try to create a root epic bead in the project repo (fail-soft).
+	// repoRoot is already resolved above so no extraction is needed.
+	if c.createEpic != nil {
+		if epicID, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
+			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not create root epic (fail-soft): %v\n", epicErr)
+		} else if epicID != "" {
+			body += "epic: " + epicID + "\n"
+		}
+	}
 
 	if c.BodyFile != "" {
 		extra, err := os.ReadFile(c.BodyFile)

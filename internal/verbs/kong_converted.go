@@ -9,9 +9,11 @@
 package verbs
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 
@@ -47,6 +49,11 @@ func (c *reopenKong) Run(ctx *cli.Context) error {
 type registerKong struct {
 	Title string `name:"title" help:"Initiative title (required)." required:""`
 	File  string `name:"file"  help:"Path to body file (required)."  required:""`
+
+	// createEpic is injected at registration time so tests can substitute a
+	// fake without calling a real bd binary. If nil, epic creation is skipped
+	// (fail-soft default for tests that don't inject it).
+	createEpic epicCreatorFunc `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -57,12 +64,24 @@ func (c *registerKong) Run(ctx *cli.Context) error {
 	if _, err := os.Stat(c.File); err != nil {
 		return cli.Usagef("ateam register: file not found: %s", c.File)
 	}
+
+	// Try to create a root epic in the project repo and append its id to the
+	// body. appendEpicToBody returns the original file path on any failure
+	// (fail-soft) or a temp file path + cleanup when it succeeds.
+	bodyFile := c.File
+	if c.createEpic != nil {
+		if modPath, cleanup := appendEpicToBody(ctx, c.File, c.Title, c.createEpic); cleanup != nil {
+			bodyFile = modPath
+			defer cleanup()
+		}
+	}
+
 	var issue bd.Issue
 	if err := ctx.BD.RunJSON(&issue, "create",
 		"--title="+c.Title,
 		"--type=task",
 		"--priority=2",
-		"--body-file="+c.File,
+		"--body-file="+bodyFile,
 		"--json",
 	); err != nil {
 		return err
@@ -596,13 +615,109 @@ func (c *freshDrainKong) Run(ctx *cli.Context) error {
 	return nil
 }
 
+// ── epic creation helpers ─────────────────────────────────────────────────────
+
+// epicCreatorFunc is the function type for creating a root epic bead in a
+// project repo. Injected into registerKong and dispatchKong so tests can
+// substitute a fake without calling a real bd binary.
+type epicCreatorFunc func(repoPath, title string) (string, error)
+
+// createEpicInRepo creates a root epic bead in the project repo at repoPath
+// and returns its id. It uses exec.Command("bd", "-C", repoPath, ...) directly
+// so it targets the PROJECT repo rather than the global workspace (ctx.BD
+// always targets the global workspace). Returns ("", err) on failure.
+func createEpicInRepo(repoPath, title string) (string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("bd", "-C", repoPath, "create",
+		"--type=epic",
+		"--title="+title,
+		"--priority=2",
+		"--json",
+	)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimRight(stderr.String(), "\n")
+		if msg != "" {
+			return "", fmt.Errorf("bd create epic: %w\n%s", err, msg)
+		}
+		return "", fmt.Errorf("bd create epic: %w", err)
+	}
+	var issue bd.Issue
+	if err := json.Unmarshal(stdout.Bytes(), &issue); err != nil {
+		return "", fmt.Errorf("bd create epic: unmarshal: %w (raw: %.200s)", err, stdout.String())
+	}
+	if issue.ID == "" {
+		return "", fmt.Errorf("bd create epic: returned no id")
+	}
+	return issue.ID, nil
+}
+
+// extractRepoPath scans body for the first "repo: <path>" line and returns the
+// path. Falls back to the first "worktree: <path>" line when no repo: line is
+// present. Returns "" if neither is found.
+func extractRepoPath(body string) string {
+	var worktree string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "repo: ") {
+			v := strings.TrimRight(strings.TrimPrefix(line, "repo: "), " \t\r")
+			if v != "" {
+				return v
+			}
+		}
+		if worktree == "" && strings.HasPrefix(line, "worktree: ") {
+			worktree = strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
+		}
+	}
+	return worktree
+}
+
+// appendEpicToBody reads the file at originalPath, extracts the project repo
+// path from the body, creates a root epic via creator, and returns a new temp
+// file path with "epic: <id>" appended plus a cleanup function to remove it.
+// Returns ("", nil) on any failure so callers fall back to the original file.
+func appendEpicToBody(ctx *cli.Context, originalPath, title string, creator epicCreatorFunc) (string, func()) {
+	bodyBytes, err := os.ReadFile(originalPath)
+	if err != nil {
+		return "", nil
+	}
+	bodyStr := string(bodyBytes)
+	repoPath := extractRepoPath(bodyStr)
+	if repoPath == "" {
+		return "", nil
+	}
+	epicID, epicErr := creator(repoPath, title)
+	if epicErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam register: warning: could not create root epic (fail-soft): %v\n", epicErr)
+		return "", nil
+	}
+	if epicID == "" {
+		return "", nil
+	}
+	modified := strings.TrimRight(bodyStr, "\n") + "\nepic: " + epicID + "\n"
+	tmp, err := os.CreateTemp("", "ateam-register-*")
+	if err != nil {
+		return "", nil
+	}
+	if _, err := tmp.WriteString(modified); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", nil
+	}
+	tmp.Close()
+	tmpPath := tmp.Name()
+	return tmpPath, func() { os.Remove(tmpPath) }
+}
+
 // ── registration helpers ──────────────────────────────────────────────────────
 
 // RegisterWriteKong registers the write-track verbs onto p using native kong
 // structs. cost is NOT registered here — it lives in RegisterCostKong (cost.go).
 func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("reopen", "Reopen a closed initiative.", &reopenKong{})
-	p.AddVerb("register", "Register a new initiative from a body file.", &registerKong{})
+	p.AddVerb("register", "Register a new initiative from a body file.", &registerKong{
+		createEpic: createEpicInRepo,
+	})
 	p.AddVerb("note", "Add a note to an initiative.", &noteKong{})
 	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
