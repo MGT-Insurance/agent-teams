@@ -213,6 +213,14 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("dispatch: bd create returned no id (does this bd support --json on create?)")
 	}
 
+	// Label the root epic with the initiative ID (fail-soft).
+	if epicID := extractEpicID(body); epicID != "" {
+		cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
+		}
+	}
+
 	// 8. Launch background DRI unless --no-launch.
 	if !c.NoLaunch {
 		if err := c.launch(ctx, wtPath, issue.ID); err != nil {
@@ -374,6 +382,17 @@ func worktreePath(description string) string {
 	for _, line := range strings.Split(description, "\n") {
 		if strings.HasPrefix(line, "worktree: ") {
 			return strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
+		}
+	}
+	return ""
+}
+
+// extractEpicID scans body for the first "epic: <id>" line and returns the id.
+// Returns "" if no such line is present.
+func extractEpicID(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "epic: ") {
+			return strings.TrimRight(strings.TrimPrefix(line, "epic: "), " \t\r")
 		}
 	}
 	return ""
