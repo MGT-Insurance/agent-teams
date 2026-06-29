@@ -193,6 +193,31 @@
   margin-left: auto;
 }
 
+.inbox-attach-btn {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.inbox-attach-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.inbox-attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .inbox-row__next-action {
   font-size: 13px;
   color: var(--color-text-muted);

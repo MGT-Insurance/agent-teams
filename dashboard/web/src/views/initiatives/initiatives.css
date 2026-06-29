@@ -389,3 +389,34 @@
   text-align: center;
   flex-shrink: 0;
 }
+
+/* Attach button slot (row-level) */
+.init-row__attach {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.attach-btn--row {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.attach-btn--row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.attach-btn--row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

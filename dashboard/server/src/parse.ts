@@ -419,6 +419,12 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
 
+    // Alive session: status != null (the alive check), and id is the short 8-hex.
+    const sessionId =
+      node.session?.status != null && typeof node.session.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
+        ? node.session.id
+        : undefined;
+
     if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
       items.push({
@@ -430,6 +436,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
+        sessionId,
       });
     } else if (node.needsHuman === "waiting") {
       // Agent waiting on human input: explicit gate:question/human (declared ask).
@@ -448,6 +455,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
+        sessionId,
       });
     } else if (node.needsHuman === "check") {
       // Session waiting/blocked with no explicit gate — soft "check on it" tier.
@@ -460,6 +468,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
+        sessionId,
       });
     } else {
       // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
@@ -472,6 +481,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
+        sessionId,
       });
     }
   }

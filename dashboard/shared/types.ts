@@ -164,6 +164,9 @@ export interface InboxItem {
   // true when initiative.worktree is non-empty and exists on the local filesystem.
   // Derived server-side (dashboard server runs locally); used for the "This machine only" toggle.
   onThisMachine: boolean;
+  // Short 8-hex claude session id, present only when a live session (status != null)
+  // is attached to this initiative. Used by the dashboard to show an attach button.
+  sessionId?: string;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.

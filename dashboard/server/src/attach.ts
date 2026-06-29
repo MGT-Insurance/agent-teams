@@ -3,6 +3,8 @@
 // Returns { ok: true } on success, throws on failure.
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 
 export interface AttachResult {
   ok: true;
@@ -24,17 +26,22 @@ function escapeForAppleScript(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+// Returns true when iTerm2 is installed (system-wide or user-local Applications folder).
+export function isItermInstalled(): boolean {
+  return (
+    existsSync("/Applications/iTerm.app") ||
+    existsSync(`${homedir()}/Applications/iTerm.app`)
+  );
+}
+
 // Launch `claude attach <id>` in a new macOS Terminal window.
-// Prefers iTerm2 if running, falls back to Terminal.app.
+// Prefers iTerm2 if installed, falls back to Terminal.app.
 // Caller MUST validate id with isValidSessionId before calling.
 export function launchAttach(sessionId: string): Promise<AttachResult> {
-  // Use osascript to open a new Terminal window and run the command.
-  // The `do script` command opens a new tab/window in Terminal.app.
   const safe = escapeForAppleScript(sessionId);
-  const script = `tell application "Terminal"
-  do script "claude attach ${safe}"
-  activate
-end tell`;
+  const script = isItermInstalled()
+    ? `tell application "iTerm"\n  create window with default profile command "claude attach ${safe}"\n  activate\nend tell`
+    : `tell application "Terminal"\n  do script "claude attach ${safe}"\n  activate\nend tell`;
 
   return new Promise((resolve, reject) => {
     const proc = spawn("osascript", ["-e", script], {
