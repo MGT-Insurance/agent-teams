@@ -12,6 +12,7 @@
 // The static-serve fallback only activates when dashboard/web/dist/ exists.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -247,6 +248,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         json(res, 200, result);
       } catch (err) {
         json(res, 502, { error: String(err) });
+      }
+      return;
+    }
+
+    // POST /api/initiatives/:id/launch-session
+    if (method === "POST" && sub === "/launch-session") {
+      if (!/^[\w-]+$/.test(id) || id.length > 100) {
+        json(res, 400, { error: "invalid initiative id" });
+        return;
+      }
+      try {
+        const child = spawn("ateam", ["resume", id], { detached: true, stdio: "ignore" });
+        child.unref();
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 500, { error: String(err) });
       }
       return;
     }

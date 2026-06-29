@@ -42,7 +42,7 @@ function InboxAttachButton({ initiativeId, sessionId }: { initiativeId: string; 
       title="attach"
       aria-label="Attach to session"
     >
-      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
+      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "attach"}
     </button>
   );
 }

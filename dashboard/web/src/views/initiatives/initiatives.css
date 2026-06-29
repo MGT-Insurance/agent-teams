@@ -402,8 +402,8 @@
   font-size: 11px;
   font-family: var(--font-mono);
   line-height: 1;
-  background: var(--color-accent-dim);
-  color: var(--color-accent);
+  background: rgba(217, 168, 77, 0.15);
+  color: #d9a84d;
   border: none;
   border-radius: 0 5px 0 3px;
   padding: 3px 5px;
@@ -412,10 +412,33 @@
 }
 
 .attach-btn--row:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+  background: rgba(217, 168, 77, 0.25);
 }
 
 .attach-btn--row:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Launch DRI button — upper-right corner slot, shown when no alive session */
+.init-row__launch {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.launch-btn {
+  font-size: 11px;
+  font-family: monospace;
+  line-height: 1;
+  padding: 3px 5px;
+  border: none;
+  cursor: pointer;
+  border-radius: 0 5px 0 3px;
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+}
+
+.launch-btn:hover {
+  background: rgba(63, 185, 80, 0.25);
 }
