@@ -39,8 +39,11 @@ export function isItermInstalled(): boolean {
 // Caller MUST validate id with isValidSessionId before calling.
 export function launchAttach(sessionId: string): Promise<AttachResult> {
   const safe = escapeForAppleScript(sessionId);
+  // iTerm2: open a window with default profile, then write the command into the
+  // interactive shell via `write text`. Using `command "..."` in the profile spec
+  // bypasses shell profile loading so claude is not on PATH — write text avoids that.
   const script = isItermInstalled()
-    ? `tell application "iTerm"\n  create window with default profile command "claude attach ${safe}"\n  activate\nend tell`
+    ? `tell application "iTerm"\n  set w to (create window with default profile)\n  tell current session of w\n    write text "claude attach ${safe}"\n  end tell\n  activate\nend tell`
     : `tell application "Terminal"\n  do script "claude attach ${safe}"\n  activate\nend tell`;
 
   return new Promise((resolve, reject) => {
