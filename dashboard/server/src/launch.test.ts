@@ -36,7 +36,7 @@ vi.mock("node:child_process", () => ({
 // Dynamic import after mocks are registered so the module picks up the stubs.
 const { launchTerminal } = await import("./launch.js");
 
-const WORKTREE = "/Users/erlloyd/.agent-teams-worktrees/my-initiative";
+const INITIATIVE_ID = "at-test1";
 
 describe("launchTerminal — core paths", () => {
   afterEach(() => {
@@ -44,8 +44,8 @@ describe("launchTerminal — core paths", () => {
   });
 
   it("resolves { ok: true } when osascript exits 0", async () => {
-    vi.mocked(existsSync).mockReturnValue(false); // Terminal.app path
-    const resultP = launchTerminal(WORKTREE);
+    vi.mocked(existsSync).mockReturnValue(false);
+    const resultP = launchTerminal(INITIATIVE_ID);
     currentProc.emit("close", 0);
     const result = await resultP;
     expect(result).toEqual({ ok: true });
@@ -53,7 +53,7 @@ describe("launchTerminal — core paths", () => {
 
   it("rejects when osascript exits non-zero", async () => {
     vi.mocked(existsSync).mockReturnValue(false);
-    const resultP = launchTerminal(WORKTREE);
+    const resultP = launchTerminal(INITIATIVE_ID);
     (currentProc.stderr as EventEmitter).emit("data", Buffer.from("execution error\n"));
     currentProc.emit("close", 1);
     await expect(resultP).rejects.toThrow(/osascript exited with code 1/);
@@ -61,39 +61,36 @@ describe("launchTerminal — core paths", () => {
 
   it("rejects when spawn itself errors (e.g. ENOENT)", async () => {
     vi.mocked(existsSync).mockReturnValue(false);
-    const resultP = launchTerminal(WORKTREE);
+    const resultP = launchTerminal(INITIATIVE_ID);
     currentProc.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
     await expect(resultP).rejects.toThrow(/failed to spawn osascript/);
   });
 
-  it("AppleScript (Terminal.app) contains cd + worktree + claude", async () => {
-    vi.mocked(existsSync).mockReturnValue(false); // no iTerm
-    const resultP = launchTerminal(WORKTREE);
+  it("AppleScript (Terminal.app) contains ateam resume + initiative id", async () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    const resultP = launchTerminal(INITIATIVE_ID);
     currentProc.emit("close", 0);
     await resultP;
-    expect(currentScript).toContain("cd");
-    expect(currentScript).toContain(WORKTREE);
-    expect(currentScript).toContain("claude");
+    expect(currentScript).toContain("ateam resume");
+    expect(currentScript).toContain(INITIATIVE_ID);
     expect(currentScript).toContain("Terminal");
   });
 
-  it("AppleScript (iTerm) contains cd + worktree + claude", async () => {
-    // iTerm is present when existsSync returns true for the iTerm.app path.
+  it("AppleScript (iTerm) contains ateam resume + initiative id", async () => {
     vi.mocked(existsSync).mockImplementation(
       (p) => p === "/Applications/iTerm.app"
     );
-    const resultP = launchTerminal(WORKTREE);
+    const resultP = launchTerminal(INITIATIVE_ID);
     currentProc.emit("close", 0);
     await resultP;
-    expect(currentScript).toContain("cd");
-    expect(currentScript).toContain(WORKTREE);
-    expect(currentScript).toContain("claude");
+    expect(currentScript).toContain("ateam resume");
+    expect(currentScript).toContain(INITIATIVE_ID);
     expect(currentScript).toContain("iTerm");
   });
 
   it("includes stderr in rejection message on non-zero exit", async () => {
     vi.mocked(existsSync).mockReturnValue(false);
-    const resultP = launchTerminal(WORKTREE);
+    const resultP = launchTerminal(INITIATIVE_ID);
     (currentProc.stderr as EventEmitter).emit("data", Buffer.from("AppleScript error -1708\n"));
     currentProc.emit("close", 2);
     await expect(resultP).rejects.toThrow(/AppleScript error -1708/);

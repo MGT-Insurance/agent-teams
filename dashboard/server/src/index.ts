@@ -272,7 +272,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         return;
       }
       try {
-        const result = await launchTerminal(worktree);
+        const result = await launchTerminal(id);
         json(res, 200, result);
       } catch (err) {
         json(res, 502, { error: String(err) });
