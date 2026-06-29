@@ -4,7 +4,7 @@
   --color-surface: #161a1f;
   --color-border: #242830;
   --color-text: #c8cdd5;
-  --color-text-muted: #6b717a;
+  --color-text-muted: #9197a1; /* WCAG AA: 4.5:1+ on bg/surface/inset boxes (agent-teams-o5i1) */
   --color-accent: #4a9eff;
   --color-accent-dim: #1e3a5f;
   --color-ok: #3ecf8e;

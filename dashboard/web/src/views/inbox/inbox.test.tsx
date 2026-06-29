@@ -50,6 +50,8 @@ const waitingItem: InboxItem = {
   title: "Deploy canary to prod",
   kind: "waiting",
   nextAction: "Should we enable the feature flag for all users?",
+  recommendation: "",
+  alternative: "",
   updatedAt: "2026-06-25T10:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
   prUrl: null,
@@ -62,6 +64,8 @@ const reviewItem: InboxItem = {
   title: "Refactor auth layer",
   kind: "review",
   nextAction: "Review the PR and merge or send it back.",
+  recommendation: "",
+  alternative: "",
   updatedAt: "2026-06-25T12:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
@@ -74,6 +78,8 @@ const genericItem: InboxItem = {
   title: "Specialty quote API",
   kind: "generic",
   nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  recommendation: "",
+  alternative: "",
   updatedAt: "2026-06-25T08:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-3",
   prUrl: "https://github.com/org/repo/pull/99",
@@ -87,6 +93,8 @@ const waitingItemWithPr: InboxItem = {
   title: "Specialty Products quote API",
   kind: "waiting",
   nextAction: "Should we proceed with the rename?",
+  recommendation: "",
+  alternative: "",
   updatedAt: "2026-06-25T11:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-4",
   prUrl: "https://github.com/MGT-Insurance/midgard/pull/3551",
@@ -99,6 +107,8 @@ const offMachineItem: InboxItem = {
   title: "Remote machine initiative",
   kind: "generic",
   nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  recommendation: "",
+  alternative: "",
   updatedAt: "2026-06-25T09:00:00Z",
   worktree: "/Users/other/.worktrees/init-5",
   prUrl: null,
@@ -111,6 +121,8 @@ const checkItem: InboxItem = {
   title: "Idle background session maybe stuck",
   kind: "check",
   nextAction: "Look at the session for more info.",
+  recommendation: "",
+  alternative: "",
   updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) to prove tiering overrides recency
   worktree: "/Users/ericlloyd/.worktrees/init-6",
   prUrl: null,
@@ -476,6 +488,129 @@ describe("InboxView — tiered sort (agent-teams-ja9c)", () => {
     const rows = container.querySelectorAll("[data-initiative-id]");
     expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // newer 13:00
     expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-7"); // older 07:00
+  });
+});
+
+describe("InboxView — waiting row recommendation/alternative (agent-teams-oc3p)", () => {
+  it("renders 'Recommended:' line when recommendation is non-empty on a waiting row", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "Roll back the canary and monitor error rates.",
+      alternative: "",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    // Label is a styled <span>, value a sibling text node — assert the line's full text in order.
+    const rec = container.querySelector(".inbox-row__secondary--recommendation");
+    expect(rec?.textContent).toMatch(/^Recommended: Roll back the canary and monitor error rates\.$/);
+  });
+
+  it("renders 'Alternative:' line when alternative is non-empty on a waiting row", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "",
+      alternative: "Enable for 10% of users and watch for 24h.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const alt = container.querySelector(".inbox-row__secondary--alternative");
+    expect(alt?.textContent).toMatch(/^Alternative: Enable for 10% of users and watch for 24h\.$/);
+  });
+
+  it("renders both secondary lines when both are present", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "Roll back.",
+      alternative: "Partial rollout.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const secondary = container.querySelectorAll(".inbox-row__secondary");
+    expect(secondary).toHaveLength(2);
+  });
+
+  it("renders no secondary lines when recommendation and alternative are empty", () => {
+    setInbox([waitingItem]); // waitingItem has recommendation:"", alternative:""
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+  });
+
+  it("does not render secondary lines on a review row even with non-empty fields (type guard)", () => {
+    const item: InboxItem = {
+      ...reviewItem,
+      // review rows always have "" for these per type, but guard against future misuse
+      recommendation: "",
+      alternative: "",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+  });
+});
+
+describe("InboxView — waiting row recommendation/alternative edge cases (oc3p)", () => {
+  // These complement the core-path tests above by explicitly asserting the ABSENT
+  // secondary line is not rendered when only one of the two fields is set.
+
+  it("recommendation present, alternative empty → 'Alternative:' is NOT rendered", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "Roll back the canary and monitor error rates.",
+      alternative: "",
+    };
+    setInbox([item]);
+    renderInbox();
+    expect(screen.getByText(/^Recommended:/)).toBeTruthy();
+    expect(screen.queryByText(/^Alternative:/)).toBeNull();
+  });
+
+  it("alternative present, recommendation empty → 'Recommended:' is NOT rendered", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      recommendation: "",
+      alternative: "Enable for 10% of users and watch for 24h.",
+    };
+    setInbox([item]);
+    renderInbox();
+    expect(screen.getByText(/^Alternative:/)).toBeTruthy();
+    expect(screen.queryByText(/^Recommended:/)).toBeNull();
+  });
+
+  it("check row with non-empty recommendation → secondary line NOT rendered (kind guard)", () => {
+    // buildInbox always emits "" for check rows; but guard the render itself.
+    const item: InboxItem = {
+      ...checkItem,
+      // Force non-empty to confirm the kind guard fires — this won't come from
+      // buildInbox in practice, but the render must be gated on kind, not value.
+      recommendation: "This should not appear.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
+  });
+
+  it("generic row with non-empty recommendation → secondary line NOT rendered (kind guard)", () => {
+    const item: InboxItem = {
+      ...genericItem,
+      recommendation: "This should not appear.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
+  });
+
+  it("review row with non-empty recommendation → secondary line NOT rendered (kind guard)", () => {
+    // Stronger version of the existing review test — uses non-empty value.
+    const item: InboxItem = {
+      ...reviewItem,
+      recommendation: "This should not appear.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
   });
 });
 

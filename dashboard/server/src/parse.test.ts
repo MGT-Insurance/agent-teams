@@ -1090,7 +1090,7 @@ describe("extractLatestAsk", () => {
 
   it("parses decision from a well-formed block", () => {
     const notes = "<<<ateam-ask\ndecision: Should we deploy now?\n>>>";
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?", recommendation: "", alternative: "" });
   });
 
   it("returns the LAST valid block when multiple blocks are present", () => {
@@ -1103,7 +1103,7 @@ describe("extractLatestAsk", () => {
       "decision: Second question.",
       ">>>",
     ].join("\n");
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question." });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question.", recommendation: "", alternative: "" });
   });
 
   it("skips an unclosed block at end of notes, keeps the last valid closed block", () => {
@@ -1116,7 +1116,7 @@ describe("extractLatestAsk", () => {
       "<<<ateam-ask",
       "decision: Unclosed — no close marker follows.",
     ].join("\n");
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block." });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block.", recommendation: "", alternative: "" });
   });
 
   it("skips blocks with empty decision", () => {
@@ -1127,7 +1127,29 @@ describe("extractLatestAsk", () => {
   it("ignores >>> embedded in prose (must be line-anchored)", () => {
     const notes = "<<<ateam-ask\ndecision: X or >>> something\n>>>";
     // The inline >>> in the decision value is prose; the real close is on its own line.
-    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something", recommendation: "", alternative: "" });
+  });
+
+  it("parses recommendation and alternative when present", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we roll back?",
+      "recommendation: Yes — error rate is above 5%.",
+      "alternative: Partial rollback to 10% traffic.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({
+      decision: "Should we roll back?",
+      recommendation: "Yes — error rate is above 5%.",
+      alternative: "Partial rollback to 10% traffic.",
+    });
+  });
+
+  it("returns empty strings for recommendation/alternative when fields are absent", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+    expect(result?.alternative).toBe("");
   });
 });
 
@@ -1228,6 +1250,87 @@ describe("buildInbox — updatedAt and nextAction", () => {
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
+// ---- buildInbox: recommendation/alternative passthrough (agent-teams-oc3p) ----
+
+describe("buildInbox — recommendation and alternative", () => {
+  function makeWaitingInit(notes: string): ParsedInitiative {
+    return {
+      id: "w-rec",
+      title: "Rec test",
+      description: "worktree: /wt/w-rec",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/w-rec",
+      branch: "w-rec",
+      team: "t-w-rec",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+    };
+  }
+
+  it("waiting item carries recommendation and alternative from ask block", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Ship or hold?",
+      "recommendation: Ship — tests are green.",
+      "alternative: Hold 24h and rerun perf suite.",
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toBe("Ship — tests are green.");
+    expect(inbox[0]?.alternative).toBe("Hold 24h and rerun perf suite.");
+  });
+
+  it("waiting item has empty recommendation/alternative when ask block omits them", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toBe("");
+    expect(inbox[0]?.alternative).toBe("");
+  });
+
+  it("non-waiting items always have empty recommendation/alternative", () => {
+    const reviewInit: ParsedInitiative = {
+      id: "rv",
+      title: "Review init",
+      description: "worktree: /wt/rv",
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/rv",
+      branch: "rv",
+      team: "t-rv",
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels: ["gate:review"],
+    };
+    const nodes = buildInitiativeNodes([reviewInit], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("review");
+    expect(inbox[0]?.recommendation).toBe("");
+    expect(inbox[0]?.alternative).toBe("");
   });
 });
 
@@ -1511,5 +1614,218 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.kind).toBe("waiting");
+  });
+});
+
+// ---- extractLatestAsk: edge cases (agent-teams-oc3p) -------------------------
+//
+// Core-path tests (basic parsing, last-valid-wins for decision, unclosed blocks)
+// are in the earlier extractLatestAsk describe block.  This block covers the
+// non-happy paths specific to recommendation/alternative handling.
+
+describe("extractLatestAsk — recommendation/alternative edge cases (oc3p)", () => {
+  // 1. decision: key present but value blank → entire block is invalid (returns null).
+  //    Distinct from the existing "no decision key" test: here the key exists, value
+  //    is the empty string after trim.
+  it("block with blank decision: value (key present, value empty) → null (block invalid)", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision:   ",
+      "recommendation: Do the thing.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  // 2. recommendation: key present but value blank → recommendation == "" (not undefined).
+  it("blank recommendation: line (key present, value empty after trim) → recommendation == ''", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we proceed?",
+      "recommendation:  ",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+  });
+
+  // 3. recommendation present, alternative ABSENT → alternative == "".
+  it("recommendation present, alternative absent → alternative is empty string", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      "recommendation: Yes — metrics look good.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("Yes — metrics look good.");
+    expect(result?.alternative).toBe("");
+  });
+
+  // 4. alternative present, recommendation ABSENT → recommendation == "".
+  it("alternative present, recommendation absent → recommendation is empty string", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      "alternative: Wait 24h and rerun perf suite.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+    expect(result?.alternative).toBe("Wait 24h and rerun perf suite.");
+  });
+
+  // 5. Multiple blocks: last-valid-wins applies to recommendation too.
+  //    First block has a recommendation; second block has valid decision but no recommendation.
+  //    The SECOND block wins — its empty recommendation replaces the first block's.
+  it("last block wins: second valid block has no recommendation → recommendation == ''", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: First question.",
+      "recommendation: First rec.",
+      ">>>",
+      "some prose between blocks",
+      "<<<ateam-ask",
+      "decision: Second question.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.decision).toBe("Second question.");
+    expect(result?.recommendation).toBe("");
+  });
+
+  // 6. Whitespace trimming: extra leading/trailing spaces in recommendation value are stripped.
+  it("trims whitespace from recommendation value", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Do it?",
+      "recommendation:   Lots of leading spaces.   ",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("Lots of leading spaces.");
+  });
+
+  // 7. recommendation value containing a "decision:"-like substring must NOT
+  //    cross-contaminate the parsed decision field.
+  it("embedded 'decision:' substring in recommendation value does not cross-contaminate", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Override or not?",
+      "recommendation: The decision: to act was already made.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    // decision field must not pick up the "decision:" inside the recommendation value.
+    expect(result?.decision).toBe("Override or not?");
+    expect(result?.recommendation).toBe("The decision: to act was already made.");
+  });
+
+  // 8. Unclosed block with recommendation present and NO prior closed block → null.
+  //    The unclosed block is skipped entirely; there is nothing valid to return.
+  it("unclosed block with recommendation only (no prior closed block) → null", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Open question.",
+      "recommendation: Open rec.",
+      // deliberately NO >>>
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  // 9. Unclosed block with recommendation comes AFTER a closed valid block.
+  //    The unclosed block is skipped; the closed block is returned.
+  //    (Mirrors the existing "skips unclosed block at end" test but asserts recommendation
+  //    of the closed block is preserved, not contaminated by the unclosed one.)
+  it("unclosed block after valid closed block → closed block's recommendation preserved", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Closed question.",
+      "recommendation: Closed rec.",
+      ">>>",
+      "some prose",
+      "<<<ateam-ask",
+      "decision: Unclosed — different rec.",
+      "recommendation: Unclosed rec — must not appear.",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.decision).toBe("Closed question.");
+    expect(result?.recommendation).toBe("Closed rec.");
+  });
+});
+
+// ---- buildInbox: recommendation/alternative 120-char cap (agent-teams-oc3p) ----
+//
+// buildInbox slices recommendation and alternative to 120 chars before putting
+// them in the InboxItem.
+
+describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => {
+  function makeWaitingInitWithNotes(notes: string): ParsedInitiative {
+    return {
+      id: "cap-test",
+      title: "Cap test",
+      description: "worktree: /wt/cap-test",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/cap-test",
+      branch: "cap-test",
+      team: "t-cap-test",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+    };
+  }
+
+  it("recommendation longer than 120 chars is capped at 120", () => {
+    const longRec = "R".repeat(150);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we?",
+      `recommendation: ${longRec}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toHaveLength(120);
+    expect(inbox[0]?.recommendation).toBe(longRec.slice(0, 120));
+  });
+
+  it("alternative longer than 120 chars is capped at 120", () => {
+    const longAlt = "A".repeat(200);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      `alternative: ${longAlt}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.alternative).toHaveLength(120);
+    expect(inbox[0]?.alternative).toBe(longAlt.slice(0, 120));
+  });
+
+  it("values exactly 120 chars are not truncated", () => {
+    const exactly120 = "X".repeat(120);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Go?",
+      `recommendation: ${exactly120}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toHaveLength(120);
+    expect(inbox[0]?.recommendation).toBe(exactly120);
   });
 });
