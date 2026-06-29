@@ -23,6 +23,9 @@ bd close <id>         # Complete work
 bd dolt push          # Push beads data to remote
 ```
 
+**Initiative work: always use `--parent <epicId>`.**
+All work beads for an initiative live under the initiative's root epic. The DRI provides the epic id in the spawn prompt. Use `bd create --parent <epicId>` for every work bead — task beads, discovery beads, test beads. Never create bare top-level beads for initiative work.
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
