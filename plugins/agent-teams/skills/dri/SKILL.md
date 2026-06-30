@@ -81,7 +81,21 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files; spawn agents to investigate (often a planner). This triage — not just the planned beads — is how the team converges on a PR that actually solves the problem.
 - **Verify, don't trust:** check every agent claim against artifacts (`bd show`, `git log`, read the diff) before acting on it. Proactively inspect in-progress foundational work — do not wait for completion reports on anything other tracks depend on. Expect crossed messages: idle does not mean done; "fixed" means nothing until you see the commit.
 
-**LOOP CLOSED checkpoint (required before opening any enhancement ring):** LOOP CLOSED = the loop-closing bead set is fully merged into the integration branch AND a verified end-to-end exercise of the new code passes on that branch (real run, not just unit tests — the smallest path that proves the feature works, hardcoded values/stubs/deferred edges permitted). Only after the loop is closed does the DRI open enhancement rings: unblock the gated enhancement beads and resume the plan/execute cycle for ring N. Before loop closure, the DRI drives ONLY the loop-closing set.
+**LOOP CLOSED checkpoint (required before opening any enhancement ring):** LOOP CLOSED = the loop-closing bead set is fully merged into the integration branch AND a verified end-to-end exercise of the new code passes on that branch. Unit tests and typecheck are NECESSARY but NOT SUFFICIENT. "I ran the tests and they pass" is explicitly NOT loop closure for any change with observable behavior.
+
+**Live verification procedure (mandatory before declaring loop closed):**
+
+1. If the tester's worktree does not yet have live env provisioned, run `ateam worktree-setup <tester-worktree-path>` first.
+2. Spawn an `agent-teams:tester` agent with explicit instructions to perform live verification of the loop-closing feature on the integration branch. Specify the verification type based on what changed:
+   - **Web/UI changes:** Playwright MCP is REQUIRED — the tester must drive the real UI.
+   - **API changes:** hit the endpoint and verify the response body.
+   - **CLI changes:** run the command and verify the output.
+3. The tester reports pass or fail with evidence (screenshot, response body, or command output).
+4. Act on the result — the loop is NOT closed until the tester confirms pass.
+
+The CODE may use hardcoded values/stubs/deferred edges — that is permitted. The VERIFICATION step may not be skipped or substituted with automated test results.
+
+Only after the loop is closed does the DRI open enhancement rings: unblock the gated enhancement beads and resume the plan/execute cycle for ring N. Before loop closure, the DRI drives ONLY the loop-closing set.
 
 ## Phase 5 — Deliver
 
