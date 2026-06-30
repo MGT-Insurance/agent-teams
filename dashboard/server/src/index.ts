@@ -18,7 +18,7 @@ import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
-import { CliError, claudeAgentsJson, bdWorkBeads, bdEpicSubtree, spawnClaudeLogs } from "./cli.js";
+import { CliError, claudeAgentsJson, bdLabeledBeads, spawnClaudeLogs } from "./cli.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
@@ -284,16 +284,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         const agentsRaw = await claudeAgentsJson();
         const allSessions = parseClaudeAgents(agentsRaw);
 
-        // When the initiative has a root epic, filter to that epic's subtree;
-        // fall back to all-beads for legacy initiatives that have no epic field.
+        // Fetch all beads labeled with this initiative's id.
         let workBeads: WorkBead[] = [];
         if (initiative.repo) {
           try {
-            if (initiative.epic) {
-              workBeads = await bdEpicSubtree(initiative.repo, initiative.epic);
-            } else {
-              workBeads = parseBdList(await bdWorkBeads(initiative.repo));
-            }
+            workBeads = parseBdList(await bdLabeledBeads(initiative.repo, initiative.id));
           } catch (err) {
             console.error(`[drill-in] bd work beads error for ${id}: ${(err as Error).message}`);
           }
