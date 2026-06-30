@@ -292,7 +292,8 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	// Verify argv structure:
 	// dispatch --repo <clone> --problem <title> --body-file <path>
 	//          --launch-prompt "/agent-teams:review-pr {id}" --skip-epic
-	if len(call) < 10 {
+	//          --model sonnet
+	if len(call) < 12 {
 		t.Fatalf("runner call too short (%d args): %v", len(call), call)
 	}
 	if call[0] != "dispatch" {
@@ -323,6 +324,12 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 	if call[9] != "--skip-epic" {
 		t.Errorf("call[9]: got %q, want \"--skip-epic\"", call[9])
+	}
+	if call[10] != "--model" {
+		t.Errorf("call[10]: got %q, want \"--model\"", call[10])
+	}
+	if call[11] != "sonnet" {
+		t.Errorf("call[11] (model value): got %q, want \"sonnet\"", call[11])
 	}
 
 	// Confirmation line must appear in stdout.

@@ -89,6 +89,7 @@ type dispatchKong struct {
 	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch claude bg session."`
 	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
+	Model        string `name:"model"         help:"Model override for bg session (default: opus)."`
 
 	git        gitRunner       `kong:"-"`
 	launch     launchFunc      `kong:"-"`
@@ -235,7 +236,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			// Custom prompt path: substitute {id} and bypass c.launch (which
 			// would prepend /dri).
 			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
-			if err := c.launchRaw(ctx, wtPath, prompt); err != nil {
+			if err := c.launchRaw(ctx, wtPath, prompt, c.Model); err != nil {
 				return fmt.Errorf("dispatch: launch: %w", err)
 			}
 		} else {
@@ -358,13 +359,17 @@ func bgSessionEnv() []string {
 
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background session launch. prompt is the raw positional argument passed to
-// claude (e.g. "/dri at-abc123" or a custom skill invocation). Extracted so
-// tests can assert the argv without executing the command.
-func bgSessionArgs(name, prompt string) []string {
+// claude (e.g. "/dri at-abc123" or a custom skill invocation). model overrides
+// the default "opus" model when non-empty. Extracted so tests can assert the
+// argv without executing the command.
+func bgSessionArgs(name, prompt, model string) []string {
+	if model == "" {
+		model = "opus"
+	}
 	return []string{
 		"--bg",
 		"-n", name,
-		"--model", "opus",
+		"--model", model,
 		"--permission-mode", "bypassPermissions",
 		"--append-system-prompt", memoryRoutingRule,
 		prompt,
@@ -377,19 +382,21 @@ func bgSessionArgs(name, prompt string) []string {
 type launchFunc func(ctx *cli.Context, dir, driArg string) error
 
 // rawLaunchFunc is the function type for launching a background session with a
-// custom raw prompt (no /dri prefix is added). Used by the --launch-prompt path
-// in dispatchKong; injected by tests to avoid exec-ing a real claude binary.
-type rawLaunchFunc func(ctx *cli.Context, dir, prompt string) error
+// custom raw prompt (no /dri prefix is added) and an optional model override.
+// Used by the --launch-prompt path in dispatchKong; injected by tests to avoid
+// exec-ing a real claude binary.
+type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model string) error
 
 // rawLaunchBGSession launches a background claude session with an arbitrary
-// prompt (no /dri prefix). Shared by the --launch-prompt production path and
-// tests (via injection into dispatchKong.launchRaw).
-func rawLaunchBGSession(ctx *cli.Context, dir, prompt string) error {
+// prompt (no /dri prefix). model overrides the default "opus" model when
+// non-empty. Shared by the --launch-prompt production path and tests (via
+// injection into dispatchKong.launchRaw).
+func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt)
+	args := bgSessionArgs(name, prompt, model)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Env = bgSessionEnv()
@@ -402,9 +409,9 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt string) error {
 }
 
 // launchBGSession launches a background DRI session: prepends "/dri " to
-// driArg and delegates to rawLaunchBGSession.
+// driArg and delegates to rawLaunchBGSession with the default model (opus).
 func launchBGSession(ctx *cli.Context, dir, driArg string) error {
-	return rawLaunchBGSession(ctx, dir, "/dri "+driArg)
+	return rawLaunchBGSession(ctx, dir, "/dri "+driArg, "")
 }
 
 // printWatchControl writes the standard "Watch and control" block to w.
