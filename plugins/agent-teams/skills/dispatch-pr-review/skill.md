@@ -8,7 +8,7 @@ You dispatch a background review session for a single PR; you do not perform the
 Use this when:
 
 - A human wants to kick off a PR review without tying up this session.
-- A DRI or dispatcher wants to send a review to a background session from the terminal.
+- A dispatcher wants to send a review to a background session from the terminal.
 
 For webhook-triggered reviews (CI/GitHub Actions), `ateam route-pr-event` handles the same flow programmatically — this skill is the human-facing equivalent.
 
