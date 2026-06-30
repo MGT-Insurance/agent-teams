@@ -646,10 +646,11 @@ describe("buildInbox", () => {
     expect(inbox).toHaveLength(0);
   });
 
-  it("does not include merged initiatives (needsHuman=false for merged)", () => {
+  it("does not include merged initiatives (needsHuman=false for merged when worktree exists)", () => {
     const done = { ...parseInitiative(RAW_AT_V4E), status: "done" };
-    const nodes = buildInitiativeNodes([done], sessions, new Set(["at-v4e"]));
-    // merged overrides gate: needsHuman=false
+    // Pass existsFn=true: worktree is still present (normal merged, not a zombie).
+    const nodes = buildInitiativeNodes([done], sessions, new Set(["at-v4e"]), () => true);
+    // merged + worktree exists: needsHuman=false (reap only fires when worktree is GONE)
     expect(nodes[0]?.needsHuman).toBe(false);
     const inbox = buildInbox(nodes);
     expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
@@ -908,6 +909,23 @@ describe("deriveNeedsHuman", () => {
   it("merged + WAITING -> false (done wins over waiting)", () => {
     expect(deriveNeedsHuman("merged", "waiting", null)).toBe(false);
   });
+
+  // reap rows (agent-teams-d10b.2): zombie = merged + worktree gone + session alive
+  it("merged + !worktreeExists + alive session (idle) -> 'reap'", () => {
+    expect(deriveNeedsHuman("merged", "ended", null, false)).toBe("reap");
+  });
+
+  it("merged + !worktreeExists + session working -> 'reap'", () => {
+    expect(deriveNeedsHuman("merged", "working", null, false)).toBe("reap");
+  });
+
+  it("merged + worktreeExists TRUE + alive session -> false (not a zombie)", () => {
+    expect(deriveNeedsHuman("merged", "ended", null, true)).toBe(false);
+  });
+
+  it("merged + !worktreeExists + signal='none' (no session) -> false (nothing to reap)", () => {
+    expect(deriveNeedsHuman("merged", "none", null, false)).toBe(false);
+  });
 });
 
 // ---- buildInitiativeNodes: new two-dimension fields (agent-teams-3e6) -------
@@ -954,7 +972,8 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
 
   it("delivery is merged when initiative status is closed", () => {
     const closed = { ...parseInitiative(RAW_AT_V4E), status: "closed" };
-    const nodes = buildInitiativeNodes([closed], sessions, new Set());
+    // Pass existsFn=true: worktree still present (normal merged, not zombie).
+    const nodes = buildInitiativeNodes([closed], sessions, new Set(), () => true);
     expect(nodes[0]?.delivery).toBe("merged");
     expect(nodes[0]?.needsHuman).toBe(false);
   });
@@ -1061,10 +1080,11 @@ describe("attention state: spec-required scenarios", () => {
     expect(nodes[0]?.activity).toBe("idle");
   });
 
-  it("done initiative -> needsHuman=false regardless of session", () => {
+  it("done initiative -> needsHuman=false when worktree still exists", () => {
     const init = makeInit("done-1", true, "closed");
     const sess = makeSession("/wt/done-1", "waiting", "blocked");
-    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    // Pass existsFn=true: worktree present (normal merged, not zombie).
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => true);
     expect(nodes[0]?.needsHuman).toBe(false);
     expect(nodes[0]?.activity).toBe("done");
   });
@@ -1663,6 +1683,87 @@ describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
 
     const inbox = buildInbox(nodes);
     expect(inbox.some((i) => i.initiativeId === "at-closed")).toBe(false);
+  });
+});
+
+// ---- reap flavor (agent-teams-d10b.2) ----------------------------------------
+//
+// Zombie = merged initiative + worktree gone (!worktreeExists) + alive session.
+// deriveNeedsHuman should return "reap"; buildInbox should emit kind="reap" with
+// the constant nextAction and the short sessionId when the session id is 8-hex.
+
+describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
+  function makeClosedInit(id: string, worktree: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status: "closed",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-29",
+      updated_at: "2026-06-29",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      epic: null,
+    };
+  }
+
+  function makeAliveSession(worktree: string, status: "idle" | "busy" | "waiting", shortId: string): SessionState {
+    return {
+      id: shortId,
+      sessionId: `${shortId}-0000-0000-0000-000000000000`,
+      kind: "background",
+      cwd: worktree,
+      startedAt: 0,
+      status,
+    };
+  }
+
+  it("merged + !worktreeExists + alive session -> needsHuman='reap'", () => {
+    const init = makeClosedInit("reap-1", "/wt/reap-1");
+    const sess = makeAliveSession("/wt/reap-1", "idle", "ab12cd34");
+    // existsFn returns false (worktree gone)
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
+    expect(nodes[0]?.needsHuman).toBe("reap");
+  });
+
+  it("merged + !worktreeExists + alive session -> buildInbox emits kind='reap' with sessionId", () => {
+    const init = makeClosedInit("reap-2", "/wt/reap-2");
+    const sess = makeAliveSession("/wt/reap-2", "idle", "ab12cd34");
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.kind).toBe("reap");
+    expect(inbox[0]?.nextAction).toBe("Session still running after teardown — stop it to reap it.");
+    expect(inbox[0]?.sessionId).toBe("ab12cd34");
+  });
+
+  it("merged + worktreeExists TRUE + alive session -> needsHuman=false (not a zombie)", () => {
+    const init = makeClosedInit("reap-3", "/wt/reap-3");
+    const sess = makeAliveSession("/wt/reap-3", "idle", "ab12cd34");
+    // existsFn returns true (worktree still present)
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => true);
+    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
+  });
+
+  it("merged + !worktreeExists + NO matched session (signal='none') -> needsHuman=false", () => {
+    const init = makeClosedInit("reap-4", "/wt/reap-4");
+    // No session passed — nothing to reap
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => false);
+    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
   });
 });
 
