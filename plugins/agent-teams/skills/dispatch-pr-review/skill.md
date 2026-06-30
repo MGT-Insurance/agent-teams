@@ -81,10 +81,11 @@ ateam dispatch \
   --problem "Review PR #<pr-number> (<owner>/<repo>)" \
   --body-file "$TMPFILE" \
   --launch-prompt "/agent-teams:review-pr {id}" \
-  --skip-epic
+  --skip-epic \
+  --model sonnet
 ```
 
-`--skip-epic` prevents the review initiative from being grouped under an epic. `--launch-prompt` causes the background session to run the `review-pr` skill instead of the full `/dri` playbook.
+`--skip-epic` prevents the review initiative from being grouped under an epic. `--launch-prompt` causes the background session to run the `review-pr` skill instead of the full `/dri` playbook. `--model sonnet` overrides the default Opus model — PR reviews don't need the top-tier model.
 
 ### 5. Report and hand off
 
