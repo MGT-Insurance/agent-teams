@@ -100,6 +100,27 @@ const deadSession: SessionState = {
   state: "done",
 };
 
+// Alive session with a valid short 8-hex id — attach should be offered.
+const aliveWithId: SessionState = {
+  id: "ab12cd34", // valid 8-hex
+  cwd: "/wt/init-1",
+  kind: "background",
+  startedAt: 0,
+  sessionId: "ab12cd34-0000-0000-0000-000000000000",
+  status: "busy",
+  state: "working",
+};
+
+// Detached session (no status) with a valid short 8-hex id — attach should still be offered.
+const detachedWithId: SessionState = {
+  id: "ff00aa11", // valid 8-hex
+  cwd: "/wt/init-1",
+  kind: "background",
+  startedAt: 0,
+  sessionId: "ff00aa11-0000-0000-0000-000000000000",
+  // No `status` — session is detached (process exited, lingers in agent list).
+};
+
 function makeNode(over: Partial<InitiativeNode> = {}, init: Partial<ParsedInitiative> = {}): InitiativeNode {
   return {
     initiative: makeInitiative(init),
@@ -605,5 +626,48 @@ describe("LaunchButton — edge cases", () => {
     });
     expect(screen.getByRole("button", { name: "launch" })).toBeTruthy();
     expect(screen.queryByText(/exited with code/i)).toBeNull();
+  });
+});
+
+describe("InitiativesView — launch vs attach button (agent-teams-u9f2)", () => {
+  // Helper: query for the attach or launch button inside a specific row.
+  function getRowButton(rowTitle: RegExp, btnLabel: RegExp) {
+    return within(screen.getByRole("button", { name: rowTitle })).queryByRole("button", { name: btnLabel });
+  }
+
+  it("offers Attach when the session is alive and has a valid 8-hex id", () => {
+    setInitiatives([makeNode({ session: aliveWithId, worktreeExists: true }, { id: "a1", title: "AliveWithId" })]);
+    renderView();
+    expect(getRowButton(/alivewithid/i, /attach/i)).toBeTruthy();
+    expect(getRowButton(/alivewithid/i, /launch/i)).toBeNull();
+  });
+
+  it("offers Attach when the session is detached (no status) but has a valid 8-hex id", () => {
+    setInitiatives([makeNode({ session: detachedWithId, worktreeExists: true }, { id: "d1", title: "DetachedWithId" })]);
+    renderView();
+    expect(getRowButton(/detachedwithid/i, /attach/i)).toBeTruthy();
+    expect(getRowButton(/detachedwithid/i, /launch/i)).toBeNull();
+  });
+
+  it("offers Launch (not Attach) when no session entry exists but worktree is on machine", () => {
+    setInitiatives([makeNode({ session: null, worktreeExists: true }, { id: "n1", title: "NoSession" })]);
+    renderView();
+    expect(getRowButton(/nosession/i, /launch/i)).toBeTruthy();
+    expect(getRowButton(/nosession/i, /attach/i)).toBeNull();
+  });
+
+  it("offers Launch when the session has no valid 8-hex id and worktree is on machine", () => {
+    // deadSession has no `id` field at all -> no attach id -> fall through to Launch.
+    setInitiatives([makeNode({ session: deadSession, worktreeExists: true }, { id: "nd", title: "NoId" })]);
+    renderView();
+    expect(getRowButton(/noid/i, /launch/i)).toBeTruthy();
+    expect(getRowButton(/noid/i, /attach/i)).toBeNull();
+  });
+
+  it("offers neither button when no valid session id and worktree is not on machine", () => {
+    setInitiatives([makeNode({ session: null, worktreeExists: false }, { id: "x1", title: "OffMachine" })]);
+    renderView();
+    expect(getRowButton(/offmachine/i, /attach/i)).toBeNull();
+    expect(getRowButton(/offmachine/i, /launch/i)).toBeNull();
   });
 });

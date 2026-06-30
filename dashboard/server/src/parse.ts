@@ -437,9 +437,10 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
 
-    // Alive session: status != null (the alive check), and id is the short 8-hex.
+    // Any matched entry with a valid short 8-hex id is attachable via `claude attach <id>`,
+    // regardless of whether the session is alive (status present) or detached (status absent).
     const sessionId =
-      node.session?.status != null && typeof node.session.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
+      typeof node.session?.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
         ? node.session.id
         : undefined;
 

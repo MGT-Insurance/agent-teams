@@ -113,6 +113,18 @@ const ENDED_SESSION: SessionState = {
   state: "stopped",
 };
 
+// Process has exited and status is absent — session lingers in `claude agents --all`
+// as a detached entry. Still attachable via `claude attach <id>`.
+const DETACHED_SESSION: SessionState = {
+  id: "deadbeef", // valid 8-hex — used for claude attach
+  cwd: "/wt/detached-initiative",
+  kind: "background",
+  startedAt: 1781400000002,
+  sessionId: "deadbeef-0000-0000-0000-000000000000",
+  name: "detached-initiative",
+  // No status — process exited, session no longer live.
+};
+
 // ---- extractPrUrl -----------------------------------------------------------
 
 describe("extractPrUrl", () => {
@@ -641,6 +653,74 @@ describe("buildInbox", () => {
     expect(nodes[0]?.needsHuman).toBe(false);
     const inbox = buildInbox(nodes);
     expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
+  });
+});
+
+// ---- buildInbox: sessionId on detached sessions (agent-teams-u9f2) -----------
+//
+// A detached session (status absent, lingers in `claude agents --all`) still
+// carries a short 8-hex id and is attachable via `claude attach <id>`.
+// The inbox must expose that id so the dashboard can offer Attach instead of Launch.
+
+describe("buildInbox — sessionId for detached/alive sessions (agent-teams-u9f2)", () => {
+  function makeDetachedInit(): ParsedInitiative {
+    return {
+      id: "at-detached",
+      title: "Detached initiative",
+      description: `worktree: ${DETACHED_SESSION.cwd}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: DETACHED_SESSION.cwd,
+      branch: "at-detached",
+      team: "t-x",
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/99",
+      labels: ["gate:review"],
+      epic: null,
+    };
+  }
+
+  it("sessionId is set from a detached session (no status) with a valid 8-hex id", () => {
+    const nodes = buildInitiativeNodes([makeDetachedInit()], [DETACHED_SESSION], new Set());
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-detached");
+    expect(item).toBeDefined();
+    expect(item?.sessionId).toBe("deadbeef");
+  });
+
+  it("sessionId is set from an alive session (status present) with a valid 8-hex id", () => {
+    const aliveSession: SessionState = {
+      ...DETACHED_SESSION,
+      id: "deadbeef",
+      status: "idle",
+      state: "stopped",
+    };
+    const nodes = buildInitiativeNodes([makeDetachedInit()], [aliveSession], new Set());
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-detached");
+    expect(item?.sessionId).toBe("deadbeef");
+  });
+
+  it("sessionId is undefined when session has no id field", () => {
+    const noIdSession: SessionState = {
+      cwd: DETACHED_SESSION.cwd,
+      kind: "background",
+      startedAt: 0,
+      sessionId: "deadbeef-0000-0000-0000-000000000000",
+      // No `id` field.
+    };
+    const nodes = buildInitiativeNodes([makeDetachedInit()], [noIdSession], new Set());
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-detached");
+    expect(item?.sessionId).toBeUndefined();
   });
 });
 

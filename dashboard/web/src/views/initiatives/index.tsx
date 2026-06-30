@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { InitiativeNode } from "@agent-teams/shared";
+import type { InitiativeNode, SessionState } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import { attachToInitiative, launchSession } from "../../lib/api.js";
 import "./initiatives.css";
@@ -52,6 +52,15 @@ function sessionKind(node: InitiativeNode): "alive" | "dead" | "none" {
 // completed — it stays visible with a row alert until the session is reaped.
 function isCompleted(node: InitiativeNode): boolean {
   return isClosed(node) && sessionKind(node) === "none";
+}
+
+// Returns the short 8-hex session id if the session carries a valid attachable id,
+// undefined otherwise. A valid id means `claude attach <id>` should work regardless
+// of whether the session is alive (status present) or detached (status absent).
+// Reserve Launch only for when there is NO matched entry at all.
+function sessionAttachId(session: SessionState | null | undefined): string | undefined {
+  const id = session?.id;
+  return typeof id === "string" && /^[0-9a-f]{8}$/.test(id) ? id : undefined;
 }
 
 // Row alert — an anomaly where action should be taken, ranked by urgency.
@@ -251,6 +260,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
   const sess = sessionChip(node);
   const alert = rowAlert(node);
   const info = alertInfo(node);
+  const attachId = sessionAttachId(node.session);
 
   function handleRowClick() {
     navigate(`/initiative/${initiative.id}`);
@@ -335,8 +345,8 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
-      {sessionKind(node) === "alive" && node.session?.id ? (
-        <RowAttachButton initiativeId={initiative.id} sessionId={node.session.id} />
+      {attachId ? (
+        <RowAttachButton initiativeId={initiative.id} sessionId={attachId} />
       ) : node.worktreeExists && !isClosed(node) ? (
         <LaunchButton initiativeId={initiative.id} />
       ) : null}
