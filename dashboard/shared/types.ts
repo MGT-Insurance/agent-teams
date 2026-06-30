@@ -172,8 +172,9 @@ export interface InboxItem {
   // true when initiative.worktree is non-empty and exists on the local filesystem.
   // Derived server-side (dashboard server runs locally); used for the "This machine only" toggle.
   onThisMachine: boolean;
-  // Short 8-hex claude session id, present only when a live session (status != null)
-  // is attached to this initiative. Used by the dashboard to show an attach button.
+  // Short 8-hex claude session id from any matched entry (alive or detached).
+  // A valid id means `claude attach <id>` should work regardless of session liveness.
+  // Absent when no matched session entry carries a valid 8-hex id.
   sessionId?: string;
 }
 
