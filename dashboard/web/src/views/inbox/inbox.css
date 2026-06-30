@@ -189,11 +189,14 @@
   text-decoration: underline;
 }
 
-/* Action slot — literal upper-right corner, out of flex flow */
+/* Action slot — in-flow flex item */
 .inbox-row__action-slot {
-  position: absolute;
-  top: 0;
-  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  min-height: 24px;
 }
 
 .inbox-attach-btn {
@@ -203,8 +206,8 @@
   background: rgba(217, 168, 77, 0.15);
   color: #d9a84d;
   border: none;
-  border-radius: 0 5px 0 3px;
-  padding: 3px 5px;
+  border-radius: 4px;
+  padding: 4px 6px;
   cursor: pointer;
   transition: background 0.15s;
 }
