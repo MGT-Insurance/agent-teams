@@ -3,14 +3,17 @@ import { useNavigate } from "react-router-dom";
 import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import { attachToInitiative } from "../../lib/api.js";
+import { StopButton } from "../../components/StopButton.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
+// reap:    zombie — closed initiative, worktree gone, session still alive. Stop it.
 // review:  AUTHORITATIVE gate:review label; "review the PR".
 // waiting: explicit gate:question/human; agent declared a blocking question.
 // generic: delivered + no explicit gate; graceful degrade, no specific action asserted.
 // check:   session waiting/blocked but no declared gate; softer "check on it" tier.
 function rowBadgeLabel(kind: InboxItem["kind"]): string {
+  if (kind === "reap") return "reap";
   if (kind === "review") return "review the PR";
   if (kind === "waiting") return "agent waiting";
   if (kind === "check") return "check on it";
@@ -143,8 +146,8 @@ export default function InboxView() {
   // Filter BEFORE sort (spec: filter then sort).
   const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine) : inbox;
 
-  // Tiered sort: real items (review, waiting, generic) above check items; recency desc within tier.
-  const tierRank: Record<InboxItem["kind"], number> = { review: 0, waiting: 1, generic: 2, check: 3 };
+  // Tiered sort: review first, then reap zombies (just-below review), then waiting/generic/check; recency desc within tier.
+  const tierRank: Record<InboxItem["kind"], number> = { review: 0, reap: 1, waiting: 2, generic: 3, check: 4 };
   const sorted = [...filtered].sort((a, b) => {
     const tierDiff = tierRank[a.kind] - tierRank[b.kind];
     if (tierDiff !== 0) return tierDiff;
@@ -189,7 +192,9 @@ export default function InboxView() {
               <InboxRow
                 item={item}
                 actionSlot={
-                  item.sessionId ? (
+                  item.kind === "reap" && item.sessionId ? (
+                    <StopButton initiativeId={item.initiativeId} sessionId={item.sessionId} />
+                  ) : item.sessionId ? (
                     <InboxAttachButton initiativeId={item.initiativeId} sessionId={item.sessionId} />
                   ) : undefined
                 }
