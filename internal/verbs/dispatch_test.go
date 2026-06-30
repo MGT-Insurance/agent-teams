@@ -692,7 +692,7 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123")
+	args := bgSessionArgs("my-session", "at-abc123", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical memoryRoutingRule const.
@@ -726,7 +726,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
 	// caller (launchBGSession), not by bgSessionArgs itself.
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs(name, prompt)
+	args := bgSessionArgs(name, prompt, "")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -769,6 +769,49 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	last := args[len(args)-1]
 	if last != prompt {
 		t.Errorf("last argv element = %q, want %q", last, prompt)
+	}
+}
+
+// TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
+// replaces the "opus" default in the --model flag.
+func TestBGSessionArgs_ModelOverride(t *testing.T) {
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet")
+
+	found := false
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			if args[i+1] != "sonnet" {
+				t.Errorf("--model value = %q, want %q", args[i+1], "sonnet")
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --model flag; got: %v", args)
+	}
+	// The default "opus" must NOT appear anywhere when overridden.
+	for _, a := range args {
+		if a == "opus" {
+			t.Errorf("argv should not contain default \"opus\" when model override is set; got: %v", args)
+		}
+	}
+}
+
+// TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
+// argument falls back to the "opus" default.
+func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
+	args := bgSessionArgs("my-session", "/some-prompt", "")
+
+	found := false
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) && args[i+1] == "opus" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --model opus pair for empty override; got: %v", args)
 	}
 }
 
@@ -1178,7 +1221,7 @@ func TestDispatch_LaunchPrompt(t *testing.T) {
 		LaunchPrompt: "/review-skill at-lp1",
 		git:          fg,
 		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, p string) error {
+		launchRaw: func(_ *cli.Context, _, p, _ string) error {
 			capturedPrompt = p
 			return nil
 		},
@@ -1222,7 +1265,7 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 		LaunchPrompt: "/review {id}",
 		git:          fg,
 		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, p string) error {
+		launchRaw: func(_ *cli.Context, _, p, _ string) error {
 			capturedPrompt = p
 			return nil
 		},
@@ -1236,6 +1279,45 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 	want := "/review at-sub1"
 	if capturedPrompt != want {
 		t.Errorf("prompt = %q, want %q ({id} must be substituted with initiative id)", capturedPrompt, want)
+	}
+}
+
+// TestDispatch_LaunchPrompt_ModelOverride verifies that --model is threaded
+// through to c.launchRaw alongside the substituted --launch-prompt.
+func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-model1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedModel string
+	cmd := &dispatchKong{
+		Problem:      "Review with sonnet",
+		Repo:         repoDir,
+		LaunchPrompt: "/review {id}",
+		Model:        "sonnet",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, _, m string) error {
+			capturedModel = m
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedModel != "sonnet" {
+		t.Errorf("launchRaw model = %q, want %q", capturedModel, "sonnet")
 	}
 }
 
