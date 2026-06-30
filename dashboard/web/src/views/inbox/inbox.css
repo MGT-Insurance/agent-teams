@@ -98,7 +98,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px 16px;
+  padding: 14px 32px 14px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -189,36 +189,11 @@
   text-decoration: underline;
 }
 
-/* Action slot — in-flow flex item */
+/* Action slot — upper-right corner, flush with the card edge */
 .inbox-row__action-slot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 28px;
-  min-height: 24px;
-}
-
-.inbox-attach-btn {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  line-height: 1;
-  background: rgba(217, 168, 77, 0.15);
-  color: #d9a84d;
-  border: none;
-  border-radius: 4px;
-  padding: 4px 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.inbox-attach-btn:hover:not(:disabled) {
-  background: rgba(217, 168, 77, 0.25);
-}
-
-.inbox-attach-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  position: absolute;
+  top: -5px;
+  right: -1px;
 }
 
 .inbox-row__next-action {

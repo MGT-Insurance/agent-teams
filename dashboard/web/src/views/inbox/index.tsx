@@ -39,10 +39,10 @@ function InboxAttachButton({ initiativeId, sessionId }: { initiativeId: string; 
 
   return (
     <button
-      className="inbox-attach-btn"
+      className="attach-btn--row"
       onClick={(e) => { void handleClick(e); }}
       disabled={state === "pending"}
-      title="attach"
+      title="Attach to session"
       aria-label="Attach to session"
     >
       {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}

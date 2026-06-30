@@ -126,8 +126,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 12px 32px 12px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -181,12 +181,15 @@
    The slot is always present (empty on non-alerted rows) at a fixed width so
    the signals column to its left holds the same position on every row. */
 .init-row__info {
-  position: relative;
+  position: absolute;
+  bottom: 0;
+  right: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
   width: 16px;
+  height: 16px;
+  margin: 4px;
   color: var(--color-warn);
 }
 
@@ -391,84 +394,13 @@
   flex-shrink: 0;
 }
 
-/* Action button slot — always present for consistent flex spacing */
+/* Action button — upper-right corner, flush with the card edge */
 .init-row__action {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 28px;
-  min-height: 24px;
+  position: absolute;
+  top: -5px;
+  right: -1px;
 }
 
-.attach-btn--row {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  line-height: 1;
-  background: rgba(217, 168, 77, 0.15);
-  color: #d9a84d;
-  border: none;
-  border-radius: 4px;
-  padding: 4px 6px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.attach-btn--row:hover:not(:disabled) {
-  background: rgba(217, 168, 77, 0.25);
-}
-
-.attach-btn--row:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.stop-btn {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  line-height: 1;
-  padding: 4px 6px;
-  border: none;
-  cursor: pointer;
-  border-radius: 4px;
-  background: rgba(248, 81, 73, 0.15);
-  color: #f85149;
-}
-
-.stop-btn:hover:not(:disabled) {
-  background: rgba(248, 81, 73, 0.25);
-}
-
-.stop-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.launch-btn {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  line-height: 1;
-  padding: 4px 6px;
-  border: none;
-  cursor: pointer;
-  border-radius: 4px;
-  background: rgba(63, 185, 80, 0.15);
-  color: #3fb950;
-}
-
-.launch-btn:hover {
-  background: rgba(63, 185, 80, 0.25);
-}
-
-.launch-btn--err {
-  background: rgba(248, 81, 73, 0.15);
-  color: #f85149;
-}
-
-.launch-btn--err:hover {
-  background: rgba(248, 81, 73, 0.25);
-}
 
 .launch-btn__err-msg {
   position: absolute;
