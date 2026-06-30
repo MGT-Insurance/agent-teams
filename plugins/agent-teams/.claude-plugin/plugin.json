@@ -1,6 +1,6 @@
 {
   "name": "agent-teams",
-  "version": "0.35.1",
+  "version": "0.36.0",
   "description": "DRI-led agent teams: the /dri playbook, four role agents, a global learning workspace and initiative registry. Hard-requires beads (bd).",
   "author": { "name": "Eric Lloyd" }
 }

@@ -735,6 +735,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	}{
 		{"--bg", ""},
 		{"-n", name},
+		{"--model", "opus"},
 		{"--permission-mode", "bypassPermissions"},
 	}
 	for _, c := range checks {
