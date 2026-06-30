@@ -391,11 +391,15 @@
   flex-shrink: 0;
 }
 
-/* Attach icon button — literal upper-right corner, out of flex flow */
-.init-row__attach {
-  position: absolute;
-  top: 0;
-  right: 0;
+/* Action button slot — always present for consistent flex spacing */
+.init-row__action {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  min-height: 24px;
 }
 
 .attach-btn--row {
@@ -405,8 +409,8 @@
   background: rgba(217, 168, 77, 0.15);
   color: #d9a84d;
   border: none;
-  border-radius: 0 5px 0 3px;
-  padding: 3px 5px;
+  border-radius: 4px;
+  padding: 4px 6px;
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -420,21 +424,35 @@
   cursor: not-allowed;
 }
 
-/* Launch DRI button — upper-right corner slot, shown when no alive session */
-.init-row__launch {
-  position: absolute;
-  top: 0;
-  right: 0;
+.stop-btn {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1;
+  padding: 4px 6px;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.25);
+}
+
+.stop-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .launch-btn {
   font-size: 11px;
-  font-family: monospace;
+  font-family: var(--font-mono);
   line-height: 1;
-  padding: 3px 5px;
+  padding: 4px 6px;
   border: none;
   cursor: pointer;
-  border-radius: 0 5px 0 3px;
+  border-radius: 4px;
   background: rgba(63, 185, 80, 0.15);
   color: #3fb950;
 }
@@ -452,8 +470,6 @@
   background: rgba(248, 81, 73, 0.25);
 }
 
-/* Brief inline error hint — appears below the ✗ button, truncated so it
-   doesn't break the row layout. Full message is on the button's title. */
 .launch-btn__err-msg {
   position: absolute;
   right: 0;
@@ -469,5 +485,5 @@
   background: var(--color-bg, #0d1117);
   padding: 2px 5px;
   border: 1px solid rgba(248, 81, 73, 0.35);
-  border-radius: 0 0 3px 3px;
+  border-radius: 3px;
 }
