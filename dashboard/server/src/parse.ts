@@ -198,6 +198,7 @@ export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKi
 
 // Derive needsHuman with flavor (agent-teams-0rl: explicit gate takes priority).
 // Truth table:
+//   merged + !worktreeExists + signal=working|waiting -> "reap" (zombie: worktree gone, session ALIVE)
 //   merged                            -> false (done)
 //   explicit gate == "review"         -> "review"  (AUTHORITATIVE; wins over session)
 //   explicit gate == "question"       -> "waiting" (agent asking a question)
@@ -209,12 +210,15 @@ export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKi
 //
 // KEY CHANGE (agent-teams-0rl): "review" flavor comes ONLY from explicit gate:review label.
 // KEY CHANGE (agent-teams-ja9c): session-only waiting/blocked with NO gate -> "check" (soft tier).
+// KEY CHANGE (agent-teams-d10b.2): reap row — zombie detection (merged, worktree gone, session alive).
 // Gate checks come BEFORE signal check — gate:question wins over a blocked session.
 export function deriveNeedsHuman(
   delivery: DeliveryStatus,
   signal: SessionSignal,
   gate: ExplicitGateKind | null,
+  worktreeExists: boolean = true,
 ): false | NeedsHumanFlavor {
+  if (delivery === "merged" && !worktreeExists && (signal === "working" || signal === "waiting")) return "reap";
   if (delivery === "merged") return false;
   // Explicit gate:review -> AUTHORITATIVE review signal (wins over everything).
   if (gate === "review") return "review";
@@ -326,7 +330,7 @@ export function buildInitiativeNodes(
       // Two-dimension state model fields (agent-teams-blo).
       const delivery = deriveDelivery(initiative);
       const signal = deriveSessionSignal(session);
-      const needsHuman = deriveNeedsHuman(delivery, signal, gate);
+      const needsHuman = deriveNeedsHuman(delivery, signal, gate, worktreeExists);
 
       return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount };
     } catch (err) {
@@ -422,6 +426,7 @@ export function extractLatestAsk(notes: string): { decision: string; recommendat
 
 // Build InboxItem[] from already-built InitiativeNode[].
 // An item is in the inbox iff node.needsHuman !== false.
+//   needsHuman="reap"    -> zombie (at-asi): merged + worktree gone + alive session (stop to reap)
 //   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
 //   needsHuman="waiting" -> explicit gate:question/human (declared ask; may have ask block)
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
@@ -444,7 +449,22 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         ? node.session.id
         : undefined;
 
-    if (node.needsHuman === "review") {
+    if (node.needsHuman === "reap") {
+      // Zombie: merged initiative, worktree gone, but session is still alive.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "reap",
+        nextAction: "Session still running after teardown — stop it to reap it.",
+        recommendation: "",
+        alternative: "",
+        updatedAt: initiative.updated_at,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+      });
+    } else if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
       items.push({
         initiativeId: initiative.id,

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { InitiativeNode, SessionState } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import { attachToInitiative, launchSession } from "../../lib/api.js";
+import { StopButton } from "../../components/StopButton.js";
 import "./initiatives.css";
 
 // Persist a boolean toggle to localStorage (no server). Reads on init, writes on
@@ -65,13 +66,15 @@ function sessionAttachId(session: SessionState | null | undefined): string | und
 
 // Row alert — an anomaly where action should be taken, ranked by urgency.
 // null = no alert. Urgency (most→least): urgent {open+none+on-machine (stalled),
-// closed+dead (reap it)} > med {closed+alive (close it)} > low {open+dead+
-// on-machine (session died)}. Off-machine open cases aren't locally actionable,
-// so they don't alert.
+// closed+dead (reap it), reap zombie} > med {closed+alive (close it)} > low
+// {open+dead+on-machine (session died)}. Off-machine open cases aren't locally
+// actionable, so they don't alert.
 type AlertLevel = "urgent" | "med" | "low";
 function rowAlert(node: InitiativeNode): AlertLevel | null {
   // Multiple session entries on one worktree is a conflict — wins over the rest.
   if (node.sessionCount > 1) return "urgent";
+  // Reap zombie: closed, worktree gone, session alive — wins over the generic closed+alive "med" case.
+  if (node.needsHuman === "reap") return "urgent";
   const kind = sessionKind(node);
   const onMachine = node.worktreeExists;
   if (isClosed(node)) {
@@ -91,6 +94,12 @@ function alertInfo(node: InitiativeNode): { reason: string; action: string } | n
     return {
       reason: `${node.sessionCount} sessions are attached to this worktree — a conflict.`,
       action: "Stop the extras (claude stop) — only one session should run per worktree.",
+    };
+  // Reap zombie wins over the generic closed+alive case — check it first.
+  if (node.needsHuman === "reap")
+    return {
+      reason: "Closed and the worktree is gone, but a session is still running — a zombie.",
+      action: "Stop the session (claude stop) to reap it.",
     };
   const kind = sessionKind(node);
   const onMachine = node.worktreeExists;
@@ -345,7 +354,15 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
-      {attachId ? (
+      {node.needsHuman === "reap" && node.session?.id ? (
+        <span className="init-row__attach">
+          <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
+        </span>
+      ) : isClosed(node) && node.session?.id ? (
+        <span className="init-row__attach">
+          <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
+        </span>
+      ) : attachId ? (
         <RowAttachButton initiativeId={initiative.id} sessionId={attachId} />
       ) : node.worktreeExists && !isClosed(node) ? (
         <LaunchButton initiativeId={initiative.id} />
@@ -395,8 +412,10 @@ export default function InitiativesView() {
 
   const q = query.trim().toLowerCase();
   const filtered = initiatives.filter((node) => {
-    if (!showCompleted && isCompleted(node)) return false;
-    if (onlyOnMachine && !node.worktreeExists) return false;
+    // Reap zombies are always visible — bypass BOTH the showCompleted and onlyOnMachine filters.
+    const forceShow = node.needsHuman === "reap";
+    if (!forceShow && !showCompleted && isCompleted(node)) return false;
+    if (!forceShow && onlyOnMachine && !node.worktreeExists) return false;
     if (q === "") return true;
     const { id, title } = node.initiative;
     return id.toLowerCase().includes(q) || title.toLowerCase().includes(q);

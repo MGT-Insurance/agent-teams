@@ -5,6 +5,7 @@
 //   GET  /api/initiatives/:id                 -> DrillInDetail
 //   GET  /api/initiatives/:id/logs?session=   -> raw claude logs bytes (chunked)
 //   POST /api/initiatives/:id/attach          -> { ok: true } (macOS terminal)
+//   POST /api/initiatives/:id/stop-session    -> { ok: true } (shells claude stop)
 //   POST /api/initiatives/:id/launch-session  -> { ok: true } | { error }
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
@@ -25,6 +26,7 @@ import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
 import { launchAttach, isValidSessionId } from "./attach.js";
+import { launchStop } from "./stop.js";
 import { buildSnapshot } from "./snapshot.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4823", 10);
@@ -247,6 +249,47 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
       try {
         const result = await launchAttach(sessionId);
+        json(res, 200, result);
+      } catch (err) {
+        json(res, 502, { error: String(err) });
+      }
+      return;
+    }
+
+    // POST /api/initiatives/:id/stop-session
+    if (method === "POST" && sub === "/stop-session") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch (err) {
+        const status = (err as { code?: number }).code === 413 ? 413 : 400;
+        json(res, status, { error: status === 413 ? "request body too large" : "could not read request body" });
+        return;
+      }
+
+      let sessionId: string;
+      try {
+        const parsed: unknown = JSON.parse(body);
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          typeof (parsed as Record<string, unknown>)["sessionId"] !== "string"
+        ) {
+          throw new Error("missing sessionId");
+        }
+        sessionId = (parsed as { sessionId: string }).sessionId;
+      } catch {
+        json(res, 400, { error: "body must be { sessionId: string }" });
+        return;
+      }
+
+      if (!isValidSessionId(sessionId)) {
+        json(res, 400, { error: "invalid session id" });
+        return;
+      }
+
+      try {
+        const result = await launchStop(sessionId);
         json(res, 200, result);
       } catch (err) {
         json(res, 502, { error: String(err) });
