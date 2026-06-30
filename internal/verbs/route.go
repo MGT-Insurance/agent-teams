@@ -84,9 +84,10 @@ func RegisterRouteEventKong(p *cli.Parser) {
 // path via a config file at <ctx.Home>/review-repos/<repo-key>, where
 // repo-key = Slugify(basename(event.Repo)). If the config file is absent,
 // it logs a skip message and returns nil. If configured, it writes a temp
-// file containing review instructions and invokes the ateamRunner with:
+// file containing structured PR metadata and invokes the ateamRunner with:
 //
-//	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile>
+//	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile> \
+//	         --launch-prompt "/agent-teams:review-pr {id}" --skip-epic
 //
 // Registration (one-time, out of band):
 //
@@ -111,39 +112,21 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	}
 	clonePath := strings.TrimSpace(string(data))
 
-	// Build the review title and instruction body.
+	// Build the review title.
 	title := fmt.Sprintf("Review PR #%d (%s)", event.PRNumber, event.Repo)
 
-	var sb strings.Builder
-	sb.WriteString("You are reviewing an EXISTING pull request — you are NOT building a feature ")
-	sb.WriteString("and you must NOT open a new PR.\n\n")
-	sb.WriteString(fmt.Sprintf("You are in a fresh worktree of %s.\n\n", event.Repo))
-	sb.WriteString("Steps:\n")
-	sb.WriteString(fmt.Sprintf("(1) Run `gh pr checkout %d` to get the PR's code locally.\n", event.PRNumber))
-	sb.WriteString(fmt.Sprintf("(2) Read the full diff: `gh pr diff %d`\n", event.PRNumber))
-	sb.WriteString("(3) Read the surrounding code as needed.\n")
-	sb.WriteString("(4) Review for correctness, tests, edge cases, and security.\n")
-	sb.WriteString("(5) Post your review. Comment rules:\n")
-	sb.WriteString("    - NO nit comments. Skip style/preference/trivia entirely — post only\n")
-	sb.WriteString("      substantive findings (correctness, tests, edge cases, security).\n")
-	sb.WriteString("    - Post each finding as an INLINE comment anchored to its line, NOT one\n")
-	sb.WriteString("      big block comment. Create the review in a single API call with a\n")
-	sb.WriteString("      comments array, one entry per finding:\n")
-	sb.WriteString(fmt.Sprintf("        gh api repos/%s/pulls/%d/reviews --method POST \\\n", event.Repo, event.PRNumber))
-	sb.WriteString("          -f event=COMMENT -f body=\"<one-sentence summary>\" \\\n")
-	sb.WriteString("          -F 'comments[][path]=FILE' -F 'comments[][line]=N' -F 'comments[][body]=...' ...\n")
-	sb.WriteString("    - The review body is ONE final comment: a single sentence summarizing the\n")
-	sb.WriteString("      outcome. No long block summary.\n\n")
-	sb.WriteString("If the worktree needs a live env to run/build, run `ateam worktree-setup <this-worktree-abs-path>`.\n\n")
-	sb.WriteString("Do NOT open a PR.\n")
-	sb.WriteString("Do NOT raise a merge/review gate for your own work.\n")
-	sb.WriteString("Your deliverable is the posted review on PR #" + fmt.Sprintf("%d", event.PRNumber) + ".\n")
-	if event.PRURL != "" {
-		sb.WriteString("\nPR URL: " + event.PRURL + "\n")
+	// Build structured metadata body parseable by the review-pr skill.
+	prURL := event.PRURL
+	if prURL == "" {
+		prURL = fmt.Sprintf("https://github.com/%s/pull/%d", event.Repo, event.PRNumber)
 	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("pr-number: %d\n", event.PRNumber))
+	sb.WriteString(fmt.Sprintf("pr-repo: %s\n", event.Repo))
+	sb.WriteString(fmt.Sprintf("pr-url: %s\n", prURL))
 
-	// Write the instruction body to a temp file.
-	tmpFile, err := os.CreateTemp("", "review-instructions-*.txt")
+	// Write the metadata to a temp file.
+	tmpFile, err := os.CreateTemp("", "review-metadata-*.txt")
 	if err != nil {
 		return fmt.Errorf("route-pr-event: review-spawn: create temp file: %w", err)
 	}
@@ -155,8 +138,10 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	}
 	tmpFile.Close()
 
-	// Invoke dispatch via the runner.
-	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath)
+	// Invoke dispatch via the runner with --launch-prompt and --skip-epic so the
+	// lightweight /agent-teams:review-pr skill runs instead of a full DRI.
+	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath,
+		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic")
 	// Clean up temp file after the runner returns (dispatch has already read it).
 	os.Remove(tmpPath)
 

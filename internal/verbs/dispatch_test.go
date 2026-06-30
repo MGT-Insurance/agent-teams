@@ -723,8 +723,10 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 
 func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	name := "my-session"
-	driArg := "at-abc123"
-	args := bgSessionArgs(name, driArg)
+	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
+	// caller (launchBGSession), not by bgSessionArgs itself.
+	prompt := "/dri at-abc123"
+	args := bgSessionArgs(name, prompt)
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -761,11 +763,11 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 		}
 	}
 
-	// Positional /dri arg must be last.
+	// Prompt must be the last element exactly as passed (bgSessionArgs does not
+	// add any /dri prefix; that is the caller's responsibility).
 	last := args[len(args)-1]
-	wantLast := "/dri " + driArg
-	if last != wantLast {
-		t.Errorf("last argv element = %q, want %q", last, wantLast)
+	if last != prompt {
+		t.Errorf("last argv element = %q, want %q", last, prompt)
 	}
 }
 
@@ -1104,6 +1106,135 @@ func TestBGSessionEnv_PreservesOtherVars(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("bgSessionEnv() dropped unrelated env var %q", want)
+	}
+}
+
+// ── dispatch: --skip-epic ─────────────────────────────────────────────────────
+
+// TestDispatch_SkipEpic verifies that when --skip-epic is set, createEpic is
+// never called (even when it is injected).
+func TestDispatch_SkipEpic(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-se1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	epicCalled := false
+	cmd := &dispatchKong{
+		Problem:  "Skip epic test",
+		Repo:     repoDir,
+		NoLaunch: true,
+		SkipEpic: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		createEpic: func(_, _ string) (string, error) {
+			epicCalled = true
+			return "at-should-not-be-created", nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if epicCalled {
+		t.Errorf("createEpic must not be called when --skip-epic is set")
+	}
+}
+
+// ── dispatch: --launch-prompt ─────────────────────────────────────────────────
+
+// TestDispatch_LaunchPrompt verifies that when --launch-prompt is set, the bg
+// session receives the custom prompt verbatim (not /dri <id>).
+func TestDispatch_LaunchPrompt(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-lp1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedPrompt string
+	cmd := &dispatchKong{
+		Problem:      "Do a review",
+		Repo:         repoDir,
+		LaunchPrompt: "/review-skill at-lp1",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, p string) error {
+			capturedPrompt = p
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Prompt must be the LaunchPrompt verbatim (static, no {id} in this test).
+	if capturedPrompt != "/review-skill at-lp1" {
+		t.Errorf("bg session prompt = %q, want %q", capturedPrompt, "/review-skill at-lp1")
+	}
+	// Must NOT be the default /dri prefix.
+	if strings.HasPrefix(capturedPrompt, "/dri ") {
+		t.Errorf("bg session must not use /dri prefix when --launch-prompt is set: %q", capturedPrompt)
+	}
+}
+
+// TestDispatch_LaunchPrompt_Substitution verifies that {id} in --launch-prompt
+// is replaced with the actual initiative id returned by bd create.
+func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-sub1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedPrompt string
+	cmd := &dispatchKong{
+		Problem:      "Substitution test",
+		Repo:         repoDir,
+		LaunchPrompt: "/review {id}",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, p string) error {
+			capturedPrompt = p
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// {id} must be replaced with the actual initiative id.
+	want := "/review at-sub1"
+	if capturedPrompt != want {
+		t.Errorf("prompt = %q, want %q ({id} must be substituted with initiative id)", capturedPrompt, want)
 	}
 }
 

@@ -22,6 +22,7 @@ func RegisterDispatchKong(p *cli.Parser) {
 	p.AddVerb("dispatch", "Create a worktree, register an initiative, and optionally launch a DRI session.", &dispatchKong{
 		git:        gitutil.New(),
 		launch:     launchBGSession,
+		launchRaw:  rawLaunchBGSession,
 		createEpic: createEpicInRepo,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
@@ -75,21 +76,24 @@ func (c *newInitiativeKong) Run(ctx *cli.Context) error {
 // ---- dispatch (kong) --------------------------------------------------------
 
 // dispatchKong is the kong-native form of dispatch.
-// git, launch, and createEpic are injected at registration time; kong:"-"
-// keeps kong from treating them as flags. Tests stub all three so they never
-// exec a real git/claude/bd binary.
+// git, launch, createEpic, and launchRaw are injected at registration time;
+// kong:"-" keeps kong from treating them as flags. Tests stub all four so they
+// never exec a real git/claude/bd binary.
 type dispatchKong struct {
-	Problem    string `name:"problem"     help:"One-line problem statement (required)." required:""`
-	Repo       string `name:"repo"        help:"Target directory to resolve repo from (default: cwd)."`
-	BaseBranch string `name:"base-branch" help:"Override base branch (default: detected)."`
-	Slug       string `name:"slug"        help:"Kebab-case slug (default: derived from --problem)."`
-	BodyFile   string `name:"body-file"   help:"Path to file whose content is appended to the initiative body after schema lines."`
-	IDOnly     bool   `name:"id-only"     help:"Print only the initiative id."`
-	NoLaunch   bool   `name:"no-launch"   help:"Create worktree and register, but do not launch claude bg session."`
+	Problem      string `name:"problem"       help:"One-line problem statement (required)." required:""`
+	Repo         string `name:"repo"          help:"Target directory to resolve repo from (default: cwd)."`
+	BaseBranch   string `name:"base-branch"   help:"Override base branch (default: detected)."`
+	Slug         string `name:"slug"          help:"Kebab-case slug (default: derived from --problem)."`
+	BodyFile     string `name:"body-file"     help:"Path to file whose content is appended to the initiative body after schema lines."`
+	IDOnly       bool   `name:"id-only"       help:"Print only the initiative id."`
+	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch claude bg session."`
+	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
+	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
 
 	git        gitRunner       `kong:"-"`
 	launch     launchFunc      `kong:"-"`
 	createEpic epicCreatorFunc `kong:"-"`
+	launchRaw  rawLaunchFunc   `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -161,7 +165,8 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 
 	// Try to create a root epic bead in the project repo (fail-soft).
 	// repoRoot is already resolved above so no extraction is needed.
-	if c.createEpic != nil {
+	// Skipped when --skip-epic is set.
+	if !c.SkipEpic && c.createEpic != nil {
 		if epicID, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
 			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not create root epic (fail-soft): %v\n", epicErr)
 		} else if epicID != "" {
@@ -214,17 +219,29 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	}
 
 	// Label the root epic with the initiative ID (fail-soft).
-	if epicID := extractEpicID(body); epicID != "" {
-		cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
+	// Skipped when --skip-epic is set.
+	if !c.SkipEpic {
+		if epicID := extractEpicID(body); epicID != "" {
+			cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
+			if err := cmd.Run(); err != nil {
+				fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
+			}
 		}
 	}
 
 	// 8. Launch background DRI unless --no-launch.
 	if !c.NoLaunch {
-		if err := c.launch(ctx, wtPath, issue.ID); err != nil {
-			return fmt.Errorf("dispatch: launch: %w", err)
+		if c.LaunchPrompt != "" {
+			// Custom prompt path: substitute {id} and bypass c.launch (which
+			// would prepend /dri).
+			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
+			if err := c.launchRaw(ctx, wtPath, prompt); err != nil {
+				return fmt.Errorf("dispatch: launch: %w", err)
+			}
+		} else {
+			if err := c.launch(ctx, wtPath, issue.ID); err != nil {
+				return fmt.Errorf("dispatch: launch: %w", err)
+			}
 		}
 	}
 
@@ -340,15 +357,16 @@ func bgSessionEnv() []string {
 }
 
 // bgSessionArgs returns the argv slice (everything after "claude") for a
-// background DRI launch. Extracted so tests can assert the argv without
-// executing the command.
-func bgSessionArgs(name, driArg string) []string {
+// background session launch. prompt is the raw positional argument passed to
+// claude (e.g. "/dri at-abc123" or a custom skill invocation). Extracted so
+// tests can assert the argv without executing the command.
+func bgSessionArgs(name, prompt string) []string {
 	return []string{
 		"--bg",
 		"-n", name,
 		"--permission-mode", "bypassPermissions",
 		"--append-system-prompt", memoryRoutingRule,
-		"/dri " + driArg,
+		prompt,
 	}
 }
 
@@ -357,16 +375,20 @@ func bgSessionArgs(name, driArg string) []string {
 // can substitute a fake without touching a package global.
 type launchFunc func(ctx *cli.Context, dir, driArg string) error
 
-// launchBGSession checks for claude, derives the session name from dir's
-// basename, and launches: claude --bg -n <name> --permission-mode
-// bypassPermissions --append-system-prompt <memoryRoutingRule> "/dri <driArg>"
-// with Dir set to dir.
-func launchBGSession(ctx *cli.Context, dir, driArg string) error {
+// rawLaunchFunc is the function type for launching a background session with a
+// custom raw prompt (no /dri prefix is added). Used by the --launch-prompt path
+// in dispatchKong; injected by tests to avoid exec-ing a real claude binary.
+type rawLaunchFunc func(ctx *cli.Context, dir, prompt string) error
+
+// rawLaunchBGSession launches a background claude session with an arbitrary
+// prompt (no /dri prefix). Shared by the --launch-prompt production path and
+// tests (via injection into dispatchKong.launchRaw).
+func rawLaunchBGSession(ctx *cli.Context, dir, prompt string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, driArg)
+	args := bgSessionArgs(name, prompt)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Env = bgSessionEnv()
@@ -376,6 +398,12 @@ func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 		return fmt.Errorf("claude --bg: %w", err)
 	}
 	return nil
+}
+
+// launchBGSession launches a background DRI session: prepends "/dri " to
+// driArg and delegates to rawLaunchBGSession.
+func launchBGSession(ctx *cli.Context, dir, driArg string) error {
+	return rawLaunchBGSession(ctx, dir, "/dri "+driArg)
 }
 
 // printWatchControl writes the standard "Watch and control" block to w.

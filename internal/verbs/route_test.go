@@ -253,8 +253,8 @@ func TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips(t *testing.T) {
 }
 
 // TestSpawnReviewInitiative_Configured verifies the happy path: a review-repos
-// config file is present → runner called with dispatch + correct args, body-file
-// contains the required review instructions.
+// config file is present → runner called with dispatch + correct args including
+// --launch-prompt and --skip-epic for the lightweight review-pr skill.
 func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
@@ -289,8 +289,10 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 	call := fr.calls[0]
 
-	// Verify argv structure: dispatch --repo <clone> --problem <title> --body-file <path>
-	if len(call) < 7 {
+	// Verify argv structure:
+	// dispatch --repo <clone> --problem <title> --body-file <path>
+	//          --launch-prompt "/agent-teams:review-pr {id}" --skip-epic
+	if len(call) < 10 {
 		t.Fatalf("runner call too short (%d args): %v", len(call), call)
 	}
 	if call[0] != "dispatch" {
@@ -312,13 +314,16 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	if call[5] != "--body-file" {
 		t.Errorf("call[5]: got %q, want \"--body-file\"", call[5])
 	}
-	// Body file path comes from the runner args (temp file is cleaned up after run,
-	// but we capture the path from the call before it's removed).
-	bodyFilePath := call[6]
-	// The temp file is removed after runner returns; we only have the path recorded.
-	// Since fakeRunner records args synchronously before returning, we can't read
-	// the file after the fact — instead capture content via a custom runner.
-	_ = bodyFilePath
+	// call[6] is the temp file path (cleaned up after runner returns).
+	if call[7] != "--launch-prompt" {
+		t.Errorf("call[7]: got %q, want \"--launch-prompt\"", call[7])
+	}
+	if call[8] != "/agent-teams:review-pr {id}" {
+		t.Errorf("call[8] (launch-prompt value): got %q, want \"/agent-teams:review-pr {id}\"", call[8])
+	}
+	if call[9] != "--skip-epic" {
+		t.Errorf("call[9]: got %q, want \"--skip-epic\"", call[9])
+	}
 
 	// Confirmation line must appear in stdout.
 	out := stdout.String()
@@ -327,8 +332,8 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 }
 
-// TestSpawnReviewInitiative_ConfiguredBodyContent verifies the review instructions
-// body written to the temp file contains the required phrases.
+// TestSpawnReviewInitiative_ConfiguredBodyContent verifies the structured metadata
+// body written to the temp file contains the required pr-number/pr-repo/pr-url fields.
 func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
@@ -369,22 +374,76 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
-	requiredPhrases := []string{
-		"gh pr checkout 42",
-		"gh pr diff 42",
+	// Body must contain structured metadata fields parseable by the review-pr skill.
+	requiredFields := []string{
+		"pr-number: 42",
+		"pr-repo: MGT-Insurance/midgard",
+		"pr-url: https://github.com/MGT-Insurance/midgard/pull/42",
+	}
+	for _, field := range requiredFields {
+		if !strings.Contains(capturedBody, field) {
+			t.Errorf("review metadata body missing %q; body:\n%s", field, capturedBody)
+		}
+	}
+	// Body must NOT contain the old verbose instruction text.
+	oldPhrases := []string{
+		"gh pr checkout",
 		"NO nit comments",
 		"INLINE comment",
-		"gh api repos/MGT-Insurance/midgard/pulls/42/reviews",
-		"single sentence",
-		"must NOT open a new PR",
 		"Do NOT open a PR",
-		"https://github.com/MGT-Insurance/midgard/pull/42",
-		"MGT-Insurance/midgard",
 	}
-	for _, phrase := range requiredPhrases {
-		if !strings.Contains(capturedBody, phrase) {
-			t.Errorf("review body missing %q; body:\n%s", phrase, capturedBody)
+	for _, phrase := range oldPhrases {
+		if strings.Contains(capturedBody, phrase) {
+			t.Errorf("review metadata body should not contain old instruction text %q; body:\n%s", phrase, capturedBody)
 		}
+	}
+}
+
+// TestSpawnReviewInitiative_PRURLConstructed verifies that when event.PRURL is empty,
+// a pr-url is constructed from the repo and PR number.
+func TestSpawnReviewInitiative_PRURLConstructed(t *testing.T) {
+	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
+
+	clonePath := t.TempDir()
+	repoKey := "myrepo"
+	configDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, repoKey), []byte(clonePath), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var capturedBody string
+	bodyCapturingRunner := func(args ...string) error {
+		for i, a := range args {
+			if a == "--body-file" && i+1 < len(args) {
+				data, err := os.ReadFile(args[i+1])
+				if err == nil {
+					capturedBody = string(data)
+				}
+				break
+			}
+		}
+		return nil
+	}
+
+	cmd := &routePREventKong{runner: bodyCapturingRunner}
+	event := PREvent{
+		Repo:       "owner/myrepo",
+		PRNumber:   7,
+		PRURL:      "", // empty — should be constructed
+		Transition: TransitionReviewRequested,
+	}
+
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+		t.Fatalf("spawnReviewInitiative error: %v", err)
+	}
+
+	// pr-url must be auto-constructed when not provided.
+	wantURL := "pr-url: https://github.com/owner/myrepo/pull/7"
+	if !strings.Contains(capturedBody, wantURL) {
+		t.Errorf("expected constructed pr-url %q in body; got:\n%s", wantURL, capturedBody)
 	}
 }
 
