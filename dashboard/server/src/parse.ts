@@ -128,10 +128,7 @@ export function parseClaudeAgents(raw: string): SessionState[] {
   ) {
     throw new Error("claude agents --json --all: unexpected element shape (missing sessionId)");
   }
-  // Filter out state=stopped entries — these were explicitly stopped by the user
-  // (claude stop) and linger in --all history. Excluding them lets the dashboard
-  // row clear on the next snapshot tick after the user clicks Stop.
-  return (items as SessionState[]).filter((s) => s.state !== "stopped");
+  return items as SessionState[];
 }
 
 // Parse raw JSON output of `bd list --json`.

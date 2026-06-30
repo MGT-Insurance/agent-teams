@@ -1,8 +1,12 @@
-// Shell `claude stop <sessionId>` to stop a running background session.
-// Returns { ok: true } on success, throws on failure.
+// Shell `claude stop <sessionId>` then remove the job directory so the entry
+// disappears from `claude agents --json --all` on the next snapshot tick.
+// This mirrors what the `claude agents` TUI does on Ctrl-X (delete ~/.claude/jobs/<id>/).
 // Caller MUST validate id with isValidSessionId (from attach.ts) before calling.
 
 import { spawn } from "node:child_process";
+import { rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface StopResult {
   ok: true;
@@ -27,7 +31,11 @@ export function launchStop(sessionId: string): Promise<StopResult> {
         reject(new Error(`claude stop exited with code ${code}: ${stderr.slice(0, 200)}`));
         return;
       }
-      resolve({ ok: true });
+      const jobDir = join(homedir(), ".claude", "jobs", sessionId);
+      rm(jobDir, { recursive: true, force: true }).then(
+        () => resolve({ ok: true }),
+        () => resolve({ ok: true }),
+      );
     });
   });
 }
