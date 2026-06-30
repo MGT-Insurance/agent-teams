@@ -201,17 +201,15 @@ function RowAttachButton({ initiativeId, sessionId }: { initiativeId: string; se
   }
 
   return (
-    <span className="init-row__attach">
-      <button
-        className="attach-btn attach-btn--row"
-        onClick={(e) => { void handleClick(e); }}
-        disabled={state === "pending"}
-        title="attach"
-        aria-label="Attach to session"
-      >
-        {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "attach"}
-      </button>
-    </span>
+    <button
+      className="attach-btn attach-btn--row"
+      onClick={(e) => { void handleClick(e); }}
+      disabled={state === "pending"}
+      title="Attach to session"
+      aria-label="Attach to session"
+    >
+      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
+    </button>
   );
 }
 
@@ -237,7 +235,7 @@ function LaunchButton({ initiativeId }: { initiativeId: string }) {
     }
   };
 
-  const label = state === "idle" ? "launch" : state === "pending" ? "…" : state === "ok" ? "✓" : "✗";
+  const label = state === "idle" ? "▶" : state === "pending" ? "…" : state === "ok" ? "✓" : "✗";
   // In error state, set the title to the full error so it's inspectable on hover.
   const title =
     state === "err" && errMsg ? errMsg : "Launch a new DRI session for this initiative";
@@ -245,18 +243,19 @@ function LaunchButton({ initiativeId }: { initiativeId: string }) {
   const errFirst = errMsg.split("\n")[0] ?? "";
 
   return (
-    <div className="init-row__launch">
+    <>
       <button
         className={`launch-btn${state === "err" ? " launch-btn--err" : ""}`}
         onClick={(e) => { void launch(e); }}
         title={title}
+        aria-label={state === "idle" ? "launch" : undefined}
       >
         {label}
       </button>
       {state === "err" && errFirst && (
         <span className="launch-btn__err-msg">{errFirst}</span>
       )}
-    </div>
+    </>
   );
 }
 
@@ -354,19 +353,17 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
-      {node.needsHuman === "reap" && node.session?.id ? (
-        <span className="init-row__attach">
+      <div className="init-row__action">
+        {node.needsHuman === "reap" && node.session?.id ? (
           <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
-        </span>
-      ) : isClosed(node) && node.session?.id ? (
-        <span className="init-row__attach">
+        ) : isClosed(node) && node.session?.id ? (
           <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
-        </span>
-      ) : attachId ? (
-        <RowAttachButton initiativeId={initiative.id} sessionId={attachId} />
-      ) : node.worktreeExists && !isClosed(node) ? (
-        <LaunchButton initiativeId={initiative.id} />
-      ) : null}
+        ) : attachId ? (
+          <RowAttachButton initiativeId={initiative.id} sessionId={attachId} />
+        ) : node.worktreeExists && !isClosed(node) ? (
+          <LaunchButton initiativeId={initiative.id} />
+        ) : null}
+      </div>
       {/* Always-present fixed-width slot so the signals column holds the same
           horizontal position on every row. Icon + popover render only when the
           row is actually alerted, so non-alerted rows expose no tooltip. */}

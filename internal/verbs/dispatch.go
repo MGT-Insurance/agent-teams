@@ -364,6 +364,7 @@ func bgSessionArgs(name, prompt string) []string {
 	return []string{
 		"--bg",
 		"-n", name,
+		"--model", "opus",
 		"--permission-mode", "bypassPermissions",
 		"--append-system-prompt", memoryRoutingRule,
 		prompt,

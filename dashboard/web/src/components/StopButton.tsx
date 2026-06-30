@@ -29,7 +29,7 @@ export function StopButton({ initiativeId, sessionId }: { initiativeId: string; 
       title="Stop session"
       aria-label="Stop session"
     >
-      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "stop"}
+      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "■"}
     </button>
   );
 }
