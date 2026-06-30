@@ -22,6 +22,7 @@ func RegisterDispatchKong(p *cli.Parser) {
 	p.AddVerb("dispatch", "Create a worktree, register an initiative, and optionally launch a DRI session.", &dispatchKong{
 		git:        gitutil.New(),
 		launch:     launchBGSession,
+		launchRaw:  rawLaunchBGSession,
 		createEpic: createEpicInRepo,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
@@ -232,27 +233,10 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	if !c.NoLaunch {
 		if c.LaunchPrompt != "" {
 			// Custom prompt path: substitute {id} and bypass c.launch (which
-			// would prepend /dri). Use launchRaw when injected (tests), else
-			// exec claude directly (production).
+			// would prepend /dri).
 			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
-			if c.launchRaw != nil {
-				if err := c.launchRaw(ctx, wtPath, prompt); err != nil {
-					return fmt.Errorf("dispatch: launch: %w", err)
-				}
-			} else {
-				if _, err := exec.LookPath("claude"); err != nil {
-					return cli.Depf("ateam: 'claude' not found in PATH")
-				}
-				bgName := filepath.Base(wtPath)
-				bgArgs := bgSessionArgs(bgName, prompt)
-				bgCmd := exec.Command("claude", bgArgs...)
-				bgCmd.Dir = wtPath
-				bgCmd.Env = bgSessionEnv()
-				bgCmd.Stdout = ctx.Stdout
-				bgCmd.Stderr = ctx.Stderr
-				if err := bgCmd.Run(); err != nil {
-					return fmt.Errorf("claude --bg: %w", err)
-				}
+			if err := c.launchRaw(ctx, wtPath, prompt); err != nil {
+				return fmt.Errorf("dispatch: launch: %w", err)
 			}
 		} else {
 			if err := c.launch(ctx, wtPath, issue.ID); err != nil {
@@ -396,16 +380,15 @@ type launchFunc func(ctx *cli.Context, dir, driArg string) error
 // in dispatchKong; injected by tests to avoid exec-ing a real claude binary.
 type rawLaunchFunc func(ctx *cli.Context, dir, prompt string) error
 
-// launchBGSession checks for claude, derives the session name from dir's
-// basename, and launches: claude --bg -n <name> --permission-mode
-// bypassPermissions --append-system-prompt <memoryRoutingRule> "/dri <driArg>"
-// with Dir set to dir.
-func launchBGSession(ctx *cli.Context, dir, driArg string) error {
+// rawLaunchBGSession launches a background claude session with an arbitrary
+// prompt (no /dri prefix). Shared by the --launch-prompt production path and
+// tests (via injection into dispatchKong.launchRaw).
+func rawLaunchBGSession(ctx *cli.Context, dir, prompt string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, "/dri "+driArg)
+	args := bgSessionArgs(name, prompt)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Env = bgSessionEnv()
@@ -415,6 +398,12 @@ func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 		return fmt.Errorf("claude --bg: %w", err)
 	}
 	return nil
+}
+
+// launchBGSession launches a background DRI session: prepends "/dri " to
+// driArg and delegates to rawLaunchBGSession.
+func launchBGSession(ctx *cli.Context, dir, driArg string) error {
+	return rawLaunchBGSession(ctx, dir, "/dri "+driArg)
 }
 
 // printWatchControl writes the standard "Watch and control" block to w.

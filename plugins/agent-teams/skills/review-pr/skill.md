@@ -126,8 +126,8 @@ Write a brief note recording the outcome:
 
 ```bash
 printf 'review-posted: PR #<pr-number> — <N> finding(s) posted as inline comments\n' \
-  > /tmp/review-note-<id>.txt
-ateam note <id> --file /tmp/review-note-<id>.txt
+  > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ```
 
 ### 9. Close the initiative
