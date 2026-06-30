@@ -910,17 +910,21 @@ describe("deriveNeedsHuman", () => {
     expect(deriveNeedsHuman("merged", "waiting", null)).toBe(false);
   });
 
-  // reap rows (agent-teams-d10b.2): zombie = merged + worktree gone + session alive
-  it("merged + !worktreeExists + alive session (idle) -> 'reap'", () => {
-    expect(deriveNeedsHuman("merged", "ended", null, false)).toBe("reap");
-  });
-
+  // reap rows (agent-teams-d10b.2): zombie = merged + worktree gone + session ALIVE (working|waiting)
   it("merged + !worktreeExists + session working -> 'reap'", () => {
     expect(deriveNeedsHuman("merged", "working", null, false)).toBe("reap");
   });
 
+  it("merged + !worktreeExists + session waiting -> 'reap'", () => {
+    expect(deriveNeedsHuman("merged", "waiting", null, false)).toBe("reap");
+  });
+
+  it("merged + !worktreeExists + session ended -> false (stopped session, nothing to reap)", () => {
+    expect(deriveNeedsHuman("merged", "ended", null, false)).toBe(false);
+  });
+
   it("merged + worktreeExists TRUE + alive session -> false (not a zombie)", () => {
-    expect(deriveNeedsHuman("merged", "ended", null, true)).toBe(false);
+    expect(deriveNeedsHuman("merged", "working", null, true)).toBe(false);
   });
 
   it("merged + !worktreeExists + signal='none' (no session) -> false (nothing to reap)", () => {
@@ -1730,7 +1734,7 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
 
   it("merged + !worktreeExists + alive session -> needsHuman='reap'", () => {
     const init = makeClosedInit("reap-1", "/wt/reap-1");
-    const sess = makeAliveSession("/wt/reap-1", "idle", "ab12cd34");
+    const sess = makeAliveSession("/wt/reap-1", "busy", "ab12cd34");
     // existsFn returns false (worktree gone)
     const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
     expect(nodes[0]?.needsHuman).toBe("reap");
@@ -1738,7 +1742,7 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
 
   it("merged + !worktreeExists + alive session -> buildInbox emits kind='reap' with sessionId", () => {
     const init = makeClosedInit("reap-2", "/wt/reap-2");
-    const sess = makeAliveSession("/wt/reap-2", "idle", "ab12cd34");
+    const sess = makeAliveSession("/wt/reap-2", "busy", "ab12cd34");
     const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
     const inbox = buildInbox(nodes);
     expect(inbox).toHaveLength(1);
@@ -1749,7 +1753,7 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
 
   it("merged + worktreeExists TRUE + alive session -> needsHuman=false (not a zombie)", () => {
     const init = makeClosedInit("reap-3", "/wt/reap-3");
-    const sess = makeAliveSession("/wt/reap-3", "idle", "ab12cd34");
+    const sess = makeAliveSession("/wt/reap-3", "busy", "ab12cd34");
     // existsFn returns true (worktree still present)
     const nodes = buildInitiativeNodes([init], [sess], new Set(), () => true);
     expect(nodes[0]?.needsHuman).toBe(false);

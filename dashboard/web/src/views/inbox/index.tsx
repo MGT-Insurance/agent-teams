@@ -144,7 +144,7 @@ export default function InboxView() {
   const [thisMachineOnly, setThisMachineOnly] = useState(true);
 
   // Filter BEFORE sort (spec: filter then sort).
-  const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine) : inbox;
+  const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine || item.kind === "reap") : inbox;
 
   // Tiered sort: review first, then reap zombies (just-below review), then waiting/generic/check; recency desc within tier.
   const tierRank: Record<InboxItem["kind"], number> = { review: 0, reap: 1, waiting: 2, generic: 3, check: 4 };

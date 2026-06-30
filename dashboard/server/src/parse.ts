@@ -198,7 +198,7 @@ export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKi
 
 // Derive needsHuman with flavor (agent-teams-0rl: explicit gate takes priority).
 // Truth table:
-//   merged + !worktreeExists + signal!="none" -> "reap" (zombie: worktree gone, session alive)
+//   merged + !worktreeExists + signal=working|waiting -> "reap" (zombie: worktree gone, session ALIVE)
 //   merged                            -> false (done)
 //   explicit gate == "review"         -> "review"  (AUTHORITATIVE; wins over session)
 //   explicit gate == "question"       -> "waiting" (agent asking a question)
@@ -218,7 +218,7 @@ export function deriveNeedsHuman(
   gate: ExplicitGateKind | null,
   worktreeExists: boolean = true,
 ): false | NeedsHumanFlavor {
-  if (delivery === "merged" && !worktreeExists && signal !== "none") return "reap";
+  if (delivery === "merged" && !worktreeExists && (signal === "working" || signal === "waiting")) return "reap";
   if (delivery === "merged") return false;
   // Explicit gate:review -> AUTHORITATIVE review signal (wins over everything).
   if (gate === "review") return "review";
