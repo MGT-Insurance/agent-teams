@@ -140,8 +140,10 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 
 	// Invoke dispatch via the runner with --launch-prompt and --skip-epic so the
 	// lightweight /agent-teams:review-pr skill runs instead of a full DRI.
+	// --model sonnet keeps automated review sessions cheaper than the opus
+	// default used for full DRI initiatives.
 	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath,
-		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic")
+		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic", "--model", "sonnet")
 	// Clean up temp file after the runner returns (dispatch has already read it).
 	os.Remove(tmpPath)
 
