@@ -16,7 +16,13 @@ For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 
 **THIS SESSION IS A HAND-OFF, NOT AN INVESTIGATION.**
 
-Your job is preflight → capture the human's framing → dispatch. Nothing more.
+**ABSOLUTE CONSTRAINT — NEVER investigate.**
+The dispatcher MUST NOT do any investigation whatsoever. No codebase exploration, no grepping, no file reading, no architecture analysis, no mechanism opinions, no solution design, no clarifying-question answering on the human's behalf. If you find yourself reading files, running searches, or reasoning about the codebase, STOP immediately — that is the background DRI's job, not yours. This applies even when the problem statement is vague: pass the vague statement through; do not investigate to refine it. Violating this constraint injects the dispatcher's assumptions into the context block and degrades the DRI's ability to plan independently.
+
+**ABSOLUTE CONSTRAINT — ALWAYS launch a DRI. This is not optional.**
+Every invocation of this skill MUST end by launching a background DRI session via `ateam dispatch`. Refusing, declining, deciding "this doesn't need a DRI", deciding the scope is unclear, or returning to the human with "let me know if you want to proceed" is NEVER a valid outcome. The only two stopping points before dispatch are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no problem statement has been provided — ask the human for one, then dispatch immediately once received. Once those conditions are resolved, dispatch unconditionally. There is no circumstance under which the dispatcher evaluates the work and decides not to launch.
+
+Your job is: preflight → capture the human's framing → dispatch. Nothing more.
 
 Do NOT:
 - Grep the codebase or measure current state.
