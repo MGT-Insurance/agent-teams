@@ -315,6 +315,30 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
+// autoCompactWindowEnv is the environment variable that controls Claude Code's
+// auto-compact trigger window (in tokens). autoCompactWindowValue forces it to
+// 250000 for all background DRI sessions regardless of the caller's environment.
+const (
+	autoCompactWindowEnv   = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+	autoCompactWindowValue = "250000"
+)
+
+// bgSessionEnv returns os.Environ() with CLAUDE_CODE_AUTO_COMPACT_WINDOW forced
+// to autoCompactWindowValue. Any inherited occurrence of the key is filtered out
+// before appending ours — glibc/macOS getenv returns the FIRST duplicate, so a
+// plain append would not override an inherited value.
+func bgSessionEnv() []string {
+	prefix := autoCompactWindowEnv + "="
+	base := os.Environ()
+	filtered := make([]string, 0, len(base)+1)
+	for _, e := range base {
+		if !strings.HasPrefix(e, prefix) {
+			filtered = append(filtered, e)
+		}
+	}
+	return append(filtered, prefix+autoCompactWindowValue)
+}
+
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background DRI launch. Extracted so tests can assert the argv without
 // executing the command.
@@ -345,6 +369,7 @@ func launchBGSession(ctx *cli.Context, dir, driArg string) error {
 	args := bgSessionArgs(name, driArg)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
+	cmd.Env = bgSessionEnv()
 	cmd.Stdout = ctx.Stdout
 	cmd.Stderr = ctx.Stderr
 	if err := cmd.Run(); err != nil {
