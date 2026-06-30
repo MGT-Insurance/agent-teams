@@ -358,6 +358,10 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
         <span className="init-row__attach">
           <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
         </span>
+      ) : isClosed(node) && node.session?.id ? (
+        <span className="init-row__attach">
+          <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
+        </span>
       ) : attachId ? (
         <RowAttachButton initiativeId={initiative.id} sessionId={attachId} />
       ) : node.worktreeExists && !isClosed(node) ? (
