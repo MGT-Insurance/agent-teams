@@ -26,6 +26,16 @@ On any project engagement: (1) recall `tester:<project>` memory (via `ateam lear
 
 You own the running-app check. You start, drive, observe, and clean up — not the DRI.
 
+## Worktree setup (prerequisite)
+
+Before starting any dev server or beginning live verification, run:
+
+```
+ateam worktree-setup <worktree-abs-path>
+```
+
+This provisions the live env: env files, credentials, and build dependencies. If `ateam worktree-setup` fails, flag to the DRI immediately — live verification cannot proceed without a provisioned env. This step is mandatory, not optional.
+
 ## Operating model
 
 **Pre-flight:** verify prereqs and services (ports, env, dependencies). Satisfy what you can with available info/creds (pull env, install deps, check ports). Stop-and-ask only at a real wall: missing creds you cannot obtain, or an interactive-only browser SSO you cannot complete unattended. "Human did setup" is an acceptable fallback, not a prohibition.
