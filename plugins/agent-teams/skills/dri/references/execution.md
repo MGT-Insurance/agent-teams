@@ -10,7 +10,7 @@
 
 ## CWD discipline — the DRI never lets its cwd drift
 
-- **Never call `EnterWorktree`.** It re-pins the session cwd to the entered worktree; the harness re-applies that pin before every Bash call (`cd` cannot escape it). When that worktree is later removed at teardown, the pin dangles and the shell falls back to `$HOME`. The DRI's checkout under `${AGENT_TEAMS_HOME}-worktrees/<initiative>` IS its isolation — it is already isolated; there is nothing to "enter". (Recovery, if you ever do drift: `ExitWorktree` with `action: keep` returns the session to its original checkout without removing the worktree — that is its only sanctioned use in a DRI session.)
+- **Never call `EnterWorktree`.** It re-pins the session cwd to the entered worktree; the harness re-applies that pin before every Bash call (`cd` cannot escape it). When that worktree is later removed at wind-down, the pin dangles and the shell falls back to `$HOME`. The DRI's checkout under `${AGENT_TEAMS_HOME}-worktrees/<initiative>` IS its isolation — it is already isolated; there is nothing to "enter". (Recovery, if you ever do drift: `ExitWorktree` with `action: keep` returns the session to its original checkout without removing the worktree — that is its only sanctioned use in a DRI session.)
 - **Ignore the background-session bootstrap nudge.** If the session prompt says "use `EnterWorktree` to isolate your work — unless your cwd is already under `.claude/worktrees/`": IGNORE it. A DRI worktree lives under `${AGENT_TEAMS_HOME}-worktrees/`, which does not match that skip-condition, so the nudge misfires. You are isolated regardless.
 - **Stay cwd-immune.** Never depend on the shell cwd. Use `git -C <abs>` and `bd -C <abs>` and absolute paths for every command. This is already global policy; for the DRI it is load-bearing — a drifted or dangling pin silently miss-targets a sibling worktree with no error.
 - **Operate on track worktrees via `-C`/absolute paths.** Create them with `git worktree add` / `bd worktree create` and hand each implementer its absolute path. Never chdir or call `EnterWorktree` into a track worktree to operate in it.
@@ -32,9 +32,9 @@
 
 - Merge each track into the integration branch as it lands: prefer `git merge --ff-only <track-branch>`; on real conflicts, resolve them YOURSELF (read both sides; keep the contract's intent), then complete the merge.
 - After the loop-closing set's tracks are merged: run an integration verification pass (full typecheck + the feature's suites on the composed branch) independently of what tracks reported — this is Step 1, a NECESSARY but NOT SUFFICIENT gate for loop closure (covers automated CI-equivalent checks). Step 2 is the live verification procedure defined in the SKILL.md LOOP CLOSED checkpoint: provision env if needed, spawn a tester with explicit live-verification instructions, and act on the pass/fail evidence. Ordering: automated gates first, then live verification. Loop closed = automated gates green AND tester confirms. Run the same automated pass again after each subsequent enhancement ring's tracks merge.
-- Remove worktrees and delete track branches at teardown, not before.
+- Remove worktrees and delete track branches at wind-down, not before.
 
 ## Lifecycle
 
 - Implementers: ephemeral — shutdown_request once their work is VERIFIED merged (you checked the commits, not just the report). Fresh implementer per fix batch.
-- Planner: persistent until teardown. Tester/Reviewer: keep while verification cycles continue; shut down when their lane is done.
+- Planner: persistent until wind-down. Tester/Reviewer: keep while verification cycles continue; shut down when their lane is done.

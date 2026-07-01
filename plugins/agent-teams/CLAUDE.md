@@ -20,7 +20,7 @@ There are **two separate beads databases**, and putting the wrong beads in the w
 - **NEVER** create a feature/work/plan/discovery bead in the global workspace. Work beads live in the project repo, full stop.
 - **NEVER** touch the global workspace with a raw `bd -C ~/.agent-teams …` command. The **only** sanctioned interface is the `ateam` script. `ateam` deliberately exposes **no generic issue-create verb** — `register` (initiative-tracking schema) is the only thing that writes an issue there, and that is by design. If you reach for `bd -C <global> create`, you are about to make the mistake this rule exists to prevent.
 - Plain `bd create` (no `-C`) is correct for project work — it targets the project repo because that is your cwd. Keep it that way; do not redirect it at the global workspace.
-- **Audit:** `ateam audit` lists any issue in the global workspace that lacks the tracking schema (a leaked work bead) and exits non-zero. `/initiatives` and DRI teardown run it; the workspace must always audit clean.
+- **Audit:** `ateam audit` lists any issue in the global workspace that lacks the tracking schema (a leaked work bead) and exits non-zero. `/initiatives` and DRI wind-down run it; the workspace must always audit clean.
 
 **Beads runtime:** embedded mode (no server daemon needed). Agent isolation uses git **worktrees** of the project repo, not independent clones — worktrees share the project's single `.beads/` issue DB via git-common-dir discovery; clones each get a separate, fragmented beads workspace.
 
