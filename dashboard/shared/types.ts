@@ -58,6 +58,10 @@ export interface SessionState {
   // Per Claude Code agent-view docs: working | blocked | done | failed | stopped.
   // `failed` = the session errored. Absent on interactive sessions.
   state?: "working" | "blocked" | "done" | "failed" | "stopped";
+  // Boundary pass-through: emitted by newer `claude agents --json` builds on a
+  // session blocked on a permission prompt (observed value "permissionPrompt").
+  // Absent in older builds — tolerate missing, render verbatim when present.
+  waitingFor?: string;
 }
 
 // Derived activity enum for constellation rendering.
@@ -172,8 +176,8 @@ export interface InboxItem {
   alternative: string;
   // Free-form "what it's waiting on" prose from the context: field in the same ask block
   // (mirrors Go's askBlock.context, internal/verbs/query.go parseAskBody). "" when absent
-  // or for non-waiting kinds. This — not a "waitingFor" field, which does not exist in the
-  // session JSON (confirmed agent-teams-ni2y.12) — is the canonical waiting-reason detail.
+  // or for non-waiting kinds. This is the declared-ask waiting-reason; waitingFor below
+  // is a separate, live-session permission-prompt signal — the two coexist.
   context: string;
   // ISO-8601 timestamp from RawInitiative.updated_at — the PRIMARY recency sort key
   // for the inbox (agent-teams-ni2y).
@@ -193,6 +197,10 @@ export interface InboxItem {
   // either holds should read as urgent regardless of `kind`.
   status: string | null;
   state: string | null;
+  // Raw session waitingFor pass-through (see SessionState.waitingFor) — the live-session
+  // permission-prompt reason. Absent when the session doesn't carry one (common today;
+  // newer `claude agents --json` builds emit it). Render verbatim when present.
+  waitingFor?: string;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.
