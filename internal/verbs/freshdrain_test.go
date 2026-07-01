@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // TestFreshDrain_DrainsFreshToCold verifies that fresh: keys are promoted to
@@ -28,9 +30,9 @@ func TestFreshDrain_DrainsFreshToCold(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &freshDrainCmd{}
+	cmd := &freshDrainKong{Role: "implementer"}
 
-	if err := cmd.Run(ctx, []string{"implementer"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -73,9 +75,9 @@ func TestFreshDrain_CollisionOverwritesCold(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &freshDrainCmd{}
+	cmd := &freshDrainKong{Role: "dri"}
 
-	if err := cmd.Run(ctx, []string{"dri"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -111,9 +113,9 @@ func TestFreshDrain_IdempotentNoop(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &freshDrainCmd{}
+	cmd := &freshDrainKong{Role: "planner"}
 
-	if err := cmd.Run(ctx, []string{"planner"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -127,21 +129,23 @@ func TestFreshDrain_IdempotentNoop(t *testing.T) {
 	}
 }
 
-// TestFreshDrain_MissingRole verifies usage error when role arg is missing.
+// TestFreshDrain_MissingRole verifies kong enforces the required <role> positional
+// at parse time (exit-2 parity: kong.ParseError → ExitCode 2).
 func TestFreshDrain_MissingRole(t *testing.T) {
-	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
-	err := (&freshDrainCmd{}).Run(ctx, nil)
-	if err == nil {
-		t.Fatal("expected usage error, got nil")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
 	}
-	if !strings.Contains(err.Error(), "missing <role>") {
-		t.Errorf("expected 'missing <role>' in error; got: %v", err)
+	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
+	_, parseErr := p.Parse([]string{"fresh-drain"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>, got nil")
 	}
 }
 
 // TestFreshDrain_NilContextReturnsError verifies nil context returns an error.
 func TestFreshDrain_NilContextReturnsError(t *testing.T) {
-	err := (&freshDrainCmd{}).Run(nil, []string{"implementer"})
+	err := (&freshDrainKong{Role: "implementer"}).Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context; got nil")
 	}
@@ -155,7 +159,7 @@ func TestFreshDrain_BDErrorPropagates(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	err := (&freshDrainCmd{}).Run(ctx, []string{"implementer"})
+	err := (&freshDrainKong{Role: "implementer"}).Run(ctx)
 	if err == nil {
 		t.Fatal("expected error from bd failure; got nil")
 	}

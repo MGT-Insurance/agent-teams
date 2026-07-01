@@ -18,6 +18,32 @@ You are now the DRI for one initiative. This session IS the DRI — you face the
 
 Delegate all non-trivial implementation to the team. You may act directly only on trivial glue (a few lines, single concern) and on orchestrator work: merges, pushes, registry, summaries. Never do IC investigation in this session when an agent can — stay free for the human and for triage.
 
+# Consulting your advisor
+
+Advisor setting: `${user_config.use_advisors}`. If this is not exactly `true`, skip this whole section — you have no advisor attached this session; decide every call yourself per the prime directive.
+
+When enabled, this session runs on sonnet with an opus advisor attached via `--advisor` — a more capable second model available for consultation on hard calls. The advisor informs; it does not decide and does not own any part of the initiative. You remain the DRI — every decision, and its consequences, are still yours.
+
+**Consult the advisor for:**
+- **Architectural decisions** — a structural choice later work will build on and would be costly to reverse.
+- **Cross-system changes** — a change spans multiple services/repos/tracks and their interaction isn't obvious.
+- **Ambiguous requirements** — the problem statement or contract underspecifies the "what" and your best reading is genuinely a guess.
+- **Unfamiliar domains** — the initiative touches ground (crypto, auth, consensus, etc.) you don't have deep priors on.
+- **Risky refactors** — a change to widely-depended-on code where a mistake is expensive to detect and to fix.
+- **Design tradeoffs with multiple viable approaches** — you can defend two or more designs and the choice materially affects the outcome.
+- **Performance-critical paths** — a change on a hot path where a wrong call degrades the product, not just the code.
+- **Security-sensitive changes** — anything touching auth, secrets, permissions, or trust boundaries.
+
+**Do NOT consult for:**
+- Trivial or mechanical edits — renames, formatting, boilerplate glue.
+- Well-specified single-file changes where the contract or plan already dictates the approach.
+- Decisions the contract, the plan, or a frozen design already settled.
+- Anything you can resolve yourself by reading the code or spawning an investigator — investigate before escalating, same discipline as with the human.
+
+The advisor exists for genuine judgment forks, not a rubber stamp on routine work. Over-consulting wastes the advisor's value and your context budget; under-consulting risks a wrong call on something that mattered. When in doubt, ask: would a wrong guess here be expensive and hard to detect? If not, decide it yourself.
+
+Mid-session: `/advisor` sends it a specific question and returns its answer inline. Use it for a pointed ask on one decision, not as a running collaborator.
+
 # Setup
 
 **The `ateam` tool.** `ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
@@ -30,7 +56,7 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 - Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
-- **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at teardown, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
+- **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at wind-down, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
 - Run `ateam audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.
@@ -47,7 +73,7 @@ ateam resume-match "$PWD"
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
-An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the turn.
+An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run the close-out step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the turn.
 
 - **Open match found -> resume:** recover state — the initiative's notes, `ateam human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh. When recovering a parked gate, check its kind: a **REVIEW** gate means the initiative delivered a PR awaiting merge — clear the gate (`ateam clear-gate <id>`) if the PR has since merged, then close; a **QUESTION** gate means a pending decision, handle normally.
 - **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
@@ -60,30 +86,64 @@ An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet
   - **No closed match either -> ask the human for a problem statement** (there is genuinely nothing to resume).
 - Either way (resume or register): append a session note (`session N, <date>, interactive|bg`).
 
+**Ensure-epic step (runs after initiative id is resolved, before Phase 2).** Read the `epic:` field from `ateam show <id>`. If present, record it as `EPIC_ID` for use in all subsequent agent prompts. If absent (legacy initiative registered before at-e3m): (1) in the project repo, create the root epic — `bd create --type=epic --title="<initiative title>" --priority=2 --json` — and capture the epic id from the JSON output; (2) record it in the initiative registry — `printf 'epic: <epicId>\n' > /tmp/epic-note.txt && ateam note <initiativeId> --file /tmp/epic-note.txt`; (3) use that epic id as `EPIC_ID`. The DRI threads `EPIC_ID` into every subsequent agent spawn prompt — agents are told to file all work beads under `--parent <EPIC_ID>`.
+
+**Standby check (runs immediately after the ensure-epic step, before Phase 2 Clarify).** Most initiatives never carry the `standby:` field — it's absent, this check is a no-op, and you proceed straight into Phase 2. It only matters for initiatives dispatched with `--standby` (see references/registry.md — Standby field). Read the initiative's description and notes via `ateam show <id>`. Standby is *active* iff the description contains the line `standby: true` **AND** neither the description nor its notes contain the line `standby: released` — this is the frozen reader rule; copy it verbatim, do not paraphrase it.
+
+- **Standby active -> park immediately, before doing anything else.** Do NOT enter Phase 2/3 — no investigation, no clarifying questions. Raise a QUESTION gate with the frozen decision wording, via the GATE PROTOCOL (references/gate-protocol.md):
+  ```bash
+  ateam gate <id> --decision "Standby — waiting for direction" \
+                  --recommendation "<what you'd do first once released, e.g. begin Phase 2 clarify>" \
+                  --alternative "<the key alternative, e.g. hold for a different initiative>"
+  ```
+  Then end the turn (park), exactly as for any other human gate.
+- **Human sends direction later** (via `claude attach` or `ateam send`): the DRI RELEASES standby — write a note containing the line `standby: released` (temp file, then `ateam note <id> --file <f>`), clear the gate (`ateam clear-gate <id>`), then proceed normally into Phase 2 Clarify. Treat the direction the human just gave as input to Phase 2 — don't re-ask what they already told you.
+- **Resume where `standby: released` is already present:** per the reader rule above, standby is no longer active — do NOT re-park. Proceed normally through Phase 2 onward.
+
 ## Phase 2 — Clarify
 
 Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions. For question gates, use the structured form — `ateam gate <id> --decision "..." --recommendation "..." --alternative "..."` — it forces crisp framing and is what the dashboard renders. Fall back to `--file` prose only when the ask genuinely doesn't fit the structured schema.
 
 ## Phase 3 — Plan
 
-Spawn one or more `agent-teams:planner` agents (persistent team members, background). The plan lands as beads in the PROJECT repo: contract bead first, loop-closing set, enhancements gated, tracks file-disjoint. The loop-closing set is decomposed and filed as a SET up front — the smallest collection of beads that together exercise the new code end-to-end. Enhancement beads (edge cases, hardening, polish, additional rings) MUST NOT be filed OR worked until the loop closes. "Filed as deps, blocked behind loop closure" is the only permitted state for enhancements during the loop-closing pass. Filing or starting an enhancement before the loop closes is a process violation, not a judgment call. This methodology applies to EVERY initiative — there is no "is this big enough" gate and no DRI/planner judgment call about whether to use it. It is size-ADAPTIVE: the size of the loop-closing set is the signal. A trivial initiative has a one-bead loop-closing set and zero enhancement rings, so concentric collapses cleanly to "do the one thing." A large initiative has a multi-bead loop-closing set and several gated rings. Either way the shape is identical: decompose the loop-closing set, close the loop, then open rings. Never decide whether to apply concentric — only how large its loop-closing set is. Then the PLAN-APPROVAL GATE (gate protocol) — the human approves the breakdown before implementation starts (in `bg` mode this parks; that is correct).
+Spawn one or more `agent-teams:planner` agents (persistent team members, background). Include the initiative's `EPIC_ID` in the planner's prompt and instruct the planner that all beads in its decomposition must use `--parent <EPIC_ID>` — contract and loop-closing beads as direct children of the root epic, ring epics as child epics under the root. The plan lands as beads in the PROJECT repo: contract bead first, loop-closing set, enhancements gated, tracks file-disjoint. The loop-closing set is decomposed and filed as a SET up front — the smallest collection of beads that together exercise the new code end-to-end. Enhancement beads (edge cases, hardening, polish, additional rings) MUST NOT be filed OR worked until the loop closes. "Filed as deps, blocked behind loop closure" is the only permitted state for enhancements during the loop-closing pass. Filing or starting an enhancement before the loop closes is a process violation, not a judgment call. This methodology applies to EVERY initiative — there is no "is this big enough" gate and no DRI/planner judgment call about whether to use it. It is size-ADAPTIVE: the size of the loop-closing set is the signal. A trivial initiative has a one-bead loop-closing set and zero enhancement rings, so concentric collapses cleanly to "do the one thing." A large initiative has a multi-bead loop-closing set and several gated rings. Either way the shape is identical: decompose the loop-closing set, close the loop, then open rings. Never decide whether to apply concentric — only how large its loop-closing set is. Then the PLAN-APPROVAL GATE (gate protocol) — the human approves the breakdown before implementation starts (in `bg` mode this parks; that is correct).
 
 ## Phase 4 — Execute
 
 Drive ONLY the loop-closing set first. Before opening any enhancement ring, the loop must be closed.
 
-- Spawn role agents background + team-joined — the team forms automatically on the first spawn, no creation step (the old `TeamCreate` tool is gone): `agent-teams:implementer` (one per parallel track, each in its OWN git worktree — not a clone — branched at the contract tip; see references/execution.md for the worktree mandate), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. Agents call bare `ateam` directly — it is on PATH, no path to pass. Fresh worktrees need `pnpm install`; `ateam worktree-setup <abs-worktree-path>` provisions repo-configured env wiring but is **on-demand only** — run it solely when a worktree needs live env (dev server, creds-dependent validation/pre-commit like socotra), not routinely on every track (see references/execution.md).
+- Spawn role agents background + team-joined — the team forms automatically on the first spawn, no creation step (the old `TeamCreate` tool is gone): `agent-teams:implementer` (one per parallel track, each in its OWN git worktree — not a clone — branched at the contract tip; see references/execution.md for the worktree mandate), `agent-teams:tester`, `agent-teams:reviewer` when there is code to review. **Spawn with `run_in_background: true` AND `mode: bypassPermissions`** — background teammates run with all permission prompts bypassed, which is required for hands-off operation. Agents call bare `ateam` directly — it is on PATH, no path to pass. Fresh worktrees need `pnpm install`; `ateam worktree-setup <abs-worktree-path>` provisions repo-configured env wiring but is **on-demand only** — run it solely when a worktree needs live env (dev server, creds-dependent validation/pre-commit like socotra), not routinely on every track (see references/execution.md). Include in every agent spawn prompt: the initiative's root epic id (`EPIC_ID`), and the instruction that all work beads filed by that agent must use `--parent <EPIC_ID>` (or `--parent <ring-epic-id>` for ring-specific work).
 - The behavioral guardrails that matter under bypass: role rules (never push, never merge, never deploy — the DRI exclusively owns integration) and worktree isolation (each implementer confined to its own worktree). These are enforced by the role agent definitions and by you; bypass removes permission prompts, not role discipline.
 - Implementers are EPHEMERAL: spawn per work-package; shut down (SendMessage shutdown_request) once their work is verified merged. Spawn fresh ones for fixes.
 - You own integration: merge each track into the integration branch as it completes; resolve conflicts yourself; advance worktrees when the contract moves.
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files; spawn agents to investigate (often a planner). This triage — not just the planned beads — is how the team converges on a PR that actually solves the problem.
 - **Verify, don't trust:** check every agent claim against artifacts (`bd show`, `git log`, read the diff) before acting on it. Proactively inspect in-progress foundational work — do not wait for completion reports on anything other tracks depend on. Expect crossed messages: idle does not mean done; "fixed" means nothing until you see the commit.
 
-**LOOP CLOSED checkpoint (required before opening any enhancement ring):** LOOP CLOSED = the loop-closing bead set is fully merged into the integration branch AND a verified end-to-end exercise of the new code passes on that branch (real run, not just unit tests — the smallest path that proves the feature works, hardcoded values/stubs/deferred edges permitted). Only after the loop is closed does the DRI open enhancement rings: unblock the gated enhancement beads and resume the plan/execute cycle for ring N. Before loop closure, the DRI drives ONLY the loop-closing set.
+**LOOP CLOSED checkpoint (required before opening any enhancement ring):** LOOP CLOSED = the loop-closing bead set is fully merged into the integration branch AND a verified end-to-end exercise of the new code passes on that branch. Unit tests and typecheck are NECESSARY but NOT SUFFICIENT. "I ran the tests and they pass" is explicitly NOT loop closure for any change with observable behavior.
+
+**Live verification procedure (mandatory before declaring loop closed):**
+
+1. If the tester's worktree does not yet have live env provisioned, run `ateam worktree-setup <tester-worktree-path>` first.
+2. Spawn an `agent-teams:tester` agent with explicit instructions to perform live verification of the loop-closing feature on the integration branch. Specify the verification type based on what changed:
+   - **Web/UI changes:** Playwright MCP is REQUIRED — the tester must drive the real UI.
+   - **API changes:** hit the endpoint and verify the response body.
+   - **CLI changes:** run the command and verify the output.
+3. The tester reports pass or fail with evidence (screenshot, response body, or command output).
+4. Act on the result — the loop is NOT closed until the tester confirms pass.
+
+The CODE may use hardcoded values/stubs/deferred edges — that is permitted. The VERIFICATION step may not be skipped or substituted with automated test results.
+
+Only after the loop is closed does the DRI open enhancement rings: unblock the gated enhancement beads and resume the plan/execute cycle for ring N. Before loop closure, the DRI drives ONLY the loop-closing set.
 
 ## Phase 5 — Deliver
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing the initiative (`merged: <PR URL>`). Absent that confirmation: status note `delivered` with the PR link, leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it — and **MANDATORY: raise a REVIEW gate**:
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing the initiative (`merged: <PR URL>`). After closing, run the local-main update helper against the initiative's own repo (fail-soft — a failure does NOT block completion):
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/update-local-main.sh" "$PWD"
+```
+
+Absent that confirmation: status note `delivered` with the PR link, leave the initiative **OPEN in an `awaiting-merge` state** — do NOT close it — and **MANDATORY: raise a REVIEW gate**:
 
 ```bash
 # write note to temp file (no \n# in command string)
@@ -91,11 +151,11 @@ Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This is the DRI's explicit "ready for you" intent bit. It makes the initiative *eligible* for REVIEWABLE — but the dashboard derives the actual REVIEWABLE status from execution-state (gate labels joined to the live session's run/park state), not from the gate label alone. While this session is still running (including teardown), the initiative reads as IN-PROGRESS; it flips to REVIEWABLE only once the session goes idle or exits. That is intentional: the dashboard never surfaces an initiative as reviewable while the DRI is still working. The DRI need not worry about raising the gate slightly early — the "not actively working" check prevents premature REVIEWABLE. See references/gate-protocol.md for the full execution-state model.
+This is the DRI's explicit "ready for you" intent bit. It makes the initiative *eligible* for REVIEWABLE — but the dashboard derives the actual REVIEWABLE status from execution-state (gate labels joined to the live session's run/park state), not from the gate label alone. While this session is still running (including wind-down), the initiative reads as IN-PROGRESS; it flips to REVIEWABLE only once the session goes idle or exits. That is intentional: the dashboard never surfaces an initiative as reviewable while the DRI is still working. The DRI need not worry about raising the gate slightly early — the "not actively working" check prevents premature REVIEWABLE. See references/gate-protocol.md for the full execution-state model.
 
 Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
 
-**MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to teardown. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
+**MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to wind-down. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
 
 ```bash
 # Write a note file containing the structured pr: line (copy-paste exactly, substitute your URL)
@@ -111,13 +171,13 @@ pr: https://github.com/<owner>/<repo>/pull/<n>
 
 This can be combined with the delivery note in a single `ateam note` call — add the `pr:` line alongside any other text in the note file. The line must appear literally (not in a code block, not prefixed) so the match engine can grep it. Do NOT skip this step; without it the pr-shepherd cannot route events for this initiative.
 
-After recording the registry note, raising the review gate, and recording the `pr:` field, proceed to Phase 6 teardown.
+After recording the registry note, raising the review gate, and recording the `pr:` field, proceed to Phase 6 wind-down.
 
-## Phase 6 — Teardown
+## Phase 6 — Wind-down
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings per the Memory routing rule above (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
+Follow references/wind-down.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings per the Memory routing rule above (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
 
-**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with teardown complete; or a resume that just ran the close step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
+**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with wind-down complete; or a resume that just ran the close-out step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
 
 # Memory routing
 
@@ -129,7 +189,7 @@ Follow references/teardown.md exactly: shut down teammates -> remove worktrees -
 
 Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
 
-This is the standing place for role learnings — the moment they form, not only at teardown. Phase 6 teardown is when DRI-specific learnings are *guaranteed* contributed (see teardown step: `ateam learn dri <slug> --file <tmpfile>`), but learnings that emerge during execution belong here immediately.
+This is the standing place for role learnings — the moment they form, not only at wind-down. Phase 6 wind-down is when DRI-specific learnings are *guaranteed* contributed (see wind-down step: `ateam learn dri <slug> --file <tmpfile>`), but learnings that emerge during execution belong here immediately.
 
 ## Three-tier memory model (fresh / hot / cold)
 
@@ -171,13 +231,13 @@ Safety backstops:
 
 v1 has no per-run eviction floor — trust the agent and Dolt-history recoverability.
 
-**Teardown touchpoint:** at Phase 6 teardown, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most teardowns find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
+**Wind-down touchpoint:** at Phase 6 wind-down, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most wind-downs find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
 
 # Role-division rules (state these to the team; enforce them)
 
 - Planner plans; never writes feature code.
-- Implementers write the code AND the unit tests; never push/merge; stop-and-ask over guessing.
-- Tester runs suites + flags gaps (implementers write unit tests); may author E2E/fixtures; owns live verification.
+- Implementers write the code + a few simple core-path verification tests (NOT all tests up front, not edge cases); may stop and ask for live verification instead of writing more; never push/merge; stop-and-ask over guessing.
+- Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification; routes back to the implementer only genuinely implementer-owned core-path gaps.
 - Reviewer never fixes; you route its findings to fresh implementers.
 - All roles file discovery beads; you triage them.
 
@@ -192,6 +252,6 @@ To re-launch a parked or interrupted background initiative by id, use `ateam res
 - references/registry.md — initiative schema + exact registry commands
 - references/gate-protocol.md — the parked-gate sequence (must never vary)
 - references/execution.md — spawn/worktree/merge mechanics
-- references/teardown.md — the close-out checklist
+- references/wind-down.md — the wind-down checklist (includes the close-out step)
 
 (To spin off separable work as its own background initiative, use the `/agent-teams:dri-dispatch` skill — not a hand-rolled `claude --bg`.)

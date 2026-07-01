@@ -12,16 +12,32 @@ function defaultBgSession(sessions: SessionState[]): SessionState | undefined {
   return sessions.find((s) => s.kind === "background" && s.id != null);
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, urgent = true }: { status: string; urgent?: boolean }) {
   const cls =
-    status === "busy" || status === "working"
-      ? "badge badge--busy"
-      : status === "idle"
-        ? "badge badge--idle"
-        : status === "done" || status === "stopped"
-          ? "badge badge--done"
-          : "badge badge--default";
+    urgent && (status === "waiting" || status === "blocked")
+      ? "badge badge--urgent"
+      : status === "busy" || status === "working"
+        ? "badge badge--busy"
+        : status === "idle"
+          ? "badge badge--idle"
+          : status === "done" || status === "stopped"
+            ? "badge badge--done"
+            : "badge badge--default";
   return <span className={cls}>{status}</span>;
+}
+
+// Simple relative-time label for a header timestamp, e.g. "2m ago".
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const diffSec = Math.round((Date.now() - then) / 1000);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay}d ago`;
 }
 
 // Streams raw chunked bytes from the logs endpoint into an xterm Terminal instance.
@@ -100,9 +116,11 @@ function LogPane({
 function AttachButton({
   initiativeId,
   session,
+  compact = false,
 }: {
   initiativeId: string;
   session: SessionState;
+  compact?: boolean;
 }) {
   const [toast, setToast] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -127,7 +145,7 @@ function AttachButton({
   return (
     <span className="attach-slot">
       <button
-        className="attach-btn"
+        className={compact ? "attach-btn attach-btn--compact" : "attach-btn"}
         onClick={() => { void handleAttach(); }}
         disabled={pending}
       >
@@ -186,15 +204,39 @@ export default function DrillInView() {
     );
   }
 
-  // Only background sessions with a short id can be logged/attached.
   const bgSessions = detail.sessions.filter((s) => s.kind === "background" && s.id != null);
+  const reversedNotes = detail.notesHistory.slice().reverse();
 
   return (
     <div className="drillin">
-      <div className="drillin-back">
+      {/* Top toolbar: back + attach */}
+      <div className="drillin-toolbar">
         <button className="back-btn" onClick={() => navigate(-1)}>
           ← Back
         </button>
+        {bgSessions.length > 0 && (() => {
+          const primary = bgSessions[0];
+          if (!primary) return null;
+          return (
+          <div className="toolbar-attach">
+            {bgSessions.length === 1 ? (
+              <>
+                <span className="toolbar-attach-label">
+                  {primary.name ?? primary.id ?? primary.sessionId}
+                </span>
+                <AttachButton initiativeId={detail.id} session={primary} />
+              </>
+            ) : (
+              bgSessions.map((s) => (
+                <span key={s.id} className="toolbar-attach-item">
+                  <span className="toolbar-attach-label">{s.name ?? s.id}</span>
+                  <AttachButton initiativeId={detail.id} session={s} compact />
+                </span>
+              ))
+            )}
+          </div>
+          );
+        })()}
       </div>
 
       {/* Header */}
@@ -202,16 +244,25 @@ export default function DrillInView() {
         <h1 className="drillin-title">{detail.title}</h1>
         <div className="drillin-meta">
           <span className="meta-item">
+            <span className="meta-label">status</span>
+            {/* detail.status is the bd issue status (open|in_progress|blocked|deferred|closed),
+                not session state — urgent=false so a blocked epic doesn't false-fire the
+                session "needs you now" treatment. */}
+            <StatusBadge status={detail.status} urgent={false} />
+          </span>
+          <span className="meta-item">
+            <span className="meta-label">last activity</span>
+            <span className="meta-value" title={detail.updated_at}>
+              {relativeTime(detail.updated_at)}
+            </span>
+          </span>
+          <span className="meta-item">
             <span className="meta-label">branch</span>
             <span className="meta-value meta-value--mono">{detail.branch || "—"}</span>
           </span>
           <span className="meta-item">
             <span className="meta-label">repo</span>
             <span className="meta-value meta-value--mono">{detail.repo || "—"}</span>
-          </span>
-          <span className="meta-item">
-            <span className="meta-label">status</span>
-            <StatusBadge status={detail.status} />
           </span>
           {detail.prUrl && (
             <span className="meta-item">
@@ -232,16 +283,16 @@ export default function DrillInView() {
         )}
       </section>
 
-      {/* Notes / history */}
+      {/* Notes / history — most recent first */}
       <section className="drillin-section">
         <h2 className="section-title">History</h2>
-        {detail.notesHistory.length === 0 ? (
+        {reversedNotes.length === 0 ? (
           <p className="section-empty">No notes yet.</p>
         ) : (
           <ol className="notes-list">
-            {detail.notesHistory.map((note, i) => (
+            {reversedNotes.map((note, i) => (
               <li key={i} className="notes-item">
-                <span className="notes-index">{detail.notesHistory.length - i}</span>
+                <span className="notes-index">{reversedNotes.length - i}</span>
                 <pre className="notes-text">{note}</pre>
               </li>
             ))}
@@ -249,7 +300,7 @@ export default function DrillInView() {
         )}
       </section>
 
-      {/* Sessions / team members */}
+      {/* Sessions */}
       <section className="drillin-section">
         <h2 className="section-title">Sessions</h2>
         {detail.sessions.length === 0 ? (
@@ -262,7 +313,7 @@ export default function DrillInView() {
                 <th>kind</th>
                 <th>status</th>
                 <th>state</th>
-                <th>sessionId</th>
+                <th>waiting for</th>
               </tr>
             </thead>
             <tbody>
@@ -271,10 +322,10 @@ export default function DrillInView() {
                   <td className="mono">{s.name ?? s.id ?? "—"}</td>
                   <td>{s.kind}</td>
                   <td>
-                    <StatusBadge status={s.status} />
+                    <StatusBadge status={s.status ?? "—"} />
                   </td>
-                  <td>{s.state ?? "—"}</td>
-                  <td className="mono session-id">{s.sessionId}</td>
+                  <td>{s.state ? <StatusBadge status={s.state} /> : "—"}</td>
+                  <td className="mono">{s.waitingFor ?? ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -282,37 +333,70 @@ export default function DrillInView() {
         )}
       </section>
 
-      {/* Work beads */}
+      {/* Work beads — epics with nested children, then bare labeled beads */}
       <section className="drillin-section">
         <h2 className="section-title">Work Beads</h2>
         {detail.workBeads.length === 0 ? (
           <p className="section-empty">No beads for this initiative.</p>
-        ) : (
-          <table className="beads-table">
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>title</th>
-                <th>status</th>
-                <th>priority</th>
-                <th>type</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.workBeads.map((b) => (
-                <tr key={b.id} className="beads-row">
-                  <td className="mono">{b.id}</td>
-                  <td>{b.title}</td>
-                  <td>
-                    <StatusBadge status={b.status} />
-                  </td>
-                  <td>{b.priority}</td>
-                  <td>{b.issue_type}</td>
+        ) : (() => {
+          const epics = detail.workBeads.filter(b => b.issue_type === "epic");
+          const childrenByEpic = new Map<string, typeof detail.workBeads>();
+          for (const b of detail.workBeads) {
+            if (b.parent) {
+              const list = childrenByEpic.get(b.parent) ?? [];
+              list.push(b);
+              childrenByEpic.set(b.parent, list);
+            }
+          }
+          const epicIds = new Set(epics.map(e => e.id));
+          const bareBeads = detail.workBeads.filter(
+            b => b.issue_type !== "epic" && !b.parent
+          );
+          return (
+            <table className="beads-table">
+              <thead>
+                <tr>
+                  <th>id</th>
+                  <th>title</th>
+                  <th>status</th>
+                  <th>priority</th>
+                  <th>type</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {epics.map(epic => (
+                  <>
+                    <tr key={epic.id} className="beads-row beads-row--epic">
+                      <td className="mono">{epic.id}</td>
+                      <td className="beads-epic-title">{epic.title}</td>
+                      <td><StatusBadge status={epic.status} /></td>
+                      <td>{epic.priority}</td>
+                      <td>{epic.issue_type}</td>
+                    </tr>
+                    {(childrenByEpic.get(epic.id) ?? []).map(child => (
+                      <tr key={child.id} className="beads-row beads-row--child">
+                        <td className="mono beads-child-id"><span className="beads-tree-connector">└</span>{child.id}</td>
+                        <td className="beads-child-title">{child.title}</td>
+                        <td><StatusBadge status={child.status} /></td>
+                        <td>{child.priority}</td>
+                        <td>{child.issue_type}</td>
+                      </tr>
+                    ))}
+                  </>
+                ))}
+                {bareBeads.map(b => (
+                  <tr key={b.id} className="beads-row">
+                    <td className="mono">{b.id}</td>
+                    <td>{b.title}</td>
+                    <td><StatusBadge status={b.status} /></td>
+                    <td>{b.priority}</td>
+                    <td>{b.issue_type}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        })()}
       </section>
 
       {/* Logs pane */}
@@ -350,24 +434,6 @@ export default function DrillInView() {
         )}
       </section>
 
-      {/* Attach buttons */}
-      <section className="drillin-section">
-        <h2 className="section-title">Attach</h2>
-        {bgSessions.length === 0 ? (
-          <p className="section-empty">No background sessions to attach to.</p>
-        ) : (
-          <div className="attach-list">
-            {bgSessions.map((s) => (
-              <div key={s.id} className="attach-row">
-                <span className="mono attach-label">
-                  {s.name ?? s.id ?? s.sessionId}
-                </span>
-                <AttachButton initiativeId={detail.id} session={s} />
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
     </div>
   );
 }

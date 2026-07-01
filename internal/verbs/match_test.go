@@ -33,20 +33,11 @@ type testExecError struct{}
 
 func (e *testExecError) Error() string { return "exit status 1" }
 
-func matchReg() cli.Registry {
-	reg := make(cli.Registry)
-	verbs.RegisterMatch(reg)
-	return reg
-}
-
+// runVerb dispatches a match verb through RegisterMatchKong. args are
+// additional CLI tokens after the verb name (match verbs take no positionals,
+// so callers pass nil in practice).
 func runVerb(t *testing.T, name string, issues []bd.Issue, args []string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	reg := matchReg()
-	cmd, ok := reg.Lookup(name)
-	if !ok {
-		t.Fatalf("verb %q not found", name)
-	}
-
 	var outBuf, errBuf bytes.Buffer
 	client := bd.NewClientWithExec("/fake/home", fakeExec(issues))
 	ctx := &cli.Context{
@@ -55,19 +46,26 @@ func runVerb(t *testing.T, name string, issues []bd.Issue, args []string) (stdou
 		Stdout: &outBuf,
 		Stderr: &errBuf,
 	}
-	err := cmd.Run(ctx, args)
-	exitCode = cli.ExitCode(err)
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	verbs.RegisterMatchKong(p)
+	tokens := append([]string{name}, args...)
+	kctx, parseErr := p.Parse(tokens)
+	if parseErr != nil {
+		exitCode = cli.ExitCode(parseErr)
+		return outBuf.String(), errBuf.String(), exitCode
+	}
+	kctx.Bind(ctx)
+	runErr := kctx.Run(ctx)
+	exitCode = cli.ExitCode(runErr)
 	return outBuf.String(), errBuf.String(), exitCode
 }
 
+// runVerbErr dispatches a match verb with a bd client that always errors.
 func runVerbErr(t *testing.T, name string, args []string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	reg := matchReg()
-	cmd, ok := reg.Lookup(name)
-	if !ok {
-		t.Fatalf("verb %q not found", name)
-	}
-
 	var outBuf, errBuf bytes.Buffer
 	client := bd.NewClientWithExec("/fake/home", fakeExecErr())
 	ctx := &cli.Context{
@@ -76,8 +74,20 @@ func runVerbErr(t *testing.T, name string, args []string) (stdout, stderr string
 		Stdout: &outBuf,
 		Stderr: &errBuf,
 	}
-	err := cmd.Run(ctx, args)
-	exitCode = cli.ExitCode(err)
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	verbs.RegisterMatchKong(p)
+	tokens := append([]string{name}, args...)
+	kctx, parseErr := p.Parse(tokens)
+	if parseErr != nil {
+		exitCode = cli.ExitCode(parseErr)
+		return outBuf.String(), errBuf.String(), exitCode
+	}
+	kctx.Bind(ctx)
+	runErr := kctx.Run(ctx)
+	exitCode = cli.ExitCode(runErr)
 	return outBuf.String(), errBuf.String(), exitCode
 }
 

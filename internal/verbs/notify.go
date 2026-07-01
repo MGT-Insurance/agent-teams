@@ -20,12 +20,21 @@ type transportForFunc func(home string) (transport.Transport, error)
 // Injected so tests can capture bd calls without an exec.
 type labelAddFunc func(bd cli.BDRunner, id, label string) error
 
-// RegisterNotify registers the notify verb.
-func RegisterNotify(reg cli.Registry) {
-	reg.Register(&notifyCmd{
+// RegisterNotifyKong registers the notify verb onto p using a native kong struct.
+func RegisterNotifyKong(p *cli.Parser) {
+	p.AddVerb("notify", "Send a message to a human via the configured transport.", &notifyKong{
 		transportFor: transport.For,
 		labelAdd:     defaultLabelAdd,
 	})
+}
+
+// notifyForGate adapts notifyKong into the gateNotifyFunc signature so
+// `ateam gate` can fire a best-effort phone ping in-process after recording
+// the gate. kong has no runtime verb registry to look "notify" up by name
+// post-registration, so gate constructs and runs a notifyKong directly.
+func notifyForGate(ctx *cli.Context, id, file string) error {
+	cmd := &notifyKong{ID: id, File: file, transportFor: transport.For, labelAdd: defaultLabelAdd}
+	return cmd.Run(ctx)
 }
 
 // defaultLabelAdd runs `bd label add <id> <label>`.
@@ -34,46 +43,45 @@ func defaultLabelAdd(b cli.BDRunner, id, label string) error {
 	return err
 }
 
-// notifyCmd implements `ateam notify <initiative-id> --file <path> [--title <t>]`.
-type notifyCmd struct {
-	transportFor transportForFunc
-	labelAdd     labelAddFunc
+// notifyKong is the kong-native form of notifyCmd: `ateam notify <id> --file <path> [--title <t>]`.
+type notifyKong struct {
+	ID    string `arg:"" name:"id" help:"Initiative ID."`
+	File  string `name:"file" help:"Path to the message body file (required)." required:""`
+	Title string `name:"title" help:"Optional title (defaults to the initiative's title)."`
+
+	transportFor transportForFunc `kong:"-"`
+	labelAdd     labelAddFunc     `kong:"-"`
 }
 
-func (c *notifyCmd) Name() string { return "notify" }
-
-// Run implements:
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
-//		ateam notify <initiative-id> --file <path> [--title <t>]
-//
-//	 1. Reads body from --file; title from --title or derived from the initiative.
-//	 2. Resolves the active transport via transport.For(workspace.Home()).
-//	 3. Reads the initiative bead's labels for an existing "thread:<N>" label.
-//	 4. Calls transport.Send with ThreadRef="" (new topic) or the existing ref.
-//	 5. On a new topic: records "thread:<returned-ref>" on the initiative bead.
-//	 6. Prints the thread ref and a confirmation line.
-func (c *notifyCmd) Run(ctx *cli.Context, args []string) error {
+//  1. Reads body from --file; title from --title or derived from the initiative.
+//  2. Resolves the active transport via transport.For(workspace.Home()).
+//  3. Reads the initiative bead's labels for an existing "thread:<N>" label.
+//  4. Calls transport.Send with ThreadRef="" (new topic) or the existing ref.
+//  5. On a new topic: records "thread:<returned-ref>" on the initiative bead.
+//  6. Prints the thread ref and a confirmation line.
+func (c *notifyKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam notify: nil context")
 	}
-
-	initiativeID, file, title, err := parseNotifyFlags(args)
-	if err != nil {
-		return err
+	if _, err := os.Stat(c.File); err != nil {
+		return cli.Usagef("ateam notify: file not found: %s", c.File)
 	}
 
-	body, err := os.ReadFile(file)
+	body, err := os.ReadFile(c.File)
 	if err != nil {
 		return fmt.Errorf("ateam notify: read file: %w", err)
 	}
 
 	// Look up the initiative bead.
-	issue, err := bd.ShowIssue(ctx.BD, initiativeID)
+	issue, err := bd.ShowIssue(ctx.BD, c.ID)
 	if err != nil {
-		return fmt.Errorf("ateam notify: look up initiative %s: %w", initiativeID, err)
+		return fmt.Errorf("ateam notify: look up initiative %s: %w", c.ID, err)
 	}
 
 	// Derive title from the initiative if not provided.
+	title := c.Title
 	if title == "" {
 		title = issue.Title
 	}
@@ -89,7 +97,7 @@ func (c *notifyCmd) Run(ctx *cli.Context, args []string) error {
 	}
 
 	msg := transport.OutboundMessage{
-		InitiativeID: initiativeID,
+		InitiativeID: c.ID,
 		ThreadRef:    threadRef,
 		Title:        title,
 		Body:         string(body),
@@ -104,44 +112,16 @@ func (c *notifyCmd) Run(ctx *cli.Context, args []string) error {
 	// reuse it and the relay can reverse-map (contract section 2).
 	if threadRef == "" && returnedRef != "" {
 		label := "thread:" + returnedRef
-		if labErr := c.labelAdd(ctx.BD, initiativeID, label); labErr != nil {
+		if labErr := c.labelAdd(ctx.BD, c.ID, label); labErr != nil {
 			// Non-fatal: notify succeeded; label write failure is surfaced but
 			// does not break the caller.
-			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not record thread label on %s: %v\n", initiativeID, labErr)
+			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not record thread label on %s: %v\n", c.ID, labErr)
 		}
 	}
 
 	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)
-	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", initiativeID)
+	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", c.ID)
 	return nil
-}
-
-// parseNotifyFlags parses <initiative-id> --file <p> [--title <t>] from args.
-func parseNotifyFlags(args []string) (initiativeID, file, title string, err error) {
-	if len(args) == 0 {
-		return "", "", "", cli.Usagef("ateam notify: missing <initiative-id>")
-	}
-	initiativeID = args[0]
-	for i := 1; i < len(args); {
-		if v, n := parseFlag(args, i, "--file"); n > 0 {
-			file = v
-			i += n
-			continue
-		}
-		if v, n := parseFlag(args, i, "--title"); n > 0 {
-			title = v
-			i += n
-			continue
-		}
-		return "", "", "", cli.Usagef("ateam notify: unknown flag %q", args[i])
-	}
-	if file == "" {
-		return "", "", "", cli.Usagef("ateam notify: --file required")
-	}
-	if _, statErr := os.Stat(file); statErr != nil {
-		return "", "", "", cli.Usagef("ateam notify: file not found: %s", file)
-	}
-	return initiativeID, file, title, nil
 }
 
 // threadLabelValue scans labels for a "thread:<ref>" entry and returns the ref

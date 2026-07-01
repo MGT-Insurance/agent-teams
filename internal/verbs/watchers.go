@@ -1,0 +1,177 @@
+// This file is owned by Track A (watcher-state reconciliation).
+package verbs
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+)
+
+// openInitiativesFunc is the function type for loading open initiatives.
+// Injected so tests can supply a fake and avoid shelling to real bd.
+type openInitiativesFunc func() ([]bd.Issue, error)
+
+// RegisterWatchersKong registers watcher verbs onto p using native kong structs.
+func RegisterWatchersKong(p *cli.Parser) {
+	p.AddVerb("watchers", "Show watcher state for all open initiatives.", &watchersKong{
+		agentsFunc:      defaultAgentsJSON,
+		initiativesFunc: nil,
+	})
+}
+
+// ── kong struct ────────────────────────────────────────────────────────────────
+
+// watchersKong implements `ateam watchers`.
+// agentsFunc and initiativesFunc are DI fields; kong must ignore them.
+type watchersKong struct {
+	agentsFunc      agentsJSONFunc      `kong:"-"`
+	initiativesFunc openInitiativesFunc `kong:"-"`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+//
+// For each open initiative: reads its watcher pidfile, checks liveness, and
+// joins against live Claude sessions. Also scans mailbox/*.watcher.pid for
+// pidfiles whose initiative id is not in the open set (orphaned/stale).
+//
+// Output columns: id, title, watcher-state, pid, live-session.
+func (c *watchersKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam watchers: nil context")
+	}
+
+	// Load open initiatives — either injected (tests) or via ctx.BD.
+	var issues []bd.Issue
+	if c.initiativesFunc != nil {
+		var err error
+		issues, err = c.initiativesFunc()
+		if err != nil {
+			return fmt.Errorf("ateam watchers: list initiatives: %w", err)
+		}
+	} else {
+		if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+			return fmt.Errorf("ateam watchers: list initiatives: %w", err)
+		}
+	}
+
+	// Load live sessions. Graceful degrade: on failure, report session as 'unknown'.
+	sessions, agentsErr := c.agentsFunc()
+
+	// Build a set of open initiative ids for the orphan scan below.
+	openIDs := make(map[string]struct{}, len(issues))
+	for _, iss := range issues {
+		openIDs[iss.ID] = struct{}{}
+	}
+
+	mailboxDir := filepath.Join(ctx.Home, "mailbox")
+
+	// Print header.
+	fmt.Fprintf(ctx.Stdout, "%-20s %-36s %-16s %-8s %s\n",
+		"ID", "TITLE", "WATCHER-STATE", "PID", "LIVE-SESSION")
+
+	// Per open initiative row.
+	for _, iss := range issues {
+		wt := worktreePath(iss.Description)
+		pidFile := filepath.Join(mailboxDir, iss.ID+".watcher.pid")
+
+		state, pid := watcherState(pidFile)
+
+		liveSession := "unknown"
+		if agentsErr == nil {
+			if hasLiveSession(sessions, wt) {
+				liveSession = "yes"
+			} else {
+				liveSession = "no"
+			}
+		}
+
+		pidStr := "-"
+		if pid > 0 {
+			pidStr = strconv.Itoa(pid)
+		}
+
+		title := truncate(iss.Title, 36)
+		fmt.Fprintf(ctx.Stdout, "%-20s %-36s %-16s %-8s %s\n",
+			iss.ID, title, state, pidStr, liveSession)
+	}
+
+	// Orphan scan: pidfiles for non-open initiatives.
+	orphans, err := filepath.Glob(filepath.Join(mailboxDir, "*.watcher.pid"))
+	if err != nil {
+		orphans = nil
+	}
+	for _, pidFile := range orphans {
+		base := filepath.Base(pidFile)
+		id := strings.TrimSuffix(base, ".watcher.pid")
+		if _, open := openIDs[id]; open {
+			continue // already reported above
+		}
+		// Orphaned pidfile: watcher must not exist for a non-open initiative.
+		//   - pid alive -> ORPHAN-RUNNING (needs killing)
+		//   - pid dead/invalid -> STALE-PIDFILE (needs cleanup)
+		baseState, pid := watcherState(pidFile)
+		orphanState := "STALE-PIDFILE"
+		if baseState == "OK" {
+			orphanState = "ORPHAN-RUNNING"
+		}
+		pidStr := "-"
+		if pid > 0 {
+			pidStr = strconv.Itoa(pid)
+		}
+		liveSession := "unknown"
+		if agentsErr == nil {
+			liveSession = "no" // orphan: no worktree to match against
+		}
+		fmt.Fprintf(ctx.Stdout, "%-20s %-36s %-16s %-8s %s\n",
+			id, "<orphan>", orphanState, pidStr, liveSession)
+	}
+
+	return nil
+}
+
+// watcherState reads the pidfile at path and returns the watcher state plus
+// the pid it found (0 when absent or unreadable).
+//
+// States:
+//   - "OK"             — pidfile present and pid is alive
+//   - "STALE-PIDFILE"  — pidfile present but pid is dead
+//   - "MISSING-WATCHER"— no pidfile (or unreadable)
+func watcherState(pidFile string) (state string, pid int) {
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		// No pidfile.
+		return "MISSING-WATCHER", 0
+	}
+	pidStr := strings.TrimSpace(string(data))
+	p, err := strconv.Atoi(pidStr)
+	if err != nil || p <= 0 {
+		// Pidfile present but contents invalid — treat as stale.
+		return "STALE-PIDFILE", 0
+	}
+	if pidAlive(p) {
+		return "OK", p
+	}
+	return "STALE-PIDFILE", p
+}
+
+// pidAlive reports whether the process with the given pid exists.
+// Uses signal 0: no error (or EPERM) means the process exists.
+func pidAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// truncate shortens s to at most n runes, appending "…" if cut.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n-1]) + "…"
+}

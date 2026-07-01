@@ -1,5 +1,4 @@
-// Tests for spawnClaudeLogs: verifies the `fired` guard and that a non-zero exit
-// always terminates (calls onError on non-zero, calls onEnd on clean exit).
+// Tests for cli.ts wrappers: bdLabeledBeads and spawnClaudeLogs.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
@@ -32,7 +31,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-const { spawnClaudeLogs } = await import("./cli.js");
+const { spawnClaudeLogs, bdLabeledBeads } = await import("./cli.js");
 
 describe("spawnClaudeLogs", () => {
   beforeEach(() => {
@@ -86,5 +85,32 @@ describe("spawnClaudeLogs", () => {
 
     expect(onEnd).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
+  });
+});
+
+describe("bdLabeledBeads", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves with stdout on clean exit", async () => {
+    const payload = JSON.stringify([{ id: "at-abc1", title: "test bead" }]);
+    const promise = bdLabeledBeads("/repo/path", "at-abc");
+
+    // Emit data then close 0.
+    currentProc.stdout.emit("data", Buffer.from(payload));
+    currentProc.emit("close", 0);
+
+    const result = await promise;
+    expect(result).toBe(payload);
+  });
+
+  it("rejects with CliError on non-zero exit", async () => {
+    const promise = bdLabeledBeads("/repo/path", "at-abc");
+
+    currentProc.stderr.emit("data", Buffer.from("some error"));
+    currentProc.emit("close", 1);
+
+    await expect(promise).rejects.toMatchObject({ name: "CliError", exitCode: 1 });
   });
 });

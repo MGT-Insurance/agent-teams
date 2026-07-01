@@ -76,9 +76,16 @@ export function bdHumanList(workspace: string): Promise<string> {
   return runCli("bd", ["-C", workspace, "list", "--label", "human", "--json"]);
 }
 
-// Returns raw JSON string from `bd -C <projectRepo> list --json`.
-export function bdWorkBeads(projectRepo: string): Promise<string> {
-  return runCli("bd", ["-C", projectRepo, "list", "--json"]);
+// Returns raw JSON string from `bd -C <workspace> list --status=closed --json`.
+// Mirrors `ateam list-json` (which is `bd list --status=open --json`) but for the
+// closed half — same RawInitiative shape, parsed via parseAteamListJson.
+export function bdClosedInitiatives(workspace: string): Promise<string> {
+  return runCli("bd", ["-C", workspace, "list", "--status=closed", "--json"]);
+}
+
+// Returns raw JSON string from `bd -C <repo> list --label <label> --json`.
+export function bdLabeledBeads(repo: string, label: string): Promise<string> {
+  return runCli("bd", ["-C", repo, "list", "--label", label, "--status=all", "--json"]);
 }
 
 // Spawns `claude logs <sessionId>` and pipes raw bytes to the provided callback.

@@ -29,6 +29,18 @@
   padding: 1px 8px;
 }
 
+.inbox-header__toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
 /* Banner for disconnected / error states */
 .inbox-banner {
   padding: 8px 14px;
@@ -68,28 +80,6 @@
   font-size: 14px;
 }
 
-/* Section containers */
-.inbox-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.inbox-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.inbox-section__title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-text-muted);
-  margin: 0 0 4px 0;
-}
-
 /* Inbox list */
 .inbox-list {
   list-style: none;
@@ -104,10 +94,11 @@
 
 /* Row card */
 .inbox-row {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px 16px;
+  padding: 14px 32px 14px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -133,6 +124,15 @@
 
 .inbox-row--generic {
   border-left: 3px solid var(--color-accent);
+}
+
+/* High-visibility treatment (agent-teams-ni2y): keyed off raw status="waiting" /
+   state="blocked", independent of kind — a check row can be just as loud as a
+   waiting row. Blocked-no-gate rows must NOT be muted, so `check` no longer
+   gets a de-emphasized/opacity treatment (removed). */
+.inbox-row--loud {
+  border-color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 8%, var(--color-surface));
 }
 
 .inbox-row__header {
@@ -168,6 +168,34 @@
   color: var(--color-accent);
 }
 
+.inbox-row__badge--check {
+  background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
+  color: var(--color-text-muted);
+}
+
+/* Raw status/state readout — a plain verbatim chip pair, always on, distinct
+   from the derived kind badge above. */
+.inbox-row__status-chip,
+.inbox-row__state-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* Loud variant fires on the raw values (status="waiting" / state="blocked"),
+   independent of kind — see .inbox-row--loud above. */
+.inbox-row__status-chip--loud,
+.inbox-row__state-chip--loud {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 15%, transparent);
+  font-weight: 600;
+}
+
 .inbox-row__title {
   font-size: 14px;
   font-weight: 500;
@@ -187,26 +215,56 @@
   text-decoration: underline;
 }
 
-/* PR chip — shown on waiting items that also have an open PR (delivery is orthogonal). */
-.inbox-row__pr-chip {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: color-mix(in srgb, #a78bfa 20%, transparent);
-  color: #a78bfa;
-  flex-shrink: 0;
-}
-
-/* Future triage action slot — reserve space but invisible in v1 */
+/* Action slot — upper-right corner, flush with the card edge */
 .inbox-row__action-slot {
-  margin-left: auto;
+  position: absolute;
+  top: -5px;
+  right: -1px;
 }
 
-.inbox-row__question {
+.inbox-row__next-action {
   font-size: 13px;
   color: var(--color-text-muted);
   line-height: 1.5;
+}
+
+.inbox-row__secondary {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+/* Inset box groups the agent's recommendation + alternative as a distinct
+   unit beneath the question line. */
+.inbox-row__suggestion {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 8px 12px;
+  background: color-mix(in srgb, var(--color-text-muted) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text-muted) 28%, transparent);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 4px;
+}
+
+/* Colored, weighted label distinguishes recommendation (endorsed) from
+   alternative (fallback) and from the plain question line above. */
+.inbox-row__secondary-label {
+  font-weight: 600;
+}
+
+.inbox-row__secondary--recommendation .inbox-row__secondary-label {
+  color: var(--color-ok);
+}
+
+.inbox-row__secondary--alternative .inbox-row__secondary-label {
+  color: var(--color-warn);
+}
+
+.inbox-row__secondary--context .inbox-row__secondary-label {
+  color: var(--color-accent);
+}
+
+.inbox-row__secondary--waiting-for .inbox-row__secondary-label {
+  color: var(--color-warn);
 }

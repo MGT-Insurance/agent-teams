@@ -1,6 +1,7 @@
 // Pure parsing functions over raw CLI output.
 // These are the riskiest logic — they are unit-tested against real fixtures.
 
+import { existsSync } from "node:fs";
 import type {
   RawInitiative,
   ParsedInitiative,
@@ -21,6 +22,18 @@ const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
 export function extractPrUrl(text: string): string | null {
   const m = PR_URL_RE.exec(text);
   return m ? (m[0] ?? null) : null;
+}
+
+// Extract the root epic bead id from initiative description or notes.
+// Scans for a line matching `epic: <id>` — description is checked first,
+// then notes. Returns null when neither contains the field (legacy initiatives).
+const EPIC_RE = /^epic:\s*(\S+)/m;
+
+export function extractEpic(description: string, notes: string): string | null {
+  const dm = EPIC_RE.exec(description);
+  if (dm) return dm[1] ?? null;
+  const nm = EPIC_RE.exec(notes);
+  return nm ? (nm[1] ?? null) : null;
 }
 
 // Parse the `key: value` lines embedded in description text.
@@ -73,6 +86,7 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     mode: fields["mode"] ?? "",
     goal: fields["goal"] ?? "",
     prUrl,
+    epic: extractEpic(description, notes),
   };
 }
 
@@ -184,30 +198,34 @@ export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKi
 
 // Derive needsHuman with flavor (agent-teams-0rl: explicit gate takes priority).
 // Truth table:
+//   merged + !worktreeExists + signal=working|waiting -> "reap" (zombie: worktree gone, session ALIVE)
 //   merged                            -> false (done)
 //   explicit gate == "review"         -> "review"  (AUTHORITATIVE; wins over session)
 //   explicit gate == "question"       -> "waiting" (agent asking a question)
-//   else session WAITING/blocked      -> "waiting" (active OR delivered; MOST URGENT)
+//   else session WAITING/blocked      -> "check"   (no declared gate; softer tier)
 //   else session WORKING              -> false (refining — not in inbox)
 //   else delivered + session ENDED    -> "generic" (needs input; NOT "review" anymore)
 //   else delivered + session NONE     -> "generic" (graceful degrade; label "needs you")
 //   else active + session ENDED/NONE  -> false (idle/dormant, no PR)
 //
-// KEY CHANGE (agent-teams-0rl): "review" flavor now comes ONLY from an explicit
-// gate:review label — not from the delivered+ended session inference.
-// The delivered+ended path is DEMOTED to "generic".
+// KEY CHANGE (agent-teams-0rl): "review" flavor comes ONLY from explicit gate:review label.
+// KEY CHANGE (agent-teams-ja9c): session-only waiting/blocked with NO gate -> "check" (soft tier).
+// KEY CHANGE (agent-teams-d10b.2): reap row — zombie detection (merged, worktree gone, session alive).
+// Gate checks come BEFORE signal check — gate:question wins over a blocked session.
 export function deriveNeedsHuman(
   delivery: DeliveryStatus,
   signal: SessionSignal,
   gate: ExplicitGateKind | null,
+  worktreeExists: boolean = true,
 ): false | NeedsHumanFlavor {
+  if (delivery === "merged" && !worktreeExists && (signal === "working" || signal === "waiting")) return "reap";
   if (delivery === "merged") return false;
   // Explicit gate:review -> AUTHORITATIVE review signal (wins over everything).
   if (gate === "review") return "review";
   // Explicit gate:question (or legacy human-only) -> agent is waiting on your answer.
   if (gate === "question") return "waiting";
-  // Session waiting/blocked -> most urgent, regardless of delivery state.
-  if (signal === "waiting") return "waiting";
+  // Session waiting/blocked with NO gate -> soft "check" tier (not a declared ask).
+  if (signal === "waiting") return "check";
   // Working session -> refining (not in inbox).
   if (signal === "working") return false;
   // No active working session — check delivery for PR state.
@@ -275,17 +293,28 @@ export function derivePhase(notes: string): string {
 // one initiative throws (e.g. malformed data from a freshly-registered entry), that
 // initiative degrades to a minimal safe node and a warning is logged.  The rest of
 // the snapshot is unaffected — the dashboard stays live.
+// existsFn checks whether a worktree path exists on the host. Injected so parse.ts
+// stays pure (no fs import); snapshot.ts passes fs.existsSync. Defaults to a no-op
+// that reports "not present" — keeps the many existing unit-test callers unchanged.
 export function buildInitiativeNodes(
   initiatives: ParsedInitiative[],
   sessions: SessionState[],
   humanGatedIds: Set<string>,
+  existsFn: (path: string) => boolean = () => false,
 ): InitiativeNode[] {
   return initiatives.map((initiative) => {
+    // "On this machine" signal (at-gvv): empty/missing worktree path => false.
+    const worktreeExists = initiative.worktree ? existsFn(initiative.worktree) : false;
+    // All background session entries (alive + dead) matched to this worktree.
+    // sessionCount drives the "multiple sessions on one worktree" alert; the
+    // primary `session` prefers an alive entry (status present) so the chip
+    // reflects a running session over a dead corpse when both exist.
+    const matched = initiative.worktree
+      ? sessions.filter((s) => s.kind === "background" && s.cwd === initiative.worktree)
+      : [];
+    const sessionCount = matched.length;
+    const session = matched.find((s) => s.status != null) ?? matched[0] ?? null;
     try {
-      const session =
-        sessions.find(
-          (s) => s.kind === "background" && s.cwd === initiative.worktree,
-        ) ?? null;
 
       // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
       // labels is optional/missing on older entries — deriveExplicitGate handles that safely.
@@ -301,9 +330,9 @@ export function buildInitiativeNodes(
       // Two-dimension state model fields (agent-teams-blo).
       const delivery = deriveDelivery(initiative);
       const signal = deriveSessionSignal(session);
-      const needsHuman = deriveNeedsHuman(delivery, signal, gate);
+      const needsHuman = deriveNeedsHuman(delivery, signal, gate, worktreeExists);
 
-      return { initiative, session, activity, phase, delivery, needsHuman };
+      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount };
     } catch (err) {
       console.warn(
         `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -316,6 +345,8 @@ export function buildInitiativeNodes(
         phase: "active",
         delivery: "none" as const,
         needsHuman: false as const,
+        worktreeExists,
+        sessionCount,
       };
     }
   });
@@ -333,13 +364,101 @@ export function buildOrphanSessions(
   );
 }
 
+// Parse a named field from the interior of a single ateam-ask block body.
+// Returns the trimmed value string, or "" when the field is absent/empty.
+function parseAskField(body: string, field: string): string {
+  const prefix = `${field}:`;
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length).trim();
+    }
+  }
+  return "";
+}
+
+// Pure helper: scan notes for the LAST valid <<<ateam-ask ... >>> sentinel block
+// and return {decision, recommendation, alternative, context} when found, null otherwise.
+// Mirrors the Go implementation in internal/verbs/query.go (extractLatestAsk/parseAskBody).
+//
+// Grammar:
+//   open:  literal "<<<ateam-ask"
+//   close: ">>>" anchored at start of a line (or start of remaining text)
+//   A block is valid only if the decision field is non-empty; unclosed blocks are skipped.
+//   The LAST valid block wins.
+export function extractLatestAsk(
+  notes: string,
+): { decision: string; recommendation: string; alternative: string; context: string } | null {
+  const OPEN = "<<<ateam-ask";
+
+  // Returns the index of the start of ">>>" that anchors to a line boundary,
+  // or -1 when no closing sentinel is found.
+  function closeLine(s: string): number {
+    if (s.startsWith(">>>")) return 0;
+    const idx = s.indexOf("\n>>>");
+    if (idx === -1) return -1;
+    return idx + 1; // position of the first ">" that starts ">>>"
+  }
+
+  let last: { decision: string; recommendation: string; alternative: string; context: string } | null = null;
+  let remaining = notes;
+  for (;;) {
+    const start = remaining.indexOf(OPEN);
+    if (start === -1) break;
+    const after = remaining.slice(start + OPEN.length);
+    const end = closeLine(after);
+    if (end === -1) {
+      // Unclosed block — skip, advance past the open sentinel.
+      remaining = after;
+      continue;
+    }
+    const body = after.slice(0, end);
+    const decision = parseAskField(body, "decision");
+    if (decision) {
+      last = {
+        decision,
+        recommendation: parseAskField(body, "recommendation"),
+        alternative: parseAskField(body, "alternative"),
+        context: parseAskField(body, "context"),
+      };
+    }
+    remaining = after.slice(end + ">>>".length);
+  }
+  return last;
+}
+
+// Pure helper: the last non-empty "notes block" from initiative.notes, for the
+// check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits the same
+// way index.ts builds DrillInDetail.notesHistory — on the lookahead before a line
+// starting "session " — so "last block" means the same thing everywhere in the
+// dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel (e.g. left behind by
+// `ateam clear-gate` without `--file`) so its raw markup never leaks into nextAction.
+// Returns "" when notes is empty/whitespace-only or every block is an ask sentinel.
+function lastNotesBlock(notes: string): string {
+  const blocks = notes
+    .split(/\n(?=session )/i)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((b) => !b.includes("<<<ateam-ask"));
+  return blocks.length > 0 ? (blocks[blocks.length - 1] ?? "") : "";
+}
+
 // Build InboxItem[] from already-built InitiativeNode[].
 // An item is in the inbox iff node.needsHuman !== false.
+//   needsHuman="reap"    -> zombie (at-asi): merged + worktree gone + alive session (stop to reap)
 //   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
-//   needsHuman="waiting" -> explicit gate:question/human, or session blocked/waiting
+//   needsHuman="waiting" -> explicit gate:question/human (declared ask; may have ask block)
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
+//   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
 // Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
-export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
+//
+// sessionTransitions: sessionId -> lastTransitionAt (epoch ms), from snapshot.ts's
+// stampTransitions (agent-teams-ni2y.8). Undefined for ad-hoc/endpoint-fallback callers
+// (before the first poll) -> lastActivityAt degrades to updated_at.
+export function buildInbox(
+  nodes: InitiativeNode[],
+  sessionTransitions?: Map<string, number>,
+): InboxItem[] {
   const items: InboxItem[] = [];
 
   for (const node of nodes) {
@@ -347,32 +466,122 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const { initiative } = node;
 
-    if (node.needsHuman === "review") {
+    const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
+
+    // lastActivityAt = max(bead updated_at, matched session's last transition) — the
+    // PRIMARY recency sort key (agent-teams-ni2y.8). node.session is the primary/alive
+    // session (buildInitiativeNodes already prefers it); no match or no map -> updated_at.
+    const transitionMs = node.session ? sessionTransitions?.get(node.session.sessionId) : undefined;
+    const lastActivityAt =
+      transitionMs === undefined
+        ? initiative.updated_at
+        : new Date(Math.max(Date.parse(initiative.updated_at), transitionMs)).toISOString();
+
+    // Any matched entry with a valid short 8-hex id is attachable via `claude attach <id>`,
+    // regardless of whether the session is alive (status present) or detached (status absent).
+    const sessionId =
+      typeof node.session?.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
+        ? node.session.id
+        : undefined;
+
+    // RAW session status/state/waitingFor — verbatim pass-through on every row,
+    // never collapsed into `kind` (agent-teams-ni2y.2). waitingFor is tolerant:
+    // absent on older `claude agents --json` builds, real once emitted.
+    const status = node.session?.status ?? null;
+    const state = node.session?.state ?? null;
+    const waitingFor = node.session?.waitingFor;
+
+    // Fallback next-action text for the boilerplate kinds (review/check/generic):
+    // the last meaningful notes block, when notes carry one, else the row's
+    // usual constant. "Meaningful" mirrors DrillInDetail.notesHistory's
+    // session-block split — see lastNotesBlock above.
+    const notesFallback = lastNotesBlock(initiative.notes).slice(0, 120);
+
+    if (node.needsHuman === "reap") {
+      // Zombie: merged initiative, worktree gone, but session is still alive.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "reap",
+        nextAction: "Session still running after teardown — stop it to reap it.",
+        recommendation: "",
+        alternative: "",
+        context: "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
+      });
+    } else if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "review",
-        question: `Review the PR: ${initiative.prUrl ?? "(no PR URL)"}`,
+        nextAction: notesFallback || "Review the PR and merge or send it back.",
+        recommendation: "",
+        alternative: "",
+        context: "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
       });
     } else if (node.needsHuman === "waiting") {
-      // Agent waiting on human input: explicit gate:question/human or session blocked.
-      // Question = latest non-empty notes line (may contain the gate question).
-      const question =
-        initiative.notes
-          .split("\n")
-          .filter((l) => l.trim())
-          .pop() ?? "(no question recorded)";
+      // Agent waiting on human input: explicit gate:question/human (declared ask).
+      // nextAction = decision from the latest ask block, or constant fallback.
+      const ask = extractLatestAsk(initiative.notes);
+      const nextAction = ask
+        ? ask.decision.slice(0, 120)
+        : "Look at the session for more info.";
 
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "waiting",
-        question,
+        nextAction,
+        recommendation: ask?.recommendation.slice(0, 120) ?? "",
+        alternative: ask?.alternative.slice(0, 120) ?? "",
+        context: ask?.context.slice(0, 280) ?? "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
+      });
+    } else if (node.needsHuman === "check") {
+      // Session waiting/blocked with no explicit gate — soft "check on it" tier.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "check",
+        nextAction: notesFallback || "Look at the session for more info.",
+        recommendation: "",
+        alternative: "",
+        context: "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
       });
     } else {
       // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
@@ -380,9 +589,20 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "generic",
-        question: "Needs your attention",
+        nextAction:
+          notesFallback || "Delivered with no gate — open the worktree to see what's needed.",
+        recommendation: "",
+        alternative: "",
+        context: "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
       });
     }
   }

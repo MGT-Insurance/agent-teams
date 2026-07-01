@@ -12,29 +12,27 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// RegisterQuery registers the read/query verbs:
-// ws, list, list-json, human-list, show, learnings, recall, prime, roles.
-//
-// NOTE: ws is also special-cased in main before workspace initialization is
-// checked; it is registered here for completeness and usage listing.
-func RegisterQuery(reg cli.Registry) {
-	reg.Register(&wsCmd{})
-	reg.Register(&listCmd{})
-	reg.Register(&listJSONCmd{})
-	reg.Register(&humanListCmd{})
-	reg.Register(&showCmd{})
-	reg.Register(&learningsCmd{})
-	reg.Register(&recallCmd{})
-	reg.Register(&primeCmd{})
-	reg.Register(&rolesCmd{})
+// RegisterQueryKong registers all query verbs onto p as native kong structs.
+func RegisterQueryKong(p *cli.Parser) {
+	p.AddVerb("ws", "Print the workspace home path.", &wsKong{})
+	p.AddVerb("list", "List open initiatives.", &listKong{})
+	p.AddVerb("list-json", "List open initiatives as JSON.", &listJSONKong{})
+	p.AddVerb("human-list", "List gated beads awaiting human input.", &humanListKong{})
+	p.AddVerb("show", "Show details for an initiative.", &showKong{})
+	p.AddVerb("learnings", "Print role memories (hot+fresh, or all).", &learningsKong{})
+	p.AddVerb("recall", "Search role memories by substring query.", &recallKong{})
+	p.AddVerb("prime", "Print cross-project user preferences.", &primeKong{})
+	p.AddVerb("roles", "List role namespaces present in workspace memories.", &rolesKong{})
 }
 
-// wsCmd prints the workspace home path.
-type wsCmd struct{}
+// ── kong structs (native form) ────────────────────────────────────────────────
 
-func (c *wsCmd) Name() string { return "ws" }
+// wsKong provides help-listing presence for the ws verb. main.go intercepts
+// "ws" before kong dispatch and prints the home path directly; this Run is a
+// safety fallback only.
+type wsKong struct{}
 
-func (c *wsCmd) Run(ctx *cli.Context, _ []string) error {
+func (c *wsKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam ws: no context")
 	}
@@ -42,12 +40,10 @@ func (c *wsCmd) Run(ctx *cli.Context, _ []string) error {
 	return nil
 }
 
-// listCmd passes through: bd list --status=open
-type listCmd struct{}
+// listKong passes through: bd list --status=open
+type listKong struct{}
 
-func (c *listCmd) Name() string { return "list" }
-
-func (c *listCmd) Run(ctx *cli.Context, _ []string) error {
+func (c *listKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam list: no context")
 	}
@@ -59,12 +55,10 @@ func (c *listCmd) Run(ctx *cli.Context, _ []string) error {
 	return nil
 }
 
-// listJSONCmd passes through: bd list --status=open --json
-type listJSONCmd struct{}
+// listJSONKong passes through: bd list --status=open --json
+type listJSONKong struct{}
 
-func (c *listJSONCmd) Name() string { return "list-json" }
-
-func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
+func (c *listJSONKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam list-json: no context")
 	}
@@ -76,30 +70,10 @@ func (c *listJSONCmd) Run(ctx *cli.Context, _ []string) error {
 	return nil
 }
 
-// humanListCmd renders gated beads with their gate kind and note.
-// Calls `bd human list --json`, parses the result, and emits a terse
-// scannable display per issue:
-//
-//	<id>  [REVIEW|QUESTION]  <title>
-//	    decision: ...
-//	    recommendation: ...
-//	    alternative: ...
-//	    context: ...         (omitted when empty)
-//
-// When the Notes contain a sentinel-delimited ateam-ask block (CONTRACT
-// agent-teams-j9s §2), the LATEST block's structured fields are rendered.
-// When no block is present, the LATEST note block is rendered as the fallback
-// (back-compat for --file gates): notes are split on blank-line boundaries,
-// the last non-empty block is taken and capped to lastNoteBlockLines lines.
-// The note section is omitted entirely when Notes is empty.
-//
-// Kind is derived from labels: gate:review => REVIEW; otherwise QUESTION
-// (covers gate:question and backward-compat human-only beads).
-type humanListCmd struct{}
+// humanListKong renders gated beads with their gate kind and note.
+type humanListKong struct{}
 
-func (c *humanListCmd) Name() string { return "human-list" }
-
-func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
+func (c *humanListKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam human-list: no context")
 	}
@@ -123,6 +97,75 @@ func (c *humanListCmd) Run(ctx *cli.Context, _ []string) error {
 		}
 	}
 	return nil
+}
+
+// showKong passes through: bd show <id>
+type showKong struct {
+	ID string `arg:"" name:"id" help:"Initiative ID to show."`
+}
+
+func (c *showKong) Validate() error {
+	if c.ID == "" {
+		return cli.Usagef("ateam show: id must not be empty")
+	}
+	return nil
+}
+
+func (c *showKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam show: no context")
+	}
+	out, err := ctx.BD.Run("show", c.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(ctx.Stdout, out)
+	return nil
+}
+
+// learningsKong prints full bodies of memories for a role.
+type learningsKong struct {
+	Role string `arg:"" name:"role" help:"Role namespace to fetch memories for." required:""`
+}
+
+func (c *learningsKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam learnings: no context")
+	}
+	return runLearnings(ctx, c.Role)
+}
+
+// recallKong performs a substring search over a role's memories.
+type recallKong struct {
+	Role  string `arg:"" name:"role"  required:"" help:"Role namespace to search."`
+	Query string `arg:"" name:"query" required:"" help:"Substring to search for."`
+}
+
+func (c *recallKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam recall: no context")
+	}
+	return runRecall(ctx, c.Role, c.Query)
+}
+
+// primeKong prints cross-project user preferences from bd memories.
+type primeKong struct{}
+
+func (c *primeKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam prime: no context")
+	}
+	return runPrime(ctx)
+}
+
+// rolesKong lists the distinct role namespaces present in workspace memories.
+type rolesKong struct{}
+
+func (c *rolesKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam roles: no context")
+	}
+	return runRoles(ctx)
 }
 
 // lastNoteBlockLines is the maximum number of lines rendered from the fallback
@@ -297,49 +340,10 @@ func gateKind(labels []string) string {
 	return "QUESTION"
 }
 
-// showCmd passes through: bd show <id>
-type showCmd struct{}
-
-func (c *showCmd) Name() string { return "show" }
-
-func (c *showCmd) Run(ctx *cli.Context, args []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam show: no context")
-	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam show: missing <id>")
-	}
-	out, err := ctx.BD.Run("show", args[0])
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(ctx.Stdout, out)
-	return nil
-}
-
-// learningsCmd prints full bodies of memories for a role. It serves the union
-// of HOT keys (prefix `role+":hot:"`) and FRESH keys (prefix `role+":fresh:"`).
-// If both sets are empty, it falls back to ALL `role:` keys, preserving
-// backward compatibility for roles that have not yet been triaged.
-//
-// Invariant: when hotKeys and freshKeys are both empty, allRoleKeys contains
-// EVERY key under the role: namespace, so the fallback always emits the
-// complete set.
-//
-// It calls `bd memories --json` to get a flat {key: body} map with untruncated
-// bodies. No read-time truncation is applied.
-type learningsCmd struct{}
-
-func (c *learningsCmd) Name() string { return "learnings" }
-
-func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam learnings: no context")
-	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam learnings: missing <role>")
-	}
-	role := args[0]
+// runLearnings prints full bodies of memories for role. Serves the union of
+// HOT keys (prefix `role+":hot:"`) and FRESH keys (prefix `role+":fresh:"`).
+// Falls back to ALL `role:` keys when both sets are empty.
+func runLearnings(ctx *cli.Context, role string) error {
 	hotPrefix := role + ":hot:"
 	freshPrefix := role + ":fresh:"
 	rolePrefix := role + ":"
@@ -404,25 +408,10 @@ func (c *learningsCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// recallCmd performs a substring search over a role's memories (both hot and
-// cold), printing key + body for each match. It is read-only and never
-// auto-injected; it is invoked on demand to surface cold memories.
-type recallCmd struct{}
-
-func (c *recallCmd) Name() string { return "recall" }
-
-func (c *recallCmd) Run(ctx *cli.Context, args []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam recall: no context")
-	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam recall: missing <role>")
-	}
-	if len(args) < 2 || args[1] == "" {
-		return cli.Usagef("ateam recall: missing <query>")
-	}
-	role := args[0]
-	query := strings.ToLower(args[1])
+// runRecall performs a substring search over a role's memories (both hot and
+// cold), printing key + body for each match.
+func runRecall(ctx *cli.Context, role, query string) error {
+	query = strings.ToLower(query)
 	rolePrefix := role + ":"
 
 	var raw map[string]any
@@ -458,17 +447,9 @@ func (c *recallCmd) Run(ctx *cli.Context, args []string) error {
 	return nil
 }
 
-// primeCmd prints cross-project user preferences from bd memories.
-// It filters to keys with the "user:" prefix, caps at 12, and truncates
-// each body to ~300 chars. Emits nothing when no user: memories exist.
-type primeCmd struct{}
-
-func (c *primeCmd) Name() string { return "prime" }
-
-func (c *primeCmd) Run(ctx *cli.Context, _ []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam prime: no context")
-	}
+// runPrime prints cross-project user preferences from bd memories.
+// Filters to keys with the "user:" prefix, caps at 12, and truncates each body to ~300 chars.
+func runPrime(ctx *cli.Context) error {
 	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
 	var raw map[string]any
 	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
@@ -514,21 +495,8 @@ func formatBody(s string) string {
 	return string(runes[:limit]) + "…"
 }
 
-// rolesCmd lists the distinct role namespaces present in global workspace
-// memories. For every string-valued key containing a ':', the substring
-// BEFORE the first ':' is taken as the role. Keys without a ':' and
-// non-string values (e.g. schema_version) are excluded. Roles are deduped,
-// sorted, and printed one per line. A key like `dri:hot:slug` yields role
-// "dri" — hot keys collapse to the same namespace as cold keys.
-type rolesCmd struct{}
-
-func (c *rolesCmd) Name() string { return "roles" }
-
-func (c *rolesCmd) Run(ctx *cli.Context, _ []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam roles: no context")
-	}
-
+// runRoles lists the distinct role namespaces present in workspace memories.
+func runRoles(ctx *cli.Context) error {
 	var raw map[string]any
 	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
 		return err

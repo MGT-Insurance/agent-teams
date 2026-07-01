@@ -2,9 +2,9 @@
 // Track B OWNS this file — tracks C/D/E must NOT edit it.
 //
 // View contract for each track:
-//   Track C — ConstellationView: src/views/constellation/index.tsx
+//   Track C — InitiativesView: src/views/initiatives/index.tsx
 //     default export: React component, no props, reads snapshot via useSnapshotContext()
-//     navigation: call useNavigate() to push "/initiative/:id" on node click
+//     navigation: call useNavigate() to push "/initiative/:id" on row click
 //
 //   Track D — InboxView: src/views/inbox/index.tsx
 //     default export: React component, no props, reads snapshot via useSnapshotContext()
@@ -18,7 +18,7 @@
 
 import { Routes, Route, Navigate } from "react-router-dom";
 import InboxView from "./views/inbox/index.js";
-import ConstellationView from "./views/constellation/index.js";
+import InitiativesView from "./views/initiatives/index.js";
 import DrillInView from "./views/drillin/index.js";
 
 export function AppRoutes() {
@@ -27,7 +27,9 @@ export function AppRoutes() {
       {/* Default landing: Inbox (most actionable view) */}
       <Route path="/" element={<Navigate to="/inbox" replace />} />
       <Route path="/inbox" element={<InboxView />} />
-      <Route path="/constellation" element={<ConstellationView />} />
+      <Route path="/initiatives" element={<InitiativesView />} />
+      {/* Old constellation path → Initiatives (its replacement). */}
+      <Route path="/constellation" element={<Navigate to="/initiatives" replace />} />
       <Route path="/initiative/:id" element={<DrillInView />} />
       {/* Catch-all: redirect unknown paths to inbox */}
       <Route path="*" element={<Navigate to="/inbox" replace />} />

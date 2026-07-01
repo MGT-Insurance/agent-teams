@@ -1,9 +1,13 @@
 // Unit tests for the parser functions.
 // Fixtures are captured from real CLI output (ateam list-json + claude agents --json --all).
 
+import { mkdtempSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, it, expect } from "vitest";
 import {
   extractPrUrl,
+  extractEpic,
+  extractLatestAsk,
   parseInitiative,
   parseAteamListJson,
   parseClaudeAgents,
@@ -109,6 +113,18 @@ const ENDED_SESSION: SessionState = {
   state: "stopped",
 };
 
+// Process has exited and status is absent — session lingers in `claude agents --all`
+// as a detached entry. Still attachable via `claude attach <id>`.
+const DETACHED_SESSION: SessionState = {
+  id: "deadbeef", // valid 8-hex — used for claude attach
+  cwd: "/wt/detached-initiative",
+  kind: "background",
+  startedAt: 1781400000002,
+  sessionId: "deadbeef-0000-0000-0000-000000000000",
+  name: "detached-initiative",
+  // No status — process exited, session no longer live.
+};
+
 // ---- extractPrUrl -----------------------------------------------------------
 
 describe("extractPrUrl", () => {
@@ -128,6 +144,30 @@ describe("extractPrUrl", () => {
   it("finds URL in multi-line text", () => {
     const text = "session 1\nsome context\nhttps://github.com/org/repo/pull/42\nmore text";
     expect(extractPrUrl(text)).toBe("https://github.com/org/repo/pull/42");
+  });
+});
+
+// ---- extractEpic ------------------------------------------------------------
+
+describe("extractEpic", () => {
+  it("returns the epic id from description", () => {
+    expect(extractEpic("repo: /r\nepic: agent-teams-x6ce\nworktree: /wt", "")).toBe("agent-teams-x6ce");
+  });
+
+  it("falls back to notes when description has no epic line", () => {
+    expect(extractEpic("repo: /r\nworktree: /wt", "session 1\nepic: agent-teams-abcd\ndone")).toBe("agent-teams-abcd");
+  });
+
+  it("returns null when neither description nor notes has epic:", () => {
+    expect(extractEpic("repo: /r", "session 1")).toBeNull();
+  });
+
+  it("returns null for empty strings", () => {
+    expect(extractEpic("", "")).toBeNull();
+  });
+
+  it("description takes precedence over notes", () => {
+    expect(extractEpic("epic: desc-epic\n", "epic: notes-epic\n")).toBe("desc-epic");
   });
 });
 
@@ -171,6 +211,24 @@ describe("parseInitiative", () => {
     expect(parsed.id).toBe("at-v4e");
     expect(parsed.title).toBe(RAW_AT_V4E.title);
     expect(parsed.status).toBe("open");
+  });
+
+  it("extracts epic id from description when present", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\nepic: agent-teams-x6ce\n", notes: "" };
+    const parsed = parseInitiative(raw);
+    expect(parsed.epic).toBe("agent-teams-x6ce");
+  });
+
+  it("falls back to notes for epic when description lacks it", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\n", notes: "session 1\nepic: agent-teams-abcd\n" };
+    const parsed = parseInitiative(raw);
+    expect(parsed.epic).toBe("agent-teams-abcd");
+  });
+
+  it("sets epic to null for legacy initiatives without epic field", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\n", notes: "no epic here" };
+    const parsed = parseInitiative(raw);
+    expect(parsed.epic).toBeNull();
   });
 });
 
@@ -271,6 +329,28 @@ describe("buildInitiativeNodes", () => {
     const parsed = parseInitiative(RAW_AT_V4E);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
     expect(nodes[0]?.activity).toBe("busy");
+  });
+
+  it("counts all matched background sessions and prefers an alive primary", () => {
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const wt = parsed.worktree;
+    const dead: SessionState = {
+      id: "d", cwd: wt, kind: "background", startedAt: 1, sessionId: "dead-0000", name: "x", state: "done",
+    };
+    const alive: SessionState = {
+      id: "a", cwd: wt, kind: "background", startedAt: 2, sessionId: "alive-0000", name: "x", status: "busy", state: "working",
+    };
+    // dead listed first — find() would have picked it; alive-preference overrides.
+    const nodes = buildInitiativeNodes([parsed], [dead, alive], new Set());
+    expect(nodes[0]?.sessionCount).toBe(2);
+    expect(nodes[0]?.session?.sessionId).toBe("alive-0000");
+  });
+
+  it("sessionCount is 0 when no background session matches", () => {
+    const parsed = parseInitiative(RAW_AT_V4E);
+    const nodes = buildInitiativeNodes([parsed], [], new Set());
+    expect(nodes[0]?.sessionCount).toBe(0);
+    expect(nodes[0]?.session).toBeNull();
   });
 });
 
@@ -481,7 +561,7 @@ describe("buildInbox", () => {
     expect(item?.kind).toBe("waiting");
   });
 
-  it("waiting item carries the latest notes line as question", () => {
+  it("waiting item nextAction is the constant fallback when no ask block present", () => {
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -489,8 +569,7 @@ describe("buildInbox", () => {
     );
     const inbox = buildInbox(nodes);
     const item = inbox.find((i) => i.initiativeId === "at-v4e");
-    // Latest non-empty notes line of RAW_AT_V4E
-    expect(item?.question).toContain("awaiting-merge");
+    expect(item?.nextAction).toBe("Look at the session for more info.");
   });
 
   it("includes generic items (needsHuman=generic) when delivered + no session", () => {
@@ -567,13 +646,82 @@ describe("buildInbox", () => {
     expect(inbox).toHaveLength(0);
   });
 
-  it("does not include merged initiatives (needsHuman=false for merged)", () => {
+  it("does not include merged initiatives (needsHuman=false for merged when worktree exists)", () => {
     const done = { ...parseInitiative(RAW_AT_V4E), status: "done" };
-    const nodes = buildInitiativeNodes([done], sessions, new Set(["at-v4e"]));
-    // merged overrides gate: needsHuman=false
+    // Pass existsFn=true: worktree is still present (normal merged, not a zombie).
+    const nodes = buildInitiativeNodes([done], sessions, new Set(["at-v4e"]), () => true);
+    // merged + worktree exists: needsHuman=false (reap only fires when worktree is GONE)
     expect(nodes[0]?.needsHuman).toBe(false);
     const inbox = buildInbox(nodes);
     expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
+  });
+});
+
+// ---- buildInbox: sessionId on detached sessions (agent-teams-u9f2) -----------
+//
+// A detached session (status absent, lingers in `claude agents --all`) still
+// carries a short 8-hex id and is attachable via `claude attach <id>`.
+// The inbox must expose that id so the dashboard can offer Attach instead of Launch.
+
+describe("buildInbox — sessionId for detached/alive sessions (agent-teams-u9f2)", () => {
+  function makeDetachedInit(): ParsedInitiative {
+    return {
+      id: "at-detached",
+      title: "Detached initiative",
+      description: `worktree: ${DETACHED_SESSION.cwd}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: DETACHED_SESSION.cwd,
+      branch: "at-detached",
+      team: "t-x",
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/99",
+      labels: ["gate:review"],
+      epic: null,
+    };
+  }
+
+  it("sessionId is set from a detached session (no status) with a valid 8-hex id", () => {
+    const nodes = buildInitiativeNodes([makeDetachedInit()], [DETACHED_SESSION], new Set());
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-detached");
+    expect(item).toBeDefined();
+    expect(item?.sessionId).toBe("deadbeef");
+  });
+
+  it("sessionId is set from an alive session (status present) with a valid 8-hex id", () => {
+    const aliveSession: SessionState = {
+      ...DETACHED_SESSION,
+      id: "deadbeef",
+      status: "idle",
+      state: "stopped",
+    };
+    const nodes = buildInitiativeNodes([makeDetachedInit()], [aliveSession], new Set());
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-detached");
+    expect(item?.sessionId).toBe("deadbeef");
+  });
+
+  it("sessionId is undefined when session has no id field", () => {
+    const noIdSession: SessionState = {
+      cwd: DETACHED_SESSION.cwd,
+      kind: "background",
+      startedAt: 0,
+      sessionId: "deadbeef-0000-0000-0000-000000000000",
+      // No `id` field.
+    };
+    const nodes = buildInitiativeNodes([makeDetachedInit()], [noIdSession], new Set());
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "at-detached");
+    expect(item?.sessionId).toBeUndefined();
   });
 });
 
@@ -717,13 +865,13 @@ describe("deriveNeedsHuman", () => {
     expect(deriveNeedsHuman("pr-open", "none", "question")).toBe("waiting");
   });
 
-  // Session-based cases (gate=null)
-  it("session WAITING -> 'waiting' (most urgent; active initiative)", () => {
-    expect(deriveNeedsHuman("none", "waiting", null)).toBe("waiting");
+  // Session-based cases (gate=null) — no declared gate, softer "check" tier
+  it("session WAITING, no gate -> 'check' (soft tier; no declared ask)", () => {
+    expect(deriveNeedsHuman("none", "waiting", null)).toBe("check");
   });
 
-  it("session WAITING + delivered -> 'waiting' (most urgent; delivered initiative)", () => {
-    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("waiting");
+  it("session WAITING + delivered, no gate -> 'check' (soft tier; no declared ask)", () => {
+    expect(deriveNeedsHuman("pr-open", "waiting", null)).toBe("check");
   });
 
   it("session WORKING -> false (refining after delivery, not in inbox)", () => {
@@ -760,6 +908,27 @@ describe("deriveNeedsHuman", () => {
 
   it("merged + WAITING -> false (done wins over waiting)", () => {
     expect(deriveNeedsHuman("merged", "waiting", null)).toBe(false);
+  });
+
+  // reap rows (agent-teams-d10b.2): zombie = merged + worktree gone + session ALIVE (working|waiting)
+  it("merged + !worktreeExists + session working -> 'reap'", () => {
+    expect(deriveNeedsHuman("merged", "working", null, false)).toBe("reap");
+  });
+
+  it("merged + !worktreeExists + session waiting -> 'reap'", () => {
+    expect(deriveNeedsHuman("merged", "waiting", null, false)).toBe("reap");
+  });
+
+  it("merged + !worktreeExists + session ended -> false (stopped session, nothing to reap)", () => {
+    expect(deriveNeedsHuman("merged", "ended", null, false)).toBe(false);
+  });
+
+  it("merged + worktreeExists TRUE + alive session -> false (not a zombie)", () => {
+    expect(deriveNeedsHuman("merged", "working", null, true)).toBe(false);
+  });
+
+  it("merged + !worktreeExists + signal='none' (no session) -> false (nothing to reap)", () => {
+    expect(deriveNeedsHuman("merged", "none", null, false)).toBe(false);
   });
 });
 
@@ -807,7 +976,8 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
 
   it("delivery is merged when initiative status is closed", () => {
     const closed = { ...parseInitiative(RAW_AT_V4E), status: "closed" };
-    const nodes = buildInitiativeNodes([closed], sessions, new Set());
+    // Pass existsFn=true: worktree still present (normal merged, not zombie).
+    const nodes = buildInitiativeNodes([closed], sessions, new Set(), () => true);
     expect(nodes[0]?.delivery).toBe("merged");
     expect(nodes[0]?.needsHuman).toBe(false);
   });
@@ -818,19 +988,15 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.delivery).toBe("none");
   });
 
-  it("needsHuman is waiting when session is blocked (state=blocked) — the core blo fix", () => {
-    // Blocked session: status=waiting, state=blocked -> signal="waiting" -> needsHuman="waiting"
-    const parsed = parseInitiative(RAW_AT_2JH); // has prUrl but that's irrelevant
-    const nodes = buildInitiativeNodes([parsed], [BLOCKED_SESSION], new Set());
-    // BLOCKED_SESSION.cwd matches RAW_AT_2JH worktree? No — different path.
-    // Use a tweaked RAW so the worktree matches BLOCKED_SESSION.cwd.
+  it("session blocked (state=blocked) with no gate -> needsHuman='check' (soft tier, agent-teams-ja9c)", () => {
+    // Blocked session + NO gate: signal="waiting", gate=null -> needsHuman="check" (not "waiting")
     const raw: RawInitiative = { ...RAW_AT_2JH, description: RAW_AT_2JH.description.replace(
       "/Users/ericlloyd/.agent-teams-worktrees/specialty-quote-api",
       "/Users/ericlloyd/.agent-teams-worktrees/some-blocked-initiative",
     )};
-    const nodes2 = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
-    expect(nodes2[0]?.needsHuman).toBe("waiting");
-    expect(nodes2[0]?.activity).toBe("needs-human");
+    const nodes = buildInitiativeNodes([parseInitiative(raw)], [BLOCKED_SESSION], new Set());
+    expect(nodes[0]?.needsHuman).toBe("check");
+    expect(nodes[0]?.activity).toBe("needs-human");
   });
 });
 
@@ -858,6 +1024,7 @@ describe("attention state: spec-required scenarios", () => {
       mode: "bg",
       goal: "",
       prUrl: haspr ? `https://github.com/org/repo/pull/1` : null,
+      epic: null,
     };
   }
 
@@ -872,11 +1039,11 @@ describe("attention state: spec-required scenarios", () => {
     };
   }
 
-  it("session waiting/blocked -> needsHuman='waiting' (most urgent)", () => {
+  it("session waiting/blocked, no gate -> needsHuman='check' (soft tier, agent-teams-ja9c)", () => {
     const init = makeInit("blocked-1", false);
     const sess = makeSession("/wt/blocked-1", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
-    expect(nodes[0]?.needsHuman).toBe("waiting");
+    expect(nodes[0]?.needsHuman).toBe("check");
     expect(nodes[0]?.activity).toBe("needs-human");
   });
 
@@ -917,20 +1084,21 @@ describe("attention state: spec-required scenarios", () => {
     expect(nodes[0]?.activity).toBe("idle");
   });
 
-  it("done initiative -> needsHuman=false regardless of session", () => {
+  it("done initiative -> needsHuman=false when worktree still exists", () => {
     const init = makeInit("done-1", true, "closed");
     const sess = makeSession("/wt/done-1", "waiting", "blocked");
-    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    // Pass existsFn=true: worktree present (normal merged, not zombie).
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => true);
     expect(nodes[0]?.needsHuman).toBe(false);
     expect(nodes[0]?.activity).toBe("done");
   });
 
-  it("inbox: waiting item has kind='waiting'", () => {
+  it("inbox: no-gate blocked session -> kind='check' (soft tier, agent-teams-ja9c)", () => {
     const init = makeInit("w-inbox", false);
     const sess = makeSession("/wt/w-inbox", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
-    expect(inbox[0]?.kind).toBe("waiting");
+    expect(inbox[0]?.kind).toBe("check");
   });
 
   it("inbox: generic item when delivered + ended (no explicit gate)", () => {
@@ -989,6 +1157,7 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
       goal: "",
       labels,
       prUrl: haspr ? "https://github.com/org/repo/pull/1" : null,
+      epic: null,
     };
   }
 
@@ -1054,6 +1223,462 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
     const init = makeGateInit("e2", undefined, false);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe(false);
+  });
+});
+
+// ---- extractLatestAsk (agent-teams-1saz) ------------------------------------
+
+describe("extractLatestAsk", () => {
+  it("returns null when notes has no ask block", () => {
+    expect(extractLatestAsk("no ask block here")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(extractLatestAsk("")).toBeNull();
+  });
+
+  it("parses decision from a well-formed block", () => {
+    const notes = "<<<ateam-ask\ndecision: Should we deploy now?\n>>>";
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?", recommendation: "", alternative: "", context: "" });
+  });
+
+  it("returns the LAST valid block when multiple blocks are present", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: First question.",
+      ">>>",
+      "some prose",
+      "<<<ateam-ask",
+      "decision: Second question.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question.", recommendation: "", alternative: "", context: "" });
+  });
+
+  it("skips an unclosed block at end of notes, keeps the last valid closed block", () => {
+    // The unclosed block comes AFTER a closed one; closeLine returns -1 for it.
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Closed block.",
+      ">>>",
+      "some intervening notes",
+      "<<<ateam-ask",
+      "decision: Unclosed — no close marker follows.",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block.", recommendation: "", alternative: "", context: "" });
+  });
+
+  it("skips blocks with empty decision", () => {
+    const notes = "<<<ateam-ask\nrecommendation: Do X.\n>>>";
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  it("ignores >>> embedded in prose (must be line-anchored)", () => {
+    const notes = "<<<ateam-ask\ndecision: X or >>> something\n>>>";
+    // The inline >>> in the decision value is prose; the real close is on its own line.
+    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something", recommendation: "", alternative: "", context: "" });
+  });
+
+  it("parses recommendation and alternative when present", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we roll back?",
+      "recommendation: Yes — error rate is above 5%.",
+      "alternative: Partial rollback to 10% traffic.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toEqual({
+      decision: "Should we roll back?",
+      recommendation: "Yes — error rate is above 5%.",
+      alternative: "Partial rollback to 10% traffic.",
+      context: "",
+    });
+  });
+
+  it("returns empty strings for recommendation/alternative when fields are absent", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+    expect(result?.alternative).toBe("");
+  });
+});
+
+// ---- buildInbox: updatedAt + nextAction (agent-teams-1saz) -------------------
+
+describe("buildInbox — updatedAt and nextAction", () => {
+  function makeInit(
+    id: string,
+    kind: "review" | "waiting" | "generic",
+    notes = "",
+    labels?: string[],
+  ): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-25T12:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: kind === "generic" || kind === "review" ? "https://github.com/org/repo/pull/1" : null,
+      labels,
+      epic: null,
+    };
+  }
+
+  it("review item has updatedAt from initiative.updated_at", () => {
+    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("review item nextAction is the constant string", () => {
+    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Review the PR and merge or send it back.");
+  });
+
+  it("generic item nextAction is the constant string", () => {
+    const init = makeInit("gen", "generic");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe(
+      "Delivered with no gate — open the worktree to see what's needed.",
+    );
+  });
+
+  it("generic item has updatedAt from initiative.updated_at", () => {
+    const init = makeInit("gen", "generic");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("waiting item: nextAction == decision when ask block present", () => {
+    const notes = [
+      "Starting the initiative.",
+      "<<<ateam-ask",
+      "decision: Should we use approach A or approach B?",
+      ">>>",
+    ].join("\n");
+    const init = { ...makeInit("w-ask", "waiting"), notes, labels: ["gate:question", "human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Should we use approach A or approach B?");
+  });
+
+  it("waiting item: fallback is constant when no ask block present", () => {
+    const notes =
+      "Early note.\nThis is the latest entry. It has more text after the period.";
+    const init = { ...makeInit("w-fb", "waiting"), notes, labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("waiting item: fallback is constant even when notes are very long (no ask block)", () => {
+    const longLine = "A".repeat(200);
+    const init = { ...makeInit("w-long", "waiting"), notes: longLine, labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("waiting item has updatedAt from initiative.updated_at", () => {
+    const init = { ...makeInit("w-ts", "waiting"), labels: ["human"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
+// ---- buildInbox: lastActivityAt (agent-teams-ni2y.8) -------------------------
+
+describe("buildInbox — lastActivityAt (session-transition-aware recency)", () => {
+  function makeInit(id: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-25T12:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels: ["gate:review"],
+      epic: null,
+    };
+  }
+
+  function makeSession(id: string, sessionId: string): SessionState {
+    return { cwd: `/wt/${id}`, kind: "background", startedAt: 0, sessionId, status: "busy" };
+  }
+
+  it("no matched session -> lastActivityAt falls back to updated_at", () => {
+    const init = makeInit("no-sess");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes, new Map([["irrelevant", 99_999_999_999]]));
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("matched session with a NEWER transition wins over the bead timestamp (max)", () => {
+    const init = makeInit("newer");
+    const session = makeSession("newer", "sess-newer");
+    const nodes = buildInitiativeNodes([init], [session], new Set());
+    // Well after 2026-06-25T12:00:00Z.
+    const newerMs = Date.parse("2026-06-25T15:00:00Z");
+    const inbox = buildInbox(nodes, new Map([["sess-newer", newerMs]]));
+    // buildInbox stamps via new Date(ms).toISOString(), which always includes milliseconds.
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T15:00:00.000Z");
+  });
+
+  it("matched session with an OLDER transition loses to the bead timestamp (max)", () => {
+    const init = makeInit("older");
+    const session = makeSession("older", "sess-older");
+    const nodes = buildInitiativeNodes([init], [session], new Set());
+    // Well before 2026-06-25T12:00:00Z.
+    const olderMs = Date.parse("2026-06-25T01:00:00Z");
+    const inbox = buildInbox(nodes, new Map([["sess-older", olderMs]]));
+    // A defined (if older) transition still routes through Math.max/toISOString — only an
+    // ABSENT map entry falls back to the literal initiative.updated_at string (see next test).
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T12:00:00.000Z");
+  });
+
+  it("no sessionTransitions map at all (ad-hoc/endpoint fallback) -> degrades to updated_at even with a matched session", () => {
+    const init = makeInit("no-map");
+    const session = makeSession("no-map", "sess-no-map");
+    const nodes = buildInitiativeNodes([init], [session], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
+// ---- buildInbox: notes fallback skips ask-sentinel blocks (agent-teams-ni2y.5 fix) ----
+//
+// Regression for: `ateam clear-gate <id>` without `--file` removes the gate label
+// but leaves the ask-sentinel note behind. When kind then falls to check/generic,
+// the notes fallback must skip past that sentinel block instead of surfacing its
+// raw `<<<ateam-ask ...>>>` markup as the row's nextAction.
+
+describe("buildInbox — notes fallback skips ask-sentinel blocks", () => {
+  function makeCheckInit(notes: string): ParsedInitiative {
+    return {
+      id: "chk",
+      title: "Check init",
+      description: "worktree: /wt/chk",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/chk",
+      branch: "chk",
+      team: "t-chk",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      epic: null,
+    };
+  }
+
+  const BLOCKED_CHK_SESSION: SessionState = {
+    sessionId: "s-chk",
+    kind: "background",
+    cwd: "/wt/chk",
+    startedAt: 0,
+    status: "waiting",
+    state: "blocked",
+  };
+
+  it("returns the prior plain block, not raw ask-sentinel text, when the last block is a leftover ask sentinel", () => {
+    const notes = [
+      "session 1, did some setup work.",
+      "session 2, parked pending a decision.",
+      "<<<ateam-ask",
+      "decision: Should we deploy now?",
+      ">>>",
+    ].join("\n");
+    const nodes = buildInitiativeNodes([makeCheckInit(notes)], [BLOCKED_CHK_SESSION], new Set());
+    expect(nodes[0]?.needsHuman).toBe("check");
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 1, did some setup work.");
+    expect(inbox[0]?.nextAction).not.toContain("<<<ateam-ask");
+  });
+
+  it("falls back to the constant string when every block carries an ask sentinel", () => {
+    const notes = [
+      "session 1, parked pending a decision.",
+      "<<<ateam-ask",
+      "decision: Should we deploy now?",
+      ">>>",
+    ].join("\n");
+    const nodes = buildInitiativeNodes([makeCheckInit(notes)], [BLOCKED_CHK_SESSION], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+});
+
+// ---- buildInbox: recommendation/alternative passthrough (agent-teams-oc3p) ----
+
+describe("buildInbox — recommendation and alternative", () => {
+  function makeWaitingInit(notes: string): ParsedInitiative {
+    return {
+      id: "w-rec",
+      title: "Rec test",
+      description: "worktree: /wt/w-rec",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/w-rec",
+      branch: "w-rec",
+      team: "t-w-rec",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+      epic: null,
+    };
+  }
+
+  it("waiting item carries recommendation and alternative from ask block", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Ship or hold?",
+      "recommendation: Ship — tests are green.",
+      "alternative: Hold 24h and rerun perf suite.",
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toBe("Ship — tests are green.");
+    expect(inbox[0]?.alternative).toBe("Hold 24h and rerun perf suite.");
+  });
+
+  it("waiting item has empty recommendation/alternative when ask block omits them", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toBe("");
+    expect(inbox[0]?.alternative).toBe("");
+  });
+
+  it("non-waiting items always have empty recommendation/alternative", () => {
+    const reviewInit: ParsedInitiative = {
+      id: "rv",
+      title: "Review init",
+      description: "worktree: /wt/rv",
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/rv",
+      branch: "rv",
+      team: "t-rv",
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels: ["gate:review"],
+      epic: null,
+    };
+    const nodes = buildInitiativeNodes([reviewInit], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("review");
+    expect(inbox[0]?.recommendation).toBe("");
+    expect(inbox[0]?.alternative).toBe("");
+  });
+});
+
+// ---- buildInbox: onThisMachine (agent-teams-1l70) ----------------------------
+
+describe("buildInbox — onThisMachine", () => {
+  function makeWaitingInit(id: string, worktree: string): ParsedInitiative {
+    return {
+      id,
+      title: `Init ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+      epic: null,
+    };
+  }
+
+  it("onThisMachine=true when worktree path exists on disk", () => {
+    const tmp = mkdtempSync(`${tmpdir()}/at-test-`);
+    try {
+      const init = makeWaitingInit("tm-exists", tmp);
+      const nodes = buildInitiativeNodes([init], [], new Set(["tm-exists"]));
+      const inbox = buildInbox(nodes);
+      expect(inbox[0]?.onThisMachine).toBe(true);
+    } finally {
+      rmdirSync(tmp);
+    }
+  });
+
+  it("onThisMachine=false when worktree path doesn't exist", () => {
+    const init = makeWaitingInit("tm-missing", "/does/not/exist/xxyyzz-agent-teams-test");
+    const nodes = buildInitiativeNodes([init], [], new Set(["tm-missing"]));
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.onThisMachine).toBe(false);
+  });
+
+  it("onThisMachine=false when worktree is empty string", () => {
+    const init = makeWaitingInit("tm-empty", "");
+    const nodes = buildInitiativeNodes([init], [], new Set(["tm-empty"]));
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.onThisMachine).toBe(false);
   });
 });
 
@@ -1136,5 +1761,622 @@ describe("buildOrphanSessions", () => {
     // Only the 2 bg sessions — interactive excluded.
     expect(orphans).toHaveLength(2);
     expect(orphans.every((s) => s.kind === "background")).toBe(true);
+  });
+});
+
+// ---- buildInitiativeNodes: worktreeExists + closed initiatives (at-gvv) -----
+
+describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
+  function makeInit(id: string, worktree: string, status = "open"): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status,
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-15",
+      updated_at: "2026-06-15",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      epic: null,
+    };
+  }
+
+  it("worktreeExists is true when existsFn returns true for the worktree", () => {
+    const init = makeInit("at-aaa", "/wt/at-aaa");
+    const nodes = buildInitiativeNodes([init], [], new Set(), (p) => p === "/wt/at-aaa");
+    expect(nodes[0]?.worktreeExists).toBe(true);
+  });
+
+  it("worktreeExists is false when existsFn returns false", () => {
+    const init = makeInit("at-bbb", "/wt/at-bbb");
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => false);
+    expect(nodes[0]?.worktreeExists).toBe(false);
+  });
+
+  it("worktreeExists is false for empty worktree path without calling existsFn", () => {
+    const init = makeInit("at-ccc", "");
+    // existsFn would return true for anything — empty path must short-circuit to false.
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => true);
+    expect(nodes[0]?.worktreeExists).toBe(false);
+  });
+
+  it("defaults worktreeExists to false when no existsFn is supplied", () => {
+    const init = makeInit("at-ddd", "/wt/at-ddd");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.worktreeExists).toBe(false);
+  });
+
+  it("closed initiatives appear in nodes (merged) but never enter the inbox", () => {
+    const open = makeInit("at-open", "/wt/at-open", "open");
+    const closed = makeInit("at-closed", "/wt/at-closed", "closed");
+    const nodes = buildInitiativeNodes([open, closed], [], new Set());
+
+    const closedNode = nodes.find((n) => n.initiative.id === "at-closed");
+    expect(closedNode).toBeDefined();
+    expect(closedNode?.delivery).toBe("merged");
+    expect(closedNode?.needsHuman).toBe(false);
+
+    const inbox = buildInbox(nodes);
+    expect(inbox.some((i) => i.initiativeId === "at-closed")).toBe(false);
+  });
+});
+
+// ---- reap flavor (agent-teams-d10b.2) ----------------------------------------
+//
+// Zombie = merged initiative + worktree gone (!worktreeExists) + alive session.
+// deriveNeedsHuman should return "reap"; buildInbox should emit kind="reap" with
+// the constant nextAction and the short sessionId when the session id is 8-hex.
+
+describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
+  function makeClosedInit(id: string, worktree: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: ${worktree}`,
+      notes: "",
+      status: "closed",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-29",
+      updated_at: "2026-06-29",
+      problem: "",
+      repo: "/repo",
+      worktree,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      epic: null,
+    };
+  }
+
+  function makeAliveSession(worktree: string, status: "idle" | "busy" | "waiting", shortId: string): SessionState {
+    return {
+      id: shortId,
+      sessionId: `${shortId}-0000-0000-0000-000000000000`,
+      kind: "background",
+      cwd: worktree,
+      startedAt: 0,
+      status,
+    };
+  }
+
+  it("merged + !worktreeExists + alive session -> needsHuman='reap'", () => {
+    const init = makeClosedInit("reap-1", "/wt/reap-1");
+    const sess = makeAliveSession("/wt/reap-1", "busy", "ab12cd34");
+    // existsFn returns false (worktree gone)
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
+    expect(nodes[0]?.needsHuman).toBe("reap");
+  });
+
+  it("merged + !worktreeExists + alive session -> buildInbox emits kind='reap' with sessionId", () => {
+    const init = makeClosedInit("reap-2", "/wt/reap-2");
+    const sess = makeAliveSession("/wt/reap-2", "busy", "ab12cd34");
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.kind).toBe("reap");
+    expect(inbox[0]?.nextAction).toBe("Session still running after teardown — stop it to reap it.");
+    expect(inbox[0]?.sessionId).toBe("ab12cd34");
+  });
+
+  it("merged + worktreeExists TRUE + alive session -> needsHuman=false (not a zombie)", () => {
+    const init = makeClosedInit("reap-3", "/wt/reap-3");
+    const sess = makeAliveSession("/wt/reap-3", "busy", "ab12cd34");
+    // existsFn returns true (worktree still present)
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => true);
+    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
+  });
+
+  it("merged + !worktreeExists + NO matched session (signal='none') -> needsHuman=false", () => {
+    const init = makeClosedInit("reap-4", "/wt/reap-4");
+    // No session passed — nothing to reap
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => false);
+    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(0);
+  });
+});
+
+// ---- check flavor (agent-teams-ja9c) -----------------------------------------
+//
+// A session reporting waiting/blocked with NO explicit gate must produce kind="check"
+// (soft tier), NOT "waiting". A real gate:question must still produce "waiting"
+// even when the session is also blocked.
+
+describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
+  function makeInit(id: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T10:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      epic: null,
+    };
+  }
+
+  function makeSession(id: string, status: string, state?: string): SessionState {
+    return {
+      sessionId: `sess-${id}`,
+      kind: "background",
+      cwd: `/wt/${id}`,
+      startedAt: 0,
+      status: status as "idle" | "busy" | "waiting",
+      state: state as "working" | "blocked" | "done" | "stopped" | undefined,
+    };
+  }
+
+  it("no-gate + state='blocked' → InboxItem.kind === 'check'", () => {
+    const init = makeInit("chk-blocked");
+    const sess = makeSession("chk-blocked", "idle", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("check");
+  });
+
+  it("no-gate + status='waiting' → InboxItem.kind === 'check'", () => {
+    const init = makeInit("chk-waiting");
+    const sess = makeSession("chk-waiting", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("check");
+  });
+
+  it("check item nextAction is the constant fallback string", () => {
+    const init = makeInit("chk-action");
+    const sess = makeSession("chk-action", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+
+  it("gate:question + session also blocked → kind='waiting' (gate wins; gate checked first)", () => {
+    const init: ParsedInitiative = { ...makeInit("chk-q"), labels: ["gate:question", "human"] };
+    const sess = makeSession("chk-q", "waiting", "blocked");
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
+  });
+
+  it("gate:question without blocked session → kind='waiting' (authoritative declared ask)", () => {
+    const init: ParsedInitiative = { ...makeInit("chk-q2"), labels: ["gate:question"] };
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.kind).toBe("waiting");
+  });
+});
+
+// ---- extractLatestAsk: edge cases (agent-teams-oc3p) -------------------------
+//
+// Core-path tests (basic parsing, last-valid-wins for decision, unclosed blocks)
+// are in the earlier extractLatestAsk describe block.  This block covers the
+// non-happy paths specific to recommendation/alternative handling.
+
+describe("extractLatestAsk — recommendation/alternative edge cases (oc3p)", () => {
+  // 1. decision: key present but value blank → entire block is invalid (returns null).
+  //    Distinct from the existing "no decision key" test: here the key exists, value
+  //    is the empty string after trim.
+  it("block with blank decision: value (key present, value empty) → null (block invalid)", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision:   ",
+      "recommendation: Do the thing.",
+      ">>>",
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  // 2. recommendation: key present but value blank → recommendation == "" (not undefined).
+  it("blank recommendation: line (key present, value empty after trim) → recommendation == ''", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we proceed?",
+      "recommendation:  ",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+  });
+
+  // 3. recommendation present, alternative ABSENT → alternative == "".
+  it("recommendation present, alternative absent → alternative is empty string", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      "recommendation: Yes — metrics look good.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("Yes — metrics look good.");
+    expect(result?.alternative).toBe("");
+  });
+
+  // 4. alternative present, recommendation ABSENT → recommendation == "".
+  it("alternative present, recommendation absent → recommendation is empty string", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      "alternative: Wait 24h and rerun perf suite.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("");
+    expect(result?.alternative).toBe("Wait 24h and rerun perf suite.");
+  });
+
+  // 5. Multiple blocks: last-valid-wins applies to recommendation too.
+  //    First block has a recommendation; second block has valid decision but no recommendation.
+  //    The SECOND block wins — its empty recommendation replaces the first block's.
+  it("last block wins: second valid block has no recommendation → recommendation == ''", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: First question.",
+      "recommendation: First rec.",
+      ">>>",
+      "some prose between blocks",
+      "<<<ateam-ask",
+      "decision: Second question.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.decision).toBe("Second question.");
+    expect(result?.recommendation).toBe("");
+  });
+
+  // 6. Whitespace trimming: extra leading/trailing spaces in recommendation value are stripped.
+  it("trims whitespace from recommendation value", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Do it?",
+      "recommendation:   Lots of leading spaces.   ",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.recommendation).toBe("Lots of leading spaces.");
+  });
+
+  // 7. recommendation value containing a "decision:"-like substring must NOT
+  //    cross-contaminate the parsed decision field.
+  it("embedded 'decision:' substring in recommendation value does not cross-contaminate", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Override or not?",
+      "recommendation: The decision: to act was already made.",
+      ">>>",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    // decision field must not pick up the "decision:" inside the recommendation value.
+    expect(result?.decision).toBe("Override or not?");
+    expect(result?.recommendation).toBe("The decision: to act was already made.");
+  });
+
+  // 8. Unclosed block with recommendation present and NO prior closed block → null.
+  //    The unclosed block is skipped entirely; there is nothing valid to return.
+  it("unclosed block with recommendation only (no prior closed block) → null", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Open question.",
+      "recommendation: Open rec.",
+      // deliberately NO >>>
+    ].join("\n");
+    expect(extractLatestAsk(notes)).toBeNull();
+  });
+
+  // 9. Unclosed block with recommendation comes AFTER a closed valid block.
+  //    The unclosed block is skipped; the closed block is returned.
+  //    (Mirrors the existing "skips unclosed block at end" test but asserts recommendation
+  //    of the closed block is preserved, not contaminated by the unclosed one.)
+  it("unclosed block after valid closed block → closed block's recommendation preserved", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Closed question.",
+      "recommendation: Closed rec.",
+      ">>>",
+      "some prose",
+      "<<<ateam-ask",
+      "decision: Unclosed — different rec.",
+      "recommendation: Unclosed rec — must not appear.",
+    ].join("\n");
+    const result = extractLatestAsk(notes);
+    expect(result?.decision).toBe("Closed question.");
+    expect(result?.recommendation).toBe("Closed rec.");
+  });
+});
+
+// ---- buildInbox: recommendation/alternative 120-char cap (agent-teams-oc3p) ----
+//
+// buildInbox slices recommendation and alternative to 120 chars before putting
+// them in the InboxItem.
+
+describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => {
+  function makeWaitingInitWithNotes(notes: string): ParsedInitiative {
+    return {
+      id: "cap-test",
+      title: "Cap test",
+      description: "worktree: /wt/cap-test",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/cap-test",
+      branch: "cap-test",
+      team: "t-cap-test",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+      epic: null,
+    };
+  }
+
+  it("recommendation longer than 120 chars is capped at 120", () => {
+    const longRec = "R".repeat(150);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Should we?",
+      `recommendation: ${longRec}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toHaveLength(120);
+    expect(inbox[0]?.recommendation).toBe(longRec.slice(0, 120));
+  });
+
+  it("alternative longer than 120 chars is capped at 120", () => {
+    const longAlt = "A".repeat(200);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Deploy?",
+      `alternative: ${longAlt}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.alternative).toHaveLength(120);
+    expect(inbox[0]?.alternative).toBe(longAlt.slice(0, 120));
+  });
+
+  it("values exactly 120 chars are not truncated", () => {
+    const exactly120 = "X".repeat(120);
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Go?",
+      `recommendation: ${exactly120}`,
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInitWithNotes(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.recommendation).toHaveLength(120);
+    expect(inbox[0]?.recommendation).toBe(exactly120);
+  });
+});
+
+// ---- buildInbox: raw status/state/waitingFor pass-through (agent-teams-ni2y.2) ----
+
+describe("buildInbox — raw status/state/waitingFor pass-through", () => {
+  function makeInit(id: string, labels?: string[]): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-01T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels,
+      epic: null,
+    };
+  }
+
+  it("passes through raw session status/state/waitingFor verbatim (not collapsed into kind)", () => {
+    const init = makeInit("pt-1", ["human"]);
+    const sess: SessionState = {
+      sessionId: "sess-pt-1",
+      kind: "background",
+      cwd: "/wt/pt-1",
+      startedAt: 0,
+      status: "waiting",
+      state: "blocked",
+      waitingFor: "permissionPrompt",
+    };
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.status).toBe("waiting");
+    expect(inbox[0]?.state).toBe("blocked");
+    expect(inbox[0]?.waitingFor).toBe("permissionPrompt");
+  });
+
+  it("status/state are null and waitingFor is absent when no session matched", () => {
+    const init = makeInit("pt-2", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.status).toBeNull();
+    expect(inbox[0]?.state).toBeNull();
+    expect(inbox[0]?.waitingFor).toBeUndefined();
+  });
+});
+
+// ---- extractLatestAsk / buildInbox: context field (agent-teams-ni2y.2) -------
+
+describe("buildInbox — waiting item context from ask block", () => {
+  function makeWaitingInit(notes: string): ParsedInitiative {
+    return {
+      id: "ctx-test",
+      title: "Context test",
+      description: "worktree: /wt/ctx-test",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-01T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/ctx-test",
+      branch: "ctx-test",
+      team: "t-ctx-test",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+      epic: null,
+    };
+  }
+
+  it("context is the ask block's context: field", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Ship or hold?",
+      "context: Waiting on perf numbers from the load test before deciding.",
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.context).toBe("Waiting on perf numbers from the load test before deciding.");
+  });
+
+  it("context is '' when the ask block has no context: field", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.context).toBe("");
+  });
+});
+
+// ---- buildInbox: notes-block nextAction fallback (agent-teams-ni2y.2) --------
+//
+// check/generic/review rows fall back to the last "session N, ..." notes block
+// (mirrors DrillInDetail.notesHistory's split) instead of the boilerplate
+// constant, when notes carry one. Constant-fallback-on-empty-notes is already
+// covered by the "updatedAt and nextAction" and "check flavor" describe blocks above.
+
+describe("buildInbox — notes-block nextAction fallback for check/generic/review", () => {
+  function makeInit(id: string, notes: string, labels?: string[]): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-01T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels,
+      epic: null,
+    };
+  }
+
+  it("review item nextAction falls back to the last notes block when present", () => {
+    const notes =
+      "session 1, 2026-06-30 — investigating flaky test.\nsession 2, 2026-07-01 — fix landed, needs review of the retry logic.";
+    const init = makeInit("rev-fb", notes, ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 2, 2026-07-01 — fix landed, needs review of the retry logic.");
+  });
+
+  it("generic item nextAction falls back to the last notes block when present", () => {
+    const notes = "session 1 — delivered, waiting on a manual smoke test before merge.";
+    const init = makeInit("gen-fb", notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 1 — delivered, waiting on a manual smoke test before merge.");
+  });
+
+  it("check item nextAction falls back to the last notes block when present", () => {
+    const notes = "session 1 — session paused mid-rebase, no explicit gate set.";
+    const init = { ...makeInit("chk-fb", notes), prUrl: null };
+    const sess: SessionState = {
+      sessionId: "sess-chk-fb",
+      kind: "background",
+      cwd: "/wt/chk-fb",
+      startedAt: 0,
+      status: "waiting",
+      state: "blocked",
+    };
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 1 — session paused mid-rebase, no explicit gate set.");
   });
 });

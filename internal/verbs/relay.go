@@ -29,14 +29,6 @@ type relayBDQueryFunc func(home, label string) ([]bd.Issue, error)
 // Injected so tests can capture calls without running a subprocess.
 type relaySendFunc func(ctx *cli.Context, id, file string) error
 
-// relayCmd implements `ateam relay`.
-type relayCmd struct {
-	enabled      relayEnabledFunc
-	transportFor relayTransportForFunc
-	bdQuery      relayBDQueryFunc
-	send         relaySendFunc
-}
-
 // defaultBDQuery runs `bd list --status=open --label=<label> --json` against
 // the global workspace home and returns matching issues.
 func defaultBDQuery(home, label string) ([]bd.Issue, error) {
@@ -57,9 +49,9 @@ func defaultRelaySend(_ *cli.Context, id, file string) error {
 	return cmd.Run()
 }
 
-// RegisterRelay registers the relay verb.
-func RegisterRelay(reg cli.Registry) {
-	reg.Register(&relayCmd{
+// RegisterRelayKong registers the relay verb onto p using a native kong struct.
+func RegisterRelayKong(p *cli.Parser) {
+	p.AddVerb("relay", "Long-poll the configured transport and relay human replies into ateam send.", &relayKong{
 		enabled:      transport.Enabled,
 		transportFor: transport.For,
 		bdQuery:      defaultBDQuery,
@@ -67,13 +59,19 @@ func RegisterRelay(reg cli.Registry) {
 	})
 }
 
-func (c *relayCmd) Name() string { return "relay" }
+// relayKong is the kong-native form of relayCmd: `ateam relay` (no args).
+type relayKong struct {
+	enabled      relayEnabledFunc      `kong:"-"`
+	transportFor relayTransportForFunc `kong:"-"`
+	bdQuery      relayBDQueryFunc      `kong:"-"`
+	send         relaySendFunc         `kong:"-"`
+}
 
-// Run implements `ateam relay` (no args).
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
 // If messaging is not configured, prints a clear message and exits 0 (opt-in).
 // Otherwise calls transport.Receive, blocking until killed.
-func (c *relayCmd) Run(ctx *cli.Context, args []string) error {
+func (c *relayKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam relay: nil context")
 	}
@@ -100,7 +98,7 @@ func (c *relayCmd) Run(ctx *cli.Context, args []string) error {
 // handleReply routes one inbound human reply. Returns nil always (log-and-skip
 // on routing failures) unless the error is permanent-transport-level, in which
 // case returning non-nil aborts Receive.
-func (c *relayCmd) handleReply(ctx *cli.Context, reply transport.Reply) error {
+func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	// Non-topic messages (General topic, DMs) arrive with ThreadRef == "".
 	// Log and skip; bounce is a deferred enhancement (s4lq).
 	if reply.ThreadRef == "" {
@@ -160,4 +158,3 @@ func (c *relayCmd) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	}
 	return nil
 }
-

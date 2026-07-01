@@ -5,6 +5,8 @@
 //   GET  /api/initiatives/:id                 -> DrillInDetail
 //   GET  /api/initiatives/:id/logs?session=   -> raw claude logs bytes (chunked)
 //   POST /api/initiatives/:id/attach          -> { ok: true } (macOS terminal)
+//   POST /api/initiatives/:id/stop-session    -> { ok: true } (shells claude stop)
+//   POST /api/initiatives/:id/launch-session  -> { ok: true } | { error }
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -13,15 +15,18 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { DrillInDetail } from "@agent-teams/shared";
-import { CliError, claudeAgentsJson, bdWorkBeads, spawnClaudeLogs } from "./cli.js";
+import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
+import { CliError, claudeAgentsJson, bdLabeledBeads, spawnClaudeLogs } from "./cli.js";
+import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
 import { launchAttach, isValidSessionId } from "./attach.js";
+import { launchStop } from "./stop.js";
 import { buildSnapshot } from "./snapshot.js";
 
 const PORT = parseInt(process.env["PORT"] ?? "4823", 10);
@@ -251,6 +256,73 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
 
+    // POST /api/initiatives/:id/stop-session
+    if (method === "POST" && sub === "/stop-session") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch (err) {
+        const status = (err as { code?: number }).code === 413 ? 413 : 400;
+        json(res, status, { error: status === 413 ? "request body too large" : "could not read request body" });
+        return;
+      }
+
+      let sessionId: string;
+      try {
+        const parsed: unknown = JSON.parse(body);
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          typeof (parsed as Record<string, unknown>)["sessionId"] !== "string"
+        ) {
+          throw new Error("missing sessionId");
+        }
+        sessionId = (parsed as { sessionId: string }).sessionId;
+      } catch {
+        json(res, 400, { error: "body must be { sessionId: string }" });
+        return;
+      }
+
+      if (!isValidSessionId(sessionId)) {
+        json(res, 400, { error: "invalid session id" });
+        return;
+      }
+
+      try {
+        const result = await launchStop(sessionId);
+        json(res, 200, result);
+      } catch (err) {
+        json(res, 502, { error: String(err) });
+      }
+      return;
+    }
+
+    // POST /api/initiatives/:id/launch-session
+    if (method === "POST" && sub === "/launch-session") {
+      if (!/^[\w-]+$/.test(id) || id.length > 100) {
+        json(res, 400, { error: "invalid initiative id" });
+        return;
+      }
+      const snapshot = snapshots.getLatest() ?? (await buildSnapshot());
+      const node = snapshot.initiatives.find((n) => n.initiative.id === id);
+      if (!node) {
+        json(res, 404, { error: `initiative ${id} not found` });
+        return;
+      }
+      const worktree = node.initiative.worktree;
+      if (!worktree || !existsSync(worktree)) {
+        json(res, 400, { error: `initiative ${id} has no worktree on this machine` });
+        return;
+      }
+      try {
+        const result = await launchTerminal(id);
+        json(res, 200, result);
+      } catch (err) {
+        json(res, 502, { error: String(err) });
+      }
+      return;
+    }
+
     // GET /api/initiatives/:id
     if (method === "GET" && sub === "") {
       try {
@@ -264,18 +336,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         const { initiative } = node;
 
         // Fetch all background sessions and work beads for this initiative.
-        const [agentsRaw, beadsRaw] = await Promise.all([
-          claudeAgentsJson(),
-          initiative.repo
-            ? bdWorkBeads(initiative.repo).catch((err: Error) => {
-                console.error(`[drill-in] bd work beads error for ${id}: ${err.message}`);
-                return "[]";
-              })
-            : Promise.resolve("[]"),
-        ]);
-
+        const agentsRaw = await claudeAgentsJson();
         const allSessions = parseClaudeAgents(agentsRaw);
-        const workBeads = parseBdList(beadsRaw);
+
+        // Fetch all beads labeled with this initiative's id.
+        let workBeads: WorkBead[] = [];
+        if (initiative.repo) {
+          try {
+            workBeads = parseBdList(await bdLabeledBeads(initiative.repo, initiative.id));
+          } catch (err) {
+            console.error(`[drill-in] bd work beads error for ${id}: ${(err as Error).message}`);
+          }
+        }
 
         // Sessions whose cwd matches this initiative's worktree.
         const sessions = allSessions.filter(

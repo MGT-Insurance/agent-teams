@@ -1,10 +1,13 @@
-// Package cli defines the Command interface, execution Context, typed exit
-// errors, and verb Registry used by the ateam binary.
+// Package cli defines the execution Context, typed exit errors, and verb Parser
+// used by the ateam binary.
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+
+	"github.com/alecthomas/kong"
 )
 
 // Context carries per-invocation state passed to every Command.Run call.
@@ -22,37 +25,61 @@ type BDRunner interface {
 	RunJSON(dst any, args ...string) error
 }
 
-// Command is implemented by every ateam verb.
-type Command interface {
-	// Name returns the verb string (e.g. "list", "resume-match").
-	Name() string
-	// Run executes the verb. args contains everything after the verb token.
-	// Return a typed error to control the exit code; nil -> exit 0.
-	Run(ctx *Context, args []string) error
+// Parser accumulates verb registrations and builds a *kong.Kong lazily on first
+// Parse call. This deferred build is required because kong.DynamicCommand only
+// takes effect when passed to kong.New — applying it after New is a no-op.
+type Parser struct {
+	opts  []kong.Option // base options (Name, Description, Exit, Writers…)
+	verbs []kong.Option // DynamicCommand options accumulated via AddVerb
+	built *kong.Kong    // non-nil after first Parse call
 }
 
-// Registry maps verb names to their Commands. Built once in main; never mutated
-// after initial population.
-type Registry map[string]Command
+// NewParser creates a Parser that defers kong.New until Parse is called.
+// opts are applied to kong.New along with defaults (Name, Description) and any
+// registered verb options. The Exit option, if needed, must be supplied here.
+func NewParser(opts ...kong.Option) (*Parser, error) {
+	return &Parser{opts: opts}, nil
+}
 
-// Register adds cmd to r keyed by cmd.Name(). Panics on duplicate registration
-// (programming error, not a runtime condition).
-func (r Registry) Register(cmd Command) {
-	if _, exists := r[cmd.Name()]; exists {
-		panic(fmt.Sprintf("cli: duplicate verb registration: %q", cmd.Name()))
+// AddVerb registers a kong-tagged verb struct under name with a one-line help
+// string. cmd must be a pointer to a struct whose Run(*Context) error method
+// kong will invoke via kctx.Run(cliCtx). Must be called before Parse.
+func (p *Parser) AddVerb(name, help string, cmd any) {
+	p.verbs = append(p.verbs, kong.DynamicCommand(name, help, "", cmd))
+}
+
+// build constructs the *kong.Kong parser from accumulated options. Called once
+// on the first Parse.
+func (p *Parser) build() (*kong.Kong, error) {
+	var root struct{}
+	defaults := []kong.Option{
+		kong.Name("ateam"),
+		kong.Description("agent-teams workspace CLI"),
+		kong.Exit(func(int) {}), // default no-op exit; callers override via opts
 	}
-	r[cmd.Name()] = cmd
+	// Merge: defaults first so callers can override (e.g. custom Exit).
+	all := append(defaults, p.opts...)
+	all = append(all, p.verbs...)
+	return kong.New(&root, all...)
 }
 
-// Lookup returns the Command for name and true, or nil and false.
-func (r Registry) Lookup(name string) (Command, bool) {
-	c, ok := r[name]
-	return c, ok
+// Parse builds the kong parser (if not already built) and parses args.
+func (p *Parser) Parse(args []string) (*kong.Context, error) {
+	if p.built == nil {
+		k, err := p.build()
+		if err != nil {
+			return nil, err
+		}
+		p.built = k
+	}
+	return p.built.Parse(args)
 }
 
-// ExitCode maps an error returned by Command.Run to a process exit code.
+// ExitCode maps an error returned by a verb's Run (or a kong parse error) to a
+// process exit code.
 //
 //	nil               -> 0
+//	*kong.ParseError  -> 2 (parse/validation failure, always usage-level)
 //	*UsageError       -> 2
 //	*DepError         -> 3
 //	*WorkspaceError   -> 4
@@ -62,21 +89,33 @@ func ExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	switch e := err.(type) {
-	case *UsageError:
-		_ = e
-		return 2
-	case *DepError:
-		_ = e
-		return 3
-	case *WorkspaceError:
-		_ = e
-		return 4
-	case *SilentError:
-		return e.Code
-	default:
-		return 1
+	// errors.As-unwrap: kong's kctx.Run wraps the error a verb's Run returns, so
+	// a plain type switch no longer matches our typed errors and everything would
+	// collapse to exit 1. Walk the chain instead. SilentError first so an explicit
+	// code wins.
+	var silent *SilentError
+	if errors.As(err, &silent) {
+		return silent.Code
 	}
+	var usage *UsageError
+	if errors.As(err, &usage) {
+		return 2
+	}
+	var dep *DepError
+	if errors.As(err, &dep) {
+		return 3
+	}
+	var ws *WorkspaceError
+	if errors.As(err, &ws) {
+		return 4
+	}
+	// kong.ParseError represents missing/unknown flags, missing positionals, enum
+	// violations, and Validate() failures — all are usage-level errors (exit 2).
+	var kpe *kong.ParseError
+	if errors.As(err, &kpe) {
+		return 2
+	}
+	return 1
 }
 
 // UsageError signals a missing/unknown flag, missing positional, unknown verb,
@@ -130,11 +169,3 @@ func (e *SilentError) Error() string { return fmt.Sprintf("exit %d", e.Code) }
 func Silent(code int) *SilentError {
 	return &SilentError{Code: code}
 }
-
-// UsageText is printed to stderr for an empty or unknown verb.
-const UsageText = "Usage: ateam <verb> [args]\n" +
-	"Verbs: ws | list | list-json | human-list | audit | resume-match | resume-match-closed\n" +
-	"       register | note | gate | clear-gate | learn | learnings | prime\n" +
-	"       show | close | reopen | sync | new-initiative | dispatch | resume | cost\n" +
-	"       worktree-setup | send | inbox | route-pr-event | execution-status\n" +
-	"       fresh-drain | condense-lock\n"

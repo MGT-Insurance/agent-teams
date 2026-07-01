@@ -36,7 +36,7 @@ func (f *fakeTransport) Receive(handler func(transport.Reply) error) error {
 
 // ── fakeTransportFor ──────────────────────────────────────────────────────────
 
-// fakeTransportFor returns ft or an error, for injection into notifyCmd.
+// fakeTransportFor returns ft or an error, for injection into notifyKong.
 func fakeTransportFor(ft *fakeTransport, err error) transportForFunc {
 	return func(home string) (transport.Transport, error) {
 		return ft, err
@@ -108,85 +108,25 @@ func newNotifyCtx(b cli.BDRunner) (*cli.Context, *bytes.Buffer, *bytes.Buffer) {
 	}, out, errBuf
 }
 
-// ── parseNotifyFlags ──────────────────────────────────────────────────────────
+// ── notifyKong.Run flag validation ─────────────────────────────────────────────
+//
+// Required-flag / positional enforcement (--file required, <id> required) is
+// kong's job now (struct tags), exercised by the framework's own parse tests
+// and TestAllVerbsRegistered (verbs_test.go). Only the Run-level file-exists
+// check (mirroring noteKong/registerKong) is ours to test here.
 
-func TestParseNotifyFlags_HappyPath(t *testing.T) {
-	f := makeTempBodyFile(t, "hello")
-	id, file, title, err := parseNotifyFlags([]string{"at-abc", "--file", f, "--title", "My title"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestNotify_FileNotFound(t *testing.T) {
+	nbd := &notifyFakeBD{issue: bd.Issue{ID: "at-abc"}}
+	cmd := &notifyKong{
+		ID:           "at-abc",
+		File:         "/no/such/file.txt",
+		transportFor: func(home string) (transport.Transport, error) { return nil, nil },
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
 	}
-	if id != "at-abc" {
-		t.Errorf("id = %q, want at-abc", id)
-	}
-	if file != f {
-		t.Errorf("file = %q, want %q", file, f)
-	}
-	if title != "My title" {
-		t.Errorf("title = %q, want \"My title\"", title)
-	}
-}
-
-func TestParseNotifyFlags_EqForm(t *testing.T) {
-	f := makeTempBodyFile(t, "body")
-	id, _, title, err := parseNotifyFlags([]string{"at-xyz", "--file=" + f, "--title=eq-title"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if id != "at-xyz" {
-		t.Errorf("id = %q, want at-xyz", id)
-	}
-	if title != "eq-title" {
-		t.Errorf("title = %q, want eq-title", title)
-	}
-}
-
-func TestParseNotifyFlags_NoTitle(t *testing.T) {
-	f := makeTempBodyFile(t, "body")
-	_, _, title, err := parseNotifyFlags([]string{"at-abc", "--file", f})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if title != "" {
-		t.Errorf("title = %q, want empty when not specified", title)
-	}
-}
-
-func TestParseNotifyFlags_MissingID(t *testing.T) {
-	_, _, _, err := parseNotifyFlags([]string{})
-	if err == nil {
-		t.Fatal("expected error for missing initiative-id")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestParseNotifyFlags_MissingFile(t *testing.T) {
-	_, _, _, err := parseNotifyFlags([]string{"at-abc"})
-	if err == nil {
-		t.Fatal("expected error for missing --file")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestParseNotifyFlags_FileNotFound(t *testing.T) {
-	_, _, _, err := parseNotifyFlags([]string{"at-abc", "--file", "/no/such/file.txt"})
+	ctx, _, _ := newNotifyCtx(nbd)
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for missing file")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestParseNotifyFlags_UnknownFlag(t *testing.T) {
-	f := makeTempBodyFile(t, "body")
-	_, _, _, err := parseNotifyFlags([]string{"at-abc", "--file", f, "--unknown=x"})
-	if err == nil {
-		t.Fatal("expected error for unknown flag")
 	}
 	if code := cli.ExitCode(err); code != 2 {
 		t.Errorf("expected exit 2, got %d", code)
@@ -235,7 +175,9 @@ func TestNotify_FirstNotify_OpensThreadAndRecordsLabel(t *testing.T) {
 	}
 
 	var recordedLabel string
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
 			recordedLabel = label
@@ -246,7 +188,7 @@ func TestNotify_FirstNotify_OpensThreadAndRecordsLabel(t *testing.T) {
 	}
 
 	ctx, out, _ := newNotifyCtx(nbd)
-	if err := cmd.Run(ctx, []string{"at-00o", "--file", bodyFile}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -295,7 +237,9 @@ func TestNotify_SecondNotify_ReusesExistingLabel(t *testing.T) {
 	}
 
 	labelAddCalled := false
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
 			labelAddCalled = true
@@ -304,7 +248,7 @@ func TestNotify_SecondNotify_ReusesExistingLabel(t *testing.T) {
 	}
 
 	ctx, out, _ := newNotifyCtx(nbd)
-	if err := cmd.Run(ctx, []string{"at-00o", "--file", bodyFile}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -335,12 +279,14 @@ func TestNotify_TitleFromInitiative(t *testing.T) {
 	nbd := &notifyFakeBD{
 		issue: bd.Issue{ID: "at-00o", Title: "Initiative Title"},
 	}
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
 	}
 	ctx, _, _ := newNotifyCtx(nbd)
-	if err := cmd.Run(ctx, []string{"at-00o", "--file", bodyFile}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(ft.calls) != 1 {
@@ -358,12 +304,15 @@ func TestNotify_ExplicitTitle(t *testing.T) {
 	nbd := &notifyFakeBD{
 		issue: bd.Issue{ID: "at-00o", Title: "Initiative Title"},
 	}
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		Title:        "Override",
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
 	}
 	ctx, _, _ := newNotifyCtx(nbd)
-	if err := cmd.Run(ctx, []string{"at-00o", "--file", bodyFile, "--title", "Override"}); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if ft.calls[0].Title != "Override" {
@@ -377,14 +326,16 @@ func TestNotify_NoTransport(t *testing.T) {
 	nbd := &notifyFakeBD{
 		issue: bd.Issue{ID: "at-00o", Title: "x"},
 	}
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:   "at-00o",
+		File: bodyFile,
 		transportFor: func(home string) (transport.Transport, error) {
 			return nil, fmt.Errorf("no transport configured")
 		},
 		labelAdd: func(b cli.BDRunner, id, label string) error { return nil },
 	}
 	ctx, _, _ := newNotifyCtx(nbd)
-	err := cmd.Run(ctx, []string{"at-00o", "--file", bodyFile})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for no transport, got nil")
 	}
@@ -400,12 +351,14 @@ func TestNotify_BadInitiativeID(t *testing.T) {
 		showErr: fmt.Errorf("bd show at-bad: not found"),
 	}
 	ft := &fakeTransport{returnRef: "1"}
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-bad",
+		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
 	}
 	ctx, _, _ := newNotifyCtx(nbd)
-	err := cmd.Run(ctx, []string{"at-bad", "--file", bodyFile})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for bad initiative id, got nil")
 	}
@@ -422,14 +375,16 @@ func TestNotify_LabelWriteFailureIsNonFatal(t *testing.T) {
 	nbd := &notifyFakeBD{
 		issue: bd.Issue{ID: "at-00o", Title: "x"},
 	}
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
 			return fmt.Errorf("bd label add: permission denied")
 		},
 	}
 	ctx, out, errBuf := newNotifyCtx(nbd)
-	err := cmd.Run(ctx, []string{"at-00o", "--file", bodyFile})
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("Run should succeed despite label write failure, got: %v", err)
 	}
@@ -445,11 +400,13 @@ func TestNotify_LabelWriteFailureIsNonFatal(t *testing.T) {
 
 // TestNotify_NilContext confirms nil ctx returns an error immediately.
 func TestNotify_NilContext(t *testing.T) {
-	cmd := &notifyCmd{
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         "/dev/null",
 		transportFor: func(home string) (transport.Transport, error) { return nil, nil },
 		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
 	}
-	err := cmd.Run(nil, []string{"at-00o", "--file", "/dev/null"})
+	err := cmd.Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}

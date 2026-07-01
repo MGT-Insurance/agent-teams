@@ -21,9 +21,9 @@ func TestRoles_DistinctSortedRoles(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &rolesCmd{}
+	cmd := &rolesKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -56,9 +56,9 @@ func TestRoles_HotKeysCollapseToRole(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &rolesCmd{}
+	cmd := &rolesKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -92,9 +92,9 @@ func TestRoles_ExcludesColonlessAndNonString(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &rolesCmd{}
+	cmd := &rolesKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -119,9 +119,9 @@ func TestRoles_EmptyWhenNoMemories(t *testing.T) {
 		},
 	}
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	cmd := &rolesCmd{}
+	cmd := &rolesKong{}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -133,8 +133,8 @@ func TestRoles_EmptyWhenNoMemories(t *testing.T) {
 // TestRoles_NilContextErrors verifies that a nil context returns an error
 // rather than panicking.
 func TestRoles_NilContextErrors(t *testing.T) {
-	cmd := &rolesCmd{}
-	if err := cmd.Run(nil, nil); err == nil {
+	cmd := &rolesKong{}
+	if err := cmd.Run(nil); err == nil {
 		t.Error("expected error for nil context, got nil")
 	}
 }

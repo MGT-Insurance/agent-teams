@@ -26,6 +26,12 @@ const condenseLockHeldCode = 5
 // as stale and stolen by a new acquire. Exported only for unit-test injection.
 const condenseLockStaleAge = 600 * time.Second
 
+// RegisterCondenseLock registers the condense-lock verb onto p using a native
+// kong struct.
+func RegisterCondenseLock(p *cli.Parser) {
+	p.AddVerb("condense-lock", "Acquire or release the advisory condense lock.", &condenseLockKong{})
+}
+
 // condenseLockCmd implements `ateam condense-lock acquire|release`.
 //
 // acquire: atomically creates the lock file (O_CREATE|O_EXCL). If the file
@@ -43,32 +49,11 @@ type condenseLockCmd struct {
 	nowFn func() time.Time
 }
 
-func (c *condenseLockCmd) Name() string { return "condense-lock" }
-
 func (c *condenseLockCmd) now() time.Time {
 	if c.nowFn != nil {
 		return c.nowFn()
 	}
 	return time.Now()
-}
-
-func (c *condenseLockCmd) Run(ctx *cli.Context, args []string) error {
-	if ctx == nil {
-		return fmt.Errorf("ateam condense-lock: no context")
-	}
-	if len(args) == 0 || args[0] == "" {
-		return cli.Usagef("ateam condense-lock: missing acquire|release")
-	}
-	action := args[0]
-	path := condenseLockPath(ctx.Home)
-	switch action {
-	case "acquire":
-		return c.acquire(ctx, path)
-	case "release":
-		return c.release(path)
-	default:
-		return cli.Usagef("ateam condense-lock: unknown action %q (want acquire or release)", action)
-	}
 }
 
 // acquire tries to create the lock file atomically. On collision it reads the
@@ -143,4 +128,29 @@ func parseLockTimestamp(content string) (int64, error) {
 		return 0, fmt.Errorf("unexpected lock format")
 	}
 	return strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
+}
+
+// ── native kong struct ────────────────────────────────────────────────────────
+
+// condenseLockKong is the kong-converted form of condenseLockCmd.
+// Action is a required positional enum: acquire or release.
+type condenseLockKong struct {
+	Action string `arg:"" name:"action" enum:"acquire,release" help:"Lock action: acquire or release."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *condenseLockKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam condense-lock: no context")
+	}
+	path := condenseLockPath(ctx.Home)
+	impl := &condenseLockCmd{}
+	switch c.Action {
+	case "acquire":
+		return impl.acquire(ctx, path)
+	case "release":
+		return impl.release(path)
+	default:
+		return cli.Usagef("ateam condense-lock: unknown action %q (want acquire or release)", c.Action)
+	}
 }

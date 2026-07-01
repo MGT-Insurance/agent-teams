@@ -2,8 +2,10 @@ package cli_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -20,6 +22,12 @@ func TestExitCode(t *testing.T) {
 		{"SilentError code 1", cli.Silent(1), 1},
 		{"SilentError code 5", cli.Silent(5), 5},
 		{"generic error", errors.New("something broke"), 1},
+		// kong's kctx.Run wraps the verb's returned error with %w; ExitCode must
+		// errors.As-unwrap to recover the typed code (regression at-41k/7ct2).
+		{"wrapped UsageError", fmt.Errorf("run: %w", cli.Usagef("bad flag")), 2},
+		{"wrapped DepError", fmt.Errorf("run: %w", cli.Depf("bd not found")), 3},
+		{"wrapped WorkspaceError", fmt.Errorf("run: %w", cli.Workspacef("not initialized")), 4},
+		{"wrapped SilentError code 5", fmt.Errorf("run: %w", cli.Silent(5)), 5},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,35 +61,40 @@ func TestErrorMessages(t *testing.T) {
 	}
 }
 
-func TestRegistryDuplicatePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic on duplicate registration, got none")
-		}
-	}()
-	reg := make(cli.Registry)
-	cmd := &testCmd{name: "dup"}
-	reg.Register(cmd)
-	reg.Register(cmd) // should panic
-}
+// ── Parser / kong contract tests ──────────────────────────────────────────────
 
-func TestRegistryLookup(t *testing.T) {
-	reg := make(cli.Registry)
-	cmd := &testCmd{name: "myverb"}
-	reg.Register(cmd)
-
-	got, ok := reg.Lookup("myverb")
-	if !ok || got != cmd {
-		t.Errorf("Lookup(myverb) = %v, %v; want cmd, true", got, ok)
+// TestParserHelpExitsZero confirms that --help triggers Exit(0) (help was shown).
+func TestParserHelpExitsZero(t *testing.T) {
+	var exitCode *int
+	p, err := cli.NewParser(kong.Exit(func(code int) { exitCode = &code }))
+	if err != nil {
+		t.Fatal(err)
 	}
+	p.AddVerb("myverb", "a test verb", &trivialKongVerb{})
 
-	_, ok = reg.Lookup("nope")
-	if ok {
-		t.Error("Lookup(nope) returned true, want false")
+	_, _ = p.Parse([]string{"--help"})
+	if exitCode == nil {
+		t.Error("Exit was not called; expected help to trigger Exit(0)")
+	} else if *exitCode != 0 {
+		t.Errorf("Exit(%d), want Exit(0)", *exitCode)
 	}
 }
 
-type testCmd struct{ name string }
+// TestParserUnknownVerbError confirms that an unknown verb produces a parse error.
+func TestParserUnknownVerbError(t *testing.T) {
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddVerb("known", "a known verb", &trivialKongVerb{})
 
-func (c *testCmd) Name() string                         { return c.name }
-func (c *testCmd) Run(_ *cli.Context, _ []string) error { return nil }
+	_, parseErr := p.Parse([]string{"unknown-xyzzy"})
+	if parseErr == nil {
+		t.Error("expected parse error for unknown verb, got nil")
+	}
+}
+
+// trivialKongVerb is the minimal kong-style verb struct with Run(*cli.Context) error.
+type trivialKongVerb struct{}
+
+func (v *trivialKongVerb) Run(ctx *cli.Context) error { return nil }

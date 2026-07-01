@@ -122,13 +122,15 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 	}
 
 	ctx, stdout, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Add undo stack",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Add undo stack",
-		"--repo", repoDir,
-		"--no-launch",
-	})
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("dispatch --no-launch: unexpected error: %v", err)
 	}
@@ -167,9 +169,14 @@ func TestDispatch_NotARepo(t *testing.T) {
 		},
 	}
 	ctx, _, stderr := makeCtx(&fakeBD{}, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{"--problem", "Some work"})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for non-repo, got nil")
 	}
@@ -188,10 +195,16 @@ func TestDispatch_EmptySlug(t *testing.T) {
 	repoDir := t.TempDir()
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	cmd := &dispatchCommand{git: fg}
-
 	// A problem that slugifies to empty (pure punctuation).
-	err := cmd.Run(ctx, []string{"--problem", "!@#$%", "--repo", repoDir})
+	cmd := &dispatchKong{
+		Problem:  "!@#$%",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for empty slug, got nil")
 	}
@@ -210,13 +223,15 @@ func TestDispatch_WorktreeCollision(t *testing.T) {
 		worktreeExistsFn: func(repoRoot, wtPath string) bool { return true }, // collision
 	}
 	ctx, _, stderr := makeCtx(&fakeBD{}, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Some work",
-		"--repo", repoDir,
-		"--no-launch",
-	})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for collision, got nil")
 	}
@@ -258,14 +273,16 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	}
 
 	ctx, _, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Some feature",
+		Slug:     "some-feature",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Some feature",
-		"--slug", "some-feature",
-		"--repo", repoDir,
-		"--no-launch",
-	})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error from registration failure, got nil")
 	}
@@ -288,9 +305,15 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 func TestDispatch_MissingProblem(t *testing.T) {
 	home := t.TempDir()
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	cmd := &dispatchCommand{git: &fakeGit{}}
+	// Problem: "" slugifies to "" → UsageError (exit 2).
+	cmd := &dispatchKong{
+		Problem:  "",
+		NoLaunch: true,
+		git:      &fakeGit{},
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected UsageError, got nil")
 	}
@@ -315,14 +338,16 @@ func TestDispatch_IDOnly(t *testing.T) {
 	}
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, stdout, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		IDOnly:   true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "some work",
-		"--repo", repoDir,
-		"--no-launch",
-		"--id-only",
-	})
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -367,14 +392,16 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 	}
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "My work",
+		Slug:     expectedSlug,
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "My work",
-		"--slug", expectedSlug,
-		"--repo", repoDir,
-		"--no-launch",
-	})
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -385,6 +412,108 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "mode: bg") {
 		t.Errorf("body missing 'mode: bg':\n%s", gotBody)
+	}
+}
+
+// ---- dispatch: --standby ---------------------------------------------------
+
+// TestDispatch_Standby_WritesMarker verifies that --standby appends the frozen
+// "standby: true" line to the initiative body, positioned immediately after
+// "mode: bg" (contract: agent-teams-yl6t.1).
+func TestDispatch_Standby_WritesMarker(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-standby1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Standby work",
+		Slug:     "standby-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		Standby:  true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	modeIdx := strings.Index(gotBody, "mode: bg\n")
+	standbyIdx := strings.Index(gotBody, "standby: true\n")
+	if modeIdx < 0 {
+		t.Fatalf("body missing 'mode: bg':\n%s", gotBody)
+	}
+	if standbyIdx < 0 {
+		t.Fatalf("body missing 'standby: true':\n%s", gotBody)
+	}
+	if standbyIdx != modeIdx+len("mode: bg\n") {
+		t.Errorf("'standby: true' must appear immediately after 'mode: bg':\n%s", gotBody)
+	}
+}
+
+// TestDispatch_NoStandby_OmitsMarker verifies that without --standby, the body
+// contains no "standby" line at all (never "standby: false").
+func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-nostandby1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Normal work",
+		Slug:     "normal-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(gotBody, "standby") {
+		t.Errorf("body must not contain any 'standby' line when --standby is omitted:\n%s", gotBody)
 	}
 }
 
@@ -424,15 +553,17 @@ func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
 	}
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Add feature",
+		Slug:     expectedSlug,
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: ctxFile,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Add feature",
-		"--slug", expectedSlug,
-		"--repo", repoDir,
-		"--no-launch",
-		"--body-file", ctxFile,
-	})
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -459,14 +590,16 @@ func TestDispatch_BodyFile_Missing(t *testing.T) {
 	repoDir := t.TempDir()
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: "/no/such/file/ever.txt",
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Some work",
-		"--repo", repoDir,
-		"--no-launch",
-		"--body-file", "/no/such/file/ever.txt",
-	})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for missing --body-file, got nil")
 	}
@@ -491,15 +624,17 @@ func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
 		},
 	}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: "/no/such/file/ever.txt",
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Some work",
-		"--slug", "some-work",
-		"--repo", repoDir,
-		"--no-launch",
-		"--body-file", "/no/such/file/ever.txt",
-	})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for missing --body-file, got nil")
 	}
@@ -540,15 +675,16 @@ func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
 	}
 
 	ctx, stdout, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem: "Some work",
+		Slug:    "some-work",
+		Repo:    repoDir,
+		// NoLaunch intentionally false: the error must fire before any launch.
+		git:    fg,
+		launch: func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Some work",
-		"--slug", "some-work",
-		"--repo", repoDir,
-		// intentionally no --no-launch so launchBGSession would be reached if
-		// the guard were absent; the error must fire before any launch attempt.
-	})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected error for empty issue id, got nil")
 	}
@@ -596,14 +732,16 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 	}
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(fbd, home)
-	cmd := &dispatchCommand{git: fg}
+	cmd := &dispatchKong{
+		Problem:  "Schema only",
+		Slug:     expectedSlug,
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--problem", "Schema only",
-		"--slug", expectedSlug,
-		"--repo", repoDir,
-		"--no-launch",
-	})
+	err := cmd.Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -626,9 +764,10 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 func TestNewInitiative_MissingDirectory(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
-	cmd := &newInitiativeCommand{}
+	// Dir: "" triggers the empty-directory UsageError in newInitiativeKong.Run.
+	cmd := &newInitiativeKong{}
 
-	err := cmd.Run(ctx, []string{})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected UsageError, got nil")
 	}
@@ -641,9 +780,9 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
-	cmd := &newInitiativeCommand{}
+	cmd := &newInitiativeKong{Dir: dir}
 
-	err := cmd.Run(ctx, []string{dir})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected UsageError for missing dri-arg, got nil")
 	}
@@ -655,7 +794,7 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123")
+	args := bgSessionArgs("my-session", "at-abc123", "", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical memoryRoutingRule const.
@@ -686,8 +825,10 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 
 func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	name := "my-session"
-	driArg := "at-abc123"
-	args := bgSessionArgs(name, driArg)
+	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
+	// caller (launchBGSession), not by bgSessionArgs itself.
+	prompt := "/dri at-abc123"
+	args := bgSessionArgs(name, prompt, "", "")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -696,6 +837,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	}{
 		{"--bg", ""},
 		{"-n", name},
+		{"--model", "opus"},
 		{"--permission-mode", "bypassPermissions"},
 	}
 	for _, c := range checks {
@@ -724,11 +866,142 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 		}
 	}
 
-	// Positional /dri arg must be last.
+	// Prompt must be the last element exactly as passed (bgSessionArgs does not
+	// add any /dri prefix; that is the caller's responsibility).
 	last := args[len(args)-1]
-	wantLast := "/dri " + driArg
-	if last != wantLast {
-		t.Errorf("last argv element = %q, want %q", last, wantLast)
+	if last != prompt {
+		t.Errorf("last argv element = %q, want %q", last, prompt)
+	}
+}
+
+// TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
+// replaces the "opus" default in the --model flag.
+func TestBGSessionArgs_ModelOverride(t *testing.T) {
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "")
+
+	found := false
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			if args[i+1] != "sonnet" {
+				t.Errorf("--model value = %q, want %q", args[i+1], "sonnet")
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --model flag; got: %v", args)
+	}
+	// The default "opus" must NOT appear anywhere when overridden.
+	for _, a := range args {
+		if a == "opus" {
+			t.Errorf("argv should not contain default \"opus\" when model override is set; got: %v", args)
+		}
+	}
+}
+
+// TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
+// argument falls back to the "opus" default.
+func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
+	args := bgSessionArgs("my-session", "/some-prompt", "", "")
+
+	found := false
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) && args[i+1] == "opus" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --model opus pair for empty override; got: %v", args)
+	}
+}
+
+// TestBGSessionArgs_AdvisorEnabled verifies the enabled branch: model
+// "sonnet" and advisor "opus" both appear as flag/value pairs in argv.
+// Per contract decision 7 (agent-teams-wvx2.1), this must be asserted at the
+// bgSessionArgs level (pure, no env reads).
+func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus")
+
+	hasPair := func(flag, val string) bool {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasPair("--model", "sonnet") {
+		t.Errorf("argv missing \"--model\" \"sonnet\" pair; got: %v", args)
+	}
+	if !hasPair("--advisor", "opus") {
+		t.Errorf("argv missing \"--advisor\" \"opus\" pair; got: %v", args)
+	}
+}
+
+// TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
+// defaults to "opus" and no "--advisor" flag appears anywhere in argv.
+func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "")
+
+	hasPair := func(flag, val string) bool {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasPair("--model", "opus") {
+		t.Errorf("argv missing \"--model\" \"opus\" pair; got: %v", args)
+	}
+	for _, a := range args {
+		if a == "--advisor" {
+			t.Errorf("argv must not contain \"--advisor\" when advisor is disabled; got: %v", args)
+		}
+	}
+}
+
+// ---- driAdvisorSettings: env-reading helper --------------------------------
+
+// TestDriAdvisorSettings verifies driAdvisorSettings() returns ("sonnet",
+// "opus") only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true", and
+// ("", "") for every other value, including unset, empty, "false", and any
+// casing/value other than the exact string "true".
+func TestDriAdvisorSettings(t *testing.T) {
+	const envKey = "CLAUDE_PLUGIN_OPTION_USE_ADVISORS"
+
+	cases := []struct {
+		name        string
+		setEnv      bool
+		value       string
+		wantModel   string
+		wantAdvisor string
+	}{
+		{name: "true", setEnv: true, value: "true", wantModel: "sonnet", wantAdvisor: "opus"},
+		{name: "unset", setEnv: false, wantModel: "", wantAdvisor: ""},
+		{name: "empty", setEnv: true, value: "", wantModel: "", wantAdvisor: ""},
+		{name: "false", setEnv: true, value: "false", wantModel: "", wantAdvisor: ""},
+		{name: "TRUE_wrong_case", setEnv: true, value: "TRUE", wantModel: "", wantAdvisor: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.setEnv {
+				t.Setenv(envKey, tc.value)
+			} else {
+				// Ensure the var is unset for this subtest, in case the outer
+				// test process inherited it from the environment.
+				t.Setenv(envKey, "")
+				os.Unsetenv(envKey)
+			}
+
+			gotModel, gotAdvisor := driAdvisorSettings()
+			if gotModel != tc.wantModel || gotAdvisor != tc.wantAdvisor {
+				t.Errorf("driAdvisorSettings() = (%q, %q), want (%q, %q)", gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
+			}
+		})
 	}
 }
 
@@ -740,9 +1013,9 @@ func TestNewInitiative_MissingClaude(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
-	cmd := &newInitiativeCommand{}
+	cmd := &newInitiativeKong{Dir: dir, DriArgs: []string{"some-initiative-id"}}
 
-	err := cmd.Run(ctx, []string{dir, "some-initiative-id"})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected DepError, got nil")
 	}
@@ -754,9 +1027,9 @@ func TestNewInitiative_MissingClaude(t *testing.T) {
 func TestNewInitiative_NonExistentDirectory(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
-	cmd := &newInitiativeCommand{}
+	cmd := &newInitiativeKong{Dir: "/no/such/directory/exists/ever", DriArgs: []string{"arg"}}
 
-	err := cmd.Run(ctx, []string{"/no/such/directory/exists/ever", "arg"})
+	err := cmd.Run(ctx)
 	if err == nil {
 		t.Fatal("expected UsageError for non-existent dir, got nil")
 	}
@@ -775,9 +1048,9 @@ func TestNewInitiative_RegularFileNotDirectory(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
-	cmd := &newInitiativeCommand{}
+	cmd := &newInitiativeKong{Dir: f.Name(), DriArgs: []string{"some-initiative"}}
 
-	runErr := cmd.Run(ctx, []string{f.Name(), "some-initiative"})
+	runErr := cmd.Run(ctx)
 	if runErr == nil {
 		t.Fatal("expected UsageError for regular file, got nil")
 	}
@@ -786,5 +1059,513 @@ func TestNewInitiative_RegularFileNotDirectory(t *testing.T) {
 	}
 	if !strings.Contains(runErr.Error(), "not a directory") {
 		t.Errorf("expected 'not a directory' in error, got: %v", runErr)
+	}
+}
+
+// ---- kong structs: core-path tests -----------------------------------------
+
+// TestDispatchKong_FlagsRoundtrip verifies that dispatchKong.Run passes all
+// seven flags through to the underlying dispatchCommand correctly.
+func TestDispatchKong_FlagsRoundtrip(t *testing.T) {
+	repoDir := t.TempDir()
+	home := t.TempDir()
+
+	var capturedSlug string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-kong1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{
+		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
+		addWorktreeFn: func(repoRoot, wtPath, branch, base string) error {
+			capturedSlug = branch
+			return nil
+		},
+	}
+
+	ctx, stdout, _ := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:    "Add feature X",
+		Repo:       repoDir,
+		BaseBranch: "develop",
+		Slug:       "add-feature-x",
+		IDOnly:     false,
+		NoLaunch:   true,
+		git:        fg,
+		launch:     func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedSlug != "add-feature-x" {
+		t.Errorf("slug = %q, want %q", capturedSlug, "add-feature-x")
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "base_branch: develop") {
+		t.Errorf("stdout missing 'base_branch: develop':\n%s", out)
+	}
+	if !strings.Contains(out, "initiative_id: at-kong1") {
+		t.Errorf("stdout missing 'initiative_id: at-kong1':\n%s", out)
+	}
+}
+
+// TestDispatchKong_IDOnly verifies --id-only routes through dispatchKong correctly.
+func TestDispatchKong_IDOnly(t *testing.T) {
+	repoDir := t.TempDir()
+	home := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-idonly-kong"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, stdout, _ := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Work item",
+		Repo:     repoDir,
+		IDOnly:   true,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if strings.Contains(out, "worktree:") {
+		t.Errorf("--id-only must not print worktree line:\n%s", out)
+	}
+	if !strings.Contains(out, "at-idonly-kong") {
+		t.Errorf("--id-only must print the id:\n%s", out)
+	}
+}
+
+// TestNewInitiativeKong_DriArgJoined verifies that multiple DriArgs words are
+// joined as a single space-separated string before being passed to launchBGSession.
+func TestNewInitiativeKong_DriArgJoined(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+
+	// Inject a stub launcher so the test NEVER execs a real `claude --bg`
+	// session (an un-stubbed launch leaks a detached session into dir, which
+	// t.TempDir() then deletes — orphaning it; see agent-teams-wwyd).
+	var gotDir, gotArg string
+	cmd := &newInitiativeKong{
+		Dir:     dir,
+		DriArgs: []string{"the", "problem", "statement"},
+		launch: func(_ *cli.Context, d, arg string) error {
+			gotDir, gotArg = d, arg
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotArg != "the problem statement" {
+		t.Errorf("driArg = %q, want %q", gotArg, "the problem statement")
+	}
+	if gotDir != dir {
+		t.Errorf("dir = %q, want %q", gotDir, dir)
+	}
+}
+
+// TestResumeKong_DelegatesLaunch verifies that resumeKong.Run passes the
+// injected launchFunc through to the underlying resumeCommand.
+func TestResumeKong_DelegatesLaunch(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-rk1",
+				Status:      "open",
+				Description: "worktree: " + dir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var launchedID string
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-rk1",
+		launch: func(_ *cli.Context, _, arg string) error {
+			launchedID = arg
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if launchedID != "at-rk1" {
+		t.Errorf("launch driArg = %q, want %q", launchedID, "at-rk1")
+	}
+}
+
+// ── dispatch: epic creation ───────────────────────────────────────────────────
+
+// TestDispatch_EpicCreatedAndAppendedToBody verifies that when createEpic
+// succeeds, "epic: <id>" is written into the initiative body before bd create.
+func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	expectedSlug := "epic-work"
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-epic-dispatch"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var epicRepoGot, epicTitleGot string
+	cmd := &dispatchKong{
+		Problem:  "Epic work",
+		Slug:     expectedSlug,
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		createEpic: func(repoPath, title string) (string, error) {
+			epicRepoGot = repoPath
+			epicTitleGot = title
+			return "at-root-epic", nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The epic creator must have been called with the resolved repo root.
+	if epicRepoGot != repoDir {
+		t.Errorf("createEpic repo = %q, want %q", epicRepoGot, repoDir)
+	}
+	if epicTitleGot != "Epic work" {
+		t.Errorf("createEpic title = %q, want %q", epicTitleGot, "Epic work")
+	}
+	// The body passed to bd create must contain the epic: line.
+	if !strings.Contains(gotBody, "epic: at-root-epic") {
+		t.Errorf("body missing 'epic: at-root-epic':\n%s", gotBody)
+	}
+	// The repo: line must still be present.
+	if !strings.Contains(gotBody, "repo: "+repoDir) {
+		t.Errorf("body missing 'repo:' line:\n%s", gotBody)
+	}
+}
+
+// ── bgSessionEnv: env-building helper ────────────────────────────────────────
+
+// TestBGSessionEnv_ContainsKey verifies that bgSessionEnv() includes
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000 exactly once.
+func TestBGSessionEnv_ContainsKey(t *testing.T) {
+	env := bgSessionEnv()
+	want := autoCompactWindowEnv + "=" + autoCompactWindowValue
+	count := 0
+	for _, e := range env {
+		if e == want {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("bgSessionEnv() has %d occurrence(s) of %q; want exactly 1", count, want)
+	}
+}
+
+// TestBGSessionEnv_OverridesInherited verifies that an inherited value of
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW is replaced, not duplicated.
+func TestBGSessionEnv_OverridesInherited(t *testing.T) {
+	t.Setenv(autoCompactWindowEnv, "999999")
+
+	env := bgSessionEnv()
+	want := autoCompactWindowEnv + "=" + autoCompactWindowValue
+
+	count := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, autoCompactWindowEnv+"=") {
+			count++
+			if e != want {
+				t.Errorf("bgSessionEnv() has %q; want %q", e, want)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("bgSessionEnv() has %d occurrence(s) of %s=...; want exactly 1", count, autoCompactWindowEnv)
+	}
+}
+
+// TestBGSessionEnv_PreservesOtherVars verifies that an unrelated env var set
+// by the parent is present in the output.
+func TestBGSessionEnv_PreservesOtherVars(t *testing.T) {
+	t.Setenv("ATEAM_TEST_SENTINEL_XYZ", "preserved-value")
+
+	env := bgSessionEnv()
+	want := "ATEAM_TEST_SENTINEL_XYZ=preserved-value"
+	found := false
+	for _, e := range env {
+		if e == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("bgSessionEnv() dropped unrelated env var %q", want)
+	}
+}
+
+// ── dispatch: --skip-epic ─────────────────────────────────────────────────────
+
+// TestDispatch_SkipEpic verifies that when --skip-epic is set, createEpic is
+// never called (even when it is injected).
+func TestDispatch_SkipEpic(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-se1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	epicCalled := false
+	cmd := &dispatchKong{
+		Problem:  "Skip epic test",
+		Repo:     repoDir,
+		NoLaunch: true,
+		SkipEpic: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		createEpic: func(_, _ string) (string, error) {
+			epicCalled = true
+			return "at-should-not-be-created", nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if epicCalled {
+		t.Errorf("createEpic must not be called when --skip-epic is set")
+	}
+}
+
+// ── dispatch: --launch-prompt ─────────────────────────────────────────────────
+
+// TestDispatch_LaunchPrompt verifies that when --launch-prompt is set, the bg
+// session receives the custom prompt verbatim (not /dri <id>).
+func TestDispatch_LaunchPrompt(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-lp1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedPrompt string
+	cmd := &dispatchKong{
+		Problem:      "Do a review",
+		Repo:         repoDir,
+		LaunchPrompt: "/review-skill at-lp1",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, p, _, _ string) error {
+			capturedPrompt = p
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Prompt must be the LaunchPrompt verbatim (static, no {id} in this test).
+	if capturedPrompt != "/review-skill at-lp1" {
+		t.Errorf("bg session prompt = %q, want %q", capturedPrompt, "/review-skill at-lp1")
+	}
+	// Must NOT be the default /dri prefix.
+	if strings.HasPrefix(capturedPrompt, "/dri ") {
+		t.Errorf("bg session must not use /dri prefix when --launch-prompt is set: %q", capturedPrompt)
+	}
+}
+
+// TestDispatch_LaunchPrompt_Substitution verifies that {id} in --launch-prompt
+// is replaced with the actual initiative id returned by bd create.
+func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-sub1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedPrompt string
+	cmd := &dispatchKong{
+		Problem:      "Substitution test",
+		Repo:         repoDir,
+		LaunchPrompt: "/review {id}",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, p, _, _ string) error {
+			capturedPrompt = p
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// {id} must be replaced with the actual initiative id.
+	want := "/review at-sub1"
+	if capturedPrompt != want {
+		t.Errorf("prompt = %q, want %q ({id} must be substituted with initiative id)", capturedPrompt, want)
+	}
+}
+
+// TestDispatch_LaunchPrompt_ModelOverride verifies that --model is threaded
+// through to c.launchRaw alongside the substituted --launch-prompt.
+func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-model1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedModel, capturedAdvisor string
+	cmd := &dispatchKong{
+		Problem:      "Review with sonnet",
+		Repo:         repoDir,
+		LaunchPrompt: "/review {id}",
+		Model:        "sonnet",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, _, m, adv string) error {
+			capturedModel = m
+			capturedAdvisor = adv
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The raw --launch-prompt path is out of scope for advisor mode (contract
+	// decision 5): advisor must always be "" regardless of env, and model
+	// passes through as given via --model.
+	if capturedAdvisor != "" {
+		t.Errorf("launchRaw advisor = %q, want empty (raw path is out of advisor-mode scope)", capturedAdvisor)
+	}
+	if capturedModel != "sonnet" {
+		t.Errorf("launchRaw model = %q, want %q", capturedModel, "sonnet")
+	}
+}
+
+// TestDispatch_EpicCreation_FailSoft verifies that when createEpic returns an
+// error, dispatch still succeeds and registers the initiative without epic:.
+func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-no-epic"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		createEpic: func(_, _ string) (string, error) {
+			return "", fmt.Errorf("bd: simulated epic failure")
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("dispatch should succeed despite epic failure, got: %v", err)
+	}
+	// The body must NOT contain an epic: line.
+	if strings.Contains(gotBody, "epic:") {
+		t.Errorf("body must not contain 'epic:' when epic creation fails:\n%s", gotBody)
+	}
+	// A warning must be written to stderr.
+	if !strings.Contains(stderr.String(), "fail-soft") {
+		t.Errorf("stderr missing 'fail-soft' warning: %q", stderr.String())
 	}
 }

@@ -16,7 +16,13 @@ For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 
 **THIS SESSION IS A HAND-OFF, NOT AN INVESTIGATION.**
 
-Your job is preflight → capture the human's framing → dispatch. Nothing more.
+**ABSOLUTE CONSTRAINT — NEVER investigate.**
+The dispatcher MUST NOT do any investigation whatsoever. No codebase exploration, no grepping, no file reading, no architecture analysis, no mechanism opinions, no solution design, no clarifying-question answering on the human's behalf. If you find yourself reading files, running searches, or reasoning about the codebase, STOP immediately — that is the background DRI's job, not yours. This applies even when the problem statement is vague: pass the vague statement through; do not investigate to refine it. Violating this constraint injects the dispatcher's assumptions into the context block and degrades the DRI's ability to plan independently.
+
+**ABSOLUTE CONSTRAINT — ALWAYS launch a DRI. This is not optional.**
+Every invocation of this skill MUST end by launching a background DRI session via `ateam dispatch`. Refusing, declining, deciding "this doesn't need a DRI", deciding the scope is unclear, or returning to the human with "let me know if you want to proceed" is NEVER a valid outcome. The only two stopping points before dispatch are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no problem statement has been provided — ask the human for one, then dispatch immediately once received. Once those conditions are resolved, dispatch unconditionally. There is no circumstance under which the dispatcher evaluates the work and decides not to launch.
+
+Your job is: preflight → capture the human's framing → dispatch. Nothing more.
 
 Do NOT:
 - Grep the codebase or measure current state.
@@ -55,10 +61,12 @@ The dispatcher's only judgment here is whether the hand-off inputs are present. 
 Run a single call. Everything deterministic (slugify, git worktree add, initiative register, background DRI launch) is handled inside `ateam dispatch`:
 
 ```bash
-ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>]
+ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>] [--standby]
 ```
 
 `--problem` is the one-line title. `--body-file` carries the context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context from the human to pass.
+
+`--standby` is a mechanical passthrough, not a judgment call. Pass it when the invocation contains an explicit `--standby` token, or a clear standby / "park it" / "wait for direction" keyword — nothing more. Otherwise omit it. Detecting the keyword is not investigation; deciding whether standby is *warranted* would be, so don't do that. Standby changes nothing else here: still capture the human's framing verbatim, still launch unconditionally.
 
 `dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, or a `--body-file` path that cannot be read. It never prompts. On success it prints:
 

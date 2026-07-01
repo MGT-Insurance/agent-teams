@@ -34,6 +34,10 @@ export interface ParsedInitiative extends RawInitiative {
   mode: string;
   goal: string;
   prUrl: string | null;
+  // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
+  // Absent for legacy initiatives registered before at-e3m. Dashboard uses
+  // this to filter the drill-in work-bead list to just this initiative's subtree.
+  epic: string | null;
 }
 
 // Shape of one element from `claude agents --json --all`.
@@ -44,12 +48,20 @@ export interface SessionState {
   kind: "background" | "interactive";
   startedAt: number; // epoch ms
   sessionId: string; // uuid
-  // "waiting" is added by agent-teams-blo: the session is paused, waiting on human input.
-  status: "idle" | "busy" | "waiting";
+  // Present ONLY while the process is alive (absent/null once it exits — per the
+  // Claude Code agent-view docs). "waiting" is added by agent-teams-blo: the
+  // session is paused, waiting on human input.
+  status?: "idle" | "busy" | "waiting";
   // background-only fields
   id?: string;
   name?: string;
-  state?: "working" | "blocked" | "done" | "stopped";
+  // Per Claude Code agent-view docs: working | blocked | done | failed | stopped.
+  // `failed` = the session errored. Absent on interactive sessions.
+  state?: "working" | "blocked" | "done" | "failed" | "stopped";
+  // Boundary pass-through: emitted by newer `claude agents --json` builds on a
+  // session blocked on a permission prompt (observed value "permissionPrompt").
+  // Absent in older builds — tolerate missing, render verbatim when present.
+  waitingFor?: string;
 }
 
 // Derived activity enum for constellation rendering.
@@ -83,27 +95,33 @@ export type DeliveryStatus = "none" | "pr-open" | "merged";
 //   "none"    -> no matched session found
 export type SessionSignal = "working" | "waiting" | "ended" | "none";
 
-// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo, updated agent-teams-0rl).
-//   "waiting" -> session is blocked/waiting (agent paused on human input) OR explicit question gate.
-//                MOST URGENT — works for active OR delivered.
+// DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo, updated agent-teams-0rl, agent-teams-ja9c).
+//   "waiting" -> explicit gate:question or human-only label (agent asking a question). AUTHORITATIVE.
 //   "review"  -> EXPLICIT gate:review label (AUTHORITATIVE — "review the PR").
 //                Wins over session signal; comes only from the gate label.
+//   "check"   -> session signal only (status=waiting OR state=blocked) with NO explicit gate.
+//                Softer tier — the session may be paused, but there is no declared gate.
+//                Sorted BELOW review/waiting/generic in the inbox.
 //   "generic" -> fallback: delivered + session ENDED or NONE (no explicit gate).
 //                "needs you" — graceful degrade; no specific action asserted.
 //   false     -> no action required
 //
-// KEY principles (updated agent-teams-0rl):
+// KEY principles (updated agent-teams-0rl, agent-teams-ja9c):
 // - "review" comes ONLY from explicit gate:review label — NOT inferred from session signal.
 // - Explicit gate:review wins over session signal (even working session).
 // - Explicit gate:question or human-only -> "waiting" (agent asking a question).
+// - Session waiting/blocked with NO gate -> "check" (softer, not a declared ask).
 // - Without a gate, delivered + ended/none -> "generic" (needs input; NOT review).
-export type NeedsHumanFlavor = "waiting" | "review" | "generic";
+// - "reap" (at-asi): zombie — a closed/merged initiative whose worktree is GONE
+//   (!worktreeExists) but a session is still alive (matched by the cwd snapshot).
+//   Fires DESPITE the merged short-circuit; the human reaps it via `claude stop`.
+export type NeedsHumanFlavor = "waiting" | "review" | "generic" | "check" | "reap";
 
-// TRUTH TABLE (agent-teams-0rl):
+// TRUTH TABLE (agent-teams-0rl, updated agent-teams-ja9c):
 //   merged                            -> needsHuman=false (done, nothing needed)
 //   explicit gate:review              -> needsHuman="review" (AUTHORITATIVE; wins over session)
 //   explicit gate:question or human   -> needsHuman="waiting" (agent asking a question)
-//   else session WAITING/blocked      -> needsHuman="waiting" (active OR delivered; most urgent)
+//   else session WAITING/blocked      -> needsHuman="check" (no declared gate; softer tier)
 //   else session WORKING              -> needsHuman=false (working / refining, not in inbox)
 //   else delivered + session ENDED    -> needsHuman="generic" (needs input; NOT review anymore)
 //   else delivered + session NONE     -> needsHuman="generic" (graceful degrade; label "needs you")
@@ -120,23 +138,74 @@ export interface InitiativeNode {
   // Two-dimension state model fields (agent-teams-3e6).
   delivery: DeliveryStatus;
   needsHuman: false | NeedsHumanFlavor;
+  // "On this machine" signal (at-gvv): true iff the initiative's worktree path
+  // exists on the host running the dashboard server. Worktree paths are
+  // host-specific while the registry syncs cross-machine, so this MUST be
+  // computed server-side via fs.existsSync — it cannot be derived client-side.
+  worktreeExists: boolean;
+  // Number of background session ENTRIES matched to this worktree (alive + dead,
+  // as listed by `claude agents --json --all`). >1 means multiple sessions on
+  // one worktree — a conflict the dashboard flags. `session` above is the chosen
+  // primary (prefers an alive one) for the per-row session chip.
+  sessionCount: number;
 }
 
 // An item in the inbox requiring Eric's attention.
-// kind mirrors NeedsHumanFlavor (agent-teams-0rl):
-//   "waiting" -> session blocked/waiting or explicit gate:question/human (agent waiting on input)
+// kind mirrors NeedsHumanFlavor (agent-teams-0rl, agent-teams-ja9c):
+//   "waiting" -> explicit gate:question/human (agent waiting on input, declared ask)
 //   "review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
 //   "generic" -> delivered + no explicit gate (graceful degrade; label "needs you")
+//   "check"   -> session waiting/blocked with NO explicit gate (softer tier; check on it)
+//                Sorted BELOW review/waiting/generic rows.
+//   "reap"    -> zombie (at-asi): closed/merged initiative whose worktree is gone but a
+//                session is still alive. Stop it via `claude stop`. Top of inbox.
 export interface InboxItem {
   initiativeId: string;
   title: string;
-  kind: "waiting" | "review" | "generic";
-  // For "waiting" items: the gate question text from notes (if available).
-  // For "review" items: describes the PR awaiting merge.
-  // For "generic" items: generic "needs your attention" text.
-  question: string;
+  kind: "waiting" | "review" | "generic" | "check" | "reap";
+  // The one-sentence action for Eric right now.
+  //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
+  //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
+  //              or "Look at the session for more info." when no structured ask block exists.
+  //   generic -> "Delivered with no gate — open the worktree to see what's needed."
+  //   check   -> "Look at the session for more info." (soft check — no declared ask block)
+  nextAction: string;
+  // Agent's recommendation and alternative for waiting rows; "" for all other kinds.
+  // Sourced from the recommendation:/alternative: fields in the latest <<<ateam-ask >>> block.
+  recommendation: string;
+  alternative: string;
+  // Free-form "what it's waiting on" prose from the context: field in the same ask block
+  // (mirrors Go's askBlock.context, internal/verbs/query.go parseAskBody). "" when absent
+  // or for non-waiting kinds. This is the declared-ask waiting-reason; waitingFor below
+  // is a separate, live-session permission-prompt signal — the two coexist.
+  context: string;
+  // ISO-8601 timestamp from RawInitiative.updated_at — the literal bead timestamp,
+  // kept for display + relative-time (agent-teams-ni2y, agent-teams-ni2y.6).
+  updatedAt: string;
+  // ISO-8601 timestamp: max(updatedAt, matched session's last status/state transition
+  // stamped server-side) — the PRIMARY recency sort key for the inbox (agent-teams-ni2y.8).
+  // Falls back to updatedAt when no session matched, or when built without a transition
+  // map (ad-hoc/endpoint fallback before the first poll).
+  lastActivityAt: string;
   worktree: string;
   prUrl: string | null;
+  // true when initiative.worktree is non-empty and exists on the local filesystem.
+  // Derived server-side (dashboard server runs locally); used for the "This machine only" toggle.
+  onThisMachine: boolean;
+  // Short 8-hex claude session id from any matched entry (alive or detached).
+  // A valid id means `claude attach <id>` should work regardless of session liveness.
+  // Absent when no matched session entry carries a valid 8-hex id.
+  sessionId?: string;
+  // RAW node.session.status / node.session.state, passed through VERBATIM — never
+  // collapsed into `kind` above. null when node.session is null (no matched session).
+  // status=="waiting" and state=="blocked" are the high-visibility drivers: rows where
+  // either holds should read as urgent regardless of `kind`.
+  status: string | null;
+  state: string | null;
+  // Raw session waitingFor pass-through (see SessionState.waitingFor) — the live-session
+  // permission-prompt reason. Absent when the session doesn't carry one (common today;
+  // newer `claude agents --json` builds emit it). Render verbatim when present.
+  waitingFor?: string;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.
@@ -146,6 +215,8 @@ export interface WorkBead {
   status: string;
   priority: string;
   issue_type: string;
+  parent?: string;      // set on child beads; value is the parent epic's id
+  labels?: string[];    // initiative-id label lives here
 }
 
 // Full drill-in payload for a single initiative.
@@ -157,6 +228,10 @@ export interface DrillInDetail extends ParsedInitiative {
 
 // The SSE payload shape pushed on each tick and returned by GET /api/snapshot.
 export interface SnapshotEvent {
+  // May include CLOSED/DONE initiatives in addition to open ones (at-gvv): the
+  // Initiatives tab offers a "show closed" toggle and filters client-side.
+  // Closed initiatives derive delivery="merged" -> needsHuman=false, so the
+  // inbox (which keys off needsHuman) is unaffected.
   initiatives: InitiativeNode[];
   // Background claude sessions that matched no registered initiative worktree.
   // Interactive sessions are excluded — these are only unregistered background processes.

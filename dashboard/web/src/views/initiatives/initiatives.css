@@ -1,0 +1,421 @@
+.initiatives-view {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+  gap: 16px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  /* PR signal hue (no global token exists; violet, GitHub-PR-like). */
+  --chip-pr: #a371f7;
+}
+
+.initiatives-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.initiatives-header__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.initiatives-header__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+/* Banner for disconnected / error states */
+.initiatives-banner {
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.initiatives-banner--warn {
+  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
+  color: var(--color-warn);
+  border: 1px solid color-mix(in srgb, var(--color-warn) 30%, transparent);
+}
+
+.initiatives-banner--error {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+  border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
+}
+
+/* Search + closed toggle */
+.initiatives-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.initiatives-search {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  outline: none;
+}
+
+.initiatives-search:focus {
+  border-color: var(--color-accent);
+}
+
+.initiatives-search::placeholder {
+  color: var(--color-text-muted);
+}
+
+.initiatives-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.initiatives-toggle input {
+  cursor: pointer;
+}
+
+/* Empty state */
+.initiatives-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 60px 0;
+  color: var(--color-text-muted);
+}
+
+.initiatives-empty__message {
+  font-size: 14px;
+}
+
+/* List */
+.initiatives-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.initiatives-list__item {
+  display: contents;
+}
+
+/* Row card */
+.init-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 32px 12px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+}
+
+.init-row:hover,
+.init-row:focus-visible {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+}
+
+.init-row[data-closed="true"] {
+  opacity: 0.6;
+}
+
+/* Row alerts — an anomaly where action should be taken, ranked by urgency.
+   Always full-opacity (overrides the dimmed-closed look) with a left accent +
+   tint scaled to urgency: urgent=red, med=amber, low=subtle amber. */
+.init-row[data-alert] {
+  opacity: 1;
+}
+
+.init-row[data-alert="urgent"] {
+  border-left: 4px solid var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 8%, var(--color-surface));
+}
+
+.init-row[data-alert="urgent"]:hover,
+.init-row[data-alert="urgent"]:focus-visible {
+  background: color-mix(in srgb, var(--color-error) 13%, var(--color-surface));
+}
+
+.init-row[data-alert="med"] {
+  border-left: 4px solid var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 7%, var(--color-surface));
+}
+
+.init-row[data-alert="med"]:hover,
+.init-row[data-alert="med"]:focus-visible {
+  background: color-mix(in srgb, var(--color-warn) 12%, var(--color-surface));
+}
+
+.init-row[data-alert="low"] {
+  border-left: 4px solid color-mix(in srgb, var(--color-warn) 55%, transparent);
+}
+
+/* "i" affordance on alerted rows — explains why + what to do, on hover.
+   The slot is always present (empty on non-alerted rows) at a fixed width so
+   the signals column to its left holds the same position on every row. */
+.init-row__info {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 4px;
+  color: var(--color-warn);
+}
+
+.init-row__info[data-tier="urgent"] {
+  color: var(--color-error);
+}
+
+.init-row__info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  opacity: 0.7;
+}
+
+.init-row__info:hover .init-row__info-icon {
+  opacity: 1;
+}
+
+/* Popover — hidden until the "i" (or its wrapper) is hovered. */
+.init-row__info-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 250px;
+  padding: 9px 11px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid currentColor;
+  border-radius: 6px;
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.init-row__info:hover .init-row__info-pop {
+  opacity: 1;
+}
+
+.init-row__info-pop strong {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.init-row__main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.init-row__title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.init-row__id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.init-row__phase {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+}
+
+/* Per-phase hues — the base accent above is the in-progress look
+   (active/executing/investigating/planning). Only the phases that should read
+   as a distinct category override it. */
+.init-row__phase--delivered {
+  color: var(--color-ok);
+}
+
+.init-row__phase--parked {
+  color: var(--color-warn);
+}
+
+.init-row__phase--done {
+  color: var(--color-text-muted);
+}
+
+/* Signal chips — a compact vertical mini-column on the right. The stack
+   shrink-wraps to its widest child (always the "on machine" chip, which renders
+   in every row), so the column is a constant width across rows and stays narrow,
+   keeping the title primary. align-items: stretch makes all three chips share
+   that width, so lit/dim/arrow state never changes the footprint or alignment. */
+.init-row__signals {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: max-content;
+  flex-shrink: 0;
+}
+
+.init-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+/* Lit — signal present. Structure only; per-signal tone sets the hue below. */
+.init-chip--on {
+  border-style: solid;
+}
+
+/* Per-signal hues — applied only when lit (compound with --on). */
+.init-chip--on.init-chip--machine {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.init-chip--on.init-chip--pr {
+  background: color-mix(in srgb, var(--chip-pr) 15%, transparent);
+  color: var(--chip-pr);
+  border-color: color-mix(in srgb, var(--chip-pr) 35%, transparent);
+}
+
+/* Session chip levels (machine/PR use --on above; session uses these).
+   good = healthy live session (green) · warn = problematic session that needs
+   action (amber) · muted = dead but not locally actionable (faint, dashed) ·
+   off = no session. */
+.init-chip--good {
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
+  color: var(--color-ok);
+  border-color: color-mix(in srgb, var(--color-ok) 35%, transparent);
+  border-style: solid;
+}
+
+.init-chip--warn {
+  background: color-mix(in srgb, var(--color-warn) 15%, transparent);
+  color: var(--color-warn);
+  border-color: color-mix(in srgb, var(--color-warn) 35%, transparent);
+  border-style: solid;
+}
+
+.init-chip--muted {
+  background: transparent;
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  border-style: dashed;
+}
+
+/* Dim — signal absent (tone class present but uncolored). */
+.init-chip--off {
+  background: transparent;
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  opacity: 0.55;
+}
+
+.init-chip--link:hover {
+  filter: brightness(1.25);
+}
+
+.init-chip__icon {
+  font-size: 11px;
+  line-height: 1;
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* Action button — upper-right corner, flush with the card edge */
+.init-row__action {
+  position: absolute;
+  top: -5px;
+  right: -1px;
+}
+
+
+.launch-btn__err-msg {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 10;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: #f85149;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--color-bg, #0d1117);
+  padding: 2px 5px;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  border-radius: 3px;
+}

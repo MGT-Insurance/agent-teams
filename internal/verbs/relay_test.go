@@ -87,14 +87,14 @@ func TestRelay_EnabledFalse_CleanExit(t *testing.T) {
 	ft := &relayFakeTransport{}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return false },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      newFakeBDQuery().query,
 		send:         (&fakeSend{}).send,
 	}
 
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if ft.received {
@@ -109,13 +109,13 @@ func TestRelay_EnabledFalse_CleanExit(t *testing.T) {
 // warnings or error output to stderr.
 func TestRelay_EnabledFalse_NoStderrNoise(t *testing.T) {
 	ctx := newRelayCtx(t)
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return false },
 		transportFor: func(string) (transport.Transport, error) { return &relayFakeTransport{}, nil },
 		bdQuery:      newFakeBDQuery().query,
 		send:         (&fakeSend{}).send,
 	}
-	_ = cmd.Run(ctx, nil)
+	_ = cmd.Run(ctx)
 	if relayStderr(ctx) != "" {
 		t.Errorf("expected empty stderr when disabled, got: %q", relayStderr(ctx))
 	}
@@ -136,13 +136,13 @@ func TestRelay_MappedThread_SendCalled(t *testing.T) {
 	}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return true },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      bdq.query,
 		send:         fs.send,
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fs.calls) != 1 {
@@ -165,13 +165,13 @@ func TestRelay_EmptyThreadRef_Skipped(t *testing.T) {
 	}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return true },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      newFakeBDQuery().query,
 		send:         fs.send,
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fs.calls) != 0 {
@@ -191,13 +191,13 @@ func TestRelay_UnmappedThread_Skipped(t *testing.T) {
 	}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return true },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      newFakeBDQuery().query, // returns empty for "thread:99"
 		send:         fs.send,
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fs.calls) != 0 {
@@ -222,13 +222,13 @@ func TestRelay_AmbiguousThread_Skipped(t *testing.T) {
 	}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return true },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      bdq.query,
 		send:         fs.send,
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fs.calls) != 0 {
@@ -267,13 +267,13 @@ func TestRelay_BadReplyDoesNotAbort(t *testing.T) {
 	}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return true },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      bdq.query,
 		send:         sendFn,
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("loop must not abort on a bad reply, got: %v", err)
 	}
 	if callCount != 2 {
@@ -304,13 +304,13 @@ func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
 	}
 	ctx := newRelayCtx(t)
 
-	cmd := &relayCmd{
+	cmd := &relayKong{
 		enabled:      func(string) bool { return true },
 		transportFor: func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:      bdq.query,
 		send:         fs.send,
 	}
-	if err := cmd.Run(ctx, nil); err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("bd error must not abort loop, got: %v", err)
 	}
 	if len(fs.calls) != 1 || fs.calls[0].id != "at-006" {

@@ -106,6 +106,7 @@ const sampleDetail: DrillInDetail = {
   mode: "auto",
   goal: "Do the thing",
   prUrl: "https://github.com/org/repo/pull/42",
+  epic: null,
   // DrillInDetail extras
   notesHistory: ["First note", "Second note", "Third note"],
   sessions: [bgSession, interactiveSession],
@@ -155,7 +156,7 @@ describe("DrillInView", () => {
     expect(screen.getByText("Third note")).toBeTruthy();
     expect(screen.getByText("First note")).toBeTruthy();
 
-    // Sessions table shows session name — "planner" appears in both table and attach section
+    // Sessions table shows session name — "planner" appears in both table and toolbar attach
     const plannerEls = screen.getAllByText("planner");
     expect(plannerEls.length).toBeGreaterThanOrEqual(1);
 
@@ -184,7 +185,6 @@ describe("DrillInView", () => {
 
     expect(screen.getByText(/no live sessions/i)).toBeTruthy();
     expect(screen.getByText(/no background sessions — logs unavailable/i)).toBeTruthy();
-    expect(screen.getByText(/no background sessions to attach to/i)).toBeTruthy();
   });
 
   it("attach button calls attachToInitiative with correct args", async () => {
@@ -255,6 +255,62 @@ describe("DrillInView", () => {
     expect(screen.getByText("task")).toBeTruthy();
   });
 
+  it("shows loud styling for waiting status and blocked state, and surfaces waitingFor verbatim", async () => {
+    const waitingSession: SessionState = {
+      ...bgSession,
+      sessionId: "sess-3",
+      id: "s3",
+      name: "waiter",
+      status: "waiting",
+      state: "blocked",
+      waitingFor: "permissionPrompt",
+    };
+    mockFetchInitiative.mockResolvedValue({ ...sampleDetail, sessions: [waitingSession] });
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("permissionPrompt")).toBeTruthy();
+    });
+
+    expect(screen.getByText("waiting").className).toContain("badge--urgent");
+    expect(screen.getByText("blocked").className).toContain("badge--urgent");
+  });
+
+  it("does not apply urgent styling to the header status pill for a blocked bd issue status", async () => {
+    // detail.status is the bd issue status (open|in_progress|blocked|deferred|closed), not
+    // session state — a blocked epic must not false-fire the session "needs you now" treatment.
+    mockFetchInitiative.mockResolvedValue({ ...sampleDetail, status: "blocked", sessions: [] });
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Test Initiative")).toBeTruthy();
+    });
+
+    expect(screen.getByText("blocked").className).not.toContain("badge--urgent");
+  });
+
+  it("renders an empty waitingFor cell when the session carries none", async () => {
+    mockFetchInitiative.mockResolvedValue(sampleDetail);
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Test Initiative")).toBeTruthy();
+    });
+
+    // bgSession/interactiveSession fixtures carry no waitingFor.
+    expect(screen.queryByText("permissionPrompt")).toBeNull();
+  });
+
+  it("shows last-activity relative time in the header, derived from updated_at", async () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    mockFetchInitiative.mockResolvedValue({ ...sampleDetail, updated_at: fiveMinAgo });
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("5m ago")).toBeTruthy();
+    });
+  });
+
   it("renders all notes with descending numeric labels", async () => {
     mockFetchInitiative.mockResolvedValue(sampleDetail);
     render(<DrillInView />);
@@ -265,12 +321,12 @@ describe("DrillInView", () => {
 
     const items = screen.getAllByRole("listitem");
     const noteItems = items.filter((el) => el.className.includes("notes-item"));
-    // notesHistory has 3 entries; first rendered item (array[0] = "First note") gets label "3"
+    // notesHistory has 3 entries; most recent at top — "Third note" is index 0, label = 3
     expect(noteItems.length).toBe(3);
     expect(noteItems[0]?.textContent).toContain("3");
-    expect(noteItems[0]?.textContent).toContain("First note");
-    // Last rendered item (array[2] = "Third note") gets label "1"
+    expect(noteItems[0]?.textContent).toContain("Third note");
+    // Oldest ("First note") is last, label = 1
     expect(noteItems[2]?.textContent).toContain("1");
-    expect(noteItems[2]?.textContent).toContain("Third note");
+    expect(noteItems[2]?.textContent).toContain("First note");
   });
 });

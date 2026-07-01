@@ -5,13 +5,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
-	"github.com/mgt-insurance/agent-teams/internal/transport"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
 
@@ -27,19 +28,53 @@ func run(args []string) int {
 	stderr := os.Stderr
 	stdout := os.Stdout
 
-	verb := ""
-	if len(args) > 0 {
-		verb = args[0]
+	// Empty args → print kong top-level help and exit 0.
+	// Handle this before building the parser so uninitialized workspaces still
+	// get help (requirement: help-before-init-guard).
+	if len(args) == 0 || (len(args) == 1 && args[0] == "") {
+		return runHelp(args, stdout, stderr)
 	}
 
-	// Empty verb → usage error.
-	if verb == "" {
-		fmt.Fprintln(stderr, "ateam: verb required")
-		fmt.Fprint(stderr, cli.UsageText)
-		return 2
+	// "help" as the first token → treat as --help (top-level help).
+	if args[0] == "help" {
+		return runHelp(nil, stdout, stderr)
 	}
 
 	home := workspace.Home()
+
+	// ws is special-cased: prints home and exits 0 regardless of workspace
+	// initialization (mirrors bash lines 19-23).
+	if args[0] == "ws" {
+		fmt.Fprintln(stdout, home)
+		return 0
+	}
+
+	// Track whether kong's help machinery triggered (printed + suppressed exit).
+	helpShown := false
+
+	parser, err := cli.NewParser(
+		kong.Writers(stdout, stderr),
+		kong.Exit(func(code int) { helpShown = true }),
+	)
+	if err != nil {
+		fmt.Fprintln(stderr, "ateam: internal error: "+err.Error())
+		return 1
+	}
+	verbs.RegisterAllKong(parser)
+
+	kctx, parseErr := parser.Parse(args)
+
+	// Help was triggered (--help, -h, or a subcommand --help). Guards must NOT
+	// run in this path — the workspace may not be initialized.
+	if helpShown {
+		return 0
+	}
+
+	// Kong parse error → usage problem, exit 2.
+	if parseErr != nil {
+		fmt.Fprintln(stderr, "ateam: "+parseErr.Error())
+		return 2
+	}
 
 	// Guard: bd must be in PATH before any verb (mirrors bash line 17).
 	if _, err := exec.LookPath("bd"); err != nil {
@@ -47,60 +82,50 @@ func run(args []string) int {
 		return 3
 	}
 
-	// ws is special-cased: it prints home and exits 0 regardless of whether
-	// the workspace is initialized (mirrors bash lines 19-23).
-	if verb == "ws" {
-		fmt.Fprintln(stdout, home)
-		return 0
-	}
-
-	// All other verbs require an initialized workspace.
+	// All verbs except ws require an initialized workspace.
 	if !workspace.Initialized(home) {
 		fmt.Fprintf(stderr, "ateam: workspace not initialized — run /setup-agent-teams (expected: %s/.beads)\n", home)
 		return 4
 	}
 
-	// Build registry from all four track registration functions.
-	// Explicit wiring — no init() side effects.
-	reg := make(cli.Registry)
-	verbs.RegisterQuery(reg)
-	verbs.RegisterMatch(reg)
-	// Register notify first so gate can call it in-process via a registry lookup.
-	verbs.RegisterNotify(reg)
-	notifyCmd, _ := reg.Lookup("notify")
-	verbs.RegisterWrite(reg, func(ctx *cli.Context, id, file string) error {
-		return notifyCmd.Run(ctx, []string{id, "--file", file})
-	}, transport.Enabled)
-	verbs.RegisterRelay(reg)
-	verbs.RegisterDispatch(reg)
-	verbs.RegisterCost(reg)
-	verbs.RegisterWorktreeSetup(reg)
-	verbs.RegisterMessaging(reg)
-	verbs.RegisterRouteEvent(reg)
-	verbs.RegisterStatus(reg)
-
-	cmd, ok := reg.Lookup(verb)
-	if !ok {
-		fmt.Fprintf(stderr, "ateam: unknown verb '%s'\n", verb)
-		fmt.Fprint(stderr, cli.UsageText)
-		return 2
-	}
-
 	bdClient := bd.NewClient(home)
-	ctx := &cli.Context{
+	cliCtx := &cli.Context{
 		Home:   home,
 		BD:     bdClient,
 		Stdout: stdout,
 		Stderr: stderr,
 	}
 
-	err := cmd.Run(ctx, args[1:])
-	if err != nil {
-		// SilentError: the verb already wrote its output; don't re-print.
-		if _, silent := err.(*cli.SilentError); !silent {
-			fmt.Fprintln(stderr, err.Error())
+	// Bind cliCtx so every verb's Run(*cli.Context) receives it.
+	kctx.Bind(cliCtx)
+
+	runErr := kctx.Run(cliCtx)
+	if runErr != nil {
+		// errors.As: kong wraps the verb's returned error, so a direct type
+		// assertion would miss a *SilentError and double-print output the verb
+		// already wrote.
+		var silent *cli.SilentError
+		if !errors.As(runErr, &silent) {
+			fmt.Fprintln(stderr, runErr.Error())
 		}
-		return cli.ExitCode(err)
 	}
+	return cli.ExitCode(runErr)
+}
+
+// runHelp builds a parser, registers all verbs, prints top-level help, and
+// returns 0. Called for: empty args, bare "help" verb.
+// Does NOT run any workspace or bd guards — help must work pre-init.
+func runHelp(args []string, stdout, stderr *os.File) int {
+	parser, err := cli.NewParser(
+		kong.Writers(stdout, stderr),
+		kong.Exit(func(int) {}),
+	)
+	if err != nil {
+		fmt.Fprintln(stderr, "ateam: internal error: "+err.Error())
+		return 1
+	}
+	verbs.RegisterAllKong(parser)
+	// Parse --help to trigger kong's built-in help printer.
+	_, _ = parser.Parse([]string{"--help"})
 	return 0
 }

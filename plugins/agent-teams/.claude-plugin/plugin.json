@@ -1,6 +1,14 @@
 {
   "name": "agent-teams",
-  "version": "0.20.0",
+  "version": "0.38.1",
   "description": "DRI-led agent teams: the /dri playbook, four role agents, a global learning workspace and initiative registry. Hard-requires beads (bd).",
-  "author": { "name": "Eric Lloyd" }
+  "author": { "name": "Eric Lloyd" },
+  "userConfig": {
+    "use_advisors": {
+      "type": "boolean",
+      "title": "Use advisors",
+      "description": "When enabled, background DRI sessions run on sonnet with an opus advisor (--model sonnet --advisor opus) instead of the default opus-only.",
+      "default": false
+    }
+  }
 }

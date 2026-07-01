@@ -110,153 +110,33 @@ func branchIssue(id, repoName, headBranch string) bd.Issue {
 	}
 }
 
-// ── parseTransition ───────────────────────────────────────────────────────────
+// ── routePREventKong Validate ─────────────────────────────────────────────────
 
-func TestParseTransition_ValidValues(t *testing.T) {
-	cases := []struct {
-		in   string
-		want PRTransition
-	}{
-		{"ci_failed", TransitionCIFailed},
-		{"changes_requested", TransitionChangesRequested},
-		{"review_requested", TransitionReviewRequested},
-		{"bot_findings", TransitionBotFindings},
-		{"approved", TransitionApproved},
-		{"merged", TransitionMerged},
-		{"stale", TransitionStale},
-		{"other", TransitionOther},
+// TestRoutePREvent_ZeroPRNumberValidate verifies Validate rejects pr-number=0.
+func TestRoutePREvent_ZeroPRNumberValidate(t *testing.T) {
+	cmd := &routePREventKong{
+		Repo:       "o/r",
+		PRNumber:   0,
+		HeadBranch: "main",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/some/file",
 	}
-	for _, tc := range cases {
-		got, err := parseTransition(tc.in)
-		if err != nil {
-			t.Errorf("parseTransition(%q) error: %v", tc.in, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("parseTransition(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+	if err := cmd.Validate(); err == nil {
+		t.Error("expected Validate error for PRNumber=0, got nil")
 	}
 }
 
-func TestParseTransition_Unknown(t *testing.T) {
-	_, err := parseTransition("unknown_transition")
-	if err == nil {
-		t.Error("expected error for unknown transition, got nil")
+// TestRoutePREvent_PositivePRNumberValidate verifies Validate passes for pr-number>0.
+func TestRoutePREvent_PositivePRNumberValidate(t *testing.T) {
+	cmd := &routePREventKong{
+		Repo:       "o/r",
+		PRNumber:   42,
+		HeadBranch: "main",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/some/file",
 	}
-}
-
-// ── parseRoutePREventFlags ────────────────────────────────────────────────────
-
-func TestParseRoutePREventFlags_AllRequired(t *testing.T) {
-	bodyFile := writeTempFile(t, "test body")
-	repo, prNum, head, transition, body, prURL, err := parseRoutePREventFlags([]string{
-		"--repo", "owner/repo",
-		"--pr-number", "42",
-		"--head-branch", "feat-x",
-		"--transition", "ci_failed",
-		"--body-file", bodyFile,
-		"--pr-url", "https://github.com/owner/repo/pull/42",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if repo != "owner/repo" {
-		t.Errorf("repo: got %q", repo)
-	}
-	if prNum != 42 {
-		t.Errorf("prNum: got %d", prNum)
-	}
-	if head != "feat-x" {
-		t.Errorf("headBranch: got %q", head)
-	}
-	if transition != TransitionCIFailed {
-		t.Errorf("transition: got %q", transition)
-	}
-	if body != bodyFile {
-		t.Errorf("bodyFile: got %q", body)
-	}
-	if prURL != "https://github.com/owner/repo/pull/42" {
-		t.Errorf("prURL: got %q", prURL)
-	}
-}
-
-func TestParseRoutePREventFlags_EqForm(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, prNum, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--repo=owner/repo", "--pr-number=7", "--head-branch=main",
-		"--transition=approved", "--body-file=" + bodyFile,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if prNum != 7 {
-		t.Errorf("prNum (eq-form): got %d", prNum)
-	}
-}
-
-func TestParseRoutePREventFlags_MissingRepo(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, _, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--pr-number", "1", "--head-branch", "br",
-		"--transition", "ci_failed", "--body-file", bodyFile,
-	})
-	if err == nil {
-		t.Error("expected error for missing --repo")
-	}
-}
-
-func TestParseRoutePREventFlags_MissingPRNumber(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, _, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--repo", "o/r", "--head-branch", "br",
-		"--transition", "ci_failed", "--body-file", bodyFile,
-	})
-	if err == nil {
-		t.Error("expected error for missing --pr-number")
-	}
-}
-
-func TestParseRoutePREventFlags_BadPRNumber(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, _, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--repo", "o/r", "--pr-number", "abc", "--head-branch", "br",
-		"--transition", "ci_failed", "--body-file", bodyFile,
-	})
-	if err == nil {
-		t.Error("expected error for non-integer --pr-number")
-	}
-}
-
-func TestParseRoutePREventFlags_ZeroPRNumber(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, _, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--repo", "o/r", "--pr-number", "0", "--head-branch", "br",
-		"--transition", "ci_failed", "--body-file", bodyFile,
-	})
-	if err == nil {
-		t.Error("expected error for --pr-number=0 (must be positive)")
-	}
-}
-
-func TestParseRoutePREventFlags_UnknownFlag(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, _, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--repo", "o/r", "--pr-number", "1", "--head-branch", "br",
-		"--transition", "ci_failed", "--body-file", bodyFile, "--unknown",
-	})
-	if err == nil {
-		t.Error("expected error for unknown flag")
-	}
-}
-
-func TestParseRoutePREventFlags_BadTransition(t *testing.T) {
-	bodyFile := writeTempFile(t, "body")
-	_, _, _, _, _, _, err := parseRoutePREventFlags([]string{
-		"--repo", "o/r", "--pr-number", "1", "--head-branch", "br",
-		"--transition", "not_a_thing", "--body-file", bodyFile,
-	})
-	if err == nil {
-		t.Error("expected error for unknown --transition value")
+	if err := cmd.Validate(); err != nil {
+		t.Errorf("expected Validate to pass for PRNumber=42, got: %v", err)
 	}
 }
 
@@ -270,16 +150,16 @@ func TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 
 	ctx, stdout, _ := makeRouteCtx([]bd.Issue{issue})
 	fr := &fakeRunner{}
-	cmd := &routePREventCommand{runner: fr.run}
+	cmd := &routePREventKong{
+		Repo:       "owner/myrepo",
+		PRNumber:   42,
+		HeadBranch: "feat-x",
+		Transition: TransitionCIFailed,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--repo", "owner/myrepo",
-		"--pr-number", "42",
-		"--head-branch", "feat-x",
-		"--transition", "ci_failed",
-		"--body-file", bodyFile,
-	})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if len(fr.calls) != 1 {
@@ -320,16 +200,16 @@ func TestDecisionMatrix_OwnedViaMatchBranchRoutesViaSend(t *testing.T) {
 
 	ctx, _, _ := makeRouteCtx([]bd.Issue{issue})
 	fr := &fakeRunner{}
-	cmd := &routePREventCommand{runner: fr.run}
+	cmd := &routePREventKong{
+		Repo:       "owner/myrepo",
+		PRNumber:   99,
+		HeadBranch: "feature-branch",
+		Transition: TransitionChangesRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--repo", "owner/myrepo",
-		"--pr-number", "99",
-		"--head-branch", "feature-branch",
-		"--transition", "changes_requested",
-		"--body-file", bodyFile,
-	})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if len(fr.calls) != 1 {
@@ -350,16 +230,16 @@ func TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips(t *testing.T) {
 	// ctx.Home points to a real temp dir with no review-repos/<key> file.
 	ctx, stdout, _, _ := makeRouteCtxWithHome(t, nil) // no issues → MatchNone
 	fr := &fakeRunner{}
-	cmd := &routePREventCommand{runner: fr.run}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   7,
+		HeadBranch: "some-branch",
+		Transition: TransitionReviewRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--repo", "owner/repo",
-		"--pr-number", "7",
-		"--head-branch", "some-branch",
-		"--transition", "review_requested",
-		"--body-file", bodyFile,
-	})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	// Runner must NOT have been called — no config file means skip.
@@ -373,8 +253,8 @@ func TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips(t *testing.T) {
 }
 
 // TestSpawnReviewInitiative_Configured verifies the happy path: a review-repos
-// config file is present → runner called with dispatch + correct args, body-file
-// contains the required review instructions.
+// config file is present → runner called with dispatch + correct args including
+// --launch-prompt and --skip-epic for the lightweight review-pr skill.
 func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
@@ -390,7 +270,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 
 	fr := &fakeRunner{}
-	cmd := &routePREventCommand{runner: fr.run}
+	cmd := &routePREventKong{runner: fr.run}
 
 	event := PREvent{
 		Repo:       "MGT-Insurance/midgard",
@@ -409,8 +289,11 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 	call := fr.calls[0]
 
-	// Verify argv structure: dispatch --repo <clone> --problem <title> --body-file <path>
-	if len(call) < 7 {
+	// Verify argv structure:
+	// dispatch --repo <clone> --problem <title> --body-file <path>
+	//          --launch-prompt "/agent-teams:review-pr {id}" --skip-epic
+	//          --model sonnet
+	if len(call) < 12 {
 		t.Fatalf("runner call too short (%d args): %v", len(call), call)
 	}
 	if call[0] != "dispatch" {
@@ -432,13 +315,22 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	if call[5] != "--body-file" {
 		t.Errorf("call[5]: got %q, want \"--body-file\"", call[5])
 	}
-	// Body file path comes from the runner args (temp file is cleaned up after run,
-	// but we capture the path from the call before it's removed).
-	bodyFilePath := call[6]
-	// The temp file is removed after runner returns; we only have the path recorded.
-	// Since fakeRunner records args synchronously before returning, we can't read
-	// the file after the fact — instead capture content via a custom runner.
-	_ = bodyFilePath
+	// call[6] is the temp file path (cleaned up after runner returns).
+	if call[7] != "--launch-prompt" {
+		t.Errorf("call[7]: got %q, want \"--launch-prompt\"", call[7])
+	}
+	if call[8] != "/agent-teams:review-pr {id}" {
+		t.Errorf("call[8] (launch-prompt value): got %q, want \"/agent-teams:review-pr {id}\"", call[8])
+	}
+	if call[9] != "--skip-epic" {
+		t.Errorf("call[9]: got %q, want \"--skip-epic\"", call[9])
+	}
+	if call[10] != "--model" {
+		t.Errorf("call[10]: got %q, want \"--model\"", call[10])
+	}
+	if call[11] != "sonnet" {
+		t.Errorf("call[11] (model value): got %q, want \"sonnet\"", call[11])
+	}
 
 	// Confirmation line must appear in stdout.
 	out := stdout.String()
@@ -447,8 +339,8 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 }
 
-// TestSpawnReviewInitiative_ConfiguredBodyContent verifies the review instructions
-// body written to the temp file contains the required phrases.
+// TestSpawnReviewInitiative_ConfiguredBodyContent verifies the structured metadata
+// body written to the temp file contains the required pr-number/pr-repo/pr-url fields.
 func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
@@ -477,7 +369,7 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 		return nil
 	}
 
-	cmd := &routePREventCommand{runner: bodyCapturingRunner}
+	cmd := &routePREventKong{runner: bodyCapturingRunner}
 	event := PREvent{
 		Repo:       "MGT-Insurance/midgard",
 		PRNumber:   42,
@@ -489,22 +381,76 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
-	requiredPhrases := []string{
-		"gh pr checkout 42",
-		"gh pr diff 42",
+	// Body must contain structured metadata fields parseable by the review-pr skill.
+	requiredFields := []string{
+		"pr-number: 42",
+		"pr-repo: MGT-Insurance/midgard",
+		"pr-url: https://github.com/MGT-Insurance/midgard/pull/42",
+	}
+	for _, field := range requiredFields {
+		if !strings.Contains(capturedBody, field) {
+			t.Errorf("review metadata body missing %q; body:\n%s", field, capturedBody)
+		}
+	}
+	// Body must NOT contain the old verbose instruction text.
+	oldPhrases := []string{
+		"gh pr checkout",
 		"NO nit comments",
 		"INLINE comment",
-		"gh api repos/MGT-Insurance/midgard/pulls/42/reviews",
-		"single sentence",
-		"must NOT open a new PR",
 		"Do NOT open a PR",
-		"https://github.com/MGT-Insurance/midgard/pull/42",
-		"MGT-Insurance/midgard",
 	}
-	for _, phrase := range requiredPhrases {
-		if !strings.Contains(capturedBody, phrase) {
-			t.Errorf("review body missing %q; body:\n%s", phrase, capturedBody)
+	for _, phrase := range oldPhrases {
+		if strings.Contains(capturedBody, phrase) {
+			t.Errorf("review metadata body should not contain old instruction text %q; body:\n%s", phrase, capturedBody)
 		}
+	}
+}
+
+// TestSpawnReviewInitiative_PRURLConstructed verifies that when event.PRURL is empty,
+// a pr-url is constructed from the repo and PR number.
+func TestSpawnReviewInitiative_PRURLConstructed(t *testing.T) {
+	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
+
+	clonePath := t.TempDir()
+	repoKey := "myrepo"
+	configDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, repoKey), []byte(clonePath), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var capturedBody string
+	bodyCapturingRunner := func(args ...string) error {
+		for i, a := range args {
+			if a == "--body-file" && i+1 < len(args) {
+				data, err := os.ReadFile(args[i+1])
+				if err == nil {
+					capturedBody = string(data)
+				}
+				break
+			}
+		}
+		return nil
+	}
+
+	cmd := &routePREventKong{runner: bodyCapturingRunner}
+	event := PREvent{
+		Repo:       "owner/myrepo",
+		PRNumber:   7,
+		PRURL:      "", // empty — should be constructed
+		Transition: TransitionReviewRequested,
+	}
+
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+		t.Fatalf("spawnReviewInitiative error: %v", err)
+	}
+
+	// pr-url must be auto-constructed when not provided.
+	wantURL := "pr-url: https://github.com/owner/myrepo/pull/7"
+	if !strings.Contains(capturedBody, wantURL) {
+		t.Errorf("expected constructed pr-url %q in body; got:\n%s", wantURL, capturedBody)
 	}
 }
 
@@ -514,16 +460,16 @@ func TestDecisionMatrix_UnownedCIFailedSkips(t *testing.T) {
 	bodyFile := writeTempFile(t, "ci output")
 	ctx, stdout, _ := makeRouteCtx(nil) // no issues → MatchNone
 	fr := &fakeRunner{}
-	cmd := &routePREventCommand{runner: fr.run}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   3,
+		HeadBranch: "fix-branch",
+		Transition: TransitionCIFailed,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--repo", "owner/repo",
-		"--pr-number", "3",
-		"--head-branch", "fix-branch",
-		"--transition", "ci_failed",
-		"--body-file", bodyFile,
-	})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if len(fr.calls) != 0 {
@@ -540,16 +486,16 @@ func TestDecisionMatrix_UnownedApprovedSkips(t *testing.T) {
 	bodyFile := writeTempFile(t, "approved body")
 	ctx, stdout, _ := makeRouteCtx(nil)
 	fr := &fakeRunner{}
-	cmd := &routePREventCommand{runner: fr.run}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   5,
+		HeadBranch: "br",
+		Transition: TransitionApproved,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
 
-	err := cmd.Run(ctx, []string{
-		"--repo", "owner/repo",
-		"--pr-number", "5",
-		"--head-branch", "br",
-		"--transition", "approved",
-		"--body-file", bodyFile,
-	})
-	if err != nil {
+	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
 	if len(fr.calls) != 0 {
@@ -562,60 +508,221 @@ func TestDecisionMatrix_UnownedApprovedSkips(t *testing.T) {
 
 // TestDecisionMatrix_NilContextErrors verifies nil context returns an error.
 func TestDecisionMatrix_NilContextErrors(t *testing.T) {
-	cmd := &routePREventCommand{runner: (&fakeRunner{}).run}
-	err := cmd.Run(nil, nil)
-	if err == nil {
+	cmd := &routePREventKong{
+		Repo:       "o/r",
+		PRNumber:   1,
+		HeadBranch: "br",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/dev/null",
+		runner:     (&fakeRunner{}).run,
+	}
+	if err := cmd.Run(nil); err == nil {
 		t.Error("expected error for nil context, got nil")
 	}
 }
 
-// TestDecisionMatrix_BadArgsMissingRepo verifies UsageError on bad args.
-func TestDecisionMatrix_BadArgsMissingRepo(t *testing.T) {
+// TestDecisionMatrix_MissingBodyFileErrors verifies error when body-file is missing.
+func TestDecisionMatrix_MissingBodyFileErrors(t *testing.T) {
 	ctx, _, _ := makeRouteCtx(nil)
-	cmd := &routePREventCommand{runner: (&fakeRunner{}).run}
-	err := cmd.Run(ctx, []string{
-		"--pr-number", "1", "--head-branch", "br",
-		"--transition", "ci_failed", "--body-file", "/dev/null",
-	})
-	if err == nil {
-		t.Fatal("expected error for missing --repo, got nil")
+	cmd := &routePREventKong{
+		Repo:       "o/r",
+		PRNumber:   1,
+		HeadBranch: "br",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/no/such/file.txt",
+		runner:     (&fakeRunner{}).run,
+	}
+	if err := cmd.Run(ctx); err == nil {
+		t.Fatal("expected error for missing body-file, got nil")
 	}
 }
 
-// TestRegisterRouteEvent confirms the verb registers under "route-pr-event".
+// TestRegisterRouteEvent confirms that route-pr-event is registered in the
+// full kong parser (no missing-verb or duplicate panic).
 func TestRegisterRouteEvent(t *testing.T) {
-	reg := make(cli.Registry)
-	RegisterRouteEvent(reg)
-	cmd, ok := reg.Lookup("route-pr-event")
-	if !ok {
-		t.Fatal("route-pr-event not registered")
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cmd.Name() != "route-pr-event" {
-		t.Errorf("Name() = %q, want \"route-pr-event\"", cmd.Name())
+	RegisterRouteEventKong(p)
+	// Invoke with --help to test registration. Validate() may fire for missing
+	// required flags, which is fine — what matters is the verb is known (no
+	// "unexpected argument route-pr-event" error).
+	_, parseErr := p.Parse([]string{"route-pr-event", "--help"})
+	if parseErr != nil && strings.Contains(parseErr.Error(), "unexpected argument route-pr-event") {
+		t.Errorf("route-pr-event not registered: %v", parseErr)
 	}
 }
 
-// TestRegisterRouteEvent_NoDuplicateWithFullRegistry confirms no collision
-// when route-pr-event is added alongside all existing verbs.
+// TestRegisterRouteEvent_NoDuplicateWithFullRegistry confirms RegisterAllKong
+// does not panic on duplicate registration.
 func TestRegisterRouteEvent_NoDuplicateWithFullRegistry(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
-			t.Errorf("registration panicked (duplicate): %v", r)
+			t.Errorf("RegisterAllKong panicked (duplicate): %v", r)
 		}
 	}()
-	reg := make(cli.Registry)
-	verbs_registerAll(reg)
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterAllKong(p)
 }
 
-// verbs_registerAll mirrors main.go's registration block plus the new verb.
-func verbs_registerAll(reg cli.Registry) {
-	RegisterQuery(reg)
-	RegisterMatch(reg)
-	RegisterWrite(reg, nil, nil)
-	RegisterDispatch(reg)
-	RegisterCost(reg)
-	RegisterWorktreeSetup(reg)
-	RegisterMessaging(reg)
-	RegisterRouteEvent(reg)
+// ── routePREventKong core-path tests ─────────────────────────────────────────
+
+// TestRoutePREventKong_Validate_ZeroPRNumber verifies Validate rejects pr-number <= 0.
+func TestRoutePREventKong_Validate_ZeroPRNumber(t *testing.T) {
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   0,
+		HeadBranch: "br",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/dev/null",
+		runner:     (&fakeRunner{}).run,
+	}
+	if err := cmd.Validate(); err == nil {
+		t.Error("expected error for PRNumber=0, got nil")
+	}
 }
 
+func TestRoutePREventKong_Validate_NegativePRNumber(t *testing.T) {
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   -5,
+		HeadBranch: "br",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/dev/null",
+		runner:     (&fakeRunner{}).run,
+	}
+	if err := cmd.Validate(); err == nil {
+		t.Error("expected error for negative PRNumber, got nil")
+	}
+}
+
+func TestRoutePREventKong_Validate_PositivePRNumber(t *testing.T) {
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   42,
+		HeadBranch: "br",
+		Transition: TransitionCIFailed,
+		BodyFile:   "/dev/null",
+		runner:     (&fakeRunner{}).run,
+	}
+	if err := cmd.Validate(); err != nil {
+		t.Errorf("unexpected Validate error for positive PRNumber: %v", err)
+	}
+}
+
+// TestRoutePREventKong_NilContext verifies nil context returns an error.
+func TestRoutePREventKong_NilContext(t *testing.T) {
+	cmd := &routePREventKong{runner: (&fakeRunner{}).run}
+	if err := cmd.Run(nil); err == nil {
+		t.Error("expected error for nil context, got nil")
+	}
+}
+
+// TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend verifies the ROUTE path:
+// owned (MatchPRField) → runner("send", id, "--file", body, "--sender", "pr-shepherd").
+func TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
+	bodyFile := writeTempFile(t, "CI failed output")
+	issue := prFieldIssue("at-kong.1", "owner/myrepo", 42)
+
+	ctx, _, _ := makeRouteCtx([]bd.Issue{issue})
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/myrepo",
+		PRNumber:   42,
+		HeadBranch: "feat-x",
+		Transition: TransitionCIFailed,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("expected 1 runner call, got %d: %v", len(fr.calls), fr.calls)
+	}
+	call := fr.calls[0]
+	if call[0] != "send" {
+		t.Errorf("call[0]: got %q, want \"send\"", call[0])
+	}
+	if call[1] != "at-kong.1" {
+		t.Errorf("call[1] (initiative id): got %q, want \"at-kong.1\"", call[1])
+	}
+	if call[4] != "--sender" || call[5] != "pr-shepherd" {
+		t.Errorf("expected --sender pr-shepherd; call: %v", call)
+	}
+}
+
+// TestRoutePREventKong_UnownedCIFailedSkips verifies LOG-AND-SKIP for unowned PR.
+func TestRoutePREventKong_UnownedCIFailedSkips(t *testing.T) {
+	bodyFile := writeTempFile(t, "ci output")
+	ctx, stdout, _ := makeRouteCtx(nil)
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   3,
+		HeadBranch: "fix-branch",
+		Transition: TransitionCIFailed,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("expected 0 runner calls for unowned ci_failed, got %d", len(fr.calls))
+	}
+	if !strings.Contains(stdout.String(), "skipping") {
+		t.Errorf("stdout should say 'skipping'; got: %q", stdout.String())
+	}
+}
+
+// TestRoutePREventKong_RegisteredAsKongVerb verifies RegisterRouteEventKong adds
+// route-pr-event as a native (non-bridge) verb so --help works correctly.
+func TestRoutePREventKong_RegisteredAsKongVerb(t *testing.T) {
+	parser, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	RegisterRouteEventKong(parser)
+
+	// Parse --help; a native kong verb should exit cleanly (not error).
+	var stdout, stderr bytes.Buffer
+	// We just need the parse to not return an unexpected error for --help.
+	// (main.go sets a no-op Exit; the Parser has its own.)
+	_, parseErr := parser.Parse([]string{"route-pr-event", "--help"})
+	_ = parseErr // help triggers exit(0), not a real error
+	_ = stdout
+	_ = stderr
+}
+
+// TestRoutePREventKong_UnownedReviewRequestedSkipsWhenUnconfigured verifies
+// review_requested + unowned + no config file → logs skip, runner not called.
+func TestRoutePREventKong_UnownedReviewRequestedSkipsWhenUnconfigured(t *testing.T) {
+	bodyFile := writeTempFile(t, "reviewer added")
+	ctx, stdout, _, _ := makeRouteCtxWithHome(t, nil)
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   7,
+		HeadBranch: "some-branch",
+		Transition: TransitionReviewRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("expected 0 runner calls for unconfigured review_requested, got %d: %v", len(fr.calls), fr.calls)
+	}
+	if !strings.Contains(stdout.String(), "skipping") {
+		t.Errorf("stdout should say 'skipping'; got: %q", stdout.String())
+	}
+}

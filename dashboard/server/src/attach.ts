@@ -3,6 +3,8 @@
 // Returns { ok: true } on success, throws on failure.
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 
 export interface AttachResult {
   ok: true;
@@ -20,21 +22,29 @@ export function isValidSessionId(id: string): boolean {
 
 // Escape a string for safe embedding inside an AppleScript double-quoted string.
 // Replaces backslash then double-quote so the value cannot break out of `do script "..."`.
-function escapeForAppleScript(value: string): string {
+export function escapeForAppleScript(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+// Returns true when iTerm2 is installed (system-wide or user-local Applications folder).
+export function isItermInstalled(): boolean {
+  return (
+    existsSync("/Applications/iTerm.app") ||
+    existsSync(`${homedir()}/Applications/iTerm.app`)
+  );
+}
+
 // Launch `claude attach <id>` in a new macOS Terminal window.
-// Prefers iTerm2 if running, falls back to Terminal.app.
+// Prefers iTerm2 if installed, falls back to Terminal.app.
 // Caller MUST validate id with isValidSessionId before calling.
 export function launchAttach(sessionId: string): Promise<AttachResult> {
-  // Use osascript to open a new Terminal window and run the command.
-  // The `do script` command opens a new tab/window in Terminal.app.
   const safe = escapeForAppleScript(sessionId);
-  const script = `tell application "Terminal"
-  do script "claude attach ${safe}"
-  activate
-end tell`;
+  // iTerm2: open a window with default profile, then write the command into the
+  // interactive shell via `write text`. Using `command "..."` in the profile spec
+  // bypasses shell profile loading so claude is not on PATH — write text avoids that.
+  const script = isItermInstalled()
+    ? `tell application "iTerm"\n  set w to (create window with default profile)\n  tell current session of w\n    write text "claude attach ${safe}"\n  end tell\n  activate\nend tell`
+    : `tell application "Terminal"\n  do script "claude attach ${safe}"\n  activate\nend tell`;
 
   return new Promise((resolve, reject) => {
     const proc = spawn("osascript", ["-e", script], {

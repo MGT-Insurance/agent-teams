@@ -3,90 +3,12 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
-
-// ── parseSendFlags ────────────────────────────────────────────────────────────
-
-func TestParseSendFlags_HappyPath(t *testing.T) {
-	f := makeTempFile(t, "hello")
-	recipientID, file, sender, thread, err := parseSendFlags([]string{
-		"at-abc", "--file", f, "--sender", "test-sender", "--thread", "t1",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if recipientID != "at-abc" {
-		t.Errorf("recipientID = %q, want %q", recipientID, "at-abc")
-	}
-	if file != f {
-		t.Errorf("file = %q, want %q", file, f)
-	}
-	if sender != "test-sender" {
-		t.Errorf("sender = %q, want %q", sender, "test-sender")
-	}
-	if thread != "t1" {
-		t.Errorf("thread = %q, want %q", thread, "t1")
-	}
-}
-
-func TestParseSendFlags_EqForm(t *testing.T) {
-	f := makeTempFile(t, "body")
-	_, _, sender, _, err := parseSendFlags([]string{"at-xyz", "--file=" + f, "--sender=agent-x"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sender != "agent-x" {
-		t.Errorf("sender = %q, want agent-x", sender)
-	}
-}
-
-func TestParseSendFlags_MissingRecipient(t *testing.T) {
-	_, _, _, _, err := parseSendFlags([]string{})
-	if err == nil {
-		t.Fatal("expected error for missing recipient, got nil")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestParseSendFlags_MissingFile(t *testing.T) {
-	_, _, _, _, err := parseSendFlags([]string{"at-abc"})
-	if err == nil {
-		t.Fatal("expected error for missing --file, got nil")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestParseSendFlags_FileNotFound(t *testing.T) {
-	_, _, _, _, err := parseSendFlags([]string{"at-abc", "--file", "/no/such/file.txt"})
-	if err == nil {
-		t.Fatal("expected error for missing file, got nil")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestParseSendFlags_UnknownFlag(t *testing.T) {
-	f := makeTempFile(t, "body")
-	_, _, _, _, err := parseSendFlags([]string{"at-abc", "--file", f, "--unknown=x"})
-	if err == nil {
-		t.Fatal("expected error for unknown flag, got nil")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
 
 // ── hasLiveSession ────────────────────────────────────────────────────────────
 
@@ -168,246 +90,6 @@ func TestFilterMessageType_None(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("expected 0 messages, got %d", len(got))
 	}
-}
-
-// ── parseInboxFlags ───────────────────────────────────────────────────────────
-
-func TestParseInboxFlags_JSON(t *testing.T) {
-	jsonOut, peek, err := parseInboxFlags([]string{"--json"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !jsonOut {
-		t.Error("expected jsonOut=true")
-	}
-	if peek {
-		t.Error("expected peek=false")
-	}
-}
-
-func TestParseInboxFlags_Peek(t *testing.T) {
-	jsonOut, peek, err := parseInboxFlags([]string{"--peek"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if jsonOut {
-		t.Error("expected jsonOut=false")
-	}
-	if !peek {
-		t.Error("expected peek=true")
-	}
-}
-
-func TestParseInboxFlags_NoArgs(t *testing.T) {
-	jsonOut, peek, err := parseInboxFlags([]string{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if jsonOut {
-		t.Error("expected jsonOut=false with no args")
-	}
-	if peek {
-		t.Error("expected peek=false with no args")
-	}
-}
-
-func TestParseInboxFlags_Unknown(t *testing.T) {
-	_, _, err := parseInboxFlags([]string{"--unknown"})
-	if err == nil {
-		t.Fatal("expected error for unknown flag, got nil")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-// ── send: happy path ──────────────────────────────────────────────────────────
-
-func TestSend_HappyPath_LiveSession(t *testing.T) {
-	home := t.TempDir()
-	f := makeTempFile(t, "hello recipient")
-
-	recipientWt := t.TempDir()
-	var createArgs []string
-	fbd := &fakeBD{
-		// bd create --json returns a single object (not an array).
-		runJSONFn: func(dst any, args ...string) error {
-			createArgs = args
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-wisp-msg1"
-			}
-			return nil
-		},
-		// bd show <id> --json returns a single-element array.
-		runFn: func(args ...string) (string, error) {
-			issues := []bd.Issue{{
-				ID:          "at-recipient",
-				Description: "worktree: " + recipientWt + "\n",
-			}}
-			raw, _ := json.Marshal(issues)
-			return string(raw), nil
-		},
-	}
-
-	var agentsCalled bool
-	var resumeCalled bool
-
-	cmd := &sendCmd{
-		agentsFunc: func() ([]agentSession, error) {
-			agentsCalled = true
-			return []agentSession{{CWD: recipientWt}}, nil
-		},
-		resumeFunc: func(_ *cli.Context, id string) error {
-			resumeCalled = true
-			return nil
-		},
-	}
-
-	ctx, stdout, _ := makeCtx(fbd, home)
-	if err := cmd.Run(ctx, []string{"at-recipient", "--file", f, "--sender", "dri:at-sender"}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Message bead must have been created.
-	if len(createArgs) == 0 {
-		t.Fatal("expected bd create call, got none")
-	}
-	assertContains(t, createArgs, "--type=message", "bd create missing --type=message")
-	assertContains(t, createArgs, "--assignee=at-recipient", "bd create missing --assignee")
-	assertContains(t, createArgs, "--labels=delivery:pending", "bd create missing delivery:pending label")
-
-	var hasNotesFrom bool
-	for _, a := range createArgs {
-		if strings.HasPrefix(a, "--notes=from: ") {
-			hasNotesFrom = true
-		}
-	}
-	if !hasNotesFrom {
-		t.Errorf("bd create missing --notes=from: ...; got: %v", createArgs)
-	}
-
-	// Doorbell must have been touched.
-	doorbellPath := filepath.Join(home, "mailbox", "at-recipient.wake")
-	if _, err := os.Stat(doorbellPath); err != nil {
-		t.Errorf("doorbell not touched at %s: %v", doorbellPath, err)
-	}
-
-	// Agents were queried.
-	if !agentsCalled {
-		t.Error("expected agentsFunc to be called")
-	}
-	// Session was live — resume must NOT have been called.
-	if resumeCalled {
-		t.Error("resume should not be called when session is live")
-	}
-
-	out := stdout.String()
-	if !strings.Contains(out, "message_id: at-wisp-msg1") {
-		t.Errorf("stdout missing message_id: %s", out)
-	}
-}
-
-func TestSend_DeadSession_EscalatesToResume(t *testing.T) {
-	home := t.TempDir()
-	f := makeTempFile(t, "hello")
-	recipientWt := t.TempDir()
-
-	fbd := &fakeBD{
-		// bd create --json returns single object.
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-wisp-msg2"
-			}
-			return nil
-		},
-		// bd show <id> --json returns single-element array.
-		runFn: func(args ...string) (string, error) {
-			issues := []bd.Issue{{
-				ID:          "at-dead",
-				Description: "worktree: " + recipientWt + "\n",
-			}}
-			raw, _ := json.Marshal(issues)
-			return string(raw), nil
-		},
-	}
-
-	var resumedID string
-	cmd := &sendCmd{
-		agentsFunc: func() ([]agentSession, error) {
-			return []agentSession{}, nil // no live sessions
-		},
-		resumeFunc: func(_ *cli.Context, id string) error {
-			resumedID = id
-			return nil
-		},
-	}
-
-	ctx, stdout, _ := makeCtx(fbd, home)
-	if err := cmd.Run(ctx, []string{"at-dead", "--file", f}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if resumedID != "at-dead" {
-		t.Errorf("resume not called with correct id; got %q", resumedID)
-	}
-	if !strings.Contains(stdout.String(), "launching via ateam resume") {
-		t.Errorf("stdout missing launch notice: %s", stdout.String())
-	}
-}
-
-func TestSend_NilContext(t *testing.T) {
-	cmd := &sendCmd{}
-	err := cmd.Run(nil, []string{"at-abc", "--file", "/tmp/x"})
-	if err == nil {
-		t.Fatal("expected error for nil context, got nil")
-	}
-}
-
-func TestSend_MissingRecipient(t *testing.T) {
-	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
-	cmd := &sendCmd{}
-	err := cmd.Run(ctx, []string{})
-	if err == nil {
-		t.Fatal("expected error for missing recipient, got nil")
-	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("expected exit 2, got %d", code)
-	}
-}
-
-func TestSend_ThreadLabel(t *testing.T) {
-	home := t.TempDir()
-	f := makeTempFile(t, "threaded message")
-
-	var createArgs []string
-	fbd := &fakeBD{
-		// bd create --json returns single object.
-		runJSONFn: func(dst any, args ...string) error {
-			createArgs = args
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-wisp-t1"
-			}
-			return nil
-		},
-		// bd show --json: return issue with no worktree line (non-fatal path).
-		runFn: func(args ...string) (string, error) {
-			issues := []bd.Issue{{ID: "at-recip", Description: ""}}
-			raw, _ := json.Marshal(issues)
-			return string(raw), nil
-		},
-	}
-
-	cmd := &sendCmd{
-		agentsFunc: func() ([]agentSession, error) { return nil, fmt.Errorf("no claude") },
-		resumeFunc: func(_ *cli.Context, _ string) error { return nil },
-	}
-
-	ctx, _, _ := makeCtx(fbd, home)
-	if err := cmd.Run(ctx, []string{"at-recip", "--file", f, "--thread", "thread-xyz"}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	assertContains(t, createArgs, "--labels=thread:thread-xyz", "bd create missing thread label")
 }
 
 // ── inbox: resolves initiative and drains messages ───────────────────────────
@@ -529,36 +211,6 @@ func TestInbox_DrainAndMark(t *testing.T) {
 	_ = stdout
 }
 
-func TestInbox_NilContext(t *testing.T) {
-	cmd := &inboxCmd{}
-	err := cmd.Run(nil, nil)
-	if err == nil {
-		t.Fatal("expected error for nil context, got nil")
-	}
-}
-
-func TestInbox_NotRegisteredInitiative_SilentNoOp(t *testing.T) {
-	// When resolveMyInitiative returns no match, inbox exits 0 silently.
-	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			// Return empty list — no initiative matches cwd.
-			return json.Unmarshal([]byte("[]"), dst)
-		},
-	}
-	ctx, stdout, stderr := makeCtx(fbd, t.TempDir())
-	cmd := &inboxCmd{}
-
-	if err := cmd.Run(ctx, nil); err != nil {
-		t.Fatalf("expected nil error for non-initiative cwd, got: %v", err)
-	}
-	if stdout.String() != "" {
-		t.Errorf("expected empty stdout, got: %s", stdout.String())
-	}
-	if stderr.String() != "" {
-		t.Errorf("expected empty stderr, got: %s", stderr.String())
-	}
-}
-
 func TestInbox_NoMessages_Silent(t *testing.T) {
 	cwd := t.TempDir()
 	myID := "at-no-mail"
@@ -659,12 +311,6 @@ func TestInbox_PeekWithUnread_NonConsuming(t *testing.T) {
 		},
 	}
 
-	// parseInboxFlags --peek
-	_, peek, err := parseInboxFlags([]string{"--peek"})
-	if err != nil || !peek {
-		t.Fatalf("parseInboxFlags --peek: peek=%v err=%v", peek, err)
-	}
-
 	// Simulate the peek branch: query messages, print count, no mark-read calls.
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	var messages []bd.Issue
@@ -692,11 +338,6 @@ func TestInbox_PeekWithUnread_NonConsuming(t *testing.T) {
 
 func TestInbox_PeekNoUnread(t *testing.T) {
 	// --peek with zero unread prints "no unread mail" and makes no label calls.
-	_, peek, err := parseInboxFlags([]string{"--peek"})
-	if err != nil || !peek {
-		t.Fatalf("parseInboxFlags: peek=%v err=%v", peek, err)
-	}
-
 	fbd := &fakeBD{
 		runFn: func(args ...string) (string, error) {
 			t.Error("label call made during peek with no unread")
@@ -888,4 +529,175 @@ func mustMarshal(v any) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// ── sendKong core-path tests ──────────────────────────────────────────────────
+
+func TestSendKong_HappyPath_LiveSession(t *testing.T) {
+	home := t.TempDir()
+	f := makeTempFile(t, "hello recipient")
+	recipientWt := t.TempDir()
+
+	var createArgs []string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			createArgs = args
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-kong-msg1"
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-kong-recip",
+				Description: "worktree: " + recipientWt + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var resumeCalled bool
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        f,
+		Sender:      "test-sender",
+		agentsFunc:  func() ([]agentSession, error) { return []agentSession{{CWD: recipientWt}}, nil },
+		resumeFunc:  func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(fbd, home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertContains(t, createArgs, "--type=message", "bd create missing --type=message")
+	assertContains(t, createArgs, "--assignee=at-kong-recip", "bd create missing --assignee")
+
+	if resumeCalled {
+		t.Error("resume should not be called when session is live")
+	}
+	if !strings.Contains(stdout.String(), "message_id: at-kong-msg1") {
+		t.Errorf("stdout missing message_id: %s", stdout.String())
+	}
+}
+
+func TestSendKong_DeadSession_EscalatesToResume(t *testing.T) {
+	home := t.TempDir()
+	f := makeTempFile(t, "hello")
+	recipientWt := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-kong-msg2"
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-kong-dead", Description: "worktree: " + recipientWt + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var resumedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-dead",
+		File:        f,
+		agentsFunc:  func() ([]agentSession, error) { return []agentSession{}, nil },
+		resumeFunc:  func(_ *cli.Context, id string) error { resumedID = id; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(fbd, home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resumedID != "at-kong-dead" {
+		t.Errorf("resume not called with correct id; got %q", resumedID)
+	}
+	if !strings.Contains(stdout.String(), "launching via ateam resume") {
+		t.Errorf("stdout missing launch notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_NilContext(t *testing.T) {
+	cmd := &sendKong{RecipientID: "at-x", File: "/tmp/x"}
+	if err := cmd.Run(nil); err == nil {
+		t.Fatal("expected error for nil context, got nil")
+	}
+}
+
+func TestSendKong_FileNotFound(t *testing.T) {
+	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+	cmd := &sendKong{RecipientID: "at-x", File: "/no/such/file.txt"}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+// ── inboxKong core-path tests ─────────────────────────────────────────────────
+
+func TestInboxKong_PeekWithUnread(t *testing.T) {
+	cwd := t.TempDir()
+	myID := "at-kong-peek"
+
+	var labelCalls [][]string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			switch {
+			case containsAll(args, "--status=open") && !containsAll(args, "--include-infra"):
+				issues := []bd.Issue{{ID: myID, Description: "worktree: " + cwd + "\n", Status: "open"}}
+				return json.Unmarshal(mustMarshal(issues), dst)
+			case containsAll(args, "--include-infra"):
+				messages := []bd.Issue{
+					{ID: "at-kp1", IssueType: "message", Assignee: myID, Description: "hi"},
+					{ID: "at-kp2", IssueType: "message", Assignee: myID, Description: "there"},
+				}
+				return json.Unmarshal(mustMarshal(messages), dst)
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			labelCalls = append(labelCalls, args)
+			return "", nil
+		},
+	}
+
+	// Simulate peek path via the helpers (Run uses os.Getwd which can't be injected).
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	id, err := resolveMyInitiative(ctx, cwd)
+	if err != nil || id != myID {
+		t.Fatalf("resolveMyInitiative: id=%q err=%v", id, err)
+	}
+
+	var messages []bd.Issue
+	if err := fbd.RunJSON(&messages,
+		"list", "--include-infra", "--assignee="+myID, "--exclude-label=read", "--status=open", "--json",
+	); err != nil {
+		t.Fatalf("RunJSON: %v", err)
+	}
+	messages = filterMessageType(messages)
+
+	// Peek: print count, no label calls.
+	if len(messages) > 0 {
+		fmt.Fprintf(ctx.Stdout, "%d unread message(s)\n", len(messages))
+	}
+	if !strings.Contains(stdout.String(), "2 unread message(s)") {
+		t.Errorf("expected count line, got: %s", stdout.String())
+	}
+	if len(labelCalls) != 0 {
+		t.Errorf("peek must not call label ops, got: %v", labelCalls)
+	}
+}
+
+func TestInboxKong_NilContext(t *testing.T) {
+	cmd := &inboxKong{}
+	if err := cmd.Run(nil); err == nil {
+		t.Fatal("expected error for nil context")
+	}
 }
