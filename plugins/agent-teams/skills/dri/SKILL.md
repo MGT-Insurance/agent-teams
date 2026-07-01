@@ -62,6 +62,18 @@ An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet
 
 **Ensure-epic step (runs after initiative id is resolved, before Phase 2).** Read the `epic:` field from `ateam show <id>`. If present, record it as `EPIC_ID` for use in all subsequent agent prompts. If absent (legacy initiative registered before at-e3m): (1) in the project repo, create the root epic — `bd create --type=epic --title="<initiative title>" --priority=2 --json` — and capture the epic id from the JSON output; (2) record it in the initiative registry — `printf 'epic: <epicId>\n' > /tmp/epic-note.txt && ateam note <initiativeId> --file /tmp/epic-note.txt`; (3) use that epic id as `EPIC_ID`. The DRI threads `EPIC_ID` into every subsequent agent spawn prompt — agents are told to file all work beads under `--parent <EPIC_ID>`.
 
+**Standby check (runs immediately after the ensure-epic step, before Phase 2 Clarify).** Most initiatives never carry the `standby:` field — it's absent, this check is a no-op, and you proceed straight into Phase 2. It only matters for initiatives dispatched with `--standby` (see references/registry.md — Standby field). Read the initiative's description and notes via `ateam show <id>`. Standby is *active* iff the description contains the line `standby: true` **AND** neither the description nor its notes contain the line `standby: released` — this is the frozen reader rule; copy it verbatim, do not paraphrase it.
+
+- **Standby active -> park immediately, before doing anything else.** Do NOT enter Phase 2/3 — no investigation, no clarifying questions. Raise a QUESTION gate with the frozen decision wording, via the GATE PROTOCOL (references/gate-protocol.md):
+  ```bash
+  ateam gate <id> --decision "Standby — waiting for direction" \
+                  --recommendation "<what you'd do first once released, e.g. begin Phase 2 clarify>" \
+                  --alternative "<the key alternative, e.g. hold for a different initiative>"
+  ```
+  Then end the turn (park), exactly as for any other human gate.
+- **Human sends direction later** (via `claude attach` or `ateam send`): the DRI RELEASES standby — write a note containing the line `standby: released` (temp file, then `ateam note <id> --file <f>`), clear the gate (`ateam clear-gate <id>`), then proceed normally into Phase 2 Clarify. Treat the direction the human just gave as input to Phase 2 — don't re-ask what they already told you.
+- **Resume where `standby: released` is already present:** per the reader rule above, standby is no longer active — do NOT re-park. Proceed normally through Phase 2 onward.
+
 ## Phase 2 — Clarify
 
 Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions). Then ask only what changes the design, with your recommended default per question. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park. While parked, keep all non-dependent work moving; batch questions. For question gates, use the structured form — `ateam gate <id> --decision "..." --recommendation "..." --alternative "..."` — it forces crisp framing and is what the dashboard renders. Fall back to `--file` prose only when the ask genuinely doesn't fit the structured schema.
