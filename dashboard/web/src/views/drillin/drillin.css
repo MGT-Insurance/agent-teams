@@ -173,6 +173,13 @@
   border-color: var(--color-border);
 }
 
+.badge--urgent {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 20%, transparent);
+  border-color: var(--color-error);
+  font-weight: 600;
+}
+
 /* Notes */
 .notes-list {
   list-style: none;

@@ -255,6 +255,49 @@ describe("DrillInView", () => {
     expect(screen.getByText("task")).toBeTruthy();
   });
 
+  it("shows loud styling for waiting status and blocked state, and surfaces waitingFor verbatim", async () => {
+    const waitingSession: SessionState = {
+      ...bgSession,
+      sessionId: "sess-3",
+      id: "s3",
+      name: "waiter",
+      status: "waiting",
+      state: "blocked",
+      waitingFor: "permissionPrompt",
+    };
+    mockFetchInitiative.mockResolvedValue({ ...sampleDetail, sessions: [waitingSession] });
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("permissionPrompt")).toBeTruthy();
+    });
+
+    expect(screen.getByText("waiting").className).toContain("badge--urgent");
+    expect(screen.getByText("blocked").className).toContain("badge--urgent");
+  });
+
+  it("renders an empty waitingFor cell when the session carries none", async () => {
+    mockFetchInitiative.mockResolvedValue(sampleDetail);
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Test Initiative")).toBeTruthy();
+    });
+
+    // bgSession/interactiveSession fixtures carry no waitingFor.
+    expect(screen.queryByText("permissionPrompt")).toBeNull();
+  });
+
+  it("shows last-activity relative time in the header, derived from updated_at", async () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    mockFetchInitiative.mockResolvedValue({ ...sampleDetail, updated_at: fiveMinAgo });
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("5m ago")).toBeTruthy();
+    });
+  });
+
   it("renders all notes with descending numeric labels", async () => {
     mockFetchInitiative.mockResolvedValue(sampleDetail);
     render(<DrillInView />);
