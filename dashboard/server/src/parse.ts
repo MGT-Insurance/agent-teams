@@ -378,7 +378,7 @@ function parseAskField(body: string, field: string): string {
 }
 
 // Pure helper: scan notes for the LAST valid <<<ateam-ask ... >>> sentinel block
-// and return {decision, recommendation, alternative} when found, null otherwise.
+// and return {decision, recommendation, alternative, context} when found, null otherwise.
 // Mirrors the Go implementation in internal/verbs/query.go (extractLatestAsk/parseAskBody).
 //
 // Grammar:
@@ -386,7 +386,9 @@ function parseAskField(body: string, field: string): string {
 //   close: ">>>" anchored at start of a line (or start of remaining text)
 //   A block is valid only if the decision field is non-empty; unclosed blocks are skipped.
 //   The LAST valid block wins.
-export function extractLatestAsk(notes: string): { decision: string; recommendation: string; alternative: string } | null {
+export function extractLatestAsk(
+  notes: string,
+): { decision: string; recommendation: string; alternative: string; context: string } | null {
   const OPEN = "<<<ateam-ask";
 
   // Returns the index of the start of ">>>" that anchors to a line boundary,
@@ -398,7 +400,7 @@ export function extractLatestAsk(notes: string): { decision: string; recommendat
     return idx + 1; // position of the first ">" that starts ">>>"
   }
 
-  let last: { decision: string; recommendation: string; alternative: string } | null = null;
+  let last: { decision: string; recommendation: string; alternative: string; context: string } | null = null;
   let remaining = notes;
   for (;;) {
     const start = remaining.indexOf(OPEN);
@@ -417,11 +419,28 @@ export function extractLatestAsk(notes: string): { decision: string; recommendat
         decision,
         recommendation: parseAskField(body, "recommendation"),
         alternative: parseAskField(body, "alternative"),
+        context: parseAskField(body, "context"),
       };
     }
     remaining = after.slice(end + ">>>".length);
   }
   return last;
+}
+
+// Pure helper: the last non-empty "notes block" from initiative.notes, for the
+// check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits the same
+// way index.ts builds DrillInDetail.notesHistory — on the lookahead before a line
+// starting "session " — so "last block" means the same thing everywhere in the
+// dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel (e.g. left behind by
+// `ateam clear-gate` without `--file`) so its raw markup never leaks into nextAction.
+// Returns "" when notes is empty/whitespace-only or every block is an ask sentinel.
+function lastNotesBlock(notes: string): string {
+  const blocks = notes
+    .split(/\n(?=session )/i)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((b) => !b.includes("<<<ateam-ask"));
+  return blocks.length > 0 ? (blocks[blocks.length - 1] ?? "") : "";
 }
 
 // Build InboxItem[] from already-built InitiativeNode[].
@@ -432,7 +451,14 @@ export function extractLatestAsk(notes: string): { decision: string; recommendat
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
 //   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
 // Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
-export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
+//
+// sessionTransitions: sessionId -> lastTransitionAt (epoch ms), from snapshot.ts's
+// stampTransitions (agent-teams-ni2y.8). Undefined for ad-hoc/endpoint-fallback callers
+// (before the first poll) -> lastActivityAt degrades to updated_at.
+export function buildInbox(
+  nodes: InitiativeNode[],
+  sessionTransitions?: Map<string, number>,
+): InboxItem[] {
   const items: InboxItem[] = [];
 
   for (const node of nodes) {
@@ -442,12 +468,34 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
 
     const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
 
+    // lastActivityAt = max(bead updated_at, matched session's last transition) — the
+    // PRIMARY recency sort key (agent-teams-ni2y.8). node.session is the primary/alive
+    // session (buildInitiativeNodes already prefers it); no match or no map -> updated_at.
+    const transitionMs = node.session ? sessionTransitions?.get(node.session.sessionId) : undefined;
+    const lastActivityAt =
+      transitionMs === undefined
+        ? initiative.updated_at
+        : new Date(Math.max(Date.parse(initiative.updated_at), transitionMs)).toISOString();
+
     // Any matched entry with a valid short 8-hex id is attachable via `claude attach <id>`,
     // regardless of whether the session is alive (status present) or detached (status absent).
     const sessionId =
       typeof node.session?.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
         ? node.session.id
         : undefined;
+
+    // RAW session status/state/waitingFor — verbatim pass-through on every row,
+    // never collapsed into `kind` (agent-teams-ni2y.2). waitingFor is tolerant:
+    // absent on older `claude agents --json` builds, real once emitted.
+    const status = node.session?.status ?? null;
+    const state = node.session?.state ?? null;
+    const waitingFor = node.session?.waitingFor;
+
+    // Fallback next-action text for the boilerplate kinds (review/check/generic):
+    // the last meaningful notes block, when notes carry one, else the row's
+    // usual constant. "Meaningful" mirrors DrillInDetail.notesHistory's
+    // session-block split — see lastNotesBlock above.
+    const notesFallback = lastNotesBlock(initiative.notes).slice(0, 120);
 
     if (node.needsHuman === "reap") {
       // Zombie: merged initiative, worktree gone, but session is still alive.
@@ -458,11 +506,16 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         nextAction: "Session still running after teardown — stop it to reap it.",
         recommendation: "",
         alternative: "",
+        context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
         sessionId,
+        status,
+        state,
+        waitingFor,
       });
     } else if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
@@ -470,14 +523,19 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "review",
-        nextAction: "Review the PR and merge or send it back.",
+        nextAction: notesFallback || "Review the PR and merge or send it back.",
         recommendation: "",
         alternative: "",
+        context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
         sessionId,
+        status,
+        state,
+        waitingFor,
       });
     } else if (node.needsHuman === "waiting") {
       // Agent waiting on human input: explicit gate:question/human (declared ask).
@@ -494,11 +552,16 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         nextAction,
         recommendation: ask?.recommendation.slice(0, 120) ?? "",
         alternative: ask?.alternative.slice(0, 120) ?? "",
+        context: ask?.context.slice(0, 280) ?? "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
         sessionId,
+        status,
+        state,
+        waitingFor,
       });
     } else if (node.needsHuman === "check") {
       // Session waiting/blocked with no explicit gate — soft "check on it" tier.
@@ -506,14 +569,19 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "check",
-        nextAction: "Look at the session for more info.",
+        nextAction: notesFallback || "Look at the session for more info.",
         recommendation: "",
         alternative: "",
+        context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
         sessionId,
+        status,
+        state,
+        waitingFor,
       });
     } else {
       // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
@@ -521,14 +589,20 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         initiativeId: initiative.id,
         title: initiative.title,
         kind: "generic",
-        nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+        nextAction:
+          notesFallback || "Delivered with no gate — open the worktree to see what's needed.",
         recommendation: "",
         alternative: "",
+        context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
         sessionId,
+        status,
+        state,
+        waitingFor,
       });
     }
   }

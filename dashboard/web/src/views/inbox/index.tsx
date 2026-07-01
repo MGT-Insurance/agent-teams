@@ -68,9 +68,14 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
     e.stopPropagation();
   }
 
+  // High-visibility trigger — keyed off the RAW session fields, independent of `kind`.
+  // A row is loud when the agent declared itself waiting or its session is blocked,
+  // regardless of which flavor badge it happens to carry.
+  const isLoud = item.status === "waiting" || item.state === "blocked";
+
   return (
     <div
-      className={`inbox-row inbox-row--${item.kind}`}
+      className={`inbox-row inbox-row--${item.kind}${isLoud ? " inbox-row--loud" : ""}`}
       data-kind={item.kind}
       data-initiative-id={item.initiativeId}
       onClick={handleRowClick}
@@ -82,6 +87,13 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
       <div className="inbox-row__header">
         <span className={`inbox-row__badge inbox-row__badge--${item.kind}`}>
           {rowBadgeLabel(item.kind)}
+        </span>
+        {/* Raw status/state readout — always on, independent of the derived kind badge above. */}
+        <span className={`inbox-row__status-chip${item.status === "waiting" ? " inbox-row__status-chip--loud" : ""}`}>
+          status: {item.status ?? "—"}
+        </span>
+        <span className={`inbox-row__state-chip${item.state === "blocked" ? " inbox-row__state-chip--loud" : ""}`}>
+          state: {item.state ?? "—"}
         </span>
         <span className="inbox-row__title">{item.title}</span>
         {/* PR link whenever a URL is present — delivery is orthogonal to flavor. */}
@@ -101,8 +113,19 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
         )}
       </div>
       <p className="inbox-row__next-action">{item.nextAction}</p>
-      {item.kind === "waiting" && (item.recommendation || item.alternative) && (
+      {/* Live-session permission-prompt reason — kind-independent, tolerant pass-through. */}
+      {item.waitingFor && (
+        <p className="inbox-row__secondary inbox-row__secondary--waiting-for">
+          <span className="inbox-row__secondary-label">Waiting on:</span> {item.waitingFor}
+        </p>
+      )}
+      {item.kind === "waiting" && (item.context || item.recommendation || item.alternative) && (
         <div className="inbox-row__suggestion">
+          {item.context && (
+            <p className="inbox-row__secondary inbox-row__secondary--context">
+              <span className="inbox-row__secondary-label">Context:</span> {item.context}
+            </p>
+          )}
           {item.recommendation && (
             <p className="inbox-row__secondary inbox-row__secondary--recommendation">
               <span className="inbox-row__secondary-label">Recommended:</span> {item.recommendation}
@@ -146,13 +169,12 @@ export default function InboxView() {
   // Filter BEFORE sort (spec: filter then sort).
   const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine || item.kind === "reap") : inbox;
 
-  // Tiered sort: review first, then reap zombies (just-below review), then waiting/generic/check; recency desc within tier.
-  const tierRank: Record<InboxItem["kind"], number> = { review: 0, reap: 1, waiting: 2, generic: 3, check: 4 };
-  const sorted = [...filtered].sort((a, b) => {
-    const tierDiff = tierRank[a.kind] - tierRank[b.kind];
-    if (tierDiff !== 0) return tierDiff;
-    return b.updatedAt.localeCompare(a.updatedAt);
-  });
+  // Recency-only sort: lastActivityAt desc is the PRIMARY key across ALL kinds (agent-teams-ni2y,
+  // agent-teams-ni2y.8). lastActivityAt = max(bead updatedAt, session transition), so a session
+  // flipping status/state (e.g. busy->waiting) rises even without a bead edit. No kind tiering —
+  // a fresh waiting row outranks a stale review row. Waiting/blocked rows are made loud instead
+  // of pinned (ni2y.4); reap stays in the same recency ordering too.
+  const sorted = [...filtered].sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
 
   const showBanner = connectionState !== "connected";
   const totalCount = sorted.length;

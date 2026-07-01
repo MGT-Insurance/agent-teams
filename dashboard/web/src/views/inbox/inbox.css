@@ -126,10 +126,13 @@
   border-left: 3px solid var(--color-accent);
 }
 
-/* check: softer muted-blue border — visually distinct from orange "agent waiting" */
-.inbox-row--check {
-  border-left: 3px solid var(--color-text-muted);
-  opacity: 0.85;
+/* High-visibility treatment (agent-teams-ni2y): keyed off raw status="waiting" /
+   state="blocked", independent of kind — a check row can be just as loud as a
+   waiting row. Blocked-no-gate rows must NOT be muted, so `check` no longer
+   gets a de-emphasized/opacity treatment (removed). */
+.inbox-row--loud {
+  border-color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 8%, var(--color-surface));
 }
 
 .inbox-row__header {
@@ -168,6 +171,29 @@
 .inbox-row__badge--check {
   background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
   color: var(--color-text-muted);
+}
+
+/* Raw status/state readout — a plain verbatim chip pair, always on, distinct
+   from the derived kind badge above. */
+.inbox-row__status-chip,
+.inbox-row__state-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* Loud variant fires on the raw values (status="waiting" / state="blocked"),
+   independent of kind — see .inbox-row--loud above. */
+.inbox-row__status-chip--loud,
+.inbox-row__state-chip--loud {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 15%, transparent);
+  font-weight: 600;
 }
 
 .inbox-row__title {
@@ -232,5 +258,13 @@
 }
 
 .inbox-row__secondary--alternative .inbox-row__secondary-label {
+  color: var(--color-warn);
+}
+
+.inbox-row__secondary--context .inbox-row__secondary-label {
+  color: var(--color-accent);
+}
+
+.inbox-row__secondary--waiting-for .inbox-row__secondary-label {
   color: var(--color-warn);
 }

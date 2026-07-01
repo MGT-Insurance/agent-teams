@@ -58,6 +58,10 @@ export interface SessionState {
   // Per Claude Code agent-view docs: working | blocked | done | failed | stopped.
   // `failed` = the session errored. Absent on interactive sessions.
   state?: "working" | "blocked" | "done" | "failed" | "stopped";
+  // Boundary pass-through: emitted by newer `claude agents --json` builds on a
+  // session blocked on a permission prompt (observed value "permissionPrompt").
+  // Absent in older builds — tolerate missing, render verbatim when present.
+  waitingFor?: string;
 }
 
 // Derived activity enum for constellation rendering.
@@ -170,8 +174,19 @@ export interface InboxItem {
   // Sourced from the recommendation:/alternative: fields in the latest <<<ateam-ask >>> block.
   recommendation: string;
   alternative: string;
-  // ISO-8601 timestamp from RawInitiative.updated_at — drives recency sort in the inbox.
+  // Free-form "what it's waiting on" prose from the context: field in the same ask block
+  // (mirrors Go's askBlock.context, internal/verbs/query.go parseAskBody). "" when absent
+  // or for non-waiting kinds. This is the declared-ask waiting-reason; waitingFor below
+  // is a separate, live-session permission-prompt signal — the two coexist.
+  context: string;
+  // ISO-8601 timestamp from RawInitiative.updated_at — the literal bead timestamp,
+  // kept for display + relative-time (agent-teams-ni2y, agent-teams-ni2y.6).
   updatedAt: string;
+  // ISO-8601 timestamp: max(updatedAt, matched session's last status/state transition
+  // stamped server-side) — the PRIMARY recency sort key for the inbox (agent-teams-ni2y.8).
+  // Falls back to updatedAt when no session matched, or when built without a transition
+  // map (ad-hoc/endpoint fallback before the first poll).
+  lastActivityAt: string;
   worktree: string;
   prUrl: string | null;
   // true when initiative.worktree is non-empty and exists on the local filesystem.
@@ -181,6 +196,16 @@ export interface InboxItem {
   // A valid id means `claude attach <id>` should work regardless of session liveness.
   // Absent when no matched session entry carries a valid 8-hex id.
   sessionId?: string;
+  // RAW node.session.status / node.session.state, passed through VERBATIM — never
+  // collapsed into `kind` above. null when node.session is null (no matched session).
+  // status=="waiting" and state=="blocked" are the high-visibility drivers: rows where
+  // either holds should read as urgent regardless of `kind`.
+  status: string | null;
+  state: string | null;
+  // Raw session waitingFor pass-through (see SessionState.waitingFor) — the live-session
+  // permission-prompt reason. Absent when the session doesn't carry one (common today;
+  // newer `claude agents --json` builds emit it). Render verbatim when present.
+  waitingFor?: string;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.

@@ -12,16 +12,32 @@ function defaultBgSession(sessions: SessionState[]): SessionState | undefined {
   return sessions.find((s) => s.kind === "background" && s.id != null);
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, urgent = true }: { status: string; urgent?: boolean }) {
   const cls =
-    status === "busy" || status === "working"
-      ? "badge badge--busy"
-      : status === "idle"
-        ? "badge badge--idle"
-        : status === "done" || status === "stopped"
-          ? "badge badge--done"
-          : "badge badge--default";
+    urgent && (status === "waiting" || status === "blocked")
+      ? "badge badge--urgent"
+      : status === "busy" || status === "working"
+        ? "badge badge--busy"
+        : status === "idle"
+          ? "badge badge--idle"
+          : status === "done" || status === "stopped"
+            ? "badge badge--done"
+            : "badge badge--default";
   return <span className={cls}>{status}</span>;
+}
+
+// Simple relative-time label for a header timestamp, e.g. "2m ago".
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const diffSec = Math.round((Date.now() - then) / 1000);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay}d ago`;
 }
 
 // Streams raw chunked bytes from the logs endpoint into an xterm Terminal instance.
@@ -229,7 +245,16 @@ export default function DrillInView() {
         <div className="drillin-meta">
           <span className="meta-item">
             <span className="meta-label">status</span>
-            <StatusBadge status={detail.status} />
+            {/* detail.status is the bd issue status (open|in_progress|blocked|deferred|closed),
+                not session state — urgent=false so a blocked epic doesn't false-fire the
+                session "needs you now" treatment. */}
+            <StatusBadge status={detail.status} urgent={false} />
+          </span>
+          <span className="meta-item">
+            <span className="meta-label">last activity</span>
+            <span className="meta-value" title={detail.updated_at}>
+              {relativeTime(detail.updated_at)}
+            </span>
           </span>
           <span className="meta-item">
             <span className="meta-label">branch</span>
@@ -288,6 +313,7 @@ export default function DrillInView() {
                 <th>kind</th>
                 <th>status</th>
                 <th>state</th>
+                <th>waiting for</th>
               </tr>
             </thead>
             <tbody>
@@ -298,7 +324,8 @@ export default function DrillInView() {
                   <td>
                     <StatusBadge status={s.status ?? "—"} />
                   </td>
-                  <td>{s.state ?? "—"}</td>
+                  <td>{s.state ? <StatusBadge status={s.state} /> : "—"}</td>
+                  <td className="mono">{s.waitingFor ?? ""}</td>
                 </tr>
               ))}
             </tbody>
