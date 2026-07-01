@@ -1239,7 +1239,7 @@ describe("extractLatestAsk", () => {
 
   it("parses decision from a well-formed block", () => {
     const notes = "<<<ateam-ask\ndecision: Should we deploy now?\n>>>";
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?", recommendation: "", alternative: "" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Should we deploy now?", recommendation: "", alternative: "", context: "" });
   });
 
   it("returns the LAST valid block when multiple blocks are present", () => {
@@ -1252,7 +1252,7 @@ describe("extractLatestAsk", () => {
       "decision: Second question.",
       ">>>",
     ].join("\n");
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question.", recommendation: "", alternative: "" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Second question.", recommendation: "", alternative: "", context: "" });
   });
 
   it("skips an unclosed block at end of notes, keeps the last valid closed block", () => {
@@ -1265,7 +1265,7 @@ describe("extractLatestAsk", () => {
       "<<<ateam-ask",
       "decision: Unclosed — no close marker follows.",
     ].join("\n");
-    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block.", recommendation: "", alternative: "" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "Closed block.", recommendation: "", alternative: "", context: "" });
   });
 
   it("skips blocks with empty decision", () => {
@@ -1276,7 +1276,7 @@ describe("extractLatestAsk", () => {
   it("ignores >>> embedded in prose (must be line-anchored)", () => {
     const notes = "<<<ateam-ask\ndecision: X or >>> something\n>>>";
     // The inline >>> in the decision value is prose; the real close is on its own line.
-    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something", recommendation: "", alternative: "" });
+    expect(extractLatestAsk(notes)).toEqual({ decision: "X or >>> something", recommendation: "", alternative: "", context: "" });
   });
 
   it("parses recommendation and alternative when present", () => {
@@ -1291,6 +1291,7 @@ describe("extractLatestAsk", () => {
       decision: "Should we roll back?",
       recommendation: "Yes — error rate is above 5%.",
       alternative: "Partial rollback to 10% traffic.",
+      context: "",
     });
   });
 
@@ -2064,5 +2065,178 @@ describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => 
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.recommendation).toHaveLength(120);
     expect(inbox[0]?.recommendation).toBe(exactly120);
+  });
+});
+
+// ---- buildInbox: raw status/state/waitingFor pass-through (agent-teams-ni2y.2) ----
+
+describe("buildInbox — raw status/state/waitingFor pass-through", () => {
+  function makeInit(id: string, labels?: string[]): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-01T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels,
+      epic: null,
+    };
+  }
+
+  it("passes through raw session status/state/waitingFor verbatim (not collapsed into kind)", () => {
+    const init = makeInit("pt-1", ["human"]);
+    const sess: SessionState = {
+      sessionId: "sess-pt-1",
+      kind: "background",
+      cwd: "/wt/pt-1",
+      startedAt: 0,
+      status: "waiting",
+      state: "blocked",
+      waitingFor: "permissionPrompt",
+    };
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.status).toBe("waiting");
+    expect(inbox[0]?.state).toBe("blocked");
+    expect(inbox[0]?.waitingFor).toBe("permissionPrompt");
+  });
+
+  it("status/state are null and waitingFor is absent when no session matched", () => {
+    const init = makeInit("pt-2", ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.status).toBeNull();
+    expect(inbox[0]?.state).toBeNull();
+    expect(inbox[0]?.waitingFor).toBeUndefined();
+  });
+});
+
+// ---- extractLatestAsk / buildInbox: context field (agent-teams-ni2y.2) -------
+
+describe("buildInbox — waiting item context from ask block", () => {
+  function makeWaitingInit(notes: string): ParsedInitiative {
+    return {
+      id: "ctx-test",
+      title: "Context test",
+      description: "worktree: /wt/ctx-test",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-01T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/ctx-test",
+      branch: "ctx-test",
+      team: "t-ctx-test",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels: ["human"],
+      epic: null,
+    };
+  }
+
+  it("context is the ask block's context: field", () => {
+    const notes = [
+      "<<<ateam-ask",
+      "decision: Ship or hold?",
+      "context: Waiting on perf numbers from the load test before deciding.",
+      ">>>",
+    ].join("\n");
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.context).toBe("Waiting on perf numbers from the load test before deciding.");
+  });
+
+  it("context is '' when the ask block has no context: field", () => {
+    const notes = "<<<ateam-ask\ndecision: Go or no-go?\n>>>";
+    const init = makeWaitingInit(notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.context).toBe("");
+  });
+});
+
+// ---- buildInbox: notes-block nextAction fallback (agent-teams-ni2y.2) --------
+//
+// check/generic/review rows fall back to the last "session N, ..." notes block
+// (mirrors DrillInDetail.notesHistory's split) instead of the boilerplate
+// constant, when notes carry one. Constant-fallback-on-empty-notes is already
+// covered by the "updatedAt and nextAction" and "check flavor" describe blocks above.
+
+describe("buildInbox — notes-block nextAction fallback for check/generic/review", () => {
+  function makeInit(id: string, notes: string, labels?: string[]): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-01T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels,
+      epic: null,
+    };
+  }
+
+  it("review item nextAction falls back to the last notes block when present", () => {
+    const notes =
+      "session 1, 2026-06-30 — investigating flaky test.\nsession 2, 2026-07-01 — fix landed, needs review of the retry logic.";
+    const init = makeInit("rev-fb", notes, ["gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 2, 2026-07-01 — fix landed, needs review of the retry logic.");
+  });
+
+  it("generic item nextAction falls back to the last notes block when present", () => {
+    const notes = "session 1 — delivered, waiting on a manual smoke test before merge.";
+    const init = makeInit("gen-fb", notes);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 1 — delivered, waiting on a manual smoke test before merge.");
+  });
+
+  it("check item nextAction falls back to the last notes block when present", () => {
+    const notes = "session 1 — session paused mid-rebase, no explicit gate set.";
+    const init = { ...makeInit("chk-fb", notes), prUrl: null };
+    const sess: SessionState = {
+      sessionId: "sess-chk-fb",
+      kind: "background",
+      cwd: "/wt/chk-fb",
+      startedAt: 0,
+      status: "waiting",
+      state: "blocked",
+    };
+    const nodes = buildInitiativeNodes([init], [sess], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 1 — session paused mid-rebase, no explicit gate set.");
   });
 });
