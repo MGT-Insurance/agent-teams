@@ -30,7 +30,7 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 - Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
-- **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at teardown, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
+- **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at wind-down, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once (machine-wide context).
 - Run `ateam audit`. It must report clean. If it lists leaked work beads (work beads that landed in the global workspace by mistake), surface them to the human — they belong in some project repo, not the registry.
@@ -47,7 +47,7 @@ ateam resume-match "$PWD"
 
 This uses exact-line matching (not `contains`) to avoid prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`). Note: `bd search` does NOT match description body content — only titles; do not use it as a fallback.
 
-An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run teardown's close step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the turn.
+An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet merged — see Phase 5). Resume handles both: recover state and report which it is. An `awaiting-merge` resume's first move is to check the PR — if it merged, run the close-out step; if it's still open, report awaiting-merge and, if the human did not ask for more work, end the turn.
 
 - **Open match found -> resume:** recover state — the initiative's notes, `ateam human-list` (parked gates), the project repo's beads, branch/PR state — then report "here is where this stands" before continuing. Recreate the team (prior members are dead processes); spawn fresh. When recovering a parked gate, check its kind: a **REVIEW** gate means the initiative delivered a PR awaiting merge — clear the gate (`ateam clear-gate <id>`) if the PR has since merged, then close; a **QUESTION** gate means a pending decision, handle normally.
 - **Open match found AND a new problem statement given -> pause and confirm** with the human: append to the existing initiative vs. start a new one.
@@ -125,11 +125,11 @@ Absent that confirmation: status note `delivered` with the PR link, leave the in
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This is the DRI's explicit "ready for you" intent bit. It makes the initiative *eligible* for REVIEWABLE — but the dashboard derives the actual REVIEWABLE status from execution-state (gate labels joined to the live session's run/park state), not from the gate label alone. While this session is still running (including teardown), the initiative reads as IN-PROGRESS; it flips to REVIEWABLE only once the session goes idle or exits. That is intentional: the dashboard never surfaces an initiative as reviewable while the DRI is still working. The DRI need not worry about raising the gate slightly early — the "not actively working" check prevents premature REVIEWABLE. See references/gate-protocol.md for the full execution-state model.
+This is the DRI's explicit "ready for you" intent bit. It makes the initiative *eligible* for REVIEWABLE — but the dashboard derives the actual REVIEWABLE status from execution-state (gate labels joined to the live session's run/park state), not from the gate label alone. While this session is still running (including wind-down), the initiative reads as IN-PROGRESS; it flips to REVIEWABLE only once the session goes idle or exits. That is intentional: the dashboard never surfaces an initiative as reviewable while the DRI is still working. The DRI need not worry about raising the gate slightly early — the "not actively working" check prevents premature REVIEWABLE. See references/gate-protocol.md for the full execution-state model.
 
 Opening a PR without setting this gate is incomplete. Opening a PR is not completion — the initiative stays open. An initiative is closed ONLY when its PR is merged or a human explicitly closes it; until then a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
 
-**MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to teardown. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
+**MANDATORY — record the structured `pr:` field** immediately after opening the PR and before proceeding to wind-down. The pr-shepherd match engine reads this exact line to associate the PR with its initiative:
 
 ```bash
 # Write a note file containing the structured pr: line (copy-paste exactly, substitute your URL)
@@ -145,13 +145,13 @@ pr: https://github.com/<owner>/<repo>/pull/<n>
 
 This can be combined with the delivery note in a single `ateam note` call — add the `pr:` line alongside any other text in the note file. The line must appear literally (not in a code block, not prefixed) so the match engine can grep it. Do NOT skip this step; without it the pr-shepherd cannot route events for this initiative.
 
-After recording the registry note, raising the review gate, and recording the `pr:` field, proceed to Phase 6 teardown.
+After recording the registry note, raising the review gate, and recording the `pr:` field, proceed to Phase 6 wind-down.
 
-## Phase 6 — Teardown
+## Phase 6 — Wind-down
 
-Follow references/teardown.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings per the Memory routing rule above (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
+Follow references/wind-down.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings per the Memory routing rule above (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
 
-**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with teardown complete; or a resume that just ran the close step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
+**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with wind-down complete; or a resume that just ran the close step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
 
 # Memory routing
 
@@ -163,7 +163,7 @@ Follow references/teardown.md exactly: shut down teammates -> remove worktrees -
 
 Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
 
-This is the standing place for role learnings — the moment they form, not only at teardown. Phase 6 teardown is when DRI-specific learnings are *guaranteed* contributed (see teardown step: `ateam learn dri <slug> --file <tmpfile>`), but learnings that emerge during execution belong here immediately.
+This is the standing place for role learnings — the moment they form, not only at wind-down. Phase 6 wind-down is when DRI-specific learnings are *guaranteed* contributed (see wind-down step: `ateam learn dri <slug> --file <tmpfile>`), but learnings that emerge during execution belong here immediately.
 
 ## Three-tier memory model (fresh / hot / cold)
 
@@ -205,7 +205,7 @@ Safety backstops:
 
 v1 has no per-run eviction floor — trust the agent and Dolt-history recoverability.
 
-**Teardown touchpoint:** at Phase 6 teardown, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most teardowns find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
+**Wind-down touchpoint:** at Phase 6 wind-down, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most wind-downs find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
 
 # Role-division rules (state these to the team; enforce them)
 
@@ -226,6 +226,6 @@ To re-launch a parked or interrupted background initiative by id, use `ateam res
 - references/registry.md — initiative schema + exact registry commands
 - references/gate-protocol.md — the parked-gate sequence (must never vary)
 - references/execution.md — spawn/worktree/merge mechanics
-- references/teardown.md — the close-out checklist
+- references/wind-down.md — the wind-down checklist (includes the close-out step)
 
 (To spin off separable work as its own background initiative, use the `/agent-teams:dri-dispatch` skill — not a hand-rolled `claude --bg`.)
