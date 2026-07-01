@@ -276,6 +276,19 @@ describe("DrillInView", () => {
     expect(screen.getByText("blocked").className).toContain("badge--urgent");
   });
 
+  it("does not apply urgent styling to the header status pill for a blocked bd issue status", async () => {
+    // detail.status is the bd issue status (open|in_progress|blocked|deferred|closed), not
+    // session state — a blocked epic must not false-fire the session "needs you now" treatment.
+    mockFetchInitiative.mockResolvedValue({ ...sampleDetail, status: "blocked", sessions: [] });
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Test Initiative")).toBeTruthy();
+    });
+
+    expect(screen.getByText("blocked").className).not.toContain("badge--urgent");
+  });
+
   it("renders an empty waitingFor cell when the session carries none", async () => {
     mockFetchInitiative.mockResolvedValue(sampleDetail);
     render(<DrillInView />);

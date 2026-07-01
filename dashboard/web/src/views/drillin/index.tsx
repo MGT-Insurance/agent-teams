@@ -12,9 +12,9 @@ function defaultBgSession(sessions: SessionState[]): SessionState | undefined {
   return sessions.find((s) => s.kind === "background" && s.id != null);
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, urgent = true }: { status: string; urgent?: boolean }) {
   const cls =
-    status === "waiting" || status === "blocked"
+    urgent && (status === "waiting" || status === "blocked")
       ? "badge badge--urgent"
       : status === "busy" || status === "working"
         ? "badge badge--busy"
@@ -245,7 +245,10 @@ export default function DrillInView() {
         <div className="drillin-meta">
           <span className="meta-item">
             <span className="meta-label">status</span>
-            <StatusBadge status={detail.status} />
+            {/* detail.status is the bd issue status (open|in_progress|blocked|deferred|closed),
+                not session state — urgent=false so a blocked epic doesn't false-fire the
+                session "needs you now" treatment. */}
+            <StatusBadge status={detail.status} urgent={false} />
           </span>
           <span className="meta-item">
             <span className="meta-label">last activity</span>

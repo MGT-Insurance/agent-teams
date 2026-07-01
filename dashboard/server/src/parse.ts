@@ -431,9 +431,15 @@ export function extractLatestAsk(
 // check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits the same
 // way index.ts builds DrillInDetail.notesHistory — on the lookahead before a line
 // starting "session " — so "last block" means the same thing everywhere in the
-// dashboard. Returns "" when notes is empty/whitespace-only.
+// dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel (e.g. left behind by
+// `ateam clear-gate` without `--file`) so its raw markup never leaks into nextAction.
+// Returns "" when notes is empty/whitespace-only or every block is an ask sentinel.
 function lastNotesBlock(notes: string): string {
-  const blocks = notes.split(/\n(?=session )/i).map((s) => s.trim()).filter(Boolean);
+  const blocks = notes
+    .split(/\n(?=session )/i)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((b) => !b.includes("<<<ateam-ask"));
   return blocks.length > 0 ? (blocks[blocks.length - 1] ?? "") : "";
 }
 

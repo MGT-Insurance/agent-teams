@@ -1404,6 +1404,75 @@ describe("buildInbox — updatedAt and nextAction", () => {
   });
 });
 
+// ---- buildInbox: notes fallback skips ask-sentinel blocks (agent-teams-ni2y.5 fix) ----
+//
+// Regression for: `ateam clear-gate <id>` without `--file` removes the gate label
+// but leaves the ask-sentinel note behind. When kind then falls to check/generic,
+// the notes fallback must skip past that sentinel block instead of surfacing its
+// raw `<<<ateam-ask ...>>>` markup as the row's nextAction.
+
+describe("buildInbox — notes fallback skips ask-sentinel blocks", () => {
+  function makeCheckInit(notes: string): ParsedInitiative {
+    return {
+      id: "chk",
+      title: "Check init",
+      description: "worktree: /wt/chk",
+      notes,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/chk",
+      branch: "chk",
+      team: "t-chk",
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      epic: null,
+    };
+  }
+
+  const BLOCKED_CHK_SESSION: SessionState = {
+    sessionId: "s-chk",
+    kind: "background",
+    cwd: "/wt/chk",
+    startedAt: 0,
+    status: "waiting",
+    state: "blocked",
+  };
+
+  it("returns the prior plain block, not raw ask-sentinel text, when the last block is a leftover ask sentinel", () => {
+    const notes = [
+      "session 1, did some setup work.",
+      "session 2, parked pending a decision.",
+      "<<<ateam-ask",
+      "decision: Should we deploy now?",
+      ">>>",
+    ].join("\n");
+    const nodes = buildInitiativeNodes([makeCheckInit(notes)], [BLOCKED_CHK_SESSION], new Set());
+    expect(nodes[0]?.needsHuman).toBe("check");
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("session 1, did some setup work.");
+    expect(inbox[0]?.nextAction).not.toContain("<<<ateam-ask");
+  });
+
+  it("falls back to the constant string when every block carries an ask sentinel", () => {
+    const notes = [
+      "session 1, parked pending a decision.",
+      "<<<ateam-ask",
+      "decision: Should we deploy now?",
+      ">>>",
+    ].join("\n");
+    const nodes = buildInitiativeNodes([makeCheckInit(notes)], [BLOCKED_CHK_SESSION], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
+  });
+});
+
 // ---- buildInbox: recommendation/alternative passthrough (agent-teams-oc3p) ----
 
 describe("buildInbox — recommendation and alternative", () => {
