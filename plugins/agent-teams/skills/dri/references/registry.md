@@ -13,8 +13,24 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
     team: <team slug>
     mode: interactive|bg
     epic: <root epic bead id in the project repo, e.g. agent-teams-x6ce>
+    standby: true    # OPTIONAL — present only when the initiative was dispatched --standby
 
 There is NO `phase:` or `status:` field. The DRI maintains no phase; execution-state (IN-PROGRESS / REVIEWABLE / NEEDS-DECISION) is computed by the dashboard from gate labels and the live session's run/park state.
+
+## Standby field (frozen contract — `--standby`)
+
+An initiative dispatched with `--standby` is registered and its DRI launched, but the DRI **parks on startup waiting for human direction** instead of entering clarify/plan/implement. This keeps `ateam dispatch` / `/dri-dispatch` mechanical (no judgment, no investigation) while the standby *behavior* lives in `/dri`, which already knows how to park on human gates.
+
+The field is a single line in the initiative description, written by `ateam dispatch --standby` (placed directly after the `mode:` line):
+
+    standby: true
+
+Rules (both the writer and every reader copy these verbatim):
+
+- **Off state:** the line is simply **absent**. Never write `standby: false`.
+- **Release marker:** once the human gives direction, the DRI records a note containing the line `standby: released`. This is the durable release signal — it survives resume and is independent of gate-label state.
+- **Reader rule (`/dri` startup):** standby is *active* iff the description contains `standby: true` **AND** does not contain `standby: released`. When active, `/dri` parks with a QUESTION gate worded **"Standby — waiting for direction"** (see the gate protocol) instead of entering Phase 2. When the human provides direction, the DRI appends the `standby: released` note, clears the gate, and proceeds normally through clarify/plan/execute.
+- Rationale for the explicit release marker: a standby DRI parks *before* creating any work beads, so "are there beads yet" cannot distinguish a still-waiting initiative from one that has received direction. The append-only `standby: released` note disambiguates unambiguously across any number of resumes.
 
 **Epic invariant (at-e3m):** every new initiative has a root epic bead in the project repo. `ateam register` auto-creates this epic (via `bd -C <repo> create --type=epic`) and writes its id as the `epic:` line in the description. All work beads filed by the DRI, planner, and role agents must use `--parent <epicId>` so they live under the initiative's subtree. Multiple ring/phase epics are permitted — they are children of the root epic. Bare (unparented) work beads are acceptable only in trivial one-off cases. The `epic:` field is also written to initiative notes by the DRI ensure-epic step when absent (legacy initiatives). The dashboard reads `epic:` to filter the drill-in work-bead list to just this initiative's subtree.
 
