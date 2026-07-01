@@ -12,8 +12,8 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
     branch: <branch name>
     team: <team slug>
     mode: interactive|bg
+    standby: true    # OPTIONAL — present only when dispatched --standby; written directly after mode:
     epic: <root epic bead id in the project repo, e.g. agent-teams-x6ce>
-    standby: true    # OPTIONAL — present only when the initiative was dispatched --standby
 
 There is NO `phase:` or `status:` field. The DRI maintains no phase; execution-state (IN-PROGRESS / REVIEWABLE / NEEDS-DECISION) is computed by the dashboard from gate labels and the live session's run/park state.
 
