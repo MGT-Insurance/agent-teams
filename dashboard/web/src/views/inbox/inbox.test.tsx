@@ -469,32 +469,28 @@ describe("InboxView — kind='check' row (agent-teams-ja9c)", () => {
   });
 });
 
-describe("InboxView — tiered sort (agent-teams-ja9c)", () => {
-  it("check item sorts BELOW review/waiting/generic even when check has a newer updatedAt", () => {
+describe("InboxView — recency-only sort, no kind tiering (agent-teams-ni2y)", () => {
+  it("check item (newest) sorts ABOVE review (older) — kind never overrides recency", () => {
     // checkItem.updatedAt = 13:00, reviewItem.updatedAt = 12:00
-    // Tiering must override recency: review (tier 0) before check (tier 3).
     setInbox([checkItem, reviewItem]);
     const { container } = renderInbox();
     const rows = container.querySelectorAll("[data-initiative-id]");
-    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review
-    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-6"); // check
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // check, newest
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-2"); // review, older
   });
 
-  it("tiered-then-recency: review < waiting < generic < check, recency desc within tier", () => {
-    // review:  12:00 (tier 0)
-    // waiting: 10:00 (tier 1)
-    // generic: 08:00 (tier 2)
-    // check:   13:00 (tier 3) — newest overall but lowest tier
+  it("orders strictly by updatedAt desc across all kinds, ignoring kind entirely", () => {
+    // check: 13:00, review: 12:00, waiting: 10:00, generic: 08:00
     setInbox([checkItem, genericItem, waitingItem, reviewItem]);
     const { container } = renderInbox();
     const rows = container.querySelectorAll("[data-initiative-id]");
-    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review  tier 0
-    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-1"); // waiting tier 1
-    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-3"); // generic tier 2
-    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-6"); // check   tier 3
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // check   13:00
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-2"); // review  12:00
+    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-1"); // waiting 10:00
+    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-3"); // generic 08:00
   });
 
-  it("two check items sort by recency desc within the check tier", () => {
+  it("two check items sort by recency desc", () => {
     const olderCheck: InboxItem = {
       ...checkItem,
       initiativeId: "init-7",

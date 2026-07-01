@@ -146,13 +146,10 @@ export default function InboxView() {
   // Filter BEFORE sort (spec: filter then sort).
   const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine || item.kind === "reap") : inbox;
 
-  // Tiered sort: review first, then reap zombies (just-below review), then waiting/generic/check; recency desc within tier.
-  const tierRank: Record<InboxItem["kind"], number> = { review: 0, reap: 1, waiting: 2, generic: 3, check: 4 };
-  const sorted = [...filtered].sort((a, b) => {
-    const tierDiff = tierRank[a.kind] - tierRank[b.kind];
-    if (tierDiff !== 0) return tierDiff;
-    return b.updatedAt.localeCompare(a.updatedAt);
-  });
+  // Recency-only sort: updatedAt desc is the PRIMARY key across ALL kinds (agent-teams-ni2y).
+  // No kind tiering — a fresh waiting row outranks a stale review row. Waiting/blocked rows
+  // are made loud instead of pinned (ni2y.4); reap stays in the same recency ordering too.
+  const sorted = [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const showBanner = connectionState !== "connected";
   const totalCount = sorted.length;
