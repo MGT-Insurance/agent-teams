@@ -61,10 +61,12 @@ The dispatcher's only judgment here is whether the hand-off inputs are present. 
 Run a single call. Everything deterministic (slugify, git worktree add, initiative register, background DRI launch) is handled inside `ateam dispatch`:
 
 ```bash
-ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>]
+ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>] [--standby]
 ```
 
 `--problem` is the one-line title. `--body-file` carries the context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context from the human to pass.
+
+`--standby` is a mechanical passthrough, not a judgment call. Pass it when the invocation contains an explicit `--standby` token, or a clear standby / "park it" / "wait for direction" keyword — nothing more. Otherwise omit it. Detecting the keyword is not investigation; deciding whether standby is *warranted* would be, so don't do that. Standby changes nothing else here: still capture the human's framing verbatim, still launch unconditionally.
 
 `dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, or a `--body-file` path that cannot be read. It never prompts. On success it prints:
 

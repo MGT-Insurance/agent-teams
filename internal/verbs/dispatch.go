@@ -90,6 +90,7 @@ type dispatchKong struct {
 	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
 	Model        string `name:"model"         help:"Model override for bg session (default: opus)."`
+	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 
 	git        gitRunner       `kong:"-"`
 	launch     launchFunc      `kong:"-"`
@@ -163,6 +164,9 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		"branch: " + resolvedSlug + "\n" +
 		"team: " + team + "\n" +
 		"mode: bg\n"
+	if c.Standby {
+		body += "standby: true\n"
+	}
 
 	// Try to create a root epic bead in the project repo (fail-soft).
 	// repoRoot is already resolved above so no extraction is needed.

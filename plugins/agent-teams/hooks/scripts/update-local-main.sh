@@ -6,7 +6,7 @@
 #   Works from a linked worktree: derives the main checkout root via --git-common-dir.
 #
 # FAIL-SOFT: this script ALWAYS exits 0.  Every git error is caught; a one-line
-# summary is printed and the script exits 0 so it never blocks teardown or close.
+# summary is printed and the script exits 0 so it never blocks wind-down or close-out.
 #
 # Algorithm (frozen, from contract agent-teams-ovkj):
 #   a. Determine current HEAD branch of the main repo.
@@ -21,7 +21,7 @@
 # before our catch logic runs.
 
 # Never prompt for credentials: an HTTPS remote with an expired token would
-# otherwise hang the network ops below indefinitely and block teardown/close —
+# otherwise hang the network ops below indefinitely and block wind-down/close-out —
 # a worse fail-soft violation than a non-zero exit. With prompting off, an
 # auth failure returns non-zero immediately and is caught like any other error.
 export GIT_TERMINAL_PROMPT=0

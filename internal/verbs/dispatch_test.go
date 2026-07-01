@@ -415,6 +415,108 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 	}
 }
 
+// ---- dispatch: --standby ---------------------------------------------------
+
+// TestDispatch_Standby_WritesMarker verifies that --standby appends the frozen
+// "standby: true" line to the initiative body, positioned immediately after
+// "mode: bg" (contract: agent-teams-yl6t.1).
+func TestDispatch_Standby_WritesMarker(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-standby1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Standby work",
+		Slug:     "standby-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		Standby:  true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	modeIdx := strings.Index(gotBody, "mode: bg\n")
+	standbyIdx := strings.Index(gotBody, "standby: true\n")
+	if modeIdx < 0 {
+		t.Fatalf("body missing 'mode: bg':\n%s", gotBody)
+	}
+	if standbyIdx < 0 {
+		t.Fatalf("body missing 'standby: true':\n%s", gotBody)
+	}
+	if standbyIdx != modeIdx+len("mode: bg\n") {
+		t.Errorf("'standby: true' must appear immediately after 'mode: bg':\n%s", gotBody)
+	}
+}
+
+// TestDispatch_NoStandby_OmitsMarker verifies that without --standby, the body
+// contains no "standby" line at all (never "standby: false").
+func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	var gotBody string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if strings.HasPrefix(a, "--body-file=") {
+					path := strings.TrimPrefix(a, "--body-file=")
+					b, err := os.ReadFile(path)
+					if err == nil {
+						gotBody = string(b)
+					}
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-nostandby1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	cmd := &dispatchKong{
+		Problem:  "Normal work",
+		Slug:     "normal-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(gotBody, "standby") {
+		t.Errorf("body must not contain any 'standby' line when --standby is omitted:\n%s", gotBody)
+	}
+}
+
 // ---- dispatch: --body-file appends context after schema lines ---------------
 
 func TestDispatch_BodyFile_AppendsContext(t *testing.T) {

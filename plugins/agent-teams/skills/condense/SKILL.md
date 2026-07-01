@@ -1,6 +1,6 @@
 ---
 name: condense
-description: Triggered manually or at teardown to drain fresh memories then condense hot/cold learnings for each over-threshold role. Lock-guarded; skips cleanly if another condense is already running.
+description: Triggered manually or at wind-down to drain fresh memories then condense hot/cold learnings for each over-threshold role. Lock-guarded; skips cleanly if another condense is already running.
 ---
 
 **The `ateam` tool.** `ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere.
@@ -89,7 +89,7 @@ Measure the **byte length** of the output. Approximate token count as `bytes / 4
 <role>: under threshold (~<N> tokens) — skipped
 ```
 
-Only roles where `approx_tokens > 8000` proceed to drain+condense. Most teardown runs will find nothing over 8K and exit after the release with zero LLM work done.
+Only roles where `approx_tokens > 8000` proceed to drain+condense. Most wind-down runs will find nothing over 8K and exit after the release with zero LLM work done.
 
 ### Step 3 — Drain fresh then condense (per gated role)
 
