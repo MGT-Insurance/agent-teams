@@ -151,7 +151,7 @@ After recording the registry note, raising the review gate, and recording the `p
 
 Follow references/wind-down.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> contribute `dri:<slug>` learnings per the Memory routing rule above (write to a temp file, then `ateam learn dri <slug> --file <tmpfile>`) -> write the final registry note.
 
-**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with wind-down complete; or a resume that just ran the close step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
+**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with wind-down complete; or a resume that just ran the close-out step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
 
 # Memory routing
 
