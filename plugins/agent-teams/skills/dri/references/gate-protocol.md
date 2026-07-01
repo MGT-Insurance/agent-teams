@@ -26,7 +26,7 @@ The dashboard joins the initiative to any live Claude session whose `cwd` matche
 3. **REVIEWABLE** — `human` + `gate:review` present AND no actively-working session.
 4. **IN-PROGRESS** — open initiative, no review/question gate.
 
-Conservative rule: while the DRI's session is still running — including teardown tidying — the initiative reads as IN-PROGRESS. It flips to REVIEWABLE only once the session goes idle or exits. This is intentional: the dashboard never tells the human to review too early, even if the PR is technically stable while the DRI is still cleaning up.
+Conservative rule: while the DRI's session is still running — including wind-down tidying — the initiative reads as IN-PROGRESS. It flips to REVIEWABLE only once the session goes idle or exits. This is intentional: the dashboard never tells the human to review too early, even if the PR is technically stable while the DRI is still cleaning up.
 
 The DRI sets NO phase field and maintains no status field. The run/park state of its session IS the signal.
 
