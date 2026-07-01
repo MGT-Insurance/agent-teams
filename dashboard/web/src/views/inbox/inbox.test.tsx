@@ -139,12 +139,48 @@ const checkItem: InboxItem = {
   recommendation: "",
   alternative: "",
   context: "",
-  updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) to prove tiering overrides recency
+  updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) — used to prove recency wins over kind
   worktree: "/Users/ericlloyd/.worktrees/init-6",
   prUrl: null,
   onThisMachine: true,
   status: null,
   state: null,
+};
+
+// status="waiting" (raw session field) drives the high-visibility loud treatment
+// on its own — kind is deliberately "generic" here to prove the treatment isn't
+// gated on kind.
+const waitingStatusItem: InboxItem = {
+  initiativeId: "init-8",
+  title: "Session reporting status=waiting",
+  kind: "generic",
+  nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  recommendation: "",
+  alternative: "",
+  context: "",
+  updatedAt: "2026-06-25T09:30:00Z",
+  worktree: "/Users/ericlloyd/.worktrees/init-8",
+  prUrl: null,
+  onThisMachine: true,
+  status: "waiting",
+  state: null,
+};
+
+// state="blocked" (raw session field) also drives the loud treatment on its own.
+const blockedStateItem: InboxItem = {
+  initiativeId: "init-9",
+  title: "Session reporting state=blocked",
+  kind: "check",
+  nextAction: "Look at the session for more info.",
+  recommendation: "",
+  alternative: "",
+  context: "",
+  updatedAt: "2026-06-25T09:15:00Z",
+  worktree: "/Users/ericlloyd/.worktrees/init-9",
+  prUrl: null,
+  onThisMachine: true,
+  status: "idle",
+  state: "blocked",
 };
 
 beforeEach(() => {
@@ -466,6 +502,65 @@ describe("InboxView — kind='check' row (agent-teams-ja9c)", () => {
     const row = screen.getByRole("button", { name: /idle background session maybe stuck/i });
     fireEvent.click(row);
     expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-6");
+  });
+});
+
+describe("InboxView — raw status/state chips (agent-teams-ni2y.4)", () => {
+  it("renders both status and state verbatim, independent of kind badge", () => {
+    setInbox([waitingStatusItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__status-chip")?.textContent).toBe("status: waiting");
+    expect(container.querySelector(".inbox-row__state-chip")?.textContent).toBe("state: —");
+  });
+
+  it("renders '—' for both chips when status and state are null", () => {
+    setInbox([waitingItem]); // status: null, state: null
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__status-chip")?.textContent).toBe("status: —");
+    expect(container.querySelector(".inbox-row__state-chip")?.textContent).toBe("state: —");
+  });
+
+  it("renders chips on every kind, not just waiting", () => {
+    setInbox([reviewItem, genericItem, checkItem]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__status-chip")).toHaveLength(3);
+    expect(container.querySelectorAll(".inbox-row__state-chip")).toHaveLength(3);
+  });
+});
+
+describe("InboxView — high-visibility loud treatment (agent-teams-ni2y.4)", () => {
+  it("applies inbox-row--loud when status='waiting', regardless of kind", () => {
+    setInbox([waitingStatusItem]); // kind="generic", status="waiting"
+    const { container } = renderInbox();
+    const row = container.querySelector(".inbox-row--loud");
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-kind")).toBe("generic");
+  });
+
+  it("applies inbox-row--loud when state='blocked', regardless of kind", () => {
+    setInbox([blockedStateItem]); // kind="check", state="blocked"
+    const { container } = renderInbox();
+    const row = container.querySelector(".inbox-row--loud");
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-kind")).toBe("check");
+  });
+
+  it("does not apply inbox-row--loud when status/state are null", () => {
+    setInbox([waitingItem]); // kind="waiting" flavor, but raw status/state are null
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row--loud")).toBeNull();
+  });
+
+  it("marks the loud status chip with the --loud modifier", () => {
+    setInbox([waitingStatusItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__status-chip--loud")).not.toBeNull();
+  });
+
+  it("marks the loud state chip with the --loud modifier", () => {
+    setInbox([blockedStateItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__state-chip--loud")).not.toBeNull();
   });
 });
 

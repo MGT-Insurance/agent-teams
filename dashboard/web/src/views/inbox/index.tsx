@@ -68,9 +68,14 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
     e.stopPropagation();
   }
 
+  // High-visibility trigger — keyed off the RAW session fields, independent of `kind`.
+  // A row is loud when the agent declared itself waiting or its session is blocked,
+  // regardless of which flavor badge it happens to carry.
+  const isLoud = item.status === "waiting" || item.state === "blocked";
+
   return (
     <div
-      className={`inbox-row inbox-row--${item.kind}`}
+      className={`inbox-row inbox-row--${item.kind}${isLoud ? " inbox-row--loud" : ""}`}
       data-kind={item.kind}
       data-initiative-id={item.initiativeId}
       onClick={handleRowClick}
@@ -82,6 +87,13 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
       <div className="inbox-row__header">
         <span className={`inbox-row__badge inbox-row__badge--${item.kind}`}>
           {rowBadgeLabel(item.kind)}
+        </span>
+        {/* Raw status/state readout — always on, independent of the derived kind badge above. */}
+        <span className={`inbox-row__status-chip${item.status === "waiting" ? " inbox-row__status-chip--loud" : ""}`}>
+          status: {item.status ?? "—"}
+        </span>
+        <span className={`inbox-row__state-chip${item.state === "blocked" ? " inbox-row__state-chip--loud" : ""}`}>
+          state: {item.state ?? "—"}
         </span>
         <span className="inbox-row__title">{item.title}</span>
         {/* PR link whenever a URL is present — delivery is orthogonal to flavor. */}
