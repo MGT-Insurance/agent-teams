@@ -169,10 +169,12 @@ export default function InboxView() {
   // Filter BEFORE sort (spec: filter then sort).
   const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine || item.kind === "reap") : inbox;
 
-  // Recency-only sort: updatedAt desc is the PRIMARY key across ALL kinds (agent-teams-ni2y).
-  // No kind tiering — a fresh waiting row outranks a stale review row. Waiting/blocked rows
-  // are made loud instead of pinned (ni2y.4); reap stays in the same recency ordering too.
-  const sorted = [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  // Recency-only sort: lastActivityAt desc is the PRIMARY key across ALL kinds (agent-teams-ni2y,
+  // agent-teams-ni2y.8). lastActivityAt = max(bead updatedAt, session transition), so a session
+  // flipping status/state (e.g. busy->waiting) rises even without a bead edit. No kind tiering —
+  // a fresh waiting row outranks a stale review row. Waiting/blocked rows are made loud instead
+  // of pinned (ni2y.4); reap stays in the same recency ordering too.
+  const sorted = [...filtered].sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
 
   const showBanner = connectionState !== "connected";
   const totalCount = sorted.length;

@@ -1404,6 +1404,77 @@ describe("buildInbox — updatedAt and nextAction", () => {
   });
 });
 
+// ---- buildInbox: lastActivityAt (agent-teams-ni2y.8) -------------------------
+
+describe("buildInbox — lastActivityAt (session-transition-aware recency)", () => {
+  function makeInit(id: string): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-25T12:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: "https://github.com/org/repo/pull/1",
+      labels: ["gate:review"],
+      epic: null,
+    };
+  }
+
+  function makeSession(id: string, sessionId: string): SessionState {
+    return { cwd: `/wt/${id}`, kind: "background", startedAt: 0, sessionId, status: "busy" };
+  }
+
+  it("no matched session -> lastActivityAt falls back to updated_at", () => {
+    const init = makeInit("no-sess");
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    const inbox = buildInbox(nodes, new Map([["irrelevant", 99_999_999_999]]));
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T12:00:00Z");
+  });
+
+  it("matched session with a NEWER transition wins over the bead timestamp (max)", () => {
+    const init = makeInit("newer");
+    const session = makeSession("newer", "sess-newer");
+    const nodes = buildInitiativeNodes([init], [session], new Set());
+    // Well after 2026-06-25T12:00:00Z.
+    const newerMs = Date.parse("2026-06-25T15:00:00Z");
+    const inbox = buildInbox(nodes, new Map([["sess-newer", newerMs]]));
+    // buildInbox stamps via new Date(ms).toISOString(), which always includes milliseconds.
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T15:00:00.000Z");
+  });
+
+  it("matched session with an OLDER transition loses to the bead timestamp (max)", () => {
+    const init = makeInit("older");
+    const session = makeSession("older", "sess-older");
+    const nodes = buildInitiativeNodes([init], [session], new Set());
+    // Well before 2026-06-25T12:00:00Z.
+    const olderMs = Date.parse("2026-06-25T01:00:00Z");
+    const inbox = buildInbox(nodes, new Map([["sess-older", olderMs]]));
+    // A defined (if older) transition still routes through Math.max/toISOString — only an
+    // ABSENT map entry falls back to the literal initiative.updated_at string (see next test).
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T12:00:00.000Z");
+  });
+
+  it("no sessionTransitions map at all (ad-hoc/endpoint fallback) -> degrades to updated_at even with a matched session", () => {
+    const init = makeInit("no-map");
+    const session = makeSession("no-map", "sess-no-map");
+    const nodes = buildInitiativeNodes([init], [session], new Set());
+    const inbox = buildInbox(nodes);
+    expect(inbox[0]?.lastActivityAt).toBe("2026-06-25T12:00:00Z");
+  });
+});
+
 // ---- buildInbox: notes fallback skips ask-sentinel blocks (agent-teams-ni2y.5 fix) ----
 //
 // Regression for: `ateam clear-gate <id>` without `--file` removes the gate label

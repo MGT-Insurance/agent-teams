@@ -451,7 +451,14 @@ function lastNotesBlock(notes: string): string {
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
 //   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
 // Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
-export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
+//
+// sessionTransitions: sessionId -> lastTransitionAt (epoch ms), from snapshot.ts's
+// stampTransitions (agent-teams-ni2y.8). Undefined for ad-hoc/endpoint-fallback callers
+// (before the first poll) -> lastActivityAt degrades to updated_at.
+export function buildInbox(
+  nodes: InitiativeNode[],
+  sessionTransitions?: Map<string, number>,
+): InboxItem[] {
   const items: InboxItem[] = [];
 
   for (const node of nodes) {
@@ -460,6 +467,15 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
     const { initiative } = node;
 
     const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
+
+    // lastActivityAt = max(bead updated_at, matched session's last transition) — the
+    // PRIMARY recency sort key (agent-teams-ni2y.8). node.session is the primary/alive
+    // session (buildInitiativeNodes already prefers it); no match or no map -> updated_at.
+    const transitionMs = node.session ? sessionTransitions?.get(node.session.sessionId) : undefined;
+    const lastActivityAt =
+      transitionMs === undefined
+        ? initiative.updated_at
+        : new Date(Math.max(Date.parse(initiative.updated_at), transitionMs)).toISOString();
 
     // Any matched entry with a valid short 8-hex id is attachable via `claude attach <id>`,
     // regardless of whether the session is alive (status present) or detached (status absent).
@@ -492,6 +508,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         alternative: "",
         context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
@@ -511,6 +528,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         alternative: "",
         context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
@@ -536,6 +554,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         alternative: ask?.alternative.slice(0, 120) ?? "",
         context: ask?.context.slice(0, 280) ?? "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
@@ -555,6 +574,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         alternative: "",
         context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,
@@ -575,6 +595,7 @@ export function buildInbox(nodes: InitiativeNode[]): InboxItem[] {
         alternative: "",
         context: "",
         updatedAt: initiative.updated_at,
+        lastActivityAt,
         worktree: initiative.worktree,
         prUrl: initiative.prUrl,
         onThisMachine,

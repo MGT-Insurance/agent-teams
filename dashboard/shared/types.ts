@@ -179,9 +179,14 @@ export interface InboxItem {
   // or for non-waiting kinds. This is the declared-ask waiting-reason; waitingFor below
   // is a separate, live-session permission-prompt signal — the two coexist.
   context: string;
-  // ISO-8601 timestamp from RawInitiative.updated_at — the PRIMARY recency sort key
-  // for the inbox (agent-teams-ni2y).
+  // ISO-8601 timestamp from RawInitiative.updated_at — the literal bead timestamp,
+  // kept for display + relative-time (agent-teams-ni2y, agent-teams-ni2y.6).
   updatedAt: string;
+  // ISO-8601 timestamp: max(updatedAt, matched session's last status/state transition
+  // stamped server-side) — the PRIMARY recency sort key for the inbox (agent-teams-ni2y.8).
+  // Falls back to updatedAt when no session matched, or when built without a transition
+  // map (ad-hoc/endpoint fallback before the first poll).
+  lastActivityAt: string;
   worktree: string;
   prUrl: string | null;
   // true when initiative.worktree is non-empty and exists on the local filesystem.
