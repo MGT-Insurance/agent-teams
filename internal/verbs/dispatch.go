@@ -91,6 +91,7 @@ type dispatchKong struct {
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
 	Model        string `name:"model"         help:"Model override for bg session (default: opus)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
+	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
 
 	git        gitRunner       `kong:"-"`
 	launch     launchFunc      `kong:"-"`
@@ -240,10 +241,12 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			// Custom prompt path: substitute {id} and bypass c.launch (which
 			// would prepend /dri).
 			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
-			// advisor "": the raw --launch-prompt path (PR-review /
-			// dispatch-pr-review) is out of scope for advisor mode — see
-			// contract decision 5 (agent-teams-wvx2.1).
-			if err := c.launchRaw(ctx, wtPath, prompt, c.Model, ""); err != nil {
+			// advisor defaults to "": the raw --launch-prompt path (PR-review /
+			// dispatch-pr-review) is out of advisor-mode scope by default per
+			// contract decision 5 (agent-teams-wvx2.1) — but that decision was
+			// amended to allow an explicit opt-in via --advisor, so callers
+			// that want advisor mode for a custom-prompt launch can request it.
+			if err := c.launchRaw(ctx, wtPath, prompt, c.Model, c.Advisor); err != nil {
 				return fmt.Errorf("dispatch: launch: %w", err)
 			}
 		} else {
@@ -393,7 +396,8 @@ func bgSessionArgs(name, prompt, model, advisor string) []string {
 // env var is exactly "true", else ("", "") — any other value (unset, "",
 // "false", or anything not exactly "true") is treated as disabled. Unit
 // testable via t.Setenv. Only launchBGSession (the /dri path) calls this; the
-// raw --launch-prompt path is out of scope and always passes advisor "".
+// raw --launch-prompt path does not read this env var — it defaults to
+// advisor "" unless the caller explicitly passes --advisor (dispatchKong.Advisor).
 func driAdvisorSettings() (model, advisor string) {
 	if os.Getenv("CLAUDE_PLUGIN_OPTION_USE_ADVISORS") == "true" {
 		return "sonnet", "opus"
