@@ -170,7 +170,13 @@ export interface InboxItem {
   // Sourced from the recommendation:/alternative: fields in the latest <<<ateam-ask >>> block.
   recommendation: string;
   alternative: string;
-  // ISO-8601 timestamp from RawInitiative.updated_at — drives recency sort in the inbox.
+  // Free-form "what it's waiting on" prose from the context: field in the same ask block
+  // (mirrors Go's askBlock.context, internal/verbs/query.go parseAskBody). "" when absent
+  // or for non-waiting kinds. This — not a "waitingFor" field, which does not exist in the
+  // session JSON (confirmed agent-teams-ni2y.12) — is the canonical waiting-reason detail.
+  context: string;
+  // ISO-8601 timestamp from RawInitiative.updated_at — the PRIMARY recency sort key
+  // for the inbox (agent-teams-ni2y).
   updatedAt: string;
   worktree: string;
   prUrl: string | null;
@@ -181,6 +187,12 @@ export interface InboxItem {
   // A valid id means `claude attach <id>` should work regardless of session liveness.
   // Absent when no matched session entry carries a valid 8-hex id.
   sessionId?: string;
+  // RAW node.session.status / node.session.state, passed through VERBATIM — never
+  // collapsed into `kind` above. null when node.session is null (no matched session).
+  // status=="waiting" and state=="blocked" are the high-visibility drivers: rows where
+  // either holds should read as urgent regardless of `kind`.
+  status: string | null;
+  state: string | null;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.

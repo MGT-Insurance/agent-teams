@@ -78,10 +78,13 @@ describe("snapshotReducer", () => {
           nextAction: "Which approach?",
           recommendation: "",
           alternative: "",
+          context: "",
           updatedAt: "2026-06-25T10:00:00Z",
           worktree: "/tmp/wt",
           prUrl: null,
           onThisMachine: true,
+          status: null,
+          state: null,
         },
       ],
     };

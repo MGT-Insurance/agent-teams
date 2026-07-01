@@ -52,10 +52,13 @@ const waitingItem: InboxItem = {
   nextAction: "Should we enable the feature flag for all users?",
   recommendation: "",
   alternative: "",
+  context: "",
   updatedAt: "2026-06-25T10:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
   prUrl: null,
   onThisMachine: true,
+  status: null,
+  state: null,
 };
 
 // kind="review" — explicit gate:review label (AUTHORITATIVE; "review the PR")
@@ -66,10 +69,13 @@ const reviewItem: InboxItem = {
   nextAction: "Review the PR and merge or send it back.",
   recommendation: "",
   alternative: "",
+  context: "",
   updatedAt: "2026-06-25T12:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
   prUrl: "https://github.com/org/repo/pull/42",
   onThisMachine: true,
+  status: null,
+  state: null,
 };
 
 // kind="generic" — delivered + no session (graceful degrade)
@@ -80,10 +86,13 @@ const genericItem: InboxItem = {
   nextAction: "Delivered with no gate — open the worktree to see what's needed.",
   recommendation: "",
   alternative: "",
+  context: "",
   updatedAt: "2026-06-25T08:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-3",
   prUrl: "https://github.com/org/repo/pull/99",
   onThisMachine: true,
+  status: null,
+  state: null,
 };
 
 // kind="waiting" WITH a PR — agent blocked but initiative also has an open PR.
@@ -95,10 +104,13 @@ const waitingItemWithPr: InboxItem = {
   nextAction: "Should we proceed with the rename?",
   recommendation: "",
   alternative: "",
+  context: "",
   updatedAt: "2026-06-25T11:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-4",
   prUrl: "https://github.com/MGT-Insurance/midgard/pull/3551",
   onThisMachine: true,
+  status: null,
+  state: null,
 };
 
 // Off-machine item — worktree lives on another machine.
@@ -109,10 +121,13 @@ const offMachineItem: InboxItem = {
   nextAction: "Delivered with no gate — open the worktree to see what's needed.",
   recommendation: "",
   alternative: "",
+  context: "",
   updatedAt: "2026-06-25T09:00:00Z",
   worktree: "/Users/other/.worktrees/init-5",
   prUrl: null,
   onThisMachine: false,
+  status: null,
+  state: null,
 };
 
 // kind="check" — session blocked but NO declared gate (soft tier; agent-teams-ja9c)
@@ -123,10 +138,13 @@ const checkItem: InboxItem = {
   nextAction: "Look at the session for more info.",
   recommendation: "",
   alternative: "",
+  context: "",
   updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) to prove tiering overrides recency
   worktree: "/Users/ericlloyd/.worktrees/init-6",
   prUrl: null,
   onThisMachine: true,
+  status: null,
+  state: null,
 };
 
 beforeEach(() => {
