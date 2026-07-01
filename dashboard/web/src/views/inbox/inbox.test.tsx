@@ -723,6 +723,81 @@ describe("InboxView — waiting row recommendation/alternative edge cases (oc3p)
   });
 });
 
+describe("InboxView — ask context (agent-teams-ni2y.5)", () => {
+  it("renders 'Context:' line for a waiting row when item.context is non-empty", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      context: "Staging config diverges from prod on the feature-flag rollout percentage.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const ctx = container.querySelector(".inbox-row__secondary--context");
+    expect(ctx?.textContent).toMatch(
+      /^Context: Staging config diverges from prod on the feature-flag rollout percentage\.$/,
+    );
+  });
+
+  it("renders context alongside recommendation and alternative, in that order", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      context: "The agent needs a decision before it can proceed.",
+      recommendation: "Roll back.",
+      alternative: "Partial rollout.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const labels = Array.from(container.querySelectorAll(".inbox-row__secondary-label")).map(
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(["Context:", "Recommended:", "Alternative:"]);
+  });
+
+  it("does not render a context line on a review row even when non-empty (kind guard)", () => {
+    const item: InboxItem = { ...reviewItem, context: "This should not appear." };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__secondary--context")).toBeNull();
+  });
+});
+
+describe("InboxView — waitingFor pass-through (agent-teams-ni2y.5)", () => {
+  it("renders item.waitingFor verbatim when present", () => {
+    const item: InboxItem = { ...waitingItem, waitingFor: "permissionPrompt" };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const line = container.querySelector(".inbox-row__secondary--waiting-for");
+    expect(line?.textContent).toBe("Waiting on: permissionPrompt");
+  });
+
+  it("renders nothing when waitingFor is absent (tolerant pass-through)", () => {
+    setInbox([waitingItem]); // no waitingFor field
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__secondary--waiting-for")).toBeNull();
+  });
+
+  it("renders waitingFor regardless of kind (not gated like context/recommendation)", () => {
+    const item: InboxItem = { ...genericItem, waitingFor: "permissionPrompt" };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__secondary--waiting-for")?.textContent).toBe(
+      "Waiting on: permissionPrompt",
+    );
+  });
+});
+
+describe("InboxView — nextAction is never kind-gated (agent-teams-ni2y.5)", () => {
+  it("renders nextAction for check, generic, and review rows alike", () => {
+    setInbox([checkItem, genericItem, reviewItem]);
+    const { container } = renderInbox();
+    const actions = Array.from(container.querySelectorAll(".inbox-row__next-action")).map(
+      (el) => el.textContent,
+    );
+    expect(actions).toContain("Look at the session for more info.");
+    expect(actions).toContain("Delivered with no gate — open the worktree to see what's needed.");
+    expect(actions).toContain("Review the PR and merge or send it back.");
+  });
+});
+
 describe("InboxView — disconnected states", () => {
   it("shows a reconnecting banner when connectionState is reconnecting", () => {
     setInbox([], { connectionState: "reconnecting" });

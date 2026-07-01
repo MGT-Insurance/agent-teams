@@ -260,3 +260,11 @@
 .inbox-row__secondary--alternative .inbox-row__secondary-label {
   color: var(--color-warn);
 }
+
+.inbox-row__secondary--context .inbox-row__secondary-label {
+  color: var(--color-accent);
+}
+
+.inbox-row__secondary--waiting-for .inbox-row__secondary-label {
+  color: var(--color-warn);
+}

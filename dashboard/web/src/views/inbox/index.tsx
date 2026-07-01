@@ -113,8 +113,19 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
         )}
       </div>
       <p className="inbox-row__next-action">{item.nextAction}</p>
-      {item.kind === "waiting" && (item.recommendation || item.alternative) && (
+      {/* Live-session permission-prompt reason — kind-independent, tolerant pass-through. */}
+      {item.waitingFor && (
+        <p className="inbox-row__secondary inbox-row__secondary--waiting-for">
+          <span className="inbox-row__secondary-label">Waiting on:</span> {item.waitingFor}
+        </p>
+      )}
+      {item.kind === "waiting" && (item.context || item.recommendation || item.alternative) && (
         <div className="inbox-row__suggestion">
+          {item.context && (
+            <p className="inbox-row__secondary inbox-row__secondary--context">
+              <span className="inbox-row__secondary-label">Context:</span> {item.context}
+            </p>
+          )}
           {item.recommendation && (
             <p className="inbox-row__secondary inbox-row__secondary--recommendation">
               <span className="inbox-row__secondary-label">Recommended:</span> {item.recommendation}
