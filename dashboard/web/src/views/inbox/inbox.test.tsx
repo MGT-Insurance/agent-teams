@@ -139,12 +139,48 @@ const checkItem: InboxItem = {
   recommendation: "",
   alternative: "",
   context: "",
-  updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) to prove tiering overrides recency
+  updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) — used to prove recency wins over kind
   worktree: "/Users/ericlloyd/.worktrees/init-6",
   prUrl: null,
   onThisMachine: true,
   status: null,
   state: null,
+};
+
+// status="waiting" (raw session field) drives the high-visibility loud treatment
+// on its own — kind is deliberately "generic" here to prove the treatment isn't
+// gated on kind.
+const waitingStatusItem: InboxItem = {
+  initiativeId: "init-8",
+  title: "Session reporting status=waiting",
+  kind: "generic",
+  nextAction: "Delivered with no gate — open the worktree to see what's needed.",
+  recommendation: "",
+  alternative: "",
+  context: "",
+  updatedAt: "2026-06-25T09:30:00Z",
+  worktree: "/Users/ericlloyd/.worktrees/init-8",
+  prUrl: null,
+  onThisMachine: true,
+  status: "waiting",
+  state: null,
+};
+
+// state="blocked" (raw session field) also drives the loud treatment on its own.
+const blockedStateItem: InboxItem = {
+  initiativeId: "init-9",
+  title: "Session reporting state=blocked",
+  kind: "check",
+  nextAction: "Look at the session for more info.",
+  recommendation: "",
+  alternative: "",
+  context: "",
+  updatedAt: "2026-06-25T09:15:00Z",
+  worktree: "/Users/ericlloyd/.worktrees/init-9",
+  prUrl: null,
+  onThisMachine: true,
+  status: "idle",
+  state: "blocked",
 };
 
 beforeEach(() => {
@@ -469,32 +505,87 @@ describe("InboxView — kind='check' row (agent-teams-ja9c)", () => {
   });
 });
 
-describe("InboxView — tiered sort (agent-teams-ja9c)", () => {
-  it("check item sorts BELOW review/waiting/generic even when check has a newer updatedAt", () => {
+describe("InboxView — raw status/state chips (agent-teams-ni2y.4)", () => {
+  it("renders both status and state verbatim, independent of kind badge", () => {
+    setInbox([waitingStatusItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__status-chip")?.textContent).toBe("status: waiting");
+    expect(container.querySelector(".inbox-row__state-chip")?.textContent).toBe("state: —");
+  });
+
+  it("renders '—' for both chips when status and state are null", () => {
+    setInbox([waitingItem]); // status: null, state: null
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__status-chip")?.textContent).toBe("status: —");
+    expect(container.querySelector(".inbox-row__state-chip")?.textContent).toBe("state: —");
+  });
+
+  it("renders chips on every kind, not just waiting", () => {
+    setInbox([reviewItem, genericItem, checkItem]);
+    const { container } = renderInbox();
+    expect(container.querySelectorAll(".inbox-row__status-chip")).toHaveLength(3);
+    expect(container.querySelectorAll(".inbox-row__state-chip")).toHaveLength(3);
+  });
+});
+
+describe("InboxView — high-visibility loud treatment (agent-teams-ni2y.4)", () => {
+  it("applies inbox-row--loud when status='waiting', regardless of kind", () => {
+    setInbox([waitingStatusItem]); // kind="generic", status="waiting"
+    const { container } = renderInbox();
+    const row = container.querySelector(".inbox-row--loud");
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-kind")).toBe("generic");
+  });
+
+  it("applies inbox-row--loud when state='blocked', regardless of kind", () => {
+    setInbox([blockedStateItem]); // kind="check", state="blocked"
+    const { container } = renderInbox();
+    const row = container.querySelector(".inbox-row--loud");
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-kind")).toBe("check");
+  });
+
+  it("does not apply inbox-row--loud when status/state are null", () => {
+    setInbox([waitingItem]); // kind="waiting" flavor, but raw status/state are null
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row--loud")).toBeNull();
+  });
+
+  it("marks the loud status chip with the --loud modifier", () => {
+    setInbox([waitingStatusItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__status-chip--loud")).not.toBeNull();
+  });
+
+  it("marks the loud state chip with the --loud modifier", () => {
+    setInbox([blockedStateItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__state-chip--loud")).not.toBeNull();
+  });
+});
+
+describe("InboxView — recency-only sort, no kind tiering (agent-teams-ni2y)", () => {
+  it("check item (newest) sorts ABOVE review (older) — kind never overrides recency", () => {
     // checkItem.updatedAt = 13:00, reviewItem.updatedAt = 12:00
-    // Tiering must override recency: review (tier 0) before check (tier 3).
     setInbox([checkItem, reviewItem]);
     const { container } = renderInbox();
     const rows = container.querySelectorAll("[data-initiative-id]");
-    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review
-    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-6"); // check
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // check, newest
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-2"); // review, older
   });
 
-  it("tiered-then-recency: review < waiting < generic < check, recency desc within tier", () => {
-    // review:  12:00 (tier 0)
-    // waiting: 10:00 (tier 1)
-    // generic: 08:00 (tier 2)
-    // check:   13:00 (tier 3) — newest overall but lowest tier
+  it("orders strictly by updatedAt desc across all kinds, ignoring kind entirely", () => {
+    // check: 13:00, review: 12:00, waiting: 10:00, generic: 08:00
     setInbox([checkItem, genericItem, waitingItem, reviewItem]);
     const { container } = renderInbox();
     const rows = container.querySelectorAll("[data-initiative-id]");
-    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-2"); // review  tier 0
-    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-1"); // waiting tier 1
-    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-3"); // generic tier 2
-    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-6"); // check   tier 3
+    expect(rows[0]?.getAttribute("data-initiative-id")).toBe("init-6"); // check   13:00
+    expect(rows[1]?.getAttribute("data-initiative-id")).toBe("init-2"); // review  12:00
+    expect(rows[2]?.getAttribute("data-initiative-id")).toBe("init-1"); // waiting 10:00
+    expect(rows[3]?.getAttribute("data-initiative-id")).toBe("init-3"); // generic 08:00
   });
 
-  it("two check items sort by recency desc within the check tier", () => {
+  it("two check items sort by recency desc", () => {
     const olderCheck: InboxItem = {
       ...checkItem,
       initiativeId: "init-7",
@@ -629,6 +720,81 @@ describe("InboxView — waiting row recommendation/alternative edge cases (oc3p)
     const { container } = renderInbox();
     expect(container.querySelectorAll(".inbox-row__secondary")).toHaveLength(0);
     expect(screen.queryByText(/Recommended:/)).toBeNull();
+  });
+});
+
+describe("InboxView — ask context (agent-teams-ni2y.5)", () => {
+  it("renders 'Context:' line for a waiting row when item.context is non-empty", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      context: "Staging config diverges from prod on the feature-flag rollout percentage.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const ctx = container.querySelector(".inbox-row__secondary--context");
+    expect(ctx?.textContent).toMatch(
+      /^Context: Staging config diverges from prod on the feature-flag rollout percentage\.$/,
+    );
+  });
+
+  it("renders context alongside recommendation and alternative, in that order", () => {
+    const item: InboxItem = {
+      ...waitingItem,
+      context: "The agent needs a decision before it can proceed.",
+      recommendation: "Roll back.",
+      alternative: "Partial rollout.",
+    };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const labels = Array.from(container.querySelectorAll(".inbox-row__secondary-label")).map(
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(["Context:", "Recommended:", "Alternative:"]);
+  });
+
+  it("does not render a context line on a review row even when non-empty (kind guard)", () => {
+    const item: InboxItem = { ...reviewItem, context: "This should not appear." };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__secondary--context")).toBeNull();
+  });
+});
+
+describe("InboxView — waitingFor pass-through (agent-teams-ni2y.5)", () => {
+  it("renders item.waitingFor verbatim when present", () => {
+    const item: InboxItem = { ...waitingItem, waitingFor: "permissionPrompt" };
+    setInbox([item]);
+    const { container } = renderInbox();
+    const line = container.querySelector(".inbox-row__secondary--waiting-for");
+    expect(line?.textContent).toBe("Waiting on: permissionPrompt");
+  });
+
+  it("renders nothing when waitingFor is absent (tolerant pass-through)", () => {
+    setInbox([waitingItem]); // no waitingFor field
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__secondary--waiting-for")).toBeNull();
+  });
+
+  it("renders waitingFor regardless of kind (not gated like context/recommendation)", () => {
+    const item: InboxItem = { ...genericItem, waitingFor: "permissionPrompt" };
+    setInbox([item]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__secondary--waiting-for")?.textContent).toBe(
+      "Waiting on: permissionPrompt",
+    );
+  });
+});
+
+describe("InboxView — nextAction is never kind-gated (agent-teams-ni2y.5)", () => {
+  it("renders nextAction for check, generic, and review rows alike", () => {
+    setInbox([checkItem, genericItem, reviewItem]);
+    const { container } = renderInbox();
+    const actions = Array.from(container.querySelectorAll(".inbox-row__next-action")).map(
+      (el) => el.textContent,
+    );
+    expect(actions).toContain("Look at the session for more info.");
+    expect(actions).toContain("Delivered with no gate — open the worktree to see what's needed.");
+    expect(actions).toContain("Review the PR and merge or send it back.");
   });
 });
 
