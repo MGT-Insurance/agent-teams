@@ -9,21 +9,19 @@
 # is never present at dispatch time, so advisor mode would silently never fire.
 #
 # This runs at SessionStart (a hook process, which DOES receive both the
-# interpolated ${user_config.*} value via the USE_ADVISORS env var, set by
-# hooks.json's env block, and the CLAUDE_ENV_FILE path) and appends an export
-# line to $CLAUDE_ENV_FILE, which the harness then applies to every subsequent
-# Bash tool call in the session.
+# interpolated ${user_config.*} value as $1 and the CLAUDE_ENV_FILE path) and
+# appends an export line to $CLAUDE_ENV_FILE, which the harness then applies to
+# every subsequent Bash tool call in the session.
 #
-# USE_ADVISORS is the interpolated ${user_config.use_advisors} value
-# ("true"/"false", possibly empty if unset). Only the exact string "true"
-# enables advisor mode downstream (see driAdvisorSettings in
-# internal/verbs/dispatch.go).
+# Arg $1 is the interpolated ${user_config.use_advisors} value ("true"/"false",
+# possibly empty if unset). Only the exact string "true" enables advisor mode
+# downstream (see driAdvisorSettings in internal/verbs/dispatch.go).
 set -eu
 
 # No env file to write to (older harness / unsupported): no-op, never break the
 # session.
 [ -n "${CLAUDE_ENV_FILE:-}" ] || exit 0
 
-use_advisors="${USE_ADVISORS:-false}"
+use_advisors="${1:-false}"
 
 printf 'export CLAUDE_PLUGIN_OPTION_USE_ADVISORS=%s\n' "$use_advisors" >> "$CLAUDE_ENV_FILE"
