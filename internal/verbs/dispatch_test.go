@@ -1473,7 +1473,8 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 }
 
 // TestDispatch_LaunchPrompt_ModelOverride verifies that --model is threaded
-// through to c.launchRaw alongside the substituted --launch-prompt.
+// through to c.launchRaw alongside the substituted --launch-prompt, and that
+// advisor defaults to "" when --advisor is not set.
 func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 	home := t.TempDir()
 	repoDir := t.TempDir()
@@ -1507,11 +1508,55 @@ func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// The raw --launch-prompt path is out of scope for advisor mode (contract
-	// decision 5): advisor must always be "" regardless of env, and model
-	// passes through as given via --model.
+	// Default behavior is unchanged: advisor is "" unless the caller explicitly
+	// sets --advisor, and model passes through as given via --model.
 	if capturedAdvisor != "" {
-		t.Errorf("launchRaw advisor = %q, want empty (raw path is out of advisor-mode scope)", capturedAdvisor)
+		t.Errorf("launchRaw advisor = %q, want empty (default when --advisor is omitted)", capturedAdvisor)
+	}
+	if capturedModel != "sonnet" {
+		t.Errorf("launchRaw model = %q, want %q", capturedModel, "sonnet")
+	}
+}
+
+// TestDispatch_LaunchPrompt_AdvisorOverride verifies that --advisor is
+// threaded through to c.launchRaw when explicitly set, opting the
+// --launch-prompt path into advisor mode.
+func TestDispatch_LaunchPrompt_AdvisorOverride(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-advisor1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	var capturedModel, capturedAdvisor string
+	cmd := &dispatchKong{
+		Problem:      "Review with advisor",
+		Repo:         repoDir,
+		LaunchPrompt: "/review {id}",
+		Model:        "sonnet",
+		Advisor:      "opus",
+		git:          fg,
+		launch:       func(_ *cli.Context, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, _, m, adv string) error {
+			capturedModel = m
+			capturedAdvisor = adv
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedAdvisor != "opus" {
+		t.Errorf("launchRaw advisor = %q, want %q (explicit --advisor override)", capturedAdvisor, "opus")
 	}
 	if capturedModel != "sonnet" {
 		t.Errorf("launchRaw model = %q, want %q", capturedModel, "sonnet")
