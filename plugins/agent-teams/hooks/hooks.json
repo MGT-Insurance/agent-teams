@@ -27,8 +27,7 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/export-plugin-options.sh",
-            "env": { "USE_ADVISORS": "${user_config.use_advisors}" }
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/export-plugin-options.sh ${user_config.use_advisors}"
           }
         ]
       }
