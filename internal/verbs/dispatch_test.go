@@ -692,7 +692,7 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123", "")
+	args := bgSessionArgs("my-session", "at-abc123", "", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical memoryRoutingRule const.
@@ -726,7 +726,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
 	// caller (launchBGSession), not by bgSessionArgs itself.
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs(name, prompt, "")
+	args := bgSessionArgs(name, prompt, "", "")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -775,7 +775,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 // TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
 // replaces the "opus" default in the --model flag.
 func TestBGSessionArgs_ModelOverride(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "sonnet")
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "")
 
 	found := false
 	for i, a := range args {
@@ -801,7 +801,7 @@ func TestBGSessionArgs_ModelOverride(t *testing.T) {
 // TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
 // argument falls back to the "opus" default.
 func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "", "")
 
 	found := false
 	for i, a := range args {
@@ -812,6 +812,94 @@ func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("argv missing --model opus pair for empty override; got: %v", args)
+	}
+}
+
+// TestBGSessionArgs_AdvisorEnabled verifies the enabled branch: model
+// "sonnet" and advisor "opus" both appear as flag/value pairs in argv.
+// Per contract decision 7 (agent-teams-wvx2.1), this must be asserted at the
+// bgSessionArgs level (pure, no env reads).
+func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus")
+
+	hasPair := func(flag, val string) bool {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasPair("--model", "sonnet") {
+		t.Errorf("argv missing \"--model\" \"sonnet\" pair; got: %v", args)
+	}
+	if !hasPair("--advisor", "opus") {
+		t.Errorf("argv missing \"--advisor\" \"opus\" pair; got: %v", args)
+	}
+}
+
+// TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
+// defaults to "opus" and no "--advisor" flag appears anywhere in argv.
+func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "")
+
+	hasPair := func(flag, val string) bool {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasPair("--model", "opus") {
+		t.Errorf("argv missing \"--model\" \"opus\" pair; got: %v", args)
+	}
+	for _, a := range args {
+		if a == "--advisor" {
+			t.Errorf("argv must not contain \"--advisor\" when advisor is disabled; got: %v", args)
+		}
+	}
+}
+
+// ---- driAdvisorSettings: env-reading helper --------------------------------
+
+// TestDriAdvisorSettings verifies driAdvisorSettings() returns ("sonnet",
+// "opus") only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true", and
+// ("", "") for every other value, including unset, empty, "false", and any
+// casing/value other than the exact string "true".
+func TestDriAdvisorSettings(t *testing.T) {
+	const envKey = "CLAUDE_PLUGIN_OPTION_USE_ADVISORS"
+
+	cases := []struct {
+		name        string
+		setEnv      bool
+		value       string
+		wantModel   string
+		wantAdvisor string
+	}{
+		{name: "true", setEnv: true, value: "true", wantModel: "sonnet", wantAdvisor: "opus"},
+		{name: "unset", setEnv: false, wantModel: "", wantAdvisor: ""},
+		{name: "empty", setEnv: true, value: "", wantModel: "", wantAdvisor: ""},
+		{name: "false", setEnv: true, value: "false", wantModel: "", wantAdvisor: ""},
+		{name: "TRUE_wrong_case", setEnv: true, value: "TRUE", wantModel: "", wantAdvisor: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.setEnv {
+				t.Setenv(envKey, tc.value)
+			} else {
+				// Ensure the var is unset for this subtest, in case the outer
+				// test process inherited it from the environment.
+				t.Setenv(envKey, "")
+				os.Unsetenv(envKey)
+			}
+
+			gotModel, gotAdvisor := driAdvisorSettings()
+			if gotModel != tc.wantModel || gotAdvisor != tc.wantAdvisor {
+				t.Errorf("driAdvisorSettings() = (%q, %q), want (%q, %q)", gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
+			}
+		})
 	}
 }
 
@@ -1221,7 +1309,7 @@ func TestDispatch_LaunchPrompt(t *testing.T) {
 		LaunchPrompt: "/review-skill at-lp1",
 		git:          fg,
 		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, p, _ string) error {
+		launchRaw: func(_ *cli.Context, _, p, _, _ string) error {
 			capturedPrompt = p
 			return nil
 		},
@@ -1265,7 +1353,7 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 		LaunchPrompt: "/review {id}",
 		git:          fg,
 		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, p, _ string) error {
+		launchRaw: func(_ *cli.Context, _, p, _, _ string) error {
 			capturedPrompt = p
 			return nil
 		},
@@ -1299,7 +1387,7 @@ func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(fbd, home)
 
-	var capturedModel string
+	var capturedModel, capturedAdvisor string
 	cmd := &dispatchKong{
 		Problem:      "Review with sonnet",
 		Repo:         repoDir,
@@ -1307,14 +1395,21 @@ func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 		Model:        "sonnet",
 		git:          fg,
 		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, _, m string) error {
+		launchRaw: func(_ *cli.Context, _, _, m, adv string) error {
 			capturedModel = m
+			capturedAdvisor = adv
 			return nil
 		},
 	}
 
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// The raw --launch-prompt path is out of scope for advisor mode (contract
+	// decision 5): advisor must always be "" regardless of env, and model
+	// passes through as given via --model.
+	if capturedAdvisor != "" {
+		t.Errorf("launchRaw advisor = %q, want empty (raw path is out of advisor-mode scope)", capturedAdvisor)
 	}
 	if capturedModel != "sonnet" {
 		t.Errorf("launchRaw model = %q, want %q", capturedModel, "sonnet")

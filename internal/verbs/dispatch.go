@@ -236,7 +236,10 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			// Custom prompt path: substitute {id} and bypass c.launch (which
 			// would prepend /dri).
 			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
-			if err := c.launchRaw(ctx, wtPath, prompt, c.Model); err != nil {
+			// advisor "": the raw --launch-prompt path (PR-review /
+			// dispatch-pr-review) is out of scope for advisor mode — see
+			// contract decision 5 (agent-teams-wvx2.1).
+			if err := c.launchRaw(ctx, wtPath, prompt, c.Model, ""); err != nil {
 				return fmt.Errorf("dispatch: launch: %w", err)
 			}
 		} else {
@@ -360,20 +363,38 @@ func bgSessionEnv() []string {
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background session launch. prompt is the raw positional argument passed to
 // claude (e.g. "/dri at-abc123" or a custom skill invocation). model overrides
-// the default "opus" model when non-empty. Extracted so tests can assert the
-// argv without executing the command.
-func bgSessionArgs(name, prompt, model string) []string {
+// the default "opus" model when non-empty. advisor, when non-empty, appends
+// "--advisor <advisor>" to the argv (a hidden claude CLI flag taking a model
+// alias). Pure: does not read env. Extracted so tests can assert the argv
+// without executing the command.
+func bgSessionArgs(name, prompt, model, advisor string) []string {
 	if model == "" {
 		model = "opus"
 	}
-	return []string{
+	args := []string{
 		"--bg",
 		"-n", name,
 		"--model", model,
 		"--permission-mode", "bypassPermissions",
 		"--append-system-prompt", memoryRoutingRule,
-		prompt,
 	}
+	if advisor != "" {
+		args = append(args, "--advisor", advisor)
+	}
+	return append(args, prompt)
+}
+
+// driAdvisorSettings reads CLAUDE_PLUGIN_OPTION_USE_ADVISORS and returns the
+// (model, advisor) pair for DRI session launches: ("sonnet", "opus") when the
+// env var is exactly "true", else ("", "") — any other value (unset, "",
+// "false", or anything not exactly "true") is treated as disabled. Unit
+// testable via t.Setenv. Only launchBGSession (the /dri path) calls this; the
+// raw --launch-prompt path is out of scope and always passes advisor "".
+func driAdvisorSettings() (model, advisor string) {
+	if os.Getenv("CLAUDE_PLUGIN_OPTION_USE_ADVISORS") == "true" {
+		return "sonnet", "opus"
+	}
+	return "", ""
 }
 
 // launchFunc is the function type for launching a background DRI session.
@@ -382,21 +403,22 @@ func bgSessionArgs(name, prompt, model string) []string {
 type launchFunc func(ctx *cli.Context, dir, driArg string) error
 
 // rawLaunchFunc is the function type for launching a background session with a
-// custom raw prompt (no /dri prefix is added) and an optional model override.
-// Used by the --launch-prompt path in dispatchKong; injected by tests to avoid
-// exec-ing a real claude binary.
-type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model string) error
+// custom raw prompt (no /dri prefix is added), an optional model override, and
+// an optional advisor model. Used by the --launch-prompt path in dispatchKong;
+// injected by tests to avoid exec-ing a real claude binary.
+type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor string) error
 
 // rawLaunchBGSession launches a background claude session with an arbitrary
 // prompt (no /dri prefix). model overrides the default "opus" model when
-// non-empty. Shared by the --launch-prompt production path and tests (via
-// injection into dispatchKong.launchRaw).
-func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model string) error {
+// non-empty; advisor, when non-empty, adds "--advisor <advisor>" to the argv.
+// Shared by the --launch-prompt production path and tests (via injection into
+// dispatchKong.launchRaw).
+func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt, model)
+	args := bgSessionArgs(name, prompt, model, advisor)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Env = bgSessionEnv()
@@ -409,9 +431,14 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model string) error {
 }
 
 // launchBGSession launches a background DRI session: prepends "/dri " to
-// driArg and delegates to rawLaunchBGSession with the default model (opus).
+// driArg and delegates to rawLaunchBGSession. Reads driAdvisorSettings() to
+// decide whether the session runs sonnet+opus-advisor (use_advisors enabled)
+// or the default opus-only. This is the ONLY launch path that reads the
+// advisor env var — dispatch /dri, new-initiative, and resume all flow
+// through here, per the advisor-mode-toggle contract (agent-teams-wvx2.1).
 func launchBGSession(ctx *cli.Context, dir, driArg string) error {
-	return rawLaunchBGSession(ctx, dir, "/dri "+driArg, "")
+	model, advisor := driAdvisorSettings()
+	return rawLaunchBGSession(ctx, dir, "/dri "+driArg, model, advisor)
 }
 
 // printWatchControl writes the standard "Watch and control" block to w.
