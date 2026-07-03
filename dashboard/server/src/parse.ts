@@ -396,7 +396,7 @@ export function buildInitiativeNodes(
       ? sessions.filter((s) => s.kind === "background" && s.cwd === initiative.worktree)
       : [];
     const sessionCount = matched.length;
-    const session = matched.find((s) => s.status != null) ?? matched[0] ?? null;
+    const session = matched.find((s) => sessionKind(s) === "alive") ?? matched[0] ?? null;
     try {
 
       // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
