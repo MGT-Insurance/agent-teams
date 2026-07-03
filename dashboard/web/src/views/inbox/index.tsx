@@ -2,8 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
-import { attachToInitiative } from "../../lib/api.js";
-import { StopButton } from "../../components/StopButton.js";
+import { RowActions } from "../../components/RowActions.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
@@ -12,42 +11,15 @@ import "./inbox.css";
 // waiting: explicit gate:question/human; agent declared a blocking question.
 // generic: delivered + no explicit gate; graceful degrade, no specific action asserted.
 // check:   session waiting/blocked but no declared gate; softer "check on it" tier.
+// alert:   (agent-teams-rybk) needsHuman=false but node.alert!=null — the 'i'-icon
+//          anomaly surfaces here even with no gate/session signal.
 function rowBadgeLabel(kind: InboxItem["kind"]): string {
   if (kind === "reap") return "reap";
   if (kind === "review") return "review the PR";
   if (kind === "waiting") return "agent waiting";
   if (kind === "check") return "check on it";
+  if (kind === "alert") return "needs attention";
   return "needs you";
-}
-
-function InboxAttachButton({ initiativeId, sessionId }: { initiativeId: string; sessionId: string }) {
-  const [state, setState] = useState<"idle" | "pending" | "ok" | "err">("idle");
-
-  async function handleClick(e: React.MouseEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    if (state === "pending") return;
-    setState("pending");
-    try {
-      await attachToInitiative(initiativeId, sessionId);
-      setState("ok");
-      setTimeout(() => setState("idle"), 1500);
-    } catch {
-      setState("err");
-      setTimeout(() => setState("idle"), 3000);
-    }
-  }
-
-  return (
-    <button
-      className="attach-btn--row"
-      onClick={(e) => { void handleClick(e); }}
-      disabled={state === "pending"}
-      title="Attach to session"
-      aria-label="Attach to session"
-    >
-      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
-    </button>
-  );
 }
 
 interface InboxRowProps {
@@ -138,6 +110,19 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           )}
         </div>
       )}
+      {/* Alert Why/Do (agent-teams-rybk): same framing as the Initiatives popover.
+          Renders for BOTH alert-only rows and gate rows that also carry an alert
+          (merge semantics) — reap rows have item.alert===null so nothing renders here. */}
+      {item.alert && (
+        <div className="inbox-row__alert" data-level={item.alert.level}>
+          <p className="inbox-row__secondary inbox-row__secondary--alert-why">
+            <span className="inbox-row__secondary-label">Why:</span> {item.alert.reason}
+          </p>
+          <p className="inbox-row__secondary inbox-row__secondary--alert-do">
+            <span className="inbox-row__secondary-label">Do:</span> {item.alert.action}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -214,11 +199,16 @@ export default function InboxView() {
               <InboxRow
                 item={item}
                 actionSlot={
-                  item.kind === "reap" && item.sessionId ? (
-                    <StopButton initiativeId={item.initiativeId} sessionId={item.sessionId} />
-                  ) : item.sessionId ? (
-                    <InboxAttachButton initiativeId={item.initiativeId} sessionId={item.sessionId} />
-                  ) : undefined
+                  <RowActions
+                    input={{
+                      initiativeId: item.initiativeId,
+                      isReap: item.kind === "reap",
+                      isClosed: item.isClosed,
+                      worktreeExists: item.onThisMachine,
+                      rawSessionId: item.sessionId,
+                      attachId: item.sessionId,
+                    }}
+                  />
                 }
               />
             </li>

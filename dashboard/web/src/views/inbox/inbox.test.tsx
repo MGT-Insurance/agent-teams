@@ -207,6 +207,96 @@ const blockedStateItem: InboxItem = {
   isClosed: false,
 };
 
+// kind="alert" — alert-only row (agent-teams-rybk): needsHuman=false, but node.alert
+// is non-null. Stalled: open initiative, on-machine, no session -> Launch.
+const alertStalledItem: InboxItem = {
+  initiativeId: "init-10",
+  title: "Stalled worktree with no session",
+  kind: "alert",
+  nextAction: "Launch a session — the worktree exists but nothing is running.",
+  recommendation: "",
+  alternative: "",
+  context: "",
+  updatedAt: "2026-06-25T14:00:00Z",
+  lastActivityAt: "2026-06-25T14:00:00Z",
+  worktree: "/Users/ericlloyd/.worktrees/init-10",
+  prUrl: null,
+  onThisMachine: true,
+  status: null,
+  state: null,
+  alert: {
+    level: "urgent",
+    reason: "Open initiative with a worktree on this machine but no session running.",
+    action: "Launch a session in the worktree.",
+  },
+  isClosed: false,
+};
+
+// kind="alert" — closed initiative with a still-running session -> Stop.
+const alertClosedAliveItem: InboxItem = {
+  ...alertStalledItem,
+  initiativeId: "init-11",
+  title: "Closed initiative with a live session",
+  nextAction: "Stop the lingering session — the initiative is already closed.",
+  alert: {
+    level: "med",
+    reason: "Closed initiative but its session is still alive.",
+    action: "Stop the session (claude stop).",
+  },
+  isClosed: true,
+  sessionId: "abc12345",
+};
+
+// kind="alert" — open initiative with a dead session -> Attach.
+const alertOpenDeadItem: InboxItem = {
+  ...alertStalledItem,
+  initiativeId: "init-12",
+  title: "Open initiative with a dead session",
+  nextAction: "Attach or relaunch — the last session exited.",
+  alert: {
+    level: "low",
+    reason: "Open initiative with a dead session.",
+    action: "Attach or relaunch.",
+  },
+  isClosed: false,
+  sessionId: "def67890",
+};
+
+// kind="waiting" gate row that ALSO carries a non-null alert — merge semantics:
+// both the existing gate suggestion block AND the alert Why/Do block must render.
+const waitingWithAlertItem: InboxItem = {
+  ...waitingItem,
+  initiativeId: "init-13",
+  recommendation: "Roll back the canary.",
+  alert: {
+    level: "med",
+    reason: "Multiple sessions matched this worktree.",
+    action: "Stop the extras — only one session should run per worktree.",
+  },
+};
+
+// kind="reap" — zombie: closed initiative, worktree gone, session still alive.
+// item.alert is always null server-side for reap (dedup) — unchanged behavior.
+const reapItem: InboxItem = {
+  initiativeId: "init-14",
+  title: "Zombie session on closed initiative",
+  kind: "reap",
+  nextAction: "Stop the lingering session (claude stop) — the initiative worktree is gone.",
+  recommendation: "",
+  alternative: "",
+  context: "",
+  updatedAt: "2026-06-25T15:00:00Z",
+  lastActivityAt: "2026-06-25T15:00:00Z",
+  worktree: "/Users/ericlloyd/.worktrees/init-14",
+  prUrl: null,
+  onThisMachine: false,
+  status: null,
+  state: null,
+  alert: null,
+  isClosed: true,
+  sessionId: "fed98765",
+};
+
 beforeEach(() => {
   mockNavigate.mockReset();
   setInbox([]);
@@ -820,6 +910,83 @@ describe("InboxView — nextAction is never kind-gated (agent-teams-ni2y.5)", ()
     expect(actions).toContain("Look at the session for more info.");
     expect(actions).toContain("Delivered with no gate — open the worktree to see what's needed.");
     expect(actions).toContain("Review the PR and merge or send it back.");
+  });
+});
+
+describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", () => {
+  it("alert-only row: renders kind='alert', badge, and Why/Do block", () => {
+    setInbox([alertStalledItem]);
+    const { container } = renderInbox();
+    const row = screen.getByRole("button", { name: /stalled worktree with no session/i });
+    expect(row.getAttribute("data-kind")).toBe("alert");
+
+    const badge = container.querySelector(".inbox-row__badge--alert");
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent?.toLowerCase()).toBe("needs attention");
+
+    const why = container.querySelector(".inbox-row__secondary--alert-why");
+    const doo = container.querySelector(".inbox-row__secondary--alert-do");
+    expect(why?.textContent).toMatch(/^Why: Open initiative with a worktree/);
+    expect(doo?.textContent).toMatch(/^Do: Launch a session in the worktree\.$/);
+  });
+
+  it("stalled-open-on-machine alert row shows the Launch button", () => {
+    setInbox([alertStalledItem]);
+    renderInbox();
+    expect(screen.getByRole("button", { name: "launch" })).toBeTruthy();
+  });
+
+  it("closed+alive alert row shows the Stop button", () => {
+    setInbox([alertClosedAliveItem]);
+    renderInbox();
+    expect(screen.getByRole("button", { name: /stop session/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "launch" })).toBeNull();
+  });
+
+  it("open+dead alert row shows the Attach button", () => {
+    setInbox([alertOpenDeadItem]);
+    renderInbox();
+    expect(screen.getByRole("button", { name: /attach to session/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "launch" })).toBeNull();
+  });
+
+  it("gate row that ALSO has an alert renders BOTH its existing block and the alert Why/Do", () => {
+    setInbox([waitingWithAlertItem]);
+    const { container } = renderInbox();
+    // Existing gate suggestion block (recommendation).
+    const rec = container.querySelector(".inbox-row__secondary--recommendation");
+    expect(rec?.textContent).toMatch(/^Recommended: Roll back the canary\.$/);
+    // Alert Why/Do block, merged in alongside it.
+    const why = container.querySelector(".inbox-row__secondary--alert-why");
+    const doo = container.querySelector(".inbox-row__secondary--alert-do");
+    expect(why?.textContent).toMatch(/^Why: Multiple sessions matched this worktree\.$/);
+    expect(doo?.textContent).toMatch(/^Do: Stop the extras/);
+    // Row keeps its gate kind and badge, not "alert".
+    const row = screen.getByRole("button", { name: /deploy canary to prod/i });
+    expect(row.getAttribute("data-kind")).toBe("waiting");
+  });
+
+  it("reap row is unchanged: no alert block, Stop button", () => {
+    setInbox([reapItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__alert")).toBeNull();
+    expect(screen.getByRole("button", { name: /stop session/i })).toBeTruthy();
+    const row = screen.getByRole("button", { name: /zombie session on closed initiative/i });
+    expect(row.getAttribute("data-kind")).toBe("reap");
+  });
+
+  it("a gate row with a worktree on-machine but previously no action now shows Launch", () => {
+    // waitingItem: onThisMachine=true, isClosed=false, no sessionId — under the old
+    // inline logic this row had no action button at all.
+    setInbox([waitingItem]);
+    renderInbox();
+    expect(screen.getByRole("button", { name: "launch" })).toBeTruthy();
+  });
+
+  it("does not render an alert block on rows with alert=null", () => {
+    setInbox([waitingItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__alert")).toBeNull();
   });
 });
 
