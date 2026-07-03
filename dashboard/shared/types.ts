@@ -153,6 +153,19 @@ export function sessionKind(session: SessionState | null): SessionKind {
 //   "ended"   -> status=idle / state=done|stopped (session self-stopped), OR any other
 //                alive-but-not-working/waiting shape (see the orthogonality note above).
 //   "none"    -> no matched session.
+// claude agents --json exposes two id fields:
+//   id        — short 8 lowercase-hex chars (e.g. "21bd9e92"), used by claude attach/logs/stop
+//   sessionId — full UUID v4, informational only
+// isValidSessionId validates the SHORT id; passing the full UUID to `claude attach`
+// silently fails. Single source for what were 3 duplicated regex literals
+// (agent-teams-rybk.5.4): server/src/attach.ts's CLAUDE_ID_RE, server/src/parse.ts's
+// buildInbox sessionId derivation, and web's sessionAttachId.
+const SESSION_ID_RE = /^[0-9a-f]{8}$/;
+
+export function isValidSessionId(id: string): boolean {
+  return SESSION_ID_RE.test(id);
+}
+
 export function deriveSessionSignal(session: SessionState | null): SessionSignal {
   const r = readSession(session);
   if (!r.present) return "none";
