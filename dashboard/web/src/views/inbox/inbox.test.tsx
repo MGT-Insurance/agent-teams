@@ -60,6 +60,8 @@ const waitingItem: InboxItem = {
   onThisMachine: true,
   status: null,
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // kind="review" — explicit gate:review label (AUTHORITATIVE; "review the PR")
@@ -78,6 +80,8 @@ const reviewItem: InboxItem = {
   onThisMachine: true,
   status: null,
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // kind="generic" — delivered + no session (graceful degrade)
@@ -96,6 +100,8 @@ const genericItem: InboxItem = {
   onThisMachine: true,
   status: null,
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // kind="waiting" WITH a PR — agent blocked but initiative also has an open PR.
@@ -115,6 +121,8 @@ const waitingItemWithPr: InboxItem = {
   onThisMachine: true,
   status: null,
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // Off-machine item — worktree lives on another machine.
@@ -133,6 +141,8 @@ const offMachineItem: InboxItem = {
   onThisMachine: false,
   status: null,
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // kind="check" — session blocked but NO declared gate (soft tier; agent-teams-ja9c)
@@ -151,6 +161,8 @@ const checkItem: InboxItem = {
   onThisMachine: true,
   status: null,
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // status="waiting" (raw session field) drives the high-visibility loud treatment
@@ -171,6 +183,8 @@ const waitingStatusItem: InboxItem = {
   onThisMachine: true,
   status: "waiting",
   state: null,
+  alert: null,
+  isClosed: false,
 };
 
 // state="blocked" (raw session field) also drives the loud treatment on its own.
@@ -189,6 +203,8 @@ const blockedStateItem: InboxItem = {
   onThisMachine: true,
   status: "idle",
   state: "blocked",
+  alert: null,
+  isClosed: false,
 };
 
 beforeEach(() => {
