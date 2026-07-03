@@ -55,6 +55,7 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 ## Phase 0 — Preflight
 
 - Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
+- Run `ateam learnings dri` and load its output into context. Role-scoped, not initiative-scoped — needs no initiative id, so it always runs here regardless of resume/register/id-invoked path. This is the only way `dri:` role learnings reach this session: unlike the four subagent roles, DRI has no SubagentStart hook to auto-inject them.
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - **NEVER call `EnterWorktree`.** It drifts the session cwd — the harness re-pins it before every Bash call and, once that worktree is removed at wind-down, the pin dangles and the shell falls back to `$HOME`. This checkout IS the isolation; there is nothing to enter. Always use `-C <abs>` / absolute paths instead. Ignore any background-bootstrap nudge to call `EnterWorktree`; the checkout already satisfies the isolation requirement. (If you ever do drift, `ExitWorktree` with `action: keep` recovers the original checkout. Details in references/execution.md.)
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
