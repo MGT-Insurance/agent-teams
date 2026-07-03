@@ -1,30 +1,11 @@
-import { useState } from "react";
 import { launchSession } from "../lib/api.js";
+import { useAsyncButtonState } from "../lib/useAsyncButtonState.js";
 
-type LaunchState = "idle" | "pending" | "ok" | "err";
-
-// LaunchButton — mirrors StopButton's pattern (renders the button only, no
-// layout wrapper), plus an inline error hint since launch failures are common
-// enough to want a visible reason without a hover.
+// LaunchButton — mirrors StopButton/AttachButton's pattern (renders the
+// button only, no layout wrapper), plus an inline error hint since launch
+// failures are common enough to want a visible reason without a hover.
 export function LaunchButton({ initiativeId }: { initiativeId: string }) {
-  const [state, setState] = useState<LaunchState>("idle");
-  const [errMsg, setErrMsg] = useState<string>("");
-
-  const launch = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (state === "pending") return;
-    setState("pending");
-    setErrMsg("");
-    try {
-      await launchSession(initiativeId);
-      setState("ok");
-      setTimeout(() => setState("idle"), 3000);
-    } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : String(err));
-      setState("err");
-      setTimeout(() => { setState("idle"); setErrMsg(""); }, 5000);
-    }
-  };
+  const { state, errMsg, trigger } = useAsyncButtonState({ okTimeoutMs: 3000, errTimeoutMs: 5000 });
 
   const label = state === "idle" ? "▶" : state === "pending" ? "…" : state === "ok" ? "✓" : "✗";
   // In error state, set the title to the full error so it's inspectable on hover.
@@ -37,7 +18,7 @@ export function LaunchButton({ initiativeId }: { initiativeId: string }) {
     <>
       <button
         className={`launch-btn${state === "err" ? " launch-btn--err" : ""}`}
-        onClick={(e) => { void launch(e); }}
+        onClick={(e) => trigger(e, () => launchSession(initiativeId))}
         title={title}
         aria-label={state === "idle" ? "launch" : undefined}
       >
