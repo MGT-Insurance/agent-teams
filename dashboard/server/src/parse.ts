@@ -16,6 +16,7 @@ import type {
   WorkBead,
   Alert,
 } from "@agent-teams/shared";
+import { splitNotesBlocks } from "./notes.js";
 
 // GitHub PR URL pattern — matches https://github.com/<owner>/<repo>/pull/<n>
 const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
@@ -529,18 +530,15 @@ export function extractLatestAsk(
 }
 
 // Pure helper: the last non-empty "notes block" from initiative.notes, for the
-// check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits the same
-// way index.ts builds DrillInDetail.notesHistory — on the lookahead before a line
-// starting "session " — so "last block" means the same thing everywhere in the
-// dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel (e.g. left behind by
-// `ateam clear-gate` without `--file`) so its raw markup never leaks into nextAction.
+// check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits via the
+// shared splitNotesBlocks (agent-teams-rybk.5.3) — the same split index.ts uses
+// to build DrillInDetail.notesHistory — so "last block" means the same thing
+// everywhere in the dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel
+// (e.g. left behind by `ateam clear-gate` without `--file`) so its raw markup
+// never leaks into nextAction.
 // Returns "" when notes is empty/whitespace-only or every block is an ask sentinel.
 function lastNotesBlock(notes: string): string {
-  const blocks = notes
-    .split(/\n(?=session )/i)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .filter((b) => !b.includes("<<<ateam-ask"));
+  const blocks = splitNotesBlocks(notes).filter((b) => !b.includes("<<<ateam-ask"));
   return blocks.length > 0 ? (blocks[blocks.length - 1] ?? "") : "";
 }
 

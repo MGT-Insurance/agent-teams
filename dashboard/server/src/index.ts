@@ -23,6 +23,7 @@ import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
 import { CliError, claudeAgentsJson, bdLabeledBeads, spawnClaudeLogs } from "./cli.js";
 import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
+import { splitNotesBlocks } from "./notes.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
 import { launchAttach, isValidSessionId } from "./attach.js";
@@ -354,12 +355,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
           (s) => s.cwd === initiative.worktree,
         );
 
-        // Split on the lookahead `\n(?=session )` so each "session N, …" line
-        // starts a new entry while preserving multi-line content within an entry.
-        const notesHistory = initiative.notes
-          .split(/\n(?=session )/i)
-          .map((s) => s.trim())
-          .filter(Boolean);
+        // Shared split (agent-teams-rybk.5.3): each "session N, …" line starts a
+        // new entry while preserving multi-line content within an entry.
+        const notesHistory = splitNotesBlocks(initiative.notes);
 
         const detail: DrillInDetail = {
           ...initiative,
