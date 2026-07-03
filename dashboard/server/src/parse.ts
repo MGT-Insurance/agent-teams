@@ -16,7 +16,14 @@ import type {
   WorkBead,
   Alert,
 } from "@agent-teams/shared";
+import { sessionKind, deriveSessionSignal } from "@agent-teams/shared";
 import { splitNotesBlocks } from "./notes.js";
+
+// Re-exported for existing consumers/tests that import deriveSessionSignal
+// from this module — the implementation now lives in @agent-teams/shared
+// (agent-teams-rybk.5.2), alongside sessionKind, as the one place that reads
+// a SessionState's raw status/state fields. See shared/types.ts.
+export { deriveSessionSignal };
 
 // GitHub PR URL pattern — matches https://github.com/<owner>/<repo>/pull/<n>
 const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
@@ -165,23 +172,9 @@ export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
   return "none";
 }
 
-// Derive the session signal from a matched SessionState (or null).
-// This is the key extension from agent-teams-blo: we now distinguish
-// "waiting" (blocked/paused on human) from "working" and "ended".
-//   "working" -> status=busy / state=working (live, active)
-//   "waiting" -> status=waiting / state=blocked (agent paused on human input) — THE BUG FIX
-//   "ended"   -> status=idle / state=done|stopped (session self-stopped)
-//   "none"    -> no matched session
-export function deriveSessionSignal(session: SessionState | null): SessionSignal {
-  if (session === null) return "none";
-  // Blocked state: agent is waiting on human input. Matches both:
-  //   status="waiting" (newer API) and state="blocked" (older API).
-  if (session.status === "waiting" || session.state === "blocked") return "waiting";
-  // Working: actively running.
-  if (session.status === "busy" || session.state === "working") return "working";
-  // Ended: session self-stopped or completed.
-  return "ended";
-}
+// deriveSessionSignal (agent-teams-blo: distinguishes "waiting" from
+// "working"/"ended") now lives in @agent-teams/shared — imported above and
+// re-exported for existing consumers. See shared/types.ts for the doc.
 
 // Derive the explicit gate kind from an initiative's labels array.
 // Resilient: tolerates undefined/null/empty labels (missing or unset).
@@ -301,16 +294,6 @@ function isClosedStatus(status: string): boolean {
   return ALERT_CLOSED_STATUSES.has(status.toLowerCase());
 }
 
-// Session "kind" for alert purposes — mirrors the client sessionKind()
-// (web/src/views/initiatives/index.tsx:39-49):
-//   "alive" = matched session whose process is still running (status present).
-//   "dead"  = matched session whose process has exited (status absent).
-//   "none"  = no matched session at all.
-function alertSessionKind(session: SessionState | null): "alive" | "dead" | "none" {
-  if (session === null) return "none";
-  return session.status != null ? "alive" : "dead";
-}
-
 // Derive the row's alert (or null for a healthy/off-machine-open row). Ranked
 // urgent > med > low; see web/src/views/initiatives/index.tsx:67-71 for the
 // full urgency rationale. Six anomaly cases, verbatim from rowAlert + alertInfo:
@@ -347,7 +330,7 @@ export function deriveAlert(input: {
     };
   }
 
-  const kind = alertSessionKind(session);
+  const kind = sessionKind(session);
   const onMachine = worktreeExists;
 
   if (isClosedStatus(status)) {

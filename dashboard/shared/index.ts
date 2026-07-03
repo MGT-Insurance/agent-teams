@@ -3,6 +3,7 @@ export type {
   ParsedInitiative,
   SessionState,
   SessionSignal,
+  SessionKind,
   ActivityStatus,
   DeliveryStatus,
   NeedsHumanFlavor,
@@ -14,6 +15,8 @@ export type {
   DrillInDetail,
   SnapshotEvent,
 } from "./types.js";
+
+export { sessionKind, deriveSessionSignal } from "./types.js";
 
 export type {
   SnapshotResponse,

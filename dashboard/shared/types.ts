@@ -95,6 +95,72 @@ export type DeliveryStatus = "none" | "pr-open" | "merged";
 //   "none"    -> no matched session found
 export type SessionSignal = "working" | "waiting" | "ended" | "none";
 
+// ---------------------------------------------------------------------------
+// Session taxonomy (agent-teams-rybk.5.2): the ONLY place in the dashboard
+// that reads a SessionState's raw status/state fields. sessionKind() and
+// deriveSessionSignal() below are pure derivations of readSession()'s
+// snapshot — no other call site should re-check status!=null,
+// status==="waiting", state==="blocked", etc.
+//
+// The two taxonomies are ORTHOGONAL, not nested: sessionKind asks "is the
+// process still alive", deriveSessionSignal asks "is the agent working,
+// waiting, or done". A session can be alive+ended (status="idle", no
+// working/blocked state) — a live process where the agent isn't actively
+// working or blocked. The only invariant that holds across every input is
+// the null boundary: sessionKind==="none" iff deriveSessionSignal==="none"
+// iff session===null (see server/src/parse.test.ts's consistency suite).
+// ---------------------------------------------------------------------------
+
+function readSession(session: SessionState | null): {
+  present: boolean;
+  alive: boolean;
+  waiting: boolean;
+  working: boolean;
+} {
+  if (session === null) {
+    return { present: false, alive: false, waiting: false, working: false };
+  }
+  return {
+    present: true,
+    alive: session.status != null,
+    waiting: session.status === "waiting" || session.state === "blocked",
+    working: session.status === "busy" || session.state === "working",
+  };
+}
+
+// Session "kind" — the process-liveness axis:
+//   "alive" = matched session whose process is still running (status present).
+//   "dead"  = matched entry whose process has exited (status absent/null) —
+//             lingers in `claude agents --all` history. Won't receive messages.
+//   "none"  = no matched session at all.
+// Single source for what were two verbatim-duplicated implementations: the
+// client's per-row session chip (web/src/views/initiatives/index.tsx) and the
+// server's deriveAlert (server/src/parse.ts, formerly its own alertSessionKind).
+export type SessionKind = "alive" | "dead" | "none";
+
+export function sessionKind(session: SessionState | null): SessionKind {
+  const r = readSession(session);
+  if (!r.present) return "none";
+  return r.alive ? "alive" : "dead";
+}
+
+// Derive the session signal from a matched SessionState (or null) — the
+// agent-work-state axis (agent-teams-blo): distinguishes "waiting" (blocked/
+// paused on human) from "working" and "ended".
+//   "working" -> status=busy / state=working (live, active)
+//   "waiting" -> status=waiting / state=blocked (agent paused on human input) — checked
+//                first, so a session that is somehow both waiting and working reports waiting.
+//   "ended"   -> status=idle / state=done|stopped (session self-stopped), OR any other
+//                alive-but-not-working/waiting shape (see the orthogonality note above).
+//   "none"    -> no matched session.
+export function deriveSessionSignal(session: SessionState | null): SessionSignal {
+  const r = readSession(session);
+  if (!r.present) return "none";
+  if (r.waiting) return "waiting";
+  if (r.working) return "working";
+  return "ended";
+}
+
 // DERIVED: needsHuman — the action-required flag with a flavor (agent-teams-blo, updated agent-teams-0rl, agent-teams-ja9c).
 //   "waiting" -> explicit gate:question or human-only label (agent asking a question). AUTHORITATIVE.
 //   "review"  -> EXPLICIT gate:review label (AUTHORITATIVE — "review the PR").

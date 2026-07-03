@@ -23,6 +23,7 @@ import {
   derivePhase,
 } from "./parse.js";
 import type { RawInitiative, SessionState, ParsedInitiative } from "@agent-teams/shared";
+import { sessionKind } from "@agent-teams/shared";
 
 // ---- Fixtures ---------------------------------------------------------------
 
@@ -806,6 +807,66 @@ describe("deriveSessionSignal", () => {
   it("interactive session, status=idle -> 'ended' (not working, not blocked)", () => {
     const s: SessionState = { sessionId: "a", kind: "interactive", cwd: "/x", startedAt: 0, status: "idle" };
     expect(deriveSessionSignal(s)).toBe("ended");
+  });
+});
+
+// ---- session taxonomy consistency (agent-teams-rybk.5.2) --------------------
+//
+// sessionKind (alive|dead|none, from @agent-teams/shared) and deriveSessionSignal
+// (working|waiting|ended|none) are two ORTHOGONAL views of the same SessionState
+// — not nested. Both are now pure derivations of one raw-field read
+// (shared/types.ts's readSession) rather than independently re-checking
+// status!=null / status==="waiting" / state==="blocked". The only invariant
+// guaranteed across every input is the null boundary: they collapse to "none"
+// together, and only together — everything else can vary independently, as
+// the "alive-but-idle" case below deliberately demonstrates.
+describe("session taxonomy consistency (sessionKind vs deriveSessionSignal)", () => {
+  const REPRESENTATIVE: { label: string; session: SessionState | null }[] = [
+    { label: "no session", session: null },
+    {
+      label: "working (status=busy, state=working)",
+      session: { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "busy", state: "working" },
+    },
+    {
+      label: "waiting (status=waiting, state=blocked)",
+      session: { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "waiting", state: "blocked" },
+    },
+    {
+      label: "dead (no status, state=done)",
+      session: { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, state: "done" },
+    },
+    {
+      // Deliberately divergent case: alive (status present) but neither
+      // waiting nor working -> deriveSessionSignal falls through to "ended".
+      // sessionKind="alive" + deriveSessionSignal="ended" is EXPECTED here,
+      // not a bug: the process is still running, but the agent isn't
+      // actively working or blocked on human input.
+      label: "alive-but-idle (status=idle, no working/blocked state)",
+      session: { sessionId: "a", kind: "background", cwd: "/x", startedAt: 0, status: "idle" },
+    },
+  ];
+
+  it("agree on the null boundary: both 'none' together, and only together", () => {
+    for (const { session } of REPRESENTATIVE) {
+      const kind = sessionKind(session);
+      const signal = deriveSessionSignal(session);
+      expect(kind === "none").toBe(signal === "none");
+    }
+  });
+
+  it("documents the expected (kind, signal) pair for each representative session", () => {
+    const pairs = REPRESENTATIVE.map(({ label, session }) => ({
+      label,
+      kind: sessionKind(session),
+      signal: deriveSessionSignal(session),
+    }));
+    expect(pairs).toEqual([
+      { label: "no session", kind: "none", signal: "none" },
+      { label: "working (status=busy, state=working)", kind: "alive", signal: "working" },
+      { label: "waiting (status=waiting, state=blocked)", kind: "alive", signal: "waiting" },
+      { label: "dead (no status, state=done)", kind: "dead", signal: "ended" },
+      { label: "alive-but-idle (status=idle, no working/blocked state)", kind: "alive", signal: "ended" },
+    ]);
   });
 });
 
@@ -2025,7 +2086,7 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
 
 describe("deriveAlert", () => {
   const ALIVE: SessionState = { sessionId: "s-alive", kind: "background", cwd: "/wt/x", startedAt: 0, status: "busy" };
-  // No `status` field -> alertSessionKind treats this as "dead" (process exited).
+  // No `status` field -> sessionKind treats this as "dead" (process exited).
   const DEAD: SessionState = { sessionId: "s-dead", kind: "background", cwd: "/wt/x", startedAt: 0 };
 
   it("case 1: sessionCount>1 -> urgent conflict (wins over everything else)", () => {
