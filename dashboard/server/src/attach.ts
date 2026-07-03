@@ -5,20 +5,16 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { isValidSessionId } from "@agent-teams/shared";
 
 export interface AttachResult {
   ok: true;
 }
 
-// claude agents --json exposes two id fields:
-//   id        — short 8 lowercase-hex chars (e.g. "21bd9e92"), used by claude attach/logs/stop
-//   sessionId — full UUID v4, informational only
-// We validate the SHORT id here; passing the full UUID to `claude attach` silently fails.
-const CLAUDE_ID_RE = /^[0-9a-f]{8}$/;
-
-export function isValidSessionId(id: string): boolean {
-  return CLAUDE_ID_RE.test(id);
-}
+// Re-exported so existing consumers (server/src/index.ts, stop.ts, tests) keep
+// importing from "./attach.js" — the validation itself lives in @agent-teams/shared
+// (agent-teams-rybk.5.4), the single source shared with parse.ts and the web view.
+export { isValidSessionId };
 
 // Escape a string for safe embedding inside an AppleScript double-quoted string.
 // Replaces backslash then double-quote so the value cannot break out of `do script "..."`.

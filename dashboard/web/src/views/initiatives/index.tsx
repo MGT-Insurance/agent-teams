@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InitiativeNode, SessionState } from "@agent-teams/shared";
-import { sessionKind as canonicalSessionKind } from "@agent-teams/shared";
+import { sessionKind as canonicalSessionKind, isValidSessionId } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import { RowActions } from "../../components/RowActions.js";
 import "./initiatives.css";
@@ -63,7 +63,7 @@ function isCompleted(node: InitiativeNode): boolean {
 // Reserve Launch only for when there is NO matched entry at all.
 function sessionAttachId(session: SessionState | null | undefined): string | undefined {
   const id = session?.id;
-  return typeof id === "string" && /^[0-9a-f]{8}$/.test(id) ? id : undefined;
+  return typeof id === "string" && isValidSessionId(id) ? id : undefined;
 }
 
 // Session chip presentation per the truth table: glyph by liveness

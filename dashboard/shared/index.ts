@@ -16,7 +16,7 @@ export type {
   SnapshotEvent,
 } from "./types.js";
 
-export { sessionKind, deriveSessionSignal } from "./types.js";
+export { sessionKind, deriveSessionSignal, isValidSessionId } from "./types.js";
 
 export type {
   SnapshotResponse,

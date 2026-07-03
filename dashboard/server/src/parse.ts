@@ -16,7 +16,7 @@ import type {
   WorkBead,
   Alert,
 } from "@agent-teams/shared";
-import { sessionKind, deriveSessionSignal } from "@agent-teams/shared";
+import { sessionKind, deriveSessionSignal, isValidSessionId } from "@agent-teams/shared";
 import { splitNotesBlocks } from "./notes.js";
 
 // Re-exported for existing consumers/tests that import deriveSessionSignal
@@ -574,7 +574,7 @@ export function buildInbox(
     // Any matched entry with a valid short 8-hex id is attachable via `claude attach <id>`,
     // regardless of whether the session is alive (status present) or detached (status absent).
     const sessionId =
-      typeof node.session?.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
+      typeof node.session?.id === "string" && isValidSessionId(node.session.id)
         ? node.session.id
         : undefined;
 
