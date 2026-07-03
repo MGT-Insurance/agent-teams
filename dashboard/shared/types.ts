@@ -128,6 +128,16 @@ export type NeedsHumanFlavor = "waiting" | "review" | "generic" | "check" | "rea
 //   else active + session ENDED/NONE  -> needsHuman=false (idle/dormant, no PR)
 //   done initiative                   -> needsHuman=false
 
+// An anomaly on an initiative row where action should be taken (agent-teams-rybk).
+// Derived server-side by deriveAlert() — unifies the client's former rowAlert
+// (level) + alertInfo (reason/action) case trees into one shape. null = healthy
+// row / off-machine-open (not locally actionable) — no alert.
+export interface Alert {
+  level: "urgent" | "med" | "low";
+  reason: string;
+  action: string;
+}
+
 // The join of a ParsedInitiative with its matched SessionState (null = no live session).
 export interface InitiativeNode {
   initiative: ParsedInitiative;
@@ -148,10 +158,14 @@ export interface InitiativeNode {
   // one worktree — a conflict the dashboard flags. `session` above is the chosen
   // primary (prefers an alive one) for the per-row session chip.
   sessionCount: number;
+  // Row anomaly (agent-teams-rybk): non-null iff this row needs the 'i'-icon
+  // alert (conflict, zombie, stalled, etc.) — independent of needsHuman. A row
+  // can have needsHuman=false and alert!=null (e.g. a closed+alive session).
+  alert: Alert | null;
 }
 
 // An item in the inbox requiring Eric's attention.
-// kind mirrors NeedsHumanFlavor (agent-teams-0rl, agent-teams-ja9c):
+// kind mirrors NeedsHumanFlavor (agent-teams-0rl, agent-teams-ja9c), plus "alert":
 //   "waiting" -> explicit gate:question/human (agent waiting on input, declared ask)
 //   "review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
 //   "generic" -> delivered + no explicit gate (graceful degrade; label "needs you")
@@ -159,10 +173,13 @@ export interface InitiativeNode {
 //                Sorted BELOW review/waiting/generic rows.
 //   "reap"    -> zombie (at-asi): closed/merged initiative whose worktree is gone but a
 //                session is still alive. Stop it via `claude stop`. Top of inbox.
+//   "alert"   -> (agent-teams-rybk) needsHuman=false but node.alert!=null (e.g. a closed
+//                initiative with a still-running session). Any initiative with the 'i'-icon
+//                alert now surfaces in the inbox even when no gate/session signal fires.
 export interface InboxItem {
   initiativeId: string;
   title: string;
-  kind: "waiting" | "review" | "generic" | "check" | "reap";
+  kind: "waiting" | "review" | "generic" | "check" | "reap" | "alert";
   // The one-sentence action for Eric right now.
   //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
   //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
@@ -206,6 +223,16 @@ export interface InboxItem {
   // permission-prompt reason. Absent when the session doesn't carry one (common today;
   // newer `claude agents --json` builds emit it). Render verbatim when present.
   waitingFor?: string;
+  // node.alert pass-through (agent-teams-rybk) — the 'i'-icon anomaly, independent of
+  // `kind`. A gate row (waiting/review/check/generic) can ALSO carry a non-null alert;
+  // both render (merge semantics). Reap dedup: always null when kind === "reap" — the
+  // reap row's nextAction already states the identical zombie condition, so the alert
+  // isn't double-rendered here (node.alert on InitiativeNode stays populated for reap).
+  alert: Alert | null;
+  // True iff initiative.status is "closed" or "done" (case-insensitive). Lets the inbox's
+  // row-action seam (selectRowAction, web/src/lib) pick stop-vs-launch without importing
+  // server-only status logic.
+  isClosed: boolean;
 }
 
 // A work bead from `bd list --json` scoped to an initiative's project repo.

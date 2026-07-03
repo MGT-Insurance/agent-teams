@@ -14,6 +14,7 @@ import type {
   InitiativeNode,
   InboxItem,
   WorkBead,
+  Alert,
 } from "@agent-teams/shared";
 
 // GitHub PR URL pattern — matches https://github.com/<owner>/<repo>/pull/<n>
@@ -285,6 +286,104 @@ export function derivePhase(notes: string): string {
   return "active";
 }
 
+// ---------------------------------------------------------------------------
+// Row alert (agent-teams-rybk): unifies the client's former rowAlert (level) +
+// alertInfo (reason/action) case trees — web/src/views/initiatives/index.tsx:73-130
+// — into ONE function. Cases carry over verbatim; do NOT import from web/.
+// ---------------------------------------------------------------------------
+
+// Closed statuses for alert purposes — mirrors the client's CLOSED_STATUSES
+// (web/src/views/initiatives/index.tsx:33), compared lowercased.
+const ALERT_CLOSED_STATUSES = new Set(["closed", "done"]);
+
+function isClosedStatus(status: string): boolean {
+  return ALERT_CLOSED_STATUSES.has(status.toLowerCase());
+}
+
+// Session "kind" for alert purposes — mirrors the client sessionKind()
+// (web/src/views/initiatives/index.tsx:39-49):
+//   "alive" = matched session whose process is still running (status present).
+//   "dead"  = matched session whose process has exited (status absent).
+//   "none"  = no matched session at all.
+function alertSessionKind(session: SessionState | null): "alive" | "dead" | "none" {
+  if (session === null) return "none";
+  return session.status != null ? "alive" : "dead";
+}
+
+// Derive the row's alert (or null for a healthy/off-machine-open row). Ranked
+// urgent > med > low; see web/src/views/initiatives/index.tsx:67-71 for the
+// full urgency rationale. Six anomaly cases, verbatim from rowAlert + alertInfo:
+//   1. sessionCount>1                          -> urgent, conflict
+//   2. needsHuman==="reap"                     -> urgent, zombie
+//   3. closed + session dead                   -> urgent, reap the lingering session
+//   4. closed + session alive                  -> med, close the running session
+//   5. open + no session + on this machine     -> urgent, stalled
+//   6. open + session dead + on this machine   -> low, session died
+// Healthy rows and off-machine-open rows (not locally actionable) return null.
+export function deriveAlert(input: {
+  sessionCount: number;
+  needsHuman: false | NeedsHumanFlavor;
+  session: SessionState | null;
+  worktreeExists: boolean;
+  status: string;
+}): Alert | null {
+  const { sessionCount, needsHuman, session, worktreeExists, status } = input;
+
+  // Multiple session entries on one worktree is a conflict — wins over the rest.
+  if (sessionCount > 1) {
+    return {
+      level: "urgent",
+      reason: `${sessionCount} sessions are attached to this worktree — a conflict.`,
+      action: "Stop the extras (claude stop) — only one session should run per worktree.",
+    };
+  }
+  // Reap zombie wins over the generic closed+alive case — check it first.
+  if (needsHuman === "reap") {
+    return {
+      level: "urgent",
+      reason: "Closed and the worktree is gone, but a session is still running — a zombie.",
+      action: "Stop the session (claude stop) to reap it.",
+    };
+  }
+
+  const kind = alertSessionKind(session);
+  const onMachine = worktreeExists;
+
+  if (isClosedStatus(status)) {
+    if (kind === "dead") {
+      return {
+        level: "urgent",
+        reason: "Closed, but a finished session is still lingering in the agent list.",
+        action: "Reap it (claude stop) so it clears out.",
+      };
+    }
+    if (kind === "alive") {
+      return {
+        level: "med",
+        reason: "Closed, but a session is still running on it.",
+        action: "Close the session — the work is done.",
+      };
+    }
+    return null; // completed
+  }
+
+  if (kind === "none" && onMachine) {
+    return {
+      level: "urgent",
+      reason: "Open with a worktree on this machine, but nothing is running — stalled.",
+      action: "Resume the session, or close the initiative if it's abandoned.",
+    };
+  }
+  if (kind === "dead" && onMachine) {
+    return {
+      level: "low",
+      reason: "The session has exited — it won't receive messages.",
+      action: "Resume it, or close out the initiative.",
+    };
+  }
+  return null; // healthy, or off-machine-open (not locally actionable)
+}
+
 // Join initiatives with sessions: session.cwd === initiative.worktree.
 // humanGatedIds is the set of initiative IDs returned by `bd list --label human`
 // (kept for resilience: used to supplement labels when labels array is absent).
@@ -331,13 +430,14 @@ export function buildInitiativeNodes(
       const delivery = deriveDelivery(initiative);
       const signal = deriveSessionSignal(session);
       const needsHuman = deriveNeedsHuman(delivery, signal, gate, worktreeExists);
+      const alert = deriveAlert({ sessionCount, needsHuman, session, worktreeExists, status: initiative.status });
 
-      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount };
+      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount, alert };
     } catch (err) {
       console.warn(
         `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      // Minimal safe node: idle, no session, no PR, no needs-human.
+      // Minimal safe node: idle, no session, no PR, no needs-human, no alert.
       return {
         initiative,
         session: null,
@@ -347,6 +447,7 @@ export function buildInitiativeNodes(
         needsHuman: false as const,
         worktreeExists,
         sessionCount,
+        alert: null,
       };
     }
   });
@@ -444,13 +545,19 @@ function lastNotesBlock(notes: string): string {
 }
 
 // Build InboxItem[] from already-built InitiativeNode[].
-// An item is in the inbox iff node.needsHuman !== false.
+// An item is in the inbox iff node.needsHuman !== false OR node.alert !== null
+// (agent-teams-rybk: any initiative with the 'i'-icon alert surfaces, even with
+// no gate/session signal — e.g. a closed initiative with a still-running session).
 //   needsHuman="reap"    -> zombie (at-asi): merged + worktree gone + alive session (stop to reap)
 //   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
 //   needsHuman="waiting" -> explicit gate:question/human (declared ask; may have ask block)
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
 //   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
-// Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
+//   needsHuman=false + alert!=null -> kind="alert" (no declared gate/session signal, but anomalous)
+// A gate row (waiting/review/check/generic) can ALSO carry a non-null alert — both the gate
+// kind and the alert render (merge semantics); only "reap" suppresses the alert (dedup: the
+// reap row's nextAction already states the identical zombie condition).
+// Initiatives with needsHuman=false AND alert=null (working/refining/idle/done) are excluded.
 //
 // sessionTransitions: sessionId -> lastTransitionAt (epoch ms), from snapshot.ts's
 // stampTransitions (agent-teams-ni2y.8). Undefined for ad-hoc/endpoint-fallback callers
@@ -462,11 +569,17 @@ export function buildInbox(
   const items: InboxItem[] = [];
 
   for (const node of nodes) {
-    if (node.needsHuman === false) continue;
+    if (node.needsHuman === false && node.alert === null) continue;
 
     const { initiative } = node;
 
     const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
+    const isClosed = isClosedStatus(initiative.status);
+    // Reap dedup: the reap row's nextAction already states the identical zombie
+    // condition as node.alert's reap branch, so we don't double-render it here.
+    // node.alert on InitiativeNode stays populated for reap (the initiatives-table
+    // popover still needs it) — only the InboxItem's alert is suppressed.
+    const alertField = node.needsHuman === "reap" ? null : node.alert;
 
     // lastActivityAt = max(bead updated_at, matched session's last transition) — the
     // PRIMARY recency sort key (agent-teams-ni2y.8). node.session is the primary/alive
@@ -516,6 +629,8 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
     } else if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
@@ -536,6 +651,8 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
     } else if (node.needsHuman === "waiting") {
       // Agent waiting on human input: explicit gate:question/human (declared ask).
@@ -562,6 +679,8 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
     } else if (node.needsHuman === "check") {
       // Session waiting/blocked with no explicit gate — soft "check on it" tier.
@@ -582,9 +701,11 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
-    } else {
-      // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
+    } else if (node.needsHuman === "generic") {
+      // delivered + no explicit gate; graceful degrade.
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
@@ -603,6 +724,31 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
+      });
+    } else {
+      // needsHuman === false && node.alert !== null (membership guarantee above):
+      // no declared gate/session signal, but the row is anomalous — surface it.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "alert",
+        nextAction: alertField!.action,
+        recommendation: "",
+        alternative: "",
+        context: "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
+        alert: alertField,
+        isClosed,
       });
     }
   }

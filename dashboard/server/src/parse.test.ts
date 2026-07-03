@@ -15,6 +15,7 @@ import {
   buildOrphanSessions,
   buildInbox,
   deriveActivity,
+  deriveAlert,
   deriveDelivery,
   deriveExplicitGate,
   deriveNeedsHuman,
@@ -646,14 +647,25 @@ describe("buildInbox", () => {
     expect(inbox).toHaveLength(0);
   });
 
-  it("does not include merged initiatives (needsHuman=false for merged when worktree exists)", () => {
+  it("merged + worktree exists + alive session: needsHuman=false, but the row still surfaces as an alert (agent-teams-rybk)", () => {
     const done = { ...parseInitiative(RAW_AT_V4E), status: "done" };
     // Pass existsFn=true: worktree is still present (normal merged, not a zombie).
     const nodes = buildInitiativeNodes([done], sessions, new Set(["at-v4e"]), () => true);
-    // merged + worktree exists: needsHuman=false (reap only fires when worktree is GONE)
+    // merged + worktree exists: needsHuman=false (reap only fires when worktree is GONE) —
+    // but closed+alive-session is still an anomaly (deriveAlert "med"), so it now surfaces
+    // in the inbox via alert, not via needsHuman.
     expect(nodes[0]?.needsHuman).toBe(false);
+    expect(nodes[0]?.alert).toEqual({
+      level: "med",
+      reason: "Closed, but a session is still running on it.",
+      action: "Close the session — the work is done.",
+    });
     const inbox = buildInbox(nodes);
-    expect(inbox.find((i) => i.initiativeId === "at-v4e")).toBeUndefined();
+    const item = inbox.find((i) => i.initiativeId === "at-v4e");
+    expect(item).toBeDefined();
+    expect(item?.kind).toBe("alert");
+    expect(item?.nextAction).toBe("Close the session — the work is done.");
+    expect(item?.isClosed).toBe(true);
   });
 });
 
@@ -1890,16 +1902,26 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
     expect(inbox[0]?.kind).toBe("reap");
     expect(inbox[0]?.nextAction).toBe("Session still running after teardown — stop it to reap it.");
     expect(inbox[0]?.sessionId).toBe("ab12cd34");
+    // Reap dedup (agent-teams-rybk): node.alert is populated (for the initiatives-table
+    // popover) but the InboxItem's alert is suppressed — the reap row's nextAction
+    // already states the identical zombie condition.
+    expect(nodes[0]?.alert).not.toBeNull();
+    expect(inbox[0]?.alert).toBeNull();
   });
 
-  it("merged + worktreeExists TRUE + alive session -> needsHuman=false (not a zombie)", () => {
+  it("merged + worktreeExists TRUE + alive session -> needsHuman=false (not a zombie), but still surfaces as an alert (agent-teams-rybk)", () => {
     const init = makeClosedInit("reap-3", "/wt/reap-3");
     const sess = makeAliveSession("/wt/reap-3", "busy", "ab12cd34");
     // existsFn returns true (worktree still present)
     const nodes = buildInitiativeNodes([init], [sess], new Set(), () => true);
     expect(nodes[0]?.needsHuman).toBe(false);
+    // Not a zombie (worktree present) — but closed+alive-session is still a "med"
+    // anomaly (deriveAlert), so the row now surfaces via alert, not via needsHuman.
     const inbox = buildInbox(nodes);
-    expect(inbox).toHaveLength(0);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.kind).toBe("alert");
+    expect(inbox[0]?.nextAction).toBe("Close the session — the work is done.");
+    expect(inbox[0]?.isClosed).toBe(true);
   });
 
   it("merged + !worktreeExists + NO matched session (signal='none') -> needsHuman=false", () => {
@@ -1991,6 +2013,141 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.kind).toBe("waiting");
+  });
+});
+
+// ---- deriveAlert (agent-teams-rybk) ------------------------------------------
+//
+// Unifies the client's former rowAlert (level) + alertInfo (reason/action) case
+// trees (web/src/views/initiatives/index.tsx:73-130) into one function. All 6
+// anomaly cases carry over verbatim (level + reason + action), plus healthy and
+// off-machine-open both returning null.
+
+describe("deriveAlert", () => {
+  const ALIVE: SessionState = { sessionId: "s-alive", kind: "background", cwd: "/wt/x", startedAt: 0, status: "busy" };
+  // No `status` field -> alertSessionKind treats this as "dead" (process exited).
+  const DEAD: SessionState = { sessionId: "s-dead", kind: "background", cwd: "/wt/x", startedAt: 0 };
+
+  it("case 1: sessionCount>1 -> urgent conflict (wins over everything else)", () => {
+    const alert = deriveAlert({ sessionCount: 2, needsHuman: false, session: ALIVE, worktreeExists: true, status: "open" });
+    expect(alert).toEqual({
+      level: "urgent",
+      reason: "2 sessions are attached to this worktree — a conflict.",
+      action: "Stop the extras (claude stop) — only one session should run per worktree.",
+    });
+  });
+
+  it("case 2: needsHuman='reap' -> urgent zombie", () => {
+    const alert = deriveAlert({ sessionCount: 1, needsHuman: "reap", session: ALIVE, worktreeExists: false, status: "closed" });
+    expect(alert).toEqual({
+      level: "urgent",
+      reason: "Closed and the worktree is gone, but a session is still running — a zombie.",
+      action: "Stop the session (claude stop) to reap it.",
+    });
+  });
+
+  it("case 3: closed + session dead -> urgent, reap the lingering session", () => {
+    const alert = deriveAlert({ sessionCount: 1, needsHuman: false, session: DEAD, worktreeExists: true, status: "closed" });
+    expect(alert).toEqual({
+      level: "urgent",
+      reason: "Closed, but a finished session is still lingering in the agent list.",
+      action: "Reap it (claude stop) so it clears out.",
+    });
+  });
+
+  it("case 4: closed + session alive -> med, close the running session", () => {
+    const alert = deriveAlert({ sessionCount: 1, needsHuman: false, session: ALIVE, worktreeExists: true, status: "done" });
+    expect(alert).toEqual({
+      level: "med",
+      reason: "Closed, but a session is still running on it.",
+      action: "Close the session — the work is done.",
+    });
+  });
+
+  it("case 5: open + no session + on this machine -> urgent, stalled", () => {
+    const alert = deriveAlert({ sessionCount: 0, needsHuman: false, session: null, worktreeExists: true, status: "open" });
+    expect(alert).toEqual({
+      level: "urgent",
+      reason: "Open with a worktree on this machine, but nothing is running — stalled.",
+      action: "Resume the session, or close the initiative if it's abandoned.",
+    });
+  });
+
+  it("case 6: open + session dead + on this machine -> low, session died", () => {
+    const alert = deriveAlert({ sessionCount: 1, needsHuman: false, session: DEAD, worktreeExists: true, status: "open" });
+    expect(alert).toEqual({
+      level: "low",
+      reason: "The session has exited — it won't receive messages.",
+      action: "Resume it, or close out the initiative.",
+    });
+  });
+
+  it("healthy: closed + no session at all -> null (completed)", () => {
+    const alert = deriveAlert({ sessionCount: 0, needsHuman: false, session: null, worktreeExists: false, status: "closed" });
+    expect(alert).toBeNull();
+  });
+
+  it("healthy: open + session alive -> null", () => {
+    const alert = deriveAlert({ sessionCount: 1, needsHuman: false, session: ALIVE, worktreeExists: true, status: "open" });
+    expect(alert).toBeNull();
+  });
+
+  it("off-machine-open: no session + NOT on this machine -> null (not locally actionable)", () => {
+    const alert = deriveAlert({ sessionCount: 0, needsHuman: false, session: null, worktreeExists: false, status: "open" });
+    expect(alert).toBeNull();
+  });
+
+  it("off-machine-open: session dead + NOT on this machine -> null", () => {
+    const alert = deriveAlert({ sessionCount: 1, needsHuman: false, session: DEAD, worktreeExists: false, status: "open" });
+    expect(alert).toBeNull();
+  });
+});
+
+// ---- buildInbox: merge semantics — a gate row that ALSO carries an alert (agent-teams-rybk) --
+//
+// A gate row (waiting/review/check/generic) keeps its declared-gate kind even when
+// node.alert is also non-null — both signals render (the alert is NOT clobbered by
+// the gate, and vice versa). Only "reap" suppresses the alert (see reap-flavor tests).
+
+describe("buildInbox — merge semantics: gate row also carrying an alert (agent-teams-rybk)", () => {
+  function makeInit(id: string, labels: string[]): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-03T00:00:00Z",
+      updated_at: "2026-07-03T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      goal: "",
+      prUrl: null,
+      labels,
+      epic: null,
+    };
+  }
+
+  it("a declared-ask (waiting) row with no matched session, worktree on this machine, keeps kind='waiting' AND carries the stalled alert", () => {
+    const init = makeInit("merge-1", ["human"]);
+    // existsFn=()=>true: worktree present on this machine, but no session matched -> stalled.
+    const nodes = buildInitiativeNodes([init], [], new Set(), () => true);
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+    expect(nodes[0]?.alert?.level).toBe("urgent");
+
+    const inbox = buildInbox(nodes);
+    const item = inbox.find((i) => i.initiativeId === "merge-1");
+    expect(item?.kind).toBe("waiting"); // gate kind wins — NOT clobbered by the alert
+    expect(item?.alert?.level).toBe("urgent"); // alert still carried (merge, not dropped)
+    expect(item?.alert?.action).toBe("Resume the session, or close the initiative if it's abandoned.");
+    expect(item?.isClosed).toBe(false);
   });
 });
 
