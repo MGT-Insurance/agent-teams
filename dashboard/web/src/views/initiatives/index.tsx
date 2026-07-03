@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InitiativeNode, SessionState } from "@agent-teams/shared";
+import { sessionKind as canonicalSessionKind } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
 import { RowActions } from "../../components/RowActions.js";
 import "./initiatives.css";
@@ -41,10 +42,12 @@ function isClosed(node: InitiativeNode): boolean {
 //   "dead"  = a matched entry whose process has exited (status null/absent;
 //             lingers in `claude agents --all` history). Won't receive messages.
 //   "none"  = no matched session entry at all.
+// Thin node-level wrapper — the actual classification is the canonical
+// sessionKind() from @agent-teams/shared (agent-teams-rybk.5.2), shared with
+// the server's deriveAlert (server/src/parse.ts). Do not re-implement the
+// status!=null check here.
 function sessionKind(node: InitiativeNode): "alive" | "dead" | "none" {
-  const s = node.session;
-  if (s === null) return "none";
-  return s.status != null ? "alive" : "dead";
+  return canonicalSessionKind(node.session);
 }
 
 // "Completed" = closed AND the session is completely gone (no entry at all).
