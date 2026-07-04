@@ -152,7 +152,12 @@ export default function InboxView() {
   const [thisMachineOnly, setThisMachineOnly] = useState(true);
 
   // Filter BEFORE sort (spec: filter then sort).
-  const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine || item.kind === "reap") : inbox;
+  // Bypass on item.sessionId (not just kind==="reap"): sessionId is only ever set when
+  // buildInbox found a real LOCAL claude-agents match (parse.ts), so "has a sessionId" is
+  // the general "something on this machine to act on" signal. This subsumes reap (reap rows
+  // always have a sessionId) and also correctly surfaces alert rows with onThisMachine:false
+  // but a lingering local session (agent-teams-rybk.7) that the old reap-only check missed.
+  const filtered = thisMachineOnly ? inbox.filter((item) => item.onThisMachine || item.sessionId != null) : inbox;
 
   // Recency-only sort: lastActivityAt desc is the PRIMARY key across ALL kinds (agent-teams-ni2y,
   // agent-teams-ni2y.8). lastActivityAt = max(bead updatedAt, session transition), so a session

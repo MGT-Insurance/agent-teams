@@ -15,7 +15,8 @@ export interface SelectRowActionInput {
   isClosed: boolean;
   // initiatives: node.worktreeExists; inbox: item.onThisMachine (same server existsSync check).
   worktreeExists: boolean;
-  // stop id: node.session?.id / item.sessionId.
+  // stop id: node.session?.id (Initiatives — truly raw, unvalidated) / item.sessionId (Inbox —
+  // NOT equivalently raw; buildInbox already validated it as an 8-hex id before assigning it here).
   rawSessionId: string | undefined;
   // validated 8-hex: sessionAttachId(node.session) / item.sessionId.
   attachId: string | undefined;

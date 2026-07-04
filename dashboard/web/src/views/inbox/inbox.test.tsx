@@ -573,6 +573,33 @@ describe("InboxView — 'This machine only' toggle", () => {
     fireEvent.click(toggle);
     expect(screen.getByTestId("inbox-count").textContent).toBe("2");
   });
+
+  // agent-teams-rybk.7 — reviewer finding: the old bypass (item.kind === "reap") missed
+  // deriveAlert's closed-branch alert cases, which never check worktreeExists. A closed
+  // initiative whose worktree is gone but still has a lingering local session produces
+  // kind:"alert" with onThisMachine:false, and was silently hidden under the default toggle.
+  it("does NOT filter out an alert row with onThisMachine=false but a real sessionId (closed+dead-lingering-session gap)", () => {
+    const item: InboxItem = {
+      ...alertClosedAliveItem,
+      onThisMachine: false,
+      sessionId: "abc12345",
+    };
+    setInbox([item]);
+    renderInbox();
+    expect(screen.getByText(item.title)).toBeTruthy();
+  });
+
+  it("reap row still bypasses the filter (reap rows always have a sessionId)", () => {
+    setInbox([reapItem]); // onThisMachine: false, sessionId: "fed98765"
+    renderInbox();
+    expect(screen.getByText("Zombie session on closed initiative")).toBeTruthy();
+  });
+
+  it("still filters out a row with onThisMachine=false and no sessionId (genuinely non-local)", () => {
+    setInbox([offMachineItem]); // onThisMachine: false, sessionId undefined
+    renderInbox();
+    expect(screen.queryByText("Remote machine initiative")).toBeNull();
+  });
 });
 
 describe("InboxView — kind='check' row (agent-teams-ja9c)", () => {
