@@ -1,6 +1,6 @@
 // Tests for cli.ts wrappers: bdLabeledBeads and spawnClaudeLogs.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 
 // Build a minimal proc stub that satisfies the parts of ChildProcess we use.
@@ -32,6 +32,40 @@ vi.mock("node:child_process", () => ({
 }));
 
 const { spawnClaudeLogs, bdLabeledBeads } = await import("./cli.js");
+
+describe("runCli timeout (via bdLabeledBeads)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("kills the child and rejects with CliError if it hangs past the timeout", async () => {
+    const promise = bdLabeledBeads("/repo/path", "at-abc");
+
+    // Simulate a hung child: timer fires, we kill() it, then the OS reports
+    // the process closed (as a real killed process eventually would).
+    await vi.advanceTimersByTimeAsync(10_000);
+    currentProc.emit("close", null);
+
+    await expect(promise).rejects.toMatchObject({ name: "CliError" });
+    expect(currentProc.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not kill the child if it closes before the timeout", async () => {
+    const promise = bdLabeledBeads("/repo/path", "at-abc");
+
+    currentProc.stdout.emit("data", Buffer.from("[]"));
+    currentProc.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(promise).resolves.toBe("[]");
+    expect(currentProc.kill).not.toHaveBeenCalled();
+  });
+});
 
 describe("spawnClaudeLogs", () => {
   beforeEach(() => {

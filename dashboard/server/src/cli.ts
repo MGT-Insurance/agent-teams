@@ -16,6 +16,11 @@ export class CliError extends Error {
   }
 }
 
+// Kills a spawned child if it hangs past this long instead of blocking the
+// caller forever (at-6nj — a hung bd/ateam/claude call previously blocked
+// indefinitely with no way to recover).
+const CHILD_TIMEOUT_MS = 10_000;
+
 function runCli(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -23,10 +28,17 @@ function runCli(cmd: string, args: string[]): Promise<string> {
 
     const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
 
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, CHILD_TIMEOUT_MS);
+
     proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
     proc.stderr.on("data", (chunk: Buffer) => errChunks.push(chunk));
 
     proc.on("error", (err) => {
+      clearTimeout(timer);
       reject(
         new CliError(
           `${cmd} ${args.join(" ")}`,
@@ -38,6 +50,18 @@ function runCli(cmd: string, args: string[]): Promise<string> {
     });
 
     proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(
+          new CliError(
+            `${cmd} ${args.join(" ")}`,
+            code,
+            "",
+            `${cmd} timed out after ${CHILD_TIMEOUT_MS}ms and was killed`,
+          ),
+        );
+        return;
+      }
       if (code !== 0) {
         const stderr = Buffer.concat(errChunks).toString("utf8");
         reject(
