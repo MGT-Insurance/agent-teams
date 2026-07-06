@@ -94,9 +94,11 @@ while true; do
     exit 0
   fi
 
-  # Doorbell check.
+  # Doorbell check. Do NOT consume the doorbell here — the rewake this exit
+  # requests can be lost (e.g. respawn's first worker attempt crashing after
+  # SessionStart). inbox-drain.sh removes it when a turn actually starts, so
+  # a lost rewake just means the next armed watcher fires again.
   if [ -f "$DOORBELL" ]; then
-    rm -f "$DOORBELL"
     hook_log_note "note" "doorbell-seen initiative=${match_id}"
     HOOK_EXIT_REASON="doorbell-fired"
     printf "You have new mail — run \`ateam inbox\` to read it. (Messages are beads, not files — nothing to read on disk.)\n" >&2
