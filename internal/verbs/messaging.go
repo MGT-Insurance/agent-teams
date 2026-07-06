@@ -17,8 +17,11 @@ import (
 // RegisterMessagingKong registers messaging verbs onto p using native kong structs.
 func RegisterMessagingKong(p *cli.Parser) {
 	p.AddVerb("send", "Send a message to a recipient initiative.", &sendKong{
-		agentsFunc: defaultAgentsJSON,
-		resumeFunc: defaultResume,
+		agentsFunc:     defaultAgentsJSONAll,
+		resumeFunc:     defaultResume,
+		sleeper:        defaultSleeper,
+		doorbellExists: defaultDoorbellExists,
+		respawnFunc:    defaultRespawn,
 	})
 	p.AddVerb("inbox", "Read and consume unread messages for this initiative.", &inboxKong{})
 }
@@ -26,16 +29,19 @@ func RegisterMessagingKong(p *cli.Parser) {
 // ── sendKong ──────────────────────────────────────────────────────────────────
 
 // sendKong is the kong-native form of sendCmd.
-// DI fields (agentsFunc, resumeFunc) are tagged kong:"-" so kong ignores them;
-// tests substitute fakes without touching the struct registration.
+// DI fields are tagged kong:"-" so kong ignores them; tests substitute fakes
+// without touching the struct registration.
 type sendKong struct {
 	RecipientID string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
 	File        string `name:"file"   help:"Path to the message body file (required)." required:""`
 	Sender      string `name:"sender" help:"Sender identifier (default: git user.name)."`
 	Thread      string `name:"thread" help:"Optional thread identifier label."`
 
-	agentsFunc agentsJSONFunc       `kong:"-"`
-	resumeFunc resumeInitiativeFunc `kong:"-"`
+	agentsFunc     agentsJSONFunc       `kong:"-"`
+	resumeFunc     resumeInitiativeFunc `kong:"-"`
+	sleeper        sleeperFunc          `kong:"-"`
+	doorbellExists doorbellExistsFunc   `kong:"-"`
+	respawnFunc    respawnFunc          `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -100,22 +106,46 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return nil
 	}
 
-	want := strings.TrimRight(wtPath, "/")
-	fmt.Fprintf(ctx.Stdout, "liveness: recipient worktree=%q; %d session(s) reported by claude agents --json\n", want, len(sessions))
+	want := canonicalPath(wtPath)
+	fmt.Fprintf(ctx.Stdout, "liveness: recipient worktree=%q; %d session(s) reported by claude agents --all --json\n", wtPath, len(sessions))
 	for i, s := range sessions {
-		fmt.Fprintf(ctx.Stdout, "liveness:   session[%d] cwd=%q kind=%q status=%q match=%t\n",
-			i, s.CWD, s.Kind, s.Status, strings.TrimRight(s.CWD, "/") == want)
+		fmt.Fprintf(ctx.Stdout, "liveness:   session[%d] id=%q cwd=%q status=%q pid-present=%t match=%t\n",
+			i, s.ID, s.CWD, s.Status, s.PID != nil, canonicalPath(s.CWD) == want)
 	}
 
-	if hasLiveSession(sessions, wtPath) {
-		fmt.Fprintf(ctx.Stdout, "recipient session is live; doorbell will wake it\n")
+	entry := matchSessionByWorktree(sessions, wtPath)
+	if entry == nil {
+		fmt.Fprintf(ctx.Stdout, "recipient not found in claude agents; launching via ateam resume\n")
+		if err := c.resumeFunc(ctx, c.RecipientID); err != nil {
+			return fmt.Errorf("ateam send: resume escalation: %w", err)
+		}
 		return nil
 	}
 
-	fmt.Fprintf(ctx.Stdout, "recipient session not live; launching via ateam resume\n")
-	if err := c.resumeFunc(ctx, c.RecipientID); err != nil {
-		return fmt.Errorf("ateam send: resume escalation: %w", err)
+	// NEVER respawn busy (interrupts in-flight tool calls) or waiting (would
+	// drop a pending AskUserQuestion/permission dialog) — Stop re-arms the
+	// watcher, which will see the doorbell the instant the turn ends.
+	if entry.Status == "busy" || entry.Status == "waiting" {
+		fmt.Fprintf(ctx.Stdout, "recipient is %s; doorbell will be picked up when its turn ends\n", entry.Status)
+		return nil
 	}
+
+	// idle or pid-less: give an armed watcher a moment to deliver, then
+	// re-check the doorbell. inbox-drain is the only consumer now, so "gone"
+	// reliably means a turn saw it; "still present" means the recipient is
+	// deaf and needs reviving.
+	c.sleeper(5 * time.Second)
+	if !c.doorbellExists(doorbellPath) {
+		fmt.Fprintf(ctx.Stdout, "doorbell consumed; delivery in progress\n")
+		return nil
+	}
+
+	fmt.Fprintf(ctx.Stdout, "doorbell still present after 5s; recipient is deaf — respawning %s\n", entry.ID)
+	if err := c.respawnFunc(entry.ID); err != nil {
+		fmt.Fprintf(ctx.Stdout, "warning: respawn %s failed (%v); message %s remains queued for the next turn\n", entry.ID, err, issue.ID)
+		return nil
+	}
+	fmt.Fprintf(ctx.Stdout, "respawned %s to deliver the doorbell\n", entry.ID)
 	return nil
 }
 
@@ -209,26 +239,47 @@ type resumeInitiativeFunc func(ctx *cli.Context, id string) error
 //   - Background only:  ID, Name, State (working|done).
 //     Interactive sessions have no State/Name/ID; JSON absence is fine — Go
 //     leaves the fields at their zero values ("").
+//
+// PID and Status are both absent (PID nil, Status "") for a tracked-but-dead
+// session — one `claude agents --all --json` reports but has no live process
+// backing it. Never branch on State; it's unreliable. Only PID presence and
+// Status matter.
 type agentSession struct {
 	CWD       string `json:"cwd"`
 	Kind      string `json:"kind"`      // "interactive" | "background"
-	Status    string `json:"status"`    // "busy" | "idle" | "waiting"
+	Status    string `json:"status"`    // "busy" | "idle" | "waiting"; absent for dead sessions
 	Name      string `json:"name"`      // background sessions only
-	State     string `json:"state"`     // "working" | "done"; background sessions only
-	ID        string `json:"id"`        // short id for background sessions; used by claude stop
+	State     string `json:"state"`     // unreliable; do not branch on this
+	ID        string `json:"id"`        // short id for background sessions; used by claude stop/respawn
+	PID       *int   `json:"pid"`       // nil => absent => tracked-but-dead session
 	SessionID string `json:"sessionId"` // full session id present on all sessions
 }
 
 // defaultAgentsJSON runs `claude agents --json` and parses the result.
+// Omits pid-less tracked-but-dead sessions — see defaultAgentsJSONAll.
 func defaultAgentsJSON() ([]agentSession, error) {
-	cmd := exec.Command("claude", "agents", "--json")
+	return runAgentsJSON("--json")
+}
+
+// defaultAgentsJSONAll runs `claude agents --all --json` and parses the
+// result. --all surfaces pid-less tracked sessions that a plain
+// `claude agents --json` omits; ateam send needs to see these to distinguish
+// "recipient is idle" from "recipient's process is gone but claude still
+// tracks it" (both require the same idle/pid-less handling in sendKong).
+func defaultAgentsJSONAll() ([]agentSession, error) {
+	return runAgentsJSON("--all", "--json")
+}
+
+// runAgentsJSON runs `claude agents <args...>` and parses the JSON result.
+func runAgentsJSON(args ...string) ([]agentSession, error) {
+	cmd := exec.Command("claude", append([]string{"agents"}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("claude agents --json: %w", err)
+		return nil, fmt.Errorf("claude agents %s: %w", strings.Join(args, " "), err)
 	}
 	var sessions []agentSession
 	if err := json.Unmarshal(out, &sessions); err != nil {
-		return nil, fmt.Errorf("claude agents --json: parse: %w", err)
+		return nil, fmt.Errorf("claude agents %s: parse: %w", strings.Join(args, " "), err)
 	}
 	return sessions, nil
 }
@@ -242,13 +293,51 @@ func defaultResume(ctx *cli.Context, id string) error {
 // hasLiveSession reports whether any session in sessions has a cwd matching
 // worktreePath (symlink-normalised, see canonicalPath).
 func hasLiveSession(sessions []agentSession, worktreePath string) bool {
+	return matchSessionByWorktree(sessions, worktreePath) != nil
+}
+
+// matchSessionByWorktree returns a pointer to the first session in sessions
+// whose cwd resolves (symlink-normalised, see canonicalPath) to worktreePath,
+// or nil if none match.
+func matchSessionByWorktree(sessions []agentSession, worktreePath string) *agentSession {
 	want := canonicalPath(worktreePath)
-	for _, s := range sessions {
-		if canonicalPath(s.CWD) == want {
-			return true
+	for i := range sessions {
+		if canonicalPath(sessions[i].CWD) == want {
+			return &sessions[i]
 		}
 	}
-	return false
+	return nil
+}
+
+// sleeperFunc pauses execution for d. Injected so tests can substitute a no-op.
+type sleeperFunc func(d time.Duration)
+
+// defaultSleeper is time.Sleep, wired in as the production sleeperFunc.
+func defaultSleeper(d time.Duration) {
+	time.Sleep(d)
+}
+
+// doorbellExistsFunc reports whether the doorbell file at path still exists
+// (i.e. no turn has consumed it yet via inbox-drain). Injected so tests can
+// substitute a fake without touching the filesystem.
+type doorbellExistsFunc func(path string) bool
+
+// defaultDoorbellExists checks the real filesystem for path.
+func defaultDoorbellExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// respawnFunc revives a tracked-but-dead or unresponsive session in place via
+// `claude respawn <shortid>` (same sessionId, same single entry in
+// `claude agents`, full conversation preserved — verified 6+ times). Injected
+// so tests can substitute a fake without executing real claude commands.
+type respawnFunc func(id string) error
+
+// defaultRespawn execs `claude respawn <id>`.
+func defaultRespawn(id string) error {
+	cmd := exec.Command("claude", "respawn", id)
+	return cmd.Run()
 }
 
 // gitUserName returns the current git user.name (best-effort; empty on error).
