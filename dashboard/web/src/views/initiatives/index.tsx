@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InitiativeNode, SessionState } from "@agent-teams/shared";
+import { sessionKind as canonicalSessionKind, isValidSessionId } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
-import { attachToInitiative, launchSession } from "../../lib/api.js";
-import { StopButton } from "../../components/StopButton.js";
+import { RowActions } from "../../components/RowActions.js";
 import "./initiatives.css";
 
 // Persist a boolean toggle to localStorage (no server). Reads on init, writes on
@@ -42,10 +42,12 @@ function isClosed(node: InitiativeNode): boolean {
 //   "dead"  = a matched entry whose process has exited (status null/absent;
 //             lingers in `claude agents --all` history). Won't receive messages.
 //   "none"  = no matched session entry at all.
+// Thin node-level wrapper — the actual classification is the canonical
+// sessionKind() from @agent-teams/shared (agent-teams-rybk.5.2), shared with
+// the server's deriveAlert (server/src/parse.ts). Do not re-implement the
+// status!=null check here.
 function sessionKind(node: InitiativeNode): "alive" | "dead" | "none" {
-  const s = node.session;
-  if (s === null) return "none";
-  return s.status != null ? "alive" : "dead";
+  return canonicalSessionKind(node.session);
 }
 
 // "Completed" = closed AND the session is completely gone (no entry at all).
@@ -61,72 +63,7 @@ function isCompleted(node: InitiativeNode): boolean {
 // Reserve Launch only for when there is NO matched entry at all.
 function sessionAttachId(session: SessionState | null | undefined): string | undefined {
   const id = session?.id;
-  return typeof id === "string" && /^[0-9a-f]{8}$/.test(id) ? id : undefined;
-}
-
-// Row alert — an anomaly where action should be taken, ranked by urgency.
-// null = no alert. Urgency (most→least): urgent {open+none+on-machine (stalled),
-// closed+dead (reap it), reap zombie} > med {closed+alive (close it)} > low
-// {open+dead+on-machine (session died)}. Off-machine open cases aren't locally
-// actionable, so they don't alert.
-type AlertLevel = "urgent" | "med" | "low";
-function rowAlert(node: InitiativeNode): AlertLevel | null {
-  // Multiple session entries on one worktree is a conflict — wins over the rest.
-  if (node.sessionCount > 1) return "urgent";
-  // Reap zombie: closed, worktree gone, session alive — wins over the generic closed+alive "med" case.
-  if (node.needsHuman === "reap") return "urgent";
-  const kind = sessionKind(node);
-  const onMachine = node.worktreeExists;
-  if (isClosed(node)) {
-    if (kind === "dead") return "urgent"; // #7 reap the lingering session
-    if (kind === "alive") return "med"; //  #6 close the running session
-    return null; //                         #8 completed
-  }
-  if (kind === "none" && onMachine) return "urgent"; // #4 stalled — nothing running
-  if (kind === "dead" && onMachine) return "low"; //    #2 session died, won't get messages
-  return null; //                                       #1 healthy, #3/#5 off-machine
-}
-
-// Why the row is alerted + what to do about it — surfaced via the row's info
-// popover. Returns null for non-alerted rows (mirrors rowAlert's cases).
-function alertInfo(node: InitiativeNode): { reason: string; action: string } | null {
-  if (node.sessionCount > 1)
-    return {
-      reason: `${node.sessionCount} sessions are attached to this worktree — a conflict.`,
-      action: "Stop the extras (claude stop) — only one session should run per worktree.",
-    };
-  // Reap zombie wins over the generic closed+alive case — check it first.
-  if (node.needsHuman === "reap")
-    return {
-      reason: "Closed and the worktree is gone, but a session is still running — a zombie.",
-      action: "Stop the session (claude stop) to reap it.",
-    };
-  const kind = sessionKind(node);
-  const onMachine = node.worktreeExists;
-  if (isClosed(node)) {
-    if (kind === "dead")
-      return {
-        reason: "Closed, but a finished session is still lingering in the agent list.",
-        action: "Reap it (claude stop) so it clears out.",
-      };
-    if (kind === "alive")
-      return {
-        reason: "Closed, but a session is still running on it.",
-        action: "Close the session — the work is done.",
-      };
-    return null;
-  }
-  if (kind === "none" && onMachine)
-    return {
-      reason: "Open with a worktree on this machine, but nothing is running — stalled.",
-      action: "Resume the session, or close the initiative if it's abandoned.",
-    };
-  if (kind === "dead" && onMachine)
-    return {
-      reason: "The session has exited — it won't receive messages.",
-      action: "Resume it, or close out the initiative.",
-    };
-  return null;
+  return typeof id === "string" && isValidSessionId(id) ? id : undefined;
 }
 
 // Session chip presentation per the truth table: glyph by liveness
@@ -183,82 +120,6 @@ function SignalChip({ level, tone, icon, label, value, title }: SignalChipProps)
   );
 }
 
-function RowAttachButton({ initiativeId, sessionId }: { initiativeId: string; sessionId: string }) {
-  const [state, setState] = useState<"idle" | "pending" | "ok" | "err">("idle");
-
-  async function handleClick(e: React.MouseEvent<HTMLButtonElement>) {
-    e.stopPropagation();
-    if (state === "pending") return;
-    setState("pending");
-    try {
-      await attachToInitiative(initiativeId, sessionId);
-      setState("ok");
-      setTimeout(() => setState("idle"), 1500);
-    } catch {
-      setState("err");
-      setTimeout(() => setState("idle"), 3000);
-    }
-  }
-
-  return (
-    <button
-      className="attach-btn attach-btn--row"
-      onClick={(e) => { void handleClick(e); }}
-      disabled={state === "pending"}
-      title="Attach to session"
-      aria-label="Attach to session"
-    >
-      {state === "pending" ? "…" : state === "ok" ? "✓" : state === "err" ? "✗" : "↗"}
-    </button>
-  );
-}
-
-type LaunchState = "idle" | "pending" | "ok" | "err";
-
-function LaunchButton({ initiativeId }: { initiativeId: string }) {
-  const [state, setState] = useState<LaunchState>("idle");
-  const [errMsg, setErrMsg] = useState<string>("");
-
-  const launch = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (state === "pending") return;
-    setState("pending");
-    setErrMsg("");
-    try {
-      await launchSession(initiativeId);
-      setState("ok");
-      setTimeout(() => setState("idle"), 3000);
-    } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : String(err));
-      setState("err");
-      setTimeout(() => { setState("idle"); setErrMsg(""); }, 5000);
-    }
-  };
-
-  const label = state === "idle" ? "▶" : state === "pending" ? "…" : state === "ok" ? "✓" : "✗";
-  // In error state, set the title to the full error so it's inspectable on hover.
-  const title =
-    state === "err" && errMsg ? errMsg : "Launch a new DRI session for this initiative";
-  // First line of error message — brief inline hint so the failure is legible at a glance.
-  const errFirst = errMsg.split("\n")[0] ?? "";
-
-  return (
-    <>
-      <button
-        className={`launch-btn${state === "err" ? " launch-btn--err" : ""}`}
-        onClick={(e) => { void launch(e); }}
-        title={title}
-        aria-label={state === "idle" ? "launch" : undefined}
-      >
-        {label}
-      </button>
-      {state === "err" && errFirst && (
-        <span className="launch-btn__err-msg">{errFirst}</span>
-      )}
-    </>
-  );
-}
-
 function InitiativeRow({ node }: { node: InitiativeNode }) {
   const navigate = useNavigate();
   const { initiative } = node;
@@ -266,8 +127,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
   const onMachine = node.worktreeExists;
   const hasPr = node.delivery === "pr-open";
   const sess = sessionChip(node);
-  const alert = rowAlert(node);
-  const info = alertInfo(node);
+  const alert = node.alert;
   const attachId = sessionAttachId(node.session);
 
   function handleRowClick() {
@@ -300,7 +160,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
       className="init-row"
       data-initiative-id={initiative.id}
       data-closed={isClosed(node) ? "true" : "false"}
-      data-alert={alert ?? undefined}
+      data-alert={alert?.level}
       onClick={handleRowClick}
       role="button"
       tabIndex={0}
@@ -354,26 +214,27 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
         />
       </div>
       <div className="init-row__action">
-        {node.needsHuman === "reap" && node.session?.id ? (
-          <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
-        ) : isClosed(node) && node.session?.id ? (
-          <StopButton initiativeId={initiative.id} sessionId={node.session.id} />
-        ) : attachId ? (
-          <RowAttachButton initiativeId={initiative.id} sessionId={attachId} />
-        ) : node.worktreeExists && !isClosed(node) ? (
-          <LaunchButton initiativeId={initiative.id} />
-        ) : null}
+        <RowActions
+          input={{
+            initiativeId: initiative.id,
+            isReap: node.needsHuman === "reap",
+            isClosed: isClosed(node),
+            worktreeExists: node.worktreeExists,
+            rawSessionId: node.session?.id,
+            attachId,
+          }}
+        />
       </div>
       {/* Always-present fixed-width slot so the signals column holds the same
           horizontal position on every row. Icon + popover render only when the
           row is actually alerted, so non-alerted rows expose no tooltip. */}
-      <div className="init-row__info" data-tier={alert ?? undefined}>
-        {info && (
+      <div className="init-row__info" data-tier={alert?.level}>
+        {alert && (
           <>
             <span className="init-row__info-icon" aria-hidden="true">i</span>
             <span className="init-row__info-pop" role="tooltip">
-              <span className="init-row__info-why"><strong>Why:</strong> {info.reason}</span>
-              <span className="init-row__info-do"><strong>Do:</strong> {info.action}</span>
+              <span className="init-row__info-why"><strong>Why:</strong> {alert.reason}</span>
+              <span className="init-row__info-do"><strong>Do:</strong> {alert.action}</span>
             </span>
           </>
         )}

@@ -86,6 +86,8 @@ describe("snapshotReducer", () => {
           onThisMachine: true,
           status: null,
           state: null,
+          alert: null,
+          isClosed: false,
         },
       ],
     };

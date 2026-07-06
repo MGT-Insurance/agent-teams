@@ -3,16 +3,20 @@ export type {
   ParsedInitiative,
   SessionState,
   SessionSignal,
+  SessionKind,
   ActivityStatus,
   DeliveryStatus,
   NeedsHumanFlavor,
   ExplicitGateKind,
+  Alert,
   InitiativeNode,
   InboxItem,
   WorkBead,
   DrillInDetail,
   SnapshotEvent,
 } from "./types.js";
+
+export { sessionKind, deriveSessionSignal, isValidSessionId } from "./types.js";
 
 export type {
   SnapshotResponse,

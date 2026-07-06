@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vite
 import { render, screen, cleanup, fireEvent, within, waitFor, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { SnapshotState } from "../../hooks/useSnapshot.js";
-import type { InitiativeNode, ParsedInitiative, SessionState } from "@agent-teams/shared";
+import type { Alert, InitiativeNode, ParsedInitiative, SessionState } from "@agent-teams/shared";
 
 // Snapshot context is mocked so we control the initiatives data directly.
 const mockState: SnapshotState = {
@@ -121,6 +121,39 @@ const detachedWithId: SessionState = {
   // No `status` — session is detached (process exited, lingers in agent list).
 };
 
+// Alert fixtures — the view now renders node.alert directly (server-derived,
+// see server/src/parse.ts deriveAlert). Text carries over VERBATIM from the
+// former client-side rowAlert/alertInfo case trees (CONTRACT B).
+const stalledAlert: Alert = {
+  level: "urgent",
+  reason: "Open with a worktree on this machine, but nothing is running — stalled.",
+  action: "Resume the session, or close the initiative if it's abandoned.",
+};
+
+const openDeadAlert: Alert = {
+  level: "low",
+  reason: "The session has exited — it won't receive messages.",
+  action: "Resume it, or close out the initiative.",
+};
+
+const closedAliveAlert: Alert = {
+  level: "med",
+  reason: "Closed, but a session is still running on it.",
+  action: "Close the session — the work is done.",
+};
+
+const closedDeadAlert: Alert = {
+  level: "urgent",
+  reason: "Closed, but a finished session is still lingering in the agent list.",
+  action: "Reap it (claude stop) so it clears out.",
+};
+
+const multiSessionAlert: Alert = {
+  level: "urgent",
+  reason: "2 sessions are attached to this worktree — a conflict.",
+  action: "Stop the extras (claude stop) — only one session should run per worktree.",
+};
+
 function makeNode(over: Partial<InitiativeNode> = {}, init: Partial<ParsedInitiative> = {}): InitiativeNode {
   return {
     initiative: makeInitiative(init),
@@ -131,6 +164,7 @@ function makeNode(over: Partial<InitiativeNode> = {}, init: Partial<ParsedInitia
     needsHuman: false,
     worktreeExists: false,
     sessionCount: over.session ? 1 : 0,
+    alert: null,
     ...over,
   };
 }
@@ -359,25 +393,42 @@ describe("InitiativesView — row alerts (anomalies needing action)", () => {
   });
 
   it("URGENT: open + on-machine + no session (stalled)", () => {
-    setInitiatives([makeNode({ session: null, worktreeExists: true }, { id: "i", title: "Stalled" })]);
+    setInitiatives([
+      makeNode({ session: null, worktreeExists: true, alert: stalledAlert }, { id: "i", title: "Stalled" }),
+    ]);
     renderView();
     expect(alertOf(/stalled/i)).toBe("urgent");
   });
 
   it("LOW: open + on-machine + dead session", () => {
-    setInitiatives([makeNode({ session: deadSession, worktreeExists: true }, { id: "i", title: "OpenDead" })]);
+    setInitiatives([
+      makeNode(
+        { session: deadSession, worktreeExists: true, alert: openDeadAlert },
+        { id: "i", title: "OpenDead" }
+      ),
+    ]);
     renderView();
     expect(alertOf(/opendead/i)).toBe("low");
   });
 
   it("MED: closed + alive session", () => {
-    setInitiatives([makeNode({ session: workingSession }, { id: "i", title: "ClosedAlive", status: "closed" })]);
+    setInitiatives([
+      makeNode(
+        { session: workingSession, alert: closedAliveAlert },
+        { id: "i", title: "ClosedAlive", status: "closed" }
+      ),
+    ]);
     renderView();
     expect(alertOf(/closedalive/i)).toBe("med");
   });
 
   it("URGENT: closed + dead session", () => {
-    setInitiatives([makeNode({ session: deadSession }, { id: "i", title: "ClosedDead", status: "closed" })]);
+    setInitiatives([
+      makeNode(
+        { session: deadSession, alert: closedDeadAlert },
+        { id: "i", title: "ClosedDead", status: "closed" }
+      ),
+    ]);
     renderView();
     expect(alertOf(/closeddead/i)).toBe("urgent");
   });
@@ -391,7 +442,7 @@ describe("InitiativesView — row alerts (anomalies needing action)", () => {
   it("URGENT (wins): multiple sessions on one worktree, even on an otherwise-healthy row", () => {
     setInitiatives([
       makeNode(
-        { session: workingSession, worktreeExists: true, sessionCount: 2 },
+        { session: workingSession, worktreeExists: true, sessionCount: 2, alert: multiSessionAlert },
         { id: "i", title: "MultiSess" }
       ),
     ]);
@@ -404,7 +455,10 @@ describe("InitiativesView — row alerts (anomalies needing action)", () => {
   it("renders a why+action info popover on alerted rows only", () => {
     setInitiatives([
       makeNode({ session: workingSession, worktreeExists: true }, { id: "ok", title: "Healthy" }),
-      makeNode({ session: deadSession }, { id: "bad", title: "ClosedDead", status: "closed" }),
+      makeNode(
+        { session: deadSession, alert: closedDeadAlert },
+        { id: "bad", title: "ClosedDead", status: "closed" }
+      ),
     ]);
     renderView();
     // Healthy row has no info popover.

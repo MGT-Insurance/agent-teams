@@ -14,7 +14,16 @@ import type {
   InitiativeNode,
   InboxItem,
   WorkBead,
+  Alert,
 } from "@agent-teams/shared";
+import { sessionKind, deriveSessionSignal, isValidSessionId } from "@agent-teams/shared";
+import { splitNotesBlocks } from "./notes.js";
+
+// Re-exported for existing consumers/tests that import deriveSessionSignal
+// from this module — the implementation now lives in @agent-teams/shared
+// (agent-teams-rybk.5.2), alongside sessionKind, as the one place that reads
+// a SessionState's raw status/state fields. See shared/types.ts.
+export { deriveSessionSignal };
 
 // GitHub PR URL pattern — matches https://github.com/<owner>/<repo>/pull/<n>
 const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
@@ -163,23 +172,9 @@ export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
   return "none";
 }
 
-// Derive the session signal from a matched SessionState (or null).
-// This is the key extension from agent-teams-blo: we now distinguish
-// "waiting" (blocked/paused on human) from "working" and "ended".
-//   "working" -> status=busy / state=working (live, active)
-//   "waiting" -> status=waiting / state=blocked (agent paused on human input) — THE BUG FIX
-//   "ended"   -> status=idle / state=done|stopped (session self-stopped)
-//   "none"    -> no matched session
-export function deriveSessionSignal(session: SessionState | null): SessionSignal {
-  if (session === null) return "none";
-  // Blocked state: agent is waiting on human input. Matches both:
-  //   status="waiting" (newer API) and state="blocked" (older API).
-  if (session.status === "waiting" || session.state === "blocked") return "waiting";
-  // Working: actively running.
-  if (session.status === "busy" || session.state === "working") return "working";
-  // Ended: session self-stopped or completed.
-  return "ended";
-}
+// deriveSessionSignal (agent-teams-blo: distinguishes "waiting" from
+// "working"/"ended") now lives in @agent-teams/shared — imported above and
+// re-exported for existing consumers. See shared/types.ts for the doc.
 
 // Derive the explicit gate kind from an initiative's labels array.
 // Resilient: tolerates undefined/null/empty labels (missing or unset).
@@ -285,6 +280,94 @@ export function derivePhase(notes: string): string {
   return "active";
 }
 
+// ---------------------------------------------------------------------------
+// Row alert (agent-teams-rybk): unifies the client's former rowAlert (level) +
+// alertInfo (reason/action) case trees — web/src/views/initiatives/index.tsx:73-130
+// — into ONE function. Cases carry over verbatim; do NOT import from web/.
+// ---------------------------------------------------------------------------
+
+// Closed statuses for alert purposes — mirrors the client's CLOSED_STATUSES
+// (web/src/views/initiatives/index.tsx:33), compared lowercased.
+const ALERT_CLOSED_STATUSES = new Set(["closed", "done"]);
+
+function isClosedStatus(status: string): boolean {
+  return ALERT_CLOSED_STATUSES.has(status.toLowerCase());
+}
+
+// Derive the row's alert (or null for a healthy/off-machine-open row). Ranked
+// urgent > med > low; see web/src/views/initiatives/index.tsx:67-71 for the
+// full urgency rationale. Six anomaly cases, verbatim from rowAlert + alertInfo:
+//   1. sessionCount>1                          -> urgent, conflict
+//   2. needsHuman==="reap"                     -> urgent, zombie
+//   3. closed + session dead                   -> urgent, reap the lingering session
+//   4. closed + session alive                  -> med, close the running session
+//   5. open + no session + on this machine     -> urgent, stalled
+//   6. open + session dead + on this machine   -> low, session died
+// Healthy rows and off-machine-open rows (not locally actionable) return null.
+export function deriveAlert(input: {
+  sessionCount: number;
+  needsHuman: false | NeedsHumanFlavor;
+  session: SessionState | null;
+  worktreeExists: boolean;
+  status: string;
+}): Alert | null {
+  const { sessionCount, needsHuman, session, worktreeExists, status } = input;
+
+  // Multiple session entries on one worktree is a conflict — wins over the rest.
+  if (sessionCount > 1) {
+    return {
+      level: "urgent",
+      reason: `${sessionCount} sessions are attached to this worktree — a conflict.`,
+      action: "Stop the extras (claude stop) — only one session should run per worktree.",
+    };
+  }
+  // Reap zombie wins over the generic closed+alive case — check it first.
+  if (needsHuman === "reap") {
+    return {
+      level: "urgent",
+      reason: "Closed and the worktree is gone, but a session is still running — a zombie.",
+      action: "Stop the session (claude stop) to reap it.",
+    };
+  }
+
+  const kind = sessionKind(session);
+  const onMachine = worktreeExists;
+
+  if (isClosedStatus(status)) {
+    if (kind === "dead") {
+      return {
+        level: "urgent",
+        reason: "Closed, but a finished session is still lingering in the agent list.",
+        action: "Reap it (claude stop) so it clears out.",
+      };
+    }
+    if (kind === "alive") {
+      return {
+        level: "med",
+        reason: "Closed, but a session is still running on it.",
+        action: "Close the session — the work is done.",
+      };
+    }
+    return null; // completed
+  }
+
+  if (kind === "none" && onMachine) {
+    return {
+      level: "urgent",
+      reason: "Open with a worktree on this machine, but nothing is running — stalled.",
+      action: "Resume the session, or close the initiative if it's abandoned.",
+    };
+  }
+  if (kind === "dead" && onMachine) {
+    return {
+      level: "low",
+      reason: "The session has exited — it won't receive messages.",
+      action: "Resume it, or close out the initiative.",
+    };
+  }
+  return null; // healthy, or off-machine-open (not locally actionable)
+}
+
 // Join initiatives with sessions: session.cwd === initiative.worktree.
 // humanGatedIds is the set of initiative IDs returned by `bd list --label human`
 // (kept for resilience: used to supplement labels when labels array is absent).
@@ -313,7 +396,7 @@ export function buildInitiativeNodes(
       ? sessions.filter((s) => s.kind === "background" && s.cwd === initiative.worktree)
       : [];
     const sessionCount = matched.length;
-    const session = matched.find((s) => s.status != null) ?? matched[0] ?? null;
+    const session = matched.find((s) => sessionKind(s) === "alive") ?? matched[0] ?? null;
     try {
 
       // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
@@ -331,13 +414,14 @@ export function buildInitiativeNodes(
       const delivery = deriveDelivery(initiative);
       const signal = deriveSessionSignal(session);
       const needsHuman = deriveNeedsHuman(delivery, signal, gate, worktreeExists);
+      const alert = deriveAlert({ sessionCount, needsHuman, session, worktreeExists, status: initiative.status });
 
-      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount };
+      return { initiative, session, activity, phase, delivery, needsHuman, worktreeExists, sessionCount, alert };
     } catch (err) {
       console.warn(
         `[buildInitiativeNodes] skipping bad initiative ${initiative.id}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      // Minimal safe node: idle, no session, no PR, no needs-human.
+      // Minimal safe node: idle, no session, no PR, no needs-human, no alert.
       return {
         initiative,
         session: null,
@@ -347,6 +431,7 @@ export function buildInitiativeNodes(
         needsHuman: false as const,
         worktreeExists,
         sessionCount,
+        alert: null,
       };
     }
   });
@@ -428,29 +513,32 @@ export function extractLatestAsk(
 }
 
 // Pure helper: the last non-empty "notes block" from initiative.notes, for the
-// check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits the same
-// way index.ts builds DrillInDetail.notesHistory — on the lookahead before a line
-// starting "session " — so "last block" means the same thing everywhere in the
-// dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel (e.g. left behind by
-// `ateam clear-gate` without `--file`) so its raw markup never leaks into nextAction.
+// check/generic/review nextAction fallback (agent-teams-ni2y.2). Splits via the
+// shared splitNotesBlocks (agent-teams-rybk.5.3) — the same split index.ts uses
+// to build DrillInDetail.notesHistory — so "last block" means the same thing
+// everywhere in the dashboard. Skips blocks that carry a `<<<ateam-ask` sentinel
+// (e.g. left behind by `ateam clear-gate` without `--file`) so its raw markup
+// never leaks into nextAction.
 // Returns "" when notes is empty/whitespace-only or every block is an ask sentinel.
 function lastNotesBlock(notes: string): string {
-  const blocks = notes
-    .split(/\n(?=session )/i)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .filter((b) => !b.includes("<<<ateam-ask"));
+  const blocks = splitNotesBlocks(notes).filter((b) => !b.includes("<<<ateam-ask"));
   return blocks.length > 0 ? (blocks[blocks.length - 1] ?? "") : "";
 }
 
 // Build InboxItem[] from already-built InitiativeNode[].
-// An item is in the inbox iff node.needsHuman !== false.
+// An item is in the inbox iff node.needsHuman !== false OR node.alert !== null
+// (agent-teams-rybk: any initiative with the 'i'-icon alert surfaces, even with
+// no gate/session signal — e.g. a closed initiative with a still-running session).
 //   needsHuman="reap"    -> zombie (at-asi): merged + worktree gone + alive session (stop to reap)
 //   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
 //   needsHuman="waiting" -> explicit gate:question/human (declared ask; may have ask block)
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
 //   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
-// Initiatives with needsHuman=false (working/refining/idle/done) are excluded.
+//   needsHuman=false + alert!=null -> kind="alert" (no declared gate/session signal, but anomalous)
+// A gate row (waiting/review/check/generic) can ALSO carry a non-null alert — both the gate
+// kind and the alert render (merge semantics); only "reap" suppresses the alert (dedup: the
+// reap row's nextAction already states the identical zombie condition).
+// Initiatives with needsHuman=false AND alert=null (working/refining/idle/done) are excluded.
 //
 // sessionTransitions: sessionId -> lastTransitionAt (epoch ms), from snapshot.ts's
 // stampTransitions (agent-teams-ni2y.8). Undefined for ad-hoc/endpoint-fallback callers
@@ -462,11 +550,17 @@ export function buildInbox(
   const items: InboxItem[] = [];
 
   for (const node of nodes) {
-    if (node.needsHuman === false) continue;
+    if (node.needsHuman === false && node.alert === null) continue;
 
     const { initiative } = node;
 
     const onThisMachine = initiative.worktree !== "" && existsSync(initiative.worktree);
+    const isClosed = isClosedStatus(initiative.status);
+    // Reap dedup: the reap row's nextAction already states the identical zombie
+    // condition as node.alert's reap branch, so we don't double-render it here.
+    // node.alert on InitiativeNode stays populated for reap (the initiatives-table
+    // popover still needs it) — only the InboxItem's alert is suppressed.
+    const alertField = node.needsHuman === "reap" ? null : node.alert;
 
     // lastActivityAt = max(bead updated_at, matched session's last transition) — the
     // PRIMARY recency sort key (agent-teams-ni2y.8). node.session is the primary/alive
@@ -480,7 +574,7 @@ export function buildInbox(
     // Any matched entry with a valid short 8-hex id is attachable via `claude attach <id>`,
     // regardless of whether the session is alive (status present) or detached (status absent).
     const sessionId =
-      typeof node.session?.id === "string" && /^[0-9a-f]{8}$/.test(node.session.id)
+      typeof node.session?.id === "string" && isValidSessionId(node.session.id)
         ? node.session.id
         : undefined;
 
@@ -516,6 +610,8 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
     } else if (node.needsHuman === "review") {
       // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
@@ -536,6 +632,8 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
     } else if (node.needsHuman === "waiting") {
       // Agent waiting on human input: explicit gate:question/human (declared ask).
@@ -562,6 +660,8 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
     } else if (node.needsHuman === "check") {
       // Session waiting/blocked with no explicit gate — soft "check on it" tier.
@@ -582,9 +682,11 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
       });
-    } else {
-      // needsHuman === "generic": delivered + no explicit gate; graceful degrade.
+    } else if (node.needsHuman === "generic") {
+      // delivered + no explicit gate; graceful degrade.
       items.push({
         initiativeId: initiative.id,
         title: initiative.title,
@@ -603,6 +705,31 @@ export function buildInbox(
         status,
         state,
         waitingFor,
+        alert: alertField,
+        isClosed,
+      });
+    } else {
+      // needsHuman === false && node.alert !== null (membership guarantee above):
+      // no declared gate/session signal, but the row is anomalous — surface it.
+      items.push({
+        initiativeId: initiative.id,
+        title: initiative.title,
+        kind: "alert",
+        nextAction: alertField!.action,
+        recommendation: "",
+        alternative: "",
+        context: "",
+        updatedAt: initiative.updated_at,
+        lastActivityAt,
+        worktree: initiative.worktree,
+        prUrl: initiative.prUrl,
+        onThisMachine,
+        sessionId,
+        status,
+        state,
+        waitingFor,
+        alert: alertField,
+        isClosed,
       });
     }
   }
