@@ -274,22 +274,94 @@
   color: var(--color-warn);
 }
 
-/* Alert 'Why/Do' block (agent-teams-rybk): renders whenever item.alert is
-   present, independent of kind — including alongside the existing gate
-   suggestion box above (merge semantics). Warn-tinted to read as an anomaly,
-   distinct from the accent-bordered suggestion box. */
-.inbox-row__alert {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px 8px 12px;
-  background: color-mix(in srgb, var(--color-warn) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-warn) 30%, transparent);
-  border-left: 3px solid var(--color-warn);
-  border-radius: 4px;
-}
-
 .inbox-row__secondary--alert-why .inbox-row__secondary-label,
 .inbox-row__secondary--alert-do .inbox-row__secondary-label {
   color: var(--color-warn);
+}
+
+/* "i" affordance on alerted rows (agent-teams-rybk) — mirrors the Initiatives
+   view's hover-revealed info icon: explains why + what to do, on hover or
+   keyboard focus, instead of always showing the Why/Do text inline. Renders
+   only when item.alert is present (no fixed-width slot needed here since
+   inbox rows are a vertical stack, not a column-aligned table like
+   Initiatives). Positioned bottom-right of the row, reusing .inbox-row's
+   existing position:relative + 32px right padding. */
+.inbox-row__info {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 4px;
+  color: var(--color-warn);
+}
+
+.inbox-row__info[data-tier="urgent"] {
+  color: var(--color-error);
+}
+
+.inbox-row__info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  opacity: 0.7;
+  outline: none;
+}
+
+.inbox-row__info:hover .inbox-row__info-icon,
+.inbox-row__info:focus-within .inbox-row__info-icon {
+  opacity: 1;
+}
+
+.inbox-row__info-icon:focus-visible {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+/* Popover — hidden until the "i" (or its wrapper) is hovered or keyboard-focused. */
+.inbox-row__info-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 250px;
+  padding: 9px 11px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid currentColor;
+  border-radius: 6px;
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.inbox-row__info:hover .inbox-row__info-pop,
+.inbox-row__info:focus-within .inbox-row__info-pop {
+  opacity: 1;
 }

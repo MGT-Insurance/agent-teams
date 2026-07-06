@@ -110,17 +110,29 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           )}
         </div>
       )}
-      {/* Alert Why/Do (agent-teams-rybk): same framing as the Initiatives popover.
-          Renders for BOTH alert-only rows and gate rows that also carry an alert
-          (merge semantics) — reap rows have item.alert===null so nothing renders here. */}
+      {/* "i" affordance for the alert Why/Do detail (agent-teams-rybk data) — mirrors
+          the Initiatives view's hover-revealed info icon so alerted inbox rows stay
+          compact instead of always showing the Why/Do text inline. Reachable via
+          keyboard focus (Tab), not hover-only — the icon is a real focusable element. */}
       {item.alert && (
-        <div className="inbox-row__alert" data-level={item.alert.level}>
-          <p className="inbox-row__secondary inbox-row__secondary--alert-why">
-            <span className="inbox-row__secondary-label">Why:</span> {item.alert.reason}
-          </p>
-          <p className="inbox-row__secondary inbox-row__secondary--alert-do">
-            <span className="inbox-row__secondary-label">Do:</span> {item.alert.action}
-          </p>
+        <div className="inbox-row__info" data-tier={item.alert.level}>
+          <span
+            className="inbox-row__info-icon"
+            tabIndex={0}
+            aria-label={`Why: ${item.alert.reason} Do: ${item.alert.action}`}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            i
+          </span>
+          <span className="inbox-row__info-pop" role="tooltip">
+            <p className="inbox-row__secondary inbox-row__secondary--alert-why">
+              <span className="inbox-row__secondary-label">Why:</span> {item.alert.reason}
+            </p>
+            <p className="inbox-row__secondary inbox-row__secondary--alert-do">
+              <span className="inbox-row__secondary-label">Do:</span> {item.alert.action}
+            </p>
+          </span>
         </div>
       )}
     </div>
