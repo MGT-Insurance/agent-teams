@@ -36,7 +36,6 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -188,7 +187,8 @@ func (c *executionStatusKong) Run(ctx *cli.Context) error {
 }
 
 // isActivelyWorking reports whether any session in sessions has a cwd matching
-// worktree (exact-line match) AND meets the "actively working" predicate:
+// worktree (symlink-normalised, see canonicalPath) AND meets the "actively
+// working" predicate:
 //
 //	status == "busy" OR state == "working"
 //
@@ -197,12 +197,9 @@ func isActivelyWorking(sessions []agentSession, worktree string) bool {
 	if worktree == "" {
 		return false
 	}
-	// Mirror hasLiveSession: exact string equality after trimming trailing slashes.
-	// Claude agents sometimes reports cwd with a trailing slash; the stored
-	// worktree path never has one, so we normalise both sides before comparing.
-	want := strings.TrimRight(worktree, "/")
+	want := canonicalPath(worktree)
 	for _, s := range sessions {
-		if strings.TrimRight(s.CWD, "/") == want {
+		if canonicalPath(s.CWD) == want {
 			if s.Status == "busy" || s.State == "working" {
 				return true
 			}

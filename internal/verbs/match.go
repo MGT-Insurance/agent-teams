@@ -3,12 +3,25 @@ package verbs
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
+
+// canonicalPath resolves symlinks in p so cwd-vs-worktree comparisons aren't
+// defeated by symlinked directories (e.g. macOS /tmp -> /private/tmp). Falls
+// back to filepath.Clean when p doesn't exist (EvalSymlinks requires the path
+// to exist — e.g. a worktree already removed) or on any other resolution
+// error, so callers always get a normalised string to compare.
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return filepath.Clean(p)
+}
 
 // RegisterMatchKong registers match verbs onto p using native kong structs.
 func RegisterMatchKong(p *cli.Parser) {
@@ -38,31 +51,27 @@ func findOffenders(issues []bd.Issue) []bd.Issue {
 	return out
 }
 
-// matchByWorktree returns the first issue in issues whose description contains
-// an exact line equal to "worktree: "+path (not prefix, not contains).
+// matchByWorktree returns the first issue in issues whose "worktree: <path>"
+// line resolves (after symlink normalisation) to the same path as path.
 func matchByWorktree(issues []bd.Issue, path string) *bd.Issue {
-	needle := "worktree: " + path
+	want := canonicalPath(path)
 	for i := range issues {
-		for _, line := range strings.Split(issues[i].Description, "\n") {
-			if line == needle {
-				return &issues[i]
-			}
+		if wt := worktreePath(issues[i].Description); wt != "" && canonicalPath(wt) == want {
+			return &issues[i]
 		}
 	}
 	return nil
 }
 
-// matchAllByWorktree returns all issues whose description contains an exact
-// line equal to "worktree: "+path, sorted by CreatedAt descending.
+// matchAllByWorktree returns all issues whose "worktree: <path>" line
+// resolves (after symlink normalisation) to the same path as path, sorted by
+// CreatedAt descending.
 func matchAllByWorktree(issues []bd.Issue, path string) []bd.Issue {
-	needle := "worktree: " + path
+	want := canonicalPath(path)
 	var out []bd.Issue
 	for _, iss := range issues {
-		for _, line := range strings.Split(iss.Description, "\n") {
-			if line == needle {
-				out = append(out, iss)
-				break
-			}
+		if wt := worktreePath(iss.Description); wt != "" && canonicalPath(wt) == want {
+			out = append(out, iss)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

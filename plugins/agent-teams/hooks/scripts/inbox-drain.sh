@@ -57,6 +57,15 @@ if [ -f "$PIDFILE" ]; then
   rm -f "$PIDFILE"
 fi
 
+# ── Consume the doorbell: a turn is now definitely running. Watchers no longer
+# remove it at fire time (their rewake can be lost); this is the single ack
+# point that the wake was actually delivered into a turn.
+DOORBELL="$MAILBOX/${match_id}.wake"
+if [ -f "$DOORBELL" ]; then
+  rm -f "$DOORBELL"
+  hook_log_note "note" "doorbell-consumed initiative=${match_id}"
+fi
+
 # ── Signal: peek at unread mail; emit additionalContext if any ───────────────
 peek_out=$("$ATEAM" inbox --peek 2>/dev/null || true)
 # peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.

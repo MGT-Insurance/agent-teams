@@ -3,8 +3,11 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -41,6 +44,27 @@ func TestHasLiveSession_TrailingSlash(t *testing.T) {
 	sessions := []agentSession{{CWD: "/wt/path/"}}
 	if !hasLiveSession(sessions, "/wt/path") {
 		t.Error("expected match when CWD has trailing slash")
+	}
+}
+
+// TestHasLiveSession_SymlinkedCwd verifies that a session whose CWD is a
+// symlink to the registered worktree path (or vice versa) is still recognised
+// as live — regression test for the macOS /tmp -> /private/tmp false negative.
+func TestHasLiveSession_SymlinkedCwd(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Session CWD reported via the symlink; registered worktree is the real path.
+	if !hasLiveSession([]agentSession{{CWD: link}}, real) {
+		t.Error("expected match: session cwd via symlink, worktree real path")
+	}
+
+	// Session CWD is the real path; registered worktree is the symlink.
+	if !hasLiveSession([]agentSession{{CWD: real}}, link) {
+		t.Error("expected match: session cwd real path, worktree via symlink")
 	}
 }
 
@@ -533,83 +557,126 @@ func mustMarshal(v any) []byte {
 
 // ── sendKong core-path tests ──────────────────────────────────────────────────
 
-func TestSendKong_HappyPath_LiveSession(t *testing.T) {
-	home := t.TempDir()
-	f := makeTempFile(t, "hello recipient")
-	recipientWt := t.TempDir()
+// sendFixture bundles the fakeBD + sendKong wiring shared by the escalation
+// tests below; each test overrides only the fields relevant to its branch.
+type sendFixture struct {
+	home        string
+	file        string
+	recipientWt string
+	createArgs  []string
+}
 
-	var createArgs []string
-	fbd := &fakeBD{
+func newSendFixture(t *testing.T) *sendFixture {
+	t.Helper()
+	return &sendFixture{
+		home:        t.TempDir(),
+		file:        makeTempFile(t, "hello recipient"),
+		recipientWt: t.TempDir(),
+	}
+}
+
+func (sf *sendFixture) fakeBD(recipientID, msgID string) *fakeBD {
+	return &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
-			createArgs = args
+			sf.createArgs = args
 			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-kong-msg1"
+				issue.ID = msgID
 			}
 			return nil
 		},
 		runFn: func(args ...string) (string, error) {
-			issues := []bd.Issue{{
-				ID:          "at-kong-recip",
-				Description: "worktree: " + recipientWt + "\n",
-			}}
+			issues := []bd.Issue{{ID: recipientID, Description: "worktree: " + sf.recipientWt + "\n"}}
 			raw, _ := json.Marshal(issues)
 			return string(raw), nil
 		},
 	}
+}
 
-	var resumeCalled bool
+func TestSendKong_BusySession_NoOp(t *testing.T) {
+	sf := newSendFixture(t)
+	var resumeCalled, sleeperCalled, respawnCalled bool
 	cmd := &sendKong{
 		RecipientID: "at-kong-recip",
-		File:        f,
+		File:        sf.file,
 		Sender:      "test-sender",
-		agentsFunc:  func() ([]agentSession, error) { return []agentSession{{CWD: recipientWt}}, nil },
-		resumeFunc:  func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "busy"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+		sleeper:        func(time.Duration) { sleeperCalled = true },
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { respawnCalled = true; return nil },
 	}
 
-	ctx, stdout, _ := makeCtx(fbd, home)
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-recip", "at-kong-msg1"), sf.home)
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	assertContains(t, createArgs, "--type=message", "bd create missing --type=message")
-	assertContains(t, createArgs, "--assignee=at-kong-recip", "bd create missing --assignee")
-
+	assertContains(t, sf.createArgs, "--type=message", "bd create missing --type=message")
+	assertContains(t, sf.createArgs, "--assignee=at-kong-recip", "bd create missing --assignee")
 	if resumeCalled {
-		t.Error("resume should not be called when session is live")
+		t.Error("resume should not be called when recipient is busy")
+	}
+	if sleeperCalled {
+		t.Error("sleeper should not be called when recipient is busy")
+	}
+	if respawnCalled {
+		t.Error("respawn should not be called when recipient is busy")
 	}
 	if !strings.Contains(stdout.String(), "message_id: at-kong-msg1") {
 		t.Errorf("stdout missing message_id: %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "doorbell will be picked up when its turn ends") {
+		t.Errorf("stdout missing busy no-op notice: %s", stdout.String())
+	}
 }
 
-func TestSendKong_DeadSession_EscalatesToResume(t *testing.T) {
-	home := t.TempDir()
-	f := makeTempFile(t, "hello")
-	recipientWt := t.TempDir()
-
-	fbd := &fakeBD{
-		runJSONFn: func(dst any, args ...string) error {
-			if issue, ok := dst.(*bd.Issue); ok {
-				issue.ID = "at-kong-msg2"
-			}
-			return nil
+func TestSendKong_WaitingSession_NoOp(t *testing.T) {
+	sf := newSendFixture(t)
+	var resumeCalled, respawnCalled bool
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "waiting"}}, nil
 		},
-		runFn: func(args ...string) (string, error) {
-			issues := []bd.Issue{{ID: "at-kong-dead", Description: "worktree: " + recipientWt + "\n"}}
-			raw, _ := json.Marshal(issues)
-			return string(raw), nil
-		},
+		resumeFunc:     func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { respawnCalled = true; return nil },
 	}
+
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-recip", "at-kong-msg1"), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resumeCalled {
+		t.Error("resume should not be called when recipient is waiting")
+	}
+	if respawnCalled {
+		t.Error("respawn should not be called when recipient is waiting (would drop a pending dialog)")
+	}
+	if !strings.Contains(stdout.String(), "doorbell will be picked up when its turn ends") {
+		t.Errorf("stdout missing waiting no-op notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_NoMatchingSession_EscalatesToResume(t *testing.T) {
+	sf := newSendFixture(t)
 
 	var resumedID string
 	cmd := &sendKong{
-		RecipientID: "at-kong-dead",
-		File:        f,
-		agentsFunc:  func() ([]agentSession, error) { return []agentSession{}, nil },
-		resumeFunc:  func(_ *cli.Context, id string) error { resumedID = id; return nil },
+		RecipientID:    "at-kong-dead",
+		File:           sf.file,
+		agentsFunc:     func() ([]agentSession, error) { return []agentSession{}, nil },
+		resumeFunc:     func(_ *cli.Context, id string) error { resumedID = id; return nil },
+		sleeper:        func(time.Duration) { t.Fatal("sleeper should not be called when no session matches") },
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { t.Fatal("respawn should not be called when no session matches"); return nil },
 	}
 
-	ctx, stdout, _ := makeCtx(fbd, home)
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-dead", "at-kong-msg2"), sf.home)
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -618,6 +685,118 @@ func TestSendKong_DeadSession_EscalatesToResume(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "launching via ateam resume") {
 		t.Errorf("stdout missing launch notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
+	sf := newSendFixture(t)
+	var sleptFor time.Duration
+	var respawnCalled bool
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(d time.Duration) { sleptFor = d },
+		doorbellExists: func(string) bool { return false }, // gone: a turn consumed it
+		respawnFunc:    func(string) error { respawnCalled = true; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-recip", "at-kong-msg1"), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sleptFor != 5*time.Second {
+		t.Errorf("expected a 5s wait before the doorbell re-check, got %v", sleptFor)
+	}
+	if respawnCalled {
+		t.Error("respawn should not be called when the doorbell was already consumed")
+	}
+	if !strings.Contains(stdout.String(), "doorbell consumed; delivery in progress") {
+		t.Errorf("stdout missing consumed notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_IdleSession_DoorbellPresent_Respawns(t *testing.T) {
+	sf := newSendFixture(t)
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true }, // still present: recipient is deaf
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-recip", "at-kong-msg1"), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "abc12345" {
+		t.Errorf("respawn not called with correct short id; got %q", respawnedID)
+	}
+	if !strings.Contains(stdout.String(), "respawned abc12345") {
+		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_PidlessSession_DoorbellPresent_Respawns(t *testing.T) {
+	sf := newSendFixture(t)
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			// Tracked-but-dead: no Status, PID stays nil (zero value).
+			return []agentSession{{ID: "deadbeef", CWD: sf.recipientWt}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-recip", "at-kong-msg1"), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "deadbeef" {
+		t.Errorf("respawn not called with correct short id; got %q", respawnedID)
+	}
+	if !strings.Contains(stdout.String(), "respawned deadbeef") {
+		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_RespawnError_WarnsButSucceeds(t *testing.T) {
+	sf := newSendFixture(t)
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { return fmt.Errorf("exec: \"claude\": executable file not found in $PATH") },
+	}
+
+	ctx, stdout, _ := makeCtx(sf.fakeBD("at-kong-recip", "at-kong-msg1"), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("respawn failure must not fail ateam send (mail is already delivered): %v", err)
+	}
+	if !strings.Contains(stdout.String(), "warning: respawn abc12345 failed") {
+		t.Errorf("stdout missing respawn-failure warning: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "at-kong-msg1") {
+		t.Errorf("stdout warning should reference the queued message id: %s", stdout.String())
 	}
 }
 
