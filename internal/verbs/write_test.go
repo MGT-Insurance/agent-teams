@@ -1407,6 +1407,125 @@ func TestCloseKong_FilePrecedenceOverReason(t *testing.T) {
 	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=" + content})
 }
 
+// ── close: update-local-main wiring (agent-teams-q564.1) ────────────────────
+//
+// These use fakeBD/makeCtx (defined in dispatch_test.go, shared with
+// resume_test.go) rather than newCtx/fakeExec, because closeKong.Run now
+// issues a second bd call (bd.ShowIssue -> "show <id> --json") in addition to
+// the "close" call, and fakeBD lets us branch the fake response on args[0]
+// instead of relying on fakeExec's fixed response-per-index sequencing.
+
+// TestCloseKong_UpdateLocalMain_RepoPathPresent verifies that when the closed
+// issue's description has a repo: line, the injected runUpdateLocalMain fake
+// is invoked with that path and its output is forwarded to stdout.
+func TestCloseKong_UpdateLocalMain_RepoPathPresent(t *testing.T) {
+	var gotRepo string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "show" {
+				issues := []bd.Issue{{ID: "at-5", Description: "repo: /some/repo\n"}}
+				raw, _ := json.Marshal(issues)
+				return string(raw), nil
+			}
+			return "ok", nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &closeKong{
+		ID: "at-5",
+		runUpdateLocalMain: func(repoPath string) (string, error) {
+			gotRepo = repoPath
+			return "update-local-main: already up to date (/some/repo main)\n", nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotRepo != "/some/repo" {
+		t.Errorf("runUpdateLocalMain called with repo %q, want /some/repo", gotRepo)
+	}
+	if !strings.Contains(stdout.String(), "update-local-main: already up to date") {
+		t.Errorf("stdout = %q, want update-local-main output forwarded", stdout.String())
+	}
+}
+
+// TestCloseKong_UpdateLocalMain_RepoPathAbsent verifies close still succeeds
+// and the injected fake is never invoked when the issue description has no
+// repo: (or worktree:) line.
+func TestCloseKong_UpdateLocalMain_RepoPathAbsent(t *testing.T) {
+	called := false
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "show" {
+				issues := []bd.Issue{{ID: "at-5", Description: "problem: no repo line here\n"}}
+				raw, _ := json.Marshal(issues)
+				return string(raw), nil
+			}
+			return "ok", nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &closeKong{
+		ID: "at-5",
+		runUpdateLocalMain: func(repoPath string) (string, error) {
+			called = true
+			return "", nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Error("runUpdateLocalMain should not be invoked when no repo: line is present")
+	}
+}
+
+// TestCloseKong_UpdateLocalMain_ScriptErrorIsFailSoft verifies that a script
+// error (simulating script-not-found / exec failure) is swallowed: close
+// still succeeds, and a one-line warning appears in stdout instead of an
+// error propagating.
+func TestCloseKong_UpdateLocalMain_ScriptErrorIsFailSoft(t *testing.T) {
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "show" {
+				issues := []bd.Issue{{ID: "at-5", Description: "repo: /some/repo\n"}}
+				raw, _ := json.Marshal(issues)
+				return string(raw), nil
+			}
+			return "ok", nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &closeKong{
+		ID: "at-5",
+		runUpdateLocalMain: func(repoPath string) (string, error) {
+			return "", fmt.Errorf("update-local-main.sh not found")
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("expected close to succeed despite script error, got: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "update-local-main: skipped") {
+		t.Errorf("stdout = %q, want a one-line skip warning", stdout.String())
+	}
+}
+
+// TestRunUpdateLocalMainScript_NotFoundIsFailSoft exercises the stat-guard in
+// runUpdateLocalMainScript's production implementation: os.Executable()
+// resolves to the running test binary, which has no sibling
+// hooks/scripts/update-local-main.sh, so the "not found" error path fires.
+// This proves the fail-soft guard fires; it deliberately does not exercise
+// real script behaviour (see live verification for that).
+func TestRunUpdateLocalMainScript_NotFoundIsFailSoft(t *testing.T) {
+	_, err := runUpdateLocalMainScript(t.TempDir())
+	if err == nil {
+		t.Fatal("expected error: no hooks/scripts/update-local-main.sh sibling to the test binary")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want 'not found'", err)
+	}
+}
+
 // TestLearnKong_AppliesFreshPrefix verifies learnKong uses the learnKey helper
 // to prepend the fresh: tier prefix for bare slugs.
 func TestLearnKong_AppliesFreshPrefix(t *testing.T) {

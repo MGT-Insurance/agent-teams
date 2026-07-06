@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -383,6 +384,11 @@ type closeKong struct {
 	ID     string `arg:"" name:"id"  help:"Initiative ID."`
 	Reason string `name:"reason"     help:"Close reason text."`
 	File   string `name:"file"       help:"Path to file containing close reason (takes precedence over --reason)."`
+
+	// runUpdateLocalMain is injected at registration time so tests can
+	// substitute a fake without exec'ing a real script. If nil,
+	// runLocalMainUpdate falls back to runUpdateLocalMainScript.
+	runUpdateLocalMain updateLocalMainFunc `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -398,18 +404,72 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 		}
 		reason = string(data)
 	}
+
+	var out string
+	var err error
 	if reason != "" {
-		out, err := ctx.BD.Run("close", c.ID, "--reason="+reason)
-		if out != "" {
-			fmt.Fprintln(ctx.Stdout, out)
-		}
-		return err
+		out, err = ctx.BD.Run("close", c.ID, "--reason="+reason)
+	} else {
+		out, err = ctx.BD.Run("close", c.ID)
 	}
-	out, err := ctx.BD.Run("close", c.ID)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+
+	c.runLocalMainUpdate(ctx)
+	return nil
+}
+
+// runLocalMainUpdate best-effort fast-forwards the initiative's local main
+// checkout after a successful close. Never returns an error — any failure
+// (issue lookup, missing repo: line, script exec) is fail-soft: printed as a
+// one-line note and swallowed.
+func (c *closeKong) runLocalMainUpdate(ctx *cli.Context) {
+	issue, err := bd.ShowIssue(ctx.BD, c.ID)
+	if err != nil {
+		return
+	}
+	repo := extractRepoPath(issue.Description)
+	if repo == "" {
+		return
+	}
+	run := c.runUpdateLocalMain
+	if run == nil {
+		run = runUpdateLocalMainScript
+	}
+	out, err := run(repo)
+	if err != nil {
+		fmt.Fprintf(ctx.Stdout, "update-local-main: skipped (%v)\n", err)
+		return
+	}
+	if out != "" {
+		fmt.Fprint(ctx.Stdout, out)
+	}
+}
+
+// updateLocalMainFunc runs update-local-main.sh against repoPath and returns
+// its combined output. Injected on closeKong so tests can fake it.
+type updateLocalMainFunc func(repoPath string) (string, error)
+
+// runUpdateLocalMainScript resolves update-local-main.sh relative to the
+// running ateam binary (self-locating — see route_types.go's
+// defaultAteamRunner for the same os.Executable() pattern) and execs it
+// against repoPath. Returns an error if the binary can't be located, the
+// script doesn't exist there, or the script itself exits non-zero.
+func runUpdateLocalMainScript(repoPath string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve self binary: %w", err)
+	}
+	script := filepath.Join(filepath.Dir(self), "..", "hooks", "scripts", "update-local-main.sh")
+	if _, err := os.Stat(script); err != nil {
+		return "", fmt.Errorf("update-local-main.sh not found at %s: %w", script, err)
+	}
+	out, err := exec.Command(script, repoPath).CombinedOutput()
+	return string(out), err
 }
 
 // ── pull ──────────────────────────────────────────────────────────────────────
@@ -758,7 +818,9 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
 	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})
-	p.AddVerb("close", "Close an initiative.", &closeKong{})
+	p.AddVerb("close", "Close an initiative.", &closeKong{
+		runUpdateLocalMain: runUpdateLocalMainScript,
+	})
 	p.AddVerb("pull", "Pull the remote beads database (dolt pull).", &pullKong{})
 	p.AddVerb("sync", "Pull then push the beads database (bounded non-ff retry).", &syncKong{})
 	p.AddVerb("forget", "Delete a role memory by key.", &forgetKong{})
