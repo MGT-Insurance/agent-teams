@@ -205,3 +205,33 @@ body {
   border: 1px solid rgba(248, 81, 73, 0.35);
   border-radius: 3px;
 }
+
+/* Shared row-card base (agent-teams-m380.3) — position/background/border/
+   radius/cursor/transition/outline + hover/focus-visible treatment shared by
+   Initiatives' .init-row and Inbox's .inbox-row. Each view's row class keeps
+   only its own layout-only declarations (flex-direction, padding, gap) and
+   composes with this base class in the row div's className. */
+.row-card {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+}
+
+.row-card:hover,
+.row-card:focus-visible {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface));
+}
+
+/* Shared action-slot positioning (agent-teams-m380.3) — corner tab flush
+   with the row card's top-right edge, used by Initiatives' action button
+   and Inbox's action slot. */
+.row-action-slot {
+  position: absolute;
+  top: -5px;
+  right: -1px;
+}

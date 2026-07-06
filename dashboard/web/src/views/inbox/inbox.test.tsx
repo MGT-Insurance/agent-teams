@@ -951,8 +951,8 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
     expect(badge).not.toBeNull();
     expect(badge?.textContent?.toLowerCase()).toBe("needs attention");
 
-    const why = container.querySelector(".inbox-row__secondary--alert-why");
-    const doo = container.querySelector(".inbox-row__secondary--alert-do");
+    const why = container.querySelector(".alert-info__why");
+    const doo = container.querySelector(".alert-info__do");
     expect(why?.textContent).toMatch(/^Why: Open initiative with a worktree/);
     expect(doo?.textContent).toMatch(/^Do: Launch a session in the worktree\.$/);
   });
@@ -984,8 +984,8 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
     const rec = container.querySelector(".inbox-row__secondary--recommendation");
     expect(rec?.textContent).toMatch(/^Recommended: Roll back the canary\.$/);
     // Alert Why/Do block, merged in alongside it.
-    const why = container.querySelector(".inbox-row__secondary--alert-why");
-    const doo = container.querySelector(".inbox-row__secondary--alert-do");
+    const why = container.querySelector(".alert-info__why");
+    const doo = container.querySelector(".alert-info__do");
     expect(why?.textContent).toMatch(/^Why: Multiple sessions matched this worktree\.$/);
     expect(doo?.textContent).toMatch(/^Do: Stop the extras/);
     // Row keeps its gate kind and badge, not "alert".
@@ -996,7 +996,7 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
   it("reap row is unchanged: no alert info icon, Stop button", () => {
     setInbox([reapItem]);
     const { container } = renderInbox();
-    expect(container.querySelector(".inbox-row__info-icon")).toBeNull();
+    expect(container.querySelector(".alert-info__icon")).toBeNull();
     expect(screen.getByRole("button", { name: /stop session/i })).toBeTruthy();
     const row = screen.getByRole("button", { name: /zombie session on closed initiative/i });
     expect(row.getAttribute("data-kind")).toBe("reap");
@@ -1013,19 +1013,19 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
   it("does not render an alert info icon on rows with alert=null", () => {
     setInbox([waitingItem]);
     const { container } = renderInbox();
-    expect(container.querySelector(".inbox-row__info-icon")).toBeNull();
+    expect(container.querySelector(".alert-info__icon")).toBeNull();
   });
 
   it("alerted row renders the 'i' info icon affordance instead of an inline Why/Do block", () => {
     setInbox([alertStalledItem]);
     const { container } = renderInbox();
-    expect(container.querySelector(".inbox-row__info-icon")).not.toBeNull();
+    expect(container.querySelector(".alert-info__icon")).not.toBeNull();
   });
 
   it("clicking the info icon does not navigate (stopPropagation keeps the row from drilling in)", () => {
     setInbox([alertStalledItem]);
     const { container } = renderInbox();
-    const icon = container.querySelector(".inbox-row__info-icon");
+    const icon = container.querySelector(".alert-info__icon");
     expect(icon).not.toBeNull();
     fireEvent.click(icon as Element);
     expect(mockNavigate).not.toHaveBeenCalled();
@@ -1034,7 +1034,7 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
   it("pressing Enter on the focused info icon does not navigate (keyboard stopPropagation)", () => {
     setInbox([alertStalledItem]);
     const { container } = renderInbox();
-    const icon = container.querySelector(".inbox-row__info-icon");
+    const icon = container.querySelector(".alert-info__icon");
     expect(icon).not.toBeNull();
     fireEvent.keyDown(icon as Element, { key: "Enter" });
     expect(mockNavigate).not.toHaveBeenCalled();
