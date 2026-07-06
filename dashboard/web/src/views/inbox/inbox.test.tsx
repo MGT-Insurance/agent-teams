@@ -993,10 +993,10 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
     expect(row.getAttribute("data-kind")).toBe("waiting");
   });
 
-  it("reap row is unchanged: no alert block, Stop button", () => {
+  it("reap row is unchanged: no alert info icon, Stop button", () => {
     setInbox([reapItem]);
     const { container } = renderInbox();
-    expect(container.querySelector(".inbox-row__alert")).toBeNull();
+    expect(container.querySelector(".inbox-row__info-icon")).toBeNull();
     expect(screen.getByRole("button", { name: /stop session/i })).toBeTruthy();
     const row = screen.getByRole("button", { name: /zombie session on closed initiative/i });
     expect(row.getAttribute("data-kind")).toBe("reap");
@@ -1010,10 +1010,34 @@ describe("InboxView — kind='alert' rows and RowActions (agent-teams-rybk.4)", 
     expect(screen.getByRole("button", { name: "launch" })).toBeTruthy();
   });
 
-  it("does not render an alert block on rows with alert=null", () => {
+  it("does not render an alert info icon on rows with alert=null", () => {
     setInbox([waitingItem]);
     const { container } = renderInbox();
-    expect(container.querySelector(".inbox-row__alert")).toBeNull();
+    expect(container.querySelector(".inbox-row__info-icon")).toBeNull();
+  });
+
+  it("alerted row renders the 'i' info icon affordance instead of an inline Why/Do block", () => {
+    setInbox([alertStalledItem]);
+    const { container } = renderInbox();
+    expect(container.querySelector(".inbox-row__info-icon")).not.toBeNull();
+  });
+
+  it("clicking the info icon does not navigate (stopPropagation keeps the row from drilling in)", () => {
+    setInbox([alertStalledItem]);
+    const { container } = renderInbox();
+    const icon = container.querySelector(".inbox-row__info-icon");
+    expect(icon).not.toBeNull();
+    fireEvent.click(icon as Element);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it("pressing Enter on the focused info icon does not navigate (keyboard stopPropagation)", () => {
+    setInbox([alertStalledItem]);
+    const { container } = renderInbox();
+    const icon = container.querySelector(".inbox-row__info-icon");
+    expect(icon).not.toBeNull();
+    fireEvent.keyDown(icon as Element, { key: "Enter" });
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
 
