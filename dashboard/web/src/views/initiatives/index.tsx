@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type { InitiativeNode, SessionState } from "@agent-teams/shared";
 import { sessionKind as canonicalSessionKind, isValidSessionId } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
+import { useRowClickNav } from "../../hooks/useRowClickNav.js";
 import { RowActions } from "../../components/RowActions.js";
+import { AlertInfoIcon } from "../../components/AlertInfoIcon.js";
 import "./initiatives.css";
 
 // Persist a boolean toggle to localStorage (no server). Reads on init, writes on
@@ -121,18 +122,14 @@ function SignalChip({ level, tone, icon, label, value, title }: SignalChipProps)
 }
 
 function InitiativeRow({ node }: { node: InitiativeNode }) {
-  const navigate = useNavigate();
   const { initiative } = node;
+  const rowNav = useRowClickNav(initiative.id, initiative.title);
 
   const onMachine = node.worktreeExists;
   const hasPr = node.delivery === "pr-open";
   const sess = sessionChip(node);
   const alert = node.alert;
   const attachId = sessionAttachId(node.session);
-
-  function handleRowClick() {
-    navigate(`/initiative/${initiative.id}`);
-  }
 
   function handlePrLinkClick(e: React.MouseEvent<HTMLAnchorElement>) {
     // Don't let the PR link bubble up to the row's drill-in navigation.
@@ -157,15 +154,11 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
 
   return (
     <div
-      className="init-row"
+      className="row-card init-row"
       data-initiative-id={initiative.id}
       data-closed={isClosed(node) ? "true" : "false"}
       data-alert={alert?.level}
-      onClick={handleRowClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleRowClick(); }}
-      aria-label={`Open initiative: ${initiative.title}`}
+      {...rowNav}
     >
       <div className="init-row__main">
         <span className="init-row__title">{initiative.title}</span>
@@ -213,7 +206,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
-      <div className="init-row__action">
+      <div className="row-action-slot">
         <RowActions
           input={{
             initiativeId: initiative.id,
@@ -225,20 +218,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           }}
         />
       </div>
-      {/* Always-present fixed-width slot so the signals column holds the same
-          horizontal position on every row. Icon + popover render only when the
-          row is actually alerted, so non-alerted rows expose no tooltip. */}
-      <div className="init-row__info" data-tier={alert?.level}>
-        {alert && (
-          <>
-            <span className="init-row__info-icon" aria-hidden="true">i</span>
-            <span className="init-row__info-pop" role="tooltip">
-              <span className="init-row__info-why"><strong>Why:</strong> {alert.reason}</span>
-              <span className="init-row__info-do"><strong>Do:</strong> {alert.action}</span>
-            </span>
-          </>
-        )}
-      </div>
+      <AlertInfoIcon alert={alert} />
     </div>
   );
 }

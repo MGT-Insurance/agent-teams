@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type { InboxItem } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
+import { useRowClickNav } from "../../hooks/useRowClickNav.js";
 import { RowActions } from "../../components/RowActions.js";
+import { AlertInfoIcon } from "../../components/AlertInfoIcon.js";
 import "./inbox.css";
 
 // Row label per flavor — matches the spec's specificity-follows-signal principle.
@@ -29,11 +30,7 @@ interface InboxRowProps {
 }
 
 function InboxRow({ item, actionSlot }: InboxRowProps) {
-  const navigate = useNavigate();
-
-  function handleRowClick() {
-    navigate(`/initiative/${item.initiativeId}`);
-  }
+  const rowNav = useRowClickNav(item.initiativeId, item.title);
 
   function handlePrLinkClick(e: React.MouseEvent<HTMLAnchorElement>) {
     // Stop propagation so the row click (navigate to drill-in) doesn't also fire.
@@ -47,14 +44,10 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
 
   return (
     <div
-      className={`inbox-row inbox-row--${item.kind}${isLoud ? " inbox-row--loud" : ""}`}
+      className={`row-card inbox-row inbox-row--${item.kind}${isLoud ? " inbox-row--loud" : ""}`}
       data-kind={item.kind}
       data-initiative-id={item.initiativeId}
-      onClick={handleRowClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleRowClick(); }}
-      aria-label={`Open initiative: ${item.title}`}
+      {...rowNav}
     >
       <div className="inbox-row__header">
         <span className={`inbox-row__badge inbox-row__badge--${item.kind}`}>
@@ -81,7 +74,7 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           </a>
         )}
         {actionSlot && (
-          <div className="inbox-row__action-slot">{actionSlot}</div>
+          <div className="row-action-slot">{actionSlot}</div>
         )}
       </div>
       <p className="inbox-row__next-action">{item.nextAction}</p>
@@ -110,31 +103,9 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           )}
         </div>
       )}
-      {/* "i" affordance for the alert Why/Do detail (agent-teams-rybk data) — mirrors
-          the Initiatives view's hover-revealed info icon so alerted inbox rows stay
-          compact instead of always showing the Why/Do text inline. Reachable via
-          keyboard focus (Tab), not hover-only — the icon is a real focusable element. */}
-      {item.alert && (
-        <div className="inbox-row__info" data-tier={item.alert.level}>
-          <span
-            className="inbox-row__info-icon"
-            tabIndex={0}
-            aria-label={`Why: ${item.alert.reason} Do: ${item.alert.action}`}
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-          >
-            i
-          </span>
-          <span className="inbox-row__info-pop" role="tooltip">
-            <p className="inbox-row__secondary inbox-row__secondary--alert-why">
-              <span className="inbox-row__secondary-label">Why:</span> {item.alert.reason}
-            </p>
-            <p className="inbox-row__secondary inbox-row__secondary--alert-do">
-              <span className="inbox-row__secondary-label">Do:</span> {item.alert.action}
-            </p>
-          </span>
-        </div>
-      )}
+      {/* "i" affordance for the alert Why/Do detail (agent-teams-rybk data) —
+          shared with Initiatives' info icon (agent-teams-m380.1). */}
+      <AlertInfoIcon alert={item.alert} />
     </div>
   );
 }
