@@ -1,4 +1,4 @@
-// Assembles SnapshotEvent from CLI data and manages the 2s poll loop.
+// Assembles SnapshotEvent from CLI data and manages the poll loop.
 
 import { existsSync } from "node:fs";
 
@@ -20,7 +20,10 @@ import {
   buildInbox,
 } from "./parse.js";
 
-const POLL_INTERVAL_MS = 2_000;
+// 15s (not 2s): each tick fires 4 subprocess calls against the global bd
+// workspace, which serializes on an advisory flock (at-6nj). 2s caused
+// lock-contention pileups under concurrent load.
+const POLL_INTERVAL_MS = 15_000;
 
 // Per-session transition bookkeeping (agent-teams-ni2y.8). sessionId -> last-seen
 // (status, state) pair plus the epoch ms it last changed. Server-internal only —
