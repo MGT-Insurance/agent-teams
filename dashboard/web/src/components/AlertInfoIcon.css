@@ -1,0 +1,91 @@
+/* "i" affordance on alerted rows (agent-teams-m380.1) — explains why + what
+   to do, on hover or keyboard focus. The slot is always present (empty on
+   non-alerted rows) at a fixed 16x16 size, positioned bottom-right relative
+   to the row (row must be position:relative). */
+.alert-info {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: 4px;
+  color: var(--color-warn);
+}
+
+.alert-info[data-tier="urgent"] {
+  color: var(--color-error);
+}
+
+.alert-info__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  opacity: 0.7;
+  outline: none;
+}
+
+.alert-info:hover .alert-info__icon,
+.alert-info:focus-within .alert-info__icon {
+  opacity: 1;
+}
+
+.alert-info__icon:focus-visible {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+/* Popover — hidden until the "i" (or its wrapper) is hovered or keyboard-focused. */
+.alert-info__pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 250px;
+  padding: 9px 11px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid currentColor;
+  border-radius: 6px;
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.alert-info:hover .alert-info__pop,
+.alert-info:focus-within .alert-info__pop {
+  opacity: 1;
+}
+
+/* Tier-neutral label color: the popover's left border already carries the
+   tier color (currentColor, amber or red), so the label itself stays a
+   fixed muted grey rather than duplicating/contradicting that signal. */
+.alert-info__label {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
