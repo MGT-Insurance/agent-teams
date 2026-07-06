@@ -102,16 +102,39 @@
   padding: 14px 32px 14px 16px;
 }
 
-/* Left accent line per kind */
-.inbox-row--waiting {
+/* Left accent line per kind. Compounded with .row-card (not just the bare
+   modifier class) so each kind wins deterministically over .row-card's own
+   border/background: a bare modifier class ties .row-card's specificity
+   (0,1,0 each), and the agent-teams-m380.3 split moved .row-card into a
+   separately-loaded, later-in-bundle file, which flips that tie in
+   .row-card's favor — silently dropping the left-accent color (and, for
+   waiting/review, the 3px width too) at rest. Compounding bumps these to
+   (0,2,0), beating .row-card outright regardless of load order
+   (agent-teams-m380.5). Hover/focus-visible is restated too, but only for
+   waiting/review, where .row-card:hover's border-color would otherwise win
+   the same way; generic's hover color already coincides with accent-blue,
+   and loud going accent-blue on hover is unchanged pre-refactor behavior
+   (.row-card:hover was always higher-specificity than .inbox-row--loud
+   alone), so neither needs a hover rule here. */
+.row-card.inbox-row--waiting {
   border-left: 3px solid #ff6b35;
 }
 
-.inbox-row--review {
+.row-card.inbox-row--waiting:hover,
+.row-card.inbox-row--waiting:focus-visible {
+  border-left-color: #ff6b35;
+}
+
+.row-card.inbox-row--review {
   border-left: 3px solid var(--color-ok);
 }
 
-.inbox-row--generic {
+.row-card.inbox-row--review:hover,
+.row-card.inbox-row--review:focus-visible {
+  border-left-color: var(--color-ok);
+}
+
+.row-card.inbox-row--generic {
   border-left: 3px solid var(--color-accent);
 }
 
@@ -119,7 +142,7 @@
    state="blocked", independent of kind — a check row can be just as loud as a
    waiting row. Blocked-no-gate rows must NOT be muted, so `check` no longer
    gets a de-emphasized/opacity treatment (removed). */
-.inbox-row--loud {
+.row-card.inbox-row--loud {
   border-color: var(--color-warn);
   background: color-mix(in srgb, var(--color-warn) 8%, var(--color-surface));
 }

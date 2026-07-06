@@ -149,6 +149,10 @@
 
 .init-row[data-alert="urgent"]:hover,
 .init-row[data-alert="urgent"]:focus-visible {
+  /* Restated (not just inherited from the base rule above) so this tier's
+     left-accent color wins deterministically over the shared .row-card:hover
+     border-color, regardless of stylesheet load order (agent-teams-m380.5). */
+  border-left-color: var(--color-error);
   background: color-mix(in srgb, var(--color-error) 13%, var(--color-surface));
 }
 
@@ -159,11 +163,17 @@
 
 .init-row[data-alert="med"]:hover,
 .init-row[data-alert="med"]:focus-visible {
+  border-left-color: var(--color-warn);
   background: color-mix(in srgb, var(--color-warn) 12%, var(--color-surface));
 }
 
 .init-row[data-alert="low"] {
   border-left: 4px solid color-mix(in srgb, var(--color-warn) 55%, transparent);
+}
+
+.init-row[data-alert="low"]:hover,
+.init-row[data-alert="low"]:focus-visible {
+  border-left-color: color-mix(in srgb, var(--color-warn) 55%, transparent);
 }
 
 .init-row__main {
