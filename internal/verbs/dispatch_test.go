@@ -1284,62 +1284,36 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 	}
 }
 
-// ── bgSessionEnv: env-building helper ────────────────────────────────────────
+// ── bgSessionArgs: --settings auto-compact-window argument ──────────────────
 
-// TestBGSessionEnv_ContainsKey verifies that bgSessionEnv() includes
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000 exactly once.
-func TestBGSessionEnv_ContainsKey(t *testing.T) {
-	env := bgSessionEnv()
-	want := autoCompactWindowEnv + "=" + autoCompactWindowValue
-	count := 0
-	for _, e := range env {
-		if e == want {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("bgSessionEnv() has %d occurrence(s) of %q; want exactly 1", count, want)
-	}
-}
+// TestBGSessionArgs_ContainsSettingsFlag verifies that bgSessionArgs() argv
+// contains "--settings" immediately followed by the exact
+// autoCompactWindowSettingsJSON string. This is the CLI-arg mechanism that
+// replaced the old CLAUDE_CODE_AUTO_COMPACT_WINDOW env var (which never
+// reached bg sessions launched via the daemon's spare-session pool — see
+// agent-teams-g8xc).
+func TestBGSessionArgs_ContainsSettingsFlag(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "")
 
-// TestBGSessionEnv_OverridesInherited verifies that an inherited value of
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW is replaced, not duplicated.
-func TestBGSessionEnv_OverridesInherited(t *testing.T) {
-	t.Setenv(autoCompactWindowEnv, "999999")
-
-	env := bgSessionEnv()
-	want := autoCompactWindowEnv + "=" + autoCompactWindowValue
-
-	count := 0
-	for _, e := range env {
-		if strings.HasPrefix(e, autoCompactWindowEnv+"=") {
-			count++
-			if e != want {
-				t.Errorf("bgSessionEnv() has %q; want %q", e, want)
-			}
-		}
-	}
-	if count != 1 {
-		t.Errorf("bgSessionEnv() has %d occurrence(s) of %s=...; want exactly 1", count, autoCompactWindowEnv)
-	}
-}
-
-// TestBGSessionEnv_PreservesOtherVars verifies that an unrelated env var set
-// by the parent is present in the output.
-func TestBGSessionEnv_PreservesOtherVars(t *testing.T) {
-	t.Setenv("ATEAM_TEST_SENTINEL_XYZ", "preserved-value")
-
-	env := bgSessionEnv()
-	want := "ATEAM_TEST_SENTINEL_XYZ=preserved-value"
 	found := false
-	for _, e := range env {
-		if e == want {
+	for i, a := range args {
+		if a == "--settings" {
+			if i+1 >= len(args) {
+				t.Fatal("--settings has no following value in argv")
+			}
+			val := args[i+1]
+			if val != autoCompactWindowSettingsJSON {
+				t.Errorf("value after --settings = %q, want %q", val, autoCompactWindowSettingsJSON)
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("bgSessionEnv() dropped unrelated env var %q", want)
+		t.Errorf("argv missing --settings; got: %v", args)
+	}
+	if autoCompactWindowSettingsJSON != `{"autoCompactWindow":200000}` {
+		t.Errorf("autoCompactWindowSettingsJSON = %q, want %q", autoCompactWindowSettingsJSON, `{"autoCompactWindow":200000}`)
 	}
 }
 

@@ -343,29 +343,18 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
-// autoCompactWindowEnv is the environment variable that controls Claude Code's
-// auto-compact trigger window (in tokens). autoCompactWindowValue forces it to
-// 250000 for all background DRI sessions regardless of the caller's environment.
-const (
-	autoCompactWindowEnv   = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
-	autoCompactWindowValue = "250000"
-)
-
-// bgSessionEnv returns os.Environ() with CLAUDE_CODE_AUTO_COMPACT_WINDOW forced
-// to autoCompactWindowValue. Any inherited occurrence of the key is filtered out
-// before appending ours — glibc/macOS getenv returns the FIRST duplicate, so a
-// plain append would not override an inherited value.
-func bgSessionEnv() []string {
-	prefix := autoCompactWindowEnv + "="
-	base := os.Environ()
-	filtered := make([]string, 0, len(base)+1)
-	for _, e := range base {
-		if !strings.HasPrefix(e, prefix) {
-			filtered = append(filtered, e)
-		}
-	}
-	return append(filtered, prefix+autoCompactWindowValue)
-}
+// autoCompactWindowSettingsJSON is the --settings JSON argument forcing
+// Claude Code's auto-compact trigger window to 200000 tokens for all
+// background DRI sessions, regardless of the caller's environment.
+//
+// This is a CLI argument, not an env var, because the daemon's spare-session
+// pool forks new bg sessions from a pre-warmed process whose environment was
+// frozen at daemon start — setting cmd.Env on the exec.Command here never
+// reaches the spawned session (verified live). --settings is parsed by the
+// newly spawned process itself from its own argv, so it always applies. See
+// agent-teams-g8xc for the investigation that found the env-var mechanism
+// was dead code.
+const autoCompactWindowSettingsJSON = `{"autoCompactWindow":200000}`
 
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background session launch. prompt is the raw positional argument passed to
@@ -383,6 +372,7 @@ func bgSessionArgs(name, prompt, model, advisor string) []string {
 		"-n", name,
 		"--model", model,
 		"--permission-mode", "bypassPermissions",
+		"--settings", autoCompactWindowSettingsJSON,
 		"--append-system-prompt", memoryRoutingRule,
 	}
 	if advisor != "" {
@@ -429,7 +419,6 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor string) er
 	args := bgSessionArgs(name, prompt, model, advisor)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
-	cmd.Env = bgSessionEnv()
 	cmd.Stdout = ctx.Stdout
 	cmd.Stderr = ctx.Stderr
 	if err := cmd.Run(); err != nil {
