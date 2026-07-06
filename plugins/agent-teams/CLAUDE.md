@@ -30,7 +30,7 @@ There are **two separate beads databases**, and putting the wrong beads in the w
 
 **Read this before reading the hook scripts** — it captures what they do and how to diagnose them from logs alone.
 
-**Hooks & cwd.** `plugins/agent-teams/hooks/hooks.json` wires per-event scripts: SessionStart → `session-start-pull.sh` (`ateam pull`), `prime-user-memories.sh` (`ateam prime`), `session-start-inbox.sh` (drain mail); UserPromptSubmit → `inbox-drain.sh`; SubagentStart → `subagent-prime-learnings.sh`; compact → `compact-recovery.sh`; **Stop → `wake-watcher.sh`** (`async`, `asyncRewake`, 24h timeout). The harness runs each hook by spawning `/bin/sh` with the child **cwd set to the session's worktree**.
+**Hooks & cwd.** `plugins/agent-teams/hooks/hooks.json` wires per-event scripts: SessionStart → `session-start-pull.sh` (`ateam pull`), `prime-user-memories.sh` (`ateam prime`), `session-start-inbox.sh` (drain mail), **and `wake-watcher.sh`** (`startup`/`resume` only — a freshly-launched or respawned session re-arms its own watcher); UserPromptSubmit → `inbox-drain.sh`; SubagentStart → `subagent-prime-learnings.sh`; compact → `compact-recovery.sh`; **Stop → `wake-watcher.sh`** (`async`, `asyncRewake`, 24h timeout). The watcher is now armed from BOTH ends of a turn — SessionStart and Stop — closing the gap where Claude's aggressive idle-process reaping kills the Stop-armed watcher and leaves a session deaf until its next Stop. The harness runs each hook by spawning `/bin/sh` with the child **cwd set to the session's worktree**.
 
 **The debug log.** Every hook writes lifecycle events to `~/.agent-teams/debug/hooks.log` (via `lib/hook-debug-log.sh`), 6 TAB-separated columns:
 ```
@@ -49,13 +49,22 @@ Auto-rotates to `hooks.log.1` at ~5 MB. Tail it: `tail -f ~/.agent-teams/debug/h
 - **`signal=TERM`** → graceful kill (e.g. the singleton handoff killing a prior watcher).
 - **`wake-watcher` `alive elapsed=Ns` ticks** → how long the poll-loop survived; an abrupt stop with no exit pinpoints when it was reaped.
 
-**Wake/messaging mechanism.** `ateam send <id>` creates a `type=message` bead (assignee=`<id>`) in the global workspace **and** touches a doorbell `~/.agent-teams/mailbox/<id>.wake`. A live `wake-watcher.sh` poll-loop (one per initiative, singleton-guarded by `mailbox/<id>.watcher.pid`) checks the doorbell every 1s and `exit 2`s to wake the session, which drains mail via `ateam inbox`. **Mail is beads, not files** — reading is bead-driven (`inbox-drain.sh`/`session-start-inbox.sh`); the doorbell only controls *waking*.
+**Wake/messaging mechanism.** `ateam send <id>` creates a `type=message` bead (assignee=`<id>`) in the global workspace **and** touches a doorbell `~/.agent-teams/mailbox/<id>.wake`. A live `wake-watcher.sh` poll-loop (one per initiative, singleton-guarded by `mailbox/<id>.watcher.pid`) checks the doorbell every 1s and `exit 2`s to wake the session — **the watcher fires without consuming the doorbell.** The doorbell is consumed only by `inbox-drain.sh`, at the START of the turn the wake produced. That makes doorbell presence unambiguous: **present = undelivered** (no turn has seen it yet), **absent = a turn saw it**. A lost rewake (e.g. the woken session's first worker attempt crashes before its next turn starts) self-heals: the doorbell is still there, so the next armed watcher fires again. **Mail is beads, not files** — reading is bead-driven (`inbox-drain.sh`/`session-start-inbox.sh`); the doorbell only controls *waking*.
 
 **Check watcher health:** `ateam watchers` — per-initiative state. `MISSING-WATCHER` = no pidfile/poll-loop; `STALE-PIDFILE` = pidfile names a dead pid. A live session with `MISSING-WATCHER` has a **dead doorbell** (nothing is polling it).
 
 **Known gotchas:**
 - **`ENOENT … posix_spawn '/bin/sh'`** on any hook = the session's cwd (its git worktree) was **deleted while the session is still alive**. The harness then can't spawn the shell, so *no* hook for that session runs — it is NOT a bug in the script. Remedy: don't delete a live session's worktree; reap orphans (`claude agents --json --all` → `claude stop <id>` for entries whose `cwd` no longer exists).
-- **`ateam send` reports session-liveness, not watcher-liveness** — its "doorbell will wake it" can be false when the session is alive but `ateam watchers` shows `MISSING-WATCHER`.
+
+**`ateam send` escalation.** `send` queries `claude agents --all --json`, matches the recipient by symlink-normalised worktree cwd, and branches on what it finds — it no longer needs `ateam watchers`/watcher-liveness at all, since the doorbell probe below subsumes that check:
+
+| Match state | Action |
+|---|---|
+| No entry at all | `ateam resume <id>` — fresh dispatch, creates the only entry |
+| `status: busy` or `status: waiting` | Wait — never touch it. Respawn would interrupt an in-flight tool call or drop a pending permission/AskUserQuestion dialog; the Stop-armed watcher picks up the doorbell the instant the turn ends |
+| `status: idle`, or no `pid` at all (tracked-but-dead) | Wait ~5s, then re-check the doorbell: gone means a turn already consumed it (done); still present means the recipient is deaf, so `claude respawn <shortid>` revives it **in place** — same `sessionId`, same single `claude agents` entry, full conversation preserved |
+
+Respawn failure (e.g. `claude` not in PATH) only prints a warning — the mail is already a written bead, so a broken respawn never loses it.
 
 ## Memory routing
 

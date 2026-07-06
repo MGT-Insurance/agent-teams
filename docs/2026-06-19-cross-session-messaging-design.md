@@ -163,3 +163,13 @@ Filed in the project repo (`agent-teams-*`, tagged `at-1xd`). **Design-first: no
 All design questions are **resolved**: **bead type** (native `type=message`), **read/delivered marker** (`read` label + keep open), **drain timing** (`UserPromptSubmit` per-turn), **heartbeat/timeout** (4h / 24h — mail latency is the ~1s doorbell, not the heartbeat; 24h is the sleep-survival cap), **sleep recovery** (24h timeout survives normal closes; >24h-continuous-close is a noted edge with a wake-time re-arm enhancement), and **stop-on-closed** (option A — the watcher self-checks `ateam show <id>` status at each heartbeat re-arm and `exit 0`s if CLOSED; self-contained, handles out-of-band closes, no teardown coupling).
 
 The contract (`agent-teams-29k`) is fully specified; the loop-closing POC is unblocked pending the human's go-ahead to implement.
+
+## Addendum (2026-07-05, initiative `at-hm3`): the wake path changed
+
+Claude Code's harness began reaping idle background sessions (and their Stop-armed watcher subprocesses) more aggressively than this design assumed, which could leave a live-but-deaf session with no watcher and an undeliverable doorbell. `at-hm3` closed that gap and changed how revival works:
+
+- **`wake-watcher.sh` now also arms on `SessionStart` (`startup`/`resume`), not just `Stop`.** A respawned or freshly-launched session re-arms its own watcher immediately, rather than waiting for its next `Stop`.
+- **The watcher fires without consuming the doorbell.** The doorbell is consumed only by `inbox-drain.sh`, at the start of the turn the wake produced — the single ack point proving the wake actually became a turn. This makes doorbell presence unambiguous (present = undelivered, absent = a turn saw it) and makes a lost rewake self-healing (the doorbell is still there for the next armed watcher to see).
+- **`ateam resume` is no longer the only revival mechanism.** `claude respawn <shortid>` is now the *primary* path for reviving a tracked-but-dead or unresponsive session: verified 6+ times to preserve the same `sessionId` and the same single entry in `claude agents`, with the full conversation intact. `ateam send` now queries `claude agents --all --json`, matches the recipient by (symlink-normalised) worktree cwd, and only falls back to `ateam resume` when the recipient has **no entry at all** in `claude agents` (i.e. the session is fully gone, not just deaf). See `plugins/agent-teams/CLAUDE.md` § "Debugging hooks, watchers & messaging" for the full escalation table.
+
+This doesn't change the beads-backed mailbox, the `type=message` schema, or the per-turn drain (§2, §8) — only the wake/revival mechanism underneath it.
