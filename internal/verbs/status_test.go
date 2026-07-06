@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -257,6 +259,24 @@ func TestIsActivelyWorking_TrailingSlash(t *testing.T) {
 					tc.cwdFn(), tc.wtFn(), got, tc.want)
 			}
 		})
+	}
+}
+
+// TestIsActivelyWorking_SymlinkedCwd verifies that a session whose CWD is a
+// symlink to the registered worktree path (or vice versa) is still matched —
+// regression test for the macOS /tmp -> /private/tmp false negative.
+func TestIsActivelyWorking_SymlinkedCwd(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if !isActivelyWorking([]agentSession{session(link, "busy", "")}, real) {
+		t.Error("expected match: session cwd via symlink, worktree real path")
+	}
+	if !isActivelyWorking([]agentSession{session(real, "busy", "")}, link) {
+		t.Error("expected match: session cwd real path, worktree via symlink")
 	}
 }
 

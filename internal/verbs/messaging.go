@@ -240,11 +240,11 @@ func defaultResume(ctx *cli.Context, id string) error {
 }
 
 // hasLiveSession reports whether any session in sessions has a cwd matching
-// worktreePath (exact match after trimming trailing slashes).
+// worktreePath (symlink-normalised, see canonicalPath).
 func hasLiveSession(sessions []agentSession, worktreePath string) bool {
-	want := strings.TrimRight(worktreePath, "/")
+	want := canonicalPath(worktreePath)
 	for _, s := range sessions {
-		if strings.TrimRight(s.CWD, "/") == want {
+		if canonicalPath(s.CWD) == want {
 			return true
 		}
 	}

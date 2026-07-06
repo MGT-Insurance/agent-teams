@@ -3,6 +3,8 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,6 +43,27 @@ func TestHasLiveSession_TrailingSlash(t *testing.T) {
 	sessions := []agentSession{{CWD: "/wt/path/"}}
 	if !hasLiveSession(sessions, "/wt/path") {
 		t.Error("expected match when CWD has trailing slash")
+	}
+}
+
+// TestHasLiveSession_SymlinkedCwd verifies that a session whose CWD is a
+// symlink to the registered worktree path (or vice versa) is still recognised
+// as live — regression test for the macOS /tmp -> /private/tmp false negative.
+func TestHasLiveSession_SymlinkedCwd(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Session CWD reported via the symlink; registered worktree is the real path.
+	if !hasLiveSession([]agentSession{{CWD: link}}, real) {
+		t.Error("expected match: session cwd via symlink, worktree real path")
+	}
+
+	// Session CWD is the real path; registered worktree is the symlink.
+	if !hasLiveSession([]agentSession{{CWD: real}}, link) {
+		t.Error("expected match: session cwd real path, worktree via symlink")
 	}
 }
 
