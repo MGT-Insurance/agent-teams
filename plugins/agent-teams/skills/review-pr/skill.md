@@ -41,7 +41,18 @@ Parse the output for these structured fields (one per line, key followed by colo
 
 If any required field is missing, stop and report which fields are absent. Split `pr-repo` into `<owner>` and `<repo>` for later use with the GitHub API.
 
-### 3. Checkout the PR code
+### 3. Determine whether this is a self-review
+
+Compare the PR's author against the current GitHub identity — this decides whether a no-findings result can auto-approve (step 8) or must stay `COMMENT`.
+
+```bash
+gh pr view <pr-number> --repo <owner>/<repo> --json author -q .author.login
+gh api user -q .login
+```
+
+If the two logins match, this is a self-authored PR — treat it as a self-review. If either command fails for any reason, also treat it as a self-review — a failed identity check must never default to auto-approve.
+
+### 4. Checkout the PR code
 
 Run:
 
@@ -51,9 +62,9 @@ gh pr checkout <pr-number>
 
 This checks out the PR's head branch into the current worktree so subsequent `gh pr` commands work against the correct code.
 
-If this fails (e.g. the PR is from a fork with a non-writable ref, or the repo is not available locally), note the error and proceed with the diff-only approach in step 4 — the review can still run against the diff alone.
+If this fails (e.g. the PR is from a fork with a non-writable ref, or the repo is not available locally), note the error and proceed with the diff-only approach in step 5 — the review can still run against the diff alone.
 
-### 4. Get the diff
+### 5. Get the diff
 
 Run:
 
@@ -63,14 +74,14 @@ gh pr diff <pr-number>
 
 Capture the full output. If the diff is empty or the command fails, stop and note the error in the initiative before closing.
 
-### 5. Spawn the reviewer subagent
+### 6. Spawn the reviewer subagent
 
 Spawn one `agent-teams:reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The SubagentStart hook fires automatically for `agent-teams:reviewer` agents, injecting prior-review learnings via `ateam learnings reviewer`.
 
 Include in the reviewer's prompt:
 
 - The PR URL (`<pr-url>`) and PR number (`<pr-number>`)
-- The full diff captured in step 4 (inline it, or instruct the reviewer to run `gh pr diff <pr-number>` if the diff is too large to inline)
+- The full diff captured in step 5 (inline it, or instruct the reviewer to run `gh pr diff <pr-number>` if the diff is too large to inline)
 - These review instructions:
   - Review for correctness, edge cases, security vulnerabilities, and missing or inadequate test coverage
   - NO nit-level style comments — report only substantive findings that a maintainer should act on
@@ -79,26 +90,37 @@ Include in the reviewer's prompt:
   - When done, report all findings in a structured list via SendMessage back to this session (include severity, file:line, and description for each)
   - If there are no substantive findings, SendMessage back with a single "No substantive findings" message
 
-### 6. Collect findings
+### 7. Collect findings
 
 Wait for the reviewer to complete. The reviewer will SendMessage its findings back to this session when done. Once the message arrives, capture the findings list.
 
-If no SendMessage arrives within a reasonable time, note the timeout in the initiative and proceed to step 8 (update + close) without posting a review.
+If no SendMessage arrives within a reasonable time, note the timeout in the initiative and proceed to step 9 (update + close) without posting a review.
 
-### 7. Post the review to GitHub
+### 8. Post the review to GitHub
 
 Post the review using the GitHub API. Build the inline comments from the reviewer's findings (one comment per finding at the reported `file:line`).
 
 #### Handle the no-findings case
 
-If the reviewer reported no substantive findings, post a clean review with no inline comments:
+If the reviewer reported no substantive findings, the event depends on step 3's self-review determination:
 
-```bash
-gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
-  --method POST \
-  -f event=COMMENT \
-  -f body="Automated review: no substantive findings."
-```
+- **Not a self-review** (the PR is authored by someone else) — approve it:
+
+  ```bash
+  gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+    --method POST \
+    -f event=APPROVE \
+    -f body="Automated review: no substantive findings."
+  ```
+
+- **Self-review** (the PR is our own) — keep the comment-only behavior; never auto-approve our own work:
+
+  ```bash
+  gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+    --method POST \
+    -f event=COMMENT \
+    -f body="Automated review: no substantive findings."
+  ```
 
 #### Handle findings
 
@@ -114,23 +136,23 @@ gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   -F 'comments[][body]=<severity>: <finding description>\n\n<suggestion>'
 ```
 
-Repeat the `-F 'comments[]…'` flags for each finding. Post as `COMMENT` — not `APPROVE` and not `REQUEST_CHANGES`.
+Repeat the `-F 'comments[]…'` flags for each finding. Post as `COMMENT` — not `APPROVE` and not `REQUEST_CHANGES`. This applies regardless of authorship: any critical/high/medium finding keeps the review at `COMMENT`, even on a PR that isn't ours.
 
 The review body is a single sentence summarizing the overall assessment (e.g. "Two high-severity findings related to error handling and one medium concerning missing test coverage.").
 
 If the `gh api` call fails (e.g. a file:line reference does not correspond to a diff hunk), retry without the failing inline comment(s) and add their content to the review body instead, then note the fallback in the initiative.
 
-### 8. Update the initiative
+### 9. Update the initiative
 
-Write a brief note recording the outcome:
+Write a brief note recording the outcome, including which event was posted:
 
 ```bash
-printf 'review-posted: PR #<pr-number> — <N> finding(s) posted as inline comments\n' \
+printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMENT>\n' \
   > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ```
 
-### 9. Close the initiative
+### 10. Close the initiative
 
 ```bash
 ateam close <id> --reason "Review posted to PR #<pr-number>"
@@ -140,6 +162,7 @@ ateam close <id> --reason "Review posted to PR #<pr-number>"
 
 - This skill does NOT create plans, spawn implementers/testers, open PRs, or manage epics.
 - It is a single-purpose review orchestrator — one reviewer, one PR, one outcome.
+- No critical/high/medium findings on a PR authored by someone else -> approve (`event=APPROVE`). Any finding, or a PR we authored ourselves, -> comment (`event=COMMENT`), never approve.
 - Uses `ateam` (not raw `bd -C`) for all global workspace operations.
 - CARDINAL RULE: no work beads in the global workspace — all work beads belong in the project repo via plain `bd`.
 - The reviewer subagent runs with `bypassPermissions` — its role guardrails (no push, no merge, no fix) are enforced by the reviewer agent definition, not by permission prompts.
