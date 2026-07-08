@@ -217,6 +217,10 @@ type claudePEnvelope struct {
 // reply needs no fence-stripping in practice. The prompt is piped via stdin
 // (not argv) so an arbitrarily large diff never risks ARG_MAX.
 func callClaudeP(prompt string) (string, error) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		return "", fmt.Errorf("claude -p: 'claude' not found in PATH: %w", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), llmTimeout)
 	defer cancel()
 
