@@ -7,3 +7,7 @@
 
 # Playwright MCP browser artifacts (snapshots/screenshots) — the tester drops these
 .playwright-mcp/
+
+# Eval harness runtime artifacts (manifest.json / result.json per run)
+eval/runs/*
+!eval/runs/.gitkeep
