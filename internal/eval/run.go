@@ -98,6 +98,10 @@ func dispatchArgs(repoDir string, task TaskSpec, cfg ConfigFingerprint, runID st
 	if cfg.Advisor != "" {
 		args = append(args, "--advisor", cfg.Advisor)
 	}
+	// MUST stay byte-identical to "/dri <id>": L3 metrics discovery
+	// (cost.Attribute -> discoverSessions) matches state.json intent against
+	// exactly this string; a divergent prompt silently zeros all metrics
+	// (Attribute returns a zero Report, not an error) instead of failing.
 	args = append(args, "--launch-prompt", "/dri {id}")
 	return args
 }
