@@ -1,0 +1,13 @@
+{
+  "id": "sample-task-1",
+  "archetype": "webapp-bugfix",
+  "runShape": "implement",
+  "fixtureRepo": "https://example.com/fixtures/webapp-medium.git",
+  "fixtureRef": "v1-buggy",
+  "problem": "Fix the off-by-one pagination bug on the /items endpoint.",
+  "acceptanceCriteria": [
+    "Pagination returns the correct last page without an extra empty page.",
+    "Existing pagination tests still pass."
+  ],
+  "buildCheck": "go test ./..."
+}
