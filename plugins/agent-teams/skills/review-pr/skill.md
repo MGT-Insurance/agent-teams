@@ -41,16 +41,19 @@ Parse the output for these structured fields (one per line, key followed by colo
 
 If any required field is missing, stop and report which fields are absent. Split `pr-repo` into `<owner>` and `<repo>` for later use with the GitHub API.
 
-### 3. Determine whether this is a self-review
+### 3. Determine authorship
 
-Compare the PR's author against the current GitHub identity — this decides whether a no-findings result can auto-approve (step 8) or must stay `COMMENT`.
+Compare the PR's author against the current GitHub identity:
 
 ```bash
 gh pr view <pr-number> --repo <owner>/<repo> --json author -q .author.login
 gh api user -q .login
 ```
 
-If the two logins match, this is a self-authored PR — treat it as a self-review. If either command fails for any reason, also treat it as a self-review — a failed identity check must never default to auto-approve.
+This one comparison drives **two independent decisions** downstream, and they have **opposite safe defaults** — do not collapse them into one boolean:
+
+- **Approve gate (step 8):** if the two logins match, the PR was opened by the identity running this review — a self-review, so never auto-approve (stay `COMMENT`). If either command fails, also treat it as a self-review — a failed identity check must never default to auto-approve.
+- **Design-commentary phrasing (step 6):** this review runs under Eric's GitHub identity, so a matching login means the PR is **Eric's own work** — his call to make, so design/approach findings are stated directly. Treat it as **someone else's work** (→ curious-question phrasing) whenever the logins differ, the check fails, OR the runner isn't Eric. The conservative phrasing default is "someone else's work" — the exact opposite of the approve gate's "self-review on failure" default. A failed check must NOT flip phrasing to "Eric's own."
 
 ### 4. Checkout the PR code
 
@@ -81,11 +84,16 @@ Spawn one `agent-teams:reviewer` subagent with `mode: bypassPermissions` and `ru
 Include in the reviewer's prompt:
 
 - The PR URL (`<pr-url>`) and PR number (`<pr-number>`)
+- **Whose work this is** — the phrasing determination from step 3, stated explicitly: "This is Eric's own work" or "This is someone else's work." The reviewer needs this to frame design commentary (see below). Do NOT pass the approve-gate value; pass the phrasing value.
 - The full diff captured in step 5 (inline it, or instruct the reviewer to run `gh pr diff <pr-number>` if the diff is too large to inline)
 - These review instructions:
-  - Review for correctness, edge cases, security vulnerabilities, and missing or inadequate test coverage
+  - This is a **diff-focused review that posts GitHub comments** — do NOT run the full CI gate (install/build/typecheck/lint/test). Review the diff and its blast radius; do not build the app.
+  - Priority order, highest first: (1) correctness bugs and **blast radius** — does this change touch something shared/cross-cutting outside the PR's stated scope (a shared config entry, a shared exposure, a value other products/consumers depend on) that could *silently* break something not visible in the diff; (2) security, but only when impact is genuinely critical (auth bypass, data exposure, injection, secrets leakage) — not general hardening nits; (3) missing test coverage, and only briefly — a minor concern, not a category to lead with or pad
+  - A blast-radius finding is usually about a consumer file/line **not in the diff**, which GitHub can't accept as an inline comment — report it plainly (file:line of the affected consumer) so it can go in the review body, not as an inline comment
+  - Out of scope, do NOT flag: git/branch/merge-conflict state (the PR author's problem to solve, not a review finding), and suggestions to file a tracking ticket or add follow-up logging (the PR owner's call, not the reviewer's)
+  - Design/approach commentary IS welcome, but phrasing depends on whose work it is: if this is **someone else's work**, frame design/approach findings as curious questions ("why this approach over X?"), never verdicts ("this should have been X") — you don't have the author's context on trade-offs already weighed, and it isn't your call to make for them. If this is **Eric's own work**, state design/approach findings directly and declaratively — it's his call, and a direct statement serves him better than a hedge. Either way, objective correctness bugs always get stated plainly, never softened into a question
   - NO nit-level style comments — report only substantive findings that a maintainer should act on
-  - For each finding: severity (critical / high / medium), the file path and line number (`file:line`), a brief description of the problem, and a concrete suggestion
+  - For each finding: a severity and the file path and line number (`file:line`), a brief description, and a concrete suggestion. Correctness/security/coverage findings get `critical`/`high`/`medium`; a design/approach question is not a defect — label it `question`, not a severity, so it isn't posted as a labeled bug
   - Do NOT fix code, do NOT push, do NOT merge
   - When done, report all findings in a structured list via SendMessage back to this session (include severity, file:line, and description for each)
   - If there are no substantive findings, SendMessage back with a single "No substantive findings" message
@@ -124,7 +132,9 @@ If the reviewer reported no substantive findings, the event depends on step 3's 
 
 #### Handle findings
 
-For each finding, construct an inline comment. Collect them into a single review POST:
+Inline comments only work on lines present in the PR diff. Two kinds of finding won't post inline and belong in the review body instead: blast-radius findings that reference a consumer line **outside the diff**, and design/approach findings labeled `question` (post those verbatim as questions in the body — do not prefix them with a severity, which would read as a defect). Everything else posts inline.
+
+For each inline finding, construct an inline comment. Collect them into a single review POST:
 
 ```bash
 gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
