@@ -2,7 +2,7 @@ package eval
 
 import "errors"
 
-// Metrics — produced by `eval collect`, merges metrics + judge.
+// Metrics holds the descriptive cost/latency/tool-use numbers for one run.
 //
 // Field → canonical Langfuse score name (align for cross-time comparability,
 // per Anthropic "Demystifying evals for AI agents"). These are DESCRIPTIVE
