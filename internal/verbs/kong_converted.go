@@ -367,8 +367,13 @@ func (c *learnKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return cli.Usagef("ateam learn: file not found: %s", c.File)
 	}
+	content := strings.TrimRight(string(data), "\n")
+	tier, capBytes := learnCap(c.Slug)
+	if len(content) > capBytes {
+		return learnCapError(tier, capBytes, len(content))
+	}
 	key := learnKey(c.Role, c.Slug)
-	out, runErr := ctx.BD.Run("remember", "--key="+key, string(data))
+	out, runErr := ctx.BD.Run("remember", "--key="+key, content)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
