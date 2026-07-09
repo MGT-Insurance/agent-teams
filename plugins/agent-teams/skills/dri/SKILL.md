@@ -184,7 +184,7 @@ Follow references/wind-down.md exactly: shut down teammates -> remove worktrees 
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. Store the learning itself, not the story of how it was found — include only enough context to signal WHEN the learning is relevant, not a history lesson. Shape the body as RULE (one sentence — the transferable learning itself), TRIGGER (when it fires / how to recognize relevance), APPLY (what to do about it), with PROVENANCE as a bare initiative-id parenthetical only, e.g. `(agent-teams-2n1w)` — no narrative retelling of how it was discovered. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 
@@ -212,7 +212,7 @@ Role memories use a three-tier key convention — the tier is encoded in the key
 
 **Removing a memory:** `ateam forget <role> <slug>` removes a cold memory. `ateam forget <role> hot:<slug>` removes a hot memory. `ateam forget <role> fresh:<slug>` removes a fresh memory. Every removal is recoverable from Dolt history (`refs/dolt/data`).
 
-**Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body succinct — hot memories are injected whole every session, so verbosity directly costs context.
+**Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body succinct and in the RULE/TRIGGER/APPLY + bare-id-provenance shape above (write-time cap: 900 bytes for hot and fresh, 1500 for cold) — hot memories are injected whole every session, so a history lesson directly costs context, not just extra bytes.
 
 ## Condensing (autonomous)
 
@@ -232,7 +232,7 @@ Safety backstops:
 
 v1 has no per-run eviction floor — trust the agent and Dolt-history recoverability.
 
-**Wind-down touchpoint:** at Phase 6 wind-down, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, per-role-8K-gated, lock-guarded drain+condense sweep. This acquires the condense lock, skips roles at or under ~8000 tokens (bytes/4 approximation), drains fresh memories into cold for each over-threshold role (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most wind-downs find nothing over 8K and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
+**Wind-down touchpoint:** at Phase 6 wind-down, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, lock-guarded drain+condense sweep. This acquires the condense lock, skips a role only if it is BOTH at or under ~8000 tokens hot∪fresh AND at or under ~1500 tokens fresh-alone (bytes/3 approximation), drains fresh memories into cold for each role where either check fired (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most wind-downs find neither check tripped and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.
 
 # Role-division rules (state these to the team; enforce them)
 
