@@ -63,6 +63,16 @@ func Push(res RunResult, task TaskSpec) error {
 	return c.push(res, task)
 }
 
+// langfuseConfigured reports whether all three Langfuse env vars are set.
+// Collect uses this to decide whether Langfuse push is even attempted:
+// Langfuse is optional infrastructure, never required to run the eval
+// suite (agent-teams-grft.7 scope note from Eric).
+func langfuseConfigured() bool {
+	return os.Getenv("LANGFUSE_HOST") != "" &&
+		os.Getenv("LANGFUSE_PUBLIC_KEY") != "" &&
+		os.Getenv("LANGFUSE_SECRET_KEY") != ""
+}
+
 func newLangfuseClientFromEnv() (*langfuseClient, error) {
 	host := os.Getenv("LANGFUSE_HOST")
 	publicKey := os.Getenv("LANGFUSE_PUBLIC_KEY")

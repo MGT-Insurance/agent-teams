@@ -281,6 +281,70 @@ func TestRun_WritesManifest(t *testing.T) {
 	}
 }
 
+// ---- resolveFixtureClone: bare-name form (agent-teams-grft.7 integration gap #1) --
+
+func TestResolveFixtureClone_BareNameResolvesUnderCacheDirDirectly(t *testing.T) {
+	cacheDir := t.TempDir()
+	fixtureDir := filepath.Join(cacheDir, "webapp-medium")
+	if err := os.MkdirAll(filepath.Join(fixtureDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubGitClone(t, func(repo, dest string) error {
+		t.Fatal("runGitClone should not be called for a bare-name fixture already present under cacheDir")
+		return nil
+	})
+
+	got, err := resolveFixtureClone("webapp-medium", cacheDir)
+	if err != nil {
+		t.Fatalf("resolveFixtureClone: %v", err)
+	}
+	if got != fixtureDir {
+		t.Errorf("got %q, want %q (bare name resolves directly under cacheDir, not cacheDir/clones/<name>)", got, fixtureDir)
+	}
+}
+
+func TestResolveFixtureClone_BareNameNotYetCached_FallsThroughToClone(t *testing.T) {
+	cacheDir := t.TempDir()
+	var gotRepo string
+	stubGitClone(t, func(repo, dest string) error {
+		gotRepo = repo
+		return os.MkdirAll(filepath.Join(dest, ".git"), 0o755)
+	})
+
+	cloneDir, err := resolveFixtureClone("webapp-medium", cacheDir)
+	if err != nil {
+		t.Fatalf("resolveFixtureClone: %v", err)
+	}
+	if gotRepo != "webapp-medium" {
+		t.Errorf("cloned wrong repo: %q", gotRepo)
+	}
+	wantDir := filepath.Join(cacheDir, "clones", "webapp-medium")
+	if cloneDir != wantDir {
+		t.Errorf("cloneDir = %q, want %q", cloneDir, wantDir)
+	}
+}
+
+// ---- checkRunIDAvailable: same-(task,config) collision guard (integration gap #2) --
+
+func TestCheckRunIDAvailable_ErrorsWhenRunDirExists(t *testing.T) {
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	runID := "some-run-id"
+	if err := os.MkdirAll(filepath.Join("eval", "runs", runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRunIDAvailable(runID); err == nil {
+		t.Fatal("checkRunIDAvailable: want error when the run dir already exists, got nil")
+	}
+}
+
+func TestCheckRunIDAvailable_OKWhenAbsent(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := checkRunIDAvailable("fresh-run-id"); err != nil {
+		t.Fatalf("checkRunIDAvailable: unexpected error: %v", err)
+	}
+}
+
 func TestRun_DispatchErrorPropagates(t *testing.T) {
 	repoDir := t.TempDir()
 	stubGitClone(t, func(repo, dest string) error {

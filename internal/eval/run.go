@@ -36,6 +36,10 @@ func Run(task TaskSpec, cfg ConfigFingerprint) (RunManifest, error) {
 	now := time.Now()
 	runID := fmt.Sprintf("%s-%s-%d", task.ID, cfg.Hash(), now.Unix())
 
+	if err := checkRunIDAvailable(runID); err != nil {
+		return RunManifest{}, err
+	}
+
 	repoDir, err := resolveFixtureClone(task.FixtureRepo, fixturesDir())
 	if err != nil {
 		return RunManifest{}, fmt.Errorf("eval: resolve fixture %s: %w", task.FixtureRepo, err)
@@ -123,6 +127,23 @@ func parseDispatchOutput(stdout string) (initiativeID, worktree, slug string) {
 	return
 }
 
+// checkRunIDAvailable guards the same-(task,config) collision: RunID is
+// second-granularity (task.ID + "-" + cfg.Hash() + "-" + unix-ts), so two
+// `eval run` invocations for the same task+config within the same second
+// would silently overwrite each other's manifest. v1 is invoked serially by
+// a human operator (CONTRACT COMPLETION SEAM), so a clear pre-dispatch error
+// is enough — no locking or retry. Checked before ateam dispatch runs, not
+// after, so a collision never launches a duplicate DRI session.
+func checkRunIDAvailable(runID string) error {
+	dir := filepath.Join("eval", "runs", runID)
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("eval: run %s already exists at %s (RunIDs collide at second granularity — wait a second and retry)", runID, dir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("eval: stat run dir %s: %w", dir, err)
+	}
+	return nil
+}
+
 // writeManifest persists m under the frozen relative path eval/runs/<RunID>/manifest.json.
 func writeManifest(m RunManifest) error {
 	dir := filepath.Join("eval", "runs", m.RunID)
@@ -157,9 +178,20 @@ func fixturesDir() string {
 // fixtureRepo that is already a local directory (the v1 durability seam: a
 // fixture may start life as a local-only repo before a hosted home is
 // chosen — see agent-teams-grft.1) is used in place, with no cache copy.
+//
+// fixtureRepo may also be a bare name (e.g. "webapp-medium", as
+// eval/tasks/webapp-bugfix-1.json uses) rather than a path or URL, so task
+// specs stay portable across machines/EVAL_FIXTURES_DIR locations. That form
+// resolves directly to cacheDir/<name> — NOT cacheDir/clones/<name>, which is
+// reserved for repos this function itself clones from a URL.
 func resolveFixtureClone(fixtureRepo, cacheDir string) (string, error) {
 	if fi, err := os.Stat(fixtureRepo); err == nil && fi.IsDir() {
 		return fixtureRepo, nil
+	}
+
+	direct := filepath.Join(cacheDir, fixtureRepo)
+	if fi, err := os.Stat(filepath.Join(direct, ".git")); err == nil && fi.IsDir() {
+		return direct, nil
 	}
 
 	name := gitutil.Slugify(strings.TrimSuffix(filepath.Base(fixtureRepo), ".git"))
