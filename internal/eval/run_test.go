@@ -230,7 +230,7 @@ func TestRun_WritesManifest(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	wantRunIDPrefix := "sample-task-1-" + cfg.Hash() + "-"
+	wantRunIDPrefix := "eval-sample-task-1-" + cfg.Hash() + "-"
 	if !strings.HasPrefix(manifest.RunID, wantRunIDPrefix) {
 		t.Errorf("RunID = %q, want prefix %q", manifest.RunID, wantRunIDPrefix)
 	}

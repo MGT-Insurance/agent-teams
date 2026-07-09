@@ -18,7 +18,7 @@ import (
 // RunManifest is produced by `eval run`, one JSON per sample.
 // Persisted under eval/runs/<RunID>/manifest.json
 type RunManifest struct {
-	RunID        string            `json:"runId"` // taskID + "-" + config.Hash() + "-" + unix-ts
+	RunID        string            `json:"runId"` // "eval-" + taskID + "-" + config.Hash() + "-" + unix-ts
 	TaskID       string            `json:"taskId"`
 	Config       ConfigFingerprint `json:"config"`
 	InitiativeID string            `json:"initiativeId"` // the ateam-dispatch initiative id (cost/transcript discovery key)
@@ -34,7 +34,10 @@ type RunManifest struct {
 // captures the initiative id + branch + worktree, writes manifest.json.
 func Run(task TaskSpec, cfg ConfigFingerprint) (RunManifest, error) {
 	now := time.Now()
-	runID := fmt.Sprintf("%s-%s-%d", task.ID, cfg.Hash(), now.Unix())
+	// The "eval-" prefix flows through --slug into the dispatched session's
+	// worktree, branch, and `claude agents` identity, marking every eval-owned
+	// artifact on the machine.
+	runID := fmt.Sprintf("eval-%s-%s-%d", task.ID, cfg.Hash(), now.Unix())
 
 	if err := checkRunIDAvailable(runID); err != nil {
 		return RunManifest{}, err
