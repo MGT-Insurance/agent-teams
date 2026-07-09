@@ -4,6 +4,14 @@
 // task's acceptance criteria, and pushes descriptive scores to Langfuse for
 // cross-configuration comparison. It is NOT a pass/fail gate.
 //
+// WARNING: Run and Judge (behind the `eval run` and `eval collect` CLI
+// commands) dispatch a real agent-teams session and call a real LLM judge —
+// both spend actual API dollars and real wall-clock time (observed: ~$9 and
+// 13 minutes for one bugfix run; runs can take hours). Never call them from
+// a test, CI job, or loop. This package's own test suite fakes every such
+// seam (runGitClone, runDispatch, runExtractMetrics, runJudge, runPush) and
+// costs nothing to run. See eval/README.md for the full cost model.
+//
 // This package is the frozen contract from bead agent-teams-grft.1: file
 // layout, data shapes, and the four exposed entry points (Run,
 // ExtractMetrics, Judge, Push) are specified there and must not be changed

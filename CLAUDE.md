@@ -66,6 +66,17 @@ bash tests/<name>.test.sh
 
 Note: `tests/ateam.test.sh` case10 (bd dolt sync against an empty remote) is a known pre-existing failure unrelated to most changes — confirm it also fails at your merge-base before treating it as a regression.
 
+## Eval suite — costs real money
+
+`eval/` (`cmd/eval`, `internal/eval`) is a live-dispatch A/B eval harness:
+`eval run` dispatches a **real, autonomous agent-teams DRI session**, and
+`eval collect` calls a **real LLM judge** — both spend real API dollars and
+real wall-clock time (observed: ~$9 and 13 min for one bugfix run; runs can
+take hours). **Never invoke either as part of building/testing/verifying a
+change, and never add them to CI or a script/loop.** `go test ./...` on
+`internal/eval` is the free path — it fakes every dispatch/clone/judge/push
+seam. See `eval/README.md` for the full cost model and lifecycle.
+
 ## Architecture Overview
 
 Two shipped artifacts in one repo:
