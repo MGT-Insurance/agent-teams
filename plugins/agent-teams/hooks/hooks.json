@@ -80,7 +80,7 @@
     ],
     "SubagentStart": [
       {
-        "matcher": "implementer|planner|tester|reviewer",
+        "matcher": "(^|:)(implementer|planner|tester|reviewer)$",
         "hooks": [
           {
             "type": "command",

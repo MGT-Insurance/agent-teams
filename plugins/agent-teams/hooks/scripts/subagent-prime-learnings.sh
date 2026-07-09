@@ -33,10 +33,14 @@ fi
 
 hook_log_note "note" "agent_type=${agent_type}"
 
+# agent_type may be namespace-qualified on cold spawn (e.g. "agent-teams:reviewer");
+# strip any "namespace:" prefix since bd-memory keys are stored bare-role-keyed.
+role="${agent_type##*:}"
+
 # Pull must go through ateam/bd: bd's flock on .beads/embeddeddolt/.lock serializes
 # parallel subagent pulls; shelling 'dolt' directly would bypass it and hit the manifest race.
 "$ATEAM" pull || true
-"$ATEAM" learnings "$agent_type" || true
+"$ATEAM" learnings "$role" || true
 
 HOOK_EXIT_REASON="ok"
 exit 0
