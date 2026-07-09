@@ -38,8 +38,12 @@ var priceTable = map[string]modelRates{
 	"claude-opus-4-8":   {input: 5, output: 25, cw5m: 6.25, cw1h: 10, cr: 0.50},
 	"claude-opus-4-7":   {input: 5, output: 25, cw5m: 6.25, cw1h: 10, cr: 0.50},
 	"claude-sonnet-4-6": {input: 3, output: 15, cw5m: 3.75, cw1h: 6, cr: 0.30},
-	"claude-haiku-4-5":  {input: 1, output: 5, cw5m: 1.25, cw1h: 2, cr: 0.10},
-	"claude-fable-5":    {input: 10, output: 50, cw5m: 12.50, cw1h: 20, cr: 1.00},
+	// Current published list rates as of 2026-07-09. An intro rate of $2/$10
+	// runs through 2026-08-31; deliberately not encoded here — this table
+	// carries durable list rates only.
+	"claude-sonnet-5":  {input: 3, output: 15, cw5m: 3.75, cw1h: 6, cr: 0.30},
+	"claude-haiku-4-5": {input: 1, output: 5, cw5m: 1.25, cw1h: 2, cr: 0.10},
+	"claude-fable-5":   {input: 10, output: 50, cw5m: 12.50, cw1h: 20, cr: 1.00},
 }
 
 // lookup finds the rates for model by prefix-matching priceTable keys.
