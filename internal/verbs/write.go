@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // ── gateAsk ───────────────────────────────────────────────────────────────────
@@ -55,4 +57,43 @@ func learnKey(role, slug string) string {
 		return role + ":" + slug
 	}
 	return role + ":fresh:" + slug
+}
+
+// learnCap detects the tier from slug using the same prefix precedence as
+// learnKey and returns the tier name plus its write-time byte cap (frozen by
+// contract agent-teams-b2xr.2, item 2). A bare slug (no prefix) defaults to
+// fresh, mirroring learnKey's own default.
+func learnCap(slug string) (tier string, capBytes int) {
+	switch {
+	case strings.HasPrefix(slug, "cold:"):
+		return "cold", 1500
+	case strings.HasPrefix(slug, "hot:"):
+		return "hot", 900
+	default:
+		// "fresh:" prefix and bare/default-to-fresh slugs both land here.
+		return "fresh", 900
+	}
+}
+
+// learnStoragePhilosophy is the frozen storage-philosophy sentence from
+// contract agent-teams-b2xr.2, item 5. It must agree verbatim with the
+// wording used in the prose bead (agent-teams-b2xr.4) — do not let them
+// drift.
+const learnStoragePhilosophy = "Store the learning itself, not the story of how it was found — include only enough context to signal WHEN the learning is relevant, not a history lesson."
+
+// learnCapError builds the rejection message for an over-cap ateam learn
+// write. It teaches the required RULE/TRIGGER/APPLY shape, bare-id
+// provenance, the storage philosophy, and where overflow content belongs, so
+// an LLM caller can self-correct in the same tool-call cycle (contract
+// agent-teams-b2xr.2, item 4).
+func learnCapError(tier string, capBytes, gotBytes int) error {
+	return cli.Usagef(
+		"ateam learn: %s tier cap is %d bytes, got %d. "+
+			"Learnings must follow this shape: RULE (one sentence — the transferable learning itself), "+
+			"TRIGGER (when it fires / how to recognize relevance), APPLY (what to do about it), "+
+			"and PROVENANCE as a bare initiative-id parenthetical only, e.g. \"(agent-teams-2n1w)\" — "+
+			"no narrative retelling of how it was discovered. %s "+
+			"If it needs more room, put the overflow in a linked bd issue and reference its id from the learning body.",
+		tier, capBytes, gotBytes, learnStoragePhilosophy,
+	)
 }
