@@ -3,13 +3,32 @@
 // metrics for comparison in Langfuse. See internal/eval and bead
 // agent-teams-grft.1 for the frozen contract this implements.
 //
-// Usage: eval run|collect ...
+// Usage:
+//
+//	eval run --task <path> --config <name>   dispatch a DRI run, print its RunID
+//	eval collect <RunID>                     assemble metrics+judge, push to Langfuse if configured
+//	eval push <RunID>                        push a previously collected result to Langfuse
+//	eval clean <RunID>                       remove the run's leftover fixture worktree/branch
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
+
+	"github.com/mgt-insurance/agent-teams/internal/eval"
 )
+
+// configs is the tiny v1 config registry (agent-teams-grft.1 CONFIG AXIS):
+// --config <name> selects one of the two frozen v1 ConfigFingerprints.
+// Hardcoding these two here is acceptable per grft.7's WHAT (stub-permitted);
+// reserved R4 fields (PerRoleModels/PromptVariantHash/PluginRef) stay zero.
+var configs = map[string]eval.ConfigFingerprint{
+	"opus-noadvisor": {Name: "opus-noadvisor", DRIModel: "opus", Advisor: ""},
+	"sonnet-advisor": {Name: "sonnet-advisor", DRIModel: "sonnet", Advisor: "opus"},
+}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -23,17 +42,130 @@ func run(args []string) int {
 
 	switch args[0] {
 	case "run":
-		fmt.Fprintln(os.Stderr, "eval run: not implemented")
-		return 1
+		return runCmd(args[1:])
 	case "collect":
-		fmt.Fprintln(os.Stderr, "eval collect: not implemented")
-		return 1
+		return collectCmd(args[1:])
+	case "push":
+		return pushCmd(args[1:])
+	case "clean":
+		return cleanCmd(args[1:])
 	default:
 		printUsage(os.Stderr)
 		return 1
 	}
 }
 
+func runCmd(args []string) int {
+	fs := flag.NewFlagSet("eval run", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	taskPath := fs.String("task", "", "path to a TaskSpec JSON file")
+	configName := fs.String("config", "", "config name ("+configNames()+")")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if *taskPath == "" || *configName == "" {
+		fmt.Fprintln(os.Stderr, "eval run: --task and --config are required")
+		return 1
+	}
+	cfg, ok := configs[*configName]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "eval run: unknown --config %q (known: %s)\n", *configName, configNames())
+		return 1
+	}
+
+	task, err := eval.LoadTaskSpec(*taskPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval run:", err)
+		return 1
+	}
+	manifest, err := eval.Run(task, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval run:", err)
+		return 1
+	}
+	fmt.Println(manifest.RunID)
+	return 0
+}
+
+func collectCmd(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: eval collect <RunID>")
+		return 1
+	}
+	result, pushed, err := eval.Collect(args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval collect:", err)
+		return 1
+	}
+	printSummary(result)
+	if !pushed {
+		fmt.Println("push skipped (no LANGFUSE_HOST set)")
+	}
+	return 0
+}
+
+func pushCmd(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: eval push <RunID>")
+		return 1
+	}
+	runID := args[0]
+	result, err := eval.LoadResult(runID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval push:", err)
+		return 1
+	}
+	task, err := eval.LoadTaskSpec(eval.TaskSpecPath(result.TaskID))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval push:", err)
+		return 1
+	}
+	if err := eval.Push(result, task); err != nil {
+		fmt.Fprintln(os.Stderr, "eval push:", err)
+		return 1
+	}
+	fmt.Println("pushed:", runID)
+	return 0
+}
+
+func cleanCmd(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: eval clean <RunID>")
+		return 1
+	}
+	if err := eval.Clean(args[0]); err != nil {
+		fmt.Fprintln(os.Stderr, "eval clean:", err)
+		return 1
+	}
+	fmt.Println("cleaned:", args[0])
+	return 0
+}
+
+func printSummary(res eval.RunResult) {
+	fmt.Printf("RunID:             %s\n", res.RunID)
+	fmt.Printf("Task:              %s\n", res.TaskID)
+	fmt.Printf("Config:            %s (%s)\n", res.Config.Name, res.Config.Hash())
+	fmt.Printf("Cost (USD):        %.4f\n", res.Metrics.CostUSD)
+	fmt.Printf("Total tokens:      %d\n", res.Metrics.TotalTokens)
+	fmt.Printf("Wall clock (s):    %.1f\n", res.Metrics.WallClockSeconds)
+	fmt.Printf("Tool calls:        %d\n", res.Metrics.ToolCallCount)
+	fmt.Printf("Turns:             %d\n", res.Metrics.NTurns)
+	fmt.Printf("Objective floor:   %v\n", res.Judge.ObjectiveFloorPass)
+	fmt.Printf("Correctness score: %.2f\n", res.Judge.CorrectnessScore)
+}
+
+func configNames() string {
+	names := make([]string, 0, len(configs))
+	for n := range configs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 func printUsage(w *os.File) {
-	fmt.Fprintln(w, "Usage: eval run|collect ...")
+	fmt.Fprintln(w, "Usage: eval run --task <path> --config <name>")
+	fmt.Fprintln(w, "       eval collect <RunID>")
+	fmt.Fprintln(w, "       eval push <RunID>")
+	fmt.Fprintln(w, "       eval clean <RunID>")
 }
