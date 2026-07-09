@@ -75,7 +75,7 @@ ateam roles
 
 Skip the `user` role unconditionally. The `user:` namespace is served by `ateam prime` (capped and truncated at read time) and is not part of the hot/cold learnings model. Learning roles to consider: `dri`, `planner`, `implementer`, `tester`, `reviewer`, and any others returned by `ateam roles` that are not `user`.
 
-### Step 2 — Per-role size gate (8K token threshold)
+### Step 2 — Per-role size gate (8K hot∪fresh threshold OR ~1500-token fresh-alone threshold)
 
 For each role:
 
@@ -83,13 +83,17 @@ For each role:
 ateam learnings <role>
 ```
 
-Measure the **byte length** of the output. Approximate token count as `bytes / 4` (rough heuristic: one token ≈ 4 bytes of English text; adjust this divisor if you observe systematic over- or under-counting). If `approx_tokens <= 8000`, **skip this role cheaply** with a one-line note:
+Measure the **byte length** of the output. Approximate token count as `bytes / 3` (rough heuristic: one token ≈ 3 bytes of English text; adjust this divisor if you observe systematic over- or under-counting).
+
+Also check the **fresh tier alone**, since a role can be well under the hot∪fresh threshold while its undrained fresh tier is already large: there is no `--fresh` flag on `ateam learnings`, so measure it via `bd memories --json`, filtering to keys matching the `<role>:fresh:` prefix, summing the byte length of those bodies, and dividing by 3 for an approximate token count.
+
+If **both** `approx_tokens <= 8000` (hot∪fresh) **and** the fresh-alone approximation is `<= ~1500`, **skip this role cheaply** with a one-line note:
 
 ```
 <role>: under threshold (~<N> tokens) — skipped
 ```
 
-Only roles where `approx_tokens > 8000` proceed to drain+condense. Most wind-down runs will find nothing over 8K and exit after the release with zero LLM work done.
+If **either** check fires — hot∪fresh `approx_tokens > 8000`, OR fresh-alone `> ~1500` tokens — the role proceeds to drain+condense. Most wind-down runs will find neither check tripped and exit after the release with zero LLM work done.
 
 ### Step 3 — Drain fresh then condense (per gated role)
 
@@ -147,8 +151,9 @@ IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set 
 Design principles:
 - Select the highest-signal learnings: recurring process rules, hard-won gotchas, ship constraints, cardinal rules — anything whose loss causes a wrong or expensive action.
 - MERGE overlapping learnings into single succinct entries. This is where most token reduction comes from.
-- Write each entry "as succinct as possible while still COMPLETE" — keep every load-bearing detail (file paths, exact commands, the WHY).
-- Target <= 6000 tokens (~24KB) / ~15-25 items total across all hot keys.
+- **Theme-first forced merge:** when more than 2 fresh/cold candidates share a theme, they MUST collapse into ONE umbrella hot (or cold) entry with per-nuance bullets — do not leave them as separate entries. Cite at most ONE anecdote or initiative-id per merged entry; the rest of the theme's occurrences just reinforce the same RULE/TRIGGER, they don't each need their own provenance. This is not optional polish — a shared theme with 3+ standalone entries is a design defect, not a stylistic choice.
+- Write each entry "as succinct as possible while still COMPLETE" — keep every load-bearing detail (file paths, exact commands, the WHY). Store the learning itself, not the story of how it was found — include only enough context to signal WHEN the learning is relevant, not a history lesson. Shape each entry as RULE (one sentence — the transferable learning itself), TRIGGER (when it fires / how to recognize relevance), APPLY (what to do about it), and PROVENANCE as a bare initiative-id parenthetical only, e.g. `(agent-teams-2n1w)` — no narrative retelling of how it was discovered.
+- Target <= 6000 tokens (~24KB) / ~15-25 items total across all hot keys, with each individual entry capped at ~900 bytes (the same hot/fresh write-time cap `ateam learn` enforces) — a merged umbrella entry must still fit this cap, which is exactly why per-nuance bullets over separate entries is the only way to absorb a large shared theme.
 - Assign each hot entry a meaningful slug (e.g. `hot:cardinal-rule`, `hot:ship-constraint`).
 
 ### Apply (batch write, then cleanup)
@@ -202,7 +207,7 @@ Where:
 - N = number of net-new hot entries (keys that did not previously have `hot:` form)
 - M = number of cold entries merged into a single hot entry (count source entries collapsed)
 - K = number of cold entries removed via `ateam forget`
-- X = approximate token count of the current hot set (estimate from character count / 4)
+- X = approximate token count of the current hot set (estimate from character count / 3)
 
 If a role returned zero memories from `ateam condense <role>`, skip it with: `<role>: no memories — skipped`.
 
