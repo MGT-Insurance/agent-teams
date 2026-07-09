@@ -39,6 +39,12 @@ claude --bg --dangerously-skip-permissions "/dri <problem statement>"
 
 The session shows up in `claude agents`; attach to answer gates (`claude attach <id>`), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 
+## Eval suite
+
+`eval/` is an A/B comparison harness for agent-teams configurations (model, advisor on/off) across cost, latency, tool calls, turns, and correctness. See [`eval/README.md`](eval/README.md) for the full lifecycle.
+
+⚠️ **Costs real money:** running an eval dispatches a real, autonomous agent team and spends real API dollars. It is not part of the test suite — never run it casually or in CI.
+
 ## Concepts
 
 - **Global workspace** (`${AGENT_TEAMS_HOME:-$HOME/.agent-teams}`): a git-backed beads workspace. Role learnings (`<role>:<slug>` memories — every planner learns from every planner) and the initiative registry (one issue per initiative; `bd human` flags = "waiting on a human"). Syncs across machines via its git remote.
