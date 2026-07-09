@@ -45,6 +45,22 @@ func TestCost_knownModels(t *testing.T) {
 			wantOK:  true,
 		},
 		{
+			name:  "sonnet-5 exact match",
+			model: "claude-sonnet-5",
+			usage: TokenUsage{InputTokens: 1_000_000, OutputTokens: 1_000_000},
+			// 1M×$3 + 1M×$15 = $18
+			wantUSD: 18.0,
+			wantOK:  true,
+		},
+		{
+			name:  "sonnet-5 with date-stamp suffix (prefix match)",
+			model: "claude-sonnet-5-20260315",
+			usage: TokenUsage{InputTokens: 1_000_000},
+			// 1M×$3 = $3
+			wantUSD: 3.0,
+			wantOK:  true,
+		},
+		{
 			name:  "fable output",
 			model: "claude-fable-5",
 			usage: TokenUsage{OutputTokens: 1_000_000},
@@ -64,6 +80,18 @@ func TestCost_knownModels(t *testing.T) {
 				t.Errorf("usd=%v, want %v", got, tc.wantUSD)
 			}
 		})
+	}
+}
+
+func TestCost_sonnet5NotZero(t *testing.T) {
+	// Regression for agent-teams-grft.20: claude-sonnet-5 usage previously
+	// priced to (0, false) because the table had no matching key.
+	usd, ok := Cost("claude-sonnet-5", TokenUsage{InputTokens: 55365, OutputTokens: 24764})
+	if !ok {
+		t.Fatal("expected priced=true for claude-sonnet-5")
+	}
+	if usd <= 0 {
+		t.Errorf("expected non-zero cost for claude-sonnet-5, got %v", usd)
 	}
 }
 
@@ -139,6 +167,9 @@ func TestIsPriced(t *testing.T) {
 	}
 	if !IsPriced("claude-haiku-4-5-20251001") {
 		t.Error("claude-haiku-4-5-20251001 should match claude-haiku-4-5 prefix")
+	}
+	if !IsPriced("claude-sonnet-5") {
+		t.Error("claude-sonnet-5 should be priced")
 	}
 	if IsPriced("claude-unknown-99") {
 		t.Error("claude-unknown-99 should not be priced")
