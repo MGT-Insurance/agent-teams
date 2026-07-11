@@ -29,8 +29,14 @@ binary "the build passed."
 
 ## Lifecycle
 
-1. **`eval run --task <path> --config <name>`** — loads a `TaskSpec` (see
-   below), resolves its fixture repo to a local clone, and shells
+Run all commands below via `scripts/eval` — a thin wrapper that execs
+`go run ./cmd/eval` from the repo root, so the CLI is always current with
+the source tree (no `go build -o eval-bin` step to remember, and no stale
+binary to trip over) and resolves `eval/runs` / `eval/tasks` correctly
+regardless of your cwd.
+
+1. **`scripts/eval run --task <path> --config <name>`** — loads a `TaskSpec`
+   (see below), resolves its fixture repo to a local clone, and shells
    `ateam dispatch --repo <clone> --base-branch <FixtureRef> --problem
    <Problem> --slug <RunID> --model <cfg.DRIModel> [--advisor <cfg.Advisor>]
    --launch-prompt "/dri {id}"`. This launches a real DRI agent team that
@@ -42,24 +48,25 @@ binary "the build passed."
    human-operated and serial by design — `eval run` refuses to reuse a
    `RunID` that already exists rather than trying to coordinate concurrent
    dispatches.
-3. **`eval collect <RunID>`** — once the dispatched run has finished, this
-   extracts cost/token/wall-clock/tool-call/turn metrics from the local
-   Claude Code session data for the run's initiative (the same accounting
-   `ateam cost` uses), runs the task's `buildCheck` in the run's worktree for
-   an objective pass/fail floor, and calls a real LLM judge (`claude -p`,
-   fixed to the `opus` model regardless of the run's own config) to score the
-   produced diff against the task's `acceptanceCriteria`. This also spends
-   money — a second real LLM call per `eval collect` invocation. Results are
-   written to `eval/runs/<RunID>/result.json`. If Langfuse credentials are
-   set (see below), the result is also pushed; otherwise `eval collect`
-   prints `push skipped (no LANGFUSE_HOST set)` and exits successfully.
-4. **`eval push <RunID>`** — backfills a Langfuse push for a run that was
-   collected before credentials existed, reading the persisted
+3. **`scripts/eval collect <RunID>`** — once the dispatched run has
+   finished, this extracts cost/token/wall-clock/tool-call/turn metrics from
+   the local Claude Code session data for the run's initiative (the same
+   accounting `ateam cost` uses), runs the task's `buildCheck` in the run's
+   worktree for an objective pass/fail floor, and calls a real LLM judge
+   (`claude -p`, fixed to the `opus` model regardless of the run's own
+   config) to score the produced diff against the task's
+   `acceptanceCriteria`. This also spends money — a second real LLM call per
+   `eval collect` invocation. Results are written to
+   `eval/runs/<RunID>/result.json`. If Langfuse credentials are set (see
+   below), the result is also pushed; otherwise `eval collect` prints
+   `push skipped (no LANGFUSE_HOST set)` and exits successfully.
+4. **`scripts/eval push <RunID>`** — backfills a Langfuse push for a run
+   that was collected before credentials existed, reading the persisted
    `result.json`. Idempotent (trace id = RunID, dataset item id = TaskID).
-5. **`eval clean <RunID>`** — removes the per-run git worktree and branch
-   that `ateam dispatch` left behind under the fixture clone. Best-effort,
-   not idempotent: re-running `clean` on an already-cleaned run is an error,
-   not a no-op.
+5. **`scripts/eval clean <RunID>`** — removes the per-run git worktree and
+   branch that `ateam dispatch` left behind under the fixture clone.
+   Best-effort, not idempotent: re-running `clean` on an already-cleaned run
+   is an error, not a no-op.
 
 ## Where results land
 
@@ -128,10 +135,10 @@ already happened.
 ## CLI reference
 
 ```
-eval run --task <path> --config <name>   dispatch a DRI run, print its RunID
-eval collect <RunID>                     assemble metrics+judge, push to Langfuse if configured
-eval push <RunID>                        push a previously collected result to Langfuse
-eval clean <RunID>                       remove the run's leftover fixture worktree/branch
+scripts/eval run --task <path> --config <name>   dispatch a DRI run, print its RunID
+scripts/eval collect <RunID>                     assemble metrics+judge, push to Langfuse if configured
+scripts/eval push <RunID>                        push a previously collected result to Langfuse
+scripts/eval clean <RunID>                       remove the run's leftover fixture worktree/branch
 ```
 
 `<name>` for `--config` is one of the frozen v1 registry in
