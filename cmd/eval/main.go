@@ -5,10 +5,11 @@
 //
 // Usage:
 //
-//	eval run --task <path> --config <name>   dispatch a DRI run, print its RunID
-//	eval collect <RunID>                     assemble metrics+judge, push to Langfuse if configured
-//	eval push <RunID>                        push a previously collected result to Langfuse
-//	eval clean <RunID>                       remove the run's leftover fixture worktree/branch
+//	eval run --task <path> --config <name>            dispatch a DRI run under a frozen preset, print its RunID
+//	eval run --task <path> --model <m> [--advisor <a>] dispatch a DRI run under an ad hoc model/advisor pair
+//	eval collect <RunID>                               assemble metrics+judge, push to Langfuse if configured
+//	eval push <RunID>                                  push a previously collected result to Langfuse
+//	eval clean <RunID>                                 remove the run's leftover fixture worktree/branch
 package main
 
 import (
@@ -59,17 +60,19 @@ func runCmd(args []string) int {
 	fs := flag.NewFlagSet("eval run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	taskPath := fs.String("task", "", "path to a TaskSpec JSON file")
-	configName := fs.String("config", "", "config name ("+configNames()+")")
+	configName := fs.String("config", "", "frozen config preset ("+configNames()+"); mutually exclusive with --model/--advisor")
+	model := fs.String("model", "", "DRI model (e.g. opus, sonnet, fable); mutually exclusive with --config")
+	advisor := fs.String("advisor", "", "advisor model, default off; requires --model; mutually exclusive with --config")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
-	if *taskPath == "" || *configName == "" {
-		fmt.Fprintln(os.Stderr, "eval run: --task and --config are required")
+	if *taskPath == "" {
+		fmt.Fprintln(os.Stderr, "eval run: --task is required")
 		return 1
 	}
-	cfg, ok := configs[*configName]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "eval run: unknown --config %q (known: %s)\n", *configName, configNames())
+	cfg, err := resolveConfig(*configName, *model, *advisor)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "eval run:", err)
 		return 1
 	}
 
@@ -85,6 +88,41 @@ func runCmd(args []string) int {
 	}
 	fmt.Println(manifest.RunID)
 	return 0
+}
+
+// resolveConfig picks the ConfigFingerprint for `eval run` from either the
+// frozen --config presets or the --model/--advisor axis flags — exactly one
+// form is allowed. Pure and side-effect-free so it's testable without
+// dispatching anything.
+//
+// Axis-flag Name is derived deterministically: "<model>-noadvisor" with
+// advisor off, "<model>-advisor:<advisor>" with it on. ConfigFingerprint.Hash()
+// already gives identity for Langfuse; model strings are passed through
+// as-is, not checked against an allowlist (dispatch owns that validation).
+func resolveConfig(configName, model, advisor string) (eval.ConfigFingerprint, error) {
+	usingConfig := configName != ""
+	usingAxes := model != "" || advisor != ""
+
+	switch {
+	case usingConfig && usingAxes:
+		return eval.ConfigFingerprint{}, fmt.Errorf("--config and --model/--advisor are mutually exclusive")
+	case !usingConfig && !usingAxes:
+		return eval.ConfigFingerprint{}, fmt.Errorf("one of --config or --model is required")
+	case usingConfig:
+		cfg, ok := configs[configName]
+		if !ok {
+			return eval.ConfigFingerprint{}, fmt.Errorf("unknown --config %q (known: %s)", configName, configNames())
+		}
+		return cfg, nil
+	case model == "":
+		return eval.ConfigFingerprint{}, fmt.Errorf("--advisor requires --model")
+	default:
+		name := model + "-noadvisor"
+		if advisor != "" {
+			name = model + "-advisor:" + advisor
+		}
+		return eval.ConfigFingerprint{Name: name, DRIModel: model, Advisor: advisor}, nil
+	}
 }
 
 func collectCmd(args []string) int {
@@ -165,6 +203,7 @@ func configNames() string {
 
 func printUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage: eval run --task <path> --config <name>")
+	fmt.Fprintln(w, "       eval run --task <path> --model <m> [--advisor <a>]")
 	fmt.Fprintln(w, "       eval collect <RunID>")
 	fmt.Fprintln(w, "       eval push <RunID>")
 	fmt.Fprintln(w, "       eval clean <RunID>")
