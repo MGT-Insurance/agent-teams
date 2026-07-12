@@ -21,7 +21,9 @@ function formatDateTime(iso: string): string {
 // function so it can be unit-tested directly, independent of the component's
 // state wiring.
 export interface MailFilters {
-  unreadOnly: boolean;
+  // "unread" = status === "pending"; "read" = status !== "pending" (covers
+  // both "read" and "acked" — both are read from the user's perspective).
+  readState: "all" | "unread" | "read";
   initiativeId: string; // "" = all
   text: string; // matched case-insensitively against subject/from/to/body
 }
@@ -29,7 +31,8 @@ export interface MailFilters {
 export function filterMessages(messages: MailMessage[], filters: MailFilters): MailMessage[] {
   const text = filters.text.trim().toLowerCase();
   return messages.filter((m) => {
-    if (filters.unreadOnly && m.status !== "pending") return false;
+    if (filters.readState === "unread" && m.status !== "pending") return false;
+    if (filters.readState === "read" && m.status === "pending") return false;
     if (filters.initiativeId && m.to !== filters.initiativeId) return false;
     if (text) {
       const haystack = `${m.subject} ${m.from} ${m.to} ${m.body}`.toLowerCase();
@@ -160,7 +163,7 @@ export default function MailView() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sendOpen, setSendOpen] = useState(false);
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [readState, setReadState] = useState<MailFilters["readState"]>("all");
   const [initiativeFilter, setInitiativeFilter] = useState("");
   const [textFilter, setTextFilter] = useState("");
 
@@ -183,13 +186,16 @@ export default function MailView() {
   }, [load]);
 
   const recipients = initiatives.filter((node) => !isClosed(node));
+  // Full id -> title lookup (NOT `recipients`, which excludes closed initiatives) —
+  // past mail may reference a since-closed initiative and should still show its name.
+  const initiativeTitleById = new Map(initiatives.map((node) => [node.initiative.id, node.initiative.title]));
   const sorted = [...messages].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const filtered = filterMessages(sorted, { unreadOnly, initiativeId: initiativeFilter, text: textFilter });
+  const filtered = filterMessages(sorted, { readState, initiativeId: initiativeFilter, text: textFilter });
 
   // Distinct recipient ids present in the mailbox, for the initiative filter dropdown.
   const toOptions = Array.from(new Set(messages.map((m) => m.to))).sort();
 
-  const filtersActive = unreadOnly || initiativeFilter !== "" || textFilter.trim() !== "";
+  const filtersActive = readState !== "all" || initiativeFilter !== "" || textFilter.trim() !== "";
 
   return (
     <div className="mail-view">
@@ -216,14 +222,16 @@ export default function MailView() {
         <h2 className="section-title">Messages</h2>
         {messages.length > 0 && (
           <div className="mail-filters">
-            <label className="mail-filter-checkbox">
-              <input
-                type="checkbox"
-                checked={unreadOnly}
-                onChange={(e) => setUnreadOnly(e.target.checked)}
-              />
-              Unread only
-            </label>
+            <select
+              className="mail-filter-select"
+              aria-label="Filter by read status"
+              value={readState}
+              onChange={(e) => setReadState(e.target.value as MailFilters["readState"])}
+            >
+              <option value="all">All</option>
+              <option value="unread">Unread</option>
+              <option value="read">Read</option>
+            </select>
             <select
               className="mail-filter-select"
               aria-label="Filter by initiative"
@@ -231,9 +239,12 @@ export default function MailView() {
               onChange={(e) => setInitiativeFilter(e.target.value)}
             >
               <option value="">All initiatives</option>
-              {toOptions.map((id) => (
-                <option key={id} value={id}>{id}</option>
-              ))}
+              {toOptions.map((id) => {
+                const title = initiativeTitleById.get(id);
+                return (
+                  <option key={id} value={id}>{title ? `${title} (${id})` : id}</option>
+                );
+              })}
             </select>
             <input
               type="text"
@@ -248,7 +259,7 @@ export default function MailView() {
                 type="button"
                 className="mail-filter-clear"
                 onClick={() => {
-                  setUnreadOnly(false);
+                  setReadState("all");
                   setInitiativeFilter("");
                   setTextFilter("");
                 }}
