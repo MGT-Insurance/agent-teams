@@ -114,3 +114,50 @@ func TestWebappBugfix1TaskSpec_Parses(t *testing.T) {
 		t.Error("BuildCheck is empty")
 	}
 }
+
+// TestWebappBugfix1V1TaskSpec_Parses guards eval/tasks/webapp-bugfix-1-v1.json,
+// the current (loop-fixed-baseline) version of the webapp-bugfix-1 archetype.
+// webapp-bugfix-1 (fixtureRef v0-bug-1) is frozen/historical — see grft.17 —
+// because its fixture baseline carried an undetected frontend refetch-loop
+// defect that contaminated seeded-bug isolation. This spec pins fixtureRef to
+// v1-bug-1 (v1-baseline + the same seeded project-filter bug) and is the id
+// all new A/B runs of this archetype should dispatch against.
+func TestWebappBugfix1V1TaskSpec_Parses(t *testing.T) {
+	data, err := os.ReadFile("../../eval/tasks/webapp-bugfix-1-v1.json")
+	if err != nil {
+		t.Fatalf("reading webapp-bugfix-1-v1.json: %v", err)
+	}
+
+	var task TaskSpec
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("unmarshalling webapp-bugfix-1-v1.json: %v", err)
+	}
+
+	if task.ID != "webapp-bugfix-1-v1" {
+		t.Errorf("ID = %q, want %q", task.ID, "webapp-bugfix-1-v1")
+	}
+	if task.Archetype != "webapp-bugfix" {
+		t.Errorf("Archetype = %q, want %q", task.Archetype, "webapp-bugfix")
+	}
+	if task.RunShape != "implement" {
+		t.Errorf("RunShape = %q, want %q", task.RunShape, "implement")
+	}
+	if task.FixtureRepo == "" {
+		t.Error("FixtureRepo is empty")
+	}
+	if task.FixtureRepo == "eval/tasks/webapp-bugfix-1-v1.json" {
+		t.Error("FixtureRepo looks like an in-repo path, not an out-of-repo reference")
+	}
+	if task.FixtureRef != "v1-bug-1" {
+		t.Errorf("FixtureRef = %q, want %q", task.FixtureRef, "v1-bug-1")
+	}
+	if task.Problem == "" {
+		t.Error("Problem is empty")
+	}
+	if len(task.AcceptanceCriteria) == 0 {
+		t.Error("AcceptanceCriteria is empty")
+	}
+	if task.BuildCheck == "" {
+		t.Error("BuildCheck is empty")
+	}
+}
