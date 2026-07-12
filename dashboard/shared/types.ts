@@ -345,3 +345,62 @@ export interface SnapshotEvent {
   inbox: InboxItem[];
   ts: number; // epoch ms
 }
+
+// ---------------------------------------------------------------------------
+// Mail tab (agent-teams-hw71). CONTRACT — frozen shape shared by three
+// file-disjoint tracks (Go CLI, dashboard server, dashboard web); see
+// agent-teams-hw71.1 for the full spec. Implementers build to this comment
+// block verbatim — no need to re-read the bead.
+//
+// NON-DESTRUCTIVE INVARIANT: the mail READ path is `ateam debug-mail` ONLY.
+// The dashboard must NEVER invoke `ateam inbox` — that command CONSUMES
+// mail and marks it read, which would corrupt state out from under the
+// agents actually waiting on it. Sending uses `ateam send` (its
+// liveness/resume/respawn escalation behavior is intended and sanctioned).
+//
+// A) `ateam debug-mail --json` output: a JSON array of objects, one per
+// message, NEWEST-FIRST, with EXACTLY these camelCase keys (same field
+// names + null semantics as MailMessage below). Empty mailbox => `[]`.
+// Derivation rules the CLI MUST follow:
+//   • status  — existing mailStatus(labels) precedence: acked > read > pending.
+//   • readAt  — value after the "delivery-acked-at:" label prefix, else null.
+//   • readBy  — value after the "delivery-acked-by:" label prefix, else null.
+//   • thread  — value after the "thread:" label prefix, else null.
+//   • from    — senderFromNotes(Notes) else CreatedBy (mirrors the text path).
+//   • body    — bd Description.
+// ---------------------------------------------------------------------------
+
+export interface MailMessage {
+  id: string; // message bead id
+  to: string; // recipient initiative id (bd Assignee)
+  from: string; // sender: "from:" line in Notes, else created_by
+  subject: string; // bd Title (auto "message from <sender>")
+  body: string; // bd Description (message body)
+  status: "pending" | "read" | "acked"; // mailStatus() precedence: acked > read > pending
+  createdAt: string; // RFC3339
+  readAt: string | null; // from label delivery-acked-at:; null if unread/unknown
+  readBy: string | null; // from label delivery-acked-by:; null if unread/unknown
+  thread: string | null; // from label thread:; null if none
+}
+
+// B) GET /api/mail -> 200 MailListResponse ({ messages }); on `ateam debug-mail`
+// CLI failure -> 502 { error }.
+export interface MailListResponse {
+  messages: MailMessage[];
+}
+
+// C) POST /api/mail/send, request body MailSendRequest ({ to, body, sender? }):
+//   • 200 MailSendResponse ({ ok:true, messageId, recipient }) on success.
+//   • 400 { error } for malformed/missing to|body or invalid initiative id.
+//   • 502 { error } on `ateam send` failure.
+export interface MailSendRequest {
+  to: string;
+  body: string;
+  sender?: string;
+}
+
+export interface MailSendResponse {
+  ok: true;
+  messageId: string;
+  recipient: string;
+}
