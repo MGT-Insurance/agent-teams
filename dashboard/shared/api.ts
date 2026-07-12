@@ -8,6 +8,8 @@ export const API_PATHS = {
   logs: (id: string, sessionId: string) =>
     `/api/initiatives/${encodeURIComponent(id)}/logs?session=${encodeURIComponent(sessionId)}`,
   attach: (id: string) => `/api/initiatives/${encodeURIComponent(id)}/attach`,
+  mail: "/api/mail",
+  mailSend: "/api/mail/send",
 } as const;
 
 // GET /api/snapshot
@@ -40,3 +42,14 @@ export interface AttachResponse {
 // SSE event union — the `type` field on the EventSource message.
 export type DashboardSSEEvent =
   | { type: "snapshot"; data: SnapshotEvent };
+
+// GET /api/mail -> 200 MailListResponse ({ messages }); on `ateam debug-mail`
+// CLI failure -> 502 { error }. See MailMessage/MailListResponse in ./types.ts
+// for the full contract (mirrors `ateam debug-mail --json`).
+// NON-DESTRUCTIVE: the server MUST implement this via `ateam debug-mail`, never `ateam inbox`.
+
+// POST /api/mail/send, body MailSendRequest ({ to, body, sender? }):
+//   • 200 MailSendResponse ({ ok:true, messageId, recipient }) on success.
+//   • 400 { error } for malformed/missing to|body or invalid initiative id.
+//   • 502 { error } on `ateam send` failure.
+// See MailSendRequest/MailSendResponse in ./types.ts.
