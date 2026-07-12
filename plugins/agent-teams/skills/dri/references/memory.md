@@ -1,0 +1,45 @@
+# Memory mechanics — three-tier model + condensing
+
+The core routing rule (route by kind; default `ateam learn`; never MEMORY.md; contribute the moment a learning forms) lives inline in SKILL.md under "Memory routing". This file holds the tier mechanics and the condense flow — reference-only detail the DRI reaches when curating memories or at Phase 6 wind-down.
+
+## Three-tier memory model (fresh / hot / cold)
+
+Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
+
+- **Fresh:** `<role>:fresh:<slug>` — the default write tier. `ateam learn <role> <slug> --file <f>` (bare slug, no prefix) writes here automatically. Fresh memories accumulate between condense runs; `ateam learnings <role>` serves them alongside hot. Fresh is the "just written, not yet curated" tier and is periodically drained into cold by `ateam fresh-drain <role>`.
+- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct; target budget is ~6000 tokens (~15–25 learnings) across all hot keys for a role.
+- **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. Write explicitly with `ateam learn <role> cold:<slug> --file <f>` (the `cold:` prefix is stripped to produce the bare `role:<slug>` key). The existing pre-tier `dri:<slug>` memories are already cold with no migration needed.
+
+`ateam learnings <role>` serves the **hot ∪ fresh** union. It falls back to all `role:` keys only when BOTH hot and fresh are empty (preserving pre-tier behavior for roles with no curated set). All three tiers are living; cold is not a frozen archive.
+
+**Key conventions at a glance:**
+- `ateam learn <role> <slug>` → writes `role:fresh:<slug>` (default)
+- `ateam learn <role> hot:<slug>` → writes `role:hot:<slug>` (explicit hot)
+- `ateam learn <role> fresh:<slug>` → writes `role:fresh:<slug>` (explicit fresh, same as default)
+- `ateam learn <role> cold:<slug>` → writes `role:<slug>` (explicit cold, no tier tag)
+
+**Searching cold memories:** `ateam recall <role> <query>` does a substring search over a role's memories (key+body) and prints matching key+body pairs on demand. Use this to surface cold context before starting a task or when a hot hint points to a cold detail.
+
+**Removing a memory:** `ateam forget <role> <slug>` removes a cold memory. `ateam forget <role> hot:<slug>` removes a hot memory. `ateam forget <role> fresh:<slug>` removes a fresh memory. Every removal is recoverable from Dolt history (`refs/dolt/data`).
+
+**Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body succinct and in the RULE/TRIGGER/APPLY + bare-id-provenance shape above (write-time cap: 900 bytes for hot and fresh, 1500 for cold) — hot memories are injected whole every session, so a history lesson directly costs context, not just extra bytes.
+
+## Condensing (autonomous)
+
+Condensing is **lock-guarded**: the `/agent-teams:condense` skill acquires `ateam condense-lock` before doing any work, skips cleanly if another session holds the lock, and releases on all exit paths. Use the skill (no arg for all roles; `<role>` arg for a single role) rather than calling `ateam condense <role>` directly.
+
+The condense flow per role: `ateam fresh-drain <role>` first (deterministic — moves `role:fresh:*` → cold, no LLM), then `ateam condense <role>` (emits a read-only structured packet: all memories, hot budget, and instruction contract) to stdout. The condense agent reads that packet and applies changes autonomously via `ateam learn` and `ateam forget`:
+- promote/refresh into hot: `ateam learn <role> hot:<slug> --file <f>`
+- demote stale hot to cold: `ateam learn <role> cold:<slug> --file <f>`, then `ateam forget <role> hot:<slug>`
+- merge/rewrite in cold: `ateam learn <role> cold:<slug> --file <f>`
+- evict dead items: `ateam forget <role> <slug>`
+
+There is NO human-review gate and NO staged diff — the agent acts autonomously.
+
+Safety backstops:
+- **Dolt history** — every write, including eviction, is recoverable via `refs/dolt/data`. A bad run is revertible.
+- **Change-summary log** — the condense agent emits one line per run: `promoted N / merged M / evicted K / hot now X tokens`.
+
+v1 has no per-run eviction floor — trust the agent and Dolt-history recoverability.
+
+**Wind-down touchpoint:** at Phase 6 wind-down, run the `/agent-teams:condense` skill (no arg) to perform the all-roles, lock-guarded drain+condense sweep. This acquires the condense lock, skips a role only if it is BOTH at or under ~8000 tokens hot∪fresh AND at or under ~1500 tokens fresh-alone (bytes/3 approximation), drains fresh memories into cold for each role where either check fired (`ateam fresh-drain <role>`), then runs the condense procedure for that role (`ateam condense <role>`), and releases the lock. The DRI is a LOCAL agent with access to the local `~/.agent-teams` Dolt store and can run the LLM curation. Most wind-downs find neither check tripped and exit cheaply with zero LLM calls. If another session holds the condense lock, the skill logs "condense in progress elsewhere — skipping, fresh flushes next run" and exits cleanly without blocking. See the `/agent-teams:condense` skill for the full procedure.

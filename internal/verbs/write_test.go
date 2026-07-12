@@ -1248,6 +1248,143 @@ func TestLearn_ColdSlugNotDoublePrefixed(t *testing.T) {
 	}
 }
 
+// ── learn: write-time byte caps (agent-teams-b2xr.3, contract .2) ─────────────
+
+func TestLearn_RejectsOverCap_Hot(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 901))
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "implementer", Slug: "hot:foo", File: f}).Run(ctx)
+	assertUsageError(t, err, "hot tier cap is 900 bytes, got 901")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd remember call on rejection, got %d calls: %v", len(*calls), *calls)
+	}
+}
+
+func TestLearn_RejectsOverCap_FreshExplicitPrefix(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 901))
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "implementer", Slug: "fresh:foo", File: f}).Run(ctx)
+	assertUsageError(t, err, "fresh tier cap is 900 bytes, got 901")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd remember call on rejection, got %d calls: %v", len(*calls), *calls)
+	}
+}
+
+func TestLearn_RejectsOverCap_FreshBareSlug(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 901))
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "implementer", Slug: "foo", File: f}).Run(ctx)
+	assertUsageError(t, err, "fresh tier cap is 900 bytes, got 901")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd remember call on rejection, got %d calls: %v", len(*calls), *calls)
+	}
+}
+
+func TestLearn_RejectsOverCap_Cold(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 1501))
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "implementer", Slug: "cold:foo", File: f}).Run(ctx)
+	assertUsageError(t, err, "cold tier cap is 1500 bytes, got 1501")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd remember call on rejection, got %d calls: %v", len(*calls), *calls)
+	}
+}
+
+func TestLearn_RejectionMessage_TeachesShape(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 901))
+	ctx, _ := newCtx(t, nil)
+	err := (&learnKong{Role: "implementer", Slug: "hot:foo", File: f}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"RULE", "TRIGGER", "APPLY", "PROVENANCE",
+		"bare initiative-id parenthetical",
+		"linked bd issue",
+		"Store the learning itself, not the story of how it was found — include only enough context to signal WHEN the learning is relevant, not a history lesson.",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q; got: %s", want, msg)
+		}
+	}
+}
+
+func TestLearn_AcceptsUnderCap_Hot(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 900))
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnKong{Role: "implementer", Slug: "hot:foo", File: f}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd remember call, got %d", len(*calls))
+	}
+}
+
+func TestLearn_AcceptsUnderCap_Fresh(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 900))
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnKong{Role: "implementer", Slug: "fresh:foo", File: f}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd remember call, got %d", len(*calls))
+	}
+}
+
+func TestLearn_AcceptsUnderCap_Cold(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 1500))
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnKong{Role: "implementer", Slug: "cold:foo", File: f}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd remember call, got %d", len(*calls))
+	}
+}
+
+func TestLearn_ColdRegression_2000BytesNowRejected(t *testing.T) {
+	// Previously cold had no write-time cap at all; this now must be rejected.
+	f := makeTempFile(t, strings.Repeat("x", 2000))
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "implementer", Slug: "cold:foo", File: f}).Run(ctx)
+	assertUsageError(t, err, "cold tier cap is 1500 bytes, got 2000")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd remember call on rejection, got %d calls: %v", len(*calls), *calls)
+	}
+}
+
+func TestLearn_ColdBetween900And1500_StillPasses(t *testing.T) {
+	f := makeTempFile(t, strings.Repeat("x", 1200))
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnKong{Role: "implementer", Slug: "cold:foo", File: f}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd remember call, got %d", len(*calls))
+	}
+}
+
+func TestLearn_TrimsTrailingNewlineBeforeMeasuring(t *testing.T) {
+	// 900 bytes of content plus a trailing newline must still be accepted —
+	// the trailing newline must not eat the byte budget (mirrors
+	// buildAskBlock's TrimRight behavior).
+	trimmed := strings.Repeat("x", 900)
+	f := makeTempFile(t, trimmed+"\n")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnKong{Role: "implementer", Slug: "hot:foo", File: f}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd remember call, got %d", len(*calls))
+	}
+	// The stored body must be the trimmed content, not the raw file bytes —
+	// the trailing newline must not be persisted either.
+	if got := (*calls)[0].args[2]; got != trimmed {
+		t.Errorf("stored body = %d bytes, want trimmed %d-byte body without trailing newline", len(got), len(trimmed))
+	}
+}
+
 func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
 	if err := (&closeKong{ID: "at-5"}).Run(ctx); err != nil {
