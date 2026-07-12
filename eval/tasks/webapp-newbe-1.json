@@ -1,0 +1,16 @@
+{
+  "id": "webapp-newbe-1",
+  "archetype": "webapp-newbe",
+  "runShape": "implement",
+  "fixtureRepo": "webapp-medium",
+  "fixtureRef": "v1-newbe-1",
+  "problem": "TaskFlow's backend has a dead route: backend/src/routes/tasks.js has a commented-out GET /search handler with a note that it 'used to power the old global search page — feature cut but nobody removed the route. Left disabled for now.' Product wants global task search brought back. Implement GET /api/tasks/search as a real endpoint: it takes a query string parameter `q` and returns the JSON array of tasks (in the same shape used elsewhere, e.g. GET /api/projects/:projectId/tasks) whose title contains `q` as a case-insensitive substring, searched across ALL projects (not scoped to one project). If `q` is missing, respond with 400 and a JSON error body, matching the validation style already used elsewhere in this router (e.g. POST /api/projects rejecting a missing name). Follow the existing route/service conventions in backend/src/routes/tasks.js, backend/src/routes/projects.js, and backend/src/services/taskService.js (thin route handlers delegating to a taskService function, consistent error-response shape). Do not change any other endpoint's behavior.",
+  "acceptanceCriteria": [
+    "GET /api/tasks/search?q=<term> returns 200 with a JSON array of tasks whose title contains <term> as a case-insensitive substring",
+    "The search is global: it can return matching tasks from multiple different projects in one response, not just the caller's own project",
+    "GET /api/tasks/search?q=<term-with-no-matches> returns 200 with an empty array, not a 404 or error",
+    "GET /api/tasks/search with no q query parameter returns 400 with a JSON error body",
+    "No regressions: project listing/creation, project task listing/filtering, task creation, task update (PATCH), and task deletion (DELETE) continue to work as before"
+  ],
+  "buildCheck": "npm install && npm run verify"
+}
