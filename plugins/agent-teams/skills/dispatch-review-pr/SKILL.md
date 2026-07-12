@@ -1,6 +1,6 @@
 ---
-name: dispatch-pr-review
-description: "Dispatch a background PR review session for a GitHub pull request. Use when invoked as /dispatch-pr-review <PR>, where <PR> is a full URL (https://github.com/owner/repo/pull/123), short form (owner/repo#123), or bare number (#123 or 123, inferring repo from cwd). Parses the reference, registers a review initiative via ateam dispatch, and launches a background /agent-teams:review-pr session. Does NOT review the PR itself."
+name: dispatch-review-pr
+description: "Dispatch a background PR review session for a GitHub pull request. Use when invoked as /dispatch-review-pr <PR>, where <PR> is a full URL (https://github.com/owner/repo/pull/123), short form (owner/repo#123), or bare number (#123 or 123, inferring repo from cwd). Parses the reference, registers a review initiative via ateam dispatch, and launches a background /agent-teams:review-pr session. Does NOT review the PR itself."
 ---
 
 You dispatch a background review session for a single PR; you do not perform the review yourself. This skill parses the PR reference the human provides, writes structured metadata, and calls `ateam dispatch` with `--launch-prompt "/agent-teams:review-pr {id}" --skip-epic`. The background session runs the `review-pr` skill end-to-end — checkout, diff, reviewer subagent, inline GitHub comments, close.
