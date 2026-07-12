@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/mgt-insurance/agent-teams/internal/eval"
+)
 
 // These cover the CLI's own argument-validation logic only — never real
 // eval.Run/eval.Collect/eval.Clean, which shell out to `ateam dispatch` /
@@ -27,6 +32,98 @@ func TestRunCmd_UnknownConfig_Errors(t *testing.T) {
 	code := runCmd([]string{"--task", "/does/not/matter.json", "--config", "bogus"})
 	if code != 1 {
 		t.Errorf("runCmd with unknown --config = %d, want 1", code)
+	}
+}
+
+func TestRunCmd_ConfigAndModelConflict_Errors(t *testing.T) {
+	// Resolved before eval.LoadTaskSpec, same as the unknown-config case.
+	code := runCmd([]string{"--task", "/does/not/matter.json", "--config", "opus-noadvisor", "--model", "sonnet"})
+	if code != 1 {
+		t.Errorf("runCmd with --config and --model = %d, want 1", code)
+	}
+}
+
+func TestRunCmd_AdvisorWithoutModel_Errors(t *testing.T) {
+	code := runCmd([]string{"--task", "/does/not/matter.json", "--advisor", "opus"})
+	if code != 1 {
+		t.Errorf("runCmd with --advisor and no --model = %d, want 1", code)
+	}
+}
+
+func TestRunCmd_NeitherConfigNorModel_Errors(t *testing.T) {
+	code := runCmd([]string{"--task", "/does/not/matter.json"})
+	if code != 1 {
+		t.Errorf("runCmd with neither --config nor --model = %d, want 1", code)
+	}
+}
+
+func TestResolveConfig(t *testing.T) {
+	cases := []struct {
+		name                       string
+		configName, model, advisor string
+		wantErr                    bool
+		want                       eval.ConfigFingerprint
+	}{
+		{
+			name:       "known config preset",
+			configName: "opus-noadvisor",
+			want:       eval.ConfigFingerprint{Name: "opus-noadvisor", DRIModel: "opus", Advisor: ""},
+		},
+		{
+			name:       "unknown config preset",
+			configName: "bogus",
+			wantErr:    true,
+		},
+		{
+			name:  "model only derives noadvisor name",
+			model: "sonnet",
+			want:  eval.ConfigFingerprint{Name: "sonnet-noadvisor", DRIModel: "sonnet", Advisor: ""},
+		},
+		{
+			name:    "model and advisor derives advisor name",
+			model:   "sonnet",
+			advisor: "opus",
+			want:    eval.ConfigFingerprint{Name: "sonnet-advisor:opus", DRIModel: "sonnet", Advisor: "opus"},
+		},
+		{
+			name:    "advisor without model errors",
+			advisor: "opus",
+			wantErr: true,
+		},
+		{
+			name:       "config plus model conflicts",
+			configName: "opus-noadvisor",
+			model:      "sonnet",
+			wantErr:    true,
+		},
+		{
+			name:       "config plus advisor conflicts",
+			configName: "opus-noadvisor",
+			advisor:    "opus",
+			wantErr:    true,
+		},
+		{
+			name:    "neither config nor model errors",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveConfig(tc.configName, tc.model, tc.advisor)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveConfig(%q, %q, %q) = %+v, want error", tc.configName, tc.model, tc.advisor, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveConfig(%q, %q, %q) unexpected error: %v", tc.configName, tc.model, tc.advisor, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("resolveConfig(%q, %q, %q) = %+v, want %+v", tc.configName, tc.model, tc.advisor, got, tc.want)
+			}
+		})
 	}
 }
 

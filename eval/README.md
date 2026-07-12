@@ -35,14 +35,17 @@ the source tree (no `go build -o eval-bin` step to remember, and no stale
 binary to trip over) and resolves `eval/runs` / `eval/tasks` correctly
 regardless of your cwd.
 
-1. **`scripts/eval run --task <path> --config <name>`** — loads a `TaskSpec`
-   (see below), resolves its fixture repo to a local clone, and shells
-   `ateam dispatch --repo <clone> --base-branch <FixtureRef> --problem
-   <Problem> --slug <RunID> --model <cfg.DRIModel> [--advisor <cfg.Advisor>]
-   --launch-prompt "/dri {id}"`. This launches a real DRI agent team that
-   works autonomously — minutes to hours — against the fixture. `eval run`
-   itself returns quickly once dispatch has started; it prints the `RunID`
-   and writes `eval/runs/<RunID>/manifest.json`.
+1. **`scripts/eval run --task <path> --config <name>`** (or, for an ad hoc
+   pair not in the frozen registry, **`scripts/eval run --task <path>
+   --model <m> [--advisor <a>]`** — see [CLI reference](#cli-reference) for
+   how the two forms interact) — loads a `TaskSpec` (see below), resolves its
+   fixture repo to a local clone, and shells `ateam dispatch --repo <clone>
+   --base-branch <FixtureRef> --problem <Problem> --slug <RunID> --model
+   <cfg.DRIModel> [--advisor <cfg.Advisor>] --launch-prompt "/dri {id}"`.
+   This launches a real DRI agent team that works autonomously — minutes to
+   hours — against the fixture. `eval run` itself returns quickly once
+   dispatch has started; it prints the `RunID` and writes
+   `eval/runs/<RunID>/manifest.json`.
 2. **Wait.** The dispatched team drives the task to a pushed branch on its
    own; there is nothing to poll from this CLI. This is why the harness is
    human-operated and serial by design — `eval run` refuses to reuse a
@@ -135,11 +138,22 @@ already happened.
 ## CLI reference
 
 ```
-scripts/eval run --task <path> --config <name>   dispatch a DRI run, print its RunID
-scripts/eval collect <RunID>                     assemble metrics+judge, push to Langfuse if configured
-scripts/eval push <RunID>                        push a previously collected result to Langfuse
-scripts/eval clean <RunID>                       remove the run's leftover fixture worktree/branch
+scripts/eval run --task <path> --config <name>             dispatch a DRI run under a frozen preset, print its RunID
+scripts/eval run --task <path> --model <m> [--advisor <a>]  dispatch a DRI run under an ad hoc model/advisor pair
+scripts/eval collect <RunID>                                assemble metrics+judge, push to Langfuse if configured
+scripts/eval push <RunID>                                   push a previously collected result to Langfuse
+scripts/eval clean <RunID>                                  remove the run's leftover fixture worktree/branch
 ```
 
-`<name>` for `--config` is one of the frozen v1 registry in
-`cmd/eval/main.go`: `opus-noadvisor`, `sonnet-advisor`.
+`eval run` takes exactly one of two mutually exclusive forms for selecting a
+config — using both is an error:
+
+- **`--config <name>`** — one of the frozen v1 registry in
+  `cmd/eval/main.go`: `opus-noadvisor`, `sonnet-advisor`.
+- **`--model <m> [--advisor <a>]`** — sets the DRI model and advisor axes
+  independently, for any pair not in the frozen registry. `--model` alone
+  turns the advisor off; `--advisor` without `--model` is an error (explicit
+  beats a hidden default). `<m>`/`<a>` are passed through to `ateam dispatch`
+  unvalidated — dispatch owns rejecting an unknown model. The resulting
+  `ConfigFingerprint.Name` is derived as `<model>-noadvisor` or
+  `<model>-advisor:<advisor>`.
