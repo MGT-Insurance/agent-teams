@@ -1,0 +1,17 @@
+{
+  "id": "webapp-bugfix-1",
+  "archetype": "webapp-bugfix",
+  "runShape": "implement",
+  "fixtureRepo": "webapp-medium",
+  "fixtureRef": "v0-bug-1",
+  "problem": "Users report that in TaskFlow, selecting any project on the dashboard always shows \"No tasks found\" in the task list, even for projects that clearly have tasks (e.g. the 'Website Redesign' project has 3 seeded tasks). The status filter dropdown also never returns results, and every project's completion/progress stat shows 0% regardless of how many tasks are actually done. Diagnose the root cause and fix it so project task lists, filters, and stats reflect the real data, without breaking project creation, task creation, task updates, or task deletion.",
+  "acceptanceCriteria": [
+    "GET /api/projects/1/tasks returns all 3 seeded tasks for project 1, not an empty array",
+    "GET /api/projects/2/tasks?status=done returns exactly the 1 seeded 'done' task for project 2",
+    "GET /api/projects/:projectId/stats returns non-zero total/done counts (and correct percentComplete) for projects that have tasks",
+    "A task created via POST /api/projects/:projectId/tasks is scoped to that project and appears in a subsequent GET of that project's tasks",
+    "The fix addresses the root cause (a type mismatch between the string route-param projectId and the numeric stored task.projectId) rather than a narrow workaround for one endpoint",
+    "No regressions: project listing/creation, task update (PATCH), and task deletion (DELETE) continue to work as before"
+  ],
+  "buildCheck": "npm install && npm run verify"
+}
