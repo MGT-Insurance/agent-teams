@@ -25,10 +25,16 @@ vi.mock("../../lib/api.js", () => ({
   sendMail: mockSendMail,
 }));
 
-import MailView from "./index.js";
+import MailView, { filterMessages, type MailFilters } from "./index.js";
 
 function renderMail() {
   return render(<MailView />);
+}
+
+// The send form is collapsed by default (agent-teams-hw71.6.7) — open it before
+// interacting with recipient/body fields.
+function openSendForm() {
+  fireEvent.click(screen.getByRole("button", { name: /send a message/i }));
 }
 
 function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative {
@@ -149,6 +155,7 @@ describe("MailView — recipient picker", () => {
   it("lists only non-closed initiatives, showing the name", async () => {
     renderMail();
     await waitFor(() => expect(mockFetchMail).toHaveBeenCalled());
+    openSendForm();
 
     const select = screen.getByLabelText(/recipient initiative/i) as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.textContent);
@@ -163,6 +170,7 @@ describe("MailView — send form submission", () => {
     mockSendMail.mockResolvedValue({ ok: true, messageId: "msg-99", recipient: "init-1" });
     renderMail();
     await waitFor(() => expect(mockFetchMail).toHaveBeenCalled());
+    openSendForm();
 
     const select = screen.getByLabelText(/recipient initiative/i) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "init-1" } });
@@ -179,6 +187,7 @@ describe("MailView — send form submission", () => {
     mockSendMail.mockResolvedValue({ ok: true, messageId: "msg-99", recipient: "init-1" });
     renderMail();
     await waitFor(() => expect(mockFetchMail).toHaveBeenCalledTimes(1));
+    openSendForm();
 
     const select = screen.getByLabelText(/recipient initiative/i) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "init-1" } });
@@ -193,6 +202,7 @@ describe("MailView — send form submission", () => {
     mockSendMail.mockRejectedValue(new Error("invalid recipient initiative id"));
     renderMail();
     await waitFor(() => expect(mockFetchMail).toHaveBeenCalled());
+    openSendForm();
 
     const select = screen.getByLabelText(/recipient initiative/i) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "init-1" } });
@@ -200,5 +210,98 @@ describe("MailView — send form submission", () => {
     fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
 
     await screen.findByText(/invalid recipient initiative id/i);
+  });
+});
+
+describe("MailView — send form disclosure (agent-teams-hw71.6.7)", () => {
+  it("renders the send form collapsed by default, with the Messages table as the first visible content", async () => {
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+
+    // Recipient select / message body are not in the document until opened.
+    expect(screen.queryByLabelText(/recipient initiative/i)).toBeNull();
+    expect(screen.queryByLabelText(/message body/i)).toBeNull();
+
+    // Messages section appears before the send-form toggle in document order.
+    const sectionTitles = Array.from(container.querySelectorAll("h2.section-title")).map(
+      (el) => el.textContent,
+    );
+    expect(sectionTitles[0]).toBe("Messages");
+
+    const toggle = screen.getByRole("button", { name: /send a message/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("reveals the send form when the toggle is clicked, and hides it again on second click", async () => {
+    renderMail();
+    await waitFor(() => expect(screen.getByRole("button", { name: /send a message/i })).toBeTruthy());
+
+    openSendForm();
+    expect(screen.getByLabelText(/recipient initiative/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /hide send form/i }).getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /hide send form/i }));
+    expect(screen.queryByLabelText(/recipient initiative/i)).toBeNull();
+  });
+});
+
+describe("MailView — filters (agent-teams-hw71.6.1)", () => {
+  it("shows only pending messages when Unread only is checked", async () => {
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+
+    fireEvent.click(screen.getByLabelText(/unread only/i));
+
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(1));
+    const cells = container.querySelector(".mail-row")!.querySelectorAll("td");
+    expect(cells[3]!.textContent).toBe("pending");
+  });
+
+  it("narrows the list with the free-text search", async () => {
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+
+    fireEvent.change(screen.getByLabelText(/search messages/i), { target: { value: "implementer" } });
+
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(1));
+    const cells = container.querySelector(".mail-row")!.querySelectorAll("td");
+    expect(cells[1]!.textContent).toBe("implementer");
+  });
+
+  it("shows the no-match empty state and clears filters via the Clear filters button", async () => {
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+
+    fireEvent.change(screen.getByLabelText(/search messages/i), { target: { value: "nonexistent" } });
+    await screen.findByText(/no messages match the current filters/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+  });
+});
+
+describe("filterMessages (unit)", () => {
+  const base: MailFilters = { unreadOnly: false, initiativeId: "", text: "" };
+
+  it("unreadOnly=true keeps only status==='pending' messages", () => {
+    const result = filterMessages([unreadMessage, readMessage], { ...base, unreadOnly: true });
+    expect(result).toEqual([unreadMessage]);
+  });
+
+  it("text filter matches case-insensitively across subject/from/to/body", () => {
+    const result = filterMessages([unreadMessage, readMessage], { ...base, text: "REVIEW THE PLAN" });
+    expect(result).toEqual([unreadMessage]);
+  });
+
+  it("initiativeId filter keeps only messages addressed to that initiative", () => {
+    const result = filterMessages([unreadMessage, readMessage], { ...base, initiativeId: "init-2" });
+    expect(result).toEqual([readMessage]);
+  });
+
+  it("returns all messages when no filters are active", () => {
+    const result = filterMessages([unreadMessage, readMessage], base);
+    expect(result).toEqual([unreadMessage, readMessage]);
   });
 });

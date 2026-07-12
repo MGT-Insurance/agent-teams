@@ -64,7 +64,31 @@
   border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
 }
 
-/* Send form */
+/* Send form — collapsed by default behind a toggle, positioned below Messages
+   (agent-teams-hw71.6.7). */
+.mail-send-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mail-send-toggle {
+  align-self: flex-start;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-send-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
 .mail-send-form {
   display: flex;
   flex-direction: column;
@@ -155,6 +179,61 @@
   font-size: 13px;
   color: var(--color-text-muted);
   font-style: italic;
+}
+
+/* Filter controls (agent-teams-hw71.6.1) */
+.mail-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.mail-filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.mail-filter-select,
+.mail-filter-text {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  padding: 5px 9px;
+  outline: none;
+}
+
+.mail-filter-select:focus,
+.mail-filter-text:focus {
+  border-color: var(--color-accent);
+}
+
+.mail-filter-text {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.mail-filter-clear {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-filter-clear:hover {
+  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);
 }
 
 .mail-table {

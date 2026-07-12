@@ -17,6 +17,28 @@ function formatDateTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
+// Client-side filter predicate (agent-teams-hw71.6.1). Exported as a pure
+// function so it can be unit-tested directly, independent of the component's
+// state wiring.
+export interface MailFilters {
+  unreadOnly: boolean;
+  initiativeId: string; // "" = all
+  text: string; // matched case-insensitively against subject/from/to/body
+}
+
+export function filterMessages(messages: MailMessage[], filters: MailFilters): MailMessage[] {
+  const text = filters.text.trim().toLowerCase();
+  return messages.filter((m) => {
+    if (filters.unreadOnly && m.status !== "pending") return false;
+    if (filters.initiativeId && m.to !== filters.initiativeId) return false;
+    if (text) {
+      const haystack = `${m.subject} ${m.from} ${m.to} ${m.body}`.toLowerCase();
+      if (!haystack.includes(text)) return false;
+    }
+    return true;
+  });
+}
+
 // Mail is an on-demand fetch, NOT part of the SSE snapshot — light poll as a
 // fallback to a manual Refresh (see router.tsx's per-track view contract).
 const POLL_MS = 20_000;
@@ -137,6 +159,10 @@ export default function MailView() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sendOpen, setSendOpen] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [initiativeFilter, setInitiativeFilter] = useState("");
+  const [textFilter, setTextFilter] = useState("");
 
   const load = useCallback(() => {
     return fetchMail()
@@ -158,6 +184,12 @@ export default function MailView() {
 
   const recipients = initiatives.filter((node) => !isClosed(node));
   const sorted = [...messages].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const filtered = filterMessages(sorted, { unreadOnly, initiativeId: initiativeFilter, text: textFilter });
+
+  // Distinct recipient ids present in the mailbox, for the initiative filter dropdown.
+  const toOptions = Array.from(new Set(messages.map((m) => m.to))).sort();
+
+  const filtersActive = unreadOnly || initiativeFilter !== "" || textFilter.trim() !== "";
 
   return (
     <div className="mail-view">
@@ -180,14 +212,58 @@ export default function MailView() {
         <div className="mail-banner mail-banner--error">Failed to load mail: {fetchError}</div>
       )}
 
-      <MailSendForm recipients={recipients} onSent={() => { void load(); }} />
-
       <section className="mail-section">
         <h2 className="section-title">Messages</h2>
+        {messages.length > 0 && (
+          <div className="mail-filters">
+            <label className="mail-filter-checkbox">
+              <input
+                type="checkbox"
+                checked={unreadOnly}
+                onChange={(e) => setUnreadOnly(e.target.checked)}
+              />
+              Unread only
+            </label>
+            <select
+              className="mail-filter-select"
+              aria-label="Filter by initiative"
+              value={initiativeFilter}
+              onChange={(e) => setInitiativeFilter(e.target.value)}
+            >
+              <option value="">All initiatives</option>
+              {toOptions.map((id) => (
+                <option key={id} value={id}>{id}</option>
+              ))}
+            </select>
+            <input
+              type="text"
+              className="mail-filter-text"
+              placeholder="Search subject, from, to, body…"
+              aria-label="Search messages"
+              value={textFilter}
+              onChange={(e) => setTextFilter(e.target.value)}
+            />
+            {filtersActive && (
+              <button
+                type="button"
+                className="mail-filter-clear"
+                onClick={() => {
+                  setUnreadOnly(false);
+                  setInitiativeFilter("");
+                  setTextFilter("");
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        )}
         {loading && messages.length === 0 ? (
           <p className="mail-status-text">Loading mail…</p>
-        ) : sorted.length === 0 ? (
+        ) : messages.length === 0 ? (
           <p className="mail-status-text">No messages.</p>
+        ) : filtered.length === 0 ? (
+          <p className="mail-status-text">No messages match the current filters.</p>
         ) : (
           <table className="mail-table" aria-label="Mail messages">
             <thead>
@@ -202,7 +278,7 @@ export default function MailView() {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((m) => (
+              {filtered.map((m) => (
                 <MailRow
                   key={m.id}
                   message={m}
@@ -213,6 +289,18 @@ export default function MailView() {
             </tbody>
           </table>
         )}
+      </section>
+
+      <section className="mail-send-section">
+        <button
+          type="button"
+          className="mail-send-toggle"
+          aria-expanded={sendOpen}
+          onClick={() => setSendOpen((cur) => !cur)}
+        >
+          {sendOpen ? "Hide send form" : "Send a message"}
+        </button>
+        {sendOpen && <MailSendForm recipients={recipients} onSent={() => { void load(); }} />}
       </section>
     </div>
   );
