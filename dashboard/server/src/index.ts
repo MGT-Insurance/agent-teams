@@ -7,6 +7,8 @@
 //   POST /api/initiatives/:id/attach          -> { ok: true } (macOS terminal)
 //   POST /api/initiatives/:id/stop-session    -> { ok: true } (shells claude stop)
 //   POST /api/initiatives/:id/launch-session  -> { ok: true } | { error }
+//   GET  /api/mail                            -> MailListResponse (shells `ateam debug-mail --json`)
+//   POST /api/mail/send                       -> MailSendResponse | { error } (shells `ateam send`)
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -19,10 +21,18 @@ import { existsSync } from "node:fs";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { DrillInDetail, WorkBead } from "@agent-teams/shared";
-import { CliError, claudeAgentsJson, bdLabeledBeads, spawnClaudeLogs } from "./cli.js";
+import type { DrillInDetail, WorkBead, MailSendRequest } from "@agent-teams/shared";
+import {
+  CliError,
+  claudeAgentsJson,
+  bdLabeledBeads,
+  spawnClaudeLogs,
+  ateamDebugMailJson,
+  ateamSend,
+} from "./cli.js";
 import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
+import { normalizeMailJson } from "./mail.js";
 import { splitNotesBlocks } from "./notes.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
@@ -374,6 +384,76 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
       return;
     }
+  }
+
+  // GET /api/mail
+  // NON-DESTRUCTIVE: shells `ateam debug-mail --json` ONLY. Never `ateam inbox`
+  // — that verb consumes/marks-read and would corrupt state for agents
+  // waiting on messages.
+  if (method === "GET" && path === "/api/mail") {
+    try {
+      const raw = await ateamDebugMailJson();
+      const messages = normalizeMailJson(raw);
+      json(res, 200, { messages });
+    } catch (err) {
+      json(res, 502, {
+        error: err instanceof CliError ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // POST /api/mail/send
+  if (method === "POST" && path === "/api/mail/send") {
+    let body: string;
+    try {
+      body = await parseBody(req);
+    } catch (err) {
+      const status = (err as { code?: number }).code === 413 ? 413 : 400;
+      json(res, status, { error: status === 413 ? "request body too large" : "could not read request body" });
+      return;
+    }
+
+    let to: string;
+    let messageBody: string;
+    let sender: string | undefined;
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        typeof (parsed as Record<string, unknown>)["to"] !== "string" ||
+        typeof (parsed as Record<string, unknown>)["body"] !== "string"
+      ) {
+        throw new Error("missing to/body");
+      }
+      const sendReq = parsed as MailSendRequest;
+      to = sendReq.to;
+      messageBody = sendReq.body;
+      sender = typeof sendReq.sender === "string" ? sendReq.sender : undefined;
+    } catch {
+      json(res, 400, { error: "body must be { to: string, body: string, sender?: string }" });
+      return;
+    }
+
+    if (!/^[\w-]+$/.test(to) || to.length > 100) {
+      json(res, 400, { error: "invalid initiative id" });
+      return;
+    }
+    if (messageBody.length === 0) {
+      json(res, 400, { error: "body must not be empty" });
+      return;
+    }
+
+    try {
+      const result = await ateamSend(to, messageBody, sender);
+      json(res, 200, { ok: true, messageId: result.messageId, recipient: result.recipient });
+    } catch (err) {
+      json(res, 502, {
+        error: err instanceof CliError ? err.message : String(err),
+      });
+    }
+    return;
   }
 
   // Static SPA fallback (production only).
