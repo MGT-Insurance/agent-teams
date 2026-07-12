@@ -41,7 +41,7 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 
 ## Eval suite
 
-`eval/` is an A/B comparison harness for agent-teams configurations (model, advisor on/off) across cost, latency, tool calls, turns, and correctness. See [`eval/README.md`](eval/README.md) for the full lifecycle.
+`eval/` is an A/B comparison harness for agent-teams configurations (model, advisor on/off) across cost, latency, tool calls, turns, and correctness. Run it via `scripts/eval` (never installed on agent PATHs by design). See [`eval/README.md`](eval/README.md) for the full lifecycle.
 
 ⚠️ **Costs real money:** `eval run` dispatches a real, autonomous agent team, and `eval collect`'s LLM judge call spends real API dollars too. Neither is part of the test suite — never run either casually or in CI.
 

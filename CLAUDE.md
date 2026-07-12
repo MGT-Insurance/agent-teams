@@ -75,7 +75,9 @@ real wall-clock time (observed: ~$9 and 13 min for one bugfix run; runs can
 take hours). **Never invoke either as part of building/testing/verifying a
 change, and never add them to CI or a script/loop.** `go test ./...` on
 `internal/eval` is the free path — it fakes every dispatch/clone/judge/push
-seam. See `eval/README.md` for the full cost model and lifecycle.
+seam. The supported entry point is `scripts/eval` (a `go run ./cmd/eval`
+wrapper anchored at the repo root). See `eval/README.md` for the full cost
+model and lifecycle.
 
 ## Architecture Overview
 
