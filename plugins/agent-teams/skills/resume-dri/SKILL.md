@@ -1,6 +1,6 @@
 ---
-name: dri-resume
-description: Resolve a natural-language description to an open initiative and relaunch its background DRI. Use when asked to "resume the initiative about X", "restart the <topic> work", "resume an initiative", "pick up where we left off on <description>", or when invoked as /dri-resume <description-or-id>. Accepts a free-text description (fuzzy-matches open initiatives) or an explicit id. Does NOT create a new initiative — use /dri-dispatch for that.
+name: resume-dri
+description: Resolve a natural-language description to an open initiative and relaunch its background DRI. Use when asked to "resume the initiative about X", "restart the <topic> work", "resume an initiative", "pick up where we left off on <description>", or when invoked as /resume-dri <description-or-id>. Accepts a free-text description (fuzzy-matches open initiatives) or an explicit id. Does NOT create a new initiative — use /dispatch-dri for that.
 ---
 
 You relaunch a background DRI for an existing initiative — you do not register anything. This skill resolves a description (or explicit id) to an open initiative, then calls `ateam resume <id>`, which looks up the registered worktree, validates the initiative is still open, and fires a new background `/dri` session in it. The current session stays free.
@@ -11,7 +11,7 @@ Use this when:
 - You parked an initiative to wait on a dependency and want to restart it now that the blocker is cleared.
 - Any parked-or-interrupted initiative surfaces in `ateam human-list` or `/initiatives` and needs a new DRI session.
 
-For *dispatching a brand-new initiative*, use `/dri-dispatch` instead. For *becoming* the DRI in this session, use `/agent-teams:dri`.
+For *dispatching a brand-new initiative*, use `/dispatch-dri` instead. For *becoming* the DRI in this session, use `/agent-teams:dri`.
 
 ## The `ateam` tool
 

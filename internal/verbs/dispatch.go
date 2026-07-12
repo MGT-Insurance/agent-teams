@@ -242,7 +242,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			// would prepend /dri).
 			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
 			// advisor defaults to "": the raw --launch-prompt path (PR-review /
-			// review-pr-dispatch) is out of advisor-mode scope by default per
+			// dispatch-review-pr) is out of advisor-mode scope by default per
 			// contract decision 5 (agent-teams-wvx2.1) — but that decision was
 			// amended to allow an explicit opt-in via --advisor, so callers
 			// that want advisor mode for a custom-prompt launch can request it.

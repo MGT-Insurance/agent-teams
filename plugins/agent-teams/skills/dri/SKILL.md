@@ -42,7 +42,7 @@ No raw `bd -C "${AGENT_TEAMS_HOME…}"` calls appear in this skill.
 
 ## Phase 1 — Register or resume
 
-**Invoked with an initiative id (e.g. `at-16c`) -> resume that initiative directly.** This is the form a background DRI receives from `/agent-teams:dri-dispatch`: the dispatcher already registered the initiative and passes its id. If the argument is a single token shaped like an initiative id, look it up with `ateam show <id>`; if it resolves to a registered initiative, that is your initiative — recover its state (notes, `ateam human-list`, the project repo's beads, branch/PR state) and drive it. Do NOT re-register, and skip the cwd match below; resuming by id rather than by `$PWD` removes any dependence on exact path matching. (If the token does not resolve to a registered initiative, fall through and treat the argument as a problem statement.)
+**Invoked with an initiative id (e.g. `at-16c`) -> resume that initiative directly.** This is the form a background DRI receives from `/agent-teams:dispatch-dri`: the dispatcher already registered the initiative and passes its id. If the argument is a single token shaped like an initiative id, look it up with `ateam show <id>`; if it resolves to a registered initiative, that is your initiative — recover its state (notes, `ateam human-list`, the project repo's beads, branch/PR state) and drive it. Do NOT re-register, and skip the cwd match below; resuming by id rather than by `$PWD` removes any dependence on exact path matching. (If the token does not resolve to a registered initiative, fall through and treat the argument as a problem statement.)
 
 Otherwise, search the registry for an OPEN initiative whose `worktree:` field matches cwd:
 
@@ -182,7 +182,7 @@ The tier mechanics (fresh/hot/cold key conventions, `ateam recall`/`forget`/prom
 
 # Spawning a sibling initiative
 
-When separable work surfaces that would balloon this initiative's scope — a discovery bead that is really its own feature, tooling/infra work — do NOT absorb it. This session stays focused; dispatch the work as its own background initiative with the **`/agent-teams:dri-dispatch`** skill, which creates the worktree, registers the initiative, and launches a background DRI to drive it. Invoke it with the problem statement; do not hand-roll the `claude --bg` launch here.
+When separable work surfaces that would balloon this initiative's scope — a discovery bead that is really its own feature, tooling/infra work — do NOT absorb it. This session stays focused; dispatch the work as its own background initiative with the **`/agent-teams:dispatch-dri`** skill, which creates the worktree, registers the initiative, and launches a background DRI to drive it. Invoke it with the problem statement; do not hand-roll the `claude --bg` launch here.
 
 To re-launch a parked or interrupted background initiative by id, use `ateam resume <id>` — one command, no hand-rolling required.
 
@@ -195,4 +195,4 @@ To re-launch a parked or interrupted background initiative by id, use `ateam res
 - references/advisor.md — advisor consult criteria (only when `use_advisors == true`)
 - references/memory.md — three-tier memory mechanics + condense flow
 
-(To spin off separable work as its own background initiative, use the `/agent-teams:dri-dispatch` skill — not a hand-rolled `claude --bg`.)
+(To spin off separable work as its own background initiative, use the `/agent-teams:dispatch-dri` skill — not a hand-rolled `claude --bg`.)

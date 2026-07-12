@@ -5,7 +5,7 @@ Measures whether the **concentric** methodology beats **waterfall** on three axe
 comparing the results.
 
 The harness BUILD is bead **agent-teams-7r5**, deferred to a sibling initiative
-(to be `/dri-dispatch`ed) after **at-vlh** research resolves the version-coexistence
+(to be `/dispatch-dri`ed) after **at-vlh** research resolves the version-coexistence
 mechanism. This doc is its design input.
 
 ---
@@ -169,7 +169,7 @@ on **R2** (after at-vlh research closes).
 Sequence:
 1. at-vlh research completes → capability confirmed or rejected.
 2. Mechanism (a) or (b) selected.
-3. agent-teams-7r5 `/dri-dispatch`ed as a sibling initiative.
+3. agent-teams-7r5 `/dispatch-dri`ed as a sibling initiative.
 4. Build implements: `internal/cost/attribute.go` timestamp extension,
    `ateam speed` verb, `ateam bench` formatter, runner docs or script.
 
