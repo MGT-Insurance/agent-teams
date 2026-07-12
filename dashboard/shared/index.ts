@@ -14,6 +14,10 @@ export type {
   WorkBead,
   DrillInDetail,
   SnapshotEvent,
+  MailMessage,
+  MailListResponse,
+  MailSendRequest,
+  MailSendResponse,
 } from "./types.js";
 
 export { sessionKind, deriveSessionSignal, isValidSessionId } from "./types.js";
