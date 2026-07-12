@@ -115,6 +115,51 @@ func TestWebappBugfix1TaskSpec_Parses(t *testing.T) {
 	}
 }
 
+// TestWebappNewbe1TaskSpec_Parses guards eval/tasks/webapp-newbe-1.json, the
+// R1 loop-closing new-backend-endpoint archetype: it pins fixtureRef to
+// v1-newbe-1, where the fixture's GET /api/tasks/search route is committed
+// red (stubbed/unimplemented) so buildCheck (backend supertest) objectively
+// distinguishes done from not-done. See CONTRACT agent-teams-1cj6.1.
+func TestWebappNewbe1TaskSpec_Parses(t *testing.T) {
+	data, err := os.ReadFile("../../eval/tasks/webapp-newbe-1.json")
+	if err != nil {
+		t.Fatalf("reading webapp-newbe-1.json: %v", err)
+	}
+
+	var task TaskSpec
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("unmarshalling webapp-newbe-1.json: %v", err)
+	}
+
+	if task.ID != "webapp-newbe-1" {
+		t.Errorf("ID = %q, want %q", task.ID, "webapp-newbe-1")
+	}
+	if task.Archetype != "webapp-newbe" {
+		t.Errorf("Archetype = %q, want %q", task.Archetype, "webapp-newbe")
+	}
+	if task.RunShape != "implement" {
+		t.Errorf("RunShape = %q, want %q", task.RunShape, "implement")
+	}
+	if task.FixtureRepo == "" {
+		t.Error("FixtureRepo is empty")
+	}
+	if task.FixtureRepo == "eval/tasks/webapp-newbe-1.json" {
+		t.Error("FixtureRepo looks like an in-repo path, not an out-of-repo reference")
+	}
+	if task.FixtureRef != "v1-newbe-1" {
+		t.Errorf("FixtureRef = %q, want %q", task.FixtureRef, "v1-newbe-1")
+	}
+	if task.Problem == "" {
+		t.Error("Problem is empty")
+	}
+	if len(task.AcceptanceCriteria) == 0 {
+		t.Error("AcceptanceCriteria is empty")
+	}
+	if task.BuildCheck == "" {
+		t.Error("BuildCheck is empty")
+	}
+}
+
 // TestWebappBugfix1V1TaskSpec_Parses guards eval/tasks/webapp-bugfix-1-v1.json,
 // the current (loop-fixed-baseline) version of the webapp-bugfix-1 archetype.
 // webapp-bugfix-1 (fixtureRef v0-bug-1) is frozen/historical — see grft.17 —
