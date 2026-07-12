@@ -102,6 +102,20 @@ const readMessage: MailMessage = {
   thread: null,
 };
 
+// "Read" filter state must cover BOTH non-pending statuses — "read" and "acked".
+const ackedMessage: MailMessage = {
+  id: "msg-3",
+  to: "init-3",
+  from: "tester",
+  subject: "message from tester",
+  body: "Acknowledged.",
+  status: "acked",
+  createdAt: "2026-07-08T08:00:00Z",
+  readAt: "2026-07-08T08:05:00Z",
+  readBy: "Eric",
+  thread: null,
+};
+
 beforeEach(() => {
   mockFetchMail.mockReset();
   mockSendMail.mockReset();
@@ -247,16 +261,41 @@ describe("MailView — send form disclosure (agent-teams-hw71.6.7)", () => {
   });
 });
 
-describe("MailView — filters (agent-teams-hw71.6.1)", () => {
-  it("shows only pending messages when Unread only is checked", async () => {
+describe("MailView — filters (agent-teams-hw71.6.1, hw71.6.8)", () => {
+  it("shows only pending messages when Unread is selected", async () => {
     const { container } = renderMail();
     await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
 
-    fireEvent.click(screen.getByLabelText(/unread only/i));
+    fireEvent.change(screen.getByLabelText(/read status/i), { target: { value: "unread" } });
 
     await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(1));
     const cells = container.querySelector(".mail-row")!.querySelectorAll("td");
     expect(cells[3]!.textContent).toBe("pending");
+  });
+
+  it("shows non-pending messages (read and acked) when Read is selected", async () => {
+    mockFetchMail.mockResolvedValue({ messages: [unreadMessage, readMessage, ackedMessage] });
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(3));
+
+    fireEvent.change(screen.getByLabelText(/read status/i), { target: { value: "read" } });
+
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+    const statuses = Array.from(container.querySelectorAll(".mail-row")).map(
+      (row) => row.querySelectorAll("td")[3]!.textContent,
+    );
+    expect(statuses.sort()).toEqual(["acked", "read"]);
+  });
+
+  it("shows initiative names (falling back to since-closed initiatives) in the initiative filter dropdown", async () => {
+    renderMail();
+    await waitFor(() => expect(screen.getAllByRole("row").length).toBeGreaterThan(1));
+
+    const select = screen.getByLabelText(/filter by initiative/i) as HTMLSelectElement;
+    const options = Array.from(select.options).map((o) => o.textContent);
+    // init-1 is open; init-2 is closed but past mail (readMessage.to) still resolves its name.
+    expect(options).toContain("Open Initiative (init-1)");
+    expect(options).toContain("Closed Initiative (init-2)");
   });
 
   it("narrows the list with the free-text search", async () => {
@@ -283,11 +322,16 @@ describe("MailView — filters (agent-teams-hw71.6.1)", () => {
 });
 
 describe("filterMessages (unit)", () => {
-  const base: MailFilters = { unreadOnly: false, initiativeId: "", text: "" };
+  const base: MailFilters = { readState: "all", initiativeId: "", text: "" };
 
-  it("unreadOnly=true keeps only status==='pending' messages", () => {
-    const result = filterMessages([unreadMessage, readMessage], { ...base, unreadOnly: true });
+  it("readState='unread' keeps only status==='pending' messages", () => {
+    const result = filterMessages([unreadMessage, readMessage], { ...base, readState: "unread" });
     expect(result).toEqual([unreadMessage]);
+  });
+
+  it("readState='read' keeps only non-pending messages, covering both 'read' and 'acked'", () => {
+    const result = filterMessages([unreadMessage, readMessage, ackedMessage], { ...base, readState: "read" });
+    expect(result).toEqual([readMessage, ackedMessage]);
   });
 
   it("text filter matches case-insensitively across subject/from/to/body", () => {
