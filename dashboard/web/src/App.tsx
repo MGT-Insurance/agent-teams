@@ -28,6 +28,9 @@ export function App() {
           <NavLink to="/initiatives" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>
             Initiatives
           </NavLink>
+          <NavLink to="/mail" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>
+            Mail
+          </NavLink>
         </div>
         <ConnectionBadge />
       </nav>
