@@ -19,7 +19,7 @@ There is NO `phase:` or `status:` field. The DRI maintains no phase; execution-s
 
 ## Standby field (frozen contract — `--standby`)
 
-An initiative dispatched with `--standby` is registered and its DRI launched, but the DRI **parks on startup waiting for human direction** instead of entering clarify/plan/implement. This keeps `ateam dispatch` / `/dri-dispatch` mechanical (no judgment, no investigation) while the standby *behavior* lives in `/dri`, which already knows how to park on human gates.
+An initiative dispatched with `--standby` is registered and its DRI launched, but the DRI **parks on startup waiting for human direction** instead of entering clarify/plan/implement. This keeps `ateam dispatch` / `/dispatch-dri` mechanical (no judgment, no investigation) while the standby *behavior* lives in `/dri`, which already knows how to park on human gates.
 
 The field is a single line in the initiative description, written by `ateam dispatch --standby` (placed directly after the `mode:` line):
 

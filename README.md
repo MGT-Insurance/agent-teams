@@ -21,13 +21,13 @@ Multi-agent software delivery for Claude Code. One session acts as the **DRI** (
 
 - `/dri <problem statement>` — make the current session the DRI for an initiative and run it end-to-end in the current worktree. Interactive: you approve the plan and answer load-bearing questions.
 - `/dri` in a worktree with an open initiative — resume it.
-- `/dri-dispatch <problem statement>` — register a *new* initiative in its own worktree and hand it to a hands-off background DRI. Use it to split off separable work without derailing what you're on; the dispatched DRI drives its own initiative to a PR independently.
-- `/dri-resume <description-or-id>` — one-command re-launch of a parked or interrupted background initiative. Resolves your description to the matching open initiative and relaunches its background DRI; accepts an explicit id too.
+- `/dispatch-dri <problem statement>` — register a *new* initiative in its own worktree and hand it to a hands-off background DRI. Use it to split off separable work without derailing what you're on; the dispatched DRI drives its own initiative to a PR independently.
+- `/resume-dri <description-or-id>` — one-command re-launch of a parked or interrupted background initiative. Resolves your description to the matching open initiative and relaunches its background DRI; accepts an explicit id too.
 - `/initiatives` — machine-wide dashboard: what's running, what's parked waiting on you.
 
 ### Headless spawn
 
-`/dri-dispatch` is the easiest way to launch a background initiative; `/dri-resume <description-or-id>` relaunches one. To spawn either by hand directly via the CLI: for a new initiative use `ateam dispatch`; to resume an existing one use `ateam resume <id>`. To spawn a new initiative entirely by hand:
+`/dispatch-dri` is the easiest way to launch a background initiative; `/resume-dri <description-or-id>` relaunches one. To spawn either by hand directly via the CLI: for a new initiative use `ateam dispatch`; to resume an existing one use `ateam resume <id>`. To spawn a new initiative entirely by hand:
 
 ```bash
 git worktree add ../myrepo-featx -b feat/x main
@@ -38,6 +38,12 @@ claude --bg --dangerously-skip-permissions "/dri <problem statement>"
 `--dangerously-skip-permissions` is required for hands-off operation: the DRI runs without permission prompts and spawns teammates with `mode: bypassPermissions`. **Safety note:** bypass means agents run commands unprompted — the guardrails are worktree isolation (each teammate is confined to its own worktree) and role boundaries (teammates only commit to their own track; the DRI owns branch integration and opens the PR; merging stays a human decision). The DRI skill enforces these.
 
 The session shows up in `claude agents`; attach to answer gates (`claude attach <id>`), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
+
+## Eval suite
+
+`eval/` is an A/B comparison harness for agent-teams configurations (model, advisor on/off) across cost, latency, tool calls, turns, and correctness. Run it via `scripts/eval` (never installed on agent PATHs by design). See [`eval/README.md`](eval/README.md) for the full lifecycle.
+
+⚠️ **Costs real money:** `eval run` dispatches a real, autonomous agent team, and `eval collect`'s LLM judge call spends real API dollars too. Neither is part of the test suite — never run either casually or in CI.
 
 ## Concepts
 

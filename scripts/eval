@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+# Thin wrapper so nobody has to remember `go build -o eval-bin ./cmd/eval`.
+# Uses `go run` (not a built binary) so the eval CLI is never stale relative
+# to the source tree, and anchors at the repo root because `eval run` /
+# `eval collect` resolve eval/runs and eval/tasks relative to cwd — this
+# makes scripts/eval work the same from any directory.
+set -eu
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+exec go run ./cmd/eval "$@"

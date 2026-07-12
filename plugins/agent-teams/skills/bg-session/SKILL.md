@@ -1,16 +1,16 @@
 ---
 name: bg-session
-description: Launch a bare background Claude session with no ateam, no beads, no worktree, and no initiative registration. Use when asked to "start a bg session", "background session", "run the dev server in the background", "stand up an idle session", "spin up a background Claude", or when invoked as /bg-session [prompt] [dir]. A deliberate escape hatch — for real feature work that should become a tracked initiative, use /dri-dispatch instead.
+description: Launch a bare background Claude session with no ateam, no beads, no worktree, and no initiative registration. Use when asked to "start a bg session", "background session", "run the dev server in the background", "stand up an idle session", "spin up a background Claude", or when invoked as /bg-session [prompt] [dir]. A deliberate escape hatch — for real feature work that should become a tracked initiative, use /dispatch-dri instead.
 ---
 
 You launch a single bare background Claude session and do nothing else — no `ateam`, no `bd create`, no worktree, no initiative registration. This is the lightest-weight dispatch skill in the plugin: an escape hatch for work that doesn't need any of that machinery — running a dev server in the background, or standing up an idle session the human can send ad-hoc instructions to later.
 
-For work that should become a tracked initiative with its own worktree and background DRI, use `/dri-dispatch` instead.
+For work that should become a tracked initiative with its own worktree and background DRI, use `/dispatch-dri` instead.
 
 ---
 
 **ABSOLUTE CONSTRAINT — this skill touches nothing but the `claude` CLI.**
-Do NOT call `ateam` (no `ateam dispatch`, no `ateam register`), do NOT `bd create` anything, and do NOT create a git worktree. If you find yourself reaching for any of those, stop — you're doing `/dri-dispatch`'s job, not this one.
+Do NOT call `ateam` (no `ateam dispatch`, no `ateam register`), do NOT `bd create` anything, and do NOT create a git worktree. If you find yourself reaching for any of those, stop — you're doing `/dispatch-dri`'s job, not this one.
 
 ## Steps
 
@@ -24,7 +24,7 @@ Two inputs, both optional and free-form:
 If no prompt was given, default it to a standby prompt, e.g.:
 
 ```
-You are a background session with no assigned task yet. Stand by and wait for instructions — take no action until you receive one. When a message arrives, decide directly whether to act on it yourself or promote it to a tracked initiative with /dri-dispatch.
+You are a background session with no assigned task yet. Stand by and wait for instructions — take no action until you receive one. When a message arrives, decide directly whether to act on it yourself or promote it to a tracked initiative with /dispatch-dri.
 ```
 
 ### 2. Choose a session name
@@ -52,10 +52,10 @@ claude attach <id>              # open it in this terminal
 claude stop <id>                # stop it
 ```
 
-Note: if the bare session later turns up real work worth tracking, the human — or the session itself, from inside it — can run `/dri-dispatch` to promote it to a full tracked initiative.
+Note: if the bare session later turns up real work worth tracking, the human — or the session itself, from inside it — can run `/dispatch-dri` to promote it to a full tracked initiative.
 
 ## Key constraints
 
 - No `ateam` call, no `bd create`, no worktree creation — anywhere in this skill.
 - No DRI-specific system-prompt or env additions — the launched session is a plain `claude --bg` session, nothing more.
-- If the work is already known to need tracking (a real feature, needs a PR), use `/dri-dispatch` instead of this skill.
+- If the work is already known to need tracking (a real feature, needs a PR), use `/dispatch-dri` instead of this skill.
