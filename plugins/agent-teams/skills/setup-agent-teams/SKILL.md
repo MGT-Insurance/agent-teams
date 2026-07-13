@@ -287,11 +287,11 @@ in `~/.claude/settings.json`:
 With 6a–6c in place, an interactive DRI runs its integration git silently and only
 prompts the human for genuinely destructive operations.
 
-## 7. Playwright MCP (tester live-UI verification)
+## 7. Playwright CLI (tester live-UI verification)
 
-The plugin ships a Playwright MCP server via `plugins/agent-teams/.mcp.json` (server name: `playwright`, runs `npx -y @playwright/mcp@latest`). The tester role uses it for live browser verification, including in `claude --bg` headless sessions — MCP servers connected at the session level propagate to subagents automatically.
+There is no MCP server for this — the tester drives and observes the real browser via `npx @playwright/cli <command>` (plain Bash, no MCP wiring needed, so it works the same in interactive and `claude --bg` headless sessions). The CLI ships its own agent skill (its path is printed at the top of `npx @playwright/cli --help`); consult that plus `--help` for the full command surface rather than looking for one here.
 
-**Prerequisite:** `npx` (Node.js) must be on PATH. The first `browser_navigate` call will trigger a one-time Playwright browser download. To pre-install and avoid that delay:
+**Prerequisite:** `npx` (Node.js) must be on PATH. The first browser use will trigger a one-time Playwright browser download. To pre-install and avoid that delay:
 
 ```bash
 npx playwright install chromium
@@ -299,13 +299,13 @@ npx playwright install chromium
 
 No credentials or auth required.
 
-**Smoke check (prefix-tolerant):** after a DRI session is running, confirm a Playwright MCP tool is available. The exact prefix depends on how Claude Code normalizes the plugin name at runtime — look for a connected tool whose name *contains* `playwright`:
+**Smoke check:** confirm the CLI is reachable and see its command surface + shipped skill path:
 
-```
-/tools | grep playwright
+```bash
+npx @playwright/cli --help
 ```
 
-If any `playwright`-prefixed tool appears in the list, the MCP server is connected and the tester can use `browser_navigate` and related tools for live UI verification.
+If that prints usage output, the CLI is available and the tester can use it for live UI verification (session model: `open` a named session with `-s=<name>` before targeting it with any other command; see `plugins/agent-teams/agents/tester.md` for the two operational gotchas).
 
 ## 8. Register a repo's worktree-setup hook (OPTIONAL — one-time per repo)
 

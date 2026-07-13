@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SessionStart hook for agent-teams: cold-path mail signal.
-# Fires on startup, resume, clear, and compact. Runs `ateam inbox --peek` so
+# Fires on startup, resume, clear, and compact. Runs `ateam mail inbox --peek` so
 # any mail that arrived while the session was inactive (or before the first
 # UserPromptSubmit) is signaled as additionalContext at session open.
-# Does NOT consume (drain) mail — the model runs `ateam inbox` to do that.
+# Does NOT consume (drain) mail — the model runs `ateam mail inbox` to do that.
 # Silent no-op when cwd is not a registered initiative.
 set -euo pipefail
 
@@ -43,11 +43,11 @@ export HOOK_INITIATIVE
 hook_log_note "note" "initiative-resolved id=${match_id}"
 
 # ── Signal: peek at unread mail; emit additionalContext if any ───────────────
-peek_out=$("$ATEAM" inbox --peek 2>/dev/null || true)
+peek_out=$("$ATEAM" mail inbox --peek 2>/dev/null || true)
 # peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.
 case "$peek_out" in
   *"unread message"*)
-    signal="You have ${peek_out} — run \`ateam inbox\` to read them."
+    signal="You have ${peek_out} — run \`ateam mail inbox\` to read them."
     HOOK_EXIT_REASON="mail-signaled"
     jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
     ;;

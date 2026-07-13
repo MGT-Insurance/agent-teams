@@ -10,6 +10,8 @@ export const API_PATHS = {
   attach: (id: string) => `/api/initiatives/${encodeURIComponent(id)}/attach`,
   mail: "/api/mail",
   mailSend: "/api/mail/send",
+  mailClose: (id: string) => `/api/mail/${encodeURIComponent(id)}/close`,
+  mailPurge: "/api/mail/purge",
 } as const;
 
 // GET /api/snapshot
@@ -43,13 +45,20 @@ export interface AttachResponse {
 export type DashboardSSEEvent =
   | { type: "snapshot"; data: SnapshotEvent };
 
-// GET /api/mail -> 200 MailListResponse ({ messages }); on `ateam debug-mail`
+// GET /api/mail -> 200 MailListResponse ({ messages }); on `ateam mail list`
 // CLI failure -> 502 { error }. See MailMessage/MailListResponse in ./types.ts
-// for the full contract (mirrors `ateam debug-mail --json`).
-// NON-DESTRUCTIVE: the server MUST implement this via `ateam debug-mail`, never `ateam inbox`.
+// for the full contract (mirrors `ateam mail list --json`).
+// NON-DESTRUCTIVE: the server MUST implement this via `ateam mail list`, never `ateam mail inbox`.
 
 // POST /api/mail/send, body MailSendRequest ({ to, body, sender? }):
 //   • 200 MailSendResponse ({ ok:true, messageId, recipient }) on success.
 //   • 400 { error } for malformed/missing to|body or invalid initiative id.
-//   • 502 { error } on `ateam send` failure.
+//   • 502 { error } on `ateam mail send` failure.
 // See MailSendRequest/MailSendResponse in ./types.ts.
+
+// POST /api/mail/:id/close -> shells `ateam mail close <id>`. 200 { ok:true };
+// 400 { error } for invalid/malformed id; 502 { error } on CLI failure.
+
+// POST /api/mail/purge, body MailPurgeRequest ({ olderThan?, dryRun? }) ->
+// shells `ateam mail purge`. 200 MailPurgeResponse ({ ok:true, output? });
+// 502 { error } on CLI failure. See MailPurgeRequest/MailPurgeResponse in ./types.ts.
