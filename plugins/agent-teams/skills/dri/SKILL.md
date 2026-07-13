@@ -76,7 +76,7 @@ An OPEN match may be mid-flight OR `awaiting-merge` (delivered, PR open, not yet
                   --alternative "<the key alternative, e.g. hold for a different initiative>"
   ```
   Then end the turn (park), exactly as for any other human gate.
-- **Human sends direction later** (via `claude attach` or `ateam send`): the DRI RELEASES standby — write a note containing the line `standby: released` (temp file, then `ateam note <id> --file <f>`), clear the gate (`ateam clear-gate <id>`), then proceed normally into Phase 2 Clarify. Treat the direction the human just gave as input to Phase 2 — don't re-ask what they already told you.
+- **Human sends direction later** (via `claude attach` or `ateam mail send`): the DRI RELEASES standby — write a note containing the line `standby: released` (temp file, then `ateam note <id> --file <f>`), clear the gate (`ateam clear-gate <id>`), then proceed normally into Phase 2 Clarify. Treat the direction the human just gave as input to Phase 2 — don't re-ask what they already told you.
 - **Resume where `standby: released` is already present:** per the reader rule above, standby is no longer active — do NOT re-park. Proceed normally through Phase 2 onward.
 
 ## Phase 2 — Clarify

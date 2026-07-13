@@ -143,7 +143,7 @@ func TestRoutePREvent_PositivePRNumberValidate(t *testing.T) {
 // ── decision matrix ───────────────────────────────────────────────────────────
 
 // TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend verifies the ROUTE path:
-// owned initiative (MatchPRField) → runner("send", id, "--file", body, "--sender", "pr-shepherd").
+// owned initiative (MatchPRField) → runner("mail", "send", id, "--file", body, "--sender", "pr-shepherd").
 func TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	bodyFile := writeTempFile(t, "CI failed output")
 	issue := prFieldIssue("at-abc.1", "owner/myrepo", 42)
@@ -166,26 +166,29 @@ func TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 		t.Fatalf("expected 1 runner call, got %d: %v", len(fr.calls), fr.calls)
 	}
 	call := fr.calls[0]
-	if len(call) < 6 {
+	if len(call) < 7 {
 		t.Fatalf("runner call too short: %v", call)
 	}
-	if call[0] != "send" {
-		t.Errorf("call[0]: got %q, want \"send\"", call[0])
+	if call[0] != "mail" {
+		t.Errorf("call[0]: got %q, want \"mail\"", call[0])
 	}
-	if call[1] != "at-abc.1" {
-		t.Errorf("call[1] (initiative id): got %q, want \"at-abc.1\"", call[1])
+	if call[1] != "send" {
+		t.Errorf("call[1]: got %q, want \"send\"", call[1])
 	}
-	if call[2] != "--file" {
-		t.Errorf("call[2]: got %q, want \"--file\"", call[2])
+	if call[2] != "at-abc.1" {
+		t.Errorf("call[2] (initiative id): got %q, want \"at-abc.1\"", call[2])
 	}
-	if call[3] != bodyFile {
-		t.Errorf("call[3] (body file): got %q, want %q", call[3], bodyFile)
+	if call[3] != "--file" {
+		t.Errorf("call[3]: got %q, want \"--file\"", call[3])
 	}
-	if call[4] != "--sender" {
-		t.Errorf("call[4]: got %q, want \"--sender\"", call[4])
+	if call[4] != bodyFile {
+		t.Errorf("call[4] (body file): got %q, want %q", call[4], bodyFile)
 	}
-	if call[5] != "pr-shepherd" {
-		t.Errorf("call[5]: got %q, want \"pr-shepherd\"", call[5])
+	if call[5] != "--sender" {
+		t.Errorf("call[5]: got %q, want \"--sender\"", call[5])
+	}
+	if call[6] != "pr-shepherd" {
+		t.Errorf("call[6]: got %q, want \"pr-shepherd\"", call[6])
 	}
 	if !strings.Contains(stdout.String(), "at-abc.1") {
 		t.Errorf("stdout should mention matched initiative id; got: %q", stdout.String())
@@ -215,11 +218,14 @@ func TestDecisionMatrix_OwnedViaMatchBranchRoutesViaSend(t *testing.T) {
 	if len(fr.calls) != 1 {
 		t.Fatalf("expected 1 runner call via MatchBranch, got %d", len(fr.calls))
 	}
-	if fr.calls[0][0] != "send" {
-		t.Errorf("runner verb: got %q, want \"send\"", fr.calls[0][0])
+	if fr.calls[0][0] != "mail" {
+		t.Errorf("runner verb: got %q, want \"mail\"", fr.calls[0][0])
 	}
-	if fr.calls[0][1] != "at-xyz.2" {
-		t.Errorf("runner initiative id: got %q, want \"at-xyz.2\"", fr.calls[0][1])
+	if fr.calls[0][1] != "send" {
+		t.Errorf("runner subverb: got %q, want \"send\"", fr.calls[0][1])
+	}
+	if fr.calls[0][2] != "at-xyz.2" {
+		t.Errorf("runner initiative id: got %q, want \"at-xyz.2\"", fr.calls[0][2])
 	}
 }
 
@@ -623,7 +629,7 @@ func TestRoutePREventKong_NilContext(t *testing.T) {
 }
 
 // TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend verifies the ROUTE path:
-// owned (MatchPRField) → runner("send", id, "--file", body, "--sender", "pr-shepherd").
+// owned (MatchPRField) → runner("mail", "send", id, "--file", body, "--sender", "pr-shepherd").
 func TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	bodyFile := writeTempFile(t, "CI failed output")
 	issue := prFieldIssue("at-kong.1", "owner/myrepo", 42)
@@ -646,13 +652,16 @@ func TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 		t.Fatalf("expected 1 runner call, got %d: %v", len(fr.calls), fr.calls)
 	}
 	call := fr.calls[0]
-	if call[0] != "send" {
-		t.Errorf("call[0]: got %q, want \"send\"", call[0])
+	if call[0] != "mail" {
+		t.Errorf("call[0]: got %q, want \"mail\"", call[0])
 	}
-	if call[1] != "at-kong.1" {
-		t.Errorf("call[1] (initiative id): got %q, want \"at-kong.1\"", call[1])
+	if call[1] != "send" {
+		t.Errorf("call[1]: got %q, want \"send\"", call[1])
 	}
-	if call[4] != "--sender" || call[5] != "pr-shepherd" {
+	if call[2] != "at-kong.1" {
+		t.Errorf("call[2] (initiative id): got %q, want \"at-kong.1\"", call[2])
+	}
+	if call[5] != "--sender" || call[6] != "pr-shepherd" {
 		t.Errorf("expected --sender pr-shepherd; call: %v", call)
 	}
 }

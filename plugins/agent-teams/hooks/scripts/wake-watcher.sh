@@ -8,7 +8,7 @@
 # the initiative has since been CLOSED.
 #
 # On doorbell: emits a SIGNAL to stderr (the woken turn's prompt) telling the
-# model to run `ateam inbox`. Does NOT consume (drain) mail — the model is the
+# model to run `ateam mail inbox`. Does NOT consume (drain) mail — the model is the
 # single consume path. The doorbell firing is sufficient proof of mail; no peek
 # is needed here.
 #
@@ -101,7 +101,7 @@ while true; do
   if [ -f "$DOORBELL" ]; then
     hook_log_note "note" "doorbell-seen initiative=${match_id}"
     HOOK_EXIT_REASON="doorbell-fired"
-    printf "You have new mail — run \`ateam inbox\` to read it. (Messages are beads, not files — nothing to read on disk.)\n" >&2
+    printf "You have new mail — run \`ateam mail inbox\` to read it. (Messages are beads, not files — nothing to read on disk.)\n" >&2
     exit 2
   fi
 

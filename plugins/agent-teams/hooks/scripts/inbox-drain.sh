@@ -3,9 +3,9 @@
 # Fires on every user prompt. Does two things:
 #   1. DISARM: kills the pending wake watcher for this initiative (the session
 #      is now active; the watcher re-arms on the next Stop).
-#   2. SIGNAL: runs `ateam inbox --peek`; if unread mail is reported, emits an
-#      additionalContext message telling the model to run `ateam inbox`.
-#      Does NOT consume (drain) mail — the model runs `ateam inbox` to do that.
+#   2. SIGNAL: runs `ateam mail inbox --peek`; if unread mail is reported, emits an
+#      additionalContext message telling the model to run `ateam mail inbox`.
+#      Does NOT consume (drain) mail — the model runs `ateam mail inbox` to do that.
 # Silent no-op when cwd is not a registered initiative — teammate subagents and
 # ad-hoc claude sessions must not be affected.
 set -euo pipefail
@@ -67,11 +67,11 @@ if [ -f "$DOORBELL" ]; then
 fi
 
 # ── Signal: peek at unread mail; emit additionalContext if any ───────────────
-peek_out=$("$ATEAM" inbox --peek 2>/dev/null || true)
+peek_out=$("$ATEAM" mail inbox --peek 2>/dev/null || true)
 # peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.
 case "$peek_out" in
   *"unread message"*)
-    signal="You have ${peek_out} — run \`ateam inbox\` to read them."
+    signal="You have ${peek_out} — run \`ateam mail inbox\` to read them."
     HOOK_EXIT_REASON="mail-signaled"
     jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
     ;;
