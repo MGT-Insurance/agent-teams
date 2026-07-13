@@ -43,14 +43,36 @@ if ! command -v bd  >/dev/null 2>&1 \
   exit 0
 fi
 
-# ── Resolve initiative id by worktree:$PWD (match the worktree root OR any subdir) ──
-match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
-  | jq -r --arg pwd "$PWD" \
-      '[.[] | select((.description // "") | split("\n") | map(select(startswith("worktree: ")) | ltrimstr("worktree: ")) | any(. as $w | $pwd == $w or ($pwd | startswith($w + "/"))))][0].id // empty' \
-  2>/dev/null || true)
-if [ -z "$match_id" ]; then
-  HOOK_EXIT_REASON="no-open-match"
-  exit 0
+# ── Steward branch: this is the Steward's own session, not an initiative ────
+# Identified by the shared contract's marker file path (mirrors
+# internal/verbs/steward_seams.go's StewardSessionMarkerPath: keep this
+# literal in lockstep with that contract) existing under $PWD's tree. The
+# Steward is machine-scoped rather than tied to a closeable initiative, so it
+# skips the worktree-based lookup below entirely, and is_steward_session also
+# gates the stop-on-closed check further down in the heartbeat block.
+STEWARD_MARKER="$ATH/steward/session/.steward-session"
+is_steward_session=0
+if [ -f "$STEWARD_MARKER" ]; then
+  marker_dir=$(dirname "$STEWARD_MARKER")
+  case "$PWD" in
+    "$marker_dir"|"$marker_dir"/*)
+      is_steward_session=1
+      ;;
+  esac
+fi
+
+if [ "$is_steward_session" = 1 ]; then
+  match_id="steward"
+else
+  # ── Resolve initiative id by worktree:$PWD (match the worktree root OR any subdir) ──
+  match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
+    | jq -r --arg pwd "$PWD" \
+        '[.[] | select((.description // "") | split("\n") | map(select(startswith("worktree: ")) | ltrimstr("worktree: ")) | any(. as $w | $pwd == $w or ($pwd | startswith($w + "/"))))][0].id // empty' \
+    2>/dev/null || true)
+  if [ -z "$match_id" ]; then
+    HOOK_EXIT_REASON="no-open-match"
+    exit 0
+  fi
 fi
 
 # Now that we have the initiative id, export it so all subsequent log lines carry it.
@@ -108,16 +130,19 @@ while true; do
   # Heartbeat deadline: exit 2 to trigger a cheap re-arm turn.
   now=$(date +%s)
   if [ "$now" -ge "$deadline" ]; then
-    # Stop-on-closed: check initiative status before re-arming.
-    initiative_status=$(bd -C "$ATH" show "$match_id" --json 2>/dev/null \
-      | jq -r '.status // empty' 2>/dev/null || true)
-    case "$initiative_status" in
-      closed|CLOSED|done|DONE)
-        # Initiative is closed — stop pulsing, go quiet.
-        HOOK_EXIT_REASON="initiative-closed"
-        exit 0
-        ;;
-    esac
+    # Stop-on-closed: check initiative status before re-arming. Skipped for
+    # the Steward — it is not a closeable initiative bead and always re-arms.
+    if [ "$is_steward_session" != 1 ]; then
+      initiative_status=$(bd -C "$ATH" show "$match_id" --json 2>/dev/null \
+        | jq -r '.status // empty' 2>/dev/null || true)
+      case "$initiative_status" in
+        closed|CLOSED|done|DONE)
+          # Initiative is closed — stop pulsing, go quiet.
+          HOOK_EXIT_REASON="initiative-closed"
+          exit 0
+          ;;
+      esac
+    fi
     HOOK_EXIT_REASON="heartbeat-rearm"
     printf 'agent-teams: heartbeat re-arm for initiative %s — no new mail, do nothing.\n' "$match_id" >&2
     exit 2
