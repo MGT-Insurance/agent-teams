@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -27,8 +28,9 @@ func RegisterStewardKong(p *cli.Parser) {
 // and runs every node that has a Run method, so a Run here would fire on
 // every subcommand (same pattern as mailCmd in mail_register.go).
 type stewardCmd struct {
-	Init   stewardInitKong  `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
-	Ledger stewardLedgerCmd `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
+	Init   stewardInitKong   `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
+	Ledger stewardLedgerCmd  `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
+	Remove stewardRemoveKong `cmd:"" name:"remove" help:"De-steward this machine: remove the session dir and doorbell (ledger/briefing kept unless --purge)."`
 }
 
 // stewardLedgerCmd is the kong parent struct for `ateam steward ledger
@@ -69,6 +71,145 @@ func (c *stewardInitKong) Run(ctx *cli.Context) error {
 
 	fmt.Fprintln(ctx.Stdout, sessionDir)
 	return nil
+}
+
+// ── steward remove ────────────────────────────────────────────────────────────
+
+// stewardRemoveKong is the kong struct for `ateam steward remove`, the
+// companion to init (agent-teams-e3mq.25): it de-steward a machine by
+// removing StewardSessionDir (marker included) and the doorbell, which is
+// what disables gate->steward routing going forward (the agent-teams-e3mq.24
+// guard in notifyToSteward short-circuits once the marker is gone) and stops
+// wake-watcher.sh from recognizing this cwd as the Steward's session.
+type stewardRemoveKong struct {
+	Purge bool `name:"purge" help:"Also delete the ledger and briefing-thread (default: kept, for relocating the Steward to another machine)."`
+
+	agentsFunc agentsJSONFunc `kong:"-"`
+}
+
+// Run removes the Steward's session dir and doorbell (idempotent — nothing
+// to remove is success, not an error), keeps the ledger and briefing-thread
+// by default (printing their paths — that's the state to carry when moving
+// the Steward to another machine), and with --purge deletes those too. It
+// also reports (never modifies) the count of unread messages still assigned
+// to the Steward handle, so mid-flight mail isn't silently lost, and prints a
+// best-effort, non-blocking warning if a live session's cwd matches the
+// session dir.
+func (c *stewardRemoveKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam steward remove: nil context")
+	}
+
+	agentsFunc := c.agentsFunc
+	if agentsFunc == nil {
+		agentsFunc = defaultAgentsJSONAll
+	}
+
+	sessionDir := StewardSessionDir(ctx)
+	if sessions, err := agentsFunc(); err == nil {
+		if hasLiveSession(sessions, sessionDir) {
+			fmt.Fprintf(ctx.Stderr, "ateam steward remove: warning: a live session appears to be running in %s; not blocking removal\n", sessionDir)
+		}
+	}
+	// Best-effort: a failure to query live sessions is not reported or
+	// treated as an error — this check never blocks removal.
+
+	removedSession, err := removeIfExists(sessionDir)
+	if err != nil {
+		return fmt.Errorf("ateam steward remove: remove session dir: %w", err)
+	}
+	doorbell := StewardDoorbellPath(ctx)
+	removedDoorbell, err := removeIfExists(doorbell)
+	if err != nil {
+		return fmt.Errorf("ateam steward remove: remove doorbell: %w", err)
+	}
+
+	switch {
+	case removedSession && removedDoorbell:
+		fmt.Fprintf(ctx.Stdout, "removed: %s\n", sessionDir)
+		fmt.Fprintf(ctx.Stdout, "removed: %s\n", doorbell)
+	case removedSession:
+		fmt.Fprintf(ctx.Stdout, "removed: %s\n", sessionDir)
+		fmt.Fprintln(ctx.Stdout, "note: no doorbell file found")
+	case removedDoorbell:
+		fmt.Fprintln(ctx.Stdout, "note: no session dir found")
+		fmt.Fprintf(ctx.Stdout, "removed: %s\n", doorbell)
+	default:
+		fmt.Fprintln(ctx.Stdout, "nothing to remove: no steward session or doorbell found")
+	}
+
+	if c.Purge {
+		stewardHome := StewardHome(ctx)
+		purged, err := removeIfExists(stewardHome)
+		if err != nil {
+			return fmt.Errorf("ateam steward remove: purge steward home: %w", err)
+		}
+		if purged {
+			fmt.Fprintf(ctx.Stdout, "purged: %s (ledger and briefing-thread deleted)\n", stewardHome)
+		} else {
+			fmt.Fprintln(ctx.Stdout, "purge: nothing to purge")
+		}
+	} else {
+		var kept []string
+		if _, err := os.Stat(StewardLedgerPath(ctx)); err == nil {
+			kept = append(kept, StewardLedgerPath(ctx))
+		}
+		if _, err := os.Stat(StewardBriefingThreadPath(ctx)); err == nil {
+			kept = append(kept, StewardBriefingThreadPath(ctx))
+		}
+		if len(kept) == 0 {
+			fmt.Fprintln(ctx.Stdout, "kept: nothing (no ledger or briefing-thread found)")
+		} else {
+			fmt.Fprintln(ctx.Stdout, "kept (carry these when relocating the Steward to another machine):")
+			for _, p := range kept {
+				fmt.Fprintf(ctx.Stdout, "  %s\n", p)
+			}
+		}
+	}
+
+	count, err := countUnreadStewardMessages(ctx)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam steward remove: warning: could not count unread steward messages: %v\n", err)
+	} else {
+		fmt.Fprintf(ctx.Stdout, "unread steward messages: %d\n", count)
+	}
+
+	return nil
+}
+
+// removeIfExists removes path (file or directory tree) if it exists,
+// reporting whether it existed. A non-existent path is not an error —
+// remove is idempotent.
+func removeIfExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// countUnreadStewardMessages reports the number of unread message beads
+// assigned to StewardHandle in the global workspace — the same query
+// inboxKong.Run (messaging.go) uses, scoped to StewardHandle rather than a
+// caller-resolved recipient.
+func countUnreadStewardMessages(ctx *cli.Context) (int, error) {
+	var messages []bd.Issue
+	if err := ctx.BD.RunJSON(&messages,
+		"list",
+		"--include-infra",
+		"--assignee="+StewardHandle,
+		"--exclude-label=read",
+		"--status=open",
+		"--json",
+	); err != nil {
+		return 0, err
+	}
+	return len(filterMessageType(messages)), nil
 }
 
 // ── steward ledger record ────────────────────────────────────────────────────

@@ -101,6 +101,22 @@ printf 'problem: steward loop test\nworktree: %s\nbranch: feat/steward-loop\ntea
 init_id=$(ateam register --title "Steward Loop Test Initiative" --file "$T/init-body.md")
 [ -n "$init_id" ] || fail case1 "register returned empty id"
 
+# ── Case 1a: gate BEFORE steward init -> marker guard no-ops (agent-teams-e3mq.24) ──
+# No steward session/marker exists yet on this machine. notifyToSteward must
+# no-op silently (no message bead, no "notify failed" warning) and the gate
+# itself must still succeed.
+
+printf 'Should we bump the minor version?\n' > "$T/gate-ask-premarker.txt"
+premarker_gate_out=$(ateam gate "$init_id" --file "$T/gate-ask-premarker.txt" --kind=question 2>&1)
+echo "$premarker_gate_out" | grep -q "notify failed" \
+  && fail case1a "gate printed 'notify failed' warning with no steward marker (got: '$premarker_gate_out')"
+
+premarker_msgs=$(bd -C "$AGENT_TEAMS_HOME" list --include-infra --assignee=steward --status=open --json)
+[ "$(echo "$premarker_msgs" | jq 'length')" = "0" ] \
+  || fail case1a "expected 0 steward messages before steward init, got: $premarker_msgs"
+
+echo "case1a PASS: gate with no steward marker created no steward message and gate still succeeded"
+
 steward_dir=$(ateam steward init)
 [ -n "$steward_dir" ] || fail case1 "steward init returned empty session dir"
 [ -f "$steward_dir/.steward-session" ] || fail case1 "steward session marker not created at $steward_dir/.steward-session"

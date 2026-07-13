@@ -114,6 +114,15 @@ ateam notify briefing --file <msg-file>
 
 No initiative bead backs this handle; the topic and its thread are created and persisted automatically on first use. Keep per-initiative updates in that initiative's own topic (`ateam notify <initiative-id>`) — reach for `briefing` only when the message genuinely doesn't belong to one initiative.
 
+## 8. Disabling the Steward on a machine
+
+Gate->Steward routing (`notifyToSteward`) is guarded on `StewardSessionMarkerPath` existing: a machine with no marker sees every `ateam gate` behave exactly as it did before the Steward existed (labels + park + dashboard only, no mail, no doorbell). This is what keeps a steward-less machine from accumulating unread steward-message beads forever.
+
+Two ways to disable it:
+
+- **Manual**: delete `~/.agent-teams/steward/session` (the marker lives inside it). Routing stops immediately; `ateam steward init` re-creates it idempotently if you want it back.
+- **`ateam steward remove`**: the supported way to de-steward a machine. Removes the session dir (marker included) and the doorbell (`~/.agent-teams/mailbox/steward.wake`); idempotent (nothing to remove is still a success). Keeps `~/.agent-teams/steward/ledger.jsonl` and `~/.agent-teams/steward/briefing-thread` by default and prints their paths — that's the state to copy over when relocating the Steward to another machine. Pass `--purge` to delete those too. It also reports (never modifies) how many unread messages are still assigned to the `steward` handle, so mid-flight mail is visible before you walk away.
+
 ## Not yet built (do not document or act as if these exist)
 
 - No confidence graduation — the ledger only records recommendation-vs-verdict; it does not yet grant any autonomous authority based on track record.

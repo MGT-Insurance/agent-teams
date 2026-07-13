@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // stewardRouteFakeBD backs notifyToSteward's two bd touchpoints:
@@ -64,12 +65,46 @@ func (f *stewardRouteFakeBD) RunJSON(dst any, args ...string) error {
 	return nil
 }
 
+// requireStewardMarker creates the Steward session marker in ctx.Home (via
+// the real stewardInitKong.Run) so notifyToSteward's presence guard
+// (agent-teams-e3mq.24) passes. Doesn't touch ctx.BD, so it's safe to call
+// against any fake BD, including a queued fakeExec.
+func requireStewardMarker(t *testing.T, ctx *cli.Context) {
+	t.Helper()
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("requireStewardMarker: steward init: %v", err)
+	}
+}
+
+// ── notifyToSteward: presence guard (agent-teams-e3mq.24) ───────────────────
+
+func TestNotifyToSteward_NoMarker_NoOpsWithoutBuildingOrSending(t *testing.T) {
+	initiativeID := "at-x12"
+	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:review"}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	// No requireStewardMarker call: this machine has no steward configured.
+
+	askFile := makeTempFile(t, "Should we ship the release?")
+	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
+		t.Fatalf("notifyToSteward: expected nil (no-op) with no marker, got: %v", err)
+	}
+
+	if fbd.createArgs != nil {
+		t.Errorf("expected no bd create call with no steward marker, got args: %v", fbd.createArgs)
+	}
+	doorbell := StewardDoorbellPath(ctx)
+	if _, err := os.Stat(doorbell); !os.IsNotExist(err) {
+		t.Errorf("expected doorbell NOT touched with no steward marker, stat: %v", err)
+	}
+}
+
 // ── notifyToSteward: envelope + routing ──────────────────────────────────────
 
 func TestNotifyToSteward_ReviewKind_BuildsEnvelopeAndRoutesToSteward(t *testing.T) {
 	initiativeID := "at-x9"
 	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:review"}}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
 
 	askFile := makeTempFile(t, "Should we ship the release?")
 	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
@@ -102,6 +137,7 @@ func TestNotifyToSteward_NoReviewLabel_DefaultsToQuestionKind(t *testing.T) {
 	initiativeID := "at-x10"
 	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:question"}}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
 
 	askFile := makeTempFile(t, "what should we name it?")
 	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
@@ -120,6 +156,7 @@ func TestNotifyToSteward_NoReviewLabel_DefaultsToQuestionKind(t *testing.T) {
 func TestNotifyToSteward_FileNotFound_ReturnsError(t *testing.T) {
 	fbd := &stewardRouteFakeBD{initiativeID: "at-x11"}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
 
 	if err := notifyToSteward(ctx, "at-x11", "/no/such/file"); err == nil {
 		t.Fatal("expected error for missing ask file, got nil")
@@ -141,6 +178,7 @@ func TestGate_NotifyToStewardFailureIsNonFatal(t *testing.T) {
 		{stdout: "ok"},                          // label add gate:question
 		{err: fmt.Errorf("bd show: not found")}, // notifyToSteward's bd.ShowIssue
 	})
+	requireStewardMarker(t, ctx)
 	errBuf := ctx.Stderr.(*bytes.Buffer)
 
 	cmd := &gateKong{
@@ -158,5 +196,38 @@ func TestGate_NotifyToStewardFailureIsNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "warning") {
 		t.Errorf("expected warning on stderr, got: %q", errBuf.String())
+	}
+}
+
+// TestGate_NotifyToStewardNoMarker_NoMessageAndGateSucceeds proves the
+// agent-teams-e3mq.24 guard end to end through gateKong.Run: with no steward
+// marker, the gate records its labels exactly as before, notifyToSteward
+// no-ops silently (no "notify failed" warning — a nil return isn't a notify
+// failure), and no bd show/create calls fire for steward routing.
+func TestGate_NotifyToStewardNoMarker_NoMessageAndGateSucceeds(t *testing.T) {
+	f := makeTempFile(t, "should we proceed?")
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "ok"}, // note
+		{stdout: "ok"}, // label add human
+		{stdout: "ok"}, // label add gate:question
+	})
+	// No requireStewardMarker: this machine has no steward configured.
+	errBuf := ctx.Stderr.(*bytes.Buffer)
+
+	cmd := &gateKong{
+		ID:      "at-6",
+		File:    f,
+		Kind:    "question",
+		enabled: func(string) bool { return true },
+		notify:  notifyToSteward,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("gate must succeed with no steward marker, got: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls (gate only; notifyToSteward no-ops before any bd show/create), got %d", len(*calls))
+	}
+	if strings.Contains(errBuf.String(), "warning") {
+		t.Errorf("expected no warning on stderr (nil is a clean no-op, not a notify failure), got: %q", errBuf.String())
 	}
 }

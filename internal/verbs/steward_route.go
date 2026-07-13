@@ -28,7 +28,18 @@ import (
 // ateam binary. Best-effort: same non-fatal semantics as notifyForGate: the
 // caller (gateKong.Run) already treats a non-nil return here as a
 // warn-and-continue, never a gate failure.
+//
+// Guarded on steward presence (agent-teams-e3mq.24): a machine with no
+// steward has no StewardSessionMarkerPath, so every gate would otherwise
+// mail the reserved "steward" handle forever with nothing ever draining the
+// inbox. Absent marker -> no-op (nil, no envelope built, no send), mirroring
+// isStewardSession's (messaging.go) any-stat-error-means-absent convention.
+// Present marker -> unchanged behavior.
 func notifyToSteward(ctx *cli.Context, id, file string) error {
+	if _, err := os.Stat(StewardSessionMarkerPath(ctx)); err != nil {
+		return nil
+	}
+
 	body, err := os.ReadFile(file)
 	if err != nil {
 		return fmt.Errorf("notify to steward: read file: %w", err)

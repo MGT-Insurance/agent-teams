@@ -1,10 +1,13 @@
 package verbs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mgt-insurance/agent-teams/internal/bd"
 )
 
 // ── steward init ──────────────────────────────────────────────────────────────
@@ -57,6 +60,238 @@ func TestStewardInit_Idempotent(t *testing.T) {
 
 func TestStewardInit_NilContext(t *testing.T) {
 	if err := (&stewardInitKong{}).Run(nil); err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── steward remove ────────────────────────────────────────────────────────────
+
+// stewardMessagesFakeBD returns a fixed set of message issues from RunJSON
+// (countUnreadStewardMessages' "bd list --assignee=steward ..." query) and
+// records whether RunJSON was called at all.
+type stewardMessagesFakeBD struct {
+	fakeBD
+	messages []bd.Issue
+	queryErr error
+	queried  bool
+}
+
+func (f *stewardMessagesFakeBD) RunJSON(dst any, args ...string) error {
+	f.queried = true
+	if f.queryErr != nil {
+		return f.queryErr
+	}
+	if out, ok := dst.(*[]bd.Issue); ok {
+		*out = f.messages
+	}
+	return nil
+}
+
+func TestStewardRemove_NoExistingSession_IdempotentSuccess(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardRemoveKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "nothing to remove") {
+		t.Errorf("expected 'nothing to remove' note, got: %q", out)
+	}
+	if !strings.Contains(out, "kept: nothing") {
+		t.Errorf("expected 'kept: nothing' note, got: %q", out)
+	}
+	if !strings.Contains(out, "unread steward messages: 0") {
+		t.Errorf("expected unread count of 0, got: %q", out)
+	}
+}
+
+func TestStewardRemove_RemovesSessionDirAndDoorbell(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("seed steward init: %v", err)
+	}
+	doorbell := StewardDoorbellPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(doorbell), 0o755); err != nil {
+		t.Fatalf("seed doorbell dir: %v", err)
+	}
+	if err := os.WriteFile(doorbell, []byte("wake"), 0o644); err != nil {
+		t.Fatalf("seed doorbell file: %v", err)
+	}
+
+	if err := (&stewardRemoveKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sessionDir := StewardSessionDir(ctx)
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Errorf("expected session dir %s removed, stat err: %v", sessionDir, err)
+	}
+	if _, err := os.Stat(doorbell); !os.IsNotExist(err) {
+		t.Errorf("expected doorbell %s removed, stat err: %v", doorbell, err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "removed: "+sessionDir) {
+		t.Errorf("expected removed session dir noted, got: %q", out)
+	}
+	if !strings.Contains(out, "removed: "+doorbell) {
+		t.Errorf("expected removed doorbell noted, got: %q", out)
+	}
+}
+
+func TestStewardRemove_KeepsLedgerAndBriefingByDefault(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := os.MkdirAll(StewardHome(ctx), 0o755); err != nil {
+		t.Fatalf("seed steward home: %v", err)
+	}
+	ledgerPath := StewardLedgerPath(ctx)
+	briefingPath := StewardBriefingThreadPath(ctx)
+	if err := os.WriteFile(ledgerPath, []byte(`{}`+"\n"), 0o644); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+	if err := os.WriteFile(briefingPath, []byte("thread"), 0o644); err != nil {
+		t.Fatalf("seed briefing-thread: %v", err)
+	}
+
+	if err := (&stewardRemoveKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(ledgerPath); err != nil {
+		t.Errorf("expected ledger kept at %s: %v", ledgerPath, err)
+	}
+	if _, err := os.Stat(briefingPath); err != nil {
+		t.Errorf("expected briefing-thread kept at %s: %v", briefingPath, err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "kept") || !strings.Contains(out, ledgerPath) || !strings.Contains(out, briefingPath) {
+		t.Errorf("expected both kept paths reported, got: %q", out)
+	}
+}
+
+func TestStewardRemove_Purge_DeletesLedgerBriefingAndHome(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := os.MkdirAll(StewardHome(ctx), 0o755); err != nil {
+		t.Fatalf("seed steward home: %v", err)
+	}
+	if err := os.WriteFile(StewardLedgerPath(ctx), []byte(`{}`+"\n"), 0o644); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+	if err := os.WriteFile(StewardBriefingThreadPath(ctx), []byte("thread"), 0o644); err != nil {
+		t.Fatalf("seed briefing-thread: %v", err)
+	}
+
+	if err := (&stewardRemoveKong{Purge: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(StewardHome(ctx)); !os.IsNotExist(err) {
+		t.Errorf("expected steward home fully purged, stat err: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "purged: "+StewardHome(ctx)) {
+		t.Errorf("expected purge note, got: %q", stdout.String())
+	}
+}
+
+func TestStewardRemove_Purge_NothingToPurgeWhenHomeMissing(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardRemoveKong{Purge: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "purge: nothing to purge") {
+		t.Errorf("expected 'purge: nothing to purge', got: %q", stdout.String())
+	}
+}
+
+func TestStewardRemove_ReportsUnreadStewardMessageCount(t *testing.T) {
+	home := t.TempDir()
+	fbd := &stewardMessagesFakeBD{messages: []bd.Issue{
+		{ID: "at-msg1", IssueType: "message"},
+		{ID: "at-msg2", IssueType: "message"},
+		{ID: "at-not-a-message", IssueType: "task"}, // excluded by filterMessageType
+	}}
+	ctx, stdout, _ := makeCtx(fbd, home)
+
+	if err := (&stewardRemoveKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fbd.queried {
+		t.Fatal("expected unread-message count query to run")
+	}
+	if !strings.Contains(stdout.String(), "unread steward messages: 2") {
+		t.Errorf("expected unread count of 2, got: %q", stdout.String())
+	}
+}
+
+func TestStewardRemove_UnreadCountQueryError_FailsSoft(t *testing.T) {
+	home := t.TempDir()
+	fbd := &stewardMessagesFakeBD{queryErr: fmt.Errorf("bd list: boom")}
+	ctx, stdout, stderr := makeCtx(fbd, home)
+
+	if err := (&stewardRemoveKong{}).Run(ctx); err != nil {
+		t.Fatalf("expected remove to fail soft on count-query error, got: %v", err)
+	}
+	if strings.Contains(stdout.String(), "unread steward messages:") {
+		t.Errorf("expected no unread count line on query error, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "warning") {
+		t.Errorf("expected warning on stderr, got: %q", stderr.String())
+	}
+}
+
+func TestStewardRemove_LiveSessionWarning(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("seed steward init: %v", err)
+	}
+	sessionDir := StewardSessionDir(ctx)
+
+	cmd := &stewardRemoveKong{
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{CWD: sessionDir}}, nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "warning") || !strings.Contains(stderr.String(), "live session") {
+		t.Errorf("expected live-session warning, got: %q", stderr.String())
+	}
+	// Best-effort: warning does not block removal.
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Errorf("expected session dir still removed despite live-session warning, stat err: %v", err)
+	}
+}
+
+func TestStewardRemove_LiveSessionCheckFailsSoft(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardRemoveKong{
+		agentsFunc: func() ([]agentSession, error) {
+			return nil, fmt.Errorf("claude agents: boom")
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(stderr.String(), "warning") {
+		t.Errorf("expected no warning when live-session check itself errors (fail-soft), got: %q", stderr.String())
+	}
+}
+
+func TestStewardRemove_NilContext(t *testing.T) {
+	if err := (&stewardRemoveKong{}).Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
 	}
 }
