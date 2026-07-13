@@ -1,5 +1,7 @@
-// Package verbs: mail verb — read-only cross-initiative mail table.
-// File owned by Track M (agent-teams-euat).
+// Package verbs: leaf verbs for the unified `ateam mail` command — list
+// (read-only), close, and purge. Parent-verb + alias registration lives in
+// mail_register.go.
+// File owned by the GO track (agent-teams-790o.2).
 package verbs
 
 import (
@@ -15,8 +17,8 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// mailKong is the kong struct for the mail verb.
-type mailKong struct {
+// mailListKong is the kong struct for the `mail list` subcommand.
+type mailListKong struct {
 	Limit int  `name:"limit" default:"20" help:"Max number of most-recent messages to show."`
 	JSON  bool `name:"json" help:"Output messages as JSON."`
 }
@@ -24,6 +26,9 @@ type mailKong struct {
 // mailRecord is the JSON shape emitted by --json; json tags match the
 // dashboard/shared/types.ts MailMessage contract exactly. readAt/readBy/thread
 // are *string so an absent label emits JSON null (not "" or an omitted key).
+// Closed is a separate axis from Status: Status tracks delivery
+// (pending|read|acked) via labels; Closed tracks the bead lifecycle
+// (open/closed) — set once auto-close-on-read fires.
 type mailRecord struct {
 	ID        string  `json:"id"`
 	To        string  `json:"to"`
@@ -35,20 +40,21 @@ type mailRecord struct {
 	ReadAt    *string `json:"readAt"`
 	ReadBy    *string `json:"readBy"`
 	Thread    *string `json:"thread"`
+	Closed    bool    `json:"closed"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 // STRICT READ-ONLY: no label/close/note/update calls — query + format only.
-func (c *mailKong) Run(ctx *cli.Context) error {
+func (c *mailListKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
-		return fmt.Errorf("ateam mail: nil context")
+		return fmt.Errorf("ateam mail list: nil context")
 	}
 
 	var msgs []bd.Issue
 	if err := ctx.BD.RunJSON(&msgs,
-		"list", "--include-infra", "--type=message",
+		"list", "--include-infra", "--type=message", "--status=all",
 		"--limit="+strconv.Itoa(c.Limit), "--json"); err != nil {
-		return fmt.Errorf("ateam mail: query: %w", err)
+		return fmt.Errorf("ateam mail list: query: %w", err)
 	}
 
 	// Defensively re-filter: bd --type= may be honored inconsistently across
@@ -85,6 +91,7 @@ func (c *mailKong) Run(ctx *cli.Context) error {
 				ReadAt:    strOrNil(readAtFromLabels(msg.Labels)),
 				ReadBy:    strOrNil(readByFromLabels(msg.Labels)),
 				Thread:    strOrNil(threadFromLabels(msg.Labels)),
+				Closed:    msg.Status == "closed",
 			}
 		}
 		enc := json.NewEncoder(ctx.Stdout)
@@ -191,7 +198,60 @@ func mailFormatCreatedAt(raw string) string {
 	return t.UTC().Format("2006-01-02 15:04")
 }
 
-// RegisterMailKong registers the debug-mail verb onto p.
-func RegisterMailKong(p *cli.Parser) {
-	p.AddVerb("debug-mail", "DEBUG ONLY — read-only table of ALL initiatives' recent mail, for humans/agents debugging the system. Does NOT mark anything read and is NOT how you read your own mail (that happens automatically; run `ateam inbox`).", &mailKong{})
+// ── mailCloseKong ─────────────────────────────────────────────────────────────
+
+// mailCloseKong is the kong struct for the `mail close` subcommand. Thin
+// wrapper over `bd close` — preserves the invariant that ateam is the ONLY
+// sanctioned WRITE interface to the global workspace (the dashboard must
+// never shell `bd -C ~/.agent-teams close` directly). Covers the orphan
+// escape hatch (unread/dead-recipient mail) and the dashboard Close button.
+type mailCloseKong struct {
+	ID string `arg:"" name:"id" help:"Message bead id to close."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *mailCloseKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam mail close: nil context")
+	}
+	out, err := ctx.BD.Run("close", c.ID)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ── mailPurgeKong ─────────────────────────────────────────────────────────────
+
+// mailPurgeKong is the kong struct for the `mail purge` subcommand. Thin
+// wrapper over `bd purge`. Purge is ALWAYS manual — never scheduled — so a
+// just-closed message being inspected isn't nuked out from under a human.
+// Default --older-than of 7d gives the same safety margin.
+type mailPurgeKong struct {
+	OlderThan string `name:"older-than" default:"7d" help:"Only purge messages closed more than this long ago (e.g. 7d, 2w)."`
+	DryRun    bool   `name:"dry-run" help:"Preview what would be purged without deleting."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *mailPurgeKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam mail purge: nil context")
+	}
+	var out string
+	var err error
+	if c.DryRun {
+		out, err = ctx.BD.Run("purge", "--older-than", c.OlderThan, "--dry-run")
+	} else {
+		out, err = ctx.BD.Run("purge", "--older-than", c.OlderThan, "--force")
+	}
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err != nil {
+		return err
+	}
+	return nil
 }

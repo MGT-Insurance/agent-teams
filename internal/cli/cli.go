@@ -48,6 +48,14 @@ func (p *Parser) AddVerb(name, help string, cmd any) {
 	p.verbs = append(p.verbs, kong.DynamicCommand(name, help, "", cmd))
 }
 
+// AddHiddenVerb registers a kong-tagged verb struct under name with a one-line
+// help string, hidden from --help output (kong's "hidden" tag). Otherwise
+// identical to AddVerb. Used for deprecated verb aliases that must keep
+// working but shouldn't clutter top-level help. Must be called before Parse.
+func (p *Parser) AddHiddenVerb(name, help string, cmd any) {
+	p.verbs = append(p.verbs, kong.DynamicCommand(name, help, "", cmd, "hidden"))
+}
+
 // build constructs the *kong.Kong parser from accumulated options. Called once
 // on the first Parse.
 func (p *Parser) build() (*kong.Kong, error) {

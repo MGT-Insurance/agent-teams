@@ -14,18 +14,6 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// RegisterMessagingKong registers messaging verbs onto p using native kong structs.
-func RegisterMessagingKong(p *cli.Parser) {
-	p.AddVerb("send", "Send a message to a recipient initiative.", &sendKong{
-		agentsFunc:     defaultAgentsJSONAll,
-		resumeFunc:     defaultResume,
-		sleeper:        defaultSleeper,
-		doorbellExists: defaultDoorbellExists,
-		respawnFunc:    defaultRespawn,
-	})
-	p.AddVerb("inbox", "Read and consume unread messages for this initiative.", &inboxKong{})
-}
-
 // ── sendKong ──────────────────────────────────────────────────────────────────
 
 // sendKong is the kong-native form of sendCmd.
@@ -428,7 +416,9 @@ func senderFromNotes(notes string) string {
 }
 
 // markMessageRead adds the 'read' label and delivery ack labels to a message
-// bead, idempotently. The bead stays open (not closed).
+// bead, then closes it. Closing is idempotent — `bd close` on an
+// already-closed bead succeeds as a no-op, so a re-drain (or a duplicate
+// inbox read) never fails here.
 func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
 	// Add 'read' label (idempotent — bd label add is no-op if already present).
 	if _, err := ctx.BD.Run("label", "add", msgID, "read"); err != nil {
@@ -447,6 +437,11 @@ func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
 	// Remove delivery:pending (idempotent).
 	if _, err := ctx.BD.Run("label", "remove", msgID, "delivery:pending"); err != nil {
 		return fmt.Errorf("remove delivery:pending: %w", err)
+	}
+	// Auto-close on read. Fires only here (post-ack), never on delivery —
+	// unread/pending messages and messages to a dead initiative stay open.
+	if _, err := ctx.BD.Run("close", msgID); err != nil {
+		return fmt.Errorf("close message: %w", err)
 	}
 	return nil
 }
