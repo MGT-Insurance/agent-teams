@@ -1,0 +1,168 @@
+package verbs_test
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/verbs"
+)
+
+// ── path helpers ──────────────────────────────────────────────────────────────
+
+func TestStewardPaths(t *testing.T) {
+	ctx := &cli.Context{Home: "/fake/home"}
+
+	if got, want := verbs.StewardHome(ctx), filepath.Join("/fake/home", "steward"); got != want {
+		t.Errorf("StewardHome = %q, want %q", got, want)
+	}
+	if got, want := verbs.StewardSessionDir(ctx), filepath.Join("/fake/home", "steward", "session"); got != want {
+		t.Errorf("StewardSessionDir = %q, want %q", got, want)
+	}
+	if got, want := verbs.StewardSessionMarkerPath(ctx), filepath.Join("/fake/home", "steward", "session", ".steward-session"); got != want {
+		t.Errorf("StewardSessionMarkerPath = %q, want %q", got, want)
+	}
+	if got, want := verbs.StewardLedgerPath(ctx), filepath.Join("/fake/home", "steward", "ledger.jsonl"); got != want {
+		t.Errorf("StewardLedgerPath = %q, want %q", got, want)
+	}
+	if got, want := verbs.StewardBriefingThreadPath(ctx), filepath.Join("/fake/home", "steward", "briefing-thread"); got != want {
+		t.Errorf("StewardBriefingThreadPath = %q, want %q", got, want)
+	}
+	if got, want := verbs.StewardDoorbellPath(ctx), filepath.Join("/fake/home", "mailbox", "steward.wake"); got != want {
+		t.Errorf("StewardDoorbellPath = %q, want %q", got, want)
+	}
+}
+
+// ── Gate→Steward envelope round-trip ─────────────────────────────────────────
+
+func TestStewardGateEnvelope_RoundTrip(t *testing.T) {
+	body := "Which design to pick?\n\nRecommended: A\nAlternative: B"
+	text, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, body)
+	if err != nil {
+		t.Fatalf("BuildStewardGateEnvelope: %v", err)
+	}
+
+	want := "<<<steward-gate initiative:agent-teams-e3mq kind:question>>>\n" + body + "\n>>>"
+	if text != want {
+		t.Fatalf("BuildStewardGateEnvelope =\n%q\nwant\n%q", text, want)
+	}
+
+	got, ok := verbs.ParseStewardGateEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardGateEnvelope: ok=false, want true")
+	}
+	if got.InitiativeID != "agent-teams-e3mq" {
+		t.Errorf("InitiativeID = %q, want %q", got.InitiativeID, "agent-teams-e3mq")
+	}
+	if got.Kind != verbs.StewardGateKindQuestion {
+		t.Errorf("Kind = %q, want %q", got.Kind, verbs.StewardGateKindQuestion)
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+func TestStewardGateEnvelope_InvalidKind(t *testing.T) {
+	if _, err := verbs.BuildStewardGateEnvelope("id", verbs.StewardGateKind("bogus"), "body"); err == nil {
+		t.Fatal("BuildStewardGateEnvelope: expected error for invalid kind, got nil")
+	}
+}
+
+func TestParseStewardGateEnvelope_Malformed(t *testing.T) {
+	if _, ok := verbs.ParseStewardGateEnvelope("not an envelope"); ok {
+		t.Error("ParseStewardGateEnvelope: expected ok=false for non-envelope text")
+	}
+	if _, ok := verbs.ParseStewardGateEnvelope("<<<steward-gate initiative:x kind:question>>>\nbody with no closer"); ok {
+		t.Error("ParseStewardGateEnvelope: expected ok=false for missing closing sentinel")
+	}
+}
+
+// ── Relay→Steward envelope round-trip ────────────────────────────────────────
+
+func TestStewardReplyEnvelope_RoundTrip(t *testing.T) {
+	body := "Go with design A."
+	text, err := verbs.BuildStewardReplyEnvelope("agent-teams-e3mq", body)
+	if err != nil {
+		t.Fatalf("BuildStewardReplyEnvelope: %v", err)
+	}
+
+	want := "<<<steward-reply initiative:agent-teams-e3mq>>>\n" + body + "\n>>>"
+	if text != want {
+		t.Fatalf("BuildStewardReplyEnvelope =\n%q\nwant\n%q", text, want)
+	}
+
+	got, ok := verbs.ParseStewardReplyEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardReplyEnvelope: ok=false, want true")
+	}
+	if got.InitiativeID != "agent-teams-e3mq" {
+		t.Errorf("InitiativeID = %q, want %q", got.InitiativeID, "agent-teams-e3mq")
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+// ── Ledger record marshal ─────────────────────────────────────────────────────
+
+func TestStewardLedgerRecord_MarshalParseRoundTrip(t *testing.T) {
+	rec := verbs.StewardLedgerRecord{
+		Timestamp:      time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC),
+		Category:       verbs.StewardLedgerCategoryMergeApproval,
+		Initiative:     "agent-teams-e3mq",
+		Recommendation: "merge PR #100",
+		Verdict:        verbs.StewardLedgerVerdictAccepted,
+	}
+
+	line, err := rec.MarshalLine()
+	if err != nil {
+		t.Fatalf("MarshalLine: %v", err)
+	}
+	if line[len(line)-1] != '\n' {
+		t.Fatalf("MarshalLine: expected trailing newline, got %q", line)
+	}
+
+	got, err := verbs.ParseStewardLedgerRecord(line)
+	if err != nil {
+		t.Fatalf("ParseStewardLedgerRecord: %v", err)
+	}
+	if !got.Timestamp.Equal(rec.Timestamp) {
+		t.Errorf("Timestamp = %v, want %v", got.Timestamp, rec.Timestamp)
+	}
+	if got.Category != rec.Category || got.Initiative != rec.Initiative ||
+		got.Recommendation != rec.Recommendation || got.Verdict != rec.Verdict {
+		t.Errorf("ParseStewardLedgerRecord = %+v, want %+v", got, rec)
+	}
+}
+
+func TestStewardLedgerRecord_ValidateRejectsBadEnums(t *testing.T) {
+	base := verbs.StewardLedgerRecord{
+		Timestamp:      time.Now(),
+		Category:       verbs.StewardLedgerCategoryScopeCall,
+		Initiative:     "agent-teams-e3mq",
+		Recommendation: "do the thing",
+		Verdict:        verbs.StewardLedgerVerdictCorrected,
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Validate on well-formed record: %v", err)
+	}
+
+	badCategory := base
+	badCategory.Category = "not-a-category"
+	if err := badCategory.Validate(); err == nil {
+		t.Error("Validate: expected error for invalid category, got nil")
+	}
+
+	badVerdict := base
+	badVerdict.Verdict = "maybe"
+	if err := badVerdict.Validate(); err == nil {
+		t.Error("Validate: expected error for invalid verdict, got nil")
+	}
+
+	noInitiative := base
+	noInitiative.Initiative = ""
+	if err := noInitiative.Validate(); err == nil {
+		t.Error("Validate: expected error for empty initiative, got nil")
+	}
+}
