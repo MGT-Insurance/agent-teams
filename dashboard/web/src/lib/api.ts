@@ -1,4 +1,12 @@
-import type { SnapshotEvent, DrillInDetail, AttachRequest, AttachResponse } from "@agent-teams/shared";
+import type {
+  SnapshotEvent,
+  DrillInDetail,
+  AttachRequest,
+  AttachResponse,
+  MailListResponse,
+  MailSendRequest,
+  MailSendResponse,
+} from "@agent-teams/shared";
 import { API_PATHS } from "@agent-teams/shared";
 
 async function fetchJSON<T>(url: string): Promise<T> {
@@ -58,4 +66,25 @@ export async function stopSession(initiativeId: string, sessionId: string): Prom
 // Do NOT fetch this with fetchJSON — it is a chunked byte stream.
 export function logsUrl(id: string, sessionId: string): string {
   return API_PATHS.logs(id, sessionId);
+}
+
+// GET /api/mail — one-shot fetch of all mail (unread + read), newest-first.
+// On-demand only — NOT part of the SSE snapshot (see views/mail/index.tsx).
+export function fetchMail(): Promise<MailListResponse> {
+  return fetchJSON<MailListResponse>(API_PATHS.mail);
+}
+
+// POST /api/mail/send — send a message to an initiative. Throws with the server's
+// error message on failure so the caller can surface it (mirrors launchSession/stopSession).
+export async function sendMail(req: MailSendRequest): Promise<MailSendResponse> {
+  const res = await fetch(API_PATHS.mailSend, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const body = (await res.json()) as Partial<MailSendResponse> & { error?: string };
+  if (!res.ok) {
+    throw new Error(body.error ?? `POST ${API_PATHS.mailSend} failed: ${res.status}`);
+  }
+  return body as MailSendResponse;
 }

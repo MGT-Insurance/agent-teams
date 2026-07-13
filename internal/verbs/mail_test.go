@@ -168,6 +168,115 @@ func TestMail_LimitCapsRows(t *testing.T) {
 	}
 }
 
+// ── --json tests ──────────────────────────────────────────────────────────────
+
+func TestMail_JSON_FullLabels(t *testing.T) {
+	msg := mailIssue("at-mj1", "init-a", "alice", "hello from alice",
+		[]string{"delivery-acked-by:init-b", "delivery-acked-at:2026-01-05T00:00:00Z", "thread:th-1"},
+		time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC))
+	msg.Description = "the message body"
+
+	fbd := mailFakeListBD([]bd.Issue{msg})
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	c := &mailKong{Limit: 20, JSON: true}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var records []mailRecord
+	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
+		t.Fatalf("expected valid JSON array; got %q: %v", stdout.String(), err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	r := records[0]
+	if r.Body != "the message body" {
+		t.Errorf("expected body == Description; got %q", r.Body)
+	}
+	if r.ReadBy == nil || *r.ReadBy != "init-b" {
+		t.Errorf("expected readBy == %q, got %v", "init-b", r.ReadBy)
+	}
+	if r.ReadAt == nil || *r.ReadAt != "2026-01-05T00:00:00Z" {
+		t.Errorf("expected readAt == %q, got %v", "2026-01-05T00:00:00Z", r.ReadAt)
+	}
+	if r.Thread == nil || *r.Thread != "th-1" {
+		t.Errorf("expected thread == %q, got %v", "th-1", r.Thread)
+	}
+}
+
+func TestMail_JSON_UnreadHasNullFields(t *testing.T) {
+	msg := mailIssue("at-mj2", "init-a", "alice", "pending msg",
+		[]string{"delivery:pending"}, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	fbd := mailFakeListBD([]bd.Issue{msg})
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	c := &mailKong{Limit: 20, JSON: true}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var records []mailRecord
+	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
+		t.Fatalf("expected valid JSON array; got %q: %v", stdout.String(), err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	r := records[0]
+	if r.Status != "pending" {
+		t.Errorf("expected status \"pending\", got %q", r.Status)
+	}
+	if r.ReadAt != nil || r.ReadBy != nil {
+		t.Errorf("expected readAt/readBy nil for unread message; got readAt=%v readBy=%v", r.ReadAt, r.ReadBy)
+	}
+}
+
+func TestMail_JSON_EmptyListEmitsBrackets(t *testing.T) {
+	fbd := mailFakeListBD(nil)
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	c := &mailKong{Limit: 20, JSON: true}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := strings.TrimSpace(stdout.String())
+	if got != "[]" {
+		t.Errorf("expected \"[]\" for empty mailbox in --json mode; got %q", got)
+	}
+	if strings.Contains(stdout.String(), "no mail") {
+		t.Errorf("must not print 'no mail' text in --json mode; got %q", stdout.String())
+	}
+}
+
+func TestMail_JSON_ReadOnly(t *testing.T) {
+	var runCalls [][]string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			issues := []bd.Issue{
+				mailIssue("at-mj3", "init-a", "alice", "hello", nil,
+					time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+			}
+			raw, _ := json.Marshal(issues)
+			return json.Unmarshal(raw, dst)
+		},
+		runFn: func(args ...string) (string, error) {
+			runCalls = append(runCalls, args)
+			return "", nil
+		},
+	}
+
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	c := &mailKong{Limit: 20, JSON: true}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(runCalls) != 0 {
+		t.Errorf("expected no Run() calls in --json mode (read-only), got %d: %v", len(runCalls), runCalls)
+	}
+}
+
 func TestMail_ReadOnly(t *testing.T) {
 	// Verify no write subcommands are invoked: only "list" RunJSON calls allowed.
 	writeSubcmds := []string{"label", "close", "note", "update"}

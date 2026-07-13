@@ -3,6 +3,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -16,7 +17,24 @@ import (
 
 // mailKong is the kong struct for the mail verb.
 type mailKong struct {
-	Limit int `name:"limit" default:"20" help:"Max number of most-recent messages to show."`
+	Limit int  `name:"limit" default:"20" help:"Max number of most-recent messages to show."`
+	JSON  bool `name:"json" help:"Output messages as JSON."`
+}
+
+// mailRecord is the JSON shape emitted by --json; json tags match the
+// dashboard/shared/types.ts MailMessage contract exactly. readAt/readBy/thread
+// are *string so an absent label emits JSON null (not "" or an omitted key).
+type mailRecord struct {
+	ID        string  `json:"id"`
+	To        string  `json:"to"`
+	From      string  `json:"from"`
+	Subject   string  `json:"subject"`
+	Body      string  `json:"body"`
+	Status    string  `json:"status"`
+	CreatedAt string  `json:"createdAt"`
+	ReadAt    *string `json:"readAt"`
+	ReadBy    *string `json:"readBy"`
+	Thread    *string `json:"thread"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -47,6 +65,31 @@ func (c *mailKong) Run(ctx *cli.Context) error {
 	// returned; this guarantees we show at most Limit rows.
 	if len(msgs) > c.Limit {
 		msgs = msgs[:c.Limit]
+	}
+
+	if c.JSON {
+		records := make([]mailRecord, len(msgs))
+		for i, msg := range msgs {
+			from := senderFromNotes(msg.Notes)
+			if from == "" {
+				from = msg.CreatedBy
+			}
+			records[i] = mailRecord{
+				ID:        msg.ID,
+				To:        msg.Assignee,
+				From:      from,
+				Subject:   msg.Title,
+				Body:      msg.Description,
+				Status:    mailStatus(msg.Labels),
+				CreatedAt: msg.CreatedAt,
+				ReadAt:    strOrNil(readAtFromLabels(msg.Labels)),
+				ReadBy:    strOrNil(readByFromLabels(msg.Labels)),
+				Thread:    strOrNil(threadFromLabels(msg.Labels)),
+			}
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(records)
 	}
 
 	if len(msgs) == 0 {
@@ -85,6 +128,48 @@ func mailStatus(labels []string) string {
 		}
 	}
 	return "pending"
+}
+
+// readAtFromLabels returns the value after the "delivery-acked-at:" label
+// prefix, or "" if no such label is present.
+func readAtFromLabels(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "delivery-acked-at:") {
+			return strings.TrimPrefix(l, "delivery-acked-at:")
+		}
+	}
+	return ""
+}
+
+// readByFromLabels returns the value after the "delivery-acked-by:" label
+// prefix, or "" if no such label is present.
+func readByFromLabels(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "delivery-acked-by:") {
+			return strings.TrimPrefix(l, "delivery-acked-by:")
+		}
+	}
+	return ""
+}
+
+// threadFromLabels returns the value after the "thread:" label prefix, or ""
+// if no such label is present.
+func threadFromLabels(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "thread:") {
+			return strings.TrimPrefix(l, "thread:")
+		}
+	}
+	return ""
+}
+
+// strOrNil returns nil for "" and a pointer to s otherwise, so JSON emits
+// null instead of an empty string for absent label values.
+func strOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // mailTruncate shortens s to at most n runes, appending "..." if truncated.

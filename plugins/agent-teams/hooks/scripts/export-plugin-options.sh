@@ -3,7 +3,7 @@
 #
 # WHY: Claude Code exports CLAUDE_PLUGIN_OPTION_<KEY> only to hook and MCP/LSP
 # subprocesses — NOT to arbitrary Bash tool calls the model makes. `ateam
-# dispatch` / `resume` (invoked as Bash calls from /dri-dispatch and friends)
+# dispatch` / `resume` (invoked as Bash calls from /dispatch-dri and friends)
 # read CLAUDE_PLUGIN_OPTION_USE_ADVISORS to decide whether a DRI session
 # launches sonnet+opus-advisor vs the default opus. Without this hook that var
 # is never present at dispatch time, so advisor mode would silently never fire.

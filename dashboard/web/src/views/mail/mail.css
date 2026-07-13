@@ -1,0 +1,312 @@
+.mail-view {
+  display: flex;
+  flex-direction: column;
+  padding: 24px 32px;
+  gap: 20px;
+  max-width: 1000px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.mail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mail-header__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.mail-header__count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+.mail-refresh-btn {
+  margin-left: auto;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-refresh-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.mail-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mail-banner {
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.mail-banner--error {
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  color: var(--color-error);
+  border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
+}
+
+/* Send form — collapsed by default behind a toggle, positioned below Messages
+   (agent-teams-hw71.6.7). */
+.mail-send-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mail-send-toggle {
+  align-self: flex-start;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-send-toggle:hover {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.mail-send-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.mail-send-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.mail-send-select,
+.mail-send-textarea {
+  font-size: 13px;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  padding: 6px 10px;
+  outline: none;
+}
+
+.mail-send-select:focus,
+.mail-send-textarea:focus {
+  border-color: var(--color-accent);
+}
+
+.mail-send-textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+}
+
+.mail-send-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mail-send-submit {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-send-submit:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.mail-send-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mail-send-result {
+  font-size: 12px;
+  color: var(--color-ok);
+  font-family: var(--font-mono);
+}
+
+.mail-send-error {
+  font-size: 12px;
+  color: var(--color-error);
+  font-family: var(--font-mono);
+}
+
+/* Messages section */
+.mail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mail-status-text {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Filter controls (agent-teams-hw71.6.1) */
+.mail-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.mail-filter-select,
+.mail-filter-text {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  padding: 5px 9px;
+  outline: none;
+}
+
+.mail-filter-select:focus,
+.mail-filter-text:focus {
+  border-color: var(--color-accent);
+}
+
+.mail-filter-text {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.mail-filter-clear {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-filter-clear:hover {
+  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);
+}
+
+.mail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.mail-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.mail-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  vertical-align: middle;
+}
+
+.mail-row {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-row:hover {
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+}
+
+/* Unread vs read — left accent + weight distinguish the two states
+   (agent-teams-hw71.4: must be visually distinguishable). */
+.mail-row--unread td:first-child {
+  border-left: 3px solid var(--color-accent);
+}
+
+.mail-row--unread {
+  font-weight: 600;
+}
+
+.mail-row--read {
+  color: var(--color-text-muted);
+}
+
+.mail-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 3px;
+}
+
+.mail-status--pending {
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
+}
+
+.mail-status--read {
+  background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
+  color: var(--color-text-muted);
+}
+
+.mail-status--acked {
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
+  color: var(--color-ok);
+}
+
+.mail-row__detail td {
+  background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface));
+}
+
+.mail-body {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px 4px;
+}

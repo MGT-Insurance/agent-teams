@@ -3,6 +3,10 @@
 // Callers surface the error in the API response — do NOT swallow.
 
 import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { parseSendOutput } from "./mail.js";
 
 export class CliError extends Error {
   constructor(
@@ -21,7 +25,7 @@ export class CliError extends Error {
 // indefinitely with no way to recover).
 const CHILD_TIMEOUT_MS = 10_000;
 
-function runCli(cmd: string, args: string[]): Promise<string> {
+function runCli(cmd: string, args: string[], timeoutMs: number = CHILD_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
@@ -32,7 +36,7 @@ function runCli(cmd: string, args: string[]): Promise<string> {
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill();
-    }, CHILD_TIMEOUT_MS);
+    }, timeoutMs);
 
     proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
     proc.stderr.on("data", (chunk: Buffer) => errChunks.push(chunk));
@@ -57,7 +61,7 @@ function runCli(cmd: string, args: string[]): Promise<string> {
             `${cmd} ${args.join(" ")}`,
             code,
             "",
-            `${cmd} timed out after ${CHILD_TIMEOUT_MS}ms and was killed`,
+            `${cmd} timed out after ${timeoutMs}ms and was killed`,
           ),
         );
         return;
@@ -82,6 +86,44 @@ function runCli(cmd: string, args: string[]): Promise<string> {
 // Returns raw JSON string from `ateam list-json`.
 export function ateamListJson(): Promise<string> {
   return runCli("ateam", ["list-json"]);
+}
+
+// Cap on messages fetched via `ateam debug-mail --json`.
+const MAIL_LIMIT = 1000;
+
+// `ateam send` blocks on liveness/resume/respawn escalation (at-00o), well past
+// the default child timeout — give it more room before we kill it.
+const SEND_TIMEOUT_MS = 30_000;
+
+// Returns raw JSON string from `ateam debug-mail --json --limit <MAIL_LIMIT>`.
+// NON-DESTRUCTIVE: reads mail without marking it read. Never call `ateam inbox`
+// here — that verb consumes/marks-read and would corrupt state for agents
+// waiting on messages.
+export function ateamDebugMailJson(): Promise<string> {
+  return runCli("ateam", ["debug-mail", "--json", "--limit", String(MAIL_LIMIT)]);
+}
+
+// Sends a mail message via `ateam send <to> --file <tmp>`, writing the body to
+// a temp file (ateam send has no inline-body flag). Returns the parsed
+// message_id/recipient from stdout. Cleans up the temp file in all cases.
+export async function ateamSend(
+  to: string,
+  body: string,
+  sender?: string,
+): Promise<{ messageId: string; recipient: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "ateam-send-"));
+  const file = join(dir, "body.txt");
+  try {
+    await writeFile(file, body, "utf8");
+    const args = ["send", to, "--file", file];
+    if (sender) {
+      args.push("--sender", sender);
+    }
+    const out = await runCli("ateam", args, SEND_TIMEOUT_MS);
+    return parseSendOutput(out);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 // Returns the ateam workspace path (single line, trimmed).
