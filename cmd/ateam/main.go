@@ -13,11 +13,15 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/transport/telegram"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
 
 func main() {
+	transport.RegisterTransport("telegram", telegram.Factory)
+	registerE2ETransports()
 	os.Exit(run(os.Args[1:]))
 }
 

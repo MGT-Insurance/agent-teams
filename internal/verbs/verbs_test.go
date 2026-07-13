@@ -25,12 +25,16 @@ var allVerbs = []string{
 	"send", "inbox",
 	// Track R
 	"route-pr-event",
+	// at-00o
+	"notify", "relay",
 	// Track S
 	"execution-status",
 	// Track A (watchers)
 	"watchers",
 	// Track C (cost)
 	"cost",
+	// at-wolk (Overseer)
+	"steward",
 }
 
 // buildParser registers all verbs onto a kong Parser and returns it.
