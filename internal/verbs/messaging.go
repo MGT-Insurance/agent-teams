@@ -156,7 +156,7 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam inbox: getwd: %w", err)
 	}
 
-	myID, err := resolveMyInitiative(ctx, cwd)
+	myID, err := resolveInboxRecipient(ctx, cwd)
 	if err != nil {
 		return nil
 	}
@@ -374,6 +374,33 @@ func resolveMyInitiative(ctx *cli.Context, cwd string) (string, error) {
 		return match.ID, nil
 	}
 	return "", fmt.Errorf("no initiative registered for worktree: %s", cwd)
+}
+
+// isStewardSession reports whether cwd is the Steward's own session
+// directory (StewardSessionDir) or a subdirectory of it, identified by the
+// contract's marker file (StewardSessionMarkerPath) existing on disk. Mirrors
+// the marker-based branch wake-watcher.sh uses to recognize the Steward's
+// session, symlink-normalised (canonicalPath) like every other cwd-vs-path
+// comparison in this package.
+func isStewardSession(ctx *cli.Context, cwd string) bool {
+	marker := StewardSessionMarkerPath(ctx)
+	if _, err := os.Stat(marker); err != nil {
+		return false
+	}
+	sessionDir := canonicalPath(filepath.Dir(marker))
+	wantCwd := canonicalPath(cwd)
+	return wantCwd == sessionDir || strings.HasPrefix(wantCwd, sessionDir+string(filepath.Separator))
+}
+
+// resolveInboxRecipient resolves the recipient id `ateam mail inbox` queries
+// and marks-read as: StewardHandle when cwd is the Steward's own session
+// (isStewardSession), otherwise the open initiative whose worktree: line
+// matches cwd (resolveMyInitiative, unchanged for every non-Steward caller).
+func resolveInboxRecipient(ctx *cli.Context, cwd string) (string, error) {
+	if isStewardSession(ctx, cwd) {
+		return StewardHandle, nil
+	}
+	return resolveMyInitiative(ctx, cwd)
 }
 
 // filterMessageType returns only issues with IssueType == "message".

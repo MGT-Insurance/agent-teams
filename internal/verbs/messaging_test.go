@@ -249,6 +249,88 @@ func TestInbox_DrainAndMark(t *testing.T) {
 	_ = stdout
 }
 
+// ── isStewardSession / resolveInboxRecipient ─────────────────────────────────
+
+func TestIsStewardSession_MarkerPresent_SessionDirAndSubdir(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+
+	sessionDir := StewardSessionDir(ctx)
+	if !isStewardSession(ctx, sessionDir) {
+		t.Errorf("expected isStewardSession true for the session dir itself: %s", sessionDir)
+	}
+	subdir := filepath.Join(sessionDir, "sub")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	if !isStewardSession(ctx, subdir) {
+		t.Errorf("expected isStewardSession true for a subdir of the session dir")
+	}
+	if isStewardSession(ctx, t.TempDir()) {
+		t.Errorf("expected isStewardSession false for an unrelated directory")
+	}
+}
+
+func TestIsStewardSession_NoMarker_ReturnsFalse(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	// No `steward init` run — marker file does not exist.
+	if isStewardSession(ctx, StewardSessionDir(ctx)) {
+		t.Error("expected isStewardSession false when no marker file exists")
+	}
+}
+
+func TestResolveInboxRecipient_StewardSession_BypassesInitiativeLookup(t *testing.T) {
+	home := t.TempDir()
+	// fakeBD errors if resolveMyInitiative's `bd list --status=open` is ever
+	// called — asserts the Steward branch short-circuits before it.
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			return fmt.Errorf("unexpected bd call in Steward-session path: %v", args)
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+
+	id, err := resolveInboxRecipient(ctx, StewardSessionDir(ctx))
+	if err != nil {
+		t.Fatalf("resolveInboxRecipient: %v", err)
+	}
+	if id != StewardHandle {
+		t.Errorf("resolveInboxRecipient = %q, want %q", id, StewardHandle)
+	}
+}
+
+func TestResolveInboxRecipient_NoMarker_FallsBackToInitiative(t *testing.T) {
+	cwd := t.TempDir()
+	myID := "at-inbox-fallback"
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			issues := []bd.Issue{{
+				ID:          myID,
+				Description: "worktree: " + cwd + "\n",
+				Status:      "open",
+			}}
+			return json.Unmarshal(mustMarshal(issues), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	id, err := resolveInboxRecipient(ctx, cwd)
+	if err != nil {
+		t.Fatalf("resolveInboxRecipient: %v", err)
+	}
+	if id != myID {
+		t.Errorf("resolveInboxRecipient = %q, want %q (existing worktree-based resolution)", id, myID)
+	}
+}
+
 func TestInbox_NoMessages_Silent(t *testing.T) {
 	cwd := t.TempDir()
 	myID := "at-no-mail"
