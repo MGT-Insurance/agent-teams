@@ -41,10 +41,10 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
-func init() {
-	transport.RegisterTransport("telegram", func(home string) (transport.Transport, error) {
-		return New(home, nil)
-	})
+// Factory constructs a Telegram transport for RegisterTransport. It satisfies
+// the transport factory signature by wrapping New with a nil http client.
+func Factory(home string) (transport.Transport, error) {
+	return New(home, nil)
 }
 
 // longPollTimeout is the getUpdates long-poll duration.

@@ -19,9 +19,9 @@
 //
 // # Registration
 //
-// The init() function registers the stub under the name "stub" using
-// transport.RegisterTransport. This file is gated by the e2e build tag, so
-// a normal `go build` / production binary does NOT include it.
+// Factory constructs the stub transport; cmd/ateam registers it under the
+// name "stub" via transport.RegisterTransport at boot, gated by the e2e
+// build tag, so a normal `go build` / production binary does NOT include it.
 package stub
 
 import (
@@ -36,14 +36,14 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
-func init() {
-	transport.RegisterTransport("stub", func(home string) (transport.Transport, error) {
-		dir := os.Getenv("AGENT_TEAMS_STUB_DIR")
-		if dir == "" {
-			return nil, fmt.Errorf("stub: AGENT_TEAMS_STUB_DIR not set")
-		}
-		return &Stub{dir: dir}, nil
-	})
+// Factory constructs the stub transport for RegisterTransport, reading its
+// directory from AGENT_TEAMS_STUB_DIR.
+func Factory(home string) (transport.Transport, error) {
+	dir := os.Getenv("AGENT_TEAMS_STUB_DIR")
+	if dir == "" {
+		return nil, fmt.Errorf("stub: AGENT_TEAMS_STUB_DIR not set")
+	}
+	return &Stub{dir: dir}, nil
 }
 
 // Stub is the loopback transport.
