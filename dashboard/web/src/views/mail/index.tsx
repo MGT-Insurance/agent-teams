@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { InitiativeNode, MailMessage } from "@agent-teams/shared";
 import { useSnapshotContext } from "../../SnapshotContext.js";
-import { fetchMail, sendMail } from "../../lib/api.js";
+import { fetchMail, sendMail, closeMail, purgeMail } from "../../lib/api.js";
 import "./mail.css";
 
 // Closed states — mirrors initiatives/index.tsx's isClosed: the send picker must
@@ -23,7 +23,8 @@ function formatDateTime(iso: string): string {
 export interface MailFilters {
   // "unread" = status === "pending"; "read" = status !== "pending" (covers
   // both "read" and "acked" — both are read from the user's perspective).
-  readState: "all" | "unread" | "read";
+  // "closed" = closed === true (bead lifecycle axis, orthogonal to status).
+  readState: "all" | "unread" | "read" | "closed";
   initiativeId: string; // "" = all
   text: string; // matched case-insensitively against subject/from/to/body
 }
@@ -33,6 +34,7 @@ export function filterMessages(messages: MailMessage[], filters: MailFilters): M
   return messages.filter((m) => {
     if (filters.readState === "unread" && m.status !== "pending") return false;
     if (filters.readState === "read" && m.status === "pending") return false;
+    if (filters.readState === "closed" && !m.closed) return false;
     if (filters.initiativeId && m.to !== filters.initiativeId) return false;
     if (text) {
       const haystack = `${m.subject} ${m.from} ${m.to} ${m.body}`.toLowerCase();
@@ -122,16 +124,22 @@ function MailRow({
   message,
   expanded,
   onToggle,
+  onClose,
+  closing,
 }: {
   message: MailMessage;
   expanded: boolean;
   onToggle: () => void;
+  onClose: () => void;
+  closing: boolean;
 }) {
   const unread = message.status === "pending";
+  // Closed rows render distinct regardless of delivery status (agent-teams-790o.4).
+  const stateClass = message.closed ? "closed" : unread ? "unread" : "read";
   return (
     <Fragment>
       <tr
-        className={`mail-row mail-row--${unread ? "unread" : "read"}`}
+        className={`mail-row mail-row--${stateClass}`}
         onClick={onToggle}
         data-testid={`mail-row-${message.id}`}
       >
@@ -140,14 +148,30 @@ function MailRow({
         <td>{message.subject}</td>
         <td>
           <span className={`mail-status mail-status--${message.status}`}>{message.status}</span>
+          {message.closed && <span className="mail-closed-badge">closed</span>}
         </td>
         <td>{formatDateTime(message.createdAt)}</td>
         <td>{message.readAt ? formatDateTime(message.readAt) : "—"}</td>
         <td>{message.readBy ?? "—"}</td>
+        <td>
+          {!message.closed && (
+            <button
+              type="button"
+              className="mail-row-close-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
+              disabled={closing}
+            >
+              {closing ? "Closing…" : "Close"}
+            </button>
+          )}
+        </td>
       </tr>
       {expanded && (
         <tr className="mail-row__detail">
-          <td colSpan={7}>
+          <td colSpan={8}>
             <pre className="mail-body">{message.body}</pre>
           </td>
         </tr>
@@ -166,6 +190,9 @@ export default function MailView() {
   const [readState, setReadState] = useState<MailFilters["readState"]>("all");
   const [initiativeFilter, setInitiativeFilter] = useState("");
   const [textFilter, setTextFilter] = useState("");
+  const [closingId, setClosingId] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     return fetchMail()
@@ -184,6 +211,35 @@ export default function MailView() {
     const interval = setInterval(() => { void load(); }, POLL_MS);
     return () => clearInterval(interval);
   }, [load]);
+
+  async function handleClose(id: string) {
+    setClosingId(id);
+    setActionError(null);
+    try {
+      await closeMail(id);
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClosingId(null);
+    }
+  }
+
+  async function handlePurge() {
+    if (!window.confirm("Purge closed mail older than 7 days? This permanently deletes it.")) {
+      return;
+    }
+    setPurging(true);
+    setActionError(null);
+    try {
+      await purgeMail({});
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPurging(false);
+    }
+  }
 
   const recipients = initiatives.filter((node) => !isClosed(node));
   // Full id -> title lookup (NOT `recipients`, which excludes closed initiatives) —
@@ -206,6 +262,14 @@ export default function MailView() {
         )}
         <button
           type="button"
+          className="mail-purge-btn"
+          onClick={() => { void handlePurge(); }}
+          disabled={purging}
+        >
+          {purging ? "Purging…" : "Purge closed"}
+        </button>
+        <button
+          type="button"
           className="mail-refresh-btn"
           onClick={() => { void load(); }}
           disabled={loading}
@@ -216,6 +280,9 @@ export default function MailView() {
 
       {fetchError && (
         <div className="mail-banner mail-banner--error">Failed to load mail: {fetchError}</div>
+      )}
+      {actionError && (
+        <div className="mail-banner mail-banner--error">{actionError}</div>
       )}
 
       <section className="mail-section">
@@ -231,6 +298,7 @@ export default function MailView() {
               <option value="all">All</option>
               <option value="unread">Unread</option>
               <option value="read">Read</option>
+              <option value="closed">Closed</option>
             </select>
             <select
               className="mail-filter-select"
@@ -286,6 +354,7 @@ export default function MailView() {
                 <th>Created</th>
                 <th>Read At</th>
                 <th>Read By</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -295,6 +364,8 @@ export default function MailView() {
                   message={m}
                   expanded={expandedId === m.id}
                   onToggle={() => setExpandedId((cur) => (cur === m.id ? null : m.id))}
+                  onClose={() => { void handleClose(m.id); }}
+                  closing={closingId === m.id}
                 />
               ))}
             </tbody>

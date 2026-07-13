@@ -7,8 +7,10 @@
 //   POST /api/initiatives/:id/attach          -> { ok: true } (macOS terminal)
 //   POST /api/initiatives/:id/stop-session    -> { ok: true } (shells claude stop)
 //   POST /api/initiatives/:id/launch-session  -> { ok: true } | { error }
-//   GET  /api/mail                            -> MailListResponse (shells `ateam debug-mail --json`)
-//   POST /api/mail/send                       -> MailSendResponse | { error } (shells `ateam send`)
+//   GET  /api/mail                            -> MailListResponse (shells `ateam mail list --json`)
+//   POST /api/mail/send                       -> MailSendResponse | { error } (shells `ateam mail send`)
+//   POST /api/mail/:id/close                  -> { ok: true } | { error } (shells `ateam mail close`)
+//   POST /api/mail/purge                      -> MailPurgeResponse | { error } (shells `ateam mail purge`)
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -21,7 +23,7 @@ import { existsSync } from "node:fs";
 import { join, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { DrillInDetail, WorkBead, MailSendRequest } from "@agent-teams/shared";
+import type { DrillInDetail, WorkBead, MailSendRequest, MailPurgeRequest } from "@agent-teams/shared";
 import {
   CliError,
   claudeAgentsJson,
@@ -29,6 +31,8 @@ import {
   spawnClaudeLogs,
   ateamDebugMailJson,
   ateamSend,
+  ateamMailClose,
+  ateamMailPurge,
 } from "./cli.js";
 import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
@@ -387,8 +391,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   // GET /api/mail
-  // NON-DESTRUCTIVE: shells `ateam debug-mail --json` ONLY. Never `ateam inbox`
-  // — that verb consumes/marks-read and would corrupt state for agents
+  // NON-DESTRUCTIVE: shells `ateam mail list --json` ONLY. Never `ateam mail
+  // inbox` — that verb consumes/marks-read and would corrupt state for agents
   // waiting on messages.
   if (method === "GET" && path === "/api/mail") {
     try {
@@ -448,6 +452,62 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     try {
       const result = await ateamSend(to, messageBody, sender);
       json(res, 200, { ok: true, messageId: result.messageId, recipient: result.recipient });
+    } catch (err) {
+      json(res, 502, {
+        error: err instanceof CliError ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // POST /api/mail/:id/close
+  const mailCloseMatch = /^\/api\/mail\/([^/]+)\/close$/.exec(path);
+  if (method === "POST" && mailCloseMatch) {
+    const id = decodeURIComponent(mailCloseMatch[1] ?? "");
+    if (!/^[\w-]+$/.test(id) || id.length > 100) {
+      json(res, 400, { error: "invalid message id" });
+      return;
+    }
+    try {
+      await ateamMailClose(id);
+      json(res, 200, { ok: true });
+    } catch (err) {
+      json(res, 502, {
+        error: err instanceof CliError ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // POST /api/mail/purge
+  if (method === "POST" && path === "/api/mail/purge") {
+    let body: string;
+    try {
+      body = await parseBody(req);
+    } catch (err) {
+      const status = (err as { code?: number }).code === 413 ? 413 : 400;
+      json(res, status, { error: status === 413 ? "request body too large" : "could not read request body" });
+      return;
+    }
+
+    let olderThan: string | undefined;
+    let dryRun: boolean | undefined;
+    try {
+      const parsed: unknown = body.trim() === "" ? {} : JSON.parse(body);
+      if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("body must be an object");
+      }
+      const purgeReq = parsed as MailPurgeRequest;
+      olderThan = typeof purgeReq.olderThan === "string" ? purgeReq.olderThan : undefined;
+      dryRun = typeof purgeReq.dryRun === "boolean" ? purgeReq.dryRun : undefined;
+    } catch {
+      json(res, 400, { error: "body must be { olderThan?: string, dryRun?: boolean }" });
+      return;
+    }
+
+    try {
+      const output = await ateamMailPurge({ olderThan, dryRun });
+      json(res, 200, { ok: true, output });
     } catch (err) {
       json(res, 502, {
         error: err instanceof CliError ? err.message : String(err),
