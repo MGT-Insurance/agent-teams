@@ -52,7 +52,7 @@ Otherwise, search for an OPEN initiative whose `worktree:` matches cwd: `ateam r
   - **No closed match either -> ask the human for a problem statement.**
 - Either way: append a session note (`session N, <date>, interactive|bg`).
 
-**Ensure-epic step (runs after initiative id is resolved, before Phase 2).** Read the `epic:` field from `ateam show <id>` → `EPIC_ID`; thread `EPIC_ID` into every subsequent agent spawn prompt (agents file all work beads under `--parent <EPIC_ID>`). If absent (legacy initiative predating at-e3m), create and record the root epic first — exact command sequence: references/registry.md ("Epic invariant").
+**Ensure-epic step (runs after initiative id is resolved, before Phase 2).** Read the `epic:` field from `ateam show <id>` → `EPIC_ID`; thread `EPIC_ID` into every subsequent agent spawn prompt (agents file all work beads under `--parent <EPIC_ID>`). If absent (legacy initiative predating at-e3m), create and record the root epic first — exact command sequence: references/registry.md ("DRI ensure-epic step, legacy branch").
 
 **Standby check (runs immediately after the ensure-epic step, before Phase 2 Clarify).** No-op for most initiatives — only initiatives dispatched with `--standby` carry the `standby:` field. Read via `ateam show <id>` and apply the frozen reader rule verbatim (full text + rationale: references/registry.md, "Standby field"): active iff `standby: true` is present **AND** neither the description nor its notes contain `standby: released`.
 
