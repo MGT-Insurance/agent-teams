@@ -34,6 +34,8 @@ Rules (both the writer and every reader copy these verbatim):
 
 **Epic invariant (at-e3m):** every new initiative has a root epic bead in the project repo. `ateam register` auto-creates this epic (via `bd -C <repo> create --type=epic`) and writes its id as the `epic:` line in the description. All work beads filed by the DRI, planner, and role agents must use `--parent <epicId>` so they live under the initiative's subtree. Multiple ring/phase epics are permitted — they are children of the root epic. Bare (unparented) work beads are acceptable only in trivial one-off cases. The `epic:` field is also written to initiative notes by the DRI ensure-epic step when absent (legacy initiatives). The dashboard reads `epic:` to filter the drill-in work-bead list to just this initiative's subtree.
 
+**DRI ensure-epic step, legacy branch (initiative registered before at-e3m, `epic:` field absent from `ateam show <id>`):** (1) in the project repo, create the root epic — `bd create --type=epic --title="<initiative title>" --priority=2 --json` — and capture the epic id from the JSON output; (2) record it in the initiative registry — `printf 'epic: <epicId>\n' > /tmp/epic-note.txt && ateam note <initiativeId> --file /tmp/epic-note.txt`; (3) use that epic id as `EPIC_ID` for all subsequent spawn prompts in this session.
+
 ## Commands
 
 Write the body to a temp file first (avoids the newline-# safety prompt), then:
