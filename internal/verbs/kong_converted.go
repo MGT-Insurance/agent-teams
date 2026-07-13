@@ -884,7 +884,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	})
 	p.AddVerb("note", "Add a note to an initiative.", &noteKong{})
 	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{
-		notify:  notifyForGate,
+		notify:  notifyToSteward,
 		enabled: transport.Enabled,
 	})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
@@ -916,4 +916,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterReapOrphansKong(p)
 	RegisterNotifyKong(p)
 	RegisterRelayKong(p)
+	RegisterStewardKong(p)
 }
