@@ -104,7 +104,7 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 
 1. If the tester's worktree does not yet have live env provisioned, run `ateam worktree-setup <tester-worktree-path>` first.
 2. Spawn an `agent-teams:tester` agent with explicit instructions to perform live verification of the loop-closing feature on the integration branch. Specify the verification type based on what changed:
-   - **Web/UI changes:** Playwright MCP is REQUIRED — the tester must drive the real UI.
+   - **Web/UI changes:** `npx @playwright/cli` is REQUIRED — the tester must drive the real UI.
    - **API changes:** hit the endpoint and verify the response body.
    - **CLI changes:** run the command and verify the output.
 3. The tester reports pass or fail with evidence (screenshot, response body, or command output).
