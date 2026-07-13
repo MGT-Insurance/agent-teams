@@ -3,7 +3,7 @@
   "archetype": "webapp-bugfix",
   "runShape": "implement",
   "fixtureRepo": "webapp-medium",
-  "fixtureRef": "v0-bug-1",
+  "fixtureRef": "v1-bug-1",
   "problem": "Users report that in TaskFlow, selecting any project on the dashboard always shows \"No tasks found\" in the task list, even for projects that clearly have tasks (e.g. the 'Website Redesign' project has 3 seeded tasks). The status filter dropdown also never returns results, and every project's completion/progress stat shows 0% regardless of how many tasks are actually done. Diagnose the root cause and fix it so project task lists, filters, and stats reflect the real data, without breaking project creation, task creation, task updates, or task deletion.",
   "acceptanceCriteria": [
     "GET /api/projects/1/tasks returns all 3 seeded tasks for project 1, not an empty array",

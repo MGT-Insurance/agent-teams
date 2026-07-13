@@ -111,6 +111,13 @@ to `~/.agent-teams-eval-fixtures/`), and may be:
 Fixture repos themselves live **outside** this repo — `fixtureRepo` must
 never point inside `agent-teams`.
 
+`webapp-bugfix-1`'s fixture baseline originally carried an undetected
+frontend refetch-loop defect (grft.17) that made it a two-defect task,
+contaminating seeded-bug isolation. That's fixed: `fixtureRef` now points to
+`v1-bug-1` (the loop-fixed `v1-baseline` plus the same seeded project-filter
+bug). No real runs had been pushed to Langfuse under this id yet, so it was
+repointed in place rather than versioned.
+
 ## Langfuse push is optional
 
 `eval collect` only pushes to Langfuse if `LANGFUSE_HOST`,
