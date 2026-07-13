@@ -22,6 +22,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/cost"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
 // ── reopen (trivial positional) ───────────────────────────────────────────────
@@ -177,6 +178,16 @@ func (c *noteKong) Run(ctx *cli.Context) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
+// gateNotifyFunc is called after gate labels are set to ping the human.
+// Injected so tests can verify invocations and simulate failures without a
+// real transport. nil means skip notify (zero-value gateKong, test usage).
+type gateNotifyFunc func(ctx *cli.Context, id, file string) error
+
+// gateEnabledFunc reports whether the active transport is configured and
+// usable. Injected so tests can control the Enabled result without touching
+// env / config files. nil is treated as "not enabled" (zero-value gateKong).
+type gateEnabledFunc func(home string) bool
+
 // gateKong is the kong-converted form of gate.
 // Two mutually-exclusive entry paths: prose (--file) vs structured
 // (--decision + optional companions). xor:"gateform" is placed only on
@@ -204,6 +215,16 @@ type gateKong struct {
 
 	// Kind applies to both forms.
 	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`
+
+	// notify is called after labels are set to ping the human via transport.
+	// Best-effort: a failure warns to stderr but does not fail the gate.
+	// nil means skip (zero-value struct, test usage without a notify hook).
+	notify gateNotifyFunc `kong:"-"`
+
+	// enabled reports whether a transport is configured. Checked before
+	// notifying; if false, notify is skipped silently (no warning). nil is
+	// treated as not-enabled.
+	enabled gateEnabledFunc `kong:"-"`
 }
 
 // Validate enforces constraints not expressible as tags:
@@ -298,7 +319,49 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	return runErr
+	if runErr != nil {
+		return runErr
+	}
+
+	// Best-effort phone ping: fire the notify path so the human is pinged
+	// with the gate question. Only runs when messaging is configured
+	// (enabled); if not configured, skip silently — no warning, no behavior
+	// change. A Send failure after a successful Enabled check warns to
+	// stderr but stays non-fatal to the gate.
+	//
+	// For structured-ask gates, send the human-readable form (buildAskMessage)
+	// rather than the raw sentinel block. The bead note (noteFile) is
+	// unchanged — only the phone body differs. This is lazy: the temp file
+	// is built only inside the enabled branch to stay zero-footprint when
+	// messaging is off.
+	if c.notify != nil && c.enabled != nil && c.enabled(ctx.Home) {
+		notifyFile := noteFile
+		if structuredUsed {
+			ask := &gateAsk{
+				decision:       c.Decision,
+				recommendation: c.Recommendation,
+				alternative:    c.Alternative,
+				contextFile:    c.ContextFile,
+			}
+			msg := buildAskMessage(ask)
+			if tmp, tmpErr := os.CreateTemp("", "ateam-gate-notify-*"); tmpErr == nil {
+				tmpNotifyPath := tmp.Name()
+				if _, writeErr := tmp.WriteString(msg); writeErr == nil {
+					tmp.Close()
+					notifyFile = tmpNotifyPath
+					defer os.Remove(tmpNotifyPath)
+				} else {
+					tmp.Close()
+					os.Remove(tmpNotifyPath)
+				}
+			}
+			// On any temp-file failure, fall back to noteFile (sentinel block).
+		}
+		if notifyErr := c.notify(ctx, c.ID, notifyFile); notifyErr != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
+		}
+	}
+	return nil
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────
@@ -820,7 +883,10 @@ func RegisterWriteKong(p *cli.Parser) {
 		createEpic: createEpicInRepo,
 	})
 	p.AddVerb("note", "Add a note to an initiative.", &noteKong{})
-	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{})
+	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{
+		notify:  notifyForGate,
+		enabled: transport.Enabled,
+	})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
 	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})
 	p.AddVerb("close", "Close an initiative.", &closeKong{
@@ -848,4 +914,6 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterStatusKong(p)
 	RegisterWatchersKong(p)
 	RegisterReapOrphansKong(p)
+	RegisterNotifyKong(p)
+	RegisterRelayKong(p)
 }

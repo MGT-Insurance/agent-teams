@@ -19,6 +19,25 @@ type gateAsk struct {
 	contextFile    string
 }
 
+// buildAskMessage renders a clean human-readable plain-text body for a phone
+// transport from a structured gateAsk. Sentinel markers are not included —
+// this is the human-facing form only (bead notes use buildAskBlock instead).
+// Context is appended best-effort: a read error is silently ignored because
+// buildAskBlock already validated the file path earlier in gateKong.Run.
+func buildAskMessage(ask *gateAsk) string {
+	var b strings.Builder
+	b.WriteString(ask.decision + "\n\n")
+	b.WriteString("Recommended: " + ask.recommendation + "\n")
+	b.WriteString("Alternative: " + ask.alternative)
+	if ask.contextFile != "" {
+		data, err := os.ReadFile(ask.contextFile)
+		if err == nil {
+			b.WriteString("\nContext: " + strings.TrimRight(string(data), "\n"))
+		}
+	}
+	return b.String()
+}
+
 // buildAskBlock serializes a gateAsk into the sentinel-delimited format from
 // contract j9s section 2. The context field may be empty.
 func buildAskBlock(ask *gateAsk) (string, error) {
