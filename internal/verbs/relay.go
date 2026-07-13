@@ -25,9 +25,11 @@ type relayTransportForFunc func(home string) (transport.Transport, error)
 // Injected so tests can substitute a fake.
 type relayBDQueryFunc func(home, label string) ([]bd.Issue, error)
 
-// relaySendFunc execs `ateam send <id> --file <tmp> --sender human`.
-// Injected so tests can capture calls without running a subprocess.
-type relaySendFunc func(ctx *cli.Context, id, file string) error
+// relaySendFunc execs `ateam mail send steward --file <tmp> --sender human`.
+// The destination is always the Steward (StewardHandle); the mapped
+// initiative id travels inside the envelope written to file, not as a CLI
+// arg. Injected so tests can capture calls without running a subprocess.
+type relaySendFunc func(ctx *cli.Context, file string) error
 
 // defaultBDQuery runs `bd list --status=open --label=<label> --json` against
 // the global workspace home and returns matching issues.
@@ -40,10 +42,12 @@ func defaultBDQuery(home, label string) ([]bd.Issue, error) {
 	return issues, nil
 }
 
-// defaultRelaySend execs `ateam send <id> --file <file> --sender human` as a
-// subprocess so the relay loop is not blocked by the in-process send machinery.
-func defaultRelaySend(_ *cli.Context, id, file string) error {
-	cmd := exec.Command("ateam", "send", id, "--file", file, "--sender", "human")
+// defaultRelaySend execs `ateam mail send steward --file <file> --sender
+// human` as a subprocess so the relay loop is not blocked by the in-process
+// send machinery. The Steward is always the recipient; it reads the mapped
+// initiative id out of the reply envelope already written to file.
+func defaultRelaySend(_ *cli.Context, file string) error {
+	cmd := exec.Command("ateam", "mail", "send", StewardHandle, "--file", file, "--sender", "human")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -51,7 +55,7 @@ func defaultRelaySend(_ *cli.Context, id, file string) error {
 
 // RegisterRelayKong registers the relay verb onto p using a native kong struct.
 func RegisterRelayKong(p *cli.Parser) {
-	p.AddVerb("relay", "Long-poll the configured transport and relay human replies into ateam send.", &relayKong{
+	p.AddVerb("relay", "Long-poll the configured transport and relay human replies to the Steward.", &relayKong{
 		enabled:      transport.Enabled,
 		transportFor: transport.For,
 		bdQuery:      defaultBDQuery,
@@ -129,7 +133,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: no open initiative found for label %q — skipping\n", label)
 		return nil
 	case 1:
-		// Exactly one match — hand off to ateam send.
+		// Exactly one match — hand off to the Steward.
 	default:
 		fmt.Fprintf(ctx.Stderr, "ateam relay: ambiguous: %d open initiatives carry label %q — skipping\n", len(open), label)
 		return nil
@@ -137,14 +141,20 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	id := open[0].ID
 
-	// Write reply text to a temp file so ateam send can read it via --file.
+	envelope, err := BuildStewardReplyEnvelope(id, reply.Text)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward reply envelope for %s: %v — skipping\n", id, err)
+		return nil
+	}
+
+	// Write the envelope to a temp file so ateam mail send can read it via --file.
 	tmp, err := os.CreateTemp("", "ateam-relay-reply-*")
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: create temp file: %v — skipping\n", err)
 		return nil
 	}
 	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(reply.Text); err != nil {
+	if _, err := tmp.WriteString(envelope); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
 		fmt.Fprintf(ctx.Stderr, "ateam relay: write temp file: %v — skipping\n", err)
@@ -153,8 +163,8 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	tmp.Close()
 	defer os.Remove(tmpPath)
 
-	if err := c.send(ctx, id, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam send %s failed: %v — skipping\n", id, err)
+	if err := c.send(ctx, tmpPath); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (initiative %s): %v — skipping\n", StewardHandle, id, err)
 	}
 	return nil
 }

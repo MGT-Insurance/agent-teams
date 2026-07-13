@@ -3,6 +3,7 @@ package verbs
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -55,15 +56,38 @@ func (f *fakeBDQuery) query(_, label string) ([]bd.Issue, error) {
 	return f.results[label], nil
 }
 
-// fakeSend records the calls and can return an error.
+// fakeSend records the calls and can return an error. Since the destination
+// is now always the Steward, there is no per-call recipient id to capture —
+// the mapped initiative id instead travels inside the file's envelope.
+// handleReply removes the temp file via defer right after send returns, so
+// send must parse the envelope synchronously (while the file still exists)
+// rather than leaving that to the caller after Run returns.
 type fakeSend struct {
-	calls []struct{ id, file string }
-	err   error
+	calls     []string               // file paths, in call order
+	envelopes []StewardReplyEnvelope // parsed envelope, captured at call time
+	err       error
 }
 
-func (f *fakeSend) send(_ *cli.Context, id, file string) error {
-	f.calls = append(f.calls, struct{ id, file string }{id, file})
+func (f *fakeSend) send(_ *cli.Context, file string) error {
+	f.calls = append(f.calls, file)
+	f.envelopes = append(f.envelopes, parseEnvelopeFile(file))
 	return f.err
+}
+
+// parseEnvelopeFile reads and parses the Relay→Steward envelope written to
+// file. Panics on failure — in these tests the file is always written by
+// handleReply just before send is called, so a read or parse failure here
+// means the fake was misused, not that the code under test misbehaved.
+func parseEnvelopeFile(file string) StewardReplyEnvelope {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		panic(fmt.Sprintf("parseEnvelopeFile: read %q: %v", file, err))
+	}
+	env, ok := ParseStewardReplyEnvelope(string(data))
+	if !ok {
+		panic(fmt.Sprintf("parseEnvelopeFile: %q is not a well-formed steward-reply envelope: %q", file, data))
+	}
+	return env
 }
 
 // newRelayCtx builds a cli.Context with captured stdout/stderr buffers.
@@ -124,8 +148,9 @@ func TestRelay_EnabledFalse_NoStderrNoise(t *testing.T) {
 // ── handler: mapped thread → ateam send ───────────────────────────────────────
 
 // TestRelay_MappedThread_SendCalled verifies that a reply with a known
-// thread ref triggers ateam send with the right initiative id and a non-empty
-// temp file path.
+// thread ref triggers ateam mail send with a non-empty temp file path whose
+// contents are a steward-reply envelope carrying the mapped initiative id
+// and Eric's reply text as the body.
 func TestRelay_MappedThread_SendCalled(t *testing.T) {
 	bdq := newFakeBDQuery()
 	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
@@ -148,11 +173,15 @@ func TestRelay_MappedThread_SendCalled(t *testing.T) {
 	if len(fs.calls) != 1 {
 		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
 	}
-	if fs.calls[0].id != "at-001" {
-		t.Errorf("send id = %q, want at-001", fs.calls[0].id)
+	if fs.calls[0] == "" {
+		t.Fatal("send file must be non-empty")
 	}
-	if fs.calls[0].file == "" {
-		t.Error("send file must be non-empty")
+	env := fs.envelopes[0]
+	if env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+	if env.Body != "looks good" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "looks good")
 	}
 }
 
@@ -250,10 +279,12 @@ func TestRelay_BadReplyDoesNotAbort(t *testing.T) {
 
 	callCount := 0
 	fs := &fakeSend{}
-	sendFn := func(ctx *cli.Context, id, file string) error {
+	sendFn := func(ctx *cli.Context, file string) error {
 		callCount++
-		fs.calls = append(fs.calls, struct{ id, file string }{id, file})
-		if id == "at-001" {
+		env := parseEnvelopeFile(file)
+		fs.calls = append(fs.calls, file)
+		fs.envelopes = append(fs.envelopes, env)
+		if env.InitiativeID == "at-001" {
 			return fmt.Errorf("send failed")
 		}
 		return nil
@@ -280,10 +311,10 @@ func TestRelay_BadReplyDoesNotAbort(t *testing.T) {
 		t.Errorf("expected send called 2 times (both replies processed), got %d", callCount)
 	}
 	// First reply failed; second succeeded.
-	if fs.calls[1].id != "at-002" {
-		t.Errorf("second send id = %q, want at-002", fs.calls[1].id)
+	if fs.envelopes[1].InitiativeID != "at-002" {
+		t.Errorf("second send envelope InitiativeID = %q, want at-002", fs.envelopes[1].InitiativeID)
 	}
-	if !strings.Contains(relayStderr(ctx), "ateam send at-001 failed") {
+	if !strings.Contains(relayStderr(ctx), "ateam mail send steward failed (initiative at-001)") {
 		t.Errorf("expected send failure log for at-001, stderr: %q", relayStderr(ctx))
 	}
 }
@@ -313,7 +344,10 @@ func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("bd error must not abort loop, got: %v", err)
 	}
-	if len(fs.calls) != 1 || fs.calls[0].id != "at-006" {
-		t.Errorf("expected exactly 1 send for at-006, got %v", fs.calls)
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call, got %d", len(fs.calls))
+	}
+	if got := fs.envelopes[0].InitiativeID; got != "at-006" {
+		t.Errorf("expected envelope InitiativeID at-006, got %q", got)
 	}
 }
