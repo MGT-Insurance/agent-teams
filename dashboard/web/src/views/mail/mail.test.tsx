@@ -17,12 +17,17 @@ vi.mock("../../SnapshotContext.js", () => ({
   useSnapshotContext: () => mockState,
 }));
 
-// api is mocked so tests control fetchMail/sendMail directly (agent-teams-hw71.4).
+// api is mocked so tests control fetchMail/sendMail/closeMail/purgeMail directly
+// (agent-teams-hw71.4, agent-teams-790o.4).
 const mockFetchMail = vi.hoisted(() => vi.fn());
 const mockSendMail = vi.hoisted(() => vi.fn());
+const mockCloseMail = vi.hoisted(() => vi.fn());
+const mockPurgeMail = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/api.js", () => ({
   fetchMail: mockFetchMail,
   sendMail: mockSendMail,
+  closeMail: mockCloseMail,
+  purgeMail: mockPurgeMail,
 }));
 
 import MailView, { filterMessages, type MailFilters } from "./index.js";
@@ -87,6 +92,7 @@ const unreadMessage: MailMessage = {
   readAt: null,
   readBy: null,
   thread: null,
+  closed: false,
 };
 
 const readMessage: MailMessage = {
@@ -100,6 +106,7 @@ const readMessage: MailMessage = {
   readAt: "2026-07-09T09:05:00Z",
   readBy: "Eric",
   thread: null,
+  closed: false,
 };
 
 // "Read" filter state must cover BOTH non-pending statuses — "read" and "acked".
@@ -114,11 +121,29 @@ const ackedMessage: MailMessage = {
   readAt: "2026-07-08T08:05:00Z",
   readBy: "Eric",
   thread: null,
+  closed: false,
+};
+
+// Closed message — bead lifecycle axis, orthogonal to delivery `status`.
+const closedMessage: MailMessage = {
+  id: "msg-4",
+  to: "init-1",
+  from: "reviewer",
+  subject: "message from reviewer",
+  body: "Reviewed and closed.",
+  status: "acked",
+  createdAt: "2026-07-11T11:00:00Z",
+  readAt: "2026-07-11T11:05:00Z",
+  readBy: "Eric",
+  thread: null,
+  closed: true,
 };
 
 beforeEach(() => {
   mockFetchMail.mockReset();
   mockSendMail.mockReset();
+  mockCloseMail.mockReset();
+  mockPurgeMail.mockReset();
   mockFetchMail.mockResolvedValue({ messages: [unreadMessage, readMessage] });
   mockState.initiatives = [
     makeNode({ id: "init-1", title: "Open Initiative", status: "open" }),
@@ -347,5 +372,56 @@ describe("filterMessages (unit)", () => {
   it("returns all messages when no filters are active", () => {
     const result = filterMessages([unreadMessage, readMessage], base);
     expect(result).toEqual([unreadMessage, readMessage]);
+  });
+
+  it("readState='closed' keeps only closed===true messages", () => {
+    const result = filterMessages([unreadMessage, readMessage, closedMessage], { ...base, readState: "closed" });
+    expect(result).toEqual([closedMessage]);
+  });
+});
+
+describe("MailView — close/purge actions (agent-teams-790o.4)", () => {
+  it("renders a Close button only on open rows, and a closed badge on closed rows", async () => {
+    mockFetchMail.mockResolvedValue({ messages: [unreadMessage, closedMessage] });
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(2));
+
+    expect(container.querySelectorAll(".mail-row-close-btn")).toHaveLength(1);
+    expect(container.querySelector(".mail-closed-badge")).toBeTruthy();
+    expect(container.querySelector(".mail-row--closed")).toBeTruthy();
+  });
+
+  it("clicking Close calls closeMail with the message id and reloads", async () => {
+    mockFetchMail.mockResolvedValue({ messages: [unreadMessage] });
+    mockCloseMail.mockResolvedValue(undefined);
+    const { container } = renderMail();
+    await waitFor(() => expect(container.querySelectorAll(".mail-row")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /^close$/i }));
+
+    await waitFor(() => expect(mockCloseMail).toHaveBeenCalledWith("msg-1"));
+    await waitFor(() => expect(mockFetchMail).toHaveBeenCalledTimes(2));
+  });
+
+  it("Purge closed asks for confirmation and does nothing if declined", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderMail();
+    await waitFor(() => expect(mockFetchMail).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: /purge closed/i }));
+
+    expect(mockPurgeMail).not.toHaveBeenCalled();
+  });
+
+  it("Purge closed calls purgeMail and reloads when confirmed", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mockPurgeMail.mockResolvedValue({ ok: true });
+    renderMail();
+    await waitFor(() => expect(mockFetchMail).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /purge closed/i }));
+
+    await waitFor(() => expect(mockPurgeMail).toHaveBeenCalledWith({}));
+    await waitFor(() => expect(mockFetchMail).toHaveBeenCalledTimes(2));
   });
 });

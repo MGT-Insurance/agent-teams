@@ -57,9 +57,9 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 
 	switch {
 	case result.How == MatchPRField || result.How == MatchBranch:
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via send\n",
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via mail send\n",
 			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
-		if err := c.runner("send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd"); err != nil {
+		if err := c.runner("mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd"); err != nil {
 			return fmt.Errorf("ateam route-pr-event: send: %w", err)
 		}
 		return nil

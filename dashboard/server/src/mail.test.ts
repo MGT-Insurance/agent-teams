@@ -15,6 +15,7 @@ describe("normalizeMailJson", () => {
         readAt: "2026-07-12T00:05:00Z",
         readBy: "impl-hw71-3",
         thread: "thread-1",
+        closed: true,
       },
     ]);
 
@@ -30,6 +31,7 @@ describe("normalizeMailJson", () => {
         readAt: "2026-07-12T00:05:00Z",
         readBy: "impl-hw71-3",
         thread: "thread-1",
+        closed: true,
       },
     ]);
   });
@@ -49,8 +51,14 @@ describe("normalizeMailJson", () => {
         readAt: null,
         readBy: null,
         thread: null,
+        closed: false,
       },
     ]);
+  });
+
+  it("coerces a non-boolean closed field to false", () => {
+    const raw = JSON.stringify([{ id: "at-bad-closed", to: "at-target", closed: "yes" }]);
+    expect(normalizeMailJson(raw)[0]!.closed).toBe(false);
   });
 
   it("returns an empty array for an empty mailbox", () => {

@@ -6,6 +6,8 @@ import type {
   MailListResponse,
   MailSendRequest,
   MailSendResponse,
+  MailPurgeRequest,
+  MailPurgeResponse,
 } from "@agent-teams/shared";
 import { API_PATHS } from "@agent-teams/shared";
 
@@ -87,4 +89,29 @@ export async function sendMail(req: MailSendRequest): Promise<MailSendResponse> 
     throw new Error(body.error ?? `POST ${API_PATHS.mailSend} failed: ${res.status}`);
   }
   return body as MailSendResponse;
+}
+
+// POST /api/mail/:id/close — close a mail message's bead. Throws with the
+// server's error message on failure so the caller can surface it.
+export async function closeMail(id: string): Promise<void> {
+  const url = API_PATHS.mailClose(id);
+  const res = await fetch(url, { method: "POST" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `POST ${url} failed: ${res.status}`);
+  }
+}
+
+// POST /api/mail/purge — purge closed mail older than the given cutoff.
+export async function purgeMail(req: MailPurgeRequest): Promise<MailPurgeResponse> {
+  const res = await fetch(API_PATHS.mailPurge, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  const body = (await res.json()) as Partial<MailPurgeResponse> & { error?: string };
+  if (!res.ok) {
+    throw new Error(body.error ?? `POST ${API_PATHS.mailPurge} failed: ${res.status}`);
+  }
+  return body as MailPurgeResponse;
 }
