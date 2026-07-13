@@ -232,6 +232,20 @@ func TestInbox_DrainAndMark(t *testing.T) {
 		t.Errorf("delivery-acked-at: label not added; added: %v", addedLabels)
 	}
 
+	// markMessageRead must close the message bead (auto-close-on-read) —
+	// regression guard: a future refactor dropping or reordering this call
+	// should fail here, not just silently stop closing messages.
+	closeCalled := false
+	for _, call := range labelCalls {
+		if len(call) == 2 && call[0] == "close" && call[1] == "at-wisp-m1" {
+			closeCalled = true
+			break
+		}
+	}
+	if !closeCalled {
+		t.Errorf("expected close call for at-wisp-m1; calls: %v", labelCalls)
+	}
+
 	_ = stdout
 }
 
