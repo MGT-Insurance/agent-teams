@@ -8,8 +8,10 @@
 #   inject a human reply through the stub
 #     -> ateam relay
 #     -> reverse-maps thread:<ref> to initiative
-#     -> exec ateam send <id> --sender human
-#   ateam inbox (from initiative worktree)
+#     -> wraps the reply in a steward-reply envelope, exec
+#        `ateam mail send steward --sender human` (post-Track-C routing —
+#        replies go to the Steward mailbox, not straight to the initiative)
+#   ateam mail inbox (from the steward session dir)
 #     -> shows the human reply
 #
 # Also asserts the opt-in / no-op path:
@@ -187,23 +189,40 @@ echo "$relay_out" | grep -q "starting on transport" \
 
 echo "case5 PASS: relay processed reply, file consumed, no session spawned"
 
-# ── Case 6: ateam inbox (from initiative worktree) shows the human reply ─────
-# inbox resolves initiative via cwd matching worktree: line.
-inbox_out=$(cd "$INITIATIVE_WT" && ateam inbox 2>&1)
-echo "inbox output: $inbox_out"
+# ── Case 6: relay routed the reply to steward, not the initiative directly ──
+# Track C (910988d) changed relay's routing: the human reply is now wrapped
+# in a steward-reply envelope and delivered to the steward mailbox
+# (`ateam mail send steward --sender human`), not straight to the
+# initiative's inbox. Mirrors tests/steward-loop.test.sh's case5 assertions.
+reply_msgs=$(bd -C "$AGENT_TEAMS_HOME" list --include-infra --assignee=steward --status=open --json)
+reply_msg_count=$(echo "$reply_msgs" | jq 'length')
+[ "$reply_msg_count" = "1" ] \
+  || { echo "FAIL case6: expected 1 open message bead assigned to steward, got $reply_msg_count (raw: $reply_msgs)"; exit 1; }
 
-echo "$inbox_out" | grep -q "$reply_text" \
-  || { echo "FAIL case6: inbox did not show reply text '$reply_text' (got: '$inbox_out')"; exit 1; }
+reply_msg_body=$(echo "$reply_msgs" | jq -r '.[0].description')
+echo "$reply_msg_body" | grep -qF "<<<steward-reply initiative:$init_id>>>" \
+  || { echo "FAIL case6: message body missing steward-reply envelope header (got: '$reply_msg_body')"; exit 1; }
+echo "$reply_msg_body" | grep -qF "$reply_text" \
+  || { echo "FAIL case6: message body missing reply text '$reply_text' (got: '$reply_msg_body')"; exit 1; }
+
+echo "case6 PASS: relay routed the reply into a steward-reply envelope for $init_id"
+
+# ── Case 7: steward drains the reply → marked read, no duplication ──────────
+# Adapted from the pre-Track-C flow (which drained the initiative's own
+# inbox): the reply now lands in the steward mailbox, so draining happens
+# from the steward session dir instead.
+steward_dir=$(ateam steward init)
+inbox_out=$(cd "$steward_dir" && ateam mail inbox 2>&1)
+echo "$inbox_out" | grep -qF "$reply_text" \
+  || { echo "FAIL case7: steward inbox did not show reply text '$reply_text' (got: '$inbox_out')"; exit 1; }
 echo "$inbox_out" | grep -qi "from: human" \
-  || { echo "FAIL case6: inbox did not show sender 'human' (got: '$inbox_out')"; exit 1; }
+  || { echo "FAIL case7: steward inbox did not show sender 'human' (got: '$inbox_out')"; exit 1; }
 
-echo "case6 PASS: inbox shows the human reply — LOOP CLOSED"
-
-# ── Case 7: second inbox call → messages marked read, no duplication ─────────
-inbox2_out=$(cd "$INITIATIVE_WT" && ateam inbox 2>&1)
+inbox2_out=$(cd "$steward_dir" && ateam mail inbox 2>&1)
 echo "$inbox2_out" | grep -q "no unread mail" \
-  || { echo "FAIL case7: second inbox call did not return 'no unread mail' (got: '$inbox2_out')"; exit 1; }
-echo "case7 PASS: messages marked read after first inbox drain"
+  || { echo "FAIL case7: second steward inbox call did not return 'no unread mail' (got: '$inbox2_out')"; exit 1; }
+
+echo "case7 PASS: steward drained the reply, marked read, no duplication — LOOP CLOSED"
 
 echo ""
 echo "ALL CASES PASSED — stub-transport e2e round trip complete."
