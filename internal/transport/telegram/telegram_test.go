@@ -3,6 +3,7 @@ package telegram
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -483,4 +485,63 @@ func TestReceive_GeneralTopicID1_EmitsEmptyThreadRef(t *testing.T) {
 	if received[0].Text != "general msg" {
 		t.Errorf("General topic Text: got %q", received[0].Text)
 	}
+}
+
+// ── Token never leaks into transport-level errors ─────────────────────────────
+
+const fakeToken = "1234567:FAKE-token-must-not-appear"
+
+// closedPortBaseURL returns an http:// base URL pointing at a TCP port with
+// no listener, so PostForm/Get fail with a connection-refused *url.Error —
+// whose unsanitized Error() string would include the full request URL, and
+// therefore the bot token embedded in it (see apiURL).
+func closedPortBaseURL(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("ln.Close: %v", err)
+	}
+	return "http://" + addr
+}
+
+func newConnFailureTelegram(t *testing.T) *Telegram {
+	t.Helper()
+	return &Telegram{
+		token:      fakeToken,
+		chatID:     "-100123456789",
+		httpClient: &http.Client{Timeout: 2 * time.Second},
+		baseURL:    closedPortBaseURL(t),
+	}
+}
+
+func assertErrorHasNoToken(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected a connection error, got nil")
+	}
+	if strings.Contains(err.Error(), fakeToken) {
+		t.Fatalf("error leaked the bot token: %v", err)
+	}
+}
+
+func TestCreateForumTopic_ConnectionFailure_NoTokenInError(t *testing.T) {
+	tg := newConnFailureTelegram(t)
+	_, err := tg.createForumTopic("topic")
+	assertErrorHasNoToken(t, err)
+}
+
+func TestSendMessage_ConnectionFailure_NoTokenInError(t *testing.T) {
+	tg := newConnFailureTelegram(t)
+	err := tg.sendMessage("7", "hello")
+	assertErrorHasNoToken(t, err)
+}
+
+func TestGetUpdates_ConnectionFailure_NoTokenInError(t *testing.T) {
+	tg := newConnFailureTelegram(t)
+	_, err := tg.getUpdates(0)
+	assertErrorHasNoToken(t, err)
 }

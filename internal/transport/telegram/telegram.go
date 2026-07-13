@@ -27,6 +27,7 @@ package telegram
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -172,6 +173,27 @@ func (t *Telegram) apiURL(method string) string {
 	return fmt.Sprintf("%s/bot%s/%s", t.baseURL, t.token, method)
 }
 
+// sanitizeTransportErr strips the request URL — which embeds the bot token —
+// out of a transport-level error returned by PostForm/Get before it can reach
+// a log line or stderr. Connection-level failures (DNS, TLS, timeout, conn
+// refused) come back as *url.Error, whose Error() string includes the full
+// request URL; unwrapping to its inner Err drops the URL entirely. Any other
+// error is passed through a string-replace of the raw token as a fallback, in
+// case a future http.Client implementation surfaces the URL some other way.
+func (t *Telegram) sanitizeTransportErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	if t.token != "" && strings.Contains(err.Error(), t.token) {
+		return errors.New(strings.ReplaceAll(err.Error(), t.token, "<redacted>"))
+	}
+	return err
+}
+
 // createForumTopic calls createForumTopic and returns the message_thread_id.
 func (t *Telegram) createForumTopic(name string) (string, error) {
 	resp, err := t.httpClient.PostForm(t.apiURL("createForumTopic"), url.Values{
@@ -179,7 +201,7 @@ func (t *Telegram) createForumTopic(name string) (string, error) {
 		"name":    {name},
 	})
 	if err != nil {
-		return "", err
+		return "", t.sanitizeTransportErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -207,7 +229,7 @@ func (t *Telegram) sendMessage(threadRef, text string) error {
 		"text":              {text},
 	})
 	if err != nil {
-		return err
+		return t.sanitizeTransportErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -234,7 +256,7 @@ func (t *Telegram) getUpdates(offset int) ([]update, error) {
 	)
 	resp, err := t.httpClient.Get(endpoint)
 	if err != nil {
-		return nil, err
+		return nil, t.sanitizeTransportErr(err)
 	}
 	defer resp.Body.Close()
 

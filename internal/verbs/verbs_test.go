@@ -33,6 +33,8 @@ var allVerbs = []string{
 	"watchers",
 	// Track C (cost)
 	"cost",
+	// at-wolk (Overseer)
+	"steward",
 }
 
 // buildParser registers all verbs onto a kong Parser and returns it.
