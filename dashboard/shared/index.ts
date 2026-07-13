@@ -18,6 +18,8 @@ export type {
   MailListResponse,
   MailSendRequest,
   MailSendResponse,
+  MailPurgeRequest,
+  MailPurgeResponse,
 } from "./types.js";
 
 export { sessionKind, deriveSessionSignal, isValidSessionId } from "./types.js";

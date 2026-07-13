@@ -88,24 +88,24 @@ export function ateamListJson(): Promise<string> {
   return runCli("ateam", ["list-json"]);
 }
 
-// Cap on messages fetched via `ateam debug-mail --json`.
+// Cap on messages fetched via `ateam mail list --json`.
 const MAIL_LIMIT = 1000;
 
-// `ateam send` blocks on liveness/resume/respawn escalation (at-00o), well past
-// the default child timeout — give it more room before we kill it.
+// `ateam mail send` blocks on liveness/resume/respawn escalation (at-00o), well
+// past the default child timeout — give it more room before we kill it.
 const SEND_TIMEOUT_MS = 30_000;
 
-// Returns raw JSON string from `ateam debug-mail --json --limit <MAIL_LIMIT>`.
-// NON-DESTRUCTIVE: reads mail without marking it read. Never call `ateam inbox`
-// here — that verb consumes/marks-read and would corrupt state for agents
-// waiting on messages.
+// Returns raw JSON string from `ateam mail list --json --limit <MAIL_LIMIT>`.
+// NON-DESTRUCTIVE: reads mail without marking it read. Never call `ateam mail
+// inbox` here — that verb consumes/marks-read and would corrupt state for
+// agents waiting on messages.
 export function ateamDebugMailJson(): Promise<string> {
-  return runCli("ateam", ["debug-mail", "--json", "--limit", String(MAIL_LIMIT)]);
+  return runCli("ateam", ["mail", "list", "--json", "--limit", String(MAIL_LIMIT)]);
 }
 
-// Sends a mail message via `ateam send <to> --file <tmp>`, writing the body to
-// a temp file (ateam send has no inline-body flag). Returns the parsed
-// message_id/recipient from stdout. Cleans up the temp file in all cases.
+// Sends a mail message via `ateam mail send <to> --file <tmp>`, writing the
+// body to a temp file (ateam mail send has no inline-body flag). Returns the
+// parsed message_id/recipient from stdout. Cleans up the temp file in all cases.
 export async function ateamSend(
   to: string,
   body: string,
@@ -115,7 +115,7 @@ export async function ateamSend(
   const file = join(dir, "body.txt");
   try {
     await writeFile(file, body, "utf8");
-    const args = ["send", to, "--file", file];
+    const args = ["mail", "send", to, "--file", file];
     if (sender) {
       args.push("--sender", sender);
     }
@@ -124,6 +124,27 @@ export async function ateamSend(
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+// Closes a mail message's bead via `ateam mail close <id>`. Thin wrapper —
+// `ateam` is the ONLY sanctioned write interface to the global workspace;
+// never shell `bd -C` directly for mail.
+export function ateamMailClose(id: string): Promise<string> {
+  return runCli("ateam", ["mail", "close", id]);
+}
+
+// Purges closed mail via `ateam mail purge`. Without dryRun, permanently
+// removes closed message beads older than olderThan (CLI defaults to "7d"
+// when omitted); with dryRun, reports what would be removed without deleting.
+export function ateamMailPurge(opts: { olderThan?: string; dryRun?: boolean }): Promise<string> {
+  const args = ["mail", "purge"];
+  if (opts.olderThan) {
+    args.push("--older-than", opts.olderThan);
+  }
+  if (opts.dryRun) {
+    args.push("--dry-run");
+  }
+  return runCli("ateam", args);
 }
 
 // Returns the ateam workspace path (single line, trimmed).

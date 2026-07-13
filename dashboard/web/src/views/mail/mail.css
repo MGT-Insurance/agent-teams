@@ -29,8 +29,30 @@
   padding: 1px 8px;
 }
 
-.mail-refresh-btn {
+.mail-purge-btn {
   margin-left: auto;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-purge-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+  color: var(--color-error);
+}
+
+.mail-purge-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mail-refresh-btn {
   font-size: 12px;
   font-family: var(--font-mono);
   background: var(--color-accent-dim);
@@ -271,6 +293,48 @@
 
 .mail-row--read {
   color: var(--color-text-muted);
+}
+
+/* Closed — bead lifecycle state, distinct from read/unread delivery status
+   (agent-teams-790o.4). Takes rendering priority over unread/read. */
+.mail-row--closed {
+  color: var(--color-text-muted);
+  opacity: 0.6;
+}
+
+.mail-closed-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  margin-left: 6px;
+  background: color-mix(in srgb, var(--color-text-muted) 15%, transparent);
+  color: var(--color-text-muted);
+}
+
+.mail-row-close-btn {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mail-row-close-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
+}
+
+.mail-row-close-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .mail-status {

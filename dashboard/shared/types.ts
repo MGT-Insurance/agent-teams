@@ -352,13 +352,17 @@ export interface SnapshotEvent {
 // agent-teams-hw71.1 for the full spec. Implementers build to this comment
 // block verbatim — no need to re-read the bead.
 //
-// NON-DESTRUCTIVE INVARIANT: the mail READ path is `ateam debug-mail` ONLY.
-// The dashboard must NEVER invoke `ateam inbox` — that command CONSUMES
+// NON-DESTRUCTIVE INVARIANT: the mail READ path is `ateam mail list` ONLY
+// (agent-teams-790o unified the mail verbs under one `ateam mail` parent;
+// `ateam debug-mail` is now a hidden deprecated alias for `ateam mail list`).
+// The dashboard must NEVER invoke `ateam mail inbox` — that command CONSUMES
 // mail and marks it read, which would corrupt state out from under the
-// agents actually waiting on it. Sending uses `ateam send` (its
+// agents actually waiting on it. Sending uses `ateam mail send` (its
 // liveness/resume/respawn escalation behavior is intended and sanctioned).
+// Closing (manual) and purging use `ateam mail close`/`ateam mail purge` —
+// see MailPurgeRequest/MailPurgeResponse below.
 //
-// A) `ateam debug-mail --json` output: a JSON array of objects, one per
+// A) `ateam mail list --json` output: a JSON array of objects, one per
 // message, NEWEST-FIRST, with EXACTLY these camelCase keys (same field
 // names + null semantics as MailMessage below). Empty mailbox => `[]`.
 // Derivation rules the CLI MUST follow:
@@ -368,6 +372,8 @@ export interface SnapshotEvent {
 //   • thread  — value after the "thread:" label prefix, else null.
 //   • from    — senderFromNotes(Notes) else CreatedBy (mirrors the text path).
 //   • body    — bd Description.
+//   • closed  — bd Status == "closed" (bead lifecycle; a separate axis from
+//               `status`'s delivery pending/read/acked).
 // ---------------------------------------------------------------------------
 
 export interface MailMessage {
@@ -381,9 +387,13 @@ export interface MailMessage {
   readAt: string | null; // from label delivery-acked-at:; null if unread/unknown
   readBy: string | null; // from label delivery-acked-by:; null if unread/unknown
   thread: string | null; // from label thread:; null if none
+  // bead lifecycle (open/closed) — a SEPARATE axis from `status` above (delivery
+  // pending/read/acked). Auto-closes on read via markMessageRead; also closeable
+  // manually (POST /api/mail/:id/close) or by `ateam mail purge`.
+  closed: boolean;
 }
 
-// B) GET /api/mail -> 200 MailListResponse ({ messages }); on `ateam debug-mail`
+// B) GET /api/mail -> 200 MailListResponse ({ messages }); on `ateam mail list`
 // CLI failure -> 502 { error }.
 export interface MailListResponse {
   messages: MailMessage[];
@@ -392,7 +402,7 @@ export interface MailListResponse {
 // C) POST /api/mail/send, request body MailSendRequest ({ to, body, sender? }):
 //   • 200 MailSendResponse ({ ok:true, messageId, recipient }) on success.
 //   • 400 { error } for malformed/missing to|body or invalid initiative id.
-//   • 502 { error } on `ateam send` failure.
+//   • 502 { error } on `ateam mail send` failure.
 export interface MailSendRequest {
   to: string;
   body: string;
@@ -403,4 +413,25 @@ export interface MailSendResponse {
   ok: true;
   messageId: string;
   recipient: string;
+}
+
+// D) POST /api/mail/:id/close -> shells `ateam mail close <id>`.
+//   • 200 { ok:true } on success.
+//   • 400 { error } for invalid/malformed id (reuse send's /^[\w-]+$/ + length cap).
+//   • 502 { error } on `ateam mail close` failure.
+// No dedicated request/response type — the id comes from the URL path and the
+// success body is the bare { ok: true } shape.
+
+// E) POST /api/mail/purge, request body MailPurgeRequest -> shells `ateam mail purge`
+// (--older-than <olderThan>, --dry-run if dryRun is true):
+//   • 200 MailPurgeResponse ({ ok:true, output? }) on success.
+//   • 502 { error } on `ateam mail purge` failure.
+export interface MailPurgeRequest {
+  olderThan?: string;
+  dryRun?: boolean;
+}
+
+export interface MailPurgeResponse {
+  ok: true;
+  output?: string;
 }
