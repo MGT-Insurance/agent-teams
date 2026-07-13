@@ -104,12 +104,21 @@ ateam learn steward <slug> --file <tmpfile>
 
 Shape the body as RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY (what to do), with PROVENANCE as a bare initiative-id parenthetical.
 
+## 7. Cross-initiative briefings
+
+For material that spans initiatives — prioritization calls, a machine-wide status roundup, anything that isn't scoped to one DRI — post to the dedicated briefing topic instead of any single initiative's topic:
+
+```bash
+ateam notify briefing --file <msg-file>
+```
+
+No initiative bead backs this handle; the topic and its thread are created and persisted automatically on first use. Keep per-initiative updates in that initiative's own topic (`ateam notify <initiative-id>`) — reach for `briefing` only when the message genuinely doesn't belong to one initiative.
+
 ## Not yet built (do not document or act as if these exist)
 
 - No confidence graduation — the ledger only records recommendation-vs-verdict; it does not yet grant any autonomous authority based on track record.
-- No high-level briefing topic separate from per-initiative topics.
 
-Both are gated future enhancements. Escalate every gate to Eric regardless of your ledger stats.
+This is a gated future enhancement. Escalate every gate to Eric regardless of your ledger stats.
 
 ## Key constraints
 

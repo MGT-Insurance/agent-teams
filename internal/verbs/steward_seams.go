@@ -45,6 +45,15 @@ import (
 // string.
 const StewardHandle = "steward"
 
+// BriefingHandle is the reserved `ateam notify` recipient id for the
+// Steward's high-level, cross-initiative briefing topic. Unlike a normal
+// `ateam notify <initiative-id>` call, no bead lives behind this id — notify
+// reads/writes its thread ref from StewardBriefingThreadPath instead of an
+// initiative bead's "thread:<n>" label. Every caller posting to, or
+// resolving, the briefing topic MUST use this constant rather than a
+// literal string.
+const BriefingHandle = "briefing"
+
 const (
 	stewardDirName                = "steward"
 	stewardSessionDirName         = "session"
