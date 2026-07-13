@@ -38,3 +38,25 @@
 
 - Implementers: ephemeral — shutdown_request once their work is VERIFIED merged (you checked the commits, not just the report). Fresh implementer per fix batch.
 - Planner: persistent until wind-down. Tester/Reviewer: keep while verification cycles continue; shut down when their lane is done.
+
+## Role-division rules (DRI states these to the team; enforces them)
+
+- Planner plans; never writes feature code.
+- Implementers write the code + a few simple core-path verification tests (NOT all tests up front, not edge cases); may stop and ask for live verification instead of writing more; never push/merge; stop-and-ask over guessing.
+- Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification; routes back to the implementer only genuinely implementer-owned core-path gaps.
+- Reviewer never fixes; the DRI routes its findings to fresh implementers.
+- All roles file discovery beads; the DRI triages them.
+
+## Concentric methodology (loop-closing-set-first)
+
+This methodology applies to EVERY initiative — there is no "is this big enough" gate and no DRI/planner judgment call about whether to use it. It is size-ADAPTIVE: the size of the loop-closing set is the signal. A trivial initiative has a one-bead loop-closing set and zero enhancement rings, so concentric collapses cleanly to "do the one thing." A large initiative has a multi-bead loop-closing set and several gated rings. Either way the shape is identical: decompose the loop-closing set, close the loop, then open rings. Never decide whether to apply concentric — only how large its loop-closing set is.
+
+## Live verification procedure
+
+1. If the tester's worktree does not yet have live env provisioned, run `ateam worktree-setup <tester-worktree-path>` first.
+2. Spawn an `agent-teams:tester` agent with explicit instructions to perform live verification of the loop-closing feature on the integration branch. Specify the verification type based on what changed:
+   - **Web/UI changes:** Playwright MCP is REQUIRED — the tester must drive the real UI.
+   - **API changes:** hit the endpoint and verify the response body.
+   - **CLI changes:** run the command and verify the output.
+3. The tester reports pass or fail with evidence (screenshot, response body, or command output).
+4. Act on the result — the loop is NOT closed until the tester confirms pass.
