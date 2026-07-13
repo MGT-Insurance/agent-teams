@@ -2,6 +2,10 @@
 
 The core routing rule (route by kind; default `ateam learn`; never MEMORY.md; contribute the moment a learning forms) lives inline in SKILL.md under "Memory routing". This file holds the tier mechanics and the condense flow — reference-only detail the DRI reaches when curating memories or at Phase 6 wind-down.
 
+## Learning body shape (all tiers)
+
+Store the learning itself, not the story of how it was found — include only enough context to signal WHEN it's relevant, not a history lesson. Shape the body as RULE (one sentence — the transferable learning itself), TRIGGER (when it fires / how to recognize relevance), APPLY (what to do about it), with PROVENANCE as a bare initiative-id parenthetical only, e.g. `(agent-teams-2n1w)` — no narrative retelling of how it was discovered. Writing the same `<slug>` again overwrites the previous body (upsert-by-key).
+
 ## Three-tier memory model (fresh / hot / cold)
 
 Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
@@ -22,7 +26,7 @@ Role memories use a three-tier key convention — the tier is encoded in the key
 
 **Removing a memory:** `ateam forget <role> <slug>` removes a cold memory. `ateam forget <role> hot:<slug>` removes a hot memory. `ateam forget <role> fresh:<slug>` removes a fresh memory. Every removal is recoverable from Dolt history (`refs/dolt/data`).
 
-**Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body succinct and in the RULE/TRIGGER/APPLY + bare-id-provenance shape above (write-time cap: 900 bytes for hot and fresh, 1500 for cold) — hot memories are injected whole every session, so a history lesson directly costs context, not just extra bytes.
+**Promoting a learning to hot:** write it with `ateam learn <role> hot:<slug> --file <tmpfile>`. Keep the body in the shape above (write-time cap: 900 bytes for hot and fresh, 1500 for cold) — hot memories are injected whole every session, so a history lesson directly costs context, not just extra bytes.
 
 ## Condensing (autonomous)
 
