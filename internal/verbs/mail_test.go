@@ -3,11 +3,14 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // ── mail test helpers ─────────────────────────────────────────────────────────
@@ -38,7 +41,7 @@ func mailFakeListBD(issues []bd.Issue) *fakeBD {
 // ── core-path tests ───────────────────────────────────────────────────────────
 
 func TestMail_NilContext(t *testing.T) {
-	c := &mailKong{Limit: 20}
+	c := &mailListKong{Limit: 20}
 	err := c.Run(nil)
 	if err == nil {
 		t.Fatal("expected error for nil context")
@@ -51,7 +54,7 @@ func TestMail_NilContext(t *testing.T) {
 func TestMail_EmptyList_PrintsNoMail(t *testing.T) {
 	fbd := mailFakeListBD(nil)
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20}
+	c := &mailListKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -71,7 +74,7 @@ func TestMail_TableNewestFirst(t *testing.T) {
 
 	fbd := mailFakeListBD([]bd.Issue{oldest, middle, newest})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20}
+	c := &mailListKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,7 +109,7 @@ func TestMail_StatusDerivation(t *testing.T) {
 
 	fbd := mailFakeListBD([]bd.Issue{acked, readMsg, pending})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20}
+	c := &mailListKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,7 +131,7 @@ func TestMail_StatusDerivation_PrefixAck(t *testing.T) {
 
 	fbd := mailFakeListBD([]bd.Issue{msg})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20}
+	c := &mailListKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +154,7 @@ func TestMail_LimitCapsRows(t *testing.T) {
 
 	fbd := mailFakeListBD(issues)
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 3}
+	c := &mailListKong{Limit: 3}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +181,7 @@ func TestMail_JSON_FullLabels(t *testing.T) {
 
 	fbd := mailFakeListBD([]bd.Issue{msg})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20, JSON: true}
+	c := &mailListKong{Limit: 20, JSON: true}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,7 +214,7 @@ func TestMail_JSON_UnreadHasNullFields(t *testing.T) {
 
 	fbd := mailFakeListBD([]bd.Issue{msg})
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20, JSON: true}
+	c := &mailListKong{Limit: 20, JSON: true}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +238,7 @@ func TestMail_JSON_UnreadHasNullFields(t *testing.T) {
 func TestMail_JSON_EmptyListEmitsBrackets(t *testing.T) {
 	fbd := mailFakeListBD(nil)
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20, JSON: true}
+	c := &mailListKong{Limit: 20, JSON: true}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,7 +270,7 @@ func TestMail_JSON_ReadOnly(t *testing.T) {
 	}
 
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20, JSON: true}
+	c := &mailListKong{Limit: 20, JSON: true}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,7 +301,7 @@ func TestMail_ReadOnly(t *testing.T) {
 	}
 
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
-	c := &mailKong{Limit: 20}
+	c := &mailListKong{Limit: 20}
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -318,5 +321,196 @@ func TestMail_ReadOnly(t *testing.T) {
 				t.Errorf("read-only violation: Run(%q) was called", call)
 			}
 		}
+	}
+}
+
+// TestMailList_QueryIncludesStatusAll guards the --status=all addition:
+// without it, auto-close-on-read would empty the dashboard mail tab of all
+// read history (bd list defaults to open-only).
+func TestMailList_QueryIncludesStatusAll(t *testing.T) {
+	var gotArgs []string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			gotArgs = args
+			return json.Unmarshal([]byte(`[]`), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	c := &mailListKong{Limit: 20}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, a := range gotArgs {
+		if a == "--status=all" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected --status=all in query args; got %v", gotArgs)
+	}
+}
+
+// TestMail_JSON_ClosedField guards the closed axis: it must track the bead
+// lifecycle (bd status), independent of the pending/read/acked delivery
+// status derived from labels.
+func TestMail_JSON_ClosedField(t *testing.T) {
+	closedMsg := mailIssue("at-mc-closed", "init-a", "alice", "closed msg", nil,
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	closedMsg.Status = "closed"
+	openMsg := mailIssue("at-mc-open", "init-a", "alice", "open msg", nil,
+		time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	openMsg.Status = "open"
+
+	fbd := mailFakeListBD([]bd.Issue{closedMsg, openMsg})
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	c := &mailListKong{Limit: 20, JSON: true}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var records []mailRecord
+	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
+		t.Fatalf("expected valid JSON array; got %q: %v", stdout.String(), err)
+	}
+	byID := map[string]mailRecord{}
+	for _, r := range records {
+		byID[r.ID] = r
+	}
+	if !byID["at-mc-closed"].Closed {
+		t.Errorf("expected closed=true for closed bead; got %+v", byID["at-mc-closed"])
+	}
+	if byID["at-mc-open"].Closed {
+		t.Errorf("expected closed=false for open bead; got %+v", byID["at-mc-open"])
+	}
+}
+
+// ── mailCloseKong ─────────────────────────────────────────────────────────────
+
+func TestMailClose_CallsBDClose(t *testing.T) {
+	var calls [][]string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, args)
+			return "closed at-m1", nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	c := &mailCloseKong{ID: "at-m1"}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"close", "at-m1"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("got calls %v, want [%v]", calls, want)
+	}
+	if !strings.Contains(stdout.String(), "closed at-m1") {
+		t.Errorf("expected bd output echoed to stdout; got %q", stdout.String())
+	}
+}
+
+func TestMailClose_NilContext(t *testing.T) {
+	c := &mailCloseKong{ID: "at-m1"}
+	if err := c.Run(nil); err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── mailPurgeKong ─────────────────────────────────────────────────────────────
+
+func TestMailPurge_DefaultForcesDelete(t *testing.T) {
+	var calls [][]string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, args)
+			return "purged 3", nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	c := &mailPurgeKong{OlderThan: "7d"}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"purge", "--older-than", "7d", "--force"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("got calls %v, want [%v]", calls, want)
+	}
+}
+
+func TestMailPurge_DryRunOmitsForce(t *testing.T) {
+	var calls [][]string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, args)
+			return "would purge 3", nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	c := &mailPurgeKong{OlderThan: "7d", DryRun: true}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"purge", "--older-than", "7d", "--dry-run"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("got calls %v, want [%v]; --dry-run must never include --force", calls, want)
+	}
+}
+
+// ── unified `mail` parent verb (mail_register.go) ───────────────────────────
+
+// TestRegisterMailKong_NestedSubcommandLimitFlag proves `ateam mail list
+// --limit=N --json` parses as a nested kong subcommand (mailCmd has no Run
+// of its own — RunNode must walk down to the List leaf) and that --limit
+// reaches the leaf's field.
+func TestRegisterMailKong_NestedSubcommandLimitFlag(t *testing.T) {
+	var issues []bd.Issue
+	for i := 0; i < 5; i++ {
+		issues = append(issues, mailIssue(fmt.Sprintf("at-nest-%d", i), "init-a", "alice", "msg", nil,
+			time.Date(2026, 1, i+1, 0, 0, 0, 0, time.UTC)))
+	}
+
+	p, err := cli.NewParser(kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	RegisterMailKong(p)
+
+	kctx, parseErr := p.Parse([]string{"mail", "list", "--limit=2", "--json"})
+	if parseErr != nil {
+		t.Fatalf("expected `ateam mail list --limit=2 --json` to parse as a nested subcommand; got: %v", parseErr)
+	}
+
+	fbd := mailFakeListBD(issues)
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	if err := kctx.Run(ctx); err != nil {
+		t.Fatalf("unexpected Run error: %v", err)
+	}
+
+	var records []mailRecord
+	if err := json.Unmarshal(stdout.Bytes(), &records); err != nil {
+		t.Fatalf("expected valid JSON; got %q: %v", stdout.String(), err)
+	}
+	if len(records) != 2 {
+		t.Errorf("expected --limit=2 to cap at 2 records (proves the flag reached the nested leaf); got %d", len(records))
+	}
+}
+
+// TestMailListAliasKong_DeprecationNoteStderrOnly proves the hidden
+// debug-mail alias warns on stderr and keeps stdout as clean JSON — the
+// dashboard parses `ateam debug-mail --json` on stdout.
+func TestMailListAliasKong_DeprecationNoteStderrOnly(t *testing.T) {
+	fbd := mailFakeListBD(nil)
+	ctx, stdout, stderr := makeCtx(fbd, t.TempDir())
+	c := &mailListAliasKong{mailListKong: mailListKong{Limit: 20, JSON: true}}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(stderr.String(), "deprecated") {
+		t.Errorf("expected deprecation note on stderr; got %q", stderr.String())
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != "[]" {
+		t.Errorf("expected clean JSON on stdout, no deprecation noise; got %q", stdout.String())
 	}
 }

@@ -1,8 +1,10 @@
 package cli_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -98,3 +100,69 @@ func TestParserUnknownVerbError(t *testing.T) {
 type trivialKongVerb struct{}
 
 func (v *trivialKongVerb) Run(ctx *cli.Context) error { return nil }
+
+// ── AddHiddenVerb ──────────────────────────────────────────────────────────────
+//
+// AddHiddenVerb backs the mail command's 3 deprecated aliases (send, inbox,
+// debug-mail): the old flat verbs must keep working for muscle memory and
+// stale hooks, but stay out of --help so `ateam mail <subcommand>` is what
+// users discover.
+
+// ranFlagKongVerb records whether Run executed, to prove a hidden verb still
+// dispatches (hidden only affects --help, not the parser/runner).
+type ranFlagKongVerb struct{ ran *bool }
+
+func (v *ranFlagKongVerb) Run(ctx *cli.Context) error {
+	*v.ran = true
+	return nil
+}
+
+// TestAddHiddenVerb_AbsentFromHelp proves a hidden verb is omitted from
+// --help output while a normal AddVerb-registered verb still appears.
+func TestAddHiddenVerb_AbsentFromHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var exitCode *int
+	p, err := cli.NewParser(
+		kong.Writers(&stdout, &stderr),
+		kong.Exit(func(code int) { exitCode = &code }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddVerb("visible", "a visible verb", &trivialKongVerb{})
+	p.AddHiddenVerb("secret", "a hidden verb", &trivialKongVerb{})
+
+	_, _ = p.Parse([]string{"--help"})
+	if exitCode == nil || *exitCode != 0 {
+		t.Fatalf("expected --help to Exit(0); exitCode=%v", exitCode)
+	}
+	help := stdout.String()
+	if !strings.Contains(help, "visible") {
+		t.Errorf("expected visible verb in --help output; got:\n%s", help)
+	}
+	if strings.Contains(help, "secret") {
+		t.Errorf("expected hidden verb absent from --help output; got:\n%s", help)
+	}
+}
+
+// TestAddHiddenVerb_StillParsesAndRuns proves hidden only affects --help —
+// the verb still parses and its Run still executes.
+func TestAddHiddenVerb_StillParsesAndRuns(t *testing.T) {
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	p.AddHiddenVerb("secret", "a hidden verb", &ranFlagKongVerb{ran: &ran})
+
+	kctx, parseErr := p.Parse([]string{"secret"})
+	if parseErr != nil {
+		t.Fatalf("expected hidden verb to parse; got: %v", parseErr)
+	}
+	if err := kctx.Run(&cli.Context{}); err != nil {
+		t.Fatalf("unexpected Run error: %v", err)
+	}
+	if !ran {
+		t.Error("expected hidden verb's Run to execute")
+	}
+}

@@ -843,7 +843,6 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterMatchKong(p)
 	RegisterDispatchKong(p)
 	RegisterWorktreeSetupKong(p)
-	RegisterMessagingKong(p)
 	RegisterMailKong(p)
 	RegisterRouteEventKong(p)
 	RegisterStatusKong(p)
