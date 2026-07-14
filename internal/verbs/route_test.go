@@ -966,3 +966,136 @@ func TestReReview_OtherTransitionSendHasNoResumeFlags(t *testing.T) {
 		}
 	}
 }
+
+// ── comment_reply transition ──────────────────────────────────────────────────
+
+func TestCommentReply_OpenMatch_PlainSendNoResumeFlags(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	issue := prFieldIssue("at-cr.1", "owner/myrepo", 42)
+	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %d, want 1 (send only)", len(runner.calls))
+	}
+	want := []string{"mail", "send", "at-cr.1", "--file", bodyFile, "--sender", "pr-shepherd"}
+	if strings.Join(runner.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("send args = %v\nwant %v (no resume flags on open match)", runner.calls[0], want)
+	}
+}
+
+func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	closed := prFieldIssue("at-cr.2", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (reopen, send): %v", len(runner.calls), runner.calls)
+	}
+	if strings.Join(runner.calls[0], " ") != "reopen at-cr.2" {
+		t.Errorf("first call = %v, want reopen at-cr.2", runner.calls[0])
+	}
+	wantSend := []string{"mail", "send", "at-cr.2", "--file", bodyFile, "--sender", "pr-shepherd",
+		"--resume-launch-prompt", "/agent-teams:review-pr at-cr.2 comment-reply", "--resume-model", "sonnet"}
+	if strings.Join(runner.calls[1], " ") != strings.Join(wantSend, " ") {
+		t.Errorf("send args = %v\nwant %v", runner.calls[1], wantSend)
+	}
+	if !strings.Contains(stdout.String(), "reopening") {
+		t.Errorf("stdout missing reopen notice: %s", stdout.String())
+	}
+}
+
+func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{}
+	// Configure review-repos so a spawn WOULD be possible — proving the drop
+	// is deliberate, not a missing-config accident.
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls = %v, want none (no spawn for comment_reply)", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "no initiative") {
+		t.Errorf("stdout missing drop notice: %s", stdout.String())
+	}
+}
+
+func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	closed := prFieldIssue("at-cr.3", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &failRunner{failOn: "reopen"}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0][0] != "reopen" {
+		t.Fatalf("calls = %v, want [reopen] only", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "dropping") {
+		t.Errorf("stdout missing drop notice: %s", stdout.String())
+	}
+}
+
+func TestCommentReply_SendFails_DropsWithoutSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	closed := prFieldIssue("at-cr.4", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &failRunner{failOn: "mail"}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail] and no dispatch", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "initiative left open") {
+		t.Errorf("stdout missing left-open notice: %s", stdout.String())
+	}
+}
