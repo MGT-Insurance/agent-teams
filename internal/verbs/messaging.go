@@ -374,14 +374,18 @@ func recipientWorktree(ctx *cli.Context, id string) (string, error) {
 	return wt, nil
 }
 
-// resolveMyInitiative finds the open initiative whose worktree: line matches cwd.
-// Returns the initiative id or an error if none matches.
+// resolveMyInitiative finds the open initiative whose worktree: line matches
+// cwd, or whose worktree: line is an ancestor directory of cwd (so `ateam
+// mail inbox` resolves correctly from any subdirectory of a registered
+// worktree, e.g. apps/mithril nested under the worktree root). When multiple
+// registered initiatives are ancestors of cwd, the most specific (longest)
+// worktree path wins. Returns the initiative id or an error if none matches.
 func resolveMyInitiative(ctx *cli.Context, cwd string) (string, error) {
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
 		return "", err
 	}
-	if match := matchByWorktree(issues, cwd); match != nil {
+	if match := matchByWorktreeOrAncestor(issues, cwd); match != nil {
 		return match.ID, nil
 	}
 	return "", fmt.Errorf("no initiative registered for worktree: %s", cwd)
