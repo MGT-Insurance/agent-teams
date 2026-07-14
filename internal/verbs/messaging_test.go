@@ -331,6 +331,82 @@ func TestResolveInboxRecipient_NoMarker_FallsBackToInitiative(t *testing.T) {
 	}
 }
 
+func TestResolveMyInitiative_ResolvesFromSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	myID := "at-inbox-subdir"
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			issues := []bd.Issue{{
+				ID:          myID,
+				Description: "worktree: " + root + "\n",
+				Status:      "open",
+			}}
+			return json.Unmarshal(mustMarshal(issues), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	subdir := filepath.Join(root, "apps", "mithril")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+
+	id, err := resolveMyInitiative(ctx, subdir)
+	if err != nil {
+		t.Fatalf("resolveMyInitiative: %v", err)
+	}
+	if id != myID {
+		t.Errorf("resolveMyInitiative(%s) = %q, want %q", subdir, id, myID)
+	}
+}
+
+func TestResolveMyInitiative_NestedWorktrees_LongestPathWins(t *testing.T) {
+	root := t.TempDir()
+	outerID := "at-inbox-outer"
+	nestedDir := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	innerID := "at-inbox-inner"
+	innerSubdir := filepath.Join(nestedDir, "apps", "mithril")
+	if err := os.MkdirAll(innerSubdir, 0o755); err != nil {
+		t.Fatalf("mkdir innerSubdir: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			issues := []bd.Issue{
+				{ID: outerID, Description: "worktree: " + root + "\n", Status: "open"},
+				{ID: innerID, Description: "worktree: " + nestedDir + "\n", Status: "open"},
+			}
+			return json.Unmarshal(mustMarshal(issues), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	id, err := resolveMyInitiative(ctx, innerSubdir)
+	if err != nil {
+		t.Fatalf("resolveMyInitiative: %v", err)
+	}
+	if id != innerID {
+		t.Errorf("resolveMyInitiative(%s) = %q, want %q (longest/most-specific worktree path should win)", innerSubdir, id, innerID)
+	}
+}
+
+func TestMatchByWorktreeOrAncestor_SiblingPrefixDoesNotMatch(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-sibling", Description: "worktree: /a/b\n", Status: "open"},
+	}
+	if match := matchByWorktreeOrAncestor(issues, "/a/b-foo"); match != nil {
+		t.Errorf("matchByWorktreeOrAncestor(/a/b-foo) = %v, want nil (sibling dir sharing a string prefix must not match worktree /a/b)", match)
+	}
+	// Sanity check the positive case still matches a true subdirectory.
+	if match := matchByWorktreeOrAncestor(issues, "/a/b/sub"); match == nil || match.ID != "at-sibling" {
+		t.Errorf("matchByWorktreeOrAncestor(/a/b/sub) = %v, want match on at-sibling", match)
+	}
+}
+
 func TestInbox_NoMessages_Silent(t *testing.T) {
 	cwd := t.TempDir()
 	myID := "at-no-mail"

@@ -63,6 +63,36 @@ func matchByWorktree(issues []bd.Issue, path string) *bd.Issue {
 	return nil
 }
 
+// matchByWorktreeOrAncestor returns the issue whose "worktree: <path>" line is
+// the most specific match for path: either an exact match, or the longest
+// worktree path that is a proper ancestor directory of path (so cwd may be
+// any subdirectory of the registered worktree, e.g. apps/mithril nested under
+// the worktree root). The trailing separator guard means a sibling directory
+// that merely shares a string prefix (worktree /a/b vs cwd /a/b-foo) never
+// matches. Used ONLY by resolveMyInitiative (the `ateam mail inbox` path) —
+// matchByWorktree remains strict-equality for resume-match, where prefix
+// matching would risk resuming the wrong initiative.
+func matchByWorktreeOrAncestor(issues []bd.Issue, path string) *bd.Issue {
+	want := canonicalPath(path)
+	var best *bd.Issue
+	var bestLen int
+	for i := range issues {
+		wt := worktreePath(issues[i].Description)
+		if wt == "" {
+			continue
+		}
+		wtCanon := canonicalPath(wt)
+		if wtCanon != want && !strings.HasPrefix(want, wtCanon+string(filepath.Separator)) {
+			continue
+		}
+		if len(wtCanon) > bestLen {
+			best = &issues[i]
+			bestLen = len(wtCanon)
+		}
+	}
+	return best
+}
+
 // matchAllByWorktree returns all issues whose "worktree: <path>" line
 // resolves (after symlink normalisation) to the same path as path, sorted by
 // CreatedAt descending.
