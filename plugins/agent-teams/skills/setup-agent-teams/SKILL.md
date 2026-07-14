@@ -322,7 +322,7 @@ echo /abs/path/to/agent-teams/scripts/midgard-worktree-setup.sh \
   > ~/.agent-teams/worktree-hooks/midgard
 ```
 
-The reference implementation for midgard is `scripts/midgard-worktree-setup.sh` in this (agent-teams) repo. It copies gitignored files from the source checkout and runs `vercel env pull` to restore creds-dependent tooling in the new worktree.
+The reference implementation for midgard is `scripts/midgard-worktree-setup.sh` in this (agent-teams) repo. It copies gitignored files from the source checkout and runs `vercel env pull` to restore creds-dependent tooling in the new worktree. Note: this raw script path is correct ONLY here, as the hook-registration target. Agents provisioning a worktree must always call `ateam worktree-setup <wtPath>` — never the raw script directly (a project memory naming the raw path shadows the discoverable wrapper).
 
 ## 9. Smoke test
 
