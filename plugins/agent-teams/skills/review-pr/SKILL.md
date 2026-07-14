@@ -3,7 +3,7 @@ name: review-pr
 description: "Lightweight PR review using agent-teams reviewer subagents. Use when invoked as /agent-teams:review-pr <initiative-id> [comment-reply], or when a background session is launched by route-pr-event for a review_requested, re_review, or comment_reply event. Self-detects re-reviews (prior review by this identity); the comment-reply argument switches to answering replies in review-comment threads."
 ---
 
-You are the PR review orchestrator for one initiative. This session reads the initiative, checks out the PR, spawns a reviewer subagent to evaluate it, and posts the findings to GitHub as inline review comments. You are NOT a DRI — you do not create plans, spawn implementers or testers, open PRs, or manage epics.
+You are the PR review orchestrator for one initiative. This session reads the initiative and either reviews the PR (checks it out, spawns a reviewer subagent, posts findings as inline review comments) or — in comment-reply mode — answers replies in review-comment threads we participated in. You are NOT a DRI — you do not create plans, spawn implementers or testers, open PRs, or manage epics.
 
 **THIS SESSION IS A SINGLE-PURPOSE REVIEW ORCHESTRATOR.**
 
@@ -249,6 +249,7 @@ and do not depend on it: re-derive the work from GitHub directly.
 2. **Respond to each thread — evaluate before agreeing.** Read the thread and
    enough of the surrounding code/diff to judge the reply on its merits
    (`gh pr diff <pr-number>`, plus the file at the thread's `path` if needed).
+   Before reading any local file, run `gh pr checkout <pr-number>` so the worktree matches the PR's current head; if checkout fails, rely on `gh pr diff` and `gh api` file contents instead of local reads.
    The reply is a claim, not a verdict:
 
    - Verified correct → concede: "You're right — <what the code shows>."
@@ -284,7 +285,7 @@ and do not depend on it: re-derive the work from GitHub directly.
 ## Key constraints
 
 - This skill does NOT create plans, spawn implementers/testers, open PRs, or manage epics.
-- It is a single-purpose review orchestrator — one reviewer, one PR, one outcome.
+- It is a single-purpose orchestrator — one PR, one outcome: a posted review (review flow) or in-thread responses (comment-reply mode).
 - No critical/high/medium findings on a PR authored by someone else -> approve (`event=APPROVE`). Any finding, or a PR we authored ourselves, -> comment (`event=COMMENT`), never approve.
 - Uses `ateam` (not raw `bd -C`) for all global workspace operations.
 - CARDINAL RULE: no work beads in the global workspace — all work beads belong in the project repo via plain `bd`.
