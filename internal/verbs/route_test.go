@@ -1092,10 +1092,14 @@ func TestCommentReply_SendFails_DropsWithoutSpawn(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
-		t.Fatalf("calls = %v, want [reopen, mail] and no dispatch", runner.calls)
+	if len(runner.calls) != 3 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" || runner.calls[2][0] != "close" {
+		t.Fatalf("calls = %v, want [reopen, mail, close] and no dispatch", runner.calls)
 	}
-	if !strings.Contains(stdout.String(), "initiative left open") {
-		t.Errorf("stdout missing left-open notice: %s", stdout.String())
+	wantClose := []string{"close", "at-cr.4", "--reason", "comment-reply send failed; restoring closed state"}
+	if gotClose := runner.calls[2]; strings.Join(gotClose, "\x00") != strings.Join(wantClose, "\x00") {
+		t.Errorf("close call = %v, want %v", gotClose, wantClose)
+	}
+	if !strings.Contains(stdout.String(), "comment-reply event dropped") {
+		t.Errorf("stdout missing dropped notice: %s", stdout.String())
 	}
 }

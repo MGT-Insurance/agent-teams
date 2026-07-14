@@ -133,9 +133,11 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 // the relaunched session can respond in-thread (the resume prompt carries the
 // comment-reply mode argument). Unlike re_review there is NO spawn fallback —
 // a fresh full review is the wrong response to a comment — so no-match,
-// reopen failure, and send failure all log and drop the event. A dropped
-// reply is recoverable: the pr-shepherd cursor only advances on successful
-// dispatch of a later reply, and the thread stays visible on GitHub.
+// reopen failure, and send failure all log and drop the event. A drop is
+// terminal for THIS event (pr-shepherd's cursor advances regardless); the
+// recovery mechanism is thread re-derivation — the comment-reply session
+// reads whole threads from GitHub, so the next reply on the PR re-triggers
+// routing and the relaunched session answers the dropped reply too.
 func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) error {
 	result, err := matchClosedReviewInitiative(ctx, event)
 	if err != nil {
@@ -157,7 +159,16 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 		"--resume-launch-prompt", "/agent-teams:review-pr " + result.InitiativeID + " comment-reply",
 		"--resume-model", "sonnet"}
 	if err := c.runner(sendArgs...); err != nil {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — comment-reply event dropped (initiative left open)\n",
+		// Compensating close: leaving the initiative open would capture ALL
+		// future events for this PR on the open-match branch (and fail the
+		// same way). Restore the closed state so later events re-match via
+		// matchClosedReviewInitiative. Best-effort — a close failure only
+		// costs us the same zombie we'd otherwise have.
+		if closeErr := c.runner("close", result.InitiativeID, "--reason", "comment-reply send failed; restoring closed state"); closeErr != nil {
+			fmt.Fprintf(ctx.Stdout, "route-pr-event: compensating close of %s also failed (%v) — initiative left open, needs manual close\n",
+				result.InitiativeID, closeErr)
+		}
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — comment-reply event dropped\n",
 			result.InitiativeID, err)
 		return nil
 	}

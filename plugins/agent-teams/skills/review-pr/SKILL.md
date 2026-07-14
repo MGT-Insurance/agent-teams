@@ -81,7 +81,7 @@ lookup failed, treat this as a first review.)
 
 ```bash
 gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews    # review bodies
-gh api repos/<owner>/<repo>/pulls/<pr-number>/comments   # inline review comments
+gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate   # inline review comments
 ```
 
 Collect every finding from our most recent review (its body plus the inline
@@ -237,7 +237,7 @@ and do not depend on it: re-derive the work from GitHub directly.
 1. **Find the threads.** Fetch all inline review comments:
 
    ```bash
-   gh api repos/<owner>/<repo>/pulls/<pr-number>/comments
+   gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate
    gh api user -q .login
    ```
 
