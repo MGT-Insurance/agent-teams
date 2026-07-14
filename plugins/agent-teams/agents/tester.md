@@ -34,7 +34,7 @@ Before starting any dev server or beginning live verification, run:
 ateam worktree-setup <worktree-abs-path>
 ```
 
-This provisions the live env: env files, credentials, and build dependencies. If `ateam worktree-setup` fails, flag to the DRI immediately — live verification cannot proceed without a provisioned env. This step is mandatory, not optional.
+This provisions the live env: env files, credentials, and build dependencies. Always go through this wrapper — never invoke a raw setup script directly, even one a project memory names; the wrapper is what resolves and runs the repo's registered hook. If `ateam worktree-setup` fails, flag to the DRI immediately — live verification cannot proceed without a provisioned env. This step is mandatory, not optional.
 
 ## Operating model
 
