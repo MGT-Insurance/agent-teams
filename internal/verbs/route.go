@@ -95,6 +95,11 @@ func (c *routePREventKong) sendArgs(id string) []string {
 // request. A fresh spawn is the fallback at every step — no prior
 // initiative, reopen failure, or send failure (e.g. deleted worktree) all
 // degrade to a new review initiative rather than dropping the event.
+// Caveat: if reopen succeeds but the send fails, the spawn fallback leaves
+// TWO open initiatives for the same PR (the reopened one never got the
+// mail); a later poll may then hit matchInitiative's ambiguity error and
+// need manual cleanup (close one). Accepted: rare, and losing the re-review
+// event silently would be worse.
 func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error {
 	result, err := matchClosedReviewInitiative(ctx, event)
 	if err != nil {

@@ -831,8 +831,10 @@ func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
 	if strings.Join(runner.calls[0], " ") != "reopen at-rr.2" {
 		t.Errorf("first call = %v, want reopen at-rr.2", runner.calls[0])
 	}
-	if runner.calls[1][0] != "mail" || runner.calls[1][1] != "send" || runner.calls[1][2] != "at-rr.2" {
-		t.Errorf("second call = %v, want mail send at-rr.2 ...", runner.calls[1])
+	wantSend := []string{"mail", "send", "at-rr.2", "--file", bodyFile, "--sender", "pr-shepherd",
+		"--resume-launch-prompt", "/agent-teams:review-pr at-rr.2", "--resume-model", "sonnet"}
+	if strings.Join(runner.calls[1], " ") != strings.Join(wantSend, " ") {
+		t.Errorf("send args = %v\nwant %v", runner.calls[1], wantSend)
 	}
 	if !strings.Contains(stdout.String(), "reopening") {
 		t.Errorf("stdout missing reopen notice: %s", stdout.String())
