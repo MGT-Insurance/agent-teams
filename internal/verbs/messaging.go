@@ -34,6 +34,14 @@ type sendKong struct {
 	respawnFunc    respawnFunc          `kong:"-"`
 }
 
+// Validate enforces the resume-flag pairing (mirrors resumeKong.Validate).
+func (c *sendKong) Validate() error {
+	if c.ResumeModel != "" && c.ResumeLaunchPrompt == "" {
+		return cli.Usagef("ateam mail send: --resume-model requires --resume-launch-prompt")
+	}
+	return nil
+}
+
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *sendKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
@@ -275,7 +283,6 @@ func runAgentsJSON(args ...string) ([]agentSession, error) {
 	return sessions, nil
 }
 
-// defaultResume runs `ateam resume <id>` via the resumeKong directly.
 // defaultResume runs `ateam resume <id>` via the resumeKong directly.
 func defaultResume(ctx *cli.Context, id, launchPrompt, model string) error {
 	cmd := &resumeKong{ID: id, LaunchPrompt: launchPrompt, Model: model, launch: launchBGSession, launchRaw: rawLaunchBGSession}

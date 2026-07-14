@@ -949,6 +949,16 @@ func TestSendKong_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestSendKong_ResumeModelWithoutPromptRejected(t *testing.T) {
+	err := (&sendKong{RecipientID: "at-x", File: "/some/file", ResumeModel: "sonnet"}).Validate()
+	if err == nil {
+		t.Fatal("expected UsageError for --resume-model without --resume-launch-prompt, got nil")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
 // ── inboxKong core-path tests ─────────────────────────────────────────────────
 
 func TestInboxKong_PeekWithUnread(t *testing.T) {
