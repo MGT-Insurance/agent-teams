@@ -698,7 +698,7 @@ func TestSendKong_BusySession_NoOp(t *testing.T) {
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "busy"}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { resumeCalled = true; return nil },
 		sleeper:        func(time.Duration) { sleeperCalled = true },
 		doorbellExists: func(string) bool { return true },
 		respawnFunc:    func(string) error { respawnCalled = true; return nil },
@@ -737,7 +737,7 @@ func TestSendKong_WaitingSession_NoOp(t *testing.T) {
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "waiting"}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _ string) error { resumeCalled = true; return nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { resumeCalled = true; return nil },
 		sleeper:        func(time.Duration) {},
 		doorbellExists: func(string) bool { return true },
 		respawnFunc:    func(string) error { respawnCalled = true; return nil },
@@ -766,7 +766,7 @@ func TestSendKong_NoMatchingSession_EscalatesToResume(t *testing.T) {
 		RecipientID:    "at-kong-dead",
 		File:           sf.file,
 		agentsFunc:     func() ([]agentSession, error) { return []agentSession{}, nil },
-		resumeFunc:     func(_ *cli.Context, id string) error { resumedID = id; return nil },
+		resumeFunc:     func(_ *cli.Context, id, _, _ string) error { resumedID = id; return nil },
 		sleeper:        func(time.Duration) { t.Fatal("sleeper should not be called when no session matches") },
 		doorbellExists: func(string) bool { return true },
 		respawnFunc:    func(string) error { t.Fatal("respawn should not be called when no session matches"); return nil },
@@ -784,6 +784,40 @@ func TestSendKong_NoMatchingSession_EscalatesToResume(t *testing.T) {
 	}
 }
 
+func TestSendKong_ResumeEscalation_ThreadsLaunchPromptAndModel(t *testing.T) {
+	sf := newSendFixture(t)
+
+	var gotID, gotPrompt, gotModel string
+	cmd := &sendKong{
+		RecipientID:        "at-kong-dead",
+		File:               sf.file,
+		ResumeLaunchPrompt: "/agent-teams:review-pr at-kong-dead",
+		ResumeModel:        "sonnet",
+		agentsFunc:         func() ([]agentSession, error) { return []agentSession{}, nil },
+		resumeFunc: func(_ *cli.Context, id, prompt, model string) error {
+			gotID, gotPrompt, gotModel = id, prompt, model
+			return nil
+		},
+		sleeper:        func(time.Duration) { t.Fatal("sleeper should not be called when no session matches") },
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { t.Fatal("respawn should not be called when no session matches"); return nil },
+	}
+
+	ctx, _, _ := makeCtx(sf.fakeBD("at-kong-dead", "at-kong-msg9"), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotID != "at-kong-dead" {
+		t.Errorf("resume id = %q", gotID)
+	}
+	if gotPrompt != "/agent-teams:review-pr at-kong-dead" {
+		t.Errorf("resume launchPrompt = %q", gotPrompt)
+	}
+	if gotModel != "sonnet" {
+		t.Errorf("resume model = %q, want sonnet", gotModel)
+	}
+}
+
 func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
 	sf := newSendFixture(t)
 	var sleptFor time.Duration
@@ -794,7 +828,7 @@ func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
 		sleeper:        func(d time.Duration) { sleptFor = d },
 		doorbellExists: func(string) bool { return false }, // gone: a turn consumed it
 		respawnFunc:    func(string) error { respawnCalled = true; return nil },
@@ -824,7 +858,7 @@ func TestSendKong_IdleSession_DoorbellPresent_Respawns(t *testing.T) {
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
 		sleeper:        func(time.Duration) {},
 		doorbellExists: func(string) bool { return true }, // still present: recipient is deaf
 		respawnFunc:    func(id string) error { respawnedID = id; return nil },
@@ -852,7 +886,7 @@ func TestSendKong_PidlessSession_DoorbellPresent_Respawns(t *testing.T) {
 			// Tracked-but-dead: no Status, PID stays nil (zero value).
 			return []agentSession{{ID: "deadbeef", CWD: sf.recipientWt}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
 		sleeper:        func(time.Duration) {},
 		doorbellExists: func(string) bool { return true },
 		respawnFunc:    func(id string) error { respawnedID = id; return nil },
@@ -878,7 +912,7 @@ func TestSendKong_RespawnError_WarnsButSucceeds(t *testing.T) {
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _ string) error { t.Fatal("resume should not be called"); return nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
 		sleeper:        func(time.Duration) {},
 		doorbellExists: func(string) bool { return true },
 		respawnFunc:    func(string) error { return fmt.Errorf("exec: \"claude\": executable file not found in $PATH") },

@@ -20,10 +20,12 @@ import (
 // DI fields are tagged kong:"-" so kong ignores them; tests substitute fakes
 // without touching the struct registration.
 type sendKong struct {
-	RecipientID string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
-	File        string `name:"file"   help:"Path to the message body file (required)." required:""`
-	Sender      string `name:"sender" help:"Sender identifier (default: git user.name)."`
-	Thread      string `name:"thread" help:"Optional thread identifier label."`
+	RecipientID        string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
+	File               string `name:"file"   help:"Path to the message body file (required)." required:""`
+	Sender             string `name:"sender" help:"Sender identifier (default: git user.name)."`
+	Thread             string `name:"thread" help:"Optional thread identifier label."`
+	ResumeLaunchPrompt string `name:"resume-launch-prompt" help:"Launch prompt used if the recipient session is gone and must be resumed (default: /dri <id>)."`
+	ResumeModel        string `name:"resume-model" help:"Model for a resumed session (only meaningful with --resume-launch-prompt)."`
 
 	agentsFunc     agentsJSONFunc       `kong:"-"`
 	resumeFunc     resumeInitiativeFunc `kong:"-"`
@@ -104,7 +106,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	entry := matchSessionByWorktree(sessions, wtPath)
 	if entry == nil {
 		fmt.Fprintf(ctx.Stdout, "recipient not found in claude agents; launching via ateam resume\n")
-		if err := c.resumeFunc(ctx, c.RecipientID); err != nil {
+		if err := c.resumeFunc(ctx, c.RecipientID, c.ResumeLaunchPrompt, c.ResumeModel); err != nil {
 			return fmt.Errorf("ateam send: resume escalation: %w", err)
 		}
 		return nil
@@ -216,8 +218,9 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 type agentsJSONFunc func() ([]agentSession, error)
 
 // resumeInitiativeFunc is the function type for escalating to ateam resume.
+// launchPrompt/model are threaded through to resumeKong ("" = default /dri).
 // Injected so tests can substitute a fake.
-type resumeInitiativeFunc func(ctx *cli.Context, id string) error
+type resumeInitiativeFunc func(ctx *cli.Context, id, launchPrompt, model string) error
 
 // agentSession is the subset of fields from `claude agents --json` relevant
 // to ateam verbs.
@@ -273,8 +276,9 @@ func runAgentsJSON(args ...string) ([]agentSession, error) {
 }
 
 // defaultResume runs `ateam resume <id>` via the resumeKong directly.
-func defaultResume(ctx *cli.Context, id string) error {
-	cmd := &resumeKong{ID: id, launch: launchBGSession}
+// defaultResume runs `ateam resume <id>` via the resumeKong directly.
+func defaultResume(ctx *cli.Context, id, launchPrompt, model string) error {
+	cmd := &resumeKong{ID: id, LaunchPrompt: launchPrompt, Model: model, launch: launchBGSession, launchRaw: rawLaunchBGSession}
 	return cmd.Run(ctx)
 }
 
