@@ -166,3 +166,45 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 
 	return MatchResult{How: MatchNone}, nil
 }
+
+// matchClosedReviewInitiative finds the most recently created CLOSED
+// initiative whose pr: URL matches the event — the reopen target for a
+// re_review. Branch matching is deliberately not used here: closed
+// initiatives accumulate and repo+branch pairs recur across them, so only
+// the exact pr: URL is trustworthy.
+func matchClosedReviewInitiative(ctx *cli.Context, event PREvent) (MatchResult, error) {
+	var issues []bd.Issue
+	if err := ctx.BD.RunJSON(&issues, "list", "--status=closed", "--json"); err != nil {
+		return MatchResult{}, fmt.Errorf("matchClosedReviewInitiative: list closed initiatives: %w", err)
+	}
+	return matchClosedFromIssues(issues, event), nil
+}
+
+// matchClosedFromIssues is the pure core of matchClosedReviewInitiative.
+// Multiple matches resolve to the most recently created (RFC3339 CreatedAt
+// compares lexicographically) rather than erroring — old review initiatives
+// for the same PR are expected.
+func matchClosedFromIssues(issues []bd.Issue, event PREvent) MatchResult {
+	eventOwnerRepo := strings.ToLower(event.Repo)
+	var best *bd.Issue
+	for i := range issues {
+		prURL := extractPrURL(issues[i].Notes)
+		if prURL == "" {
+			prURL = extractPrURL(issues[i].Description)
+		}
+		if prURL == "" {
+			continue
+		}
+		ownerRepo, prNumber, ok := parsePrURL(prURL)
+		if !ok || ownerRepo != eventOwnerRepo || prNumber != event.PRNumber {
+			continue
+		}
+		if best == nil || issues[i].CreatedAt > best.CreatedAt {
+			best = &issues[i]
+		}
+	}
+	if best == nil {
+		return MatchResult{How: MatchNone}
+	}
+	return MatchResult{InitiativeID: best.ID, Worktree: worktreePath(best.Description), How: MatchPRField}
+}

@@ -735,3 +735,371 @@ func TestRoutePREventKong_UnownedReviewRequestedSkipsWhenUnconfigured(t *testing
 		t.Errorf("stdout should say 'skipping'; got: %q", stdout.String())
 	}
 }
+
+// ── re_review transition ──────────────────────────────────────────────────────
+
+// statusFakeBD serves different issue lists for --status=open vs --status=closed.
+type statusFakeBD struct {
+	open, closed []bd.Issue
+}
+
+func (f *statusFakeBD) Run(args ...string) (string, error) { return "", nil }
+
+func (f *statusFakeBD) RunJSON(dst any, args ...string) error {
+	out, ok := dst.(*[]bd.Issue)
+	if !ok || len(args) == 0 || args[0] != "list" {
+		return nil
+	}
+	for _, a := range args {
+		if a == "--status=closed" {
+			*out = f.closed
+			return nil
+		}
+	}
+	*out = f.open
+	return nil
+}
+
+// failRunner records calls like fakeRunner but fails any call whose first arg
+// equals failOn.
+type failRunner struct {
+	calls  [][]string
+	failOn string
+}
+
+func (f *failRunner) run(args ...string) error {
+	f.calls = append(f.calls, append([]string(nil), args...))
+	if len(args) > 0 && args[0] == f.failOn {
+		return fmt.Errorf("injected %s failure", f.failOn)
+	}
+	return nil
+}
+
+func makeStatusCtx(open, closed []bd.Issue) (*cli.Context, *bytes.Buffer, *bytes.Buffer) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	return &cli.Context{
+		Home:   "/fake/home",
+		BD:     &statusFakeBD{open: open, closed: closed},
+		Stdout: stdout,
+		Stderr: stderr,
+	}, stdout, stderr
+}
+
+func TestReReview_OpenMatch_SendsWithResumeFlags(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	issue := prFieldIssue("at-rr.1", "owner/myrepo", 42)
+	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %d, want 1 (send only)", len(runner.calls))
+	}
+	want := []string{"mail", "send", "at-rr.1", "--file", bodyFile, "--sender", "pr-shepherd",
+		"--resume-launch-prompt", "/agent-teams:review-pr at-rr.1", "--resume-model", "sonnet"}
+	if strings.Join(runner.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("send args = %v\nwant %v", runner.calls[0], want)
+	}
+}
+
+func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	closed := prFieldIssue("at-rr.2", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (reopen, send): %v", len(runner.calls), runner.calls)
+	}
+	if strings.Join(runner.calls[0], " ") != "reopen at-rr.2" {
+		t.Errorf("first call = %v, want reopen at-rr.2", runner.calls[0])
+	}
+	wantSend := []string{"mail", "send", "at-rr.2", "--file", bodyFile, "--sender", "pr-shepherd",
+		"--resume-launch-prompt", "/agent-teams:review-pr at-rr.2", "--resume-model", "sonnet"}
+	if strings.Join(runner.calls[1], " ") != strings.Join(wantSend, " ") {
+		t.Errorf("send args = %v\nwant %v", runner.calls[1], wantSend)
+	}
+	if !strings.Contains(stdout.String(), "reopening") {
+		t.Errorf("stdout missing reopen notice: %s", stdout.String())
+	}
+}
+
+func TestReReview_NoInitiative_FallsBackToSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	// Point ctx.BD at a status-aware fake with no issues at all.
+	ctx.BD = &statusFakeBD{}
+	// Configure the review-repos mapping so spawn proceeds.
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0][0] != "dispatch" {
+		t.Fatalf("calls = %v, want a single dispatch call", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "no prior initiative") {
+		t.Errorf("stdout missing spawn-fallback notice: %s", stdout.String())
+	}
+}
+
+func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	closed := prFieldIssue("at-rr.3", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &failRunner{failOn: "reopen"}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// reopen (failed), then dispatch fallback — no send.
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "dispatch" {
+		t.Fatalf("calls = %v, want [reopen, dispatch]", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "reopen at-rr.3 failed") {
+		t.Errorf("stdout missing reopen-failure notice: %s", stdout.String())
+	}
+}
+
+func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	closed := prFieldIssue("at-rr.4", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &failRunner{failOn: "mail"}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// reopen (success), send/mail (failed), then dispatch fallback.
+	if len(runner.calls) != 3 {
+		t.Fatalf("calls = %d, want 3 [reopen, mail send, dispatch]: %v", len(runner.calls), runner.calls)
+	}
+	if runner.calls[0][0] != "reopen" {
+		t.Errorf("calls[0][0]: got %q, want \"reopen\"", runner.calls[0][0])
+	}
+	if runner.calls[1][0] != "mail" {
+		t.Errorf("calls[1][0]: got %q, want \"mail\"", runner.calls[1][0])
+	}
+	if runner.calls[2][0] != "dispatch" {
+		t.Errorf("calls[2][0]: got %q, want \"dispatch\"", runner.calls[2][0])
+	}
+	outStr := stdout.String()
+	if !strings.Contains(outStr, "send to") {
+		t.Errorf("stdout should contain 'send to' failure notice; got: %s", outStr)
+	}
+}
+
+func TestReReview_OtherTransitionSendHasNoResumeFlags(t *testing.T) {
+	bodyFile := writeTempFile(t, "ci failed body")
+	issue := prFieldIssue("at-ci.1", "owner/myrepo", 42)
+	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCIFailed, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, arg := range runner.calls[0] {
+		if arg == "--resume-launch-prompt" {
+			t.Errorf("non-re_review send must not carry --resume-launch-prompt: %v", runner.calls[0])
+		}
+	}
+}
+
+// ── comment_reply transition ──────────────────────────────────────────────────
+
+func TestCommentReply_OpenMatch_PlainSendNoResumeFlags(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	issue := prFieldIssue("at-cr.1", "owner/myrepo", 42)
+	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %d, want 1 (send only)", len(runner.calls))
+	}
+	want := []string{"mail", "send", "at-cr.1", "--file", bodyFile, "--sender", "pr-shepherd"}
+	if strings.Join(runner.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("send args = %v\nwant %v (no resume flags on open match)", runner.calls[0], want)
+	}
+}
+
+func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	closed := prFieldIssue("at-cr.2", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (reopen, send): %v", len(runner.calls), runner.calls)
+	}
+	if strings.Join(runner.calls[0], " ") != "reopen at-cr.2" {
+		t.Errorf("first call = %v, want reopen at-cr.2", runner.calls[0])
+	}
+	wantSend := []string{"mail", "send", "at-cr.2", "--file", bodyFile, "--sender", "pr-shepherd",
+		"--resume-launch-prompt", "/agent-teams:review-pr at-cr.2 comment-reply", "--resume-model", "sonnet"}
+	if strings.Join(runner.calls[1], " ") != strings.Join(wantSend, " ") {
+		t.Errorf("send args = %v\nwant %v", runner.calls[1], wantSend)
+	}
+	if !strings.Contains(stdout.String(), "reopening") {
+		t.Errorf("stdout missing reopen notice: %s", stdout.String())
+	}
+}
+
+func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{}
+	// Configure review-repos so a spawn WOULD be possible — proving the drop
+	// is deliberate, not a missing-config accident.
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls = %v, want none (no spawn for comment_reply)", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "no initiative") {
+		t.Errorf("stdout missing drop notice: %s", stdout.String())
+	}
+}
+
+func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	closed := prFieldIssue("at-cr.3", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &failRunner{failOn: "reopen"}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0][0] != "reopen" {
+		t.Fatalf("calls = %v, want [reopen] only", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "dropping") {
+		t.Errorf("stdout missing drop notice: %s", stdout.String())
+	}
+}
+
+func TestCommentReply_SendFails_DropsWithoutSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	closed := prFieldIssue("at-cr.4", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &failRunner{failOn: "mail"}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 3 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" || runner.calls[2][0] != "close" {
+		t.Fatalf("calls = %v, want [reopen, mail, close] and no dispatch", runner.calls)
+	}
+	wantClose := []string{"close", "at-cr.4", "--reason", "comment-reply send failed; restoring closed state"}
+	if gotClose := runner.calls[2]; strings.Join(gotClose, "\x00") != strings.Join(wantClose, "\x00") {
+		t.Errorf("close call = %v, want %v", gotClose, wantClose)
+	}
+	if !strings.Contains(stdout.String(), "comment-reply event dropped") {
+		t.Errorf("stdout missing dropped notice: %s", stdout.String())
+	}
+}

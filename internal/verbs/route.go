@@ -20,7 +20,7 @@ type routePREventKong struct {
 	Repo       string       `name:"repo"        help:"Owner/repo (e.g. owner/myrepo)."     required:""`
 	PRNumber   int          `name:"pr-number"   help:"Pull request number (positive int)."  required:""`
 	HeadBranch string       `name:"head-branch" help:"Head branch of the pull request."     required:""`
-	Transition PRTransition `name:"transition"  help:"PR event transition."                 required:"" enum:"ci_failed,changes_requested,review_requested,bot_findings,approved,merged,stale,other"`
+	Transition PRTransition `name:"transition"  help:"PR event transition."                 required:"" enum:"ci_failed,changes_requested,review_requested,bot_findings,approved,merged,stale,re_review,comment_reply,other"`
 	BodyFile   string       `name:"body-file"   help:"Path to the event body file."         required:""`
 	PRURL      string       `name:"pr-url"      help:"Full PR URL (optional, for logging)."`
 	runner     ateamRunner  `kong:"-"`
@@ -59,7 +59,7 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 	case result.How == MatchPRField || result.How == MatchBranch:
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via mail send\n",
 			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
-		if err := c.runner("mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd"); err != nil {
+		if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
 			return fmt.Errorf("ateam route-pr-event: send: %w", err)
 		}
 		return nil
@@ -67,11 +67,112 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 	case c.Transition == TransitionReviewRequested:
 		return c.spawnReviewInitiative(ctx, event)
 
+	case c.Transition == TransitionReReview:
+		return c.routeReReview(ctx, event)
+
+	case c.Transition == TransitionCommentReply:
+		return c.routeCommentReply(ctx, event)
+
 	default:
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: unowned %s for %s#%d — no owning initiative; skipping\n",
 			c.Transition, c.Repo, c.PRNumber)
 		return nil
 	}
+}
+
+// sendArgs builds the mail-send argv for routing the event body to id. A
+// re_review send threads the reviewer launch prompt so a dead session is
+// resumed as a reviewer on sonnet (matching the spawn path), never a DRI.
+func (c *routePREventKong) sendArgs(id string) []string {
+	args := []string{"mail", "send", id, "--file", c.BodyFile, "--sender", "pr-shepherd"}
+	if c.Transition == TransitionReReview {
+		args = append(args,
+			"--resume-launch-prompt", "/agent-teams:review-pr "+id,
+			"--resume-model", "sonnet")
+	}
+	return args
+}
+
+// routeReReview handles transition=re_review when no open initiative owns
+// the PR: reopen the closed review initiative and mail it the re-review
+// request. A fresh spawn is the fallback at every step — no prior
+// initiative, reopen failure, or send failure (e.g. deleted worktree) all
+// degrade to a new review initiative rather than dropping the event.
+// Caveat: if reopen succeeds but the send fails, the spawn fallback leaves
+// TWO open initiatives for the same PR (the reopened one never got the
+// mail); a later poll may then hit matchInitiative's ambiguity error and
+// need manual cleanup (close one). Accepted: rare, and losing the re-review
+// event silently would be worse.
+func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error {
+	result, err := matchClosedReviewInitiative(ctx, event)
+	if err != nil {
+		return fmt.Errorf("ateam route-pr-event: re-review match: %w", err)
+	}
+	if result.How == MatchNone {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review for %s#%d has no prior initiative — spawning fresh review\n",
+			event.Repo, event.PRNumber)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
+		result.InitiativeID, event.Repo, event.PRNumber)
+	if err := c.runner("reopen", result.InitiativeID); err != nil {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — spawning fresh review\n",
+			result.InitiativeID, err)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — spawning fresh review\n",
+			result.InitiativeID, err)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	return nil
+}
+
+// routeCommentReply handles transition=comment_reply when no open initiative
+// owns the PR: reopen the closed review initiative and mail it the reply so
+// the relaunched session can respond in-thread (the resume prompt carries the
+// comment-reply mode argument). Unlike re_review there is NO spawn fallback —
+// a fresh full review is the wrong response to a comment — so no-match,
+// reopen failure, and send failure all log and drop the event. A drop is
+// terminal for THIS event (pr-shepherd's cursor advances regardless); the
+// recovery mechanism is thread re-derivation — the comment-reply session
+// reads whole threads from GitHub, so the next reply on the PR re-triggers
+// routing and the relaunched session answers the dropped reply too.
+func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) error {
+	result, err := matchClosedReviewInitiative(ctx, event)
+	if err != nil {
+		return fmt.Errorf("ateam route-pr-event: comment-reply match: %w", err)
+	}
+	if result.How == MatchNone {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply for %s#%d has no initiative — skipping\n",
+			event.Repo, event.PRNumber)
+		return nil
+	}
+	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
+		result.InitiativeID, event.Repo, event.PRNumber)
+	if err := c.runner("reopen", result.InitiativeID); err != nil {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — dropping comment-reply event\n",
+			result.InitiativeID, err)
+		return nil
+	}
+	sendArgs := []string{"mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd",
+		"--resume-launch-prompt", "/agent-teams:review-pr " + result.InitiativeID + " comment-reply",
+		"--resume-model", "sonnet"}
+	if err := c.runner(sendArgs...); err != nil {
+		// Compensating close: leaving the initiative open would capture ALL
+		// future events for this PR on the open-match branch (and fail the
+		// same way). Restore the closed state so later events re-match via
+		// matchClosedReviewInitiative. Best-effort — a close failure only
+		// costs us the same zombie we'd otherwise have.
+		if closeErr := c.runner("close", result.InitiativeID, "--reason", "comment-reply send failed; restoring closed state"); closeErr != nil {
+			fmt.Fprintf(ctx.Stdout, "route-pr-event: compensating close of %s also failed (%v) — initiative left open, needs manual close\n",
+				result.InitiativeID, closeErr)
+		}
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — comment-reply event dropped\n",
+			result.InitiativeID, err)
+		return nil
+	}
+	return nil
 }
 
 // RegisterRouteEventKong registers route-pr-event as a native kong verb onto p.
