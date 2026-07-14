@@ -75,6 +75,16 @@ export class SnapshotManager {
   private onSnapshot: ((event: SnapshotEvent) => void) | null = null;
   // Cross-poll continuity for stampTransitions (agent-teams-ni2y.8).
   private readonly transitions: TransitionMap = new Map();
+  // Per-slice last-known-good raw CLI output, for partial-failure tolerance
+  // (agent-teams-assa.1) — carried across ticks so a killed subprocess call
+  // falls back to the previous good value instead of blanking that slice.
+  private readonly lastGood: LastGoodSlices = {};
+  // True while a poll() is awaiting buildSnapshot — guards against overlapping
+  // ticks stacking under transient contention (agent-teams-assa.1).
+  private inFlight = false;
+  // Counts consecutive skipped ticks so the skip is logged once per streak,
+  // not once per tick, while a backlog persists.
+  private skipStreak = 0;
 
   // Kick off the poll loop and immediately build the first snapshot.
   start(onSnapshot: (event: SnapshotEvent) => void): void {
@@ -95,8 +105,17 @@ export class SnapshotManager {
   }
 
   private async poll(): Promise<void> {
+    if (this.inFlight) {
+      this.skipStreak++;
+      if (this.skipStreak === 1) {
+        console.warn("[snapshot] tick skipped: previous poll still in flight");
+      }
+      return;
+    }
+    this.inFlight = true;
+    this.skipStreak = 0;
     try {
-      const event = await buildSnapshot(this.transitions);
+      const event = await buildSnapshot(this.transitions, Date.now(), this.lastGood);
       this.latest = event;
       this.onSnapshot?.(event);
     } catch (err) {
@@ -107,25 +126,79 @@ export class SnapshotManager {
       } else {
         console.error("[snapshot] unexpected error:", err);
       }
+    } finally {
+      this.inFlight = false;
     }
   }
+}
+
+// Per-slice last-known-good raw CLI JSON, keyed by slice name. Threaded through
+// buildSnapshot the same way `transitions` is: an optional mutable map the
+// caller owns and reuses across ticks (agent-teams-assa.1).
+export type LastGoodSlices = {
+  listJsonRaw?: string;
+  closedJsonRaw?: string;
+  agentsRaw?: string;
+  humanRaw?: string;
+};
+
+// Raw-JSON fallback for a slice with no prior last-known-good value (cold
+// start): every slice is a JSON array, so "[]" parses cleanly into an empty
+// list rather than throwing and discarding the rest of the snapshot.
+const EMPTY_JSON_ARRAY = "[]";
+
+// Resolve one Promise.allSettled result to a raw JSON string: the fresh value
+// on success (also recorded into lastGood for future ticks), or the previous
+// last-known-good value (falling back to an empty array if none exists yet)
+// on failure. A failed call must not blank an otherwise-healthy snapshot.
+function resolveSlice(
+  result: PromiseSettledResult<string>,
+  cliName: string,
+  lastGood: LastGoodSlices | undefined,
+  key: keyof LastGoodSlices,
+): string {
+  if (result.status === "fulfilled") {
+    if (lastGood) lastGood[key] = result.value;
+    return result.value;
+  }
+  const reason = result.reason;
+  if (reason instanceof CliError) {
+    console.error(`[snapshot] ${cliName} failed, keeping last-known-good: ${reason.message}`);
+  } else {
+    console.error(`[snapshot] ${cliName} failed, keeping last-known-good:`, reason);
+  }
+  return lastGood?.[key] ?? EMPTY_JSON_ARRAY;
 }
 
 // Build one SnapshotEvent by calling all CLIs in parallel where possible.
 // transitions: the SnapshotManager's cross-poll map (agent-teams-ni2y.8). Omitted by
 // ad-hoc/endpoint-fallback callers (index.ts, before the first poll) -> buildInbox
 // degrades gracefully to lastActivityAt = updated_at.
-export async function buildSnapshot(transitions?: TransitionMap, now = Date.now()): Promise<SnapshotEvent> {
+// lastGood: the SnapshotManager's cross-poll last-known-good raw slices
+// (agent-teams-assa.1). Omitted by ad-hoc/endpoint-fallback callers -> a failed
+// call in that one-shot degrades to an empty slice instead of failing outright.
+export async function buildSnapshot(
+  transitions?: TransitionMap,
+  now = Date.now(),
+  lastGood?: LastGoodSlices,
+): Promise<SnapshotEvent> {
   // ateam ws is a prerequisite for bdHumanList, so fetch it first.
   const ws = await ateamWs();
 
-  // Fetch open initiatives, closed initiatives, agents, and human-gated list in parallel.
-  const [listJsonRaw, closedJsonRaw, agentsRaw, humanRaw] = await Promise.all([
+  // Fetch open initiatives, closed initiatives, agents, and human-gated list in
+  // parallel. allSettled (not all): one killed/failed subprocess call must not
+  // discard the snapshot slices that did succeed (agent-teams-assa.1).
+  const [listResult, closedResult, agentsResult, humanResult] = await Promise.allSettled([
     ateamListJson(),
     bdClosedInitiatives(ws),
     claudeAgentsJson(),
     bdHumanList(ws),
   ]);
+
+  const listJsonRaw = resolveSlice(listResult, "ateam list-json", lastGood, "listJsonRaw");
+  const closedJsonRaw = resolveSlice(closedResult, "bd closed initiatives", lastGood, "closedJsonRaw");
+  const agentsRaw = resolveSlice(agentsResult, "claude agents", lastGood, "agentsRaw");
+  const humanRaw = resolveSlice(humanResult, "bd human list", lastGood, "humanRaw");
 
   const openInitiatives = parseAteamListJson(listJsonRaw);
   const closedInitiatives = parseAteamListJson(closedJsonRaw);
