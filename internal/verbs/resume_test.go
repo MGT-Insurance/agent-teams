@@ -272,3 +272,85 @@ func TestResume_HappyPath(t *testing.T) {
 		}
 	}
 }
+
+// ---- resumeKong: --launch-prompt -------------------------------------------
+
+func TestResume_CustomLaunchPromptUsesRawLaunch(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-rr1", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var gotDir, gotPrompt, gotModel string
+	cmd := &resumeKong{
+		ID:           "at-rr1",
+		LaunchPrompt: "/agent-teams:review-pr at-rr1",
+		Model:        "sonnet",
+		launch: func(_ *cli.Context, _, _ string) error {
+			t.Fatal("launch called; want launchRaw for --launch-prompt")
+			return nil
+		},
+		launchRaw: func(_ *cli.Context, d, p, m, _ string) error {
+			gotDir, gotPrompt, gotModel = d, p, m
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotDir != dir {
+		t.Errorf("launchRaw dir = %q, want %q", gotDir, dir)
+	}
+	if gotPrompt != "/agent-teams:review-pr at-rr1" {
+		t.Errorf("launchRaw prompt = %q", gotPrompt)
+	}
+	if gotModel != "sonnet" {
+		t.Errorf("launchRaw model = %q, want sonnet", gotModel)
+	}
+}
+
+func TestResume_NoLaunchPromptUsesDriLaunch(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-rr2", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var gotArg string
+	cmd := &resumeKong{
+		ID: "at-rr2",
+		launch: func(_ *cli.Context, _, arg string) error {
+			gotArg = arg
+			return nil
+		},
+		launchRaw: func(_ *cli.Context, _, _, _, _ string) error {
+			t.Fatal("launchRaw called; want launch for default path")
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotArg != "at-rr2" {
+		t.Errorf("launch driArg = %q, want at-rr2", gotArg)
+	}
+}
+
+func TestResume_ModelWithoutLaunchPromptRejected(t *testing.T) {
+	err := (&resumeKong{ID: "at-x", Model: "sonnet"}).Validate()
+	if err == nil {
+		t.Fatal("expected UsageError for --model without --launch-prompt, got nil")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}

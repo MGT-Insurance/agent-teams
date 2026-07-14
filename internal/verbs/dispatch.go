@@ -26,7 +26,8 @@ func RegisterDispatchKong(p *cli.Parser) {
 		createEpic: createEpicInRepo,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
-		launch: launchBGSession,
+		launch:    launchBGSession,
+		launchRaw: rawLaunchBGSession,
 	})
 }
 
@@ -278,18 +279,24 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 // ---- resume (kong) ----------------------------------------------------------
 
 // resumeKong is the kong-native form of resume.
-// launch is injected at registration time; kong:"-" keeps kong from treating it
-// as a flag.
+// launch/launchRaw are injected at registration time; kong:"-" keeps kong
+// from treating them as flags.
 type resumeKong struct {
-	ID string `arg:"" name:"id" optional:"" help:"Initiative ID to resume."`
+	ID           string `arg:"" name:"id" optional:"" help:"Initiative ID to resume."`
+	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: /dri <id>)."`
+	Model        string `name:"model" help:"Model for a --launch-prompt session (default: opus). Requires --launch-prompt."`
 
-	launch launchFunc `kong:"-"`
+	launch    launchFunc    `kong:"-"`
+	launchRaw rawLaunchFunc `kong:"-"`
 }
 
 // Validate checks that the required ID arg is non-empty.
 func (c *resumeKong) Validate() error {
 	if c.ID == "" {
 		return cli.Usagef("ateam resume: <id> is required")
+	}
+	if c.Model != "" && c.LaunchPrompt == "" {
+		return cli.Usagef("ateam resume: --model requires --launch-prompt")
 	}
 	return nil
 }
@@ -322,8 +329,14 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
-	if err := c.launch(ctx, dir, c.ID); err != nil {
-		return err
+	var launchErr error
+	if c.LaunchPrompt != "" {
+		launchErr = c.launchRaw(ctx, dir, c.LaunchPrompt, c.Model, "")
+	} else {
+		launchErr = c.launch(ctx, dir, c.ID)
+	}
+	if launchErr != nil {
+		return launchErr
 	}
 
 	sessionName := filepath.Base(dir)
