@@ -18,6 +18,7 @@ const (
 	TransitionApproved         PRTransition = "approved"
 	TransitionMerged           PRTransition = "merged"
 	TransitionStale            PRTransition = "stale"
+	TransitionReReview         PRTransition = "re_review"
 	TransitionOther            PRTransition = "other"
 )
 

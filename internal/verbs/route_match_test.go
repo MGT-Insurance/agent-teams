@@ -487,3 +487,45 @@ func TestMatchResult_NoneZeroValue(t *testing.T) {
 		t.Errorf("zero MatchResult.How: want MatchNone, got %v", r.How)
 	}
 }
+
+// ── matchClosedFromIssues ─────────────────────────────────────────────────────
+
+func TestMatchClosed_PicksMostRecentlyCreated(t *testing.T) {
+	older := prFieldIssue("at-old.1", "owner/myrepo", 42)
+	older.Status = "closed"
+	older.CreatedAt = "2026-07-01T00:00:00Z"
+	newer := prFieldIssue("at-new.1", "owner/myrepo", 42)
+	newer.Status = "closed"
+	newer.CreatedAt = "2026-07-10T00:00:00Z"
+
+	got := matchClosedFromIssues([]bd.Issue{older, newer}, PREvent{Repo: "owner/myrepo", PRNumber: 42})
+	if got.How != MatchPRField {
+		t.Fatalf("How = %v, want MatchPRField", got.How)
+	}
+	if got.InitiativeID != "at-new.1" {
+		t.Errorf("InitiativeID = %q, want at-new.1 (most recent)", got.InitiativeID)
+	}
+	if got.Worktree != "/tmp/wt-at-new.1" {
+		t.Errorf("Worktree = %q", got.Worktree)
+	}
+}
+
+func TestMatchClosed_NoMatchReturnsMatchNone(t *testing.T) {
+	other := prFieldIssue("at-other.1", "owner/otherrepo", 7)
+	other.Status = "closed"
+
+	got := matchClosedFromIssues([]bd.Issue{other}, PREvent{Repo: "owner/myrepo", PRNumber: 42})
+	if got.How != MatchNone {
+		t.Errorf("How = %v, want MatchNone", got.How)
+	}
+}
+
+func TestMatchClosed_IgnoresBranchOnlyIssues(t *testing.T) {
+	branchOnly := branchIssue("at-br.1", "myrepo", "feat-x")
+	branchOnly.Status = "closed"
+
+	got := matchClosedFromIssues([]bd.Issue{branchOnly}, PREvent{Repo: "owner/myrepo", PRNumber: 42})
+	if got.How != MatchNone {
+		t.Errorf("How = %v, want MatchNone — closed matching is pr-field only", got.How)
+	}
+}

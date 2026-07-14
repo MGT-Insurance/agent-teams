@@ -20,7 +20,7 @@ type routePREventKong struct {
 	Repo       string       `name:"repo"        help:"Owner/repo (e.g. owner/myrepo)."     required:""`
 	PRNumber   int          `name:"pr-number"   help:"Pull request number (positive int)."  required:""`
 	HeadBranch string       `name:"head-branch" help:"Head branch of the pull request."     required:""`
-	Transition PRTransition `name:"transition"  help:"PR event transition."                 required:"" enum:"ci_failed,changes_requested,review_requested,bot_findings,approved,merged,stale,other"`
+	Transition PRTransition `name:"transition"  help:"PR event transition."                 required:"" enum:"ci_failed,changes_requested,review_requested,bot_findings,approved,merged,stale,re_review,other"`
 	BodyFile   string       `name:"body-file"   help:"Path to the event body file."         required:""`
 	PRURL      string       `name:"pr-url"      help:"Full PR URL (optional, for logging)."`
 	runner     ateamRunner  `kong:"-"`
@@ -59,7 +59,7 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 	case result.How == MatchPRField || result.How == MatchBranch:
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via mail send\n",
 			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
-		if err := c.runner("mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd"); err != nil {
+		if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
 			return fmt.Errorf("ateam route-pr-event: send: %w", err)
 		}
 		return nil
@@ -67,11 +67,57 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 	case c.Transition == TransitionReviewRequested:
 		return c.spawnReviewInitiative(ctx, event)
 
+	case c.Transition == TransitionReReview:
+		return c.routeReReview(ctx, event)
+
 	default:
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: unowned %s for %s#%d — no owning initiative; skipping\n",
 			c.Transition, c.Repo, c.PRNumber)
 		return nil
 	}
+}
+
+// sendArgs builds the mail-send argv for routing the event body to id. A
+// re_review send threads the reviewer launch prompt so a dead session is
+// resumed as a reviewer on sonnet (matching the spawn path), never a DRI.
+func (c *routePREventKong) sendArgs(id string) []string {
+	args := []string{"mail", "send", id, "--file", c.BodyFile, "--sender", "pr-shepherd"}
+	if c.Transition == TransitionReReview {
+		args = append(args,
+			"--resume-launch-prompt", "/agent-teams:review-pr "+id,
+			"--resume-model", "sonnet")
+	}
+	return args
+}
+
+// routeReReview handles transition=re_review when no open initiative owns
+// the PR: reopen the closed review initiative and mail it the re-review
+// request. A fresh spawn is the fallback at every step — no prior
+// initiative, reopen failure, or send failure (e.g. deleted worktree) all
+// degrade to a new review initiative rather than dropping the event.
+func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error {
+	result, err := matchClosedReviewInitiative(ctx, event)
+	if err != nil {
+		return fmt.Errorf("ateam route-pr-event: re-review match: %w", err)
+	}
+	if result.How == MatchNone {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review for %s#%d has no prior initiative — spawning fresh review\n",
+			event.Repo, event.PRNumber)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
+		result.InitiativeID, event.Repo, event.PRNumber)
+	if err := c.runner("reopen", result.InitiativeID); err != nil {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — spawning fresh review\n",
+			result.InitiativeID, err)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — spawning fresh review\n",
+			result.InitiativeID, err)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	return nil
 }
 
 // RegisterRouteEventKong registers route-pr-event as a native kong verb onto p.
