@@ -124,7 +124,7 @@ This emits a JSON packet to stdout:
 }
 ```
 
-Read ALL memory bodies from this packet. These are the full cold + hot contents for the role (fresh has already been drained into cold). Apply the condense procedure below autonomously for this role.
+Read ALL memory bodies from this packet. These are the full cold + hot contents for the role (fresh has already been drained into cold). The keys that step 3a JUST moved out of `<role>:fresh:*` are the **primary promotion candidates** — they were being SERVED to every session (via hot ∪ fresh) right up until the drain, so they are not settled cold: they are un-curated served learnings awaiting a hot/cold verdict. Apply the condense procedure below autonomously for this role.
 
 ### Step 4 — Release the lock
 
@@ -147,6 +147,10 @@ This procedure is autonomous — NO human-review gate. Safety rests on Dolt hist
 ### Design the hot set (BEFORE writing anything)
 
 IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. `ateam learnings <role>` serves hot ∪ fresh; because `ateam fresh-drain <role>` already ran, the fresh set is empty here — so a partial hot set would under-serve the next session. Design the complete hot set first, then write all hot keys as a batch.
+
+**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key step 3a drained out of fresh was being injected into every session until now. Any drained key you leave in cold is SILENTLY DEMOTED out of that injection. Therefore you MUST explicitly decide, for each drained (previously-served) key, hot vs cold — do not let them settle into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the 6000-token budget is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal drained learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
+
+**Promote vs. archive — a drained key earns a hot slot only if it is a concise, self-contained learning carrying NET-NEW signal (a RULE/gotcha not already covered by an existing hot entry). Do NOT blind-promote a raw, verbose entry that is the pre-distillation SOURCE of an existing hot entry (tell: a longer body under a near-duplicate slug, e.g. cold `go-advisory-lock-pattern` vs hot `advisory-lock`) — promoting it de-distills hot. Such raw archive stays in cold; if it carries a nuance the hot entry lacks, MERGE that nuance into the existing hot entry instead of adding a second entry.**
 
 Design principles:
 - Select the highest-signal learnings: recurring process rules, hard-won gotchas, ship constraints, cardinal rules — anything whose loss causes a wrong or expensive action.
