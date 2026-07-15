@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -632,6 +633,105 @@ func (c *forgetKong) Run(ctx *cli.Context) error {
 	return err
 }
 
+// ── applied ───────────────────────────────────────────────────────────────────
+
+// appliedRecord is the JSON body shape stored at an applied:<role>:<slug> key.
+type appliedRecord struct {
+	Count       int    `json:"count"`
+	LastApplied string `json:"last_applied"`
+}
+
+// appliedKey computes the bd memory key for an applied-signal record. slug is
+// the BARE slug (the part after any hot:/fresh:/cold: tier prefix) — the
+// applied counter is deliberately tier-independent (contract
+// agent-teams-u71p.1), and the "applied:" top-level prefix keeps it out of
+// every existing "<role>:" scan (condense, fresh-drain, etc.).
+func appliedKey(role, slug string) string {
+	return "applied:" + role + ":" + slug
+}
+
+// appliedKong is the kong-converted form of applied.
+// Takes positional <role> and <slug> (bare slug, no tier prefix).
+type appliedKong struct {
+	Role string `arg:"" name:"role" help:"Role name (e.g. planner, implementer)."`
+	Slug string `arg:"" name:"slug" help:"Bare learning slug (the part after any hot:/fresh:/cold: tier prefix)."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+// Behavior is read-modify-write against the global memory KV: read the
+// current applied:<role>:<slug> record (defaulting to count 0 if absent or
+// malformed), increment the count, stamp last_applied to now (UTC RFC3339),
+// and write it back via the same "remember" path ateam learn uses. This is a
+// rough signal — non-atomic RMW is an accepted tradeoff (contract
+// agent-teams-u71p.1).
+func (c *appliedKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam applied: no context")
+	}
+	key := appliedKey(c.Role, c.Slug)
+
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	var rec appliedRecord
+	if v, ok := raw[key]; ok {
+		if s, ok := v.(string); ok {
+			// Best-effort parse; a malformed/absent existing body starts
+			// fresh at count 0 rather than erroring — rough signal.
+			_ = json.Unmarshal([]byte(s), &rec)
+		}
+	}
+	rec.Count++
+	rec.LastApplied = time.Now().UTC().Format(time.RFC3339)
+
+	body, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+
+	out, err := ctx.BD.Run("remember", "--key="+key, string(body))
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
+}
+
+// condenseBareSlug derives the bare slug (no tier prefix) from a "<role>:..."
+// memory key, given rolePrefix = "<role>:". A key of role:hot:<slug> or
+// role:fresh:<slug> strips the tier tag; a bare/cold key role:<slug> (no tier
+// tag) passes through unchanged.
+func condenseBareSlug(rolePrefix, key string) string {
+	rest := strings.TrimPrefix(key, rolePrefix)
+	if s, ok := strings.CutPrefix(rest, "hot:"); ok {
+		return s
+	}
+	if s, ok := strings.CutPrefix(rest, "fresh:"); ok {
+		return s
+	}
+	return rest
+}
+
+// lookupApplied reads the sibling applied:<role>:<slug> record (if any) out
+// of the already-fetched memories map and returns its count/last_applied.
+// Absent or malformed records return (0, "").
+func lookupApplied(raw map[string]any, role, slug string) (count int, lastApplied string) {
+	v, ok := raw[appliedKey(role, slug)]
+	if !ok {
+		return 0, ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return 0, ""
+	}
+	var rec appliedRecord
+	if err := json.Unmarshal([]byte(s), &rec); err != nil {
+		return 0, ""
+	}
+	return rec.Count, rec.LastApplied
+}
+
 // ── condense ──────────────────────────────────────────────────────────────────
 
 // condenseBudgetTokens is the hot-tier token budget the condense agent targets.
@@ -652,9 +752,13 @@ Rules:
 - v1 has NO eviction floor — trust Dolt history for recoverability`
 
 // condenseMemory is a single memory record in the condense packet.
+// AppliedCount/LastApplied are joined from the memory's sibling
+// applied:<role>:<slug> record (0/"" when no applied-signal exists yet).
 type condenseMemory struct {
-	Key  string `json:"key"`
-	Body string `json:"body"`
+	Key          string `json:"key"`
+	Body         string `json:"body"`
+	AppliedCount int    `json:"applied_count"`
+	LastApplied  string `json:"last_applied"`
 }
 
 // condensePacket is the full structured packet emitted to stdout.
@@ -695,7 +799,14 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 
 	memories := make([]condenseMemory, 0, len(keys))
 	for _, k := range keys {
-		memories = append(memories, condenseMemory{Key: k, Body: raw[k].(string)})
+		slug := condenseBareSlug(prefix, k)
+		appliedCount, lastApplied := lookupApplied(raw, c.Role, slug)
+		memories = append(memories, condenseMemory{
+			Key:          k,
+			Body:         raw[k].(string),
+			AppliedCount: appliedCount,
+			LastApplied:  lastApplied,
+		})
 	}
 
 	packet := condensePacket{
@@ -895,6 +1006,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("pull", "Pull the remote beads database (dolt pull).", &pullKong{})
 	p.AddVerb("sync", "Pull then push the beads database (bounded non-ff retry).", &syncKong{})
 	p.AddVerb("forget", "Delete a role memory by key.", &forgetKong{})
+	p.AddVerb("applied", "Record an applied-signal for a role's learning (bumps count + last_applied).", &appliedKong{})
 	p.AddVerb("condense", "Emit a structured memory packet for a role.", &condenseKong{})
 	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
 	p.AddVerb("update-description", "Update an initiative's description from a file.", &updateDescriptionKong{})
