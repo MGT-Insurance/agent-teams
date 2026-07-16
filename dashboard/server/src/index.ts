@@ -11,6 +11,7 @@
 //   POST /api/mail/send                       -> MailSendResponse | { error } (shells `ateam mail send`)
 //   POST /api/mail/:id/close                  -> { ok: true } | { error } (shells `ateam mail close`)
 //   POST /api/mail/purge                      -> MailPurgeResponse | { error } (shells `ateam mail purge`)
+//   GET  /api/memories                        -> MemoryListResponse (shells `ateam memories-json`)
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -33,10 +34,12 @@ import {
   ateamSend,
   ateamMailClose,
   ateamMailPurge,
+  ateamMemoriesJson,
 } from "./cli.js";
 import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
 import { normalizeMailJson } from "./mail.js";
+import { normalizeMemoriesJson } from "./memories.js";
 import { splitNotesBlocks } from "./notes.js";
 import { SseRegistry } from "./sse.js";
 import { SnapshotManager } from "./snapshot.js";
@@ -508,6 +511,20 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     try {
       const output = await ateamMailPurge({ olderThan, dryRun });
       json(res, 200, { ok: true, output });
+    } catch (err) {
+      json(res, 502, {
+        error: err instanceof CliError ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // GET /api/memories
+  if (method === "GET" && path === "/api/memories") {
+    try {
+      const raw = await ateamMemoriesJson();
+      const memories = normalizeMemoriesJson(raw);
+      json(res, 200, { memories });
     } catch (err) {
       json(res, 502, {
         error: err instanceof CliError ? err.message : String(err),

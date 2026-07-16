@@ -8,6 +8,7 @@ import type {
   MailSendResponse,
   MailPurgeRequest,
   MailPurgeResponse,
+  MemoryListResponse,
 } from "@agent-teams/shared";
 import { API_PATHS } from "@agent-teams/shared";
 
@@ -114,4 +115,9 @@ export async function purgeMail(req: MailPurgeRequest): Promise<MailPurgeRespons
     throw new Error(body.error ?? `POST ${API_PATHS.mailPurge} failed: ${res.status}`);
   }
   return body as MailPurgeResponse;
+}
+
+// GET /api/memories — one-shot fetch of all role memories (tier + applied signal joined in).
+export function fetchMemories(): Promise<MemoryListResponse> {
+  return fetchJSON<MemoryListResponse>(API_PATHS.memories);
 }
