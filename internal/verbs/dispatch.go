@@ -356,17 +356,25 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
-// autoCompactWindowSettingsJSON is the --settings JSON argument forcing
-// Claude Code's auto-compact trigger window to 200000 tokens for all
-// background DRI sessions, regardless of the caller's environment.
+// autoCompactWindowSettingsJSON is the --settings JSON argument requesting
+// Claude Code's auto-compact trigger window for background DRI sessions.
 //
-// This is a CLI argument, not an env var, because the daemon's spare-session
-// pool forks new bg sessions from a pre-warmed process whose environment was
-// frozen at daemon start — setting cmd.Env on the exec.Command here never
-// reaches the spawned session (verified live). --settings is parsed by the
-// newly spawned process itself from its own argv, so it always applies. See
-// agent-teams-g8xc for the investigation that found the env-var mechanism
-// was dead code.
+// CLI arg, not env var: the daemon's spare-session pool claims pre-warmed
+// processes via IPC rather than exec'ing fresh ones from this call's argv,
+// so cmd.Env set here never reaches the claimed session (verified live) —
+// but the claim payload does carry --settings, so it is honored. Caveat:
+// the CLI resolves autoCompactWindow with priority env > --settings >
+// client-default, so a stray CLAUDE_CODE_AUTO_COMPACT_WINDOW in the
+// daemon's own environment would silently win over this value with no
+// error surfaced. Not observed on this machine as of 2026-07-16 (checked
+// env, shell profiles, daemon env, settings files); see agent-teams-g8xc
+// for that investigation and at-0gno for this re-verification.
+//
+// 200000 here is a request, not the effective trigger: the CLI engine
+// reserves a further fixed margin below the configured value, confirmed
+// live via --debug-file on CLI 2.1.211 at ~20000 tokens (200000 requested
+// -> effectiveWindow=180000; 500000 requested -> effectiveWindow=480000).
+// Production DRI sessions compact at roughly 180000 tokens, not 200000.
 const autoCompactWindowSettingsJSON = `{"autoCompactWindow":200000}`
 
 // bgSessionArgs returns the argv slice (everything after "claude") for a
