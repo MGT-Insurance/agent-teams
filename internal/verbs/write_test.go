@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -2138,6 +2139,99 @@ func TestForget_ForwardsBDOutput(t *testing.T) {
 	}
 }
 
+// ── applied ───────────────────────────────────────────────────────────────────
+
+func TestApplied_FirstCallCreatesCountOne(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "{}"}, {stdout: "ok"}})
+	err := (&appliedKong{Role: "planner", Slug: "foo"}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 bd calls, got %d: %+v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 0, []string{"memories", "--json"})
+	call := (*calls)[1]
+	if call.args[0] != "remember" {
+		t.Fatalf("args[0] = %q, want remember", call.args[0])
+	}
+	if call.args[1] != "--key=applied:planner:foo" {
+		t.Fatalf("args[1] = %q, want --key=applied:planner:foo", call.args[1])
+	}
+	var rec appliedRecord
+	if err := json.Unmarshal([]byte(call.args[2]), &rec); err != nil {
+		t.Fatalf("body not valid JSON: %v (%q)", err, call.args[2])
+	}
+	if rec.Count != 1 {
+		t.Errorf("Count = %d, want 1", rec.Count)
+	}
+	if _, err := time.Parse(time.RFC3339, rec.LastApplied); err != nil {
+		t.Errorf("LastApplied = %q, not valid RFC3339: %v", rec.LastApplied, err)
+	}
+}
+
+func TestApplied_SecondCallIncrementsAndUpdatesTimestamp(t *testing.T) {
+	existingBody := `{"count":1,"last_applied":"2020-01-01T00:00:00Z"}`
+	raw, err := json.Marshal(map[string]any{"applied:planner:foo": existingBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, calls := newCtx(t, []fakeResp{{stdout: string(raw)}, {stdout: "ok"}})
+	if err := (&appliedKong{Role: "planner", Slug: "foo"}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	call := (*calls)[1]
+	if call.args[1] != "--key=applied:planner:foo" {
+		t.Fatalf("args[1] = %q, want --key=applied:planner:foo", call.args[1])
+	}
+	var rec appliedRecord
+	if err := json.Unmarshal([]byte(call.args[2]), &rec); err != nil {
+		t.Fatalf("body not valid JSON: %v (%q)", err, call.args[2])
+	}
+	if rec.Count != 2 {
+		t.Errorf("Count = %d, want 2", rec.Count)
+	}
+	if rec.LastApplied == "2020-01-01T00:00:00Z" {
+		t.Error("LastApplied was not updated on the second call")
+	}
+	if _, err := time.Parse(time.RFC3339, rec.LastApplied); err != nil {
+		t.Errorf("LastApplied = %q, not valid RFC3339: %v", rec.LastApplied, err)
+	}
+}
+
+func TestApplied_NilContext(t *testing.T) {
+	err := (&appliedKong{Role: "planner", Slug: "foo"}).Run(nil)
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestApplied_MissingRole(t *testing.T) {
+	// Role is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"applied"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <role>")
+	}
+}
+
+func TestApplied_MissingSlug(t *testing.T) {
+	// Slug is a required positional; enforced at parse time.
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterWriteKong(p)
+	_, parseErr := p.Parse([]string{"applied", "planner"})
+	if parseErr == nil {
+		t.Fatal("expected parse error for missing <slug>")
+	}
+}
+
 // ── condense ──────────────────────────────────────────────────────────────────
 
 // condensePacketFor runs condenseKong with a fakeBD returning the given memories
@@ -2304,6 +2398,41 @@ func TestCondense_RoleInPacket(t *testing.T) {
 	})
 	if pkt.Role != "implementer" {
 		t.Errorf("packet Role = %q, want %q", pkt.Role, "implementer")
+	}
+}
+
+func TestCondense_JoinsAppliedCount(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:foo":         "body foo",
+		"dri:hot:baz":     "body baz (hot)",
+		"dri:bar":         "body bar (no applied sibling)",
+		"applied:dri:foo": `{"count":5,"last_applied":"2024-01-01T00:00:00Z"}`,
+		"applied:dri:baz": `{"count":2,"last_applied":"2024-02-02T00:00:00Z"}`,
+	})
+
+	byKey := make(map[string]condenseMemory, len(pkt.Memories))
+	for _, m := range pkt.Memories {
+		byKey[m.Key] = m
+	}
+
+	if foo := byKey["dri:foo"]; foo.AppliedCount != 5 || foo.LastApplied != "2024-01-01T00:00:00Z" {
+		t.Errorf("dri:foo applied join = %+v, want count=5 last_applied=2024-01-01T00:00:00Z", foo)
+	}
+
+	// dri:hot:baz's sibling is keyed on the BARE slug (applied:dri:baz, not
+	// applied:dri:hot:baz) — the applied counter is tier-independent.
+	if baz := byKey["dri:hot:baz"]; baz.AppliedCount != 2 || baz.LastApplied != "2024-02-02T00:00:00Z" {
+		t.Errorf("dri:hot:baz applied join = %+v, want count=2 (tier-stripped slug lookup)", baz)
+	}
+
+	if bar := byKey["dri:bar"]; bar.AppliedCount != 0 || bar.LastApplied != "" {
+		t.Errorf("dri:bar applied join = %+v, want zero value (no sibling)", bar)
+	}
+
+	// The applied: keys live under a top-level "applied:" prefix, not
+	// "<role>:" — they must not leak into the memories list themselves.
+	if _, ok := byKey["applied:dri:foo"]; ok {
+		t.Error("applied:dri:foo must not appear as its own condense memory")
 	}
 }
 

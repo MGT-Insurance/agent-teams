@@ -675,3 +675,34 @@ func TestLearningsWritesOutput(t *testing.T) {
 		t.Errorf("cross-role dri: key must not appear in output; got: %q", got)
 	}
 }
+
+// ── roles ─────────────────────────────────────────────────────────────────────
+
+func TestRolesExcludesAppliedNamespace(t *testing.T) {
+	// applied:<role>:<slug> is the applied-signal counter namespace, not a
+	// role — it must never appear in `ateam roles` output (frozen contract
+	// agent-teams-u71p.1). A real role's own memory (dri:hot:bar) must still
+	// be listed.
+	memoriesJSON := []byte(`{"applied:dri:foo":"{\"count\":1}","dri:hot:bar":"some learning"}` + "\n")
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return memoriesJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
+
+	if err := runQ(t, "roles", ctx); err != nil {
+		t.Fatalf("roles.Run: %v", err)
+	}
+
+	got := out.String()
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	for _, l := range lines {
+		if l == "applied" {
+			t.Errorf("roles output must not include phantom \"applied\" role; got: %q", got)
+		}
+	}
+	if !strings.Contains(got, "dri") {
+		t.Errorf("expected real role \"dri\" in roles output; got: %q", got)
+	}
+}
