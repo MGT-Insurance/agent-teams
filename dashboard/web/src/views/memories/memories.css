@@ -3,7 +3,7 @@
   flex-direction: column;
   padding: 24px 32px;
   gap: 20px;
-  max-width: 1000px;
+  max-width: 1300px;
   width: 100%;
   margin: 0 auto;
 }
@@ -64,16 +64,104 @@
   border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
 }
 
-.memories-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .memories-status-text {
   font-size: 13px;
   color: var(--color-text-muted);
   font-style: italic;
+}
+
+/* Role-first master-detail layout (agent-teams-hvje.6). */
+.memories-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.memories-sidebar {
+  flex: 0 0 200px;
+  border-right: 1px solid var(--color-border);
+  padding-right: 16px;
+}
+
+.memories-role-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.memories-role-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.memories-role-item:hover {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.memories-role-item--active {
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+}
+
+.memories-role-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memories-role-count {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.memories-role-item--active .memories-role-count {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.memories-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.memories-detail-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.memories-detail-header__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+}
+
+.memories-detail-header__count {
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .memories-filters {
@@ -121,36 +209,39 @@
   background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);
 }
 
-.memories-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+.memories-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.memories-table th {
-  text-align: left;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.memories-card {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memories-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
   color: var(--color-text-muted);
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--color-border);
 }
 
-.memories-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--color-border);
+.memories-card__slug {
+  font-family: var(--font-mono);
+  font-size: 13px;
   color: var(--color-text);
-  vertical-align: middle;
-}
-
-.memories-row {
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.memories-row:hover {
-  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+  font-weight: 600;
 }
 
 .memories-tier {
@@ -178,15 +269,11 @@
   color: var(--color-text-muted);
 }
 
-.memories-row__detail td {
-  background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface));
-}
-
-.memories-body {
+.memories-card__body {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-text);
   white-space: pre-wrap;
   word-break: break-word;
-  padding: 6px 4px;
+  margin: 0;
 }
