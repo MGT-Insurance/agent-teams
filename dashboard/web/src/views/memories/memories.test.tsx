@@ -53,95 +53,131 @@ afterEach(() => {
   cleanup();
 });
 
-describe("MemoriesView — list rendering", () => {
-  it("renders rows sorted by appliedCount descending by default", async () => {
-    const { container } = renderMemories();
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
-
-    const rows = container.querySelectorAll(".memories-row");
-    const firstCells = rows[0]!.querySelectorAll("td");
-    expect(firstCells[0]!.textContent).toBe("planner"); // highest appliedCount (5)
-    expect(firstCells[3]!.textContent).toBe("5");
-
-    const lastCells = rows[2]!.querySelectorAll("td");
-    expect(lastCells[3]!.textContent).toBe("0"); // lowest appliedCount
-  });
-
-  it("expands a row to reveal the full memory body on click", async () => {
-    const { container } = renderMemories();
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
-
-    const rows = container.querySelectorAll(".memories-row");
-    fireEvent.click(rows[0]!);
-    expect(screen.getByText("Decompose work into file-disjoint tracks.")).toBeTruthy();
-  });
-
-  it("shows the header count of total memories", async () => {
+describe("MemoriesView — role selection", () => {
+  it("auto-selects the first role alphabetically and scopes the list to it", async () => {
     renderMemories();
-    await waitFor(() => expect(screen.getByTestId("memories-count").textContent).toBe("3"));
+
+    // "implementer" sorts before "planner" — should be selected by default.
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${implementerCold.key}`)).toBeTruthy());
+    expect(screen.queryByTestId(`memories-card-${plannerHot.key}`)).toBeNull();
+    expect(screen.queryByTestId(`memories-card-${plannerFresh.key}`)).toBeNull();
+  });
+
+  it("shows each role's memory count in the sidebar", async () => {
+    renderMemories();
+    await waitFor(() => expect(screen.getByTestId("memories-role-planner")).toBeTruthy());
+
+    expect(screen.getByTestId("memories-role-planner").textContent).toContain("2");
+    expect(screen.getByTestId("memories-role-implementer").textContent).toContain("1");
+  });
+
+  it("switches the main panel to only the selected role's memories, never interleaved", async () => {
+    renderMemories();
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${implementerCold.key}`)).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("memories-role-planner"));
+
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
+    expect(screen.getByTestId(`memories-card-${plannerFresh.key}`)).toBeTruthy();
+    expect(screen.queryByTestId(`memories-card-${implementerCold.key}`)).toBeNull();
+  });
+
+  it("sorts the selected role's memories by appliedCount descending", async () => {
+    renderMemories();
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${implementerCold.key}`)).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("memories-role-planner"));
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
+
+    const cards = screen.getAllByTestId(/^memories-card-/);
+    expect(cards[0]!.getAttribute("data-testid")).toBe(`memories-card-${plannerHot.key}`); // appliedCount 5
+    expect(cards[1]!.getAttribute("data-testid")).toBe(`memories-card-${plannerFresh.key}`); // appliedCount 2
+  });
+
+  it("shows the full memory body directly, with no expand step", async () => {
+    renderMemories();
+    fireEvent.click(await screen.findByTestId("memories-role-planner"));
+
+    expect(await screen.findByText("Decompose work into file-disjoint tracks.")).toBeTruthy();
+  });
+
+  it("shows an explicit never-applied state and a formatted last-applied date", async () => {
+    renderMemories();
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${implementerCold.key}`)).toBeTruthy());
+
+    expect(screen.getByTestId(`memories-card-${implementerCold.key}`).textContent).toContain("Never applied");
+
+    fireEvent.click(screen.getByTestId("memories-role-planner"));
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
+    expect(screen.getByTestId(`memories-card-${plannerHot.key}`).textContent).toContain("Last applied");
+  });
+
+  it("shows the header count of roles and total memories", async () => {
+    renderMemories();
+    await waitFor(() => expect(screen.getByTestId("memories-count").textContent).toContain("2 roles"));
+    expect(screen.getByTestId("memories-count").textContent).toContain("3 memories");
   });
 });
 
-describe("MemoriesView — filters", () => {
-  it("narrows the list by role", async () => {
-    const { container } = renderMemories();
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
+describe("MemoriesView — filters scoped to the selected role", () => {
+  it("narrows the selected role's list by tier without leaking into other roles", async () => {
+    renderMemories();
+    fireEvent.click(await screen.findByTestId("memories-role-planner"));
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
 
-    fireEvent.change(screen.getByLabelText(/filter by role/i), { target: { value: "implementer" } });
+    fireEvent.change(screen.getByLabelText(/filter by tier/i), { target: { value: "fresh" } });
 
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(1));
-    const cells = container.querySelector(".memories-row")!.querySelectorAll("td");
-    expect(cells[0]!.textContent).toBe("implementer");
+    await waitFor(() => expect(screen.queryByTestId(`memories-card-${plannerHot.key}`)).toBeNull());
+    expect(screen.getByTestId(`memories-card-${plannerFresh.key}`)).toBeTruthy();
   });
 
-  it("narrows the list by tier", async () => {
-    const { container } = renderMemories();
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
-
-    fireEvent.change(screen.getByLabelText(/filter by tier/i), { target: { value: "cold" } });
-
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(1));
-    const cells = container.querySelector(".memories-row")!.querySelectorAll("td");
-    expect(cells[0]!.textContent).toBe("implementer");
-  });
-
-  it("narrows the list with the free-text search over role/slug/body", async () => {
-    const { container } = renderMemories();
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
+  it("narrows the selected role's list with free-text search over slug/body", async () => {
+    renderMemories();
+    fireEvent.click(await screen.findByTestId("memories-role-planner"));
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText(/search memories/i), { target: { value: "clarifying" } });
 
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(1));
-    const cells = container.querySelector(".memories-row")!.querySelectorAll("td");
-    expect(cells[1]!.textContent).toBe("surface-questions");
+    await waitFor(() => expect(screen.queryByTestId(`memories-card-${plannerHot.key}`)).toBeNull());
+    expect(screen.getByTestId(`memories-card-${plannerFresh.key}`)).toBeTruthy();
   });
 
   it("shows the no-match empty state and clears filters via the Clear filters button", async () => {
-    const { container } = renderMemories();
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
+    renderMemories();
+    fireEvent.click(await screen.findByTestId("memories-role-planner"));
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText(/search memories/i), { target: { value: "nonexistent" } });
     await screen.findByText(/no memories match the current filters/i);
 
     fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
-    await waitFor(() => expect(container.querySelectorAll(".memories-row")).toHaveLength(3));
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
+  });
+
+  it("resets active filters when switching roles", async () => {
+    renderMemories();
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${implementerCold.key}`)).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText(/search memories/i), { target: { value: "ambiguity" } });
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${implementerCold.key}`)).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("memories-role-planner"));
+
+    await waitFor(() => expect(screen.getByTestId(`memories-card-${plannerHot.key}`)).toBeTruthy());
+    expect(screen.getByTestId(`memories-card-${plannerFresh.key}`)).toBeTruthy();
+    expect((screen.getByLabelText(/search memories/i) as HTMLInputElement).value).toBe("");
   });
 });
 
 describe("filterMemories (unit)", () => {
-  const base: MemoryFilters = { role: "", tier: "all", text: "" };
-
-  it("role filter keeps only entries for that role", () => {
-    const result = filterMemories([plannerHot, implementerCold], { ...base, role: "planner" });
-    expect(result).toEqual([plannerHot]);
-  });
+  const base: MemoryFilters = { tier: "all", text: "" };
 
   it("tier filter keeps only entries matching the tier", () => {
-    const result = filterMemories([plannerHot, implementerCold, plannerFresh], { ...base, tier: "fresh" });
+    const result = filterMemories([plannerHot, plannerFresh], { ...base, tier: "fresh" });
     expect(result).toEqual([plannerFresh]);
   });
 
-  it("text filter matches case-insensitively across role/slug/body", () => {
+  it("text filter matches case-insensitively across slug/body", () => {
     const result = filterMemories([plannerHot, implementerCold], { ...base, text: "AMBIGUITY" });
     expect(result).toEqual([implementerCold]);
   });
