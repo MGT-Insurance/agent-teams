@@ -73,7 +73,7 @@ If acquisition succeeds, proceed and ensure the lock is released in every exit p
 ateam roles
 ```
 
-Skip the `user` role unconditionally. The `user:` namespace is served by `ateam prime` (capped and truncated at read time) and is not part of the hot/cold learnings model. Learning roles to consider: `dri`, `planner`, `implementer`, `tester`, `reviewer`, and any others returned by `ateam roles` that are not `user`.
+Skip the `user` and `applied` namespaces unconditionally. The `user:` namespace is served by `ateam prime` (capped and truncated at read time) and is not part of the hot/cold learnings model. The `applied:` namespace holds per-slug applied-signal counters, not learnings — it must never be condensed. Learning roles to consider: `dri`, `planner`, `implementer`, `tester`, `reviewer`, and any others returned by `ateam roles` that are not `user` or `applied`.
 
 ### Step 2 — Per-role size gate (8K hot∪fresh threshold OR ~1500-token fresh-alone threshold)
 

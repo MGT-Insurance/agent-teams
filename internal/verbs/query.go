@@ -512,6 +512,16 @@ func runRoles(ctx *cli.Context) error {
 			continue
 		}
 		role := k[:idx]
+		// "applied" is the applied-signal counter namespace (applied:<role>:<slug>),
+		// not a role — it must stay invisible to every learnings/condense scan
+		// (frozen contract agent-teams-u71p.1). Surfacing it here would let the
+		// condense all-roles sweep run `ateam condense applied`, which matches
+		// the applied: prefix across every real role and leaks every counter
+		// into the condense packet (and can corrupt real counters via a
+		// subsequent `ateam forget applied ...`).
+		if role == "applied" {
+			continue
+		}
 		seen[role] = struct{}{}
 	}
 
