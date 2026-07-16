@@ -706,3 +706,176 @@ func TestRolesExcludesAppliedNamespace(t *testing.T) {
 		t.Errorf("expected real role \"dri\" in roles output; got: %q", got)
 	}
 }
+
+// ── memories-json ─────────────────────────────────────────────────────────────
+
+// wantMemoryEntry mirrors the memoryRecord json shape (unexported in package
+// verbs) for decoding `memories-json` output in tests.
+type wantMemoryEntry struct {
+	Role         string  `json:"role"`
+	Key          string  `json:"key"`
+	Slug         string  `json:"slug"`
+	Tier         string  `json:"tier"`
+	Body         string  `json:"body"`
+	AppliedCount int     `json:"appliedCount"`
+	LastApplied  *string `json:"lastApplied"`
+}
+
+// decodeMemoriesJSON runs the memories-json verb and decodes its stdout.
+func decodeMemoriesJSON(t *testing.T, out *bytes.Buffer) []wantMemoryEntry {
+	t.Helper()
+	var got []wantMemoryEntry
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode memories-json output: %v (raw: %s)", err, out.String())
+	}
+	return got
+}
+
+func TestMemoriesJSONTierDerivation(t *testing.T) {
+	memoriesJSON := []byte(`{
+		"dri:hot:verify-live": "hot body",
+		"dri:fresh:new-thing": "fresh body",
+		"dri:cold-thing": "cold body"
+	}`)
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return memoriesJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
+
+	if err := runQ(t, "memories-json", ctx); err != nil {
+		t.Fatalf("memories-json.Run: %v", err)
+	}
+	entries := decodeMemoriesJSON(t, out)
+
+	byKey := make(map[string]wantMemoryEntry, len(entries))
+	for _, e := range entries {
+		byKey[e.Key] = e
+	}
+
+	if got := byKey["dri:hot:verify-live"]; got.Tier != "hot" || got.Slug != "verify-live" {
+		t.Errorf("hot entry = %+v, want tier=hot slug=verify-live", got)
+	}
+	if got := byKey["dri:fresh:new-thing"]; got.Tier != "fresh" || got.Slug != "new-thing" {
+		t.Errorf("fresh entry = %+v, want tier=fresh slug=new-thing", got)
+	}
+	if got := byKey["dri:cold-thing"]; got.Tier != "cold" || got.Slug != "cold-thing" {
+		t.Errorf("cold entry = %+v, want tier=cold slug=cold-thing", got)
+	}
+}
+
+func TestMemoriesJSONAppliedJoinPresentAndAbsent(t *testing.T) {
+	memoriesJSON := []byte(`{
+		"dri:hot:foo": "foo body",
+		"dri:hot:bar": "bar body",
+		"applied:dri:foo": "{\"count\":3,\"last_applied\":\"2026-01-01T00:00:00Z\"}"
+	}`)
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return memoriesJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
+
+	if err := runQ(t, "memories-json", ctx); err != nil {
+		t.Fatalf("memories-json.Run: %v", err)
+	}
+	entries := decodeMemoriesJSON(t, out)
+
+	byKey := make(map[string]wantMemoryEntry, len(entries))
+	for _, e := range entries {
+		byKey[e.Key] = e
+	}
+
+	foo := byKey["dri:hot:foo"]
+	if foo.AppliedCount != 3 {
+		t.Errorf("foo.AppliedCount = %d, want 3", foo.AppliedCount)
+	}
+	if foo.LastApplied == nil || *foo.LastApplied != "2026-01-01T00:00:00Z" {
+		t.Errorf("foo.LastApplied = %v, want 2026-01-01T00:00:00Z", foo.LastApplied)
+	}
+
+	bar := byKey["dri:hot:bar"]
+	if bar.AppliedCount != 0 {
+		t.Errorf("bar.AppliedCount = %d, want 0 (no applied record)", bar.AppliedCount)
+	}
+	if bar.LastApplied != nil {
+		t.Errorf("bar.LastApplied = %v, want nil (no applied record)", *bar.LastApplied)
+	}
+}
+
+func TestMemoriesJSONSkipsColonlessAppliedAndNonString(t *testing.T) {
+	memoriesJSON := []byte(`{
+		"schema_version": 1,
+		"looseval": "colonless string value, must be skipped",
+		"applied:dri:foo": "{\"count\":1,\"last_applied\":\"2026-01-01T00:00:00Z\"}",
+		"dri:hot:num": 5,
+		"dri:hot:foo": "real entry"
+	}`)
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return memoriesJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
+
+	if err := runQ(t, "memories-json", ctx); err != nil {
+		t.Fatalf("memories-json.Run: %v", err)
+	}
+	entries := decodeMemoriesJSON(t, out)
+
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 entry (colonless/applied/non-string skipped), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Key != "dri:hot:foo" || entries[0].Role != "dri" {
+		t.Errorf("unexpected surviving entry: %+v", entries[0])
+	}
+}
+
+func TestMemoriesJSONSortOrderAscendingByKey(t *testing.T) {
+	memoriesJSON := []byte(`{
+		"planner:hot:mmm": "m body",
+		"dri:hot:zzz": "z body",
+		"dri:hot:aaa": "a body"
+	}`)
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return memoriesJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
+
+	if err := runQ(t, "memories-json", ctx); err != nil {
+		t.Fatalf("memories-json.Run: %v", err)
+	}
+	entries := decodeMemoriesJSON(t, out)
+
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+	wantOrder := []string{"dri:hot:aaa", "dri:hot:zzz", "planner:hot:mmm"}
+	for i, k := range wantOrder {
+		if entries[i].Key != k {
+			t.Errorf("entries[%d].Key = %q, want %q (full order: %v)", i, entries[i].Key, k, entries)
+		}
+	}
+}
+
+func TestMemoriesJSONEmptyEmitsEmptyArray(t *testing.T) {
+	memoriesJSON := []byte(`{}`)
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return memoriesJSON, nil, nil
+	}
+	client := bd.NewClientWithExec("/ws", execFn)
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{Home: "/ws", BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
+
+	if err := runQ(t, "memories-json", ctx); err != nil {
+		t.Fatalf("memories-json.Run: %v", err)
+	}
+	got := strings.TrimSpace(out.String())
+	if got != "[]" {
+		t.Errorf("empty memories-json output = %q, want %q", got, "[]")
+	}
+}
