@@ -20,6 +20,8 @@ export type {
   MailSendResponse,
   MailPurgeRequest,
   MailPurgeResponse,
+  MemoryEntry,
+  MemoryListResponse,
 } from "./types.js";
 
 export { sessionKind, deriveSessionSignal, isValidSessionId } from "./types.js";

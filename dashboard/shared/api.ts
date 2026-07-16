@@ -12,6 +12,7 @@ export const API_PATHS = {
   mailSend: "/api/mail/send",
   mailClose: (id: string) => `/api/mail/${encodeURIComponent(id)}/close`,
   mailPurge: "/api/mail/purge",
+  memories: "/api/memories",
 } as const;
 
 // GET /api/snapshot
@@ -62,3 +63,7 @@ export type DashboardSSEEvent =
 // POST /api/mail/purge, body MailPurgeRequest ({ olderThan?, dryRun? }) ->
 // shells `ateam mail purge`. 200 MailPurgeResponse ({ ok:true, output? });
 // 502 { error } on CLI failure. See MailPurgeRequest/MailPurgeResponse in ./types.ts.
+
+// GET /api/memories -> 200 MemoryListResponse ({ memories }); on
+// `ateam memories-json` CLI failure -> 502 { error }. See MemoryEntry/
+// MemoryListResponse in ./types.ts for the full contract.
