@@ -3,6 +3,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ func RegisterQueryKong(p *cli.Parser) {
 	p.AddVerb("recall", "Search role memories by substring query.", &recallKong{})
 	p.AddVerb("prime", "Print cross-project user preferences.", &primeKong{})
 	p.AddVerb("roles", "List role namespaces present in workspace memories.", &rolesKong{})
+	p.AddVerb("memories-json", "List all role memories as JSON with tier + applied signal.", &memoriesJsonKong{})
 }
 
 // ── kong structs (native form) ────────────────────────────────────────────────
@@ -166,6 +168,19 @@ func (c *rolesKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam roles: no context")
 	}
 	return runRoles(ctx)
+}
+
+// memoriesJsonKong emits every role memory as a JSON array with tier +
+// applied-signal join. JSON-only — no --json flag, no --role filter, no text
+// table (frozen contract agent-teams-hvje.1): the sole consumer is the
+// dashboard Memories tab, which fetches everything and filters client-side.
+type memoriesJsonKong struct{}
+
+func (c *memoriesJsonKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam memories-json: no context")
+	}
+	return runMemoriesJSON(ctx)
 }
 
 // lastNoteBlockLines is the maximum number of lines rendered from the fallback
@@ -535,4 +550,77 @@ func runRoles(ctx *cli.Context) error {
 		fmt.Fprintln(ctx.Stdout, r)
 	}
 	return nil
+}
+
+// memoryRecord is the JSON shape emitted by `ateam memories-json`; json tags
+// match the dashboard/shared/types.ts MemoryEntry contract exactly (frozen
+// agent-teams-hvje.1). LastApplied is *string so an absent applied record
+// emits JSON null (never "").
+type memoryRecord struct {
+	Role         string  `json:"role"`
+	Key          string  `json:"key"`
+	Slug         string  `json:"slug"`
+	Tier         string  `json:"tier"`
+	Body         string  `json:"body"`
+	AppliedCount int     `json:"appliedCount"`
+	LastApplied  *string `json:"lastApplied"`
+}
+
+// runMemoriesJSON emits every role memory as a JSON array with tier +
+// applied-signal join, sorted by key ascending. Mirrors runRoles's
+// key-derivation rules (role = substring before the first ":"; the
+// "applied:" namespace is joined in via lookupApplied, not listed as its own
+// role) plus condense's slug/applied-join pattern (condenseKong.Run).
+func runMemoriesJSON(ctx *cli.Context) error {
+	var raw map[string]any
+	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+		return err
+	}
+
+	var keys []string
+	for k, v := range raw {
+		if _, ok := v.(string); !ok {
+			continue
+		}
+		idx := strings.Index(k, ":")
+		if idx < 0 {
+			continue
+		}
+		if k[:idx] == "applied" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	records := make([]memoryRecord, 0, len(keys))
+	for _, k := range keys {
+		role := k[:strings.Index(k, ":")]
+		rolePrefix := role + ":"
+
+		tier := "cold"
+		switch {
+		case strings.HasPrefix(k, rolePrefix+"hot:"):
+			tier = "hot"
+		case strings.HasPrefix(k, rolePrefix+"fresh:"):
+			tier = "fresh"
+		}
+
+		slug := condenseBareSlug(rolePrefix, k)
+		appliedCount, lastApplied := lookupApplied(raw, role, slug)
+
+		records = append(records, memoryRecord{
+			Role:         role,
+			Key:          k,
+			Slug:         slug,
+			Tier:         tier,
+			Body:         raw[k].(string),
+			AppliedCount: appliedCount,
+			LastApplied:  strOrNil(lastApplied),
+		})
+	}
+
+	enc := json.NewEncoder(ctx.Stdout)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(records)
 }
