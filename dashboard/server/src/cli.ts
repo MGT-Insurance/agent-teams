@@ -109,6 +109,14 @@ export function ateamMemoriesJson(): Promise<string> {
   return runCli("ateam", ["memories-json"]);
 }
 
+// Returns the raw text `ateam learnings <role>` (or `ateam prime` for the
+// "user" role — user memories are surfaced via prime's filtered/capped/
+// truncated `user:` output, NOT the raw learnings dump, mirroring what's
+// actually injected into a user-role session's context) would print.
+export function ateamLearnings(role: string): Promise<string> {
+  return runCli("ateam", role === "user" ? ["prime"] : ["learnings", role]);
+}
+
 // Sends a mail message via `ateam mail send <to> --file <tmp>`, writing the
 // body to a temp file (ateam mail send has no inline-body flag). Returns the
 // parsed message_id/recipient from stdout. Cleans up the temp file in all cases.

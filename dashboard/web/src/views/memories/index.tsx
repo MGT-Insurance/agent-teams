@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { MemoryEntry } from "@agent-teams/shared";
-import { fetchMemories } from "../../lib/api.js";
+import { fetchMemories, fetchLearnings } from "../../lib/api.js";
 import "./memories.css";
 
 function formatDateTime(iso: string): string {
@@ -38,6 +38,67 @@ export function sortMemories(entries: MemoryEntry[]): MemoryEntry[] {
 // mirrors mail's POLL_MS pattern.
 const POLL_MS = 20_000;
 
+// Shows the raw text actually injected into a role's context (agent-teams-orb7):
+// `ateam learnings <role>` for every role except "user", where the mechanism is
+// `ateam prime`'s filtered/capped/truncated output instead (see fetchLearnings).
+// Re-fetches whenever `role` changes so a role switch never leaves stale content
+// on screen (the effect's dependency array does the work — no caller plumbing).
+function InjectedContextPanel({ role, onClose }: { role: string; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setText(null);
+    fetchLearnings(role)
+      .then((res) => {
+        if (!cancelled) setText(res.text);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
+
+  return (
+    <div className="memories-injected-panel" data-testid="memories-injected-panel">
+      <div className="memories-injected-panel__header">
+        <p className="memories-injected-panel__caption">
+          This is the injected subset only (hot+fresh; capped/truncated for user prefs) — not the full list below.
+        </p>
+        <button
+          type="button"
+          className="memories-injected-panel__close"
+          onClick={onClose}
+          aria-label="Close injected context panel"
+        >
+          Close
+        </button>
+      </div>
+
+      {error && (
+        <div className="memories-banner memories-banner--error">Failed to load injected context: {error}</div>
+      )}
+
+      {loading ? (
+        <p className="memories-status-text">Loading injected context…</p>
+      ) : error ? null : text !== null && text.trim() !== "" ? (
+        <pre className="memories-injected-panel__body">{text}</pre>
+      ) : (
+        <p className="memories-status-text">Nothing injected — no hot/fresh memories for this role.</p>
+      )}
+    </div>
+  );
+}
+
 function MemoryCard({ entry }: { entry: MemoryEntry }) {
   return (
     <li className="memories-card" data-testid={`memories-card-${entry.key}`}>
@@ -61,6 +122,7 @@ export default function MemoriesView() {
   const [selectedRoleRaw, setSelectedRoleRaw] = useState<string | null>(null);
   const [tier, setTier] = useState<MemoryFilters["tier"]>("all");
   const [textFilter, setTextFilter] = useState("");
+  const [showInjected, setShowInjected] = useState(false);
 
   const load = useCallback(() => {
     return fetchMemories()
@@ -162,7 +224,19 @@ export default function MemoriesView() {
               <span className="memories-detail-header__count">
                 {roleMemories.length} memor{roleMemories.length === 1 ? "y" : "ies"}
               </span>
+              <button
+                type="button"
+                className="memories-injected-toggle-btn"
+                onClick={() => setShowInjected((v) => !v)}
+                data-testid="memories-injected-toggle"
+              >
+                View injected context
+              </button>
             </div>
+
+            {selectedRole && showInjected && (
+              <InjectedContextPanel role={selectedRole} onClose={() => setShowInjected(false)} />
+            )}
 
             <div className="memories-filters">
               <select

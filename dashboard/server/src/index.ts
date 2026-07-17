@@ -12,6 +12,8 @@
 //   POST /api/mail/:id/close                  -> { ok: true } | { error } (shells `ateam mail close`)
 //   POST /api/mail/purge                      -> MailPurgeResponse | { error } (shells `ateam mail purge`)
 //   GET  /api/memories                        -> MemoryListResponse (shells `ateam memories-json`)
+//   GET  /api/learnings/:role                 -> LearningsResponse (shells `ateam learnings <role>`,
+//                                                 or `ateam prime` for role==="user")
 //   GET  /*                                   -> static SPA (dist/web/) in production
 //
 // Dev wiring: run the Vite dev server separately (Track B) and configure its
@@ -35,6 +37,7 @@ import {
   ateamMailClose,
   ateamMailPurge,
   ateamMemoriesJson,
+  ateamLearnings,
 } from "./cli.js";
 import { launchTerminal } from "./launch.js";
 import { parseClaudeAgents, parseBdList, parseInitiative } from "./parse.js";
@@ -525,6 +528,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const raw = await ateamMemoriesJson();
       const memories = normalizeMemoriesJson(raw);
       json(res, 200, { memories });
+    } catch (err) {
+      json(res, 502, {
+        error: err instanceof CliError ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // GET /api/learnings/:role
+  const learningsMatch = /^\/api\/learnings\/([^/]+)$/.exec(path);
+  if (method === "GET" && learningsMatch) {
+    const role = decodeURIComponent(learningsMatch[1] ?? "");
+    try {
+      const text = await ateamLearnings(role);
+      json(res, 200, { role, text });
     } catch (err) {
       json(res, 502, {
         error: err instanceof CliError ? err.message : String(err),

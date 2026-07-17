@@ -479,3 +479,16 @@ export interface MemoryEntry {
 export interface MemoryListResponse {
   memories: MemoryEntry[];
 }
+
+// C) GET /api/learnings/:role -> 200 LearningsResponse ({ role, text }); on
+// CLI failure -> 502 { error } (agent-teams-orb7). `text` is the raw stdout
+// of `ateam learnings <role>` for every role EXCEPT "user", where it is the
+// raw stdout of `ateam prime` instead — the "user" role's context injection
+// mechanism is `ateam prime`'s filtered/capped/truncated `user:`-key output,
+// NOT the untruncated/uncapped `ateam learnings user` dump, so mirroring the
+// real injected context requires the prime special-case. `text` may be empty
+// (no hot/fresh memories for that role — or, for "user", no `user:` keys).
+export interface LearningsResponse {
+  role: string;
+  text: string;
+}

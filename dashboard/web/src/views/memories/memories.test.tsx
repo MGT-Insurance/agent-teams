@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import type { MemoryEntry } from "@agent-teams/shared";
 
-// api is mocked so tests control fetchMemories directly.
+// api is mocked so tests control fetchMemories/fetchLearnings directly.
 const mockFetchMemories = vi.hoisted(() => vi.fn());
+const mockFetchLearnings = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/api.js", () => ({
   fetchMemories: mockFetchMemories,
+  fetchLearnings: mockFetchLearnings,
 }));
 
 import MemoriesView, { filterMemories, sortMemories, type MemoryFilters } from "./index.js";
@@ -47,6 +49,8 @@ const plannerFresh: MemoryEntry = {
 beforeEach(() => {
   mockFetchMemories.mockReset();
   mockFetchMemories.mockResolvedValue({ memories: [plannerHot, implementerCold, plannerFresh] });
+  mockFetchLearnings.mockReset();
+  mockFetchLearnings.mockResolvedValue({ role: "implementer", text: "" });
 });
 
 afterEach(() => {
@@ -194,5 +198,109 @@ describe("sortMemories (unit)", () => {
     const tieB: MemoryEntry = { ...plannerHot, key: "a:hot:x", appliedCount: 3 };
     const result = sortMemories([implementerCold, tieA, tieB, plannerFresh]);
     expect(result.map((m) => m.key)).toEqual(["a:hot:x", "b:hot:x", plannerFresh.key, implementerCold.key]);
+  });
+});
+
+// agent-teams-orb7.1: "View injected context" button + panel.
+describe("MemoriesView — injected context panel", () => {
+  it("renders the 'View injected context' button for the selected role", async () => {
+    renderMemories();
+    const btn = await screen.findByTestId("memories-injected-toggle");
+    expect(btn.textContent).toContain("View injected context");
+  });
+
+  it("fetches and shows the panel content on click, scoped to the selected role", async () => {
+    mockFetchLearnings.mockResolvedValue({
+      role: "implementer",
+      text: "implementer:hot:verify-live\nAlways verify live before declaring done.",
+    });
+
+    renderMemories();
+    await screen.findByTestId(`memories-card-${implementerCold.key}`);
+
+    fireEvent.click(screen.getByTestId("memories-injected-toggle"));
+
+    expect(await screen.findByTestId("memories-injected-panel")).toBeTruthy();
+    await waitFor(() => expect(mockFetchLearnings).toHaveBeenCalledWith("implementer"));
+    await waitFor(() =>
+      expect(screen.getByTestId("memories-injected-panel").textContent).toContain(
+        "implementer:hot:verify-live",
+      ),
+    );
+    expect(screen.getByTestId("memories-injected-panel").textContent).toContain(
+      "Always verify live before declaring done.",
+    );
+  });
+
+  it("shows the empty-injection message when the role has nothing injected", async () => {
+    mockFetchLearnings.mockResolvedValue({ role: "implementer", text: "" });
+
+    renderMemories();
+    await screen.findByTestId(`memories-card-${implementerCold.key}`);
+    fireEvent.click(screen.getByTestId("memories-injected-toggle"));
+
+    expect(
+      await screen.findByText(/nothing injected — no hot\/fresh memories for this role/i),
+    ).toBeTruthy();
+  });
+
+  it("shows an error banner when fetchLearnings fails", async () => {
+    mockFetchLearnings.mockRejectedValue(new Error("ateam learnings exited with code 1"));
+
+    renderMemories();
+    await screen.findByTestId(`memories-card-${implementerCold.key}`);
+    fireEvent.click(screen.getByTestId("memories-injected-toggle"));
+
+    expect(await screen.findByText(/failed to load injected context/i)).toBeTruthy();
+  });
+
+  it("closes the panel via the Close button", async () => {
+    mockFetchLearnings.mockResolvedValue({ role: "implementer", text: "some text" });
+
+    renderMemories();
+    await screen.findByTestId(`memories-card-${implementerCold.key}`);
+    fireEvent.click(screen.getByTestId("memories-injected-toggle"));
+    await screen.findByTestId("memories-injected-panel");
+
+    fireEvent.click(screen.getByRole("button", { name: /close injected context panel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId("memories-injected-panel")).toBeNull());
+  });
+
+  it("exercises the user-role case — fetches with role='user' and shows prime's output", async () => {
+    const userFresh: MemoryEntry = {
+      role: "user",
+      key: "user:fresh:prefers-concise-reports",
+      slug: "prefers-concise-reports",
+      tier: "fresh",
+      body: "Keep summaries under 200 words.",
+      appliedCount: 1,
+      lastApplied: "2026-07-09T00:00:00Z",
+    };
+    mockFetchMemories.mockResolvedValue({ memories: [plannerHot, implementerCold, plannerFresh, userFresh] });
+    mockFetchLearnings.mockResolvedValue({
+      role: "user",
+      text: "user:fresh:prefers-concise-reports\nKeep summaries under 200 words.",
+    });
+
+    renderMemories();
+    fireEvent.click(await screen.findByTestId("memories-role-user"));
+    await screen.findByTestId(`memories-card-${userFresh.key}`);
+
+    fireEvent.click(screen.getByTestId("memories-injected-toggle"));
+
+    await waitFor(() => expect(mockFetchLearnings).toHaveBeenCalledWith("user"));
+    // Server-side special-casing of "user" -> `ateam prime` (not `ateam
+    // learnings user`) is covered by cli.test.ts's ateamLearnings suite —
+    // this test only proves the web panel plumbs the role param through and
+    // renders whatever LearningsResponse.text the endpoint returns.
+    await waitFor(() =>
+      expect(screen.getByTestId("memories-injected-panel").textContent).toContain(
+        "user:fresh:prefers-concise-reports",
+      ),
+    );
+    expect(screen.getByTestId("memories-injected-panel").textContent).toContain(
+      "Keep summaries under 200 words.",
+    );
   });
 });
