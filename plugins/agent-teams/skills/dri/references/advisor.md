@@ -1,6 +1,6 @@
 # Consulting your advisor — when to escalate
 
-Read this only when the advisor is enabled (`user_config.use_advisors == true`). When enabled, this session runs on sonnet with an opus advisor attached via `--advisor` — a more capable second model available for consultation on hard calls. The advisor informs; it does not decide and does not own any part of the initiative. You remain the DRI — every decision, and its consequences, are still yours.
+Read this only when the advisor is enabled (`user_config.use_advisors == true`). When enabled, this session runs on sonnet with an advisor attached via `--advisor` — a more capable second model available for consultation on hard calls. The advisor's model comes from the per-machine `dri_model` plugin-config option (default `opus`) — check `/config` if you need to know which model is actually attached. The advisor informs; it does not decide and does not own any part of the initiative. You remain the DRI — every decision, and its consequences, are still yours.
 
 **Consult the advisor for:**
 - **Architectural decisions** — a structural choice later work will build on and would be costly to reverse.
