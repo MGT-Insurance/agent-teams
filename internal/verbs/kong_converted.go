@@ -23,7 +23,6 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/cost"
-	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
 // ── reopen (trivial positional) ───────────────────────────────────────────────
@@ -179,15 +178,11 @@ func (c *noteKong) Run(ctx *cli.Context) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
-// gateNotifyFunc is called after gate labels are set to ping the human.
-// Injected so tests can verify invocations and simulate failures without a
-// real transport. nil means skip notify (zero-value gateKong, test usage).
+// gateNotifyFunc is called after gate labels are set to route the ask to
+// the Steward. Injected so tests can verify invocations and simulate
+// failures without a real transport. nil means skip notify (zero-value
+// gateKong, test usage).
 type gateNotifyFunc func(ctx *cli.Context, id, file string) error
-
-// gateEnabledFunc reports whether the active transport is configured and
-// usable. Injected so tests can control the Enabled result without touching
-// env / config files. nil is treated as "not enabled" (zero-value gateKong).
-type gateEnabledFunc func(home string) bool
 
 // gateKong is the kong-converted form of gate.
 // Two mutually-exclusive entry paths: prose (--file) vs structured
@@ -217,15 +212,13 @@ type gateKong struct {
 	// Kind applies to both forms.
 	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`
 
-	// notify is called after labels are set to ping the human via transport.
-	// Best-effort: a failure warns to stderr but does not fail the gate.
-	// nil means skip (zero-value struct, test usage without a notify hook).
+	// notify is called after labels are set to route the ask to the Steward
+	// (see notifyToSteward, steward_route.go). Best-effort: a failure warns
+	// to stderr but does not fail the gate. nil means skip (zero-value
+	// struct, test usage without a notify hook). Routing is gated solely on
+	// notifyToSteward's own steward-marker presence check (e3mq.24) — there
+	// is no transport-configured precondition here (e3mq.26).
 	notify gateNotifyFunc `kong:"-"`
-
-	// enabled reports whether a transport is configured. Checked before
-	// notifying; if false, notify is skipped silently (no warning). nil is
-	// treated as not-enabled.
-	enabled gateEnabledFunc `kong:"-"`
 }
 
 // Validate enforces constraints not expressible as tags:
@@ -324,18 +317,19 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		return runErr
 	}
 
-	// Best-effort phone ping: fire the notify path so the human is pinged
-	// with the gate question. Only runs when messaging is configured
-	// (enabled); if not configured, skip silently — no warning, no behavior
-	// change. A Send failure after a successful Enabled check warns to
-	// stderr but stays non-fatal to the gate.
+	// Best-effort steward routing: fire the notify path so the ask reaches
+	// the Steward. notifyToSteward gates on its own steward-marker presence
+	// check (e3mq.24); no transport-configured precondition belongs here
+	// (e3mq.26) — a machine with a steward but no Telegram config must still
+	// route gates to it. A notify failure warns to stderr but stays
+	// non-fatal to the gate.
 	//
 	// For structured-ask gates, send the human-readable form (buildAskMessage)
 	// rather than the raw sentinel block. The bead note (noteFile) is
-	// unchanged — only the phone body differs. This is lazy: the temp file
-	// is built only inside the enabled branch to stay zero-footprint when
-	// messaging is off.
-	if c.notify != nil && c.enabled != nil && c.enabled(ctx.Home) {
+	// unchanged — only the notify body differs. This is lazy: the temp file
+	// is built only inside this branch to stay zero-footprint when notify
+	// is unset.
+	if c.notify != nil {
 		notifyFile := noteFile
 		if structuredUsed {
 			ask := &gateAsk{
@@ -995,8 +989,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	})
 	p.AddVerb("note", "Add a note to an initiative.", &noteKong{})
 	p.AddVerb("gate", "Add a gate (human-review request) to an initiative.", &gateKong{
-		notify:  notifyToSteward,
-		enabled: transport.Enabled,
+		notify: notifyToSteward,
 	})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
 	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})

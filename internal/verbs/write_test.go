@@ -648,10 +648,9 @@ func TestGate_NotifyFiredWithGateNote(t *testing.T) {
 	type notifyCall struct{ id, file string }
 	var got []notifyCall
 	cmd := &gateKong{
-		ID:      "at-5",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return true },
+		ID:   "at-5",
+		File: f,
+		Kind: "question",
 		notify: func(ctx *cli.Context, id, file string) error {
 			got = append(got, notifyCall{id, file})
 			return nil
@@ -680,10 +679,9 @@ func TestGate_NotifyFailureIsNonFatal(t *testing.T) {
 	errBuf := ctx.Stderr.(*bytes.Buffer)
 
 	cmd := &gateKong{
-		ID:      "at-5",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return true },
+		ID:   "at-5",
+		File: f,
+		Kind: "question",
 		notify: func(ctx *cli.Context, id, file string) error {
 			return fmt.Errorf("send failed: connection refused")
 		},
@@ -718,111 +716,12 @@ func TestGate_NilNotifySkipped(t *testing.T) {
 	}
 }
 
-// ── gate opt-in (agent-teams-5jnn) ───────────────────────────────────────────
-
-// TestGate_EnabledFalse_NoNotifyNoWarning is the key opt-in test: when
-// messaging is off (Enabled=false), the notify hook must NOT be called and
-// stderr must stay empty. Gate still succeeds.
-func TestGate_EnabledFalse_NoNotifyNoWarning(t *testing.T) {
-	f := makeTempFile(t, "question body")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	errBuf := ctx.Stderr.(*bytes.Buffer)
-
-	notifyCalled := false
-	cmd := &gateKong{
-		ID:      "at-5",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return false },
-		notify: func(ctx *cli.Context, id, file string) error {
-			notifyCalled = true
-			return nil
-		},
-	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("gate must succeed with messaging off, got: %v", err)
-	}
-	// Labels were still set — gate behavior unchanged.
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 bd calls (gate unchanged), got %d", len(*calls))
-	}
-	// notify must NOT have been called.
-	if notifyCalled {
-		t.Error("notify must NOT be called when Enabled=false")
-	}
-	// No warning output — silent skip.
-	if errBuf.String() != "" {
-		t.Errorf("expected empty stderr when messaging is off, got: %q", errBuf.String())
-	}
-}
-
-// TestGate_EnabledTrue_NotifyCalledOnSuccess confirms that when messaging is on
-// and notify succeeds, no warning is emitted.
-func TestGate_EnabledTrue_NotifyCalledOnSuccess(t *testing.T) {
-	f := makeTempFile(t, "question body")
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	errBuf := ctx.Stderr.(*bytes.Buffer)
-
-	notifyCalled := false
-	cmd := &gateKong{
-		ID:      "at-5",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return true },
-		notify: func(ctx *cli.Context, id, file string) error {
-			notifyCalled = true
-			return nil
-		},
-	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !notifyCalled {
-		t.Error("notify must be called when Enabled=true")
-	}
-	if errBuf.String() != "" {
-		t.Errorf("expected no stderr on success, got: %q", errBuf.String())
-	}
-}
-
-// TestGate_NilEnabled_NoNotify confirms that a nil enabled func (zero-value
-// gateCmd) behaves the same as Enabled=false — notify is skipped silently.
-func TestGate_NilEnabled_NoNotify(t *testing.T) {
-	f := makeTempFile(t, "question")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	errBuf := ctx.Stderr.(*bytes.Buffer)
-
-	notifyCalled := false
-	cmd := &gateKong{
-		ID:      "at-5",
-		File:    f,
-		Kind:    "question",
-		enabled: nil, // explicitly nil
-		notify: func(ctx *cli.Context, id, file string) error {
-			notifyCalled = true
-			return nil
-		},
-	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
-	}
-	if notifyCalled {
-		t.Error("notify must NOT be called when enabled is nil")
-	}
-	if errBuf.String() != "" {
-		t.Errorf("expected empty stderr, got: %q", errBuf.String())
-	}
-}
-
 // ── gate: structured-ask notify body (agent-teams-lbxl) ──────────────────────
 
 // TestGate_StructuredAsk_NotifyGetsHumanReadable confirms that when a
-// structured-ask gate fires with Enabled=true, the notify hook receives the
-// human-readable body (decision / Recommended / Alternative) and NOT the
-// sentinel block marker.
+// structured-ask gate fires, the notify hook receives the human-readable
+// body (decision / Recommended / Alternative) and NOT the sentinel block
+// marker.
 func TestGate_StructuredAsk_NotifyGetsHumanReadable(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 
@@ -834,7 +733,6 @@ func TestGate_StructuredAsk_NotifyGetsHumanReadable(t *testing.T) {
 		Recommendation: "Yes, ship it",
 		Alternative:    "Wait for next cycle",
 		Kind:           "question",
-		enabled:        func(string) bool { return true },
 		notify: func(ctx *cli.Context, id, file string) error {
 			data, err := os.ReadFile(file)
 			if err != nil {
@@ -885,7 +783,6 @@ func TestGate_StructuredAsk_NotifyGetsContextInBody(t *testing.T) {
 		Alternative:    "No-go",
 		ContextFile:    contextFile,
 		Kind:           "question",
-		enabled:        func(string) bool { return true },
 		notify: func(ctx *cli.Context, id, file string) error {
 			data, _ := os.ReadFile(file)
 			notifyBody = string(data)
@@ -901,17 +798,16 @@ func TestGate_StructuredAsk_NotifyGetsContextInBody(t *testing.T) {
 }
 
 // TestGate_PlainFile_NotifyGetsFileContent confirms that a plain --file gate
-// with Enabled=true sends the original file content to notify (unchanged).
+// sends the original file content to notify (unchanged).
 func TestGate_PlainFile_NotifyGetsFileContent(t *testing.T) {
 	f := makeTempFile(t, "plain gate question body")
 	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
 
 	var notifyFile string
 	cmd := &gateKong{
-		ID:      "at-lbxl3",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return true },
+		ID:   "at-lbxl3",
+		File: f,
+		Kind: "question",
 		notify: func(ctx *cli.Context, id, file string) error {
 			notifyFile = file
 			return nil
@@ -927,8 +823,8 @@ func TestGate_PlainFile_NotifyGetsFileContent(t *testing.T) {
 }
 
 // TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock confirms that the bead
-// note call still receives the sentinel block even when messaging is enabled.
-// The phone body is separate; the bd record must stay parseable.
+// note call still receives the sentinel block even when notify is set.
+// The notify body is separate; the bd record must stay parseable.
 func TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock(t *testing.T) {
 	var capturedNoteContent string
 	idx := 0
@@ -958,7 +854,6 @@ func TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock(t *testing.T) {
 		Recommendation: "Yes",
 		Alternative:    "Defer",
 		Kind:           "question",
-		enabled:        func(string) bool { return true },
 		notify:         func(ctx *cli.Context, id, file string) error { return nil },
 	}
 	if err := cmd.Run(ctx); err != nil {

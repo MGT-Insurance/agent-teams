@@ -30,6 +30,12 @@ type stewardRouteFakeBD struct {
 }
 
 func (f *stewardRouteFakeBD) Run(args ...string) (string, error) {
+	// gateKong.Run's own note/label calls, ahead of notify — no-op ok so this
+	// fake can drive a full gateKong.Run() (see
+	// TestGate_NotifyToStewardMarkerPresent_RoutesEndToEnd below).
+	if len(args) >= 1 && (args[0] == "note" || args[0] == "label") {
+		return "ok", nil
+	}
 	if len(args) >= 3 && args[0] == "show" && args[2] == "--json" {
 		if args[1] == f.initiativeID {
 			issue := bd.Issue{ID: f.initiativeID, Labels: f.issueLabels}
@@ -182,11 +188,10 @@ func TestGate_NotifyToStewardFailureIsNonFatal(t *testing.T) {
 	errBuf := ctx.Stderr.(*bytes.Buffer)
 
 	cmd := &gateKong{
-		ID:      "at-5",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return true },
-		notify:  notifyToSteward,
+		ID:     "at-5",
+		File:   f,
+		Kind:   "question",
+		notify: notifyToSteward,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("gate must succeed even when notifyToSteward fails, got: %v", err)
@@ -215,11 +220,10 @@ func TestGate_NotifyToStewardNoMarker_NoMessageAndGateSucceeds(t *testing.T) {
 	errBuf := ctx.Stderr.(*bytes.Buffer)
 
 	cmd := &gateKong{
-		ID:      "at-6",
-		File:    f,
-		Kind:    "question",
-		enabled: func(string) bool { return true },
-		notify:  notifyToSteward,
+		ID:     "at-6",
+		File:   f,
+		Kind:   "question",
+		notify: notifyToSteward,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("gate must succeed with no steward marker, got: %v", err)
@@ -229,5 +233,47 @@ func TestGate_NotifyToStewardNoMarker_NoMessageAndGateSucceeds(t *testing.T) {
 	}
 	if strings.Contains(errBuf.String(), "warning") {
 		t.Errorf("expected no warning on stderr (nil is a clean no-op, not a notify failure), got: %q", errBuf.String())
+	}
+}
+
+// ── gate -> notifyToSteward: routes with no transport configured ────────────
+
+// TestGate_NotifyToStewardMarkerPresent_RoutesEndToEnd is the regression test
+// for agent-teams-e3mq.26: gateKong is wired exactly as RegisterWriteKong
+// wires it in production (notify: notifyToSteward, no enabled/transport
+// field — there is no such field anymore). With the steward marker present,
+// the gate must route to the Steward end to end — labels set, initiative
+// looked up, envelope built, message bead created with the Steward as
+// assignee — even though nothing here configures or checks any transport
+// (Telegram, phone, etc.). Before the fix, this path additionally required
+// transport.Enabled(ctx.Home) to return true, so a steward-only machine with
+// no Telegram config would silently never reach here.
+func TestGate_NotifyToStewardMarkerPresent_RoutesEndToEnd(t *testing.T) {
+	initiativeID := "at-e3mq26"
+	f := makeTempFile(t, "should we ship the release?")
+	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:review"}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
+
+	cmd := &gateKong{
+		ID:     initiativeID,
+		File:   f,
+		Kind:   "review",
+		notify: notifyToSteward,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("gate must succeed, got: %v", err)
+	}
+
+	assertContains(t, fbd.createArgs, "--assignee="+StewardHandle, "bd create missing steward assignee")
+	env, ok := ParseStewardGateEnvelope(fbd.createBody)
+	if !ok {
+		t.Fatalf("message body is not a well-formed steward-gate envelope:\n%s", fbd.createBody)
+	}
+	if env.InitiativeID != initiativeID {
+		t.Errorf("envelope InitiativeID = %q, want %q", env.InitiativeID, initiativeID)
+	}
+	if env.Kind != StewardGateKindReview {
+		t.Errorf("envelope Kind = %q, want %q", env.Kind, StewardGateKindReview)
 	}
 }
