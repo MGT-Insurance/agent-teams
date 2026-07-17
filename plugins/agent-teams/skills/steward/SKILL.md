@@ -104,6 +104,8 @@ ateam learn steward <slug> --file <tmpfile>
 
 Shape the body as RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY (what to do), with PROVENANCE as a bare initiative-id parenthetical.
 
+`ateam learnings steward` (see Startup, above) only auto-injects the hot+fresh tiers. To search the FULL set (including cold/archived entries) for a specific term, run `ateam recall steward <query>` — a substring search over key+body that prints matches directly.
+
 ## 7. Cross-initiative briefings
 
 For material that spans initiatives — prioritization calls, a machine-wide status roundup, anything that isn't scoped to one DRI — post to the dedicated briefing topic instead of any single initiative's topic:
