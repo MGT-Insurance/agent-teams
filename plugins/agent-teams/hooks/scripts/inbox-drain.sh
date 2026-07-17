@@ -31,14 +31,25 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ]; } || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 [ -d "$ATH/.beads" ] || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 
-# ── Resolve initiative id by worktree:$PWD (match the worktree root OR any subdir) ──
-match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
-  | jq -r --arg pwd "$PWD" \
-      '[.[] | select((.description // "") | split("\n") | map(select(startswith("worktree: ")) | ltrimstr("worktree: ")) | any(. as $w | $pwd == $w or ($pwd | startswith($w + "/"))))][0].id // empty' \
-  2>/dev/null || true)
-if [ -z "$match_id" ]; then
-  HOOK_EXIT_REASON="no-open-match"
-  exit 0
+# ── Steward branch: this is the Steward's own session, not an initiative ────
+# The Steward doorbell/pidfile use the same "$MAILBOX/${match_id}.*" naming as
+# an initiative's, so once match_id=steward is set the disarm/consume logic
+# below runs unmodified.
+# shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-steward.sh
+. "$(dirname "$0")/lib/resolve-steward.sh"
+
+if is_steward_cwd; then
+  match_id="steward"
+else
+  # ── Resolve initiative id by worktree:$PWD (match the worktree root OR any subdir) ──
+  match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
+    | jq -r --arg pwd "$PWD" \
+        '[.[] | select((.description // "") | split("\n") | map(select(startswith("worktree: ")) | ltrimstr("worktree: ")) | any(. as $w | $pwd == $w or ($pwd | startswith($w + "/"))))][0].id // empty' \
+    2>/dev/null || true)
+  if [ -z "$match_id" ]; then
+    HOOK_EXIT_REASON="no-open-match"
+    exit 0
+  fi
 fi
 
 HOOK_INITIATIVE="$match_id"

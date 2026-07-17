@@ -44,21 +44,15 @@ if ! command -v bd  >/dev/null 2>&1 \
 fi
 
 # ── Steward branch: this is the Steward's own session, not an initiative ────
-# Identified by the shared contract's marker file path (mirrors
-# internal/verbs/steward_seams.go's StewardSessionMarkerPath: keep this
-# literal in lockstep with that contract) existing under $PWD's tree. The
-# Steward is machine-scoped rather than tied to a closeable initiative, so it
-# skips the worktree-based lookup below entirely, and is_steward_session also
-# gates the stop-on-closed check further down in the heartbeat block.
-STEWARD_MARKER="$ATH/steward/session/.steward-session"
+# The Steward is machine-scoped rather than tied to a closeable initiative, so
+# it skips the worktree-based lookup below entirely, and is_steward_session
+# also gates the stop-on-closed check further down in the heartbeat block.
+# shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-steward.sh
+. "$(dirname "$0")/lib/resolve-steward.sh"
+
 is_steward_session=0
-if [ -f "$STEWARD_MARKER" ]; then
-  marker_dir=$(dirname "$STEWARD_MARKER")
-  case "$PWD" in
-    "$marker_dir"|"$marker_dir"/*)
-      is_steward_session=1
-      ;;
-  esac
+if is_steward_cwd; then
+  is_steward_session=1
 fi
 
 if [ "$is_steward_session" = 1 ]; then
