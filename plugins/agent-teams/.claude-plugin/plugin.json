@@ -1,6 +1,6 @@
 {
   "name": "agent-teams",
-  "version": "0.42.7",
+  "version": "0.42.8",
   "description": "DRI-led agent teams: the /dri playbook, four role agents, a global learning workspace and initiative registry. Hard-requires beads (bd).",
   "author": { "name": "Eric Lloyd" },
   "userConfig": {
@@ -9,6 +9,12 @@
       "title": "Use advisors",
       "description": "When enabled, background DRI sessions run on sonnet with an opus advisor (--model sonnet --advisor opus) instead of the default opus-only.",
       "default": false
+    },
+    "dri_model": {
+      "type": "string",
+      "title": "DRI model",
+      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Default \"opus\" reproduces today's hardcoded behavior in both cases.",
+      "default": "opus"
     }
   }
 }

@@ -966,35 +966,52 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 // ---- driAdvisorSettings: env-reading helper --------------------------------
 
 // TestDriAdvisorSettings verifies driAdvisorSettings() returns ("sonnet",
-// "opus") only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true", and
-// ("", "") for every other value, including unset, empty, "false", and any
-// casing/value other than the exact string "true".
+// driModel) only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true",
+// and (driModel, "") for every other value, including unset, empty, "false",
+// and any casing/value other than the exact string "true". driModel comes
+// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "opus" when unset or
+// empty. Cases with an explicit non-default dri_model ("haiku") in both the
+// advisor-on and advisor-off branches prove the env var actually threads
+// through, not just the default.
 func TestDriAdvisorSettings(t *testing.T) {
-	const envKey = "CLAUDE_PLUGIN_OPTION_USE_ADVISORS"
+	const advisorsKey = "CLAUDE_PLUGIN_OPTION_USE_ADVISORS"
+	const modelKey = "CLAUDE_PLUGIN_OPTION_DRI_MODEL"
 
 	cases := []struct {
-		name        string
-		setEnv      bool
-		value       string
-		wantModel   string
-		wantAdvisor string
+		name           string
+		setAdvisorsEnv bool
+		advisorsValue  string
+		setModelEnv    bool
+		modelValue     string
+		wantModel      string
+		wantAdvisor    string
 	}{
-		{name: "true", setEnv: true, value: "true", wantModel: "sonnet", wantAdvisor: "opus"},
-		{name: "unset", setEnv: false, wantModel: "", wantAdvisor: ""},
-		{name: "empty", setEnv: true, value: "", wantModel: "", wantAdvisor: ""},
-		{name: "false", setEnv: true, value: "false", wantModel: "", wantAdvisor: ""},
-		{name: "TRUE_wrong_case", setEnv: true, value: "TRUE", wantModel: "", wantAdvisor: ""},
+		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "opus"},
+		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "opus", wantAdvisor: ""},
+		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "opus", wantAdvisor: ""},
+		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "opus", wantAdvisor: ""},
+		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "opus", wantAdvisor: ""},
+		{name: "true_nondefault_model", setAdvisorsEnv: true, advisorsValue: "true", setModelEnv: true, modelValue: "haiku", wantModel: "sonnet", wantAdvisor: "haiku"},
+		{name: "false_nondefault_model", setAdvisorsEnv: true, advisorsValue: "false", setModelEnv: true, modelValue: "haiku", wantModel: "haiku", wantAdvisor: ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setEnv {
-				t.Setenv(envKey, tc.value)
+			if tc.setAdvisorsEnv {
+				t.Setenv(advisorsKey, tc.advisorsValue)
 			} else {
 				// Ensure the var is unset for this subtest, in case the outer
 				// test process inherited it from the environment.
-				t.Setenv(envKey, "")
-				os.Unsetenv(envKey)
+				t.Setenv(advisorsKey, "")
+				os.Unsetenv(advisorsKey)
+			}
+			if tc.setModelEnv {
+				t.Setenv(modelKey, tc.modelValue)
+			} else {
+				// Ensure the var is unset for this subtest, in case the outer
+				// test process inherited it from the environment.
+				t.Setenv(modelKey, "")
+				os.Unsetenv(modelKey)
 			}
 
 			gotModel, gotAdvisor := driAdvisorSettings()

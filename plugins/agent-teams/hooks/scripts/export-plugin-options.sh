@@ -4,24 +4,27 @@
 # WHY: Claude Code exports CLAUDE_PLUGIN_OPTION_<KEY> only to hook and MCP/LSP
 # subprocesses — NOT to arbitrary Bash tool calls the model makes. `ateam
 # dispatch` / `resume` (invoked as Bash calls from /dispatch-dri and friends)
-# read CLAUDE_PLUGIN_OPTION_USE_ADVISORS to decide whether a DRI session
-# launches sonnet+opus-advisor vs the default opus. Without this hook that var
-# is never present at dispatch time, so advisor mode would silently never fire.
+# read CLAUDE_PLUGIN_OPTION_USE_ADVISORS and CLAUDE_PLUGIN_OPTION_DRI_MODEL to
+# decide whether a DRI session launches sonnet+opus-advisor vs the default
+# opus, and which model fills the "strong model" slot (advisor model when
+# advisors are on, the DRI session's own model when advisors are off).
+# Without this hook those vars are never present at dispatch time, so advisor
+# mode and dri_model would silently never take effect.
 #
-# This runs at SessionStart (a hook process, which receives both
-# CLAUDE_PLUGIN_OPTION_USE_ADVISORS in its environment — when the option is set —
-# and the CLAUDE_ENV_FILE path) and appends an export line to $CLAUDE_ENV_FILE,
-# which the harness then applies to every subsequent Bash tool call in the
-# session.
+# This runs at SessionStart (a hook process, which receives
+# CLAUDE_PLUGIN_OPTION_USE_ADVISORS and CLAUDE_PLUGIN_OPTION_DRI_MODEL in its
+# environment — when each option is set — and the CLAUDE_ENV_FILE path) and
+# appends export lines to $CLAUDE_ENV_FILE, which the harness then applies to
+# every subsequent Bash tool call in the session.
 #
-# We read the value from the CLAUDE_PLUGIN_OPTION_USE_ADVISORS env var, NOT from
-# an interpolated ${user_config.use_advisors} hook arg: Claude Code rejects
+# We read the values from the CLAUDE_PLUGIN_OPTION_* env vars, NOT from
+# interpolated ${user_config.*} hook args: Claude Code rejects
 # ${user_config.*} in a shell-form command (2.1.207+), and interpolating it as
 # an exec-form arg hard-errors at SessionStart when the option is unset (the
-# plugin.json default:false is not applied during arg interpolation). Reading
-# the env var sidesteps both — unset simply falls back to "false" here. Only the
-# exact string "true" enables advisor mode downstream (see driAdvisorSettings in
-# internal/verbs/dispatch.go).
+# plugin.json defaults are not applied during arg interpolation). Reading
+# the env vars sidesteps both — unset simply falls back to the documented
+# default here. Only the exact string "true" enables advisor mode downstream
+# (see driAdvisorSettings in internal/verbs/dispatch.go).
 set -eu
 
 # No env file to write to (older harness / unsupported): no-op, never break the
@@ -29,5 +32,7 @@ set -eu
 [ -n "${CLAUDE_ENV_FILE:-}" ] || exit 0
 
 use_advisors="${CLAUDE_PLUGIN_OPTION_USE_ADVISORS:-false}"
+dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-opus}"
 
 printf 'export CLAUDE_PLUGIN_OPTION_USE_ADVISORS=%s\n' "$use_advisors" >> "$CLAUDE_ENV_FILE"
+printf 'export CLAUDE_PLUGIN_OPTION_DRI_MODEL=%s\n' "$dri_model" >> "$CLAUDE_ENV_FILE"
