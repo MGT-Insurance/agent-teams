@@ -435,3 +435,60 @@ export interface MailPurgeResponse {
   ok: true;
   output?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Memories tab (agent-teams-hvje). CONTRACT — frozen shape shared by three
+// file-disjoint tracks (Go CLI, dashboard server, dashboard web); see
+// agent-teams-hvje.1 for the full spec. Implementers build to this comment
+// block verbatim — no need to re-read the bead.
+//
+// A) `ateam memories-json` output: a JSON array of objects, one per memory
+// entry, sorted by key ASCENDING (deterministic for tests), with EXACTLY
+// these camelCase keys (same field names + null semantics as MemoryEntry
+// below). Derivation rules (mirror runRoles in query.go), source data via
+// `bd memories --json`:
+//   • SKIP any key with no ":" (colonless, e.g. "schema_version").
+//   • role         — substring before the first ":" in the key.
+//   • SKIP role == "applied" (the applied-signal namespace is joined in,
+//                    not listed as its own role).
+//   • tier         — "hot" if key matches <role>:hot:*, "fresh" if
+//                    <role>:fresh:*, else "cold".
+//   • slug         — bare slug via condenseBareSlug(role+":", key) (strips
+//                    the hot:/fresh: tier segment).
+//   • body         — the KV value. Skip non-string values defensively.
+//   • appliedCount, lastApplied — looked up from the "applied:<role>:<slug>"
+//                    namespace; appliedCount is 0 when no applied record
+//                    exists; lastApplied is RFC3339 or null (never "").
+// NOTE (agent-teams-hvje.1): applied-signal tracking is brand new — expect
+// appliedCount to be 0 for nearly every row until PR #101's tracking accrues.
+// ---------------------------------------------------------------------------
+
+export interface MemoryEntry {
+  role: string; // substring before the first ":" in the key
+  key: string; // the raw KV key
+  slug: string; // bare slug via condenseBareSlug(role+":", key)
+  tier: "hot" | "fresh" | "cold";
+  body: string; // the KV value
+  appliedCount: number; // 0 when no applied record exists
+  lastApplied: string | null; // RFC3339, or null when absent (never "")
+}
+
+// B) GET /api/memories -> 200 MemoryListResponse ({ memories }); on
+// `ateam memories-json` CLI failure -> 502 { error }. See MemoryEntry above
+// for the full contract (mirrors `ateam memories-json`).
+export interface MemoryListResponse {
+  memories: MemoryEntry[];
+}
+
+// C) GET /api/learnings/:role -> 200 LearningsResponse ({ role, text }); on
+// CLI failure -> 502 { error } (agent-teams-orb7). `text` is the raw stdout
+// of `ateam learnings <role>` for every role EXCEPT "user", where it is the
+// raw stdout of `ateam prime` instead — the "user" role's context injection
+// mechanism is `ateam prime`'s filtered/capped/truncated `user:`-key output,
+// NOT the untruncated/uncapped `ateam learnings user` dump, so mirroring the
+// real injected context requires the prime special-case. `text` may be empty
+// (no hot/fresh memories for that role — or, for "user", no `user:` keys).
+export interface LearningsResponse {
+  role: string;
+  text: string;
+}
