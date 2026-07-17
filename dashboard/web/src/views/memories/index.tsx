@@ -43,6 +43,8 @@ const POLL_MS = 20_000;
 // `ateam prime`'s filtered/capped/truncated output instead (see fetchLearnings).
 // Re-fetches whenever `role` changes so a role switch never leaves stale content
 // on screen (the effect's dependency array does the work — no caller plumbing).
+// Renders as a modal (Eric asked for this over the initial inline-block version):
+// backdrop click and Escape both close it, matching standard modal conventions.
 function InjectedContextPanel({ role, onClose }: { role: string; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState<string | null>(null);
@@ -68,33 +70,53 @@ function InjectedContextPanel({ role, onClose }: { role: string; onClose: () => 
     };
   }, [role]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
-    <div className="memories-injected-panel" data-testid="memories-injected-panel">
-      <div className="memories-injected-panel__header">
-        <p className="memories-injected-panel__caption">
-          This is the injected subset only (hot+fresh; capped/truncated for user prefs) — not the full list below.
-        </p>
-        <button
-          type="button"
-          className="memories-injected-panel__close"
-          onClick={onClose}
-          aria-label="Close injected context panel"
-        >
-          Close
-        </button>
+    <div
+      className="memories-modal-backdrop"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Injected context for ${role}`}
+    >
+      <div
+        className="memories-injected-panel"
+        data-testid="memories-injected-panel"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="memories-injected-panel__header">
+          <p className="memories-injected-panel__caption">
+            This is the injected subset only (hot+fresh; capped/truncated for user prefs) — not the full list below.
+          </p>
+          <button
+            type="button"
+            className="memories-injected-panel__close"
+            onClick={onClose}
+            aria-label="Close injected context panel"
+          >
+            Close
+          </button>
+        </div>
+
+        {error && (
+          <div className="memories-banner memories-banner--error">Failed to load injected context: {error}</div>
+        )}
+
+        {loading ? (
+          <p className="memories-status-text">Loading injected context…</p>
+        ) : error ? null : text !== null && text.trim() !== "" ? (
+          <pre className="memories-injected-panel__body">{text}</pre>
+        ) : (
+          <p className="memories-status-text">Nothing injected — no hot/fresh memories for this role.</p>
+        )}
       </div>
-
-      {error && (
-        <div className="memories-banner memories-banner--error">Failed to load injected context: {error}</div>
-      )}
-
-      {loading ? (
-        <p className="memories-status-text">Loading injected context…</p>
-      ) : error ? null : text !== null && text.trim() !== "" ? (
-        <pre className="memories-injected-panel__body">{text}</pre>
-      ) : (
-        <p className="memories-status-text">Nothing injected — no hot/fresh memories for this role.</p>
-      )}
     </div>
   );
 }
