@@ -402,18 +402,26 @@ func bgSessionArgs(name, prompt, model, advisor string) []string {
 	return append(args, prompt)
 }
 
-// driAdvisorSettings reads CLAUDE_PLUGIN_OPTION_USE_ADVISORS and returns the
-// (model, advisor) pair for DRI session launches: ("sonnet", "opus") when the
-// env var is exactly "true", else ("", "") — any other value (unset, "",
-// "false", or anything not exactly "true") is treated as disabled. Unit
-// testable via t.Setenv. Only launchBGSession (the /dri path) calls this; the
-// raw --launch-prompt path does not read this env var — it defaults to
-// advisor "" unless the caller explicitly passes --advisor (dispatchKong.Advisor).
+// driAdvisorSettings reads CLAUDE_PLUGIN_OPTION_USE_ADVISORS and
+// CLAUDE_PLUGIN_OPTION_DRI_MODEL and returns the (model, advisor) pair for DRI
+// session launches. CLAUDE_PLUGIN_OPTION_DRI_MODEL (default "opus" when unset
+// or empty) is the "strong model" slot: when advisors are enabled (the env
+// var is exactly "true"), it becomes the advisor model and the DRI session
+// worker stays "sonnet"; when advisors are disabled — any other value
+// (unset, "", "false", or anything not exactly "true") — it becomes the DRI
+// session's own model and there is no advisor. Unit testable via t.Setenv.
+// Only launchBGSession (the /dri path) calls this; the raw --launch-prompt
+// path does not read these env vars — it defaults to advisor "" unless the
+// caller explicitly passes --advisor (dispatchKong.Advisor).
 func driAdvisorSettings() (model, advisor string) {
-	if os.Getenv("CLAUDE_PLUGIN_OPTION_USE_ADVISORS") == "true" {
-		return "sonnet", "opus"
+	driModel := os.Getenv("CLAUDE_PLUGIN_OPTION_DRI_MODEL")
+	if driModel == "" {
+		driModel = "opus"
 	}
-	return "", ""
+	if os.Getenv("CLAUDE_PLUGIN_OPTION_USE_ADVISORS") == "true" {
+		return "sonnet", driModel
+	}
+	return driModel, ""
 }
 
 // launchFunc is the function type for launching a background DRI session.
