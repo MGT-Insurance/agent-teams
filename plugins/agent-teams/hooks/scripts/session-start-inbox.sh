@@ -50,6 +50,27 @@ export HOOK_INITIATIVE
 
 hook_log_note "note" "initiative-resolved id=${match_id}"
 
+# ── Steward-only: duplicate-session advisory ─────────────────────────────────
+# Advisory only — never kills anything (that's wake-watcher.sh's shared
+# pidfile-claim fix, the other half of e3mq.29). If another LIVE session (pid
+# present, not just tracked-but-dead) is already sitting in the Steward
+# session dir under a different session id, tell THIS session to stand down
+# instead of letting two Stewards act at once. Fail-soft when `claude` isn't
+# on PATH or `claude agents` errors — the mail signal below still runs.
+if [ "$match_id" = "steward" ] && command -v claude >/dev/null 2>&1; then
+  steward_dir="$ATH/steward/session"
+  dup_count=$(claude agents --all --json 2>/dev/null \
+    | jq -r --arg dir "$steward_dir" --arg me "$HOOK_SESSION_ID" \
+        '[.[] | select((.cwd // "") == $dir) | select(.pid != null) | select((.sessionId // "") != $me)] | length' \
+    2>/dev/null || echo 0)
+  if [ "${dup_count:-0}" -gt 0 ] 2>/dev/null; then
+    HOOK_EXIT_REASON="duplicate-steward-session"
+    signal="You are a DUPLICATE Steward session — another live Steward session is already running for this machine. Do not act as the Steward: tell the human immediately and stop."
+    jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
+    exit 0
+  fi
+fi
+
 # ── Signal: peek at unread mail; emit additionalContext if any ───────────────
 peek_out=$("$ATEAM" mail inbox --peek 2>/dev/null || true)
 # peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.

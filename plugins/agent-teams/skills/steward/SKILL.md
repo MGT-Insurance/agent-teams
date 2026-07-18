@@ -19,6 +19,11 @@ Do NOT:
 
 ## 1. Startup
 
+- **Exactly ONE steward session may run per machine.** The sanctioned launch, from `~/.agent-teams/steward/session`:
+  ```bash
+  claude --bg --permission-mode bypassPermissions "/agent-teams:steward"
+  ```
+  `--permission-mode bypassPermissions` is required — a background steward launched without it hangs invisibly on its first permission prompt, with no one watching to approve it.
 - Verify `ateam steward init` has been run for this machine (it creates the steward session dir and its marker file; idempotent — safe to run again). If you're unsure it's been done, just run it.
 - Load prior context before doing anything else:
   - `ateam steward ledger stats` — per-category accepted/corrected counts, so you know your own track record before making new recommendations.
