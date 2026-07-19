@@ -37,6 +37,8 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 # below runs unmodified.
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-steward.sh
 . "$(dirname "$0")/lib/resolve-steward.sh"
+# shellcheck source=plugins/agent-teams/hooks/scripts/lib/watcher-pidfile.sh
+. "$(dirname "$0")/lib/watcher-pidfile.sh"
 
 if is_steward_cwd; then
   match_id="steward"
@@ -58,14 +60,34 @@ export HOOK_INITIATIVE
 hook_log_note "note" "initiative-resolved id=${match_id}"
 
 # ── Disarm: kill the pending watcher ────────────────────────────────────────
+# Session-aware, symmetric with wake-watcher.sh's claim rules
+# (agent-teams-e3mq.30): only kill/rm a watcher entry this session owns, or
+# one whose pid is already dead. A LIVE watcher owned by a DIFFERENT session
+# (or an old-format entry, whose session is unattributable) means this
+# session is not the session-of-record for this mailbox — leave the pidfile
+# and doorbell untouched and exit before the doorbell-consume/mail-peek
+# blocks below. Otherwise consuming the doorbell would deliver the
+# incumbent's wake into the wrong session, and the peek would prompt this
+# session to read the incumbent's mail (the e3mq.29 failure mode, via the
+# drain path instead of the claim path).
 PIDFILE="$MAILBOX/${match_id}.watcher.pid"
 if [ -f "$PIDFILE" ]; then
-  watcher_pid=$(cat "$PIDFILE" 2>/dev/null || true)
-  if [ -n "$watcher_pid" ] && kill -0 "$watcher_pid" 2>/dev/null; then
-    kill "$watcher_pid" 2>/dev/null || true
-    hook_log_note "note" "watcher-disarmed pid=${watcher_pid}"
+  entry=$(cat "$PIDFILE" 2>/dev/null || true)
+  old_pid=$(pidfile_pid "$entry")
+  old_session=$(pidfile_session "$entry")
+  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+    if [ -n "$old_session" ] && [ "$old_session" = "$HOOK_SESSION_ID" ]; then
+      kill "$old_pid" 2>/dev/null || true
+      rm -f "$PIDFILE"
+      hook_log_note "note" "watcher-disarmed pid=${old_pid}"
+    else
+      hook_log_note "note" "foreign-watcher-live old_pid=${old_pid} old_session=${old_session:-unknown} my_session=${HOOK_SESSION_ID}"
+      HOOK_EXIT_REASON="foreign-watcher-live"
+      exit 0
+    fi
+  else
+    rm -f "$PIDFILE"
   fi
-  rm -f "$PIDFILE"
 fi
 
 # ── Consume the doorbell: a turn is now definitely running. Watchers no longer
@@ -88,4 +110,6 @@ case "$peek_out" in
     ;;
 esac
 
-HOOK_EXIT_REASON="${HOOK_EXIT_REASON:-ok}"
+if [ "$HOOK_EXIT_REASON" = "unexpected" ]; then
+  HOOK_EXIT_REASON="ok"
+fi
