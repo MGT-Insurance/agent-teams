@@ -1096,3 +1096,119 @@ func TestInboxKong_NilContext(t *testing.T) {
 		t.Fatal("expected error for nil context")
 	}
 }
+
+// ── recipientWorktree / sendKong steward escalation (agent-teams-e3mq.28) ────
+
+// TestRecipientWorktree_StewardHandle_NoBDShowCall verifies recipientWorktree
+// special-cases StewardHandle to StewardSessionDir before ever calling
+// bd.ShowIssue — "steward" is not an initiative bead, so a real bd show would
+// error and the caller (sendKong.Run) would skip liveness/escalation entirely.
+func TestRecipientWorktree_StewardHandle_NoBDShowCall(t *testing.T) {
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			t.Fatalf("unexpected bd call for steward handle: %v", args)
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			t.Fatalf("unexpected bd call for steward handle: %v", args)
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	wt, err := recipientWorktree(ctx, StewardHandle)
+	if err != nil {
+		t.Fatalf("recipientWorktree: %v", err)
+	}
+	want := StewardSessionDir(ctx)
+	if wt != want {
+		t.Errorf("recipientWorktree(steward) = %q, want %q", wt, want)
+	}
+}
+
+// stewardSendFakeBD builds a fakeBD for sendKong steward-recipient tests: the
+// bd create call (runJSONFn) succeeds with msgID; any bd show / other Run
+// call fails the test, asserting recipientWorktree never falls through to
+// bd.ShowIssue for the steward handle.
+func stewardSendFakeBD(t *testing.T, msgID string) *fakeBD {
+	t.Helper()
+	return &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = msgID
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			t.Fatalf("unexpected bd Run call for steward recipient: %v", args)
+			return "", nil
+		},
+	}
+}
+
+// TestSendKong_StewardRecipient_NoMatchingSession_QueuesWithoutResume covers
+// the resume branch: when no live session's cwd matches StewardSessionDir,
+// sendKong must NOT call resumeFunc (there's no "/dri <id>" launch path for
+// the Steward — auto-relaunch is e3mq.10's scope) and must print a
+// mail-queued note instead.
+func TestSendKong_StewardRecipient_NoMatchingSession_QueuesWithoutResume(t *testing.T) {
+	home := t.TempDir()
+	file := makeTempFile(t, "hello steward")
+
+	var resumeCalled bool
+	cmd := &sendKong{
+		RecipientID:    StewardHandle,
+		File:           file,
+		agentsFunc:     func() ([]agentSession, error) { return []agentSession{}, nil },
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { resumeCalled = true; return nil },
+		sleeper:        func(time.Duration) { t.Fatal("sleeper should not be called when no session matches") },
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { t.Fatal("respawn should not be called when no session matches"); return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(stewardSendFakeBD(t, "at-steward-msg1"), home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resumeCalled {
+		t.Error("resume should not be called for the steward recipient")
+	}
+	if !strings.Contains(stdout.String(), "steward session not running; mail queued") {
+		t.Errorf("stdout missing mail-queued note: %s", stdout.String())
+	}
+}
+
+// TestSendKong_StewardRecipient_IdleSession_DoorbellPersists_Respawns covers
+// the deaf-steward self-heal path: a live session whose cwd IS
+// StewardSessionDir, idle, with the doorbell still present after the 5s
+// recheck — respawnFunc must fire exactly like it would for any other
+// recipient.
+func TestSendKong_StewardRecipient_IdleSession_DoorbellPersists_Respawns(t *testing.T) {
+	home := t.TempDir()
+	file := makeTempFile(t, "hello steward")
+	ctx, stdout, _ := makeCtx(stewardSendFakeBD(t, "at-steward-msg2"), home)
+	stewardDir := StewardSessionDir(ctx)
+
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: StewardHandle,
+		File:        file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "stew1234", CWD: stewardDir, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true }, // still present: recipient is deaf
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "stew1234" {
+		t.Errorf("respawn not called with correct short id; got %q", respawnedID)
+	}
+	if !strings.Contains(stdout.String(), "respawned stew1234") {
+		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}

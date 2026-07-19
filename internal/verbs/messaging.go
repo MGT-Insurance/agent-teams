@@ -113,6 +113,13 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	entry := matchSessionByWorktree(sessions, wtPath)
 	if entry == nil {
+		// The Steward has no initiative-resume path (there's no "/dri <id>" to
+		// launch it with) — auto-relaunch is e3mq.10's scope. Just leave the
+		// mail queued for whenever a steward session next comes up.
+		if c.RecipientID == StewardHandle {
+			fmt.Fprintf(ctx.Stdout, "note: steward session not running; mail queued\n")
+			return nil
+		}
 		fmt.Fprintf(ctx.Stdout, "recipient not found in claude agents; launching via ateam resume\n")
 		if err := c.resumeFunc(ctx, c.RecipientID, c.ResumeLaunchPrompt, c.ResumeModel); err != nil {
 			return fmt.Errorf("ateam send: resume escalation: %w", err)
@@ -361,8 +368,16 @@ func touchFile(path string) error {
 }
 
 // recipientWorktree looks up the initiative by id and extracts its worktree
-// path from the description.
+// path from the description. The Steward is a machine-scoped singleton, not
+// an initiative bead — id == StewardHandle resolves directly to
+// StewardSessionDir instead of going through bd show (which would error,
+// since "steward" isn't an initiative), so the liveness/deaf-check/respawn
+// escalation below runs for the Steward exactly like it does for any other
+// recipient (mirrors isStewardSession/resolveInboxRecipient's precedent).
 func recipientWorktree(ctx *cli.Context, id string) (string, error) {
+	if id == StewardHandle {
+		return StewardSessionDir(ctx), nil
+	}
 	issue, err := bd.ShowIssue(ctx.BD, id)
 	if err != nil {
 		return "", fmt.Errorf("bd show %s: %w", id, err)

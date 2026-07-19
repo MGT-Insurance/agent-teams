@@ -78,21 +78,55 @@ mkdir -p "$MAILBOX"
 DOORBELL="$MAILBOX/${match_id}.wake"
 PIDFILE="$MAILBOX/${match_id}.watcher.pid"
 
-# ── Singleton: kill any prior watcher for this initiative ───────────────────
+# Pidfile holds "pid<TAB>session_id" (session_id = this hook invocation's
+# HOOK_SESSION_ID, captured from stdin above). pidfile_pid/pidfile_session
+# also accept an old-format pidfile (pid only, no tab) for backward compat:
+# pidfile_session returns "" for those since an old-format entry can't be
+# attributed to any session.
+pidfile_pid() {
+  printf '%s' "${1%%$'\t'*}"
+}
+pidfile_session() {
+  case "$1" in
+    *$'\t'*) printf '%s' "${1#*$'\t'}" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+# ── Singleton: claim the watcher pidfile for this match_id ──────────────────
+# First-one-wins: an ALIVE incumbent from a DIFFERENT session is left running
+# untouched — this is the fix for two Steward sessions racing over one
+# pidfile slot (the old last-one-wins takeover let the second session's
+# watcher unconditionally kill the first's, stealing its wake while the
+# first session sat there thinking it still owned the watcher). A session
+# re-arming its OWN watcher (same session_id, e.g. after a Stop) still
+# supersedes cleanly, and a DEAD incumbent is always claimed regardless of
+# session. An old-format pidfile (pid only, no session) can't be attributed
+# to a session: dead -> claim as before; alive -> treat as foreign and
+# refuse, since we can't prove it's this same session — it self-heals on the
+# incumbent's next re-arm, which writes a new-format entry.
 if [ -f "$PIDFILE" ]; then
-  old_pid=$(cat "$PIDFILE" 2>/dev/null || true)
+  old_entry=$(cat "$PIDFILE" 2>/dev/null || true)
+  old_pid=$(pidfile_pid "$old_entry")
+  old_session=$(pidfile_session "$old_entry")
   if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-    kill "$old_pid" 2>/dev/null || true
-    # Brief wait — the old watcher may be in a sleep; give it a tick to die.
-    sleep 0.1 2>/dev/null || true
-    hook_log_note "note" "pidfile-takeover old_pid=${old_pid} new_pid=$$"
+    if [ -n "$old_session" ] && [ "$old_session" = "$HOOK_SESSION_ID" ]; then
+      kill "$old_pid" 2>/dev/null || true
+      # Brief wait — the old watcher may be in a sleep; give it a tick to die.
+      sleep 0.1 2>/dev/null || true
+      hook_log_note "note" "pidfile-takeover old_pid=${old_pid} new_pid=$$"
+    else
+      hook_log_note "note" "duplicate-watcher old_pid=${old_pid} old_session=${old_session:-unknown} new_session=${HOOK_SESSION_ID}"
+      HOOK_EXIT_REASON="duplicate-watcher"
+      exit 0
+    fi
   else
     hook_log_note "note" "pidfile-claim pid=$$ (old_pid=${old_pid:-none} was not running)"
   fi
 else
   hook_log_note "note" "pidfile-claim pid=$$"
 fi
-printf '%s' "$$" > "$PIDFILE"
+printf '%s\t%s' "$$" "$HOOK_SESSION_ID" > "$PIDFILE"
 
 # ── Heartbeat interval: 4 hours = 14400 seconds, just under the 24h timeout ──
 HEARTBEAT_SECS=14400
@@ -104,7 +138,7 @@ alive_interval=60   # log an "alive" tick every 60 seconds
 # ── Poll-loop ────────────────────────────────────────────────────────────────
 while true; do
   # Guard: still the registered watcher for this initiative?
-  live_pid=$(cat "$PIDFILE" 2>/dev/null || true)
+  live_pid=$(pidfile_pid "$(cat "$PIDFILE" 2>/dev/null || true)")
   if [ "$live_pid" != "$$" ]; then
     HOOK_EXIT_REASON="superseded"
     exit 0
