@@ -82,4 +82,6 @@ case "$peek_out" in
     ;;
 esac
 
-HOOK_EXIT_REASON="${HOOK_EXIT_REASON:-ok}"
+if [ "$HOOK_EXIT_REASON" = "unexpected" ]; then
+  HOOK_EXIT_REASON="ok"
+fi

@@ -49,6 +49,8 @@ fi
 # also gates the stop-on-closed check further down in the heartbeat block.
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-steward.sh
 . "$(dirname "$0")/lib/resolve-steward.sh"
+# shellcheck source=plugins/agent-teams/hooks/scripts/lib/watcher-pidfile.sh
+. "$(dirname "$0")/lib/watcher-pidfile.sh"
 
 is_steward_session=0
 if is_steward_cwd; then
@@ -78,20 +80,8 @@ mkdir -p "$MAILBOX"
 DOORBELL="$MAILBOX/${match_id}.wake"
 PIDFILE="$MAILBOX/${match_id}.watcher.pid"
 
-# Pidfile holds "pid<TAB>session_id" (session_id = this hook invocation's
-# HOOK_SESSION_ID, captured from stdin above). pidfile_pid/pidfile_session
-# also accept an old-format pidfile (pid only, no tab) for backward compat:
-# pidfile_session returns "" for those since an old-format entry can't be
-# attributed to any session.
-pidfile_pid() {
-  printf '%s' "${1%%$'\t'*}"
-}
-pidfile_session() {
-  case "$1" in
-    *$'\t'*) printf '%s' "${1#*$'\t'}" ;;
-    *) printf '%s' "" ;;
-  esac
-}
+# pidfile_pid/pidfile_session (pid<TAB>session_id parsing) come from
+# lib/watcher-pidfile.sh, sourced above.
 
 # ── Singleton: claim the watcher pidfile for this match_id ──────────────────
 # First-one-wins: an ALIVE incumbent from a DIFFERENT session is left running
