@@ -29,6 +29,7 @@ func RegisterStewardKong(p *cli.Parser) {
 // every subcommand (same pattern as mailCmd in mail_register.go).
 type stewardCmd struct {
 	Init   stewardInitKong   `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
+	Start  stewardStartKong  `cmd:"" name:"start" help:"Init, then singleton/orphan-watcher pre-flight checks, then launch the Steward's background session."`
 	Ledger stewardLedgerCmd  `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
 	Remove stewardRemoveKong `cmd:"" name:"remove" help:"De-steward this machine: remove the session dir and doorbell (ledger/briefing kept unless --purge)."`
 }
@@ -48,29 +49,45 @@ type stewardInitKong struct{}
 // Run creates the Steward's session directory and marker file (per contract
 // paths StewardSessionDir/StewardSessionMarkerPath) and prints the session
 // directory — the cwd a human/skill launches the Steward session in.
-// Idempotent: an existing directory or marker is left as-is.
+// Idempotent: an existing directory or marker is left as-is. Delegates to
+// stewardInit, the shared core also used by `ateam steward start`
+// (steward_start.go) so the two commands' init behavior never diverges.
 func (c *stewardInitKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward init: nil context")
 	}
 
+	sessionDir, err := stewardInit(ctx)
+	if err != nil {
+		return fmt.Errorf("ateam steward init: %w", err)
+	}
+
+	fmt.Fprintln(ctx.Stdout, sessionDir)
+	return nil
+}
+
+// stewardInit creates the Steward's session directory and marker file (per
+// contract paths StewardSessionDir/StewardSessionMarkerPath), returning the
+// session directory. Idempotent: an existing directory or marker is left
+// as-is. Shared core behind both stewardInitKong.Run (above) and
+// stewardStartKong.Run (steward_start.go).
+func stewardInit(ctx *cli.Context) (string, error) {
 	sessionDir := StewardSessionDir(ctx)
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		return fmt.Errorf("ateam steward init: create session dir: %w", err)
+		return "", fmt.Errorf("create session dir: %w", err)
 	}
 
 	marker := StewardSessionMarkerPath(ctx)
 	if _, err := os.Stat(marker); os.IsNotExist(err) {
 		content := fmt.Sprintf("created: %s\n", time.Now().UTC().Format(time.RFC3339))
 		if err := os.WriteFile(marker, []byte(content), 0o644); err != nil {
-			return fmt.Errorf("ateam steward init: write marker: %w", err)
+			return "", fmt.Errorf("write marker: %w", err)
 		}
 	} else if err != nil {
-		return fmt.Errorf("ateam steward init: stat marker: %w", err)
+		return "", fmt.Errorf("stat marker: %w", err)
 	}
 
-	fmt.Fprintln(ctx.Stdout, sessionDir)
-	return nil
+	return sessionDir, nil
 }
 
 // ── steward remove ────────────────────────────────────────────────────────────
