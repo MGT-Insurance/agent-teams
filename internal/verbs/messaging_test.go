@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1094,6 +1095,149 @@ func TestInboxKong_NilContext(t *testing.T) {
 	cmd := &inboxKong{}
 	if err := cmd.Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── checkStewardInboxGuard (agent-teams-e3mq.31) ─────────────────────────────
+
+// writeWatcherPidfile writes a watcher pidfile entry to
+// <home>/mailbox/steward.watcher.pid. session == "" writes an old-format
+// bare-pid entry (pre-e3mq.30, unattributable); otherwise it writes the
+// current "pid<TAB>session_id" format, mirroring wake-watcher.sh's claim
+// write (printf '%s\t%s' "$$" "$HOOK_SESSION_ID").
+func writeWatcherPidfile(t *testing.T, home string, pid int, session string) {
+	t.Helper()
+	mailboxDir := filepath.Join(home, "mailbox")
+	if err := os.MkdirAll(mailboxDir, 0o755); err != nil {
+		t.Fatalf("mkdir mailbox: %v", err)
+	}
+	entry := strconv.Itoa(pid)
+	if session != "" {
+		entry += "\t" + session
+	}
+	path := filepath.Join(mailboxDir, "steward.watcher.pid")
+	if err := os.WriteFile(path, []byte(entry), 0o644); err != nil {
+		t.Fatalf("write pidfile: %v", err)
+	}
+}
+
+func TestCheckStewardInboxGuard_NoPidfile_Proceeds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(sessionIDEnvVar, "caller-session")
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := checkStewardInboxGuard(ctx); err != nil {
+		t.Errorf("expected nil (no pidfile means no session-of-record to protect), got: %v", err)
+	}
+}
+
+func TestCheckStewardInboxGuard_DeadPid_Proceeds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(sessionIDEnvVar, "caller-session")
+	writeWatcherPidfile(t, home, 9999999, "some-other-session") // near-certainly not a live pid
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := checkStewardInboxGuard(ctx); err != nil {
+		t.Errorf("expected nil (dead pid means no session-of-record to protect), got: %v", err)
+	}
+}
+
+func TestCheckStewardInboxGuard_OwnSession_Proceeds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(sessionIDEnvVar, "my-session")
+	writeWatcherPidfile(t, home, os.Getpid(), "my-session")
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := checkStewardInboxGuard(ctx); err != nil {
+		t.Errorf("expected nil (caller is the session of record), got: %v", err)
+	}
+}
+
+func TestCheckStewardInboxGuard_EnvUnset_Proceeds(t *testing.T) {
+	home := t.TempDir()
+	// t.Setenv to "" rather than leaving it alone — this test process is
+	// itself a Claude Code session, so the real CLAUDE_CODE_SESSION_ID is
+	// already set in the ambient environment. Clearing it simulates a
+	// manual/debug invocation with no attributable caller session. A
+	// foreign live watcher is present, but the guard must still proceed
+	// since it can't attribute the caller.
+	t.Setenv(sessionIDEnvVar, "")
+	writeWatcherPidfile(t, home, os.Getpid(), "some-other-session")
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := checkStewardInboxGuard(ctx); err != nil {
+		t.Errorf("expected nil (unattributable caller), got: %v", err)
+	}
+}
+
+func TestCheckStewardInboxGuard_ForeignLive_Refuses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(sessionIDEnvVar, "duplicate-session")
+	writeWatcherPidfile(t, home, os.Getpid(), "incumbent-session")
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	err := checkStewardInboxGuard(ctx)
+	if err == nil {
+		t.Fatal("expected refusal for a live foreign watcher, got nil")
+	}
+	if !strings.Contains(err.Error(), "incumbent-session") {
+		t.Errorf("error should name the incumbent session: %v", err)
+	}
+	if !strings.Contains(err.Error(), "DUPLICATE") {
+		t.Errorf("error should tell the caller it looks like a duplicate: %v", err)
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestCheckStewardInboxGuard_OldFormatLive_Refuses(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(sessionIDEnvVar, "duplicate-session")
+	writeWatcherPidfile(t, home, os.Getpid(), "") // old format: bare pid, unattributable
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	err := checkStewardInboxGuard(ctx)
+	if err == nil {
+		t.Fatal("expected refusal for a live old-format (unattributable) watcher, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Errorf("error should describe the unattributable session as unknown: %v", err)
+	}
+}
+
+// TestInboxKong_StewardDuplicateSession_RefusesBothPeekAndConsume verifies the
+// guard is wired into inboxKong.Run at the single site ahead of the c.Peek
+// branch, so BOTH the consuming and --peek paths refuse — and neither ever
+// reaches the bd query/mark-read calls (the fakeBD below fails the test if
+// either fires).
+func TestInboxKong_StewardDuplicateSession_RefusesBothPeekAndConsume(t *testing.T) {
+	home := t.TempDir()
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			t.Fatalf("unexpected bd query call — guard must refuse before querying: %v", args)
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			t.Fatalf("unexpected bd Run call — guard must refuse before mark-read: %v", args)
+			return "", nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	t.Chdir(StewardSessionDir(ctx))
+
+	writeWatcherPidfile(t, home, os.Getpid(), "incumbent-session")
+	t.Setenv(sessionIDEnvVar, "duplicate-session")
+
+	if err := (&inboxKong{}).Run(ctx); err == nil {
+		t.Error("expected refusal on the consuming path, got nil")
+	}
+	if err := (&inboxKong{Peek: true}).Run(ctx); err == nil {
+		t.Error("expected refusal on the --peek path, got nil")
 	}
 }
 

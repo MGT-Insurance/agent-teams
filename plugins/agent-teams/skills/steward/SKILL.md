@@ -25,6 +25,16 @@ Do NOT:
   ```
   `--permission-mode bypassPermissions` is required — a background steward launched without it hangs invisibly on its first permission prompt, with no one watching to approve it. Running `ateam steward init` BEFORE the session starts ensures the session marker exists before any SessionStart hook can fire for it.
 - `ateam steward init` is idempotent — safe to run again if you're ever unsure it's been done for this machine. Pure backstop: the launch line above already runs it.
+- **Step 0 — before ledger/learnings/execution-status below, and before ANY inbox drain, confirm you aren't a duplicate** (agent-teams-e3mq.31):
+  ```bash
+  claude agents --all --json | jq --arg dir "$(pwd)" --arg me "$CLAUDE_CODE_SESSION_ID" \
+    '[.[] | select(.cwd == $dir and .sessionId != $me and .state != "done")]'
+  ```
+  A non-empty result means another session is already live in this steward session dir — that's the incumbent, and you are the duplicate. Your first and ONLY output this turn:
+
+  > Looks like I'm a duplicate steward session — shut down my session (`claude stop <your-session-short-id>`).
+
+  Then end the turn immediately — run nothing else from this playbook, not ledger stats, not learnings, not execution-status, not `ateam mail inbox`. Draining mail as a duplicate risks consuming the incumbent's unread messages. (`ateam mail inbox`'s session-of-record guard refuses that exact case as a backstop if this check is ever skipped — but don't rely on the backstop; check here first.)
 - Load prior context before doing anything else:
   - `ateam steward ledger stats` — per-category accepted/corrected counts, so you know your own track record before making new recommendations.
   - `ateam learnings steward` — prior role learnings.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -176,6 +177,17 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 	myID, err := resolveInboxRecipient(ctx, cwd)
 	if err != nil {
 		return nil
+	}
+
+	// Session-of-record guard (agent-teams-e3mq.31): only the Steward path
+	// needs this — a duplicate steward session must not be able to consume
+	// (or peek) the incumbent's mail just because it ran `ateam mail inbox`
+	// per its own playbook. One guard site ahead of the c.Peek branch below
+	// covers BOTH the consuming and --peek paths (defense in depth).
+	if myID == StewardHandle {
+		if err := checkStewardInboxGuard(ctx); err != nil {
+			return err
+		}
 	}
 
 	var messages []bd.Issue
@@ -431,6 +443,86 @@ func resolveInboxRecipient(ctx *cli.Context, cwd string) (string, error) {
 		return StewardHandle, nil
 	}
 	return resolveMyInitiative(ctx, cwd)
+}
+
+// sessionIDEnvVar is the env var Claude Code exports into every session's
+// Bash env carrying that session's id (verified live against the
+// steward-duplicate incident that motivated agent-teams-e3mq.31).
+// checkStewardInboxGuard reads it to identify the calling session.
+const sessionIDEnvVar = "CLAUDE_CODE_SESSION_ID"
+
+// pidfileEntryPid and pidfileEntrySession parse a watcher pidfile entry of
+// the form "pid<TAB>session_id" (or a bare pid for a pre-e3mq.30 entry,
+// whose session is then unattributable — pidfileEntrySession returns "").
+// This MUST mirror pidfile_pid/pidfile_session in
+// plugins/agent-teams/hooks/scripts/lib/watcher-pidfile.sh exactly — that
+// shell lib and this Go twin parse the one pidfile format the hooks and this
+// guard both depend on; letting them drift reopens the singleton race
+// e3mq.29/e3mq.30 closed.
+func pidfileEntryPid(entry string) string {
+	if idx := strings.IndexByte(entry, '\t'); idx >= 0 {
+		return entry[:idx]
+	}
+	return entry
+}
+
+func pidfileEntrySession(entry string) string {
+	if idx := strings.IndexByte(entry, '\t'); idx >= 0 {
+		return entry[idx+1:]
+	}
+	return ""
+}
+
+// checkStewardInboxGuard enforces session-of-record protection for steward
+// mail (agent-teams-e3mq.31): observed live, a duplicate steward session got
+// every hook-level advisory and guard, yet still ran `ateam mail inbox` per
+// its own startup playbook and would have consumed the incumbent's unread
+// mail — mail consumption is a model-driven CLI call the hooks cannot
+// intercept, so the backstop has to live here. Decision table mirrors
+// inbox-drain.sh's foreign-watcher-live disarm rule exactly:
+//
+//   - pidfile absent/unreadable, or pid dead/unparseable -> proceed (nil):
+//     no session-of-record to protect.
+//   - pid alive and pidfile session == caller session -> proceed (nil):
+//     the caller IS the session of record.
+//   - caller env var unset/empty -> proceed (nil): the caller can't be
+//     attributed, which keeps manual/debug invocations working — this guard
+//     only fires on a positive mismatch, never on ambiguity.
+//   - pid alive and pidfile session != caller session (including an
+//     old-format entry, whose session is unattributable) -> refuse (error).
+func checkStewardInboxGuard(ctx *cli.Context) error {
+	callerSession := os.Getenv(sessionIDEnvVar)
+	if callerSession == "" {
+		return nil
+	}
+
+	pidfilePath := filepath.Join(ctx.Home, "mailbox", StewardHandle+".watcher.pid")
+	data, err := os.ReadFile(pidfilePath)
+	if err != nil {
+		return nil // no pidfile -> no session-of-record to protect
+	}
+
+	entry := strings.TrimRight(string(data), "\n")
+	pid, err := strconv.Atoi(pidfileEntryPid(entry))
+	if err != nil || pid <= 0 || !pidAlive(pid) {
+		return nil // dead/unparseable pidfile -> no session-of-record to protect
+	}
+
+	pidfileSession := pidfileEntrySession(entry)
+	if pidfileSession != "" && pidfileSession == callerSession {
+		return nil // caller is the session of record
+	}
+
+	sessionDesc := pidfileSession
+	if sessionDesc == "" {
+		sessionDesc = "unknown"
+	}
+	return fmt.Errorf(
+		"ateam inbox: refusing to read steward mail: another steward session of record exists "+
+			"(watcher pid %d held by session %s). You appear to be a DUPLICATE steward session. "+
+			"Announce to the human: 'Looks like I'm a duplicate steward — shut down my session "+
+			"(claude stop <your-session-short-id>)' and do nothing else.",
+		pid, sessionDesc)
 }
 
 // filterMessageType returns only issues with IssueType == "message".
