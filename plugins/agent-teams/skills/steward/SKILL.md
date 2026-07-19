@@ -21,10 +21,14 @@ Do NOT:
 
 - **Exactly ONE steward session may run per machine.** The sanctioned launch:
   ```bash
+  ateam steward start
+  ```
+  `steward start` is the one-command form of the full manual sequence: it runs `ateam steward init`, then a singleton pre-flight (refuses to launch — exit code 1, naming the live session's id — if a steward session is already running; fails soft, with a warning, if `claude agents` can't be queried), then orphan-watcher hygiene (a dead watcher pidfile is removed; a live orphaned watcher — which has left a relaunched steward deaf before — is killed and its pidfile removed), then launches. Under the hood, that last step is:
+  ```bash
   ateam steward init && cd ~/.agent-teams/steward/session && claude --bg --permission-mode bypassPermissions "/agent-teams:steward"
   ```
   `--permission-mode bypassPermissions` is required — a background steward launched without it hangs invisibly on its first permission prompt, with no one watching to approve it. Running `ateam steward init` BEFORE the session starts ensures the session marker exists before any SessionStart hook can fire for it.
-- `ateam steward init` is idempotent — safe to run again if you're ever unsure it's been done for this machine. Pure backstop: the launch line above already runs it.
+- `ateam steward init` is idempotent — safe to run again if you're ever unsure it's been done for this machine. Pure backstop: `steward start` already runs it.
 - **Step 0 — before ledger/learnings/execution-status below, and before ANY inbox drain, confirm you aren't a duplicate** (agent-teams-e3mq.31):
   ```bash
   claude agents --all --json | jq --arg dir "$(pwd)" --arg me "$CLAUDE_CODE_SESSION_ID" \
