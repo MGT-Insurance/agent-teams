@@ -233,16 +233,42 @@ func TestStewardStart_NoPidfile_ProceedsSilently(t *testing.T) {
 
 func TestStewardStart_AgentsQueryFails_WarnsAndProceeds(t *testing.T) {
 	home := t.TempDir()
-	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+	ctx, stdout, stderr := makeCtx(&fakeBD{}, home)
+
+	// Seed the pidfile with a real, currently-alive pid. On a broken `claude
+	// agents` query, a live watcher pid can't be attributed as an orphan (an
+	// incumbent steward might legitimately own it), so start must skip
+	// hygiene entirely and leave it untouched — killing it here would free
+	// the watcher slot for a duplicate steward, the exact takeover
+	// e3mq.29/e3mq.30 closed (review finding on 398d3c3).
+	sleeper := exec.Command("sleep", "30")
+	if err := sleeper.Start(); err != nil {
+		t.Fatalf("spawn sleeper: %v", err)
+	}
+	livePID := sleeper.Process.Pid
+	t.Cleanup(func() {
+		_ = sleeper.Process.Kill()
+		_ = sleeper.Wait()
+	})
+
+	pidfile := stewardWatcherPidfilePath(ctx)
+	if err := os.MkdirAll(filepath.Dir(pidfile), 0o755); err != nil {
+		t.Fatalf("seed mailbox dir: %v", err)
+	}
+	pidfileContent := fmt.Sprintf("%d\tsome-other-session", livePID)
+	if err := os.WriteFile(pidfile, []byte(pidfileContent), 0o644); err != nil {
+		t.Fatalf("seed live pidfile: %v", err)
+	}
 
 	var launchCalled bool
+	var killCalled bool
 	cmd := &stewardStartKong{
 		agentsFunc: func() ([]agentSession, error) { return nil, fmt.Errorf("claude not found") },
 		launchFunc: func(ctx *cli.Context, dir string) error {
 			launchCalled = true
 			return nil
 		},
-		killFunc: func(pid int) {},
+		killFunc: func(pid int) { killCalled = true },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -253,6 +279,19 @@ func TestStewardStart_AgentsQueryFails_WarnsAndProceeds(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "warning") {
 		t.Errorf("expected a warning on stderr, got: %q", stderr.String())
+	}
+	if killCalled {
+		t.Error("expected kill NOT to be called when the agents query fails — a live pid can't be attributed as an orphan")
+	}
+	got, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatalf("expected pidfile to remain untouched, stat err: %v", err)
+	}
+	if string(got) != pidfileContent {
+		t.Errorf("expected pidfile content untouched, got: %q", got)
+	}
+	if strings.Contains(stdout.String(), "cleaned") {
+		t.Errorf("expected no cleanup note when the agents query fails, got: %q", stdout.String())
 	}
 }
 

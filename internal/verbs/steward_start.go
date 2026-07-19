@@ -65,7 +65,7 @@ func (c *stewardStartKong) Run(ctx *cli.Context) error {
 	// launch; only a *confirmed* live session refuses.
 	sessions, agentsErr := agentsFunc()
 	if agentsErr != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam steward start: warning: could not query live sessions (%v); skipping singleton check\n", agentsErr)
+		fmt.Fprintf(ctx.Stderr, "ateam steward start: warning: could not query live sessions (%v); skipping singleton check and orphan-watcher cleanup\n", agentsErr)
 	} else if live := findLiveStewardSession(sessions, sessionDir); live != nil {
 		id := live.ID
 		if id == "" {
@@ -75,12 +75,16 @@ func (c *stewardStartKong) Run(ctx *cli.Context) error {
 			"ateam steward start: refusing to launch: a live steward session is already running (%s) — "+
 				"attach with `claude attach %s` or stop it with `claude stop %s`",
 			id, id, id)
+	} else {
+		// 3. Orphan-watcher hygiene — only reached when the query SUCCEEDED
+		// and found zero live steward sessions, i.e. a live watcher pid can be
+		// provably attributed to no legitimate owner. On query failure a live
+		// watcher pid can't be ruled out as belonging to an incumbent steward,
+		// so it must NOT be killed — doing so would free the watcher slot for
+		// a duplicate steward to claim, the exact takeover e3mq.29/e3mq.30
+		// closed.
+		cleanOrphanStewardWatcher(ctx, kill)
 	}
-
-	// 3. Orphan-watcher hygiene — only reached when step 2 did not find (or
-	// could not rule out) a live steward session, i.e. it's safe to assume
-	// nothing legitimately owns the watcher pidfile right now.
-	cleanOrphanStewardWatcher(ctx, kill)
 
 	// 4. Launch. claude's own stdout (including the session id it prints) is
 	// streamed straight through so the human sees it.
