@@ -596,3 +596,114 @@ func TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath(t *testing.T) {
 		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
 	}
 }
+
+// ── handler: briefing-channel short-circuit ───────────────────────────────────
+
+// TestRelay_BriefingThread_RoutesToSteward verifies that a reply whose thread
+// ref matches the persisted Steward briefing-channel thread ref (contract:
+// StewardBriefingThreadPath) is routed to the Steward via a
+// steward-briefing-reply envelope, bypassing the bd initiative lookup
+// entirely.
+func TestRelay_BriefingThread_RoutesToSteward(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-5"); err != nil {
+		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+
+	bdQueryCalled := false
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "briefing-5", Text: "what's the status on at-001?"}},
+	}
+
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery: func(home, label string) ([]bd.Issue, error) {
+			bdQueryCalled = true
+			return nil, nil
+		},
+		send: fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bdQueryCalled {
+		t.Error("bd query must not be called for a briefing-channel message")
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardBriefingReplyEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-briefing-reply envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "what's the status on at-001?" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "what's the status on at-001?")
+	}
+}
+
+// TestRelay_BriefingThread_NonMatchingThreadRef_TakesInitiativePath verifies
+// that when a briefing-channel thread ref IS persisted, a reply whose
+// ThreadRef does not match it still takes the existing initiative-reply
+// path (bd lookup + steward-reply envelope), not the briefing short-circuit.
+func TestRelay_BriefingThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-5"); err != nil {
+		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:      bdq.query,
+		send:         fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath verifies that
+// when the Steward briefing-channel thread-ref file does not exist at all
+// (no briefing ever posted), a reply falls through to the existing
+// initiative-reply path — the short-circuit never fires.
+func TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t) // t.TempDir() is empty — no briefing-thread file present
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:      bdq.query,
+		send:         fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}

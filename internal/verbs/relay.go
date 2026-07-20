@@ -156,6 +156,23 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		return c.handleDirectReply(ctx, reply)
 	}
 
+	// Briefing-channel short-circuit: a message posted in the Steward's
+	// Briefings topic (contract: BriefingHandle, StewardBriefingThreadPath in
+	// steward_seams.go) has no initiative bead behind it by design, so the bd
+	// label lookup below would always miss and the message would die
+	// silently (agent-teams-8beo.1). If this reply's thread ref matches the
+	// persisted briefing-channel thread ref, route it to the Steward as a
+	// steward-briefing-reply envelope, bypassing the initiative lookup
+	// entirely. An absent/empty thread-ref file (no briefing ever posted, or
+	// a read failure) falls through to the existing initiative-reply path
+	// below.
+	briefingRef, err := readThreadRefFile(StewardBriefingThreadPath(ctx))
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: read steward briefing thread ref: %v\n", err)
+	} else if briefingRef != "" && reply.ThreadRef == briefingRef {
+		return c.handleBriefingReply(ctx, reply)
+	}
+
 	label := "thread:" + reply.ThreadRef
 	home := workspace.Home()
 
@@ -288,6 +305,30 @@ func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) e
 
 	if err := c.send(ctx, tmpPath); err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (direct message): %v — skipping\n", StewardHandle, err)
+	}
+	return nil
+}
+
+// handleBriefingReply routes a reply whose thread ref matches the Steward's
+// persisted Briefings-topic thread ref (see the short-circuit in handleReply
+// above): it wraps reply.Text in a steward-briefing-reply envelope and sends
+// it straight to the Steward, with no initiative lookup involved.
+func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply) error {
+	envelope, err := BuildStewardBriefingReplyEnvelope(reply.Text)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward briefing-reply envelope: %v — skipping\n", err)
+		return nil
+	}
+
+	tmpPath, err := writeEnvelopeToTemp(envelope)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
+		return nil
+	}
+	defer os.Remove(tmpPath)
+
+	if err := c.send(ctx, tmpPath); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (briefing reply): %v — skipping\n", StewardHandle, err)
 	}
 	return nil
 }

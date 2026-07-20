@@ -383,6 +383,58 @@ func ParseStewardDirectEnvelope(text string) (StewardDirectEnvelope, bool) {
 	return StewardDirectEnvelope{Body: body}, true
 }
 
+// ── Briefing-reply→Steward envelope ──────────────────────────────────────────
+//
+// A human reply posted in the Steward's Briefings topic (BriefingHandle,
+// StewardBriefingThreadPath) has no bead behind it by design — `ateam notify
+// briefing` maintains that topic's thread ref outside any initiative bead's
+// "thread:<n>" label, so the relay's bd label lookup would always miss and
+// the message would die silently (agent-teams-8beo.1). Distinct from
+// steward-direct: the reply surface differs (Briefings, a cross-initiative
+// broadcast topic, vs the Steward's dedicated 1:1 direct channel). Distinct
+// from steward-reply: like steward-direct, this carries no initiative id —
+// it's content-addressed (the Steward reads the reply against recent
+// briefing context and decides where it belongs), not thread-addressed to a
+// single known initiative.
+
+const stewardBriefingReplyOpenPrefix = "<<<steward-briefing-reply>>>"
+
+// StewardBriefingReplyEnvelope holds the parsed fields of a
+// Briefing-reply→Steward envelope.
+type StewardBriefingReplyEnvelope struct {
+	Body string
+}
+
+// BuildStewardBriefingReplyEnvelope renders the self-contained
+// Briefing-reply→Steward envelope:
+//
+//	<<<steward-briefing-reply>>>
+//	<body>
+//	>>>
+func BuildStewardBriefingReplyEnvelope(body string) (string, error) {
+	var b strings.Builder
+	b.WriteString(stewardBriefingReplyOpenPrefix)
+	b.WriteString("\n")
+	b.WriteString(body)
+	b.WriteString("\n" + stewardEnvelopeClose)
+	return b.String(), nil
+}
+
+// ParseStewardBriefingReplyEnvelope parses an envelope produced by
+// BuildStewardBriefingReplyEnvelope. Returns false when text isn't
+// well-formed: no header line or a missing closing sentinel line.
+func ParseStewardBriefingReplyEnvelope(text string) (StewardBriefingReplyEnvelope, bool) {
+	header := stewardBriefingReplyOpenPrefix + "\n"
+	if !strings.HasPrefix(text, header) {
+		return StewardBriefingReplyEnvelope{}, false
+	}
+	body, ok := strings.CutSuffix(text[len(header):], "\n"+stewardEnvelopeClose)
+	if !ok {
+		return StewardBriefingReplyEnvelope{}, false
+	}
+	return StewardBriefingReplyEnvelope{Body: body}, true
+}
+
 // ── Ledger record ─────────────────────────────────────────────────────────────
 
 // StewardLedgerCategory enumerates the categories of decision the Steward

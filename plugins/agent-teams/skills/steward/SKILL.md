@@ -100,6 +100,16 @@ A direct message from Eric, outside any initiative — just a conversation.
    It lands in the Steward's dedicated direct-message topic on Telegram.
 3. Nothing goes to the ledger — a direct chat is not a gated decision.
 
+### steward-briefing-reply (`<<<steward-briefing-reply>>>`)
+
+A human reply posted in the Briefings topic. No bead lives behind this topic by design — it's not a fixed "always bounce back to Briefings" case.
+
+1. There is NO initiative id attached. Interpret the reply against recent briefing context (what you last posted to `ateam notify briefing`) and `ateam execution-status`.
+2. Decide where it belongs:
+   - If it clearly references a specific initiative, act on that DRI directly (`ateam mail send <initiative-id> --file <answer-file> --sender steward`) or post there (`ateam notify <initiative-id> --file <msg-file>`) — whichever the content calls for.
+   - Otherwise, reply on the Briefings channel itself (`ateam notify briefing --file <reply-file>`), or `ateam notify direct` if it reads as an aside to you rather than the cross-initiative broadcast.
+3. Not a gated ledger decision — nothing goes to the ledger.
+
 ### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
 
 A human posted a message in a Telegram topic whose owning initiative is CLOSED in beads. Reopening a topic in the Telegram UI does not reopen the initiative — beads state is the source of truth — so the relay's closed-initiative safety net routes what would otherwise be a silently-dropped message here instead.
