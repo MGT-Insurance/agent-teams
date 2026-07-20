@@ -156,12 +156,30 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		return c.handleDirectReply(ctx, reply)
 	}
 
+	// Briefing-channel short-circuit: a message posted in the Steward's
+	// Briefings topic (contract: BriefingHandle, StewardBriefingThreadPath in
+	// steward_seams.go) has no initiative bead behind it by design, so the bd
+	// label lookup below would always miss and the message would die
+	// silently (agent-teams-8beo.1). If this reply's thread ref matches the
+	// persisted briefing-channel thread ref, route it to the Steward as a
+	// steward-briefing-reply envelope, bypassing the initiative lookup
+	// entirely. An absent/empty thread-ref file (no briefing ever posted, or
+	// a read failure) falls through to the existing initiative-reply path
+	// below.
+	briefingRef, err := readThreadRefFile(StewardBriefingThreadPath(ctx))
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: read steward briefing thread ref: %v\n", err)
+	} else if briefingRef != "" && reply.ThreadRef == briefingRef {
+		return c.handleBriefingReply(ctx, reply)
+	}
+
 	label := "thread:" + reply.ThreadRef
 	home := workspace.Home()
 
 	issues, err := c.bdQuery(home, label)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query for label %q failed: %v — skipping\n", label, err)
+		c.sendUnroutedToSteward(ctx, reply.ThreadRef, fmt.Sprintf("bd query error: %v", err), reply.Text)
 		return nil
 	}
 
@@ -176,15 +194,19 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	switch len(open) {
 	case 0:
-		if c.routeClosedInitiativeSafetyNet(ctx, home, label, reply) {
+		routed, reason := c.routeClosedInitiativeSafetyNet(ctx, home, label, reply)
+		if routed {
 			return nil
 		}
 		fmt.Fprintf(ctx.Stderr, "ateam relay: no open initiative found for label %q — skipping\n", label)
+		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
 		return nil
 	case 1:
 		// Exactly one match — hand off to the Steward.
 	default:
+		reason := fmt.Sprintf("ambiguous: %d open initiatives", len(open))
 		fmt.Fprintf(ctx.Stderr, "ateam relay: ambiguous: %d open initiatives carry label %q — skipping\n", len(open), label)
+		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
 		return nil
 	}
 
@@ -196,17 +218,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		return nil
 	}
 
-	// Write the envelope to a temp file so ateam mail send can read it via --file.
-	tmpPath, err := writeEnvelopeToTemp(envelope)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return nil
-	}
-	defer os.Remove(tmpPath)
-
-	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (initiative %s): %v — skipping\n", StewardHandle, id, err)
-	}
+	c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("initiative %s", id))
 	return nil
 }
 
@@ -218,18 +230,20 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 // forever (agent-teams-7dup, the bug this safety net closes). If exactly one
 // CLOSED initiative owns the label, the reply is routed to the Steward as a
 // steward-closed-initiative envelope carrying the closed initiative's id,
-// and true is returned so the caller skips its own "no open initiative" log.
-// Zero or ambiguous (2+) closed matches, a query error, or no bdQueryClosed
-// seam configured, all fall through to the existing skip behavior (false) —
-// the caller logs the existing message.
-func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label string, reply transport.Reply) bool {
+// and (true, "") is returned so the caller skips its own "no open
+// initiative" log. Zero or ambiguous (2+) closed matches, a query error, or
+// no bdQueryClosed seam configured, all fall through to (false, reason) —
+// the caller logs its existing message AND (agent-teams-8beo.2) routes the
+// reply to the Steward as a steward-unrouted envelope carrying reason so the
+// message still reaches the Steward instead of being dropped.
+func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label string, reply transport.Reply) (bool, string) {
 	if c.bdQueryClosed == nil {
-		return false
+		return false, "closed-initiative safety net not configured"
 	}
 	all, err := c.bdQueryClosed(home, label)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query (closed) for label %q failed: %v\n", label, err)
-		return false
+		return false, fmt.Sprintf("bd query error: %v", err)
 	}
 
 	// Defensive filter in case the seam ever returns more than closed
@@ -241,31 +255,32 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 			closed = append(closed, iss)
 		}
 	}
-	if len(closed) != 1 {
-		return false
+	switch len(closed) {
+	case 0:
+		return false, "no open or closed initiative found"
+	case 1:
+		// Exactly one match — route below.
+	default:
+		return false, fmt.Sprintf("ambiguous: %d closed initiatives", len(closed))
 	}
 	id := closed[0].ID
 
 	envelope, err := BuildStewardClosedInitiativeEnvelope(id, reply.Text)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward closed-initiative envelope for %s: %v — skipping\n", id, err)
-		return false
+		return false, fmt.Sprintf("build closed-initiative envelope failed: %v", err)
 	}
 
-	tmpPath, err := writeEnvelopeToTemp(envelope)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return false
+	wrote, sendErr := c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("closed initiative %s", id))
+	if !wrote {
+		return false, fmt.Sprintf("write envelope temp file failed: %v", sendErr)
 	}
-	defer os.Remove(tmpPath)
-
-	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (closed initiative %s): %v — skipping\n", StewardHandle, id, err)
-		return true
+	if sendErr != nil {
+		return true, ""
 	}
 
 	fmt.Fprintf(ctx.Stderr, "ateam relay: routed message to steward for closed initiative %s (label %q)\n", id, label)
-	return true
+	return true, ""
 }
 
 // handleDirectReply routes a reply whose thread ref matches the Steward's
@@ -279,17 +294,74 @@ func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) e
 		return nil
 	}
 
+	c.sendEnvelopeToSteward(ctx, envelope, "direct message")
+	return nil
+}
+
+// handleBriefingReply routes a reply whose thread ref matches the Steward's
+// persisted Briefings-topic thread ref (see the short-circuit in handleReply
+// above): it wraps reply.Text in a steward-briefing-reply envelope and sends
+// it straight to the Steward, with no initiative lookup involved.
+func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply) error {
+	envelope, err := BuildStewardBriefingReplyEnvelope(reply.Text)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward briefing-reply envelope: %v — skipping\n", err)
+		return nil
+	}
+
+	c.sendEnvelopeToSteward(ctx, envelope, "briefing reply")
+	return nil
+}
+
+// sendUnroutedToSteward is the last-resort catch-all (agent-teams-8beo.2,
+// agent-teams-8beo.3): called from handleReply's top-level bdQuery-error
+// branch, its ambiguous-open-initiatives branch, and from the case-0 branch
+// when routeClosedInitiativeSafetyNet also fails to place the reply. It
+// builds a steward-unrouted envelope carrying threadRef, reason, and body,
+// and sends it to the Steward via sendEnvelopeToSteward below. Callers are
+// expected to ALSO keep their own stderr diagnostic log (this helper does
+// not replace that visibility, it supplements it); a failure of the send
+// itself only logs here, same as every other send path in this file — it
+// never aborts the relay loop.
+func (c *relayKong) sendUnroutedToSteward(ctx *cli.Context, threadRef, reason, body string) {
+	envelope, err := BuildStewardUnroutedEnvelope(threadRef, reason, body)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward unrouted envelope: %v — skipping\n", err)
+		return
+	}
+
+	c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("unrouted reply, thread %q", threadRef))
+}
+
+// sendEnvelopeToSteward writes envelope to a temp file and sends it to the
+// Steward via c.send, removing the temp file afterward — the
+// write-temp-file/send/log-on-failure shape shared by every envelope-send
+// path in this file (agent-teams-8beo.3, finding 3: this used to be
+// repeated inline at each call site). failCtx is a short human-readable
+// description of the call site (e.g. "initiative at-001", "direct
+// message"), spliced into the send-failure log line as "ateam mail send
+// steward failed (<failCtx>): <err> — skipping".
+//
+// Returns wrote=false only when writeEnvelopeToTemp itself failed — the
+// envelope was never handed to c.send at all — with err set to that
+// failure (already logged). Otherwise wrote=true and err is c.send's error
+// (nil on success, already logged on failure); most callers ignore both
+// return values since they always continue regardless, but
+// routeClosedInitiativeSafetyNet needs the distinction to preserve its
+// existing (bool, reason) contract.
+func (c *relayKong) sendEnvelopeToSteward(ctx *cli.Context, envelope, failCtx string) (wrote bool, err error) {
 	tmpPath, err := writeEnvelopeToTemp(envelope)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return nil
+		return false, err
 	}
 	defer os.Remove(tmpPath)
 
 	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (direct message): %v — skipping\n", StewardHandle, err)
+		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (%s): %v — skipping\n", StewardHandle, failCtx, err)
+		return true, err
 	}
-	return nil
+	return true, nil
 }
 
 // writeEnvelopeToTemp writes envelope to a new temp file (so ateam mail send

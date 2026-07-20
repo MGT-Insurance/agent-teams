@@ -271,5 +271,116 @@ echo "$final_audit_out" | grep -q "audit: clean" \
 
 echo "case8 PASS: audit stays clean — steward mail beads never leaked as work beads"
 
+# ── Case 9: reply in the Briefings topic -> steward-briefing-reply envelope ──
+# End-to-end exercise of the briefing-channel short-circuit
+# (agent-teams-8beo.1): a real `ateam notify briefing` persists a thread ref
+# with no initiative bead behind it, a stub reply lands on that exact ref, and
+# the real `ateam relay` binary must route it to the Steward as a
+# steward-briefing-reply envelope instead of silently dropping it (the bd
+# label lookup would always miss for this ref).
+
+# Case5's steward-reply message was never drained from the steward's own
+# inbox (case6 onward exercise a different mailbox — the DRI's). Drain it now
+# so this case's "exactly 1 open message" assertion isn't polluted by that
+# leftover.
+(cd "$steward_dir" && ateam mail inbox >/dev/null 2>&1)
+
+printf 'Daily digest: all initiatives nominal.\n' > "$T/briefing-digest.txt"
+briefing_notify_out=$(ateam notify briefing --file "$T/briefing-digest.txt" --title "Daily Briefing" 2>&1)
+echo "$briefing_notify_out" | grep -q "thread_ref:" \
+  || fail case9 "notify briefing output missing thread_ref line (got: '$briefing_notify_out')"
+
+briefing_thread_ref=$(echo "$briefing_notify_out" | grep "^thread_ref: " | sed 's/^thread_ref: //')
+[ -n "$briefing_thread_ref" ] || fail case9 "could not extract briefing thread_ref from: '$briefing_notify_out'"
+
+briefing_thread_file="$AGENT_TEAMS_HOME/steward/briefing-thread"
+[ -f "$briefing_thread_file" ] || fail case9 "briefing thread ref file not persisted at $briefing_thread_file"
+[ "$(cat "$briefing_thread_file")" = "$briefing_thread_ref" ] \
+  || fail case9 "persisted briefing thread ref '$(cat "$briefing_thread_file")' != notify output '$briefing_thread_ref'"
+
+briefing_reply_text="Nice work team, keep it up."
+printf '{"thread_ref": "%s", "text": "%s"}\n' "$briefing_thread_ref" "$briefing_reply_text" \
+  > "$AGENT_TEAMS_STUB_DIR/reply-001.json"
+
+briefing_relay_out=$(ateam relay 2>&1)
+echo "$briefing_relay_out" | grep -q "starting on transport" \
+  || fail case9 "relay did not print starting line (got: '$briefing_relay_out')"
+
+[ ! -f "$AGENT_TEAMS_STUB_DIR/reply-001.json" ] \
+  || fail case9 "stub did not consume reply-001.json after relay"
+
+briefing_msgs=$(bd -C "$AGENT_TEAMS_HOME" list --include-infra --assignee=steward --status=open --json)
+briefing_msg_count=$(echo "$briefing_msgs" | jq 'length')
+[ "$briefing_msg_count" = "1" ] || fail case9 "expected 1 open message bead assigned to steward after relay, got $briefing_msg_count (raw: $briefing_msgs)"
+
+briefing_msg_body=$(echo "$briefing_msgs" | jq -r '.[0].description')
+echo "$briefing_msg_body" | grep -qF "<<<steward-briefing-reply>>>" \
+  || fail case9 "message body missing steward-briefing-reply envelope header (got: '$briefing_msg_body')"
+echo "$briefing_msg_body" | grep -qF "$briefing_reply_text" \
+  || fail case9 "message body missing reply text (got: '$briefing_msg_body')"
+
+audit_out=$(ateam audit 2>&1)
+echo "$audit_out" | grep -q "audit: clean" \
+  || fail case9 "ateam audit not clean after briefing relay (got: '$audit_out')"
+
+# Drain the steward inbox so the message bead this case created doesn't leak
+# into case10's "exactly 1 open message" assertion.
+(cd "$steward_dir" && ateam mail inbox >/dev/null 2>&1)
+
+echo "case9 PASS: relay routed a Briefings-topic reply into a steward-briefing-reply envelope, audit clean"
+
+# ── Case 10: reply on an ambiguous thread -> steward-unrouted envelope ──────
+# End-to-end exercise of the steward-unrouted catch-all (agent-teams-8beo.2):
+# two OPEN initiatives sharing the same "thread:<ref>" label makes the reply
+# unresolvable to exactly one initiative, and the real `ateam relay` binary
+# must route it to the Steward as a steward-unrouted envelope (carrying the
+# original thread ref and a non-empty reason) instead of silently dropping it.
+
+export INITIATIVE_WT2="$T/wt-test2"
+mkdir -p "$INITIATIVE_WT2"
+printf 'problem: steward loop test (second initiative)\nworktree: %s\nbranch: feat/steward-loop-2\nteam: test\nmode: interactive\n' \
+  "$INITIATIVE_WT2" > "$T/init-body-2.md"
+init_id2=$(ateam register --title "Steward Loop Test Initiative 2" --file "$T/init-body-2.md")
+[ -n "$init_id2" ] || fail case10 "register (second initiative) returned empty id"
+
+ambiguous_ref="ambig-1"
+bd -C "$AGENT_TEAMS_HOME" label add "$init_id" "thread:$ambiguous_ref" >/dev/null \
+  || fail case10 "could not label $init_id with thread:$ambiguous_ref"
+bd -C "$AGENT_TEAMS_HOME" label add "$init_id2" "thread:$ambiguous_ref" >/dev/null \
+  || fail case10 "could not label $init_id2 with thread:$ambiguous_ref"
+
+ambiguous_reply_text="Which initiative is this about?"
+printf '{"thread_ref": "%s", "text": "%s"}\n' "$ambiguous_ref" "$ambiguous_reply_text" \
+  > "$AGENT_TEAMS_STUB_DIR/reply-001.json"
+
+ambiguous_relay_out=$(ateam relay 2>&1)
+echo "$ambiguous_relay_out" | grep -q "starting on transport" \
+  || fail case10 "relay did not print starting line (got: '$ambiguous_relay_out')"
+echo "$ambiguous_relay_out" | grep -qi "ambiguous" \
+  || fail case10 "relay stderr did not mention 'ambiguous' (got: '$ambiguous_relay_out')"
+
+[ ! -f "$AGENT_TEAMS_STUB_DIR/reply-001.json" ] \
+  || fail case10 "stub did not consume reply-001.json after relay"
+
+ambiguous_msgs=$(bd -C "$AGENT_TEAMS_HOME" list --include-infra --assignee=steward --status=open --json)
+ambiguous_msg_count=$(echo "$ambiguous_msgs" | jq 'length')
+[ "$ambiguous_msg_count" = "1" ] || fail case10 "expected 1 open message bead assigned to steward after relay, got $ambiguous_msg_count (raw: $ambiguous_msgs)"
+
+ambiguous_msg_body=$(echo "$ambiguous_msgs" | jq -r '.[0].description')
+echo "$ambiguous_msg_body" | grep -qF "<<<steward-unrouted thread:" \
+  || fail case10 "message body missing steward-unrouted envelope header (got: '$ambiguous_msg_body')"
+echo "$ambiguous_msg_body" | grep -qF "<<<steward-unrouted thread:$ambiguous_ref reason:" \
+  || fail case10 "message body has wrong thread ref in steward-unrouted header (got: '$ambiguous_msg_body')"
+echo "$ambiguous_msg_body" | head -1 | grep -qF "reason:ambiguous: 2 open initiatives" \
+  || fail case10 "message body missing non-empty ambiguous reason (got: '$ambiguous_msg_body')"
+echo "$ambiguous_msg_body" | grep -qF "$ambiguous_reply_text" \
+  || fail case10 "message body missing reply text (got: '$ambiguous_msg_body')"
+
+audit_out=$(ateam audit 2>&1)
+echo "$audit_out" | grep -q "audit: clean" \
+  || fail case10 "ateam audit not clean after ambiguous-thread relay (got: '$audit_out')"
+
+echo "case10 PASS: relay routed an ambiguous-thread reply into a steward-unrouted envelope (thread:$ambiguous_ref), audit clean"
+
 echo ""
-echo "ALL CASES PASSED — steward loop (gate -> steward -> relay -> steward -> DRI, ledger, audit) closed end-to-end."
+echo "ALL CASES PASSED — steward loop (gate -> steward -> relay -> steward -> DRI, ledger, audit) closed end-to-end, including briefing-reply and unrouted catch-all e2e coverage."

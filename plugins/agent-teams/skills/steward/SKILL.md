@@ -100,6 +100,15 @@ A direct message from Eric, outside any initiative — just a conversation.
    It lands in the Steward's dedicated direct-message topic on Telegram.
 3. Nothing goes to the ledger — a direct chat is not a gated decision.
 
+### steward-briefing-reply (`<<<steward-briefing-reply>>>`)
+
+A human reply posted in the Briefings topic. No bead lives behind this topic by design — it's not a fixed "always bounce back to Briefings" case.
+
+1. There is NO initiative id attached. Interpret the reply against recent briefing context (what you last posted to `ateam notify briefing`) and `ateam execution-status`.
+2. ALWAYS post a brief acknowledgment back into Briefings (`ateam notify briefing --file <reply-file>`) — Eric should never see a briefing reply go silent.
+3. If the reply also clearly references a specific initiative, ADDITIONALLY route the substance there — act on that DRI directly (`ateam mail send <initiative-id> --file <answer-file> --sender steward`) or post there (`ateam notify <initiative-id> --file <msg-file>`). This is IN ADDITION TO the Briefings acknowledgment in step 2, never instead of it. Use `ateam notify direct` instead of Briefings only if the whole reply reads as an aside to you rather than anything belonging in the cross-initiative broadcast.
+4. Not a gated ledger decision — nothing goes to the ledger.
+
 ### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
 
 A human posted a message in a Telegram topic whose owning initiative is CLOSED in beads. Reopening a topic in the Telegram UI does not reopen the initiative — beads state is the source of truth — so the relay's closed-initiative safety net routes what would otherwise be a silently-dropped message here instead.
@@ -107,6 +116,14 @@ A human posted a message in a Telegram topic whose owning initiative is CLOSED i
 1. Enrich with `ateam show <id>` to see why/when it closed and what's being asked now.
 2. This isn't a DRI gate — no pending recommendation to interpret — so just use your judgment (v1 authority still applies: no autonomous decisions beyond mechanical nudges/anomaly flags/orphan reaping): either answer Eric directly, or lay out the option to bring the initiative back (e.g. `ateam reopen <id>` followed by `/agent-teams:dispatch-dri`) alongside the alternative (leave it closed, this was just a stray message). Send via `ateam notify <id> --file <msg-file>` — it lands back in that initiative's own topic.
 3. Not a gated DRI decision, so no ledger record is required.
+
+### steward-unrouted (`<<<steward-unrouted thread:<ref> reason:<reason>>>>`)
+
+The relay's last-resort catch-all: a reply the mechanical router couldn't place at all — 2+ open initiatives shared the thread label (ambiguous), the closed-initiative safety net also came up empty or ambiguous, or a bd query itself errored. There is no initiative id and no clean reply surface back into the original Telegram thread — unlike steward-closed-initiative, there's no concrete identified target you can act on directly.
+
+1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") for why routing failed, and use judgment: if `Reason`/`Body` make the target obvious (e.g. the body itself names an initiative id), act on that initiative directly (`ateam mail send <id> --file <answer-file> --sender steward` or `ateam notify <id>`).
+2. Otherwise, tell Eric directly that you saw an unroutable message and ask for clarification — `ateam notify direct --file <msg-file>` — including `Reason` and enough of `Body` that he can tell you what he meant.
+3. Not a gated ledger decision — nothing goes to the ledger.
 
 ### Every wake, regardless of inbox contents — scan
 

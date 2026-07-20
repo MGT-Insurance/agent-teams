@@ -230,10 +230,14 @@ func TestRelay_EmptyThreadRef_Skipped(t *testing.T) {
 	}
 }
 
-// ── handler: unmapped thread → skip ───────────────────────────────────────────
+// ── handler: unmapped thread → routed to steward as unrouted ─────────────────
 
+// TestRelay_UnmappedThread_Skipped verifies that a thread with no OPEN and no
+// CLOSED initiative match (agent-teams-8beo.2) is routed to the Steward as a
+// steward-unrouted envelope instead of being silently dropped, while the
+// existing "no open initiative" diagnostic log is still emitted.
 func TestRelay_UnmappedThread_Skipped(t *testing.T) {
-	fs := &fakeSend{}
+	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
 		replies: []transport.Reply{{ThreadRef: "99", Text: "reply"}},
 	}
@@ -249,8 +253,21 @@ func TestRelay_UnmappedThread_Skipped(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fs.calls) != 0 {
-		t.Errorf("expected no send calls for unmapped thread, got %d", len(fs.calls))
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (routed as unrouted), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "99" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "99")
+	}
+	if env.Reason == "" {
+		t.Error("envelope Reason must be non-empty")
+	}
+	if env.Body != "reply" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "reply")
 	}
 	if !strings.Contains(relayStderr(ctx), "no open initiative") {
 		t.Errorf("expected 'no open initiative' in stderr, got: %q", relayStderr(ctx))
@@ -308,8 +325,10 @@ func TestRelay_ClosedInitiativeThread_RoutesToSteward(t *testing.T) {
 }
 
 // TestRelay_AmbiguousClosedInitiativeThread_Skipped verifies that 2+ CLOSED
-// matches (like 0 matches) fall through to the existing skip behavior rather
-// than the closed-initiative routing path.
+// matches (like 0 matches) fall through to the closed-initiative safety
+// net's failure path, and (agent-teams-8beo.2) are routed to the Steward as
+// a steward-unrouted envelope carrying an "ambiguous: N closed initiatives"
+// reason instead of being silently dropped.
 func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 	bdq := newFakeBDQuery()
 	bdqClosed := newFakeBDQuery()
@@ -333,8 +352,18 @@ func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fs.calls) != 0 {
-		t.Errorf("expected no send calls for ambiguous closed matches, got %d", len(fs.calls))
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (routed as unrouted), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "51" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "51")
+	}
+	if !strings.Contains(env.Reason, "ambiguous: 2 closed initiatives") {
+		t.Errorf("envelope Reason = %q, want it to mention ambiguous: 2 closed initiatives", env.Reason)
 	}
 	if !strings.Contains(relayStderr(ctx), "no open initiative") {
 		t.Errorf("expected 'no open initiative' skip log, stderr: %q", relayStderr(ctx))
@@ -342,8 +371,10 @@ func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 }
 
 // TestRelay_ClosedInitiativeQueryError_Skipped verifies that a bdQueryClosed
-// error falls through to the existing skip behavior rather than aborting
-// the relay loop.
+// error falls through to the closed-initiative safety net's failure path,
+// and (agent-teams-8beo.2) is routed to the Steward as a steward-unrouted
+// envelope carrying a "bd query error: ..." reason instead of aborting the
+// relay loop or being silently dropped.
 func TestRelay_ClosedInitiativeQueryError_Skipped(t *testing.T) {
 	bdq := newFakeBDQuery()
 	bdqClosed := newFakeBDQuery()
@@ -364,23 +395,38 @@ func TestRelay_ClosedInitiativeQueryError_Skipped(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fs.calls) != 0 {
-		t.Errorf("expected no send calls on bdQueryClosed error, got %d", len(fs.calls))
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (routed as unrouted), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "52" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "52")
+	}
+	if !strings.Contains(env.Reason, "bd query error") {
+		t.Errorf("envelope Reason = %q, want it to mention bd query error", env.Reason)
 	}
 	if !strings.Contains(relayStderr(ctx), "no open initiative") {
 		t.Errorf("expected fallback 'no open initiative' skip log, stderr: %q", relayStderr(ctx))
 	}
 }
 
-// ── handler: ambiguous thread → skip ──────────────────────────────────────────
+// ── handler: ambiguous thread → routed to steward as unrouted ────────────────
 
+// TestRelay_AmbiguousThread_Skipped verifies that 2+ OPEN initiatives sharing
+// a thread label (agent-teams-8beo.2) are routed to the Steward as a
+// steward-unrouted envelope carrying an "ambiguous: N open initiatives"
+// reason instead of being silently dropped, while the existing "ambiguous"
+// diagnostic log is still emitted.
 func TestRelay_AmbiguousThread_Skipped(t *testing.T) {
 	bdq := newFakeBDQuery()
 	bdq.results["thread:7"] = []bd.Issue{
 		{ID: "at-001", Status: "open"},
 		{ID: "at-002", Status: "open"},
 	}
-	fs := &fakeSend{}
+	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
 		replies: []transport.Reply{{ThreadRef: "7", Text: "reply"}},
 	}
@@ -395,8 +441,18 @@ func TestRelay_AmbiguousThread_Skipped(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fs.calls) != 0 {
-		t.Errorf("expected no send calls for ambiguous thread, got %d", len(fs.calls))
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (routed as unrouted), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "7" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "7")
+	}
+	if !strings.Contains(env.Reason, "ambiguous: 2 open initiatives") {
+		t.Errorf("envelope Reason = %q, want it to mention ambiguous: 2 open initiatives", env.Reason)
 	}
 	if !strings.Contains(relayStderr(ctx), "ambiguous") {
 		t.Errorf("expected 'ambiguous' in stderr, got: %q", relayStderr(ctx))
@@ -454,14 +510,21 @@ func TestRelay_BadReplyDoesNotAbort(t *testing.T) {
 	}
 }
 
-// ── handler: bd query error → skip, loop continues ───────────────────────────
+// ── handler: bd query error → routed to steward as unrouted, loop continues ──
 
-func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
+// TestRelay_BDQueryError_RoutesToSteward verifies that a bd query error in
+// handleReply's top-level lookup (agent-teams-8beo.3) is routed to the
+// Steward as a steward-unrouted envelope carrying a "bd query error: ..."
+// reason, instead of being silently dropped — while a second, successful
+// reply in the same batch is still routed normally via a steward-reply
+// envelope. Renamed from TestRelay_BDQueryError_SkipsReply, which locked in
+// the prior silent-drop behavior this fix closes.
+func TestRelay_BDQueryError_RoutesToSteward(t *testing.T) {
 	bdq := newFakeBDQuery()
 	bdq.err["thread:5"] = fmt.Errorf("bd timeout")
 	bdq.results["thread:6"] = []bd.Issue{{ID: "at-006", Status: "open"}}
 
-	fs := &fakeSend{}
+	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
 		replies: []transport.Reply{
 			{ThreadRef: "5", Text: "bad"},
@@ -479,11 +542,30 @@ func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("bd error must not abort loop, got: %v", err)
 	}
-	if len(fs.calls) != 1 {
-		t.Fatalf("expected exactly 1 send call, got %d", len(fs.calls))
+	if len(fs.calls) != 2 {
+		t.Fatalf("expected exactly 2 send calls (errored reply routed as unrouted, successful reply routed normally), got %d", len(fs.calls))
 	}
-	if got := fs.envelopes[0].InitiativeID; got != "at-006" {
-		t.Errorf("expected envelope InitiativeID at-006, got %q", got)
+
+	unrouted, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("first send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if unrouted.ThreadRef != "5" {
+		t.Errorf("unrouted envelope ThreadRef = %q, want %q", unrouted.ThreadRef, "5")
+	}
+	if !strings.Contains(unrouted.Reason, "bd query error") {
+		t.Errorf("unrouted envelope Reason = %q, want it to mention bd query error", unrouted.Reason)
+	}
+	if unrouted.Body != "bad" {
+		t.Errorf("unrouted envelope Body = %q, want %q", unrouted.Body, "bad")
+	}
+
+	reply, ok := ParseStewardReplyEnvelope(fs.bodies[1])
+	if !ok {
+		t.Fatalf("second send file contents not a well-formed steward-reply envelope: %q", fs.bodies[1])
+	}
+	if reply.InitiativeID != "at-006" {
+		t.Errorf("reply envelope InitiativeID = %q, want %q", reply.InitiativeID, "at-006")
 	}
 }
 
@@ -572,6 +654,117 @@ func TestRelay_DirectThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.
 // initiative-reply path — the short-circuit never fires.
 func TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath(t *testing.T) {
 	ctx := newRelayCtx(t) // t.TempDir() is empty — no direct-thread file present
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:      bdq.query,
+		send:         fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// ── handler: briefing-channel short-circuit ───────────────────────────────────
+
+// TestRelay_BriefingThread_RoutesToSteward verifies that a reply whose thread
+// ref matches the persisted Steward briefing-channel thread ref (contract:
+// StewardBriefingThreadPath) is routed to the Steward via a
+// steward-briefing-reply envelope, bypassing the bd initiative lookup
+// entirely.
+func TestRelay_BriefingThread_RoutesToSteward(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-5"); err != nil {
+		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+
+	bdQueryCalled := false
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "briefing-5", Text: "what's the status on at-001?"}},
+	}
+
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery: func(home, label string) ([]bd.Issue, error) {
+			bdQueryCalled = true
+			return nil, nil
+		},
+		send: fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bdQueryCalled {
+		t.Error("bd query must not be called for a briefing-channel message")
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardBriefingReplyEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-briefing-reply envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "what's the status on at-001?" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "what's the status on at-001?")
+	}
+}
+
+// TestRelay_BriefingThread_NonMatchingThreadRef_TakesInitiativePath verifies
+// that when a briefing-channel thread ref IS persisted, a reply whose
+// ThreadRef does not match it still takes the existing initiative-reply
+// path (bd lookup + steward-reply envelope), not the briefing short-circuit.
+func TestRelay_BriefingThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-5"); err != nil {
+		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:      bdq.query,
+		send:         fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath verifies that
+// when the Steward briefing-channel thread-ref file does not exist at all
+// (no briefing ever posted), a reply falls through to the existing
+// initiative-reply path — the short-circuit never fires.
+func TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t) // t.TempDir() is empty — no briefing-thread file present
 
 	bdq := newFakeBDQuery()
 	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
