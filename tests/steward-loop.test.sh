@@ -42,15 +42,35 @@ mkdir -p "$AGENT_TEAMS_HOME"
 git -C "$AGENT_TEAMS_HOME" init -q
 (cd "$AGENT_TEAMS_HOME" && bd init --prefix at --non-interactive >/dev/null)
 
+# This machine is the designated fallback responder for untied/ambiguous
+# traffic (isFallbackResponder, routing_ownership.go) — case10's
+# ambiguous-thread reply is gated on this. The other half of
+# isFallbackResponder (a live steward session marker) is satisfied once
+# case1 runs `ateam steward init` below.
+mkdir -p "$AGENT_TEAMS_HOME/steward"
+: > "$AGENT_TEAMS_HOME/steward/fallback-responder"
+
 # stub transport dir
 export AGENT_TEAMS_STUB_DIR="$T/stub"
 mkdir -p "$AGENT_TEAMS_STUB_DIR"
 export AGENT_TEAMS_TRANSPORT=stub
 
-# Initiative worktree (a directory that must exist so ateam inbox/mail send
-# can find it).
+# Initiative worktree: a REAL git checkout. agent-teams-5y8a.5's relay-
+# gating requires case5's tied reply to pass claimsInitiativeLocally
+# (routing_ownership.go), which needs a live worktree/branch/repo triple —
+# a plain mkdir is no longer enough. STEWARD_LOOP_REPO stands in for the
+# shared clone dispatch.go would normally point repo: at; INITIATIVE_WT is
+# a linked worktree off it on the branch the initiative body below
+# declares.
+STEWARD_LOOP_REPO="$T/steward-loop-repo"
+mkdir -p "$STEWARD_LOOP_REPO"
+git -C "$STEWARD_LOOP_REPO" init -q
+git -C "$STEWARD_LOOP_REPO" config user.email test@example.com
+git -C "$STEWARD_LOOP_REPO" config user.name Test
+git -C "$STEWARD_LOOP_REPO" commit --allow-empty -q -m init
+
 export INITIATIVE_WT="$T/wt-test"
-mkdir -p "$INITIATIVE_WT"
+git -C "$STEWARD_LOOP_REPO" worktree add "$INITIATIVE_WT" -b feat/steward-loop -q
 
 # Determine the current platform (same logic as ateam.test.sh / e2e-loop.test.sh).
 PLATFORM_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -96,8 +116,8 @@ fail() { echo "FAIL $1: $2"; exit 1; }
 
 # ── Case 1: register initiative + steward init ───────────────────────────────
 
-printf 'problem: steward loop test\nworktree: %s\nbranch: feat/steward-loop\nteam: test\nmode: interactive\n' \
-  "$INITIATIVE_WT" > "$T/init-body.md"
+printf 'problem: steward loop test\nrepo: %s\nworktree: %s\nbranch: feat/steward-loop\nteam: test\nmode: interactive\n' \
+  "$STEWARD_LOOP_REPO" "$INITIATIVE_WT" > "$T/init-body.md"
 init_id=$(ateam register --title "Steward Loop Test Initiative" --file "$T/init-body.md")
 [ -n "$init_id" ] || fail case1 "register returned empty id"
 
