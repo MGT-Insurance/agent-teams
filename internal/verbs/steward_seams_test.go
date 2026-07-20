@@ -2,6 +2,7 @@ package verbs_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,99 @@ func TestParseStewardClosedInitiativeEnvelope_Malformed(t *testing.T) {
 	}
 	if _, ok := verbs.ParseStewardClosedInitiativeEnvelope("<<<steward-closed-initiative initiative:at-1>>>\nbody with no closer"); ok {
 		t.Error("ParseStewardClosedInitiativeEnvelope: expected ok=false for missing closing sentinel")
+	}
+}
+
+// ── Unrouted→Steward envelope round-trip ─────────────────────────────────────
+
+func TestStewardUnroutedEnvelope_RoundTrip(t *testing.T) {
+	body := "reply text"
+	text, err := verbs.BuildStewardUnroutedEnvelope("52", "ambiguous: 2 open initiatives", body)
+	if err != nil {
+		t.Fatalf("BuildStewardUnroutedEnvelope: %v", err)
+	}
+
+	want := "<<<steward-unrouted thread:52 reason:ambiguous: 2 open initiatives>>>\n" + body + "\n>>>"
+	if text != want {
+		t.Fatalf("BuildStewardUnroutedEnvelope =\n%q\nwant\n%q", text, want)
+	}
+
+	got, ok := verbs.ParseStewardUnroutedEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardUnroutedEnvelope: ok=false, want true")
+	}
+	if got.ThreadRef != "52" {
+		t.Errorf("ThreadRef = %q, want %q", got.ThreadRef, "52")
+	}
+	if got.Reason != "ambiguous: 2 open initiatives" {
+		t.Errorf("Reason = %q, want %q", got.Reason, "ambiguous: 2 open initiatives")
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+// TestStewardUnroutedEnvelope_ReasonWithEmbeddedNewline verifies
+// agent-teams-8beo.3's newline-safety fix: a reason containing an embedded
+// newline plus multi-line text (the real shape produced when relay.go
+// wraps a bd CLI error — see internal/bd/bd.go's Client.Run, which formats
+// failures as fmt.Errorf("bd %s: %w\n%s", ..., stderrText)) must not corrupt
+// the single-line sentinel header. Before this fix, an embedded newline
+// pushed the closing ">>>" of the header onto a later line, and
+// ParseStewardUnroutedEnvelope — which expects the whole header on the
+// first line — failed to parse the envelope at all.
+func TestStewardUnroutedEnvelope_ReasonWithEmbeddedNewline(t *testing.T) {
+	reason := "bd query error: bd list --status=open: exit status 1\nsome multi-line\nstderr output"
+	body := "reply text"
+	text, err := verbs.BuildStewardUnroutedEnvelope("52", reason, body)
+	if err != nil {
+		t.Fatalf("BuildStewardUnroutedEnvelope: %v", err)
+	}
+
+	headerEnd := len(text)
+	if nl := strings.IndexByte(text, '\n'); nl != -1 {
+		headerEnd = nl
+	}
+	if !strings.HasSuffix(text[:headerEnd], ">>>") {
+		t.Fatalf("BuildStewardUnroutedEnvelope: header line does not end with the closing sentinel: %q", text[:headerEnd])
+	}
+
+	got, ok := verbs.ParseStewardUnroutedEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardUnroutedEnvelope: ok=false, want true (envelope: %q)", text)
+	}
+	if got.ThreadRef != "52" {
+		t.Errorf("ThreadRef = %q, want %q", got.ThreadRef, "52")
+	}
+	if strings.Contains(got.Reason, "\n") {
+		t.Errorf("Reason still contains an embedded newline: %q", got.Reason)
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+func TestStewardUnroutedEnvelope_EmptyReason(t *testing.T) {
+	if _, err := verbs.BuildStewardUnroutedEnvelope("52", "", "body"); err == nil {
+		t.Error("BuildStewardUnroutedEnvelope: expected error for empty reason, got nil")
+	}
+	if _, err := verbs.BuildStewardUnroutedEnvelope("52", "\n  \n", "body"); err == nil {
+		t.Error("BuildStewardUnroutedEnvelope: expected error for all-whitespace reason, got nil")
+	}
+}
+
+func TestStewardUnroutedEnvelope_EmptyThreadRef(t *testing.T) {
+	if _, err := verbs.BuildStewardUnroutedEnvelope("", "reason", "body"); err == nil {
+		t.Error("BuildStewardUnroutedEnvelope: expected error for empty thread ref, got nil")
+	}
+}
+
+func TestParseStewardUnroutedEnvelope_Malformed(t *testing.T) {
+	if _, ok := verbs.ParseStewardUnroutedEnvelope("not an envelope"); ok {
+		t.Error("ParseStewardUnroutedEnvelope: expected ok=false for non-envelope text")
+	}
+	if _, ok := verbs.ParseStewardUnroutedEnvelope("<<<steward-unrouted thread:52 reason:x>>>\nbody with no closer"); ok {
+		t.Error("ParseStewardUnroutedEnvelope: expected ok=false for missing closing sentinel")
 	}
 }
 

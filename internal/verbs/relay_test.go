@@ -510,14 +510,21 @@ func TestRelay_BadReplyDoesNotAbort(t *testing.T) {
 	}
 }
 
-// ── handler: bd query error → skip, loop continues ───────────────────────────
+// ── handler: bd query error → routed to steward as unrouted, loop continues ──
 
-func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
+// TestRelay_BDQueryError_RoutesToSteward verifies that a bd query error in
+// handleReply's top-level lookup (agent-teams-8beo.3) is routed to the
+// Steward as a steward-unrouted envelope carrying a "bd query error: ..."
+// reason, instead of being silently dropped — while a second, successful
+// reply in the same batch is still routed normally via a steward-reply
+// envelope. Renamed from TestRelay_BDQueryError_SkipsReply, which locked in
+// the prior silent-drop behavior this fix closes.
+func TestRelay_BDQueryError_RoutesToSteward(t *testing.T) {
 	bdq := newFakeBDQuery()
 	bdq.err["thread:5"] = fmt.Errorf("bd timeout")
 	bdq.results["thread:6"] = []bd.Issue{{ID: "at-006", Status: "open"}}
 
-	fs := &fakeSend{}
+	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
 		replies: []transport.Reply{
 			{ThreadRef: "5", Text: "bad"},
@@ -535,11 +542,30 @@ func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("bd error must not abort loop, got: %v", err)
 	}
-	if len(fs.calls) != 1 {
-		t.Fatalf("expected exactly 1 send call, got %d", len(fs.calls))
+	if len(fs.calls) != 2 {
+		t.Fatalf("expected exactly 2 send calls (errored reply routed as unrouted, successful reply routed normally), got %d", len(fs.calls))
 	}
-	if got := fs.envelopes[0].InitiativeID; got != "at-006" {
-		t.Errorf("expected envelope InitiativeID at-006, got %q", got)
+
+	unrouted, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("first send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if unrouted.ThreadRef != "5" {
+		t.Errorf("unrouted envelope ThreadRef = %q, want %q", unrouted.ThreadRef, "5")
+	}
+	if !strings.Contains(unrouted.Reason, "bd query error") {
+		t.Errorf("unrouted envelope Reason = %q, want it to mention bd query error", unrouted.Reason)
+	}
+	if unrouted.Body != "bad" {
+		t.Errorf("unrouted envelope Body = %q, want %q", unrouted.Body, "bad")
+	}
+
+	reply, ok := ParseStewardReplyEnvelope(fs.bodies[1])
+	if !ok {
+		t.Fatalf("second send file contents not a well-formed steward-reply envelope: %q", fs.bodies[1])
+	}
+	if reply.InitiativeID != "at-006" {
+		t.Errorf("reply envelope InitiativeID = %q, want %q", reply.InitiativeID, "at-006")
 	}
 }
 

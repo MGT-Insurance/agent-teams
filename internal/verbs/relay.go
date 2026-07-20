@@ -179,6 +179,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	issues, err := c.bdQuery(home, label)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query for label %q failed: %v — skipping\n", label, err)
+		c.sendUnroutedToSteward(ctx, reply.ThreadRef, fmt.Sprintf("bd query error: %v", err), reply.Text)
 		return nil
 	}
 
@@ -344,11 +345,12 @@ func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply)
 	return nil
 }
 
-// sendUnroutedToSteward is the last-resort catch-all (agent-teams-8beo.2):
-// called from handleReply's ambiguous-open-initiatives branch and from the
-// case-0 branch when routeClosedInitiativeSafetyNet also fails to place the
-// reply. It builds a steward-unrouted envelope carrying threadRef, reason,
-// and body, and sends it to the Steward — mirroring the
+// sendUnroutedToSteward is the last-resort catch-all (agent-teams-8beo.2,
+// agent-teams-8beo.3): called from handleReply's top-level bdQuery-error
+// branch, its ambiguous-open-initiatives branch, and from the case-0 branch
+// when routeClosedInitiativeSafetyNet also fails to place the reply. It
+// builds a steward-unrouted envelope carrying threadRef, reason, and body,
+// and sends it to the Steward — mirroring the
 // build-envelope/write-temp-file/send pattern used throughout this file.
 // Callers are expected to ALSO keep their own stderr diagnostic log (this
 // helper does not replace that visibility, it supplements it); a failure of

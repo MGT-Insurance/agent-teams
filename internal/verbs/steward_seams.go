@@ -468,10 +468,24 @@ type StewardUnroutedEnvelope struct {
 //	<<<steward-unrouted thread:<ref> reason:<reason>>>>
 //	<body>
 //	>>>
+//
+// reason is sanitized via sanitizeUnroutedReason before being spliced into
+// the header line above: several call sites (relay.go) build reason via
+// fmt.Sprintf("... %v", err) from real bd command errors, and
+// internal/bd/bd.go's Client.Run formats CLI failures as fmt.Errorf("bd %s:
+// %w\n%s", ..., stderrText) — i.e. a literal embedded newline plus raw
+// multi-line CLI stderr is a normal, reachable shape for reason. Left
+// unsanitized, an embedded newline would push the header's closing ">>>"
+// onto a later line, and ParseStewardUnroutedEnvelope (which expects the
+// full header on the first line) would fail to parse the envelope at all —
+// silently losing the message, which defeats the point of this catch-all.
+// Sanitizing collapses reason to a single well-formed line unconditionally,
+// so the header is always parseable regardless of what error text flows in.
 func BuildStewardUnroutedEnvelope(threadRef, reason, body string) (string, error) {
 	if threadRef == "" {
 		return "", fmt.Errorf("steward unrouted envelope: thread ref is empty")
 	}
+	reason = sanitizeUnroutedReason(reason)
 	if reason == "" {
 		return "", fmt.Errorf("steward unrouted envelope: reason is empty")
 	}
@@ -480,6 +494,16 @@ func BuildStewardUnroutedEnvelope(threadRef, reason, body string) (string, error
 	b.WriteString(body)
 	b.WriteString("\n" + stewardEnvelopeClose)
 	return b.String(), nil
+}
+
+// sanitizeUnroutedReason collapses any run of whitespace in reason
+// (including embedded newlines) down to a single space, and trims leading
+// and trailing whitespace, via strings.Fields+Join. This makes reason safe to
+// splice into the single-line steward-unrouted sentinel header — see the
+// doc comment on BuildStewardUnroutedEnvelope for why this matters. A
+// reason that is empty or all-whitespace sanitizes to "".
+func sanitizeUnroutedReason(reason string) string {
+	return strings.Join(strings.Fields(reason), " ")
 }
 
 // ParseStewardUnroutedEnvelope parses an envelope produced by
