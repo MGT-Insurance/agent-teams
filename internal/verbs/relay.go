@@ -110,6 +110,23 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		return nil
 	}
 
+	// Direct-channel short-circuit: a message posted in the Steward's
+	// dedicated direct-message topic (contract: DirectHandle,
+	// StewardDirectThreadPath in steward_seams.go) has no initiative bead
+	// behind it, so the bd label lookup below would always miss and the
+	// message would die silently. If this reply's thread ref matches the
+	// persisted direct-channel thread ref, route it to the Steward as a
+	// steward-direct envelope, bypassing the initiative lookup entirely. An
+	// absent/empty thread-ref file (direct channel never opened yet, or a
+	// read failure) falls through to the existing initiative-reply path
+	// below.
+	directRef, err := readThreadRefFile(StewardDirectThreadPath(ctx))
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: read steward direct thread ref: %v\n", err)
+	} else if directRef != "" && reply.ThreadRef == directRef {
+		return c.handleDirectReply(ctx, reply)
+	}
+
 	label := "thread:" + reply.ThreadRef
 	home := workspace.Home()
 
@@ -148,23 +165,56 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	}
 
 	// Write the envelope to a temp file so ateam mail send can read it via --file.
-	tmp, err := os.CreateTemp("", "ateam-relay-reply-*")
+	tmpPath, err := writeEnvelopeToTemp(envelope)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: create temp file: %v — skipping\n", err)
+		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
 		return nil
 	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(envelope); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		fmt.Fprintf(ctx.Stderr, "ateam relay: write temp file: %v — skipping\n", err)
-		return nil
-	}
-	tmp.Close()
 	defer os.Remove(tmpPath)
 
 	if err := c.send(ctx, tmpPath); err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (initiative %s): %v — skipping\n", StewardHandle, id, err)
 	}
 	return nil
+}
+
+// handleDirectReply routes a reply whose thread ref matches the Steward's
+// persisted direct-message channel thread ref (see the short-circuit in
+// handleReply above): it wraps reply.Text in a steward-direct envelope and
+// sends it straight to the Steward, with no initiative lookup involved.
+func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) error {
+	envelope, err := BuildStewardDirectEnvelope(reply.Text)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward direct envelope: %v — skipping\n", err)
+		return nil
+	}
+
+	tmpPath, err := writeEnvelopeToTemp(envelope)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
+		return nil
+	}
+	defer os.Remove(tmpPath)
+
+	if err := c.send(ctx, tmpPath); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (direct message): %v — skipping\n", StewardHandle, err)
+	}
+	return nil
+}
+
+// writeEnvelopeToTemp writes envelope to a new temp file (so ateam mail send
+// can read it via --file) and returns its path. Caller owns removing it.
+func writeEnvelopeToTemp(envelope string) (string, error) {
+	tmp, err := os.CreateTemp("", "ateam-relay-reply-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(envelope); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	tmp.Close()
+	return tmpPath, nil
 }

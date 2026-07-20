@@ -54,12 +54,24 @@ const StewardHandle = "steward"
 // literal string.
 const BriefingHandle = "briefing"
 
+// DirectHandle is the reserved `ateam notify` recipient id for the
+// Steward's direct-message channel — a dedicated forum topic for messaging
+// the Steward directly, outside any initiative context. Like BriefingHandle,
+// no bead lives behind this id — notify reads/writes its thread ref from
+// StewardDirectThreadPath instead of an initiative bead's "thread:<n>"
+// label. Every caller posting to, or resolving, the direct-message topic
+// MUST use this constant rather than a literal string. Not StewardHandle:
+// that is the mail handle for initiative-scoped Gate/Relay traffic;
+// DirectHandle is the notify handle for out-of-band direct traffic.
+const DirectHandle = "direct"
+
 const (
 	stewardDirName                = "steward"
 	stewardSessionDirName         = "session"
 	stewardSessionMarkerName      = ".steward-session"
 	stewardLedgerFileName         = "ledger.jsonl"
 	stewardBriefingThreadFileName = "briefing-thread"
+	stewardDirectThreadFileName   = "direct-thread"
 	stewardDoorbellFileSuffix     = ".wake"
 )
 
@@ -94,6 +106,12 @@ func StewardLedgerPath(ctx *cli.Context) string {
 // high-level briefing-thread file.
 func StewardBriefingThreadPath(ctx *cli.Context) string {
 	return filepath.Join(StewardHome(ctx), stewardBriefingThreadFileName)
+}
+
+// StewardDirectThreadPath returns the path to the Steward's direct-message
+// channel thread-ref file.
+func StewardDirectThreadPath(ctx *cli.Context) string {
+	return filepath.Join(StewardHome(ctx), stewardDirectThreadFileName)
 }
 
 // StewardDoorbellPath returns the doorbell (wake) file wake-watcher.sh polls
@@ -253,6 +271,51 @@ func ParseStewardReplyEnvelope(text string) (StewardReplyEnvelope, bool) {
 	}
 
 	return StewardReplyEnvelope{InitiativeID: idPart, Body: body}, true
+}
+
+// ── Direct→Steward envelope ──────────────────────────────────────────────────
+//
+// Unlike the gate/reply envelopes above, a direct message carries no
+// initiative id — it's explicitly out-of-band, so the open sentinel is a
+// fixed header line rather than a prefix with trailing metadata.
+
+const stewardDirectOpenPrefix = "<<<steward-direct>>>"
+
+// StewardDirectEnvelope holds the parsed fields of a Direct→Steward
+// envelope (Eric messaging the Steward directly, outside any initiative
+// context).
+type StewardDirectEnvelope struct {
+	Body string
+}
+
+// BuildStewardDirectEnvelope renders the self-contained Direct→Steward
+// envelope:
+//
+//	<<<steward-direct>>>
+//	<body>
+//	>>>
+func BuildStewardDirectEnvelope(body string) (string, error) {
+	var b strings.Builder
+	b.WriteString(stewardDirectOpenPrefix)
+	b.WriteString("\n")
+	b.WriteString(body)
+	b.WriteString("\n" + stewardEnvelopeClose)
+	return b.String(), nil
+}
+
+// ParseStewardDirectEnvelope parses an envelope produced by
+// BuildStewardDirectEnvelope. Returns false when text isn't well-formed: no
+// header line or a missing closing sentinel line.
+func ParseStewardDirectEnvelope(text string) (StewardDirectEnvelope, bool) {
+	header := stewardDirectOpenPrefix + "\n"
+	if !strings.HasPrefix(text, header) {
+		return StewardDirectEnvelope{}, false
+	}
+	body, ok := strings.CutSuffix(text[len(header):], "\n"+stewardEnvelopeClose)
+	if !ok {
+		return StewardDirectEnvelope{}, false
+	}
+	return StewardDirectEnvelope{Body: body}, true
 }
 
 // ── Ledger record ─────────────────────────────────────────────────────────────

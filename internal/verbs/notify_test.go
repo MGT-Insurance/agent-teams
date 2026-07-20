@@ -533,6 +533,141 @@ func TestNotify_Briefing_ExplicitTitle(t *testing.T) {
 	}
 }
 
+// ── DirectHandle ──────────────────────────────────────────────────────────────
+
+// TestNotify_Direct_FirstNotify_CreatesTopicAndPersistsFile confirms:
+//   - no bd lookup occurs for the direct handle (notifyFakeBD would error on
+//     an unexpected Run call if one were attempted)
+//   - first notify sends with ThreadRef="" (new topic)
+//   - the returned threadRef is persisted to StewardDirectThreadPath, not a
+//     bead label
+//   - default title is "Steward" when --title is not given
+func TestNotify_Direct_FirstNotify_CreatesTopicAndPersistsFile(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "direct message body")
+	home := t.TempDir()
+
+	ft := &fakeTransport{returnRef: "555"}
+	nbd := &notifyFakeBD{} // no issue configured; any Run call fails the test
+
+	cmd := &notifyKong{
+		ID:           DirectHandle,
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called for the direct handle")
+			return nil
+		},
+	}
+
+	ctx, out, _ := newNotifyCtx(nbd)
+	ctx.Home = home
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ThreadRef != "" {
+		t.Errorf("expected ThreadRef empty on first direct notify, got %q", ft.calls[0].ThreadRef)
+	}
+	if ft.calls[0].InitiativeID != DirectHandle {
+		t.Errorf("InitiativeID = %q, want %q", ft.calls[0].InitiativeID, DirectHandle)
+	}
+	if ft.calls[0].Title != "Steward" {
+		t.Errorf("Title = %q, want %q", ft.calls[0].Title, "Steward")
+	}
+	if ft.calls[0].Body != "direct message body" {
+		t.Errorf("Body = %q, want %q", ft.calls[0].Body, "direct message body")
+	}
+
+	path := StewardDirectThreadPath(ctx)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected direct thread file at %s: %v", path, err)
+	}
+	if strings.TrimSpace(string(data)) != "555" {
+		t.Errorf("persisted thread ref = %q, want %q", string(data), "555")
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "thread_ref: 555") {
+		t.Errorf("output missing thread_ref: %q", output)
+	}
+	if !strings.Contains(output, "initiative: "+DirectHandle) {
+		t.Errorf("output missing initiative line: %q", output)
+	}
+}
+
+// TestNotify_Direct_SecondNotify_ReusesPersistedFile confirms:
+// - an existing StewardDirectThreadPath file is read and sent as ThreadRef
+// - no bd lookup and no labelAdd occurs
+func TestNotify_Direct_SecondNotify_ReusesPersistedFile(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "follow-up direct message")
+	home := t.TempDir()
+
+	nbd := &notifyFakeBD{}
+	ctx, out, _ := newNotifyCtx(nbd)
+	ctx.Home = home
+
+	path := StewardDirectThreadPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("654"), 0o644); err != nil {
+		t.Fatalf("seed direct thread file: %v", err)
+	}
+
+	ft := &fakeTransport{returnRef: "654"} // thread still open
+	cmd := &notifyKong{
+		ID:           DirectHandle,
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called for the direct handle")
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ThreadRef != "654" {
+		t.Errorf("expected ThreadRef=654 reused from file, got %q", ft.calls[0].ThreadRef)
+	}
+
+	if !strings.Contains(out.String(), "thread_ref: 654") {
+		t.Errorf("output missing thread_ref: %q", out.String())
+	}
+}
+
+// TestNotify_Direct_ExplicitTitle confirms --title overrides the "Steward" default.
+func TestNotify_Direct_ExplicitTitle(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	home := t.TempDir()
+	ft := &fakeTransport{returnRef: "1"}
+	nbd := &notifyFakeBD{}
+	cmd := &notifyKong{
+		ID:           DirectHandle,
+		File:         bodyFile,
+		Title:        "Direct Line",
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	ctx, _, _ := newNotifyCtx(nbd)
+	ctx.Home = home
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if ft.calls[0].Title != "Direct Line" {
+		t.Errorf("Title = %q, want %q", ft.calls[0].Title, "Direct Line")
+	}
+}
+
 // TestNotify_NilContext confirms nil ctx returns an error immediately.
 func TestNotify_NilContext(t *testing.T) {
 	cmd := &notifyKong{
