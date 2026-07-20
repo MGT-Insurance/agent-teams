@@ -90,6 +90,25 @@ func parseEnvelopeFile(file string) StewardReplyEnvelope {
 	return env
 }
 
+// fakeSendCapture records raw file contents at call time (envelope-agnostic —
+// used by direct-channel tests, which parse via ParseStewardDirectEnvelope
+// rather than the initiative-reply ParseStewardReplyEnvelope fakeSend uses).
+type fakeSendCapture struct {
+	calls  []string // file paths, in call order
+	bodies []string // raw file contents, captured at call time
+	err    error
+}
+
+func (f *fakeSendCapture) send(_ *cli.Context, file string) error {
+	f.calls = append(f.calls, file)
+	data, err := os.ReadFile(file)
+	if err != nil {
+		panic(fmt.Sprintf("fakeSendCapture: read %q: %v", file, err))
+	}
+	f.bodies = append(f.bodies, string(data))
+	return f.err
+}
+
 // newRelayCtx builds a cli.Context with captured stdout/stderr buffers.
 func newRelayCtx(t *testing.T) *cli.Context {
 	t.Helper()
@@ -349,5 +368,115 @@ func TestRelay_BDQueryError_SkipsReply(t *testing.T) {
 	}
 	if got := fs.envelopes[0].InitiativeID; got != "at-006" {
 		t.Errorf("expected envelope InitiativeID at-006, got %q", got)
+	}
+}
+
+// ── handler: direct-channel short-circuit ─────────────────────────────────────
+
+// TestRelay_DirectThread_RoutesToSteward verifies that a reply whose thread
+// ref matches the persisted Steward direct-message thread ref (contract:
+// StewardDirectThreadPath) is routed to the Steward via a steward-direct
+// envelope, bypassing the bd initiative lookup entirely.
+func TestRelay_DirectThread_RoutesToSteward(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardDirectThreadPath(ctx), "direct-123"); err != nil {
+		t.Fatalf("seed direct thread ref: %v", err)
+	}
+
+	bdQueryCalled := false
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "direct-123", Text: "hello steward"}},
+	}
+
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery: func(home, label string) ([]bd.Issue, error) {
+			bdQueryCalled = true
+			return nil, nil
+		},
+		send: fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bdQueryCalled {
+		t.Error("bd query must not be called for a direct-channel message")
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardDirectEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "hello steward" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "hello steward")
+	}
+}
+
+// TestRelay_DirectThread_NonMatchingThreadRef_TakesInitiativePath verifies
+// that when a direct-channel thread ref IS persisted, a reply whose
+// ThreadRef does not match it still takes the existing initiative-reply
+// path (bd lookup + steward-reply envelope), not the direct short-circuit.
+func TestRelay_DirectThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardDirectThreadPath(ctx), "direct-123"); err != nil {
+		t.Fatalf("seed direct thread ref: %v", err)
+	}
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:      bdq.query,
+		send:         fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath verifies that
+// when the Steward direct-message thread-ref file does not exist at all
+// (direct channel never opened), a reply falls through to the existing
+// initiative-reply path — the short-circuit never fires.
+func TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t) // t.TempDir() is empty — no direct-thread file present
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:      bdq.query,
+		send:         fs.send,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
 	}
 }
