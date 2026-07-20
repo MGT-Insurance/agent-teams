@@ -218,17 +218,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		return nil
 	}
 
-	// Write the envelope to a temp file so ateam mail send can read it via --file.
-	tmpPath, err := writeEnvelopeToTemp(envelope)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return nil
-	}
-	defer os.Remove(tmpPath)
-
-	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (initiative %s): %v — skipping\n", StewardHandle, id, err)
-	}
+	c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("initiative %s", id))
 	return nil
 }
 
@@ -281,15 +271,11 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 		return false, fmt.Sprintf("build closed-initiative envelope failed: %v", err)
 	}
 
-	tmpPath, err := writeEnvelopeToTemp(envelope)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return false, fmt.Sprintf("write envelope temp file failed: %v", err)
+	wrote, sendErr := c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("closed initiative %s", id))
+	if !wrote {
+		return false, fmt.Sprintf("write envelope temp file failed: %v", sendErr)
 	}
-	defer os.Remove(tmpPath)
-
-	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (closed initiative %s): %v — skipping\n", StewardHandle, id, err)
+	if sendErr != nil {
 		return true, ""
 	}
 
@@ -308,16 +294,7 @@ func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) e
 		return nil
 	}
 
-	tmpPath, err := writeEnvelopeToTemp(envelope)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return nil
-	}
-	defer os.Remove(tmpPath)
-
-	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (direct message): %v — skipping\n", StewardHandle, err)
-	}
+	c.sendEnvelopeToSteward(ctx, envelope, "direct message")
 	return nil
 }
 
@@ -332,16 +309,7 @@ func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply)
 		return nil
 	}
 
-	tmpPath, err := writeEnvelopeToTemp(envelope)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return nil
-	}
-	defer os.Remove(tmpPath)
-
-	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (briefing reply): %v — skipping\n", StewardHandle, err)
-	}
+	c.sendEnvelopeToSteward(ctx, envelope, "briefing reply")
 	return nil
 }
 
@@ -350,12 +318,11 @@ func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply)
 // branch, its ambiguous-open-initiatives branch, and from the case-0 branch
 // when routeClosedInitiativeSafetyNet also fails to place the reply. It
 // builds a steward-unrouted envelope carrying threadRef, reason, and body,
-// and sends it to the Steward — mirroring the
-// build-envelope/write-temp-file/send pattern used throughout this file.
-// Callers are expected to ALSO keep their own stderr diagnostic log (this
-// helper does not replace that visibility, it supplements it); a failure of
-// the send itself only logs here, same as every other send path in this
-// file — it never aborts the relay loop.
+// and sends it to the Steward via sendEnvelopeToSteward below. Callers are
+// expected to ALSO keep their own stderr diagnostic log (this helper does
+// not replace that visibility, it supplements it); a failure of the send
+// itself only logs here, same as every other send path in this file — it
+// never aborts the relay loop.
 func (c *relayKong) sendUnroutedToSteward(ctx *cli.Context, threadRef, reason, body string) {
 	envelope, err := BuildStewardUnroutedEnvelope(threadRef, reason, body)
 	if err != nil {
@@ -363,16 +330,38 @@ func (c *relayKong) sendUnroutedToSteward(ctx *cli.Context, threadRef, reason, b
 		return
 	}
 
+	c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("unrouted reply, thread %q", threadRef))
+}
+
+// sendEnvelopeToSteward writes envelope to a temp file and sends it to the
+// Steward via c.send, removing the temp file afterward — the
+// write-temp-file/send/log-on-failure shape shared by every envelope-send
+// path in this file (agent-teams-8beo.3, finding 3: this used to be
+// repeated inline at each call site). failCtx is a short human-readable
+// description of the call site (e.g. "initiative at-001", "direct
+// message"), spliced into the send-failure log line as "ateam mail send
+// steward failed (<failCtx>): <err> — skipping".
+//
+// Returns wrote=false only when writeEnvelopeToTemp itself failed — the
+// envelope was never handed to c.send at all — with err set to that
+// failure (already logged). Otherwise wrote=true and err is c.send's error
+// (nil on success, already logged on failure); most callers ignore both
+// return values since they always continue regardless, but
+// routeClosedInitiativeSafetyNet needs the distinction to preserve its
+// existing (bool, reason) contract.
+func (c *relayKong) sendEnvelopeToSteward(ctx *cli.Context, envelope, failCtx string) (wrote bool, err error) {
 	tmpPath, err := writeEnvelopeToTemp(envelope)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
-		return
+		return false, err
 	}
 	defer os.Remove(tmpPath)
 
 	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (unrouted reply, thread %q): %v — skipping\n", StewardHandle, threadRef, err)
+		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (%s): %v — skipping\n", StewardHandle, failCtx, err)
+		return true, err
 	}
+	return true, nil
 }
 
 // writeEnvelopeToTemp writes envelope to a new temp file (so ateam mail send
