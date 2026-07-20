@@ -46,9 +46,9 @@ func defaultLabelAdd(b cli.BDRunner, id, label string) error {
 
 // notifyKong is the kong-native form of notifyCmd: `ateam notify <id> --file <path> [--title <t>]`.
 type notifyKong struct {
-	ID    string `arg:"" name:"id" help:"Initiative ID, or the reserved BriefingHandle for the cross-initiative briefing topic."`
+	ID    string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, or the reserved DirectHandle for the Steward's direct-message topic."`
 	File  string `name:"file" help:"Path to the message body file (required)." required:""`
-	Title string `name:"title" help:"Optional title (defaults to the initiative's title, or \"Briefings\" for the briefing handle)."`
+	Title string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, or \"Steward\" for the direct handle)."`
 
 	transportFor transportForFunc `kong:"-"`
 	labelAdd     labelAddFunc     `kong:"-"`
@@ -82,6 +82,9 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 
 	if c.ID == BriefingHandle {
 		return c.runBriefing(ctx, string(body))
+	}
+	if c.ID == DirectHandle {
+		return c.runDirect(ctx, string(body))
 	}
 
 	// Look up the initiative bead.
@@ -180,6 +183,64 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 	if threadRef == "" && returnedRef != "" {
 		if writeErr := writeThreadRefFile(path, returnedRef); writeErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not persist briefing thread ref: %v\n", writeErr)
+		}
+	}
+
+	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)
+	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", c.ID)
+	return nil
+}
+
+// runDirect handles the reserved DirectHandle: like runBriefing, no
+// initiative bead behind it, so the thread ref persists in the file at
+// StewardDirectThreadPath (contract: steward_seams.go) instead of a bead's
+// "thread:<n>" label. This is the outbound half of the Steward's
+// direct-message loop: the first call bootstraps a dedicated forum topic
+// for messaging the Steward directly (distinct from the briefing topic);
+// later calls reuse it.
+//
+//  1. Title from --title, or "Steward" if not given.
+//  2. Reads any existing threadRef from StewardDirectThreadPath ("" if the
+//     file doesn't exist yet — this is the first direct notify).
+//  3. Resolves the active transport via transport.For(workspace.Home()).
+//  4. Calls transport.Send with ThreadRef="" (new topic) or the existing ref.
+//  5. On a new topic: persists the returned ref to StewardDirectThreadPath.
+//  6. Prints the thread ref and a confirmation line.
+func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
+	title := c.Title
+	if title == "" {
+		title = "Steward"
+	}
+
+	path := StewardDirectThreadPath(ctx)
+	threadRef, err := readThreadRefFile(path)
+	if err != nil {
+		return fmt.Errorf("ateam notify: read direct thread ref: %w", err)
+	}
+
+	home := workspace.Home()
+	t, err := c.transportFor(home)
+	if err != nil {
+		return fmt.Errorf("ateam notify: no transport configured: %w", err)
+	}
+
+	msg := transport.OutboundMessage{
+		InitiativeID: c.ID,
+		ThreadRef:    threadRef,
+		Title:        title,
+		Body:         body,
+	}
+
+	returnedRef, err := t.Send(msg)
+	if err != nil {
+		return fmt.Errorf("ateam notify: send: %w", err)
+	}
+
+	// If this was a new topic, persist the ref so subsequent direct notifies
+	// reuse it. No bead, no label — file only.
+	if threadRef == "" && returnedRef != "" {
+		if writeErr := writeThreadRefFile(path, returnedRef); writeErr != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not persist direct thread ref: %v\n", writeErr)
 		}
 	}
 
