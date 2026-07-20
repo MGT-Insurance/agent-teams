@@ -105,10 +105,9 @@ A direct message from Eric, outside any initiative — just a conversation.
 A human reply posted in the Briefings topic. No bead lives behind this topic by design — it's not a fixed "always bounce back to Briefings" case.
 
 1. There is NO initiative id attached. Interpret the reply against recent briefing context (what you last posted to `ateam notify briefing`) and `ateam execution-status`.
-2. Decide where it belongs:
-   - If it clearly references a specific initiative, act on that DRI directly (`ateam mail send <initiative-id> --file <answer-file> --sender steward`) or post there (`ateam notify <initiative-id> --file <msg-file>`) — whichever the content calls for.
-   - Otherwise, reply on the Briefings channel itself (`ateam notify briefing --file <reply-file>`), or `ateam notify direct` if it reads as an aside to you rather than the cross-initiative broadcast.
-3. Not a gated ledger decision — nothing goes to the ledger.
+2. ALWAYS post a brief acknowledgment back into Briefings (`ateam notify briefing --file <reply-file>`) — Eric should never see a briefing reply go silent.
+3. If the reply also clearly references a specific initiative, ADDITIONALLY route the substance there — act on that DRI directly (`ateam mail send <initiative-id> --file <answer-file> --sender steward`) or post there (`ateam notify <initiative-id> --file <msg-file>`). This is IN ADDITION TO the Briefings acknowledgment in step 2, never instead of it. Use `ateam notify direct` instead of Briefings only if the whole reply reads as an aside to you rather than anything belonging in the cross-initiative broadcast.
+4. Not a gated ledger decision — nothing goes to the ledger.
 
 ### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
 
