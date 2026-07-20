@@ -36,6 +36,9 @@ func TestStewardPaths(t *testing.T) {
 	if got, want := verbs.StewardDoorbellPath(ctx), filepath.Join("/fake/home", "mailbox", "steward.wake"); got != want {
 		t.Errorf("StewardDoorbellPath = %q, want %q", got, want)
 	}
+	if got, want := verbs.StewardFallbackMarkerPath(ctx), filepath.Join("/fake/home", "steward", "fallback-responder"); got != want {
+		t.Errorf("StewardFallbackMarkerPath = %q, want %q", got, want)
+	}
 }
 
 // ── Gate→Steward envelope round-trip ─────────────────────────────────────────
@@ -349,6 +352,45 @@ func TestStewardLedgerRecord_MarshalParseRoundTrip(t *testing.T) {
 	if got.Category != rec.Category || got.Initiative != rec.Initiative ||
 		got.Recommendation != rec.Recommendation || got.Verdict != rec.Verdict {
 		t.Errorf("ParseStewardLedgerRecord = %+v, want %+v", got, rec)
+	}
+}
+
+// ── Synced steward-topics record (agent-teams-5y8a.1) ────────────────────────
+
+// TestStewardTopicsKey verifies the frozen key convention:
+// "steward:topics:<hostname>".
+func TestStewardTopicsKey(t *testing.T) {
+	if got, want := verbs.StewardTopicsKey("machine-a"), "steward:topics:machine-a"; got != want {
+		t.Errorf("StewardTopicsKey(%q) = %q, want %q", "machine-a", got, want)
+	}
+}
+
+// TestStewardTopicsRecord_MarshalParseRoundTrip verifies the frozen value
+// schema round-trips through JSON with the "briefing"/"direct" field names.
+func TestStewardTopicsRecord_MarshalParseRoundTrip(t *testing.T) {
+	rec := verbs.StewardTopicsRecord{Briefing: "topic-1", Direct: "topic-2"}
+
+	value, err := rec.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if want := `{"briefing":"topic-1","direct":"topic-2"}`; value != want {
+		t.Fatalf("Marshal = %q, want %q", value, want)
+	}
+
+	got, err := verbs.ParseStewardTopicsRecord(value)
+	if err != nil {
+		t.Fatalf("ParseStewardTopicsRecord: %v", err)
+	}
+	if got != rec {
+		t.Errorf("ParseStewardTopicsRecord = %+v, want %+v", got, rec)
+	}
+}
+
+// TestParseStewardTopicsRecord_Malformed verifies invalid JSON is rejected.
+func TestParseStewardTopicsRecord_Malformed(t *testing.T) {
+	if _, err := verbs.ParseStewardTopicsRecord("not json"); err == nil {
+		t.Error("ParseStewardTopicsRecord: expected error for malformed JSON, got nil")
 	}
 }
 

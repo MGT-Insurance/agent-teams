@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -73,6 +74,7 @@ const (
 	stewardBriefingThreadFileName = "briefing-thread"
 	stewardDirectThreadFileName   = "direct-thread"
 	stewardDoorbellFileSuffix     = ".wake"
+	stewardFallbackMarkerFileName = "fallback-responder"
 )
 
 // StewardHome returns the Steward's home directory, <workspace-home>/steward,
@@ -120,6 +122,18 @@ func StewardDirectThreadPath(ctx *cli.Context) string {
 // RecipientID=StewardHandle.
 func StewardDoorbellPath(ctx *cli.Context) string {
 	return filepath.Join(ctx.Home, "mailbox", StewardHandle+stewardDoorbellFileSuffix)
+}
+
+// StewardFallbackMarkerPath returns the path to the local static-primary
+// fallback-responder marker: <StewardHome>/fallback-responder (contract
+// agent-teams-5y8a.1). Presence of this file (contents ignored) designates
+// this machine as the Steward's fallback responder for untied/unrouted
+// traffic — see isFallbackResponderFunc below. A plain per-machine local
+// file, deliberately NOT synced via the Dolt-backed memory store: being the
+// fallback primary is a per-machine deployment choice (set once by whoever
+// installs the steward on that machine), not shared cluster state.
+func StewardFallbackMarkerPath(ctx *cli.Context) string {
+	return filepath.Join(StewardHome(ctx), stewardFallbackMarkerFileName)
 }
 
 // ── Envelope formats ──────────────────────────────────────────────────────────
@@ -630,3 +644,118 @@ func ParseStewardLedgerRecord(line []byte) (StewardLedgerRecord, error) {
 	}
 	return r, nil
 }
+
+// ── Multi-machine routing predicates (Design A) ──────────────────────────────
+//
+// agent-teams-5y8a.1 (multi-machine steward): Design A runs one bot token +
+// one relay + one steward per machine, all bots in the same Telegram forum
+// supergroup (privacy OFF), so EVERY machine's relay receives EVERY human
+// message. Exactly-once routing means each relay must SUPPRESS the N-1
+// messages it does not own, not rescue a drop — #115 (agent-teams-b7lj)
+// already routes every unclaimed reply to the LOCAL steward unconditionally;
+// these two predicates are the ownership tests relay-gating
+// (agent-teams-5y8a.5) consults before that unconditional routing fires.
+// For a tied reply (thread resolves to an open initiative), claimsLocallyFunc
+// answers "do I have this initiative's checkout?" — local, distributed, no
+// config, no single point of failure. For untied traffic (thread resolves to
+// no open initiative), isFallbackResponderFunc answers "am I the designated
+// fallback responder?" — exactly one machine, static primary by default (see
+// StewardFallbackMarkerPath above).
+//
+// Both are DI seam types only — mirroring relay.go's relayEnabledFunc /
+// relayBDQueryFunc style (a named func type plus a "default" implementation
+// wired in at registration, injectable on relayKong so tests substitute a
+// fake). The default implementations (claimsInitiativeLocally,
+// isFallbackResponder) are NOT declared here — they land in the predicates
+// track's own file, internal/verbs/routing_ownership.go
+// (agent-teams-5y8a.2), which this contract does not own.
+
+// claimsLocallyFunc reports whether iss — an initiative issue matched by
+// thread label — is claimed on THIS machine, i.e. this machine holds the
+// initiative's worktree/checkout. Consumed as a DI seam on relayKong
+// (agent-teams-5y8a.5) so tests can substitute a fake without touching the
+// filesystem or git.
+type claimsLocallyFunc func(iss bd.Issue) bool
+
+// isFallbackResponderFunc reports whether THIS machine is the designated
+// fallback responder for untied/unrouted traffic. Consumed as a DI seam on
+// relayKong (agent-teams-5y8a.5) so tests can substitute a fake without
+// touching the filesystem.
+type isFallbackResponderFunc func(ctx *cli.Context) bool
+
+// ── Synced steward-topics record (multi-machine) ─────────────────────────────
+//
+// agent-teams-5y8a.1: a non-owning relay must recognize ANOTHER machine's
+// steward Briefings/direct topic and SKIP it, rather than mis-routing it
+// into the untied/fallback path (agent-teams-5y8a.5). Recognizing a peer's
+// topic requires cross-machine sync — the local StewardBriefingThreadPath /
+// StewardDirectThreadPath files only ever hold THIS machine's own refs.
+//
+// Storage: the dolt-synced memory store, reserved key
+// steward:topics:<hostname> (hostname = os.Hostname(), one key per
+// machine), value = JSON {"briefing":"<ref>","direct":"<ref>"} (see
+// StewardTopicsRecord below). Rationale, recorded here so the choice isn't
+// re-litigated downstream: only the Dolt DB has automatic cross-machine
+// push/pull; the memory store is already ateam-owned and, unlike a plain
+// bead, does NOT trip `ateam audit` (which flags any non-tracking issue
+// created in the global workspace). "steward" here is a reserved
+// pseudo-role for this key's namespace only — it does NOT participate in
+// the role/tier machinery (`ateam learn`/`learnings`/`condense`) real agent
+// roles (planner, implementer, dri, ...) use; callers build the key via
+// StewardTopicsKey below, not via learnKey.
+
+// stewardTopicsKeyPrefix is the reserved memory-store key prefix one
+// machine's steward publishes its topic refs under; see StewardTopicsKey.
+const stewardTopicsKeyPrefix = "steward:topics:"
+
+// StewardTopicsKey returns the reserved memory-store key one machine's
+// steward publishes its topic refs under: "steward:topics:<hostname>".
+// hostname is resolved by the caller (expected: os.Hostname()), not by this
+// helper, so tests can supply a fixed value without touching the real host.
+func StewardTopicsKey(hostname string) string {
+	return stewardTopicsKeyPrefix + hostname
+}
+
+// StewardTopicsRecord is the JSON value schema stored at
+// StewardTopicsKey(hostname): the publishing machine's Briefing and Direct
+// thread refs, so a non-owning relay can recognize (and skip) traffic
+// addressed to another machine's steward topics.
+type StewardTopicsRecord struct {
+	Briefing string `json:"briefing"`
+	Direct   string `json:"direct"`
+}
+
+// Marshal renders r as the JSON value stored at StewardTopicsKey.
+func (r StewardTopicsRecord) Marshal() (string, error) {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return "", fmt.Errorf("steward topics record: marshal: %w", err)
+	}
+	return string(data), nil
+}
+
+// ParseStewardTopicsRecord parses a JSON value previously produced by
+// StewardTopicsRecord.Marshal.
+func ParseStewardTopicsRecord(value string) (StewardTopicsRecord, error) {
+	var r StewardTopicsRecord
+	if err := json.Unmarshal([]byte(value), &r); err != nil {
+		return StewardTopicsRecord{}, fmt.Errorf("steward topics record: unmarshal: %w", err)
+	}
+	return r, nil
+}
+
+// Frozen function signatures — implemented in the synced-topics track's own
+// file, internal/verbs/steward_topics.go (agent-teams-5y8a.3), which this
+// contract does not own:
+//
+//	func publishStewardTopics(ctx *cli.Context) error
+//	func isKnownStewardTopic(ctx *cli.Context, threadRef string) bool
+//
+// publishStewardTopics upserts THIS machine's {briefing, direct} thread
+// refs (StewardBriefingThreadPath / StewardDirectThreadPath) into the
+// synced store at StewardTopicsKey(os.Hostname()) as a StewardTopicsRecord.
+// isKnownStewardTopic reports whether threadRef is in the synced union of
+// ALL machines' published topic refs AND is not this machine's own local
+// briefing/direct ref (i.e. it's owned by another steward) — consumed by
+// relay-gating (agent-teams-5y8a.5) as the peer-topic skip check ahead of
+// the bd label query.
