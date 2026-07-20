@@ -124,6 +124,7 @@ The relay's last-resort catch-all: a reply the mechanical router couldn't place 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") for why routing failed, and use judgment: if `Reason`/`Body` make the target obvious (e.g. the body itself names an initiative id), act on that initiative directly (`ateam mail send <id> --file <answer-file> --sender steward` or `ateam notify <id>`).
 2. Otherwise, tell Eric directly that you saw an unroutable message and ask for clarification — `ateam notify direct --file <msg-file>` — including `Reason` and enough of `Body` that he can tell you what he meant.
 3. Not a gated ledger decision — nothing goes to the ledger.
+4. Multi-machine: if `Body`/`Reason` look like a reply in another machine's steward/briefing topic, or concern an initiative this machine doesn't own, stay silent or keep any response minimal — a synced peer-topic ref that hasn't landed yet can produce a stray unrouted message during that sync-lag window.
 
 ### Every wake, regardless of inbox contents — scan
 
