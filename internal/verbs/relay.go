@@ -42,22 +42,28 @@ func defaultBDQuery(home, label string) ([]bd.Issue, error) {
 	return issues, nil
 }
 
-// relayBDQueryAllFunc queries the workspace beads for ALL initiatives
-// (regardless of status) carrying a given thread label. Used only in the
-// case-0 branch of handleReply — after the open-only bdQuery seam already
-// found zero open matches — as the closed-initiative safety net
-// (agent-teams-7dup.2): reopening a Telegram topic in the UI does not change
-// beads state, so this is keyed off beads status, not Telegram topic state.
+// relayBDQueryClosedFunc queries the workspace beads for CLOSED initiatives
+// carrying a given thread label. Used only in the case-0 branch of
+// handleReply — after the open-only bdQuery seam already found zero open
+// matches — as the closed-initiative safety net (agent-teams-7dup.2):
+// reopening a Telegram topic in the UI does not change beads state, so this
+// is keyed off beads status, not Telegram topic state.
+//
+// NOTE: `bd list` defaults to open-only, the same as every other bd list
+// invocation in this file — there is no "return all statuses" mode via a
+// bare --label query (confirmed empirically: `bd list --label=X --json`
+// omits closed issues; `bd list --label=X --status=closed --json` is
+// required to see them). So this seam queries --status=closed directly
+// rather than querying unfiltered and filtering client-side.
 // Injected so tests can substitute a fake.
-type relayBDQueryAllFunc func(home, label string) ([]bd.Issue, error)
+type relayBDQueryClosedFunc func(home, label string) ([]bd.Issue, error)
 
-// defaultBDQueryAll runs `bd list --label=<label> --json` (no --status
-// filter) against the global workspace home and returns matching issues of
-// any status.
-func defaultBDQueryAll(home, label string) ([]bd.Issue, error) {
+// defaultBDQueryClosed runs `bd list --status=closed --label=<label> --json`
+// against the global workspace home and returns matching closed issues.
+func defaultBDQueryClosed(home, label string) ([]bd.Issue, error) {
 	client := bd.NewClient(home)
 	var issues []bd.Issue
-	if err := client.RunJSON(&issues, "list", "--label="+label, "--json"); err != nil {
+	if err := client.RunJSON(&issues, "list", "--status=closed", "--label="+label, "--json"); err != nil {
 		return nil, err
 	}
 	return issues, nil
@@ -77,21 +83,21 @@ func defaultRelaySend(_ *cli.Context, file string) error {
 // RegisterRelayKong registers the relay verb onto p using a native kong struct.
 func RegisterRelayKong(p *cli.Parser) {
 	p.AddVerb("relay", "Long-poll the configured transport and relay human replies to the Steward.", &relayKong{
-		enabled:      transport.Enabled,
-		transportFor: transport.For,
-		bdQuery:      defaultBDQuery,
-		bdQueryAll:   defaultBDQueryAll,
-		send:         defaultRelaySend,
+		enabled:       transport.Enabled,
+		transportFor:  transport.For,
+		bdQuery:       defaultBDQuery,
+		bdQueryClosed: defaultBDQueryClosed,
+		send:          defaultRelaySend,
 	})
 }
 
 // relayKong is the kong-native form of relayCmd: `ateam relay` (no args).
 type relayKong struct {
-	enabled      relayEnabledFunc      `kong:"-"`
-	transportFor relayTransportForFunc `kong:"-"`
-	bdQuery      relayBDQueryFunc      `kong:"-"`
-	bdQueryAll   relayBDQueryAllFunc   `kong:"-"`
-	send         relaySendFunc         `kong:"-"`
+	enabled       relayEnabledFunc       `kong:"-"`
+	transportFor  relayTransportForFunc  `kong:"-"`
+	bdQuery       relayBDQueryFunc       `kong:"-"`
+	bdQueryClosed relayBDQueryClosedFunc `kong:"-"`
+	send          relaySendFunc          `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -206,26 +212,29 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 // routeClosedInitiativeSafetyNet handles the case-0 branch of handleReply:
 // zero OPEN initiatives carry the reply's thread label. Before giving up, it
-// queries ALL initiatives (any status) for the same label — reopening a
-// topic in the Telegram UI does not change beads state, so a human reply
-// posted into a since-closed initiative's topic would otherwise be silently
-// dropped forever (agent-teams-7dup, the bug this safety net closes). If
-// exactly one CLOSED initiative owns the label, the reply is routed to the
-// Steward as a steward-closed-initiative envelope carrying the closed
-// initiative's id, and true is returned so the caller skips its own "no
-// open initiative" log. Zero or ambiguous (2+) closed matches, a query
-// error, or no bdQueryAll seam configured, all fall through to the existing
-// skip behavior (false) — the caller logs the existing message.
+// queries CLOSED initiatives for the same label — reopening a topic in the
+// Telegram UI does not change beads state, so a human reply posted into a
+// since-closed initiative's topic would otherwise be silently dropped
+// forever (agent-teams-7dup, the bug this safety net closes). If exactly one
+// CLOSED initiative owns the label, the reply is routed to the Steward as a
+// steward-closed-initiative envelope carrying the closed initiative's id,
+// and true is returned so the caller skips its own "no open initiative" log.
+// Zero or ambiguous (2+) closed matches, a query error, or no bdQueryClosed
+// seam configured, all fall through to the existing skip behavior (false) —
+// the caller logs the existing message.
 func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label string, reply transport.Reply) bool {
-	if c.bdQueryAll == nil {
+	if c.bdQueryClosed == nil {
 		return false
 	}
-	all, err := c.bdQueryAll(home, label)
+	all, err := c.bdQueryClosed(home, label)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query-all for label %q failed: %v\n", label, err)
+		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query (closed) for label %q failed: %v\n", label, err)
 		return false
 	}
 
+	// Defensive filter in case the seam ever returns more than closed
+	// issues (e.g. a future fake or a bd behavior change) — bdQueryClosed
+	// is expected to already filter to --status=closed server-side.
 	var closed []bd.Issue
 	for _, iss := range all {
 		if strings.EqualFold(iss.Status, "closed") {

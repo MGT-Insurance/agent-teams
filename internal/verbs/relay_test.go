@@ -240,11 +240,11 @@ func TestRelay_UnmappedThread_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      newFakeBDQuery().query, // returns empty for "thread:99"
-		bdQueryAll:   newFakeBDQuery().query, // no closed match either — safety net finds nothing
-		send:         fs.send,
+		enabled:       func(string) bool { return true },
+		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:       newFakeBDQuery().query, // returns empty for "thread:99"
+		bdQueryClosed: newFakeBDQuery().query, // no closed match either — safety net finds nothing
+		send:          fs.send,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -261,14 +261,14 @@ func TestRelay_UnmappedThread_Skipped(t *testing.T) {
 
 // TestRelay_ClosedInitiativeThread_RoutesToSteward verifies the case-0
 // safety net: when bdQuery finds zero OPEN initiatives for the reply's
-// thread label but bdQueryAll finds exactly one CLOSED initiative carrying
-// it, the reply is routed to the Steward as a steward-closed-initiative
-// envelope instead of being silently dropped, and the generic "no open
-// initiative" skip log is suppressed.
+// thread label but bdQueryClosed finds exactly one CLOSED initiative
+// carrying it, the reply is routed to the Steward as a
+// steward-closed-initiative envelope instead of being silently dropped, and
+// the generic "no open initiative" skip log is suppressed.
 func TestRelay_ClosedInitiativeThread_RoutesToSteward(t *testing.T) {
 	bdq := newFakeBDQuery() // no open matches for "thread:50"
-	bdqAll := newFakeBDQuery()
-	bdqAll.results["thread:50"] = []bd.Issue{{ID: "at-050", Status: "closed"}}
+	bdqClosed := newFakeBDQuery()
+	bdqClosed.results["thread:50"] = []bd.Issue{{ID: "at-050", Status: "closed"}}
 
 	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
@@ -277,11 +277,11 @@ func TestRelay_ClosedInitiativeThread_RoutesToSteward(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		bdQueryAll:   bdqAll.query,
-		send:         fs.send,
+		enabled:       func(string) bool { return true },
+		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:       bdq.query,
+		bdQueryClosed: bdqClosed.query,
+		send:          fs.send,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -312,8 +312,8 @@ func TestRelay_ClosedInitiativeThread_RoutesToSteward(t *testing.T) {
 // than the closed-initiative routing path.
 func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 	bdq := newFakeBDQuery()
-	bdqAll := newFakeBDQuery()
-	bdqAll.results["thread:51"] = []bd.Issue{
+	bdqClosed := newFakeBDQuery()
+	bdqClosed.results["thread:51"] = []bd.Issue{
 		{ID: "at-051", Status: "closed"},
 		{ID: "at-052", Status: "closed"},
 	}
@@ -324,11 +324,11 @@ func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		bdQueryAll:   bdqAll.query,
-		send:         fs.send,
+		enabled:       func(string) bool { return true },
+		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:       bdq.query,
+		bdQueryClosed: bdqClosed.query,
+		send:          fs.send,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -341,13 +341,13 @@ func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 	}
 }
 
-// TestRelay_ClosedInitiativeQueryError_Skipped verifies that a bdQueryAll
+// TestRelay_ClosedInitiativeQueryError_Skipped verifies that a bdQueryClosed
 // error falls through to the existing skip behavior rather than aborting
 // the relay loop.
 func TestRelay_ClosedInitiativeQueryError_Skipped(t *testing.T) {
 	bdq := newFakeBDQuery()
-	bdqAll := newFakeBDQuery()
-	bdqAll.err["thread:52"] = fmt.Errorf("bd timeout")
+	bdqClosed := newFakeBDQuery()
+	bdqClosed.err["thread:52"] = fmt.Errorf("bd timeout")
 	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
 		replies: []transport.Reply{{ThreadRef: "52", Text: "reply"}},
@@ -355,17 +355,17 @@ func TestRelay_ClosedInitiativeQueryError_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		bdQueryAll:   bdqAll.query,
-		send:         fs.send,
+		enabled:       func(string) bool { return true },
+		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:       bdq.query,
+		bdQueryClosed: bdqClosed.query,
+		send:          fs.send,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fs.calls) != 0 {
-		t.Errorf("expected no send calls on bdQueryAll error, got %d", len(fs.calls))
+		t.Errorf("expected no send calls on bdQueryClosed error, got %d", len(fs.calls))
 	}
 	if !strings.Contains(relayStderr(ctx), "no open initiative") {
 		t.Errorf("expected fallback 'no open initiative' skip log, stderr: %q", relayStderr(ctx))
