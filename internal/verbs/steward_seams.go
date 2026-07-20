@@ -435,6 +435,83 @@ func ParseStewardBriefingReplyEnvelope(text string) (StewardBriefingReplyEnvelop
 	return StewardBriefingReplyEnvelope{Body: body}, true
 }
 
+// ── Unrouted→Steward envelope ────────────────────────────────────────────────
+//
+// agent-teams-8beo.2: the last-resort catch-all. relay.go's handleReply has
+// several branches where a reply's thread label can't be resolved to a
+// single actionable target — 2+ open initiatives share the label
+// (ambiguous), the closed-initiative safety net (StewardClosedInitiativeEnvelope
+// above) also comes up empty or ambiguous, or the bd query itself errors —
+// and today those branches log to stderr and silently drop the message. This
+// envelope exists so the Steward sees those messages instead of losing them.
+// Unlike StewardClosedInitiativeEnvelope, there is no concrete identified
+// target the Steward can act on directly — only the original thread ref and
+// a free-text reason the mechanical router failed, so the Steward is left to
+// use judgment (e.g. ask Eric for clarification via `ateam notify direct`).
+// NOT a substitute for the closed-initiative or briefing-reply
+// short-circuits, which stay separate because they DO carry a concrete
+// identified target.
+
+const stewardUnroutedOpenPrefix = "<<<steward-unrouted thread:"
+
+// StewardUnroutedEnvelope holds the parsed fields of an Unrouted→Steward
+// envelope.
+type StewardUnroutedEnvelope struct {
+	ThreadRef string
+	Reason    string
+	Body      string
+}
+
+// BuildStewardUnroutedEnvelope renders the self-contained Unrouted→Steward
+// envelope:
+//
+//	<<<steward-unrouted thread:<ref> reason:<reason>>>>
+//	<body>
+//	>>>
+func BuildStewardUnroutedEnvelope(threadRef, reason, body string) (string, error) {
+	if threadRef == "" {
+		return "", fmt.Errorf("steward unrouted envelope: thread ref is empty")
+	}
+	if reason == "" {
+		return "", fmt.Errorf("steward unrouted envelope: reason is empty")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s reason:%s%s\n", stewardUnroutedOpenPrefix, threadRef, reason, stewardEnvelopeClose)
+	b.WriteString(body)
+	b.WriteString("\n" + stewardEnvelopeClose)
+	return b.String(), nil
+}
+
+// ParseStewardUnroutedEnvelope parses an envelope produced by
+// BuildStewardUnroutedEnvelope. Returns false when text isn't well-formed:
+// no header, no " reason:" separator, or a missing closing sentinel line.
+func ParseStewardUnroutedEnvelope(text string) (StewardUnroutedEnvelope, bool) {
+	if !strings.HasPrefix(text, stewardUnroutedOpenPrefix) {
+		return StewardUnroutedEnvelope{}, false
+	}
+	nl := strings.IndexByte(text, '\n')
+	if nl == -1 {
+		return StewardUnroutedEnvelope{}, false
+	}
+	header, rest := text[:nl], text[nl+1:]
+
+	fields, ok := strings.CutSuffix(header[len(stewardUnroutedOpenPrefix):], stewardEnvelopeClose)
+	if !ok {
+		return StewardUnroutedEnvelope{}, false
+	}
+	threadPart, reasonPart, ok := strings.Cut(fields, " reason:")
+	if !ok || threadPart == "" || reasonPart == "" {
+		return StewardUnroutedEnvelope{}, false
+	}
+
+	body, ok := strings.CutSuffix(rest, "\n"+stewardEnvelopeClose)
+	if !ok {
+		return StewardUnroutedEnvelope{}, false
+	}
+
+	return StewardUnroutedEnvelope{ThreadRef: threadPart, Reason: reasonPart, Body: body}, true
+}
+
 // ── Ledger record ─────────────────────────────────────────────────────────────
 
 // StewardLedgerCategory enumerates the categories of decision the Steward

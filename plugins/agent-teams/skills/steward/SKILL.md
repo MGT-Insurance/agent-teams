@@ -117,6 +117,14 @@ A human posted a message in a Telegram topic whose owning initiative is CLOSED i
 2. This isn't a DRI gate — no pending recommendation to interpret — so just use your judgment (v1 authority still applies: no autonomous decisions beyond mechanical nudges/anomaly flags/orphan reaping): either answer Eric directly, or lay out the option to bring the initiative back (e.g. `ateam reopen <id>` followed by `/agent-teams:dispatch-dri`) alongside the alternative (leave it closed, this was just a stray message). Send via `ateam notify <id> --file <msg-file>` — it lands back in that initiative's own topic.
 3. Not a gated DRI decision, so no ledger record is required.
 
+### steward-unrouted (`<<<steward-unrouted thread:<ref> reason:<reason>>>>`)
+
+The relay's last-resort catch-all: a reply the mechanical router couldn't place at all — 2+ open initiatives shared the thread label (ambiguous), the closed-initiative safety net also came up empty or ambiguous, or a bd query itself errored. There is no initiative id and no clean reply surface back into the original Telegram thread — unlike steward-closed-initiative, there's no concrete identified target you can act on directly.
+
+1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") for why routing failed, and use judgment: if `Reason`/`Body` make the target obvious (e.g. the body itself names an initiative id), act on that initiative directly (`ateam mail send <id> --file <answer-file> --sender steward` or `ateam notify <id>`).
+2. Otherwise, tell Eric directly that you saw an unroutable message and ask for clarification — `ateam notify direct --file <msg-file>` — including `Reason` and enough of `Body` that he can tell you what he meant.
+3. Not a gated ledger decision — nothing goes to the ledger.
+
 ### Every wake, regardless of inbox contents — scan
 
 ```bash
