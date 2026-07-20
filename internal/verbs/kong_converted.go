@@ -23,6 +23,8 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/cost"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
 
 // ── reopen (trivial positional) ───────────────────────────────────────────────
@@ -452,6 +454,12 @@ type closeKong struct {
 	// substitute a fake without exec'ing a real script. If nil,
 	// runLocalMainUpdate falls back to runUpdateLocalMainScript.
 	runUpdateLocalMain updateLocalMainFunc `kong:"-"`
+
+	// transportFor resolves the active transport for the close-signal
+	// farewell message + topic close. Injected at registration time
+	// (transport.For) so tests can substitute a fake. If nil,
+	// sendCloseSignal falls back to transport.For.
+	transportFor transportForFunc `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -483,7 +491,69 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	}
 
 	c.runLocalMainUpdate(ctx)
+	c.sendCloseSignal(ctx)
 	return nil
+}
+
+// closeSignalFarewell is posted into the initiative's Telegram topic (if
+// one exists) immediately before the topic is closed via sendCloseSignal.
+const closeSignalFarewell = "This initiative is closed. The topic is now closed as a signal — you can reopen it from the Telegram UI anytime; messages posted here will be routed to the Steward."
+
+// topicCloser is an optional transport capability (Telegram forum topics
+// implement it) for closing a thread as a visible "this is done" signal.
+// Asserted here at the call site rather than folded into
+// transport.Transport, which stays initiative-agnostic and shared by
+// transports that have no notion of a closeable thread.
+type topicCloser interface {
+	CloseTopic(threadRef string) error
+}
+
+// sendCloseSignal posts a farewell message into the initiative's Telegram
+// forum topic and closes the topic, as a visible signal that the initiative
+// is done. Best-effort and fail-soft: bd close above has already succeeded
+// by the time this runs, so nothing here can fail `ateam close`. The
+// "nothing to do" cases (no thread label, no transport configured) are
+// silent skips — that's the normal state for most closes/installs; actual
+// transport errors during Send/CloseTopic are logged to stderr as warnings.
+func (c *closeKong) sendCloseSignal(ctx *cli.Context) {
+	issue, err := bd.ShowIssue(ctx.BD, c.ID)
+	if err != nil {
+		return
+	}
+	threadRef := threadLabelValue(issue.Labels)
+	if threadRef == "" {
+		return
+	}
+
+	transportFor := c.transportFor
+	if transportFor == nil {
+		transportFor = transport.For
+	}
+	t, err := transportFor(workspace.Home())
+	if err != nil {
+		// No transport configured: the normal default state for installs
+		// that haven't set up Telegram — silent skip, not a warning.
+		return
+	}
+
+	msg := transport.OutboundMessage{
+		InitiativeID: c.ID,
+		ThreadRef:    threadRef,
+		Title:        issue.Title,
+		Body:         closeSignalFarewell,
+	}
+	if _, sendErr := t.Send(msg); sendErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam close: warning: farewell message failed: %v\n", sendErr)
+		return
+	}
+
+	closer, ok := t.(topicCloser)
+	if !ok {
+		return
+	}
+	if closeErr := closer.CloseTopic(threadRef); closeErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam close: warning: closing topic failed: %v\n", closeErr)
+	}
 }
 
 // runLocalMainUpdate best-effort fast-forwards the initiative's local main
@@ -995,6 +1065,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})
 	p.AddVerb("close", "Close an initiative.", &closeKong{
 		runUpdateLocalMain: runUpdateLocalMainScript,
+		transportFor:       transport.For,
 	})
 	p.AddVerb("pull", "Pull the remote beads database (dolt pull).", &pullKong{})
 	p.AddVerb("sync", "Pull then push the beads database (bounded non-ff retry).", &syncKong{})

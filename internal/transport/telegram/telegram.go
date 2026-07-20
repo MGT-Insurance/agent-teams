@@ -221,6 +221,35 @@ func (t *Telegram) createForumTopic(name string) (string, error) {
 	return strconv.Itoa(r.Result.MessageThreadID), nil
 }
 
+// CloseTopic closes the forum topic identified by threadRef via the Bot API
+// closeForumTopic method. It satisfies the verbs package's optional
+// TopicCloser-shaped interface (asserted at the `ateam close` call site)
+// rather than being added to transport.Transport, which stays
+// initiative-agnostic — most transports have no notion of a closeable
+// thread.
+func (t *Telegram) CloseTopic(threadRef string) error {
+	resp, err := t.httpClient.PostForm(t.apiURL("closeForumTopic"), url.Values{
+		"chat_id":           {t.chatID},
+		"message_thread_id": {threadRef},
+	})
+	if err != nil {
+		return t.sanitizeTransportErr(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(resp.Body, &r); err != nil {
+		return err
+	}
+	if !r.OK {
+		return fmt.Errorf("API error: %s", r.Description)
+	}
+	return nil
+}
+
 // sendMessage posts text into a forum topic.
 func (t *Telegram) sendMessage(threadRef, text string) error {
 	resp, err := t.httpClient.PostForm(t.apiURL("sendMessage"), url.Values{
