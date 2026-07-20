@@ -29,6 +29,9 @@ func TestStewardPaths(t *testing.T) {
 	if got, want := verbs.StewardBriefingThreadPath(ctx), filepath.Join("/fake/home", "steward", "briefing-thread"); got != want {
 		t.Errorf("StewardBriefingThreadPath = %q, want %q", got, want)
 	}
+	if got, want := verbs.StewardDirectThreadPath(ctx), filepath.Join("/fake/home", "steward", "direct-thread"); got != want {
+		t.Errorf("StewardDirectThreadPath = %q, want %q", got, want)
+	}
 	if got, want := verbs.StewardDoorbellPath(ctx), filepath.Join("/fake/home", "mailbox", "steward.wake"); got != want {
 		t.Errorf("StewardDoorbellPath = %q, want %q", got, want)
 	}
@@ -101,6 +104,76 @@ func TestStewardReplyEnvelope_RoundTrip(t *testing.T) {
 	}
 	if got.Body != body {
 		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+// ── Direct→Steward envelope round-trip ───────────────────────────────────────
+
+func TestStewardDirectEnvelope_RoundTrip(t *testing.T) {
+	body := "Hey Steward, what's the status on the >>> deploy?\n\nAlso: any blockers?"
+	text, err := verbs.BuildStewardDirectEnvelope(body)
+	if err != nil {
+		t.Fatalf("BuildStewardDirectEnvelope: %v", err)
+	}
+
+	want := "<<<steward-direct>>>\n" + body + "\n>>>"
+	if text != want {
+		t.Fatalf("BuildStewardDirectEnvelope =\n%q\nwant\n%q", text, want)
+	}
+
+	got, ok := verbs.ParseStewardDirectEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardDirectEnvelope: ok=false, want true")
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+func TestParseStewardDirectEnvelope_Malformed(t *testing.T) {
+	if _, ok := verbs.ParseStewardDirectEnvelope("not an envelope"); ok {
+		t.Error("ParseStewardDirectEnvelope: expected ok=false for non-envelope text")
+	}
+	if _, ok := verbs.ParseStewardDirectEnvelope("<<<steward-direct>>>\nbody with no closer"); ok {
+		t.Error("ParseStewardDirectEnvelope: expected ok=false for missing closing sentinel")
+	}
+}
+
+// ── Cross-parser rejection matrix ────────────────────────────────────────────
+
+// TestStewardEnvelopes_CrossParserRejection feeds each of the three
+// envelope formats to all three parsers and confirms only the matching
+// parser accepts — no cross-match between gate/reply/direct.
+func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
+	gateText, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, "body")
+	if err != nil {
+		t.Fatalf("BuildStewardGateEnvelope: %v", err)
+	}
+	replyText, err := verbs.BuildStewardReplyEnvelope("agent-teams-e3mq", "body")
+	if err != nil {
+		t.Fatalf("BuildStewardReplyEnvelope: %v", err)
+	}
+	directText, err := verbs.BuildStewardDirectEnvelope("body")
+	if err != nil {
+		t.Fatalf("BuildStewardDirectEnvelope: %v", err)
+	}
+
+	texts := map[string]string{
+		"gate":   gateText,
+		"reply":  replyText,
+		"direct": directText,
+	}
+
+	for textName, text := range texts {
+		if _, ok := verbs.ParseStewardGateEnvelope(text); ok != (textName == "gate") {
+			t.Errorf("ParseStewardGateEnvelope(%s) ok=%v, want %v", textName, ok, textName == "gate")
+		}
+		if _, ok := verbs.ParseStewardReplyEnvelope(text); ok != (textName == "reply") {
+			t.Errorf("ParseStewardReplyEnvelope(%s) ok=%v, want %v", textName, ok, textName == "reply")
+		}
+		if _, ok := verbs.ParseStewardDirectEnvelope(text); ok != (textName == "direct") {
+			t.Errorf("ParseStewardDirectEnvelope(%s) ok=%v, want %v", textName, ok, textName == "direct")
+		}
 	}
 }
 
