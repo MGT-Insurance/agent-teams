@@ -88,6 +88,18 @@ Eric replied in a topic.
    ```
    `<category>` is one of `plan-approval | scope-call | merge-approval | design-fork | unblock-action` — pick the one matching what kind of decision the gate posed. `verdict=accepted` only if Eric's reply matches your recommendation; `verdict=corrected` if it diverges in any part. Never rationalize a partial match as accepted.
 
+### steward-direct (`<<<steward-direct>>>`)
+
+A direct message from Eric, outside any initiative — just a conversation.
+
+1. There is NO initiative to enrich. Optionally pull `ateam execution-status` if he's asking about the landscape, but otherwise just answer him.
+2. Reply on the SAME direct channel: write the reply to a temp file, then
+   ```bash
+   ateam notify direct --file <reply-file>
+   ```
+   It lands in the Steward's dedicated direct-message topic on Telegram.
+3. Nothing goes to the ledger — a direct chat is not a gated decision.
+
 ### Every wake, regardless of inbox contents — scan
 
 ```bash
@@ -134,6 +146,8 @@ ateam notify briefing --file <msg-file>
 ```
 
 No initiative bead backs this handle; the topic and its thread are created and persisted automatically on first use. Keep per-initiative updates in that initiative's own topic (`ateam notify <initiative-id>`) — reach for `briefing` only when the message genuinely doesn't belong to one initiative.
+
+Three outbound `ateam notify` targets, by scope: `ateam notify <initiative-id>` (that initiative's own topic), `ateam notify briefing` (cross-initiative broadcast, above), `ateam notify direct` (two-way direct chat with Eric outside any initiative — see steward-direct in section 2).
 
 ## 8. Disabling the Steward on a machine
 
