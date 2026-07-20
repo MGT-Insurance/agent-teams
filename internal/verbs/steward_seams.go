@@ -273,6 +273,71 @@ func ParseStewardReplyEnvelope(text string) (StewardReplyEnvelope, bool) {
 	return StewardReplyEnvelope{InitiativeID: idPart, Body: body}, true
 }
 
+// ── Closed-initiative→Steward envelope ───────────────────────────────────────
+//
+// The relay safety net (agent-teams-7dup.2): a human reply arrives in a
+// topic whose owning initiative has since closed. Reopening a topic in the
+// Telegram UI does not change beads state, so the relay keys off the
+// initiative's beads status, not Telegram topic state — see
+// relayKong.routeClosedInitiativeSafetyNet (relay.go). Distinct from
+// StewardReplyEnvelope so the Steward can tell the two apart without
+// re-querying bd: an ordinary reply answers an in-flight gate/ask, while a
+// closed-initiative message needs the Steward to decide, at its judgment via
+// the normal Eric-gated flow, whether to answer directly or re-dispatch
+// (e.g. `ateam reopen <id>` / /dispatch-dri).
+
+const stewardClosedInitiativeOpenPrefix = "<<<steward-closed-initiative initiative:"
+
+// StewardClosedInitiativeEnvelope holds the parsed fields of a
+// Closed-initiative→Steward envelope.
+type StewardClosedInitiativeEnvelope struct {
+	InitiativeID string
+	Body         string
+}
+
+// BuildStewardClosedInitiativeEnvelope renders the self-contained
+// Closed-initiative→Steward envelope:
+//
+//	<<<steward-closed-initiative initiative:<id>>>>
+//	<body>
+//	>>>
+func BuildStewardClosedInitiativeEnvelope(initiativeID, body string) (string, error) {
+	if initiativeID == "" {
+		return "", fmt.Errorf("steward closed-initiative envelope: initiative id is empty")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s%s\n", stewardClosedInitiativeOpenPrefix, initiativeID, stewardEnvelopeClose)
+	b.WriteString(body)
+	b.WriteString("\n" + stewardEnvelopeClose)
+	return b.String(), nil
+}
+
+// ParseStewardClosedInitiativeEnvelope parses an envelope produced by
+// BuildStewardClosedInitiativeEnvelope. Returns false when text isn't
+// well-formed: no header or a missing closing sentinel line.
+func ParseStewardClosedInitiativeEnvelope(text string) (StewardClosedInitiativeEnvelope, bool) {
+	if !strings.HasPrefix(text, stewardClosedInitiativeOpenPrefix) {
+		return StewardClosedInitiativeEnvelope{}, false
+	}
+	nl := strings.IndexByte(text, '\n')
+	if nl == -1 {
+		return StewardClosedInitiativeEnvelope{}, false
+	}
+	header, rest := text[:nl], text[nl+1:]
+
+	idPart, ok := strings.CutSuffix(header[len(stewardClosedInitiativeOpenPrefix):], stewardEnvelopeClose)
+	if !ok || idPart == "" {
+		return StewardClosedInitiativeEnvelope{}, false
+	}
+
+	body, ok := strings.CutSuffix(rest, "\n"+stewardEnvelopeClose)
+	if !ok {
+		return StewardClosedInitiativeEnvelope{}, false
+	}
+
+	return StewardClosedInitiativeEnvelope{InitiativeID: idPart, Body: body}, true
+}
+
 // ── Direct→Steward envelope ──────────────────────────────────────────────────
 //
 // Unlike the gate/reply envelopes above, a direct message carries no
