@@ -107,6 +107,47 @@ func TestStewardReplyEnvelope_RoundTrip(t *testing.T) {
 	}
 }
 
+// ── Closed-initiative→Steward envelope round-trip ────────────────────────────
+
+func TestStewardClosedInitiativeEnvelope_RoundTrip(t *testing.T) {
+	body := "is this still happening?"
+	text, err := verbs.BuildStewardClosedInitiativeEnvelope("agent-teams-7dup", body)
+	if err != nil {
+		t.Fatalf("BuildStewardClosedInitiativeEnvelope: %v", err)
+	}
+
+	want := "<<<steward-closed-initiative initiative:agent-teams-7dup>>>\n" + body + "\n>>>"
+	if text != want {
+		t.Fatalf("BuildStewardClosedInitiativeEnvelope =\n%q\nwant\n%q", text, want)
+	}
+
+	got, ok := verbs.ParseStewardClosedInitiativeEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardClosedInitiativeEnvelope: ok=false, want true")
+	}
+	if got.InitiativeID != "agent-teams-7dup" {
+		t.Errorf("InitiativeID = %q, want %q", got.InitiativeID, "agent-teams-7dup")
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+func TestStewardClosedInitiativeEnvelope_EmptyID(t *testing.T) {
+	if _, err := verbs.BuildStewardClosedInitiativeEnvelope("", "body"); err == nil {
+		t.Error("BuildStewardClosedInitiativeEnvelope: expected error for empty initiative id, got nil")
+	}
+}
+
+func TestParseStewardClosedInitiativeEnvelope_Malformed(t *testing.T) {
+	if _, ok := verbs.ParseStewardClosedInitiativeEnvelope("not an envelope"); ok {
+		t.Error("ParseStewardClosedInitiativeEnvelope: expected ok=false for non-envelope text")
+	}
+	if _, ok := verbs.ParseStewardClosedInitiativeEnvelope("<<<steward-closed-initiative initiative:at-1>>>\nbody with no closer"); ok {
+		t.Error("ParseStewardClosedInitiativeEnvelope: expected ok=false for missing closing sentinel")
+	}
+}
+
 // ── Direct→Steward envelope round-trip ───────────────────────────────────────
 
 func TestStewardDirectEnvelope_RoundTrip(t *testing.T) {
@@ -141,9 +182,9 @@ func TestParseStewardDirectEnvelope_Malformed(t *testing.T) {
 
 // ── Cross-parser rejection matrix ────────────────────────────────────────────
 
-// TestStewardEnvelopes_CrossParserRejection feeds each of the three
-// envelope formats to all three parsers and confirms only the matching
-// parser accepts — no cross-match between gate/reply/direct.
+// TestStewardEnvelopes_CrossParserRejection feeds each of the four envelope
+// formats to all four parsers and confirms only the matching parser accepts
+// — no cross-match between gate/reply/closed-initiative/direct.
 func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 	gateText, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, "body")
 	if err != nil {
@@ -153,15 +194,20 @@ func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildStewardReplyEnvelope: %v", err)
 	}
+	closedInitiativeText, err := verbs.BuildStewardClosedInitiativeEnvelope("agent-teams-e3mq", "body")
+	if err != nil {
+		t.Fatalf("BuildStewardClosedInitiativeEnvelope: %v", err)
+	}
 	directText, err := verbs.BuildStewardDirectEnvelope("body")
 	if err != nil {
 		t.Fatalf("BuildStewardDirectEnvelope: %v", err)
 	}
 
 	texts := map[string]string{
-		"gate":   gateText,
-		"reply":  replyText,
-		"direct": directText,
+		"gate":              gateText,
+		"reply":             replyText,
+		"closed-initiative": closedInitiativeText,
+		"direct":            directText,
 	}
 
 	for textName, text := range texts {
@@ -170,6 +216,9 @@ func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 		}
 		if _, ok := verbs.ParseStewardReplyEnvelope(text); ok != (textName == "reply") {
 			t.Errorf("ParseStewardReplyEnvelope(%s) ok=%v, want %v", textName, ok, textName == "reply")
+		}
+		if _, ok := verbs.ParseStewardClosedInitiativeEnvelope(text); ok != (textName == "closed-initiative") {
+			t.Errorf("ParseStewardClosedInitiativeEnvelope(%s) ok=%v, want %v", textName, ok, textName == "closed-initiative")
 		}
 		if _, ok := verbs.ParseStewardDirectEnvelope(text); ok != (textName == "direct") {
 			t.Errorf("ParseStewardDirectEnvelope(%s) ok=%v, want %v", textName, ok, textName == "direct")

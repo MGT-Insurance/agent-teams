@@ -100,6 +100,14 @@ A direct message from Eric, outside any initiative — just a conversation.
    It lands in the Steward's dedicated direct-message topic on Telegram.
 3. Nothing goes to the ledger — a direct chat is not a gated decision.
 
+### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
+
+A human posted a message in a Telegram topic whose owning initiative is CLOSED in beads. Reopening a topic in the Telegram UI does not reopen the initiative — beads state is the source of truth — so the relay's closed-initiative safety net routes what would otherwise be a silently-dropped message here instead.
+
+1. Enrich with `ateam show <id>` to see why/when it closed and what's being asked now.
+2. This isn't a DRI gate — no pending recommendation to interpret — so just use your judgment (v1 authority still applies: no autonomous decisions beyond mechanical nudges/anomaly flags/orphan reaping): either answer Eric directly, or lay out the option to bring the initiative back (e.g. `ateam reopen <id>` followed by `/agent-teams:dispatch-dri`) alongside the alternative (leave it closed, this was just a stray message). Send via `ateam notify <id> --file <msg-file>` — it lands back in that initiative's own topic.
+3. Not a gated DRI decision, so no ledger record is required.
+
 ### Every wake, regardless of inbox contents — scan
 
 ```bash

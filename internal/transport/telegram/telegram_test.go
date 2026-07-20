@@ -223,6 +223,60 @@ func TestSend_ExistingThread_SkipsCreateForumTopic(t *testing.T) {
 	}
 }
 
+// ── CloseTopic ────────────────────────────────────────────────────────────────
+
+func TestCloseTopic_Success(t *testing.T) {
+	const chatID = "-100123456789"
+	var gotChatID, gotThreadID string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/closeForumTopic") {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
+		gotChatID = r.FormValue("chat_id")
+		gotThreadID = r.FormValue("message_thread_id")
+		jsonResponse(w, 200, map[string]any{"ok": true, "result": true})
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	if err := tg.CloseTopic("42"); err != nil {
+		t.Fatalf("CloseTopic: %v", err)
+	}
+	if gotChatID != chatID {
+		t.Errorf("chat_id: got %q, want %q", gotChatID, chatID)
+	}
+	if gotThreadID != "42" {
+		t.Errorf("message_thread_id: got %q, want %q", gotThreadID, "42")
+	}
+}
+
+func TestCloseTopic_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, 200, map[string]any{"ok": false, "description": "topic already closed"})
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, "-100123456789")
+	err := tg.CloseTopic("42")
+	if err == nil {
+		t.Fatal("expected error for API-level failure")
+	}
+	if !strings.Contains(err.Error(), "topic already closed") {
+		t.Errorf("error = %q, want it to mention API description", err.Error())
+	}
+}
+
+func TestCloseTopic_ConnectionFailure_NoTokenInError(t *testing.T) {
+	tg := newConnFailureTelegram(t)
+	err := tg.CloseTopic("42")
+	assertErrorHasNoToken(t, err)
+}
+
 // ── Receive: is_topic_message filter ─────────────────────────────────────────
 
 func TestReceive_FiltersIsTopicMessage(t *testing.T) {

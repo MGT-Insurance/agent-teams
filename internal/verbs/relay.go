@@ -42,6 +42,33 @@ func defaultBDQuery(home, label string) ([]bd.Issue, error) {
 	return issues, nil
 }
 
+// relayBDQueryClosedFunc queries the workspace beads for CLOSED initiatives
+// carrying a given thread label. Used only in the case-0 branch of
+// handleReply — after the open-only bdQuery seam already found zero open
+// matches — as the closed-initiative safety net (agent-teams-7dup.2):
+// reopening a Telegram topic in the UI does not change beads state, so this
+// is keyed off beads status, not Telegram topic state.
+//
+// NOTE: `bd list` defaults to open-only, the same as every other bd list
+// invocation in this file — there is no "return all statuses" mode via a
+// bare --label query (confirmed empirically: `bd list --label=X --json`
+// omits closed issues; `bd list --label=X --status=closed --json` is
+// required to see them). So this seam queries --status=closed directly
+// rather than querying unfiltered and filtering client-side.
+// Injected so tests can substitute a fake.
+type relayBDQueryClosedFunc func(home, label string) ([]bd.Issue, error)
+
+// defaultBDQueryClosed runs `bd list --status=closed --label=<label> --json`
+// against the global workspace home and returns matching closed issues.
+func defaultBDQueryClosed(home, label string) ([]bd.Issue, error) {
+	client := bd.NewClient(home)
+	var issues []bd.Issue
+	if err := client.RunJSON(&issues, "list", "--status=closed", "--label="+label, "--json"); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
 // defaultRelaySend execs `ateam mail send steward --file <file> --sender
 // human` as a subprocess so the relay loop is not blocked by the in-process
 // send machinery. The Steward is always the recipient; it reads the mapped
@@ -56,19 +83,21 @@ func defaultRelaySend(_ *cli.Context, file string) error {
 // RegisterRelayKong registers the relay verb onto p using a native kong struct.
 func RegisterRelayKong(p *cli.Parser) {
 	p.AddVerb("relay", "Long-poll the configured transport and relay human replies to the Steward.", &relayKong{
-		enabled:      transport.Enabled,
-		transportFor: transport.For,
-		bdQuery:      defaultBDQuery,
-		send:         defaultRelaySend,
+		enabled:       transport.Enabled,
+		transportFor:  transport.For,
+		bdQuery:       defaultBDQuery,
+		bdQueryClosed: defaultBDQueryClosed,
+		send:          defaultRelaySend,
 	})
 }
 
 // relayKong is the kong-native form of relayCmd: `ateam relay` (no args).
 type relayKong struct {
-	enabled      relayEnabledFunc      `kong:"-"`
-	transportFor relayTransportForFunc `kong:"-"`
-	bdQuery      relayBDQueryFunc      `kong:"-"`
-	send         relaySendFunc         `kong:"-"`
+	enabled       relayEnabledFunc       `kong:"-"`
+	transportFor  relayTransportForFunc  `kong:"-"`
+	bdQuery       relayBDQueryFunc       `kong:"-"`
+	bdQueryClosed relayBDQueryClosedFunc `kong:"-"`
+	send          relaySendFunc          `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -147,6 +176,9 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	switch len(open) {
 	case 0:
+		if c.routeClosedInitiativeSafetyNet(ctx, home, label, reply) {
+			return nil
+		}
 		fmt.Fprintf(ctx.Stderr, "ateam relay: no open initiative found for label %q — skipping\n", label)
 		return nil
 	case 1:
@@ -176,6 +208,64 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (initiative %s): %v — skipping\n", StewardHandle, id, err)
 	}
 	return nil
+}
+
+// routeClosedInitiativeSafetyNet handles the case-0 branch of handleReply:
+// zero OPEN initiatives carry the reply's thread label. Before giving up, it
+// queries CLOSED initiatives for the same label — reopening a topic in the
+// Telegram UI does not change beads state, so a human reply posted into a
+// since-closed initiative's topic would otherwise be silently dropped
+// forever (agent-teams-7dup, the bug this safety net closes). If exactly one
+// CLOSED initiative owns the label, the reply is routed to the Steward as a
+// steward-closed-initiative envelope carrying the closed initiative's id,
+// and true is returned so the caller skips its own "no open initiative" log.
+// Zero or ambiguous (2+) closed matches, a query error, or no bdQueryClosed
+// seam configured, all fall through to the existing skip behavior (false) —
+// the caller logs the existing message.
+func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label string, reply transport.Reply) bool {
+	if c.bdQueryClosed == nil {
+		return false
+	}
+	all, err := c.bdQueryClosed(home, label)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query (closed) for label %q failed: %v\n", label, err)
+		return false
+	}
+
+	// Defensive filter in case the seam ever returns more than closed
+	// issues (e.g. a future fake or a bd behavior change) — bdQueryClosed
+	// is expected to already filter to --status=closed server-side.
+	var closed []bd.Issue
+	for _, iss := range all {
+		if strings.EqualFold(iss.Status, "closed") {
+			closed = append(closed, iss)
+		}
+	}
+	if len(closed) != 1 {
+		return false
+	}
+	id := closed[0].ID
+
+	envelope, err := BuildStewardClosedInitiativeEnvelope(id, reply.Text)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward closed-initiative envelope for %s: %v — skipping\n", id, err)
+		return false
+	}
+
+	tmpPath, err := writeEnvelopeToTemp(envelope)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
+		return false
+	}
+	defer os.Remove(tmpPath)
+
+	if err := c.send(ctx, tmpPath); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (closed initiative %s): %v — skipping\n", StewardHandle, id, err)
+		return true
+	}
+
+	fmt.Fprintf(ctx.Stderr, "ateam relay: routed message to steward for closed initiative %s (label %q)\n", id, label)
+	return true
 }
 
 // handleDirectReply routes a reply whose thread ref matches the Steward's
