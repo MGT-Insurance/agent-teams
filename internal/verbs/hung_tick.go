@@ -194,15 +194,19 @@ type hungTickDeps struct {
 }
 
 // doHungTick runs one periodic tick. scanHung (reused, unmodified) computes
-// this scan's classifications and persists the StuckSince-only anchor
-// state; doHungTick then re-loads that same state and applies the
-// escalation ladder ONLY to entries scanHung flagged Hung, mutating just
-// the ladder fields (WakeAttempts/AlertedAt/LastWakeAt) and re-saving. This
-// two-phase load/mutate/save — scanHung's own save, then this second pass —
-// is what makes the periodic tick the sole writer of the ladder fields
-// without needing a file lock: `ateam hung-scan` (the CLI verb, also built
-// on scanHung) never runs this second pass, so the two never race on the
-// same fields.
+// this scan's classifications and persists the anchor state (StuckSince plus
+// whatever ladder fields it round-trips forward); doHungTick then re-loads
+// that same state and applies the escalation ladder ONLY to entries scanHung
+// flagged Hung, mutating just the ladder fields
+// (WakeAttempts/AlertedAt/LastWakeAt) and re-saving when the ladder actually
+// advanced. This second pass is the only place the ladder fields are
+// ADVANCED, but it is NOT the sole writer of them: scanHung re-persists the
+// whole anchor (ladder fields included) for still-STUCK ids, and scanHung
+// also runs in the `ateam hung-scan` CLI, so a CLI scan and this tick can
+// race on the state file. saveHungState is atomic (agent-teams-6rru.17), so
+// that race can never produce a torn read; the residual sub-millisecond
+// lost-update it leaves is bounded, self-healing, and tracked in
+// agent-teams-6rru.18 — see hungAnchor's doc comment.
 func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	entries, err := scanHung(ctx, deps.agentsFunc, deps.now)
 	if err != nil {
@@ -241,7 +245,13 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 				fmt.Fprintf(ctx.Stderr, "ateam relay: hung tick: post canned alert for %s failed: %v\n", entry.ID, err)
 			}
 		case hungActionNone:
-			// Already alerted this episode — nothing to do.
+			// Already alerted this episode — the ladder is unchanged
+			// (nextHungLadderAction returned anchor untouched), so skip the
+			// write entirely. Re-saving byte-identical state every tick only
+			// widens the window for a concurrent scanHung write to lose an
+			// update (agent-teams-6rru.18); persisting only when the ladder
+			// actually advances keeps that window as small as possible.
+			continue
 		}
 
 		anchors[entry.ID] = updated

@@ -92,15 +92,25 @@ type hungScanEntry struct {
 // hungStatePath: when the initiative was first observed STUCK, plus the
 // escalation-ladder state for the current STUCK episode. StuckSince is
 // written by both `ateam hung-scan` and the periodic relay tick (via
-// scanHung, shared by both). AlertedAt/WakeAttempts/LastWakeAt are written
-// ONLY by agent-teams-6rru.9's periodic relay tick (hung_tick.go) — the
-// tick is the sole writer of the ladder fields, so no lock is needed
-// between it and hung-scan's own StuckSince-only writes (scanHung never
-// touches these three). Because scanHung carries forward the whole
-// hungAnchor struct for a still-STUCK id and drops it entirely once an
-// initiative is observed non-STUCK, the ladder fields ride the same
-// per-episode lifecycle as StuckSince with no extra bookkeeping: a fresh
-// episode always starts with these zero-valued.
+// scanHung, shared by both). AlertedAt/WakeAttempts/LastWakeAt are advanced
+// ONLY by agent-teams-6rru.9's periodic relay tick (hung_tick.go). There is
+// NO sole-writer invariant, though: scanHung round-trips the WHOLE anchor —
+// ladder fields included — for a still-STUCK id, re-persisting them on every
+// scan, and scanHung runs in BOTH the tick process and the `ateam hung-scan`
+// CLI the Steward invokes each wake. Concurrent CLI-vs-tick writes are
+// therefore possible. saveHungState is atomic (temp file + os.Rename,
+// agent-teams-6rru.17), which eliminates the torn-read/empty-map failure
+// mode entirely; what remains is a residual sub-millisecond lost-update on
+// the ladder fields if a CLI scan and a tick save interleave. That residual
+// race is bounded (at most one duplicate wake/alert), self-healing (the next
+// tick reconverges), and tracked in agent-teams-6rru.18 — it is deliberately
+// NOT fixed here.
+//
+// Because scanHung carries forward the whole hungAnchor struct for a
+// still-STUCK id and drops it entirely once an initiative is observed
+// non-STUCK, the ladder fields ride the same per-episode lifecycle as
+// StuckSince with no extra bookkeeping: a fresh episode always starts with
+// these zero-valued.
 type hungAnchor struct {
 	StuckSince   string `json:"stuck_since"`
 	AlertedAt    string `json:"alerted_at,omitempty"`
@@ -135,17 +145,49 @@ func loadHungState(path string) map[string]hungAnchor {
 }
 
 // saveHungState writes m to path as JSON, creating the parent directory if
-// needed.
-func saveHungState(path string, m map[string]hungAnchor) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// needed. The write is atomic: the JSON is written to a temp file in the SAME
+// directory and then os.Rename'd over path. Rename is atomic within one
+// filesystem, so a concurrent loadHungState reader always observes either the
+// complete old file or the complete new one — never the torn, mid-write state
+// that would parse-fail and (per loadHungState) collapse to an empty map,
+// resetting StuckSince for every currently-STUCK initiative.
+//
+// A package-level var (not a plain func) so the persist-on-change guard test
+// can wrap it to count writes: scanHung persists once per tick unconditionally,
+// so counting total writes is the only way to observe doHungTick skipping its
+// own redundant second write when the ladder didn't advance.
+var saveHungState = func(path string, m map[string]hungAnchor) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write state: %w", err)
+	tmp, err := os.CreateTemp(dir, "hung-state-*.json")
+	if err != nil {
+		return fmt.Errorf("create temp state file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp state: %w", err)
+	}
+	// os.CreateTemp makes the file 0o600; match the prior 0o644 so the
+	// atomic rewrite doesn't silently tighten the state file's permissions.
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp state: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename state into place: %w", err)
 	}
 	return nil
 }

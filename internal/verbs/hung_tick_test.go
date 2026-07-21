@@ -180,6 +180,82 @@ func TestDoHungTick_WakeThenAlertLadder(t *testing.T) {
 	}
 }
 
+// TestDoHungTick_PersistOnChangeGuard proves the persist-on-change guard
+// (agent-teams-6rru.17 Finding 2): doHungTick only writes the ladder state
+// when the ladder actually advances. scanHung persists once per tick
+// unconditionally, so a tick that ADVANCES the ladder writes twice (scanHung +
+// doHungTick) while an already-alerted no-op tick writes only once (scanHung
+// alone — doHungTick's redundant, byte-identical write is skipped). The write
+// count is the observable signal, so this test wraps saveHungState to count.
+func TestDoHungTick_PersistOnChangeGuard(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{
+		ID:          "at-8",
+		Title:       "guard initiative",
+		Description: "worktree: " + wt,
+		Status:      "open",
+		Labels:      []string{"at-8", "thread:77"},
+	}}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 1
+	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedStuckSince := t0.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-8": {StuckSince: seedStuckSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	realSave := saveHungState
+	var saves int
+	saveHungState = func(path string, m map[string]hungAnchor) error {
+		saves++
+		return realSave(path, m)
+	}
+	defer func() { saveHungState = realSave }()
+
+	wake := &fakeHungWakeSend{}
+	ft := &fakeTransport{returnRef: "77"}
+	deps := hungTickDeps{
+		agentsFunc: agentsFunc,
+		now:        fixedNow(t0),
+		wakeSend:   wake.send,
+		topicPost:  defaultHungTopicPost,
+		transport:  ft,
+	}
+
+	// Advance the ladder to the already-alerted state (2 wakes then 1 alert),
+	// asserting each advancing tick writes twice: scanHung + doHungTick.
+	for i, offset := range []time.Duration{0, 5 * time.Minute, 10 * time.Minute} {
+		deps.now = fixedNow(t0.Add(offset))
+		saves = 0
+		if err := doHungTick(ctx, deps); err != nil {
+			t.Fatalf("advancing tick %d: %v", i+1, err)
+		}
+		if saves != 2 {
+			t.Errorf("advancing tick %d: saveHungState calls = %d, want 2 (scanHung + doHungTick ladder write)", i+1, saves)
+		}
+	}
+	if loadHungState(hungStatePath(ctx))["at-8"].AlertedAt == "" {
+		t.Fatal("expected AlertedAt stamped after the ladder was exhausted")
+	}
+
+	// Already alerted -> hungActionNone -> ladder unchanged: only scanHung's
+	// single write, doHungTick's redundant write skipped by the guard.
+	deps.now = fixedNow(t0.Add(15 * time.Minute))
+	saves = 0
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("no-op tick: %v", err)
+	}
+	if saves != 1 {
+		t.Errorf("already-alerted no-op tick: saveHungState calls = %d, want 1 (scanHung only; guard skips doHungTick's write)", saves)
+	}
+}
+
 // TestDoHungTick_WakeSendFailure_LadderStillReachesAlert simulates the
 // Steward being unreachable (mail-send fails every attempt): the ladder
 // must still count attempts and reach the canned-alert fallback, since a

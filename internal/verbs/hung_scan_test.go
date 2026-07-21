@@ -2,7 +2,9 @@ package verbs
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -452,6 +454,47 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	}
 	if out[0].Hung {
 		t.Error("freshly re-STUCK initiative should not be hung immediately")
+	}
+}
+
+// ── saveHungState atomicity ──────────────────────────────────────────────────
+
+// TestSaveHungState_AtomicRoundTripNoTempLeft verifies the temp-file+rename
+// write (agent-teams-6rru.17): the state round-trips through loadHungState
+// with every field intact, and no hung-state-*.json temp file is left behind
+// in the directory after a successful save.
+func TestSaveHungState_AtomicRoundTripNoTempLeft(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, hungStateFileName)
+
+	want := map[string]hungAnchor{
+		"at-1": {
+			StuckSince:   "2026-07-21T10:00:00Z",
+			AlertedAt:    "2026-07-21T10:10:00Z",
+			WakeAttempts: 2,
+			LastWakeAt:   "2026-07-21T10:05:00Z",
+		},
+		"at-2": {StuckSince: "2026-07-21T09:00:00Z"},
+	}
+	if err := saveHungState(path, want); err != nil {
+		t.Fatalf("saveHungState: %v", err)
+	}
+
+	got := loadHungState(path)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read state dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != hungStateFileName {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("state dir = %v, want exactly [%s] (temp files must be renamed away, not left behind)", names, hungStateFileName)
 	}
 }
 
