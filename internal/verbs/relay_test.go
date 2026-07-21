@@ -616,22 +616,31 @@ func TestRelay_BDQueryError_RoutesToSteward(t *testing.T) {
 	}
 }
 
-// ── handler: direct-channel short-circuit ─────────────────────────────────────
+// ── handler: @mention routing (non-topic / General channel) ──────────────────
+//
+// Single-channel addressing (agent-teams-4x83) replaces the old per-machine
+// [Direct] topic short-circuit: a non-topic (ThreadRef=="") reply is routed
+// by @mention instead. These tests cover rules 1 and 2; rule 3 (no bot
+// mention) is unchanged and already covered by
+// TestRelay_NonTopic_FallbackResponder_RoutesUnrouted and
+// TestRelay_NonTopic_NotFallbackResponder_Skipped above.
 
-// TestRelay_DirectThread_RoutesToSteward verifies that a reply whose thread
-// ref matches the persisted Steward direct-message thread ref (contract:
-// StewardDirectThreadPath) is routed to the Steward via a steward-direct
-// envelope, bypassing the bd initiative lookup entirely.
-func TestRelay_DirectThread_RoutesToSteward(t *testing.T) {
+// TestRelay_MentionsSelf_RoutesToSteward_RegardlessOfFallbackStatus verifies
+// rule 1: a non-topic reply that mentions this bot (MentionsSelf==true) is
+// routed to the Steward as a steward-direct envelope even when this machine
+// is NOT the designated fallback responder.
+func TestRelay_MentionsSelf_RoutesToSteward_RegardlessOfFallbackStatus(t *testing.T) {
 	ctx := newRelayCtx(t)
-	if err := writeThreadRefFile(StewardDirectThreadPath(ctx), "direct-123"); err != nil {
-		t.Fatalf("seed direct thread ref: %v", err)
-	}
 
 	bdQueryCalled := false
 	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
-		replies: []transport.Reply{{ThreadRef: "direct-123", Text: "hello steward"}},
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "@stewardbot hello steward",
+			Mentions:     []string{"stewardbot"},
+			MentionsSelf: true,
+		}},
 	}
 
 	cmd := &relayKong{
@@ -643,14 +652,14 @@ func TestRelay_DirectThread_RoutesToSteward(t *testing.T) {
 		},
 		send:                fs.send,
 		claimsLocally:       alwaysClaimsLocally,
-		isFallbackResponder: alwaysFallbackResponder,
+		isFallbackResponder: func(*cli.Context) bool { return false }, // NOT fallback
 		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if bdQueryCalled {
-		t.Error("bd query must not be called for a direct-channel message")
+		t.Error("bd query must not be called for a @mention-self message")
 	}
 	if len(fs.calls) != 1 {
 		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
@@ -659,79 +668,92 @@ func TestRelay_DirectThread_RoutesToSteward(t *testing.T) {
 	if !ok {
 		t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
 	}
-	if env.Body != "hello steward" {
-		t.Errorf("envelope Body = %q, want %q", env.Body, "hello steward")
+	if env.Body != "@stewardbot hello steward" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "@stewardbot hello steward")
 	}
 }
 
-// TestRelay_DirectThread_NonMatchingThreadRef_TakesInitiativePath verifies
-// that when a direct-channel thread ref IS persisted, a reply whose
-// ThreadRef does not match it still takes the existing initiative-reply
-// path (bd lookup + steward-reply envelope), not the direct short-circuit.
-func TestRelay_DirectThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.T) {
+// TestRelay_MentionsOtherBot_Skipped verifies rule 2: a non-topic reply
+// mentioning some other bot ("@otherbot", MentionsSelf==false) is skipped
+// outright — zero sends, no bd query, and the "not me, skipping" log line.
+func TestRelay_MentionsOtherBot_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
-	if err := writeThreadRefFile(StewardDirectThreadPath(ctx), "direct-123"); err != nil {
-		t.Fatalf("seed direct thread ref: %v", err)
-	}
 
-	bdq := newFakeBDQuery()
-	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
-
+	bdQueryCalled := false
 	fs := &fakeSend{}
 	ft := &relayFakeTransport{
-		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "@otherbot handle this one",
+			Mentions:     []string{"otherbot"},
+			MentionsSelf: false,
+		}},
 	}
+
 	cmd := &relayKong{
-		enabled:             func(string) bool { return true },
-		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:             bdq.query,
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery: func(home, label string) ([]bd.Issue, error) {
+			bdQueryCalled = true
+			return nil, nil
+		},
 		send:                fs.send,
 		claimsLocally:       alwaysClaimsLocally,
-		isFallbackResponder: alwaysFallbackResponder,
+		isFallbackResponder: alwaysFallbackResponder, // even the fallback responder skips
 		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(fs.calls) != 1 {
-		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	if bdQueryCalled {
+		t.Error("bd query must not be called when skipping a mention of another bot")
 	}
-	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
-		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	if len(fs.calls) != 0 {
+		t.Errorf("expected no send calls, got %d", len(fs.calls))
+	}
+	if !strings.Contains(relayStderr(ctx), "mentions @otherbot") || !strings.Contains(relayStderr(ctx), "not me, skipping") {
+		t.Errorf("expected 'mentions @otherbot — not me, skipping' in stderr, got: %q", relayStderr(ctx))
 	}
 }
 
-// TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath verifies that
-// when the Steward direct-message thread-ref file does not exist at all
-// (direct channel never opened), a reply falls through to the existing
-// initiative-reply path — the short-circuit never fires.
-func TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath(t *testing.T) {
-	ctx := newRelayCtx(t) // t.TempDir() is empty — no direct-thread file present
+// TestRelay_MentionsHumanOnly_FallsThroughToRule3 verifies that a mention of
+// a human username (not ending in "bot", e.g. "@eric") is NOT treated as
+// rule 2's bot-mention skip — it falls through to rule 3's existing
+// fallback-responder behavior.
+func TestRelay_MentionsHumanOnly_FallsThroughToRule3(t *testing.T) {
+	ctx := newRelayCtx(t)
 
-	bdq := newFakeBDQuery()
-	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
-
-	fs := &fakeSend{}
+	fs := &fakeSendCapture{}
 	ft := &relayFakeTransport{
-		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "@eric can you take a look",
+			Mentions:     []string{"eric"},
+			MentionsSelf: false,
+		}},
 	}
+
 	cmd := &relayKong{
 		enabled:             func(string) bool { return true },
 		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:             bdq.query,
+		bdQuery:             newFakeBDQuery().query,
 		send:                fs.send,
 		claimsLocally:       alwaysClaimsLocally,
-		isFallbackResponder: alwaysFallbackResponder,
+		isFallbackResponder: func(*cli.Context) bool { return true },
 		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(fs.calls) != 1 {
-		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+		t.Fatalf("expected 1 send call (rule 3: fallback responder routes unrouted), got %d", len(fs.calls))
 	}
-	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
-		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "@eric can you take a look" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "@eric can you take a look")
 	}
 }
 
