@@ -26,10 +26,19 @@
 #   3. PEER TOPIC (thread ref is a KNOWN steward topic belonging to ANOTHER
 #      machine, synced via steward:topics:<hostname>, steward_topics.go):
 #      skipped outright, before the bd label query ever runs — that peer's
-#      own relay already routes it locally. A machine's OWN local briefing/
-#      direct thread ref is never subject to this skip; it always
-#      short-circuits to a steward-briefing-reply/steward-direct envelope
-#      first (checked earlier in handleReply, ahead of the peer-topic skip).
+#      own relay already routes it locally. A machine's OWN local briefing
+#      thread ref is never subject to this skip; it always short-circuits to
+#      a steward-briefing-reply envelope first (checked earlier in
+#      handleReply, ahead of the peer-topic skip). NOTE (agent-teams-4x83):
+#      the synced record used to also carry a per-machine "direct" thread
+#      ref, matched the same way; that [Direct] topic machinery has been
+#      ripped out (steward-direct traffic is now @mention-routed in the
+#      shared General channel instead — see
+#      tests/single-channel-mention-routing.test.sh) and
+#      StewardTopicsRecord.Direct no longer exists as a field. A peer record
+#      still carrying a legacy "direct" JSON key parses cleanly (Go ignores
+#      unknown fields) but confers no routing behavior — scenario 3 below
+#      seeds one and proves it's inert.
 #   4. NON-TOPIC reply (ThreadRef == "", e.g. a General-topic/DM message):
 #      only the designated fallback responder forwards it (as a
 #      steward-unrouted envelope carrying the "(general)" placeholder);
@@ -299,6 +308,47 @@ echo "$s3b_body" | grep -qF "$own_reply_text" \
 
 echo "case3b PASS: machine A's own briefing-topic short-circuit still fired despite the peer-topic skip logic above it in the routing order"
 
+# Close case3b's own-briefing-reply message directly so case3c's "exactly 0"
+# assertion below isn't polluted by it (both reuse machine A's home S3A).
+# NOT drain_steward_inbox: `ateam mail inbox` resolves its recipient via
+# resolveInboxRecipient(cwd), which requires either a live Steward session
+# marker file or an open initiative bead whose worktree: line matches cwd —
+# neither exists in this bare bd home, so it silently no-ops (returns nil
+# without draining anything; see agent-teams-4x83 discovery bead). A direct
+# bd close is the reliable way to retire the message bead here.
+s3b_msg_id=$(steward_open_msgs "$S3A" | jq -r '.[0].id')
+bd -C "$S3A" close "$s3b_msg_id" >/dev/null
+
+# ── 3c: reply on the peer's LEGACY "direct" ref -> NOT a peer-topic skip ───
+#
+# agent-teams-4x83.4 dropped StewardTopicsRecord.Direct from the schema; the
+# "direct":"peer-direct-ref" key seeded above (case3's remember call) is
+# tolerated-but-ignored — it still parses (Go ignores unknown JSON fields,
+# locked in by TestParseStewardTopicsRecord_ToleratesLegacyDirectField), but
+# isKnownStewardTopic now matches on Briefing only, so it confers NO routing
+# behavior. A reply whose thread ref equals that legacy value must NOT hit
+# the peer-topic-skip branch (no "skipping peer steward topic" log) — it
+# falls through to the ordinary bd-label/untied path like any other
+# unrecognized thread ref, and is suppressed there instead (machine A is not
+# configured as the fallback responder in this scenario).
+legacy_peer_direct_ref="peer-direct-ref"
+legacy_reply_text="Anyone home?"
+printf '{"thread_ref": "%s", "text": "%s"}\n' "$legacy_peer_direct_ref" "$legacy_reply_text" > "$S3A_STUB/reply-001.json"
+
+s3c_out=$(run_relay "$S3A" "$S3A_STUB")
+echo "$s3c_out" | grep -q "starting on transport" \
+  || fail case3c "relay did not print starting line (got: '$s3c_out')"
+echo "$s3c_out" | grep -qi "skipping peer steward topic" \
+  && fail case3c "relay treated the legacy peer 'direct' ref as a peer steward topic — Direct must be inert (got: '$s3c_out')"
+echo "$s3c_out" | grep -qi "not fallback responder" \
+  || fail case3c "relay stderr did not fall through to the ordinary untied/non-fallback skip (got: '$s3c_out')"
+[ ! -f "$S3A_STUB/reply-001.json" ] || fail case3c "stub did not consume reply-001.json"
+
+s3c_count=$(steward_msg_count "$S3A")
+[ "$s3c_count" = "0" ] || fail case3c "expected 0 steward messages for a reply on the legacy peer-direct ref, got $s3c_count"
+
+echo "case3c PASS: the peer's legacy 'direct' JSON key is tolerated but confers no peer-topic-skip routing — the reply fell through to the ordinary untied/non-fallback path instead"
+
 echo ""
 echo "=== Scenario 4: NON-TOPIC reply (empty ThreadRef) -> only the fallback responder routes ==="
 
@@ -350,4 +400,4 @@ s4b_count=$(steward_msg_count "$S4B")
 echo "case4b PASS: non-fallback machine B suppressed the identical non-topic reply — exactly-once confirmed"
 
 echo ""
-echo "ALL SCENARIOS PASSED — multi-machine exactly-once routing (tied-owner, untied-fallback, peer-topic-skip + own-topic-short-circuit, non-topic-fallback) confirmed end-to-end against the real ateam relay binary."
+echo "ALL SCENARIOS PASSED — multi-machine exactly-once routing (tied-owner, untied-fallback, peer-topic-skip + own-topic-short-circuit + legacy-direct-field-inert, non-topic-fallback) confirmed end-to-end against the real ateam relay binary."

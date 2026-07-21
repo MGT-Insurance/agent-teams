@@ -757,6 +757,95 @@ func TestReceive_UTF16Offset_MultiByteCharBeforeMention(t *testing.T) {
 	}
 }
 
+// ── parseMentions: direct unit tests ──────────────────────────────────────────
+//
+// These call parseMentions directly (no HTTP round trip through Receive) —
+// exercising entity offset/length edge cases the mention tests above don't
+// reach: a mention entity flush against either edge of msg.Text, and
+// multiple entities (bot + human, or multiple bots) in a single message.
+
+// TestParseMentions_MentionAtOffsetZero verifies a mention entity starting at
+// offset 0 (no leading text) is extracted correctly — the boundary opposite
+// the one TestReceive_UTF16Offset_MultiByteCharBeforeMention covers.
+func TestParseMentions_MentionAtOffsetZero(t *testing.T) {
+	tg := &Telegram{ownUsername: "stewardbot"}
+	msg := &message{
+		Text: "@stewardbot please help",
+		Entities: []messageEntity{
+			{Type: "mention", Offset: 0, Length: 11},
+		},
+	}
+
+	mentions, mentionsSelf := tg.parseMentions(msg)
+
+	if !mentionsSelf {
+		t.Error("MentionsSelf: got false, want true (mention entity starts at offset 0)")
+	}
+	if len(mentions) != 1 || mentions[0] != "stewardbot" {
+		t.Errorf("Mentions: got %v, want [stewardbot]", mentions)
+	}
+}
+
+// TestParseMentions_MentionAtEndOfText verifies a mention entity whose
+// Offset+Length lands EXACTLY at len(units) — the trailing boundary — is not
+// rejected by the "> len(units)" bounds check (an off-by-one there would
+// drop a mention with no trailing text).
+func TestParseMentions_MentionAtEndOfText(t *testing.T) {
+	tg := &Telegram{ownUsername: "stewardbot"}
+	text := "please help @stewardbot"
+	msg := &message{
+		Text: text,
+		Entities: []messageEntity{
+			// offset 12 = len("please help "); length 11 = len("@stewardbot"),
+			// so offset+length == len(text) exactly.
+			{Type: "mention", Offset: 12, Length: 11},
+		},
+	}
+
+	mentions, mentionsSelf := tg.parseMentions(msg)
+
+	if !mentionsSelf {
+		t.Error("MentionsSelf: got false, want true (mention entity ends exactly at text length)")
+	}
+	if len(mentions) != 1 || mentions[0] != "stewardbot" {
+		t.Errorf("Mentions: got %v, want [stewardbot]", mentions)
+	}
+}
+
+// TestParseMentions_MultipleMentionsMixedHumanAndBot verifies a message with
+// THREE mention entities — human, this bot, and another bot — extracts all
+// of them in order and still correctly flags MentionsSelf, proving multiple
+// bot mentions plus a mixed human mention don't interfere with each other
+// (relay's firstBotMention/MentionsSelf logic depends on Mentions preserving
+// every entity, not just the first).
+func TestParseMentions_MultipleMentionsMixedHumanAndBot(t *testing.T) {
+	tg := &Telegram{ownUsername: "stewardbot"}
+	text := "@eric @stewardbot @otherbot"
+	msg := &message{
+		Text: text,
+		Entities: []messageEntity{
+			{Type: "mention", Offset: 0, Length: 5},  // "@eric"
+			{Type: "mention", Offset: 6, Length: 11}, // "@stewardbot"
+			{Type: "mention", Offset: 18, Length: 9}, // "@otherbot"
+		},
+	}
+
+	mentions, mentionsSelf := tg.parseMentions(msg)
+
+	if !mentionsSelf {
+		t.Error("MentionsSelf: got false, want true (stewardbot is one of three mentions)")
+	}
+	want := []string{"eric", "stewardbot", "otherbot"}
+	if len(mentions) != len(want) {
+		t.Fatalf("Mentions: got %v, want %v", mentions, want)
+	}
+	for i, m := range want {
+		if mentions[i] != m {
+			t.Errorf("Mentions[%d] = %q, want %q", i, mentions[i], m)
+		}
+	}
+}
+
 // ── Send: General channel ─────────────────────────────────────────────────────
 
 func TestSend_General_OmitsThreadIDAndReturnsEmpty(t *testing.T) {
