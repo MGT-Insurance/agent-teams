@@ -631,6 +631,49 @@ func TestReceive_MessageBody_MediaPlaceholders(t *testing.T) {
 			msg:  baseMsg(8, map[string]any{}),
 			want: "[non-text message]",
 		},
+		{
+			// Regression for the json.RawMessage vs *json.RawMessage bug: a
+			// bare json.RawMessage captures the literal bytes of an explicit
+			// JSON null, so `"photo": null` decoded as non-nil and wrongly
+			// matched the msg.Photo != nil case, producing "[photo]" instead
+			// of falling through to the fallback. Media fields are now typed
+			// *json.RawMessage so an explicit null decodes to a nil pointer,
+			// same as an absent key.
+			name: "explicit JSON null for photo falls through to fallback (not [photo])",
+			msg:  baseMsg(9, map[string]any{"photo": nil}),
+			want: "[non-text message]",
+		},
+		{
+			name: "video message",
+			msg:  baseMsg(10, map[string]any{"video": map[string]any{"file_id": "EEE", "duration": 12}}),
+			want: "[video]",
+		},
+		{
+			name: "audio message",
+			msg:  baseMsg(11, map[string]any{"audio": map[string]any{"file_id": "FFF", "duration": 30}}),
+			want: "[audio]",
+		},
+		{
+			name: "video_note message",
+			msg:  baseMsg(12, map[string]any{"video_note": map[string]any{"file_id": "GGG", "duration": 3}}),
+			want: "[video note]",
+		},
+		{
+			name: "voice message with caption appends it",
+			msg: baseMsg(13, map[string]any{
+				"voice":   map[string]any{"file_id": "HHH", "duration": 4},
+				"caption": "quick update",
+			}),
+			want: "[voice message] quick update",
+		},
+		{
+			name: "sticker with caption field present ignores caption (frozen contract)",
+			msg: baseMsg(14, map[string]any{
+				"sticker": map[string]any{"emoji": "🎉"},
+				"caption": "should be ignored",
+			}),
+			want: "[sticker 🎉]",
+		},
 	}
 
 	updates := make([]map[string]any, len(cases))

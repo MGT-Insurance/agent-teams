@@ -480,16 +480,22 @@ type message struct {
 	// Media fields — present only for the corresponding non-text message
 	// type. messageBody uses these purely for content-type detection
 	// (non-nil check); Sticker.Emoji and Document.FileName are the only
-	// nested values actually read. Typed as json.RawMessage where only
-	// presence matters, to avoid modeling Telegram's full nested shapes.
-	Sticker   *sticker        `json:"sticker"`
-	Animation json.RawMessage `json:"animation"`
-	Photo     json.RawMessage `json:"photo"`
-	Voice     json.RawMessage `json:"voice"`
-	VideoNote json.RawMessage `json:"video_note"`
-	Video     json.RawMessage `json:"video"`
-	Audio     json.RawMessage `json:"audio"`
-	Document  *document       `json:"document"`
+	// nested values actually read. Typed as *json.RawMessage (not a bare
+	// json.RawMessage) where only presence matters, to avoid modeling
+	// Telegram's full nested shapes: a bare json.RawMessage captures the
+	// literal bytes of an explicit JSON null, so it decodes to a non-nil
+	// (but "null"-valued) slice for `"photo": null` — wrongly signaling
+	// presence. The pointer form correctly decodes an explicit null to a
+	// nil pointer, matching the absent-key case, just like Sticker/Document
+	// below.
+	Sticker   *sticker         `json:"sticker"`
+	Animation *json.RawMessage `json:"animation"`
+	Photo     *json.RawMessage `json:"photo"`
+	Voice     *json.RawMessage `json:"voice"`
+	VideoNote *json.RawMessage `json:"video_note"`
+	Video     *json.RawMessage `json:"video"`
+	Audio     *json.RawMessage `json:"audio"`
+	Document  *document        `json:"document"`
 }
 
 // sticker carries the sticker's emoji, if any — the only semantic signal a
