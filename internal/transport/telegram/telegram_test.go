@@ -646,15 +646,15 @@ func TestReceive_MessageBody_MediaPlaceholders(t *testing.T) {
 			wantDrop: true,
 		},
 		{
-			// Regression for the json.RawMessage vs *json.RawMessage bug: a
-			// bare json.RawMessage captures the literal bytes of an explicit
-			// JSON null, so `"photo": null` decoded as non-nil and wrongly
-			// matched the msg.Photo != nil case. Media fields are now typed
-			// *json.RawMessage so an explicit null decodes to a nil pointer,
-			// same as an absent key — still exercised here even though the
-			// message is now dropped before messageBody ever runs (it's
-			// content-less: no text, no caption).
-			name:     "explicit JSON null for photo drops (still exercises null-pointer decode)",
+			// A `"photo": null` message with no text and no caption is
+			// content-less under isContentLess, so Receive drops it before
+			// messageBody (and its null-photo decode branch) is ever
+			// reached — this case is drop coverage only. The
+			// *json.RawMessage null-vs-absent decode guard itself (the
+			// json.RawMessage vs *json.RawMessage bug, at-gqqd) is
+			// exercised directly by
+			// TestMessageBody_ExplicitNullPhotoDecodesAsAbsent below.
+			name:     "explicit JSON null for photo drops (content-less: no text/caption)",
 			msg:      baseMsg(9, map[string]any{"photo": nil}),
 			wantDrop: true,
 		},
@@ -770,6 +770,33 @@ func TestReceive_MessageBody_MediaPlaceholders(t *testing.T) {
 	}
 	if last := received[len(received)-1].Text; last != markerText {
 		t.Errorf("final reply.Text = %q, want marker %q", last, markerText)
+	}
+}
+
+// ── messageBody: direct decode-level regression test ─────────────────────────
+
+// TestMessageBody_ExplicitNullPhotoDecodesAsAbsent exercises the JSON decode
+// itself — not the Receive drop filter, which now intercepts a null-photo
+// message before messageBody ever runs since it carries no text/caption
+// (see case 9 of TestReceive_MessageBody_MediaPlaceholders above). This test
+// guards the *json.RawMessage fix (at-gqqd) directly: a bare json.RawMessage
+// captures the literal bytes of an explicit JSON null, decoding "photo": null
+// to a non-nil 4-byte "null" slice that would wrongly satisfy messageBody's
+// `case msg.Photo != nil`. The pointer form must decode explicit null to a
+// nil pointer, same as an absent key.
+func TestMessageBody_ExplicitNullPhotoDecodesAsAbsent(t *testing.T) {
+	var msg message
+	if err := json.Unmarshal([]byte(`{"photo": null}`), &msg); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if msg.Photo != nil {
+		t.Fatalf("msg.Photo = %v, want nil after decoding explicit JSON null (a bare json.RawMessage would leave it non-nil)", msg.Photo)
+	}
+
+	// Observable consequence: messageBody must not treat this as a photo —
+	// it falls through to the default placeholder instead of "[photo]".
+	if got := messageBody(&msg); got == "[photo]" {
+		t.Errorf("messageBody with explicit-null photo returned %q, want it NOT to match the photo case", got)
 	}
 }
 
