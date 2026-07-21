@@ -19,13 +19,14 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// publishStewardTopics upserts THIS machine's {briefing, direct} thread refs
-// (StewardBriefingThreadPath / StewardDirectThreadPath) into the
-// dolt-synced memory store at StewardTopicsKey(os.Hostname()), as a
-// StewardTopicsRecord. Called from notify.go's runBriefing/runDirect
-// immediately after the LOCAL thread-ref file is persisted on first topic
-// creation, so publishing rides existing topic-creation with no new user
-// step.
+// publishStewardTopics upserts THIS machine's briefing thread ref
+// (StewardBriefingThreadPath) into the dolt-synced memory store at
+// StewardTopicsKey(os.Hostname()), as a StewardTopicsRecord. Called from
+// notify.go's runBriefing immediately after the LOCAL thread-ref file is
+// persisted on first topic creation, so publishing rides existing
+// topic-creation with no new user step. (Direct traffic no longer has a
+// topic to publish — agent-teams-4x83 replaced it with @mention addressing
+// in the shared General channel.)
 func publishStewardTopics(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("publishStewardTopics: nil context")
@@ -35,17 +36,13 @@ func publishStewardTopics(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("publishStewardTopics: read briefing thread ref: %w", err)
 	}
-	direct, err := readThreadRefFile(StewardDirectThreadPath(ctx))
-	if err != nil {
-		return fmt.Errorf("publishStewardTopics: read direct thread ref: %w", err)
-	}
 
 	hostname, err := os.Hostname()
 	if err != nil {
 		return fmt.Errorf("publishStewardTopics: hostname: %w", err)
 	}
 
-	value, err := StewardTopicsRecord{Briefing: briefing, Direct: direct}.Marshal()
+	value, err := StewardTopicsRecord{Briefing: briefing}.Marshal()
 	if err != nil {
 		return fmt.Errorf("publishStewardTopics: %w", err)
 	}
@@ -57,8 +54,8 @@ func publishStewardTopics(ctx *cli.Context) error {
 }
 
 // isKnownStewardTopic reports whether threadRef is in the synced union of
-// ALL machines' published topic refs AND is not this machine's own local
-// briefing/direct ref (i.e. it's owned by another steward) — see
+// ALL machines' published briefing refs AND is not this machine's own local
+// briefing ref (i.e. it's owned by another steward) — see
 // steward_seams.go's "Synced steward-topics record" section. Consumed by
 // relay-gating (agent-teams-5y8a.5) as the peer-topic skip check ahead of
 // the bd label query. Fails closed (false) on a nil context, an empty
@@ -88,7 +85,7 @@ func isKnownStewardTopic(ctx *cli.Context, threadRef string) bool {
 		if err != nil {
 			continue
 		}
-		if threadRef == rec.Briefing || threadRef == rec.Direct {
+		if threadRef == rec.Briefing {
 			known = true
 			break
 		}
@@ -97,11 +94,10 @@ func isKnownStewardTopic(ctx *cli.Context, threadRef string) bool {
 		return false
 	}
 
-	// Exclude this machine's own local refs — a topic we own is never
+	// Exclude this machine's own local ref — a topic we own is never
 	// "another steward's" topic, regardless of what the synced store says.
 	ownBriefing, _ := readThreadRefFile(StewardBriefingThreadPath(ctx))
-	ownDirect, _ := readThreadRefFile(StewardDirectThreadPath(ctx))
-	if threadRef == ownBriefing || threadRef == ownDirect {
+	if threadRef == ownBriefing {
 		return false
 	}
 	return true

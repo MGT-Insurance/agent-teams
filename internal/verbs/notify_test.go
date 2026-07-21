@@ -535,18 +535,19 @@ func TestNotify_Briefing_ExplicitTitle(t *testing.T) {
 
 // ── DirectHandle ──────────────────────────────────────────────────────────────
 
-// TestNotify_Direct_FirstNotify_CreatesTopicAndPersistsFile confirms:
+// TestNotify_Direct_PostsToGeneralChannel confirms single-channel @mention
+// addressing (agent-teams-4x83):
 //   - no bd lookup occurs for the direct handle (notifyFakeBD would error on
 //     an unexpected Run call if one were attempted)
-//   - first notify sends with ThreadRef="" (new topic)
-//   - the returned threadRef is persisted to StewardDirectThreadPath, not a
-//     bead label
+//   - Send is called with General:true and no ThreadRef
+//   - no thread-ref file is written (no dedicated topic to persist)
+//   - no labelAdd occurs
 //   - default title is "Steward" when --title is not given
-func TestNotify_Direct_FirstNotify_CreatesTopicAndPersistsFile(t *testing.T) {
+func TestNotify_Direct_PostsToGeneralChannel(t *testing.T) {
 	bodyFile := makeTempBodyFile(t, "direct message body")
 	home := t.TempDir()
 
-	ft := &fakeTransport{returnRef: "555"}
+	ft := &fakeTransport{returnRef: ""}
 	nbd := &notifyFakeBD{} // no issue configured; any Run call fails the test
 
 	cmd := &notifyKong{
@@ -568,8 +569,11 @@ func TestNotify_Direct_FirstNotify_CreatesTopicAndPersistsFile(t *testing.T) {
 	if len(ft.calls) != 1 {
 		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
 	}
+	if !ft.calls[0].General {
+		t.Error("expected General=true on direct-handle Send")
+	}
 	if ft.calls[0].ThreadRef != "" {
-		t.Errorf("expected ThreadRef empty on first direct notify, got %q", ft.calls[0].ThreadRef)
+		t.Errorf("expected ThreadRef empty for a General send, got %q", ft.calls[0].ThreadRef)
 	}
 	if ft.calls[0].InitiativeID != DirectHandle {
 		t.Errorf("InitiativeID = %q, want %q", ft.calls[0].InitiativeID, DirectHandle)
@@ -581,67 +585,16 @@ func TestNotify_Direct_FirstNotify_CreatesTopicAndPersistsFile(t *testing.T) {
 		t.Errorf("Body = %q, want %q", ft.calls[0].Body, "direct message body")
 	}
 
-	path := StewardDirectThreadPath(ctx)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("expected direct thread file at %s: %v", path, err)
-	}
-	if strings.TrimSpace(string(data)) != "555" {
-		t.Errorf("persisted thread ref = %q, want %q", string(data), "555")
+	if _, err := os.Stat(filepath.Join(StewardHome(ctx), "direct-thread")); !os.IsNotExist(err) {
+		t.Errorf("expected no direct thread-ref file to be written, stat err = %v", err)
 	}
 
 	output := out.String()
-	if !strings.Contains(output, "thread_ref: 555") {
-		t.Errorf("output missing thread_ref: %q", output)
+	if !strings.Contains(output, "thread_ref: \n") {
+		t.Errorf("output missing empty thread_ref line: %q", output)
 	}
 	if !strings.Contains(output, "initiative: "+DirectHandle) {
 		t.Errorf("output missing initiative line: %q", output)
-	}
-}
-
-// TestNotify_Direct_SecondNotify_ReusesPersistedFile confirms:
-// - an existing StewardDirectThreadPath file is read and sent as ThreadRef
-// - no bd lookup and no labelAdd occurs
-func TestNotify_Direct_SecondNotify_ReusesPersistedFile(t *testing.T) {
-	bodyFile := makeTempBodyFile(t, "follow-up direct message")
-	home := t.TempDir()
-
-	nbd := &notifyFakeBD{}
-	ctx, out, _ := newNotifyCtx(nbd)
-	ctx.Home = home
-
-	path := StewardDirectThreadPath(ctx)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte("654"), 0o644); err != nil {
-		t.Fatalf("seed direct thread file: %v", err)
-	}
-
-	ft := &fakeTransport{returnRef: "654"} // thread still open
-	cmd := &notifyKong{
-		ID:           DirectHandle,
-		File:         bodyFile,
-		transportFor: fakeTransportFor(ft, nil),
-		labelAdd: func(b cli.BDRunner, id, label string) error {
-			t.Fatalf("labelAdd should not be called for the direct handle")
-			return nil
-		},
-	}
-
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	if len(ft.calls) != 1 {
-		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
-	}
-	if ft.calls[0].ThreadRef != "654" {
-		t.Errorf("expected ThreadRef=654 reused from file, got %q", ft.calls[0].ThreadRef)
-	}
-
-	if !strings.Contains(out.String(), "thread_ref: 654") {
-		t.Errorf("output missing thread_ref: %q", out.String())
 	}
 }
 

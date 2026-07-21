@@ -30,9 +30,6 @@ func TestStewardPaths(t *testing.T) {
 	if got, want := verbs.StewardBriefingThreadPath(ctx), filepath.Join("/fake/home", "steward", "briefing-thread"); got != want {
 		t.Errorf("StewardBriefingThreadPath = %q, want %q", got, want)
 	}
-	if got, want := verbs.StewardDirectThreadPath(ctx), filepath.Join("/fake/home", "steward", "direct-thread"); got != want {
-		t.Errorf("StewardDirectThreadPath = %q, want %q", got, want)
-	}
 	if got, want := verbs.StewardDoorbellPath(ctx), filepath.Join("/fake/home", "mailbox", "steward.wake"); got != want {
 		t.Errorf("StewardDoorbellPath = %q, want %q", got, want)
 	}
@@ -366,15 +363,15 @@ func TestStewardTopicsKey(t *testing.T) {
 }
 
 // TestStewardTopicsRecord_MarshalParseRoundTrip verifies the frozen value
-// schema round-trips through JSON with the "briefing"/"direct" field names.
+// schema round-trips through JSON with the "briefing" field name.
 func TestStewardTopicsRecord_MarshalParseRoundTrip(t *testing.T) {
-	rec := verbs.StewardTopicsRecord{Briefing: "topic-1", Direct: "topic-2"}
+	rec := verbs.StewardTopicsRecord{Briefing: "topic-1"}
 
 	value, err := rec.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if want := `{"briefing":"topic-1","direct":"topic-2"}`; value != want {
+	if want := `{"briefing":"topic-1"}`; value != want {
 		t.Fatalf("Marshal = %q, want %q", value, want)
 	}
 
@@ -391,6 +388,22 @@ func TestStewardTopicsRecord_MarshalParseRoundTrip(t *testing.T) {
 func TestParseStewardTopicsRecord_Malformed(t *testing.T) {
 	if _, err := verbs.ParseStewardTopicsRecord("not json"); err == nil {
 		t.Error("ParseStewardTopicsRecord: expected error for malformed JSON, got nil")
+	}
+}
+
+// TestParseStewardTopicsRecord_ToleratesLegacyDirectField verifies
+// agent-teams-4x83's schema change (dropping StewardTopicsRecord.Direct)
+// stays backward-compatible with records already published by peers on the
+// older schema: a value still carrying a "direct" key must parse cleanly,
+// with Direct simply dropped (Go's json.Unmarshal ignores unknown fields by
+// default).
+func TestParseStewardTopicsRecord_ToleratesLegacyDirectField(t *testing.T) {
+	got, err := verbs.ParseStewardTopicsRecord(`{"briefing":"12","direct":"9"}`)
+	if err != nil {
+		t.Fatalf("ParseStewardTopicsRecord: %v", err)
+	}
+	if want := (verbs.StewardTopicsRecord{Briefing: "12"}); got != want {
+		t.Errorf("ParseStewardTopicsRecord = %+v, want %+v", got, want)
 	}
 }
 

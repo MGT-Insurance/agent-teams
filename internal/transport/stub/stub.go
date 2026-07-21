@@ -55,10 +55,15 @@ type Stub struct {
 func (s *Stub) Name() string { return "stub" }
 
 // Send appends the outbound message to <dir>/sent.jsonl and returns a
-// deterministic threadRef from a counter stored in <dir>/next-ref.
+// deterministic threadRef from a counter stored in <dir>/next-ref. When
+// msg.General is true, no forum topic is modeled: the recorded thread_ref is
+// "" and the next-ref counter is not bumped, mirroring the Telegram
+// transport's General-channel Send.
 func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 	threadRef := msg.ThreadRef
-	if threadRef == "" {
+	if msg.General {
+		threadRef = ""
+	} else if threadRef == "" {
 		ref, err := s.nextRef()
 		if err != nil {
 			return "", fmt.Errorf("stub: nextRef: %w", err)
@@ -92,6 +97,11 @@ func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 // Receive drains reply-*.json files from <dir>, calling handler once per
 // file. Removes each file after a successful handler call. Returns after
 // all present files are consumed (non-blocking — no network long-poll).
+//
+// Optional "mentions" ([]string) and "mentions_self" (bool) fields drive the
+// relay's @mention routing rules in e2e tests. The stub has no token/getMe,
+// so per-machine bot identity is modeled by each reply file setting
+// mentions_self directly rather than being derived from mentions.
 func (s *Stub) Receive(handler func(transport.Reply) error) error {
 	matches, err := filepath.Glob(filepath.Join(s.dir, "reply-*.json"))
 	if err != nil {
@@ -106,16 +116,20 @@ func (s *Stub) Receive(handler func(transport.Reply) error) error {
 		}
 
 		var r struct {
-			ThreadRef string `json:"thread_ref"`
-			Text      string `json:"text"`
+			ThreadRef    string   `json:"thread_ref"`
+			Text         string   `json:"text"`
+			Mentions     []string `json:"mentions"`
+			MentionsSelf bool     `json:"mentions_self"`
 		}
 		if err := json.Unmarshal(data, &r); err != nil {
 			return fmt.Errorf("stub: parse %s: %w", path, err)
 		}
 
 		reply := transport.Reply{
-			ThreadRef: r.ThreadRef,
-			Text:      r.Text,
+			ThreadRef:    r.ThreadRef,
+			Text:         r.Text,
+			Mentions:     r.Mentions,
+			MentionsSelf: r.MentionsSelf,
 		}
 
 		if err := handler(reply); err != nil {

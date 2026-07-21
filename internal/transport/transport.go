@@ -49,6 +49,11 @@ type OutboundMessage struct {
 	ThreadRef    string // transport thread to continue, or "" to open a new one
 	Title        string // short subject; rendered as "[<InitiativeID>] <Title>"
 	Body         string // the question / note text
+	// General, when true, posts to the transport's General channel instead of
+	// a per-initiative thread: no topic is created, no thread_ref is used or
+	// returned. Mutually exclusive in intent with ThreadRef, though a
+	// transport should prefer General when both are set.
+	General bool
 }
 
 // Reply is an inbound human response received by the transport.
@@ -64,6 +69,12 @@ type Reply struct {
 	InitiativeID string // filled by relay, not transport
 	ThreadRef    string // Telegram message_thread_id as string; "" for non-topic messages
 	Text         string // the human's reply text
+	// Mentions holds every @-mentioned username in Text ("@" stripped,
+	// lowercased). Transport-agnostic — no platform entity types leak here.
+	Mentions []string
+	// MentionsSelf is true iff this transport's own identity (e.g. the bot's
+	// own @username) is among Mentions.
+	MentionsSelf bool
 }
 
 // factory is the function signature all transport constructors must satisfy.
