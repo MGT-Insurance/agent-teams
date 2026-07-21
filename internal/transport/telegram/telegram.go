@@ -190,6 +190,13 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 				continue
 			}
 
+			// STRICT (Eric, at-gqqd): content-less reply (no text, no
+			// caption) — drop at the relay; never forward to the steward.
+			if isContentLess(msg) {
+				fmt.Fprintln(os.Stderr, "telegram: dropping content-less reply (no text/caption)")
+				continue
+			}
+
 			var reply transport.Reply
 			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
@@ -204,6 +211,17 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			}
 		}
 	}
+}
+
+// isContentLess reports whether msg has no actionable body: no text and no
+// caption. Media type alone (sticker, photo, voice, video, video_note,
+// animation, document, audio) is NOT sufficient — text or a caption is
+// required. Sticker and video_note are never captioned by Telegram, so under
+// this predicate they always report content-less. This is the single,
+// isolated content-less decision point (STRICT, Eric, at-gqqd): flipping the
+// policy is a one-function edit.
+func isContentLess(msg *message) bool {
+	return msg.Text == "" && msg.Caption == ""
 }
 
 // messageBody returns the actionable, non-empty body to relay for msg. If
