@@ -55,15 +55,14 @@ const StewardHandle = "steward"
 // literal string.
 const BriefingHandle = "briefing"
 
-// DirectHandle is the reserved `ateam notify` recipient id for the
-// Steward's direct-message channel — a dedicated forum topic for messaging
-// the Steward directly, outside any initiative context. Like BriefingHandle,
-// no bead lives behind this id — notify reads/writes its thread ref from
-// StewardDirectThreadPath instead of an initiative bead's "thread:<n>"
-// label. Every caller posting to, or resolving, the direct-message topic
-// MUST use this constant rather than a literal string. Not StewardHandle:
-// that is the mail handle for initiative-scoped Gate/Relay traffic;
-// DirectHandle is the notify handle for out-of-band direct traffic.
+// DirectHandle is the reserved `ateam notify` recipient id for messaging the
+// Steward directly, outside any initiative context. Single-channel @mention
+// addressing (agent-teams-4x83): notify posts straight to the shared
+// General channel (no thread ref, no bead behind this id) rather than a
+// dedicated forum topic. Every caller posting to, or resolving, the direct
+// handle MUST use this constant rather than a literal string. Not
+// StewardHandle: that is the mail handle for initiative-scoped Gate/Relay
+// traffic; DirectHandle is the notify handle for out-of-band direct traffic.
 const DirectHandle = "direct"
 
 const (
@@ -72,7 +71,6 @@ const (
 	stewardSessionMarkerName      = ".steward-session"
 	stewardLedgerFileName         = "ledger.jsonl"
 	stewardBriefingThreadFileName = "briefing-thread"
-	stewardDirectThreadFileName   = "direct-thread"
 	stewardDoorbellFileSuffix     = ".wake"
 	stewardFallbackMarkerFileName = "fallback-responder"
 )
@@ -108,12 +106,6 @@ func StewardLedgerPath(ctx *cli.Context) string {
 // high-level briefing-thread file.
 func StewardBriefingThreadPath(ctx *cli.Context) string {
 	return filepath.Join(StewardHome(ctx), stewardBriefingThreadFileName)
-}
-
-// StewardDirectThreadPath returns the path to the Steward's direct-message
-// channel thread-ref file.
-func StewardDirectThreadPath(ctx *cli.Context) string {
-	return filepath.Join(StewardHome(ctx), stewardDirectThreadFileName)
 }
 
 // StewardDoorbellPath returns the doorbell (wake) file wake-watcher.sh polls
@@ -686,23 +678,32 @@ type isFallbackResponderFunc func(ctx *cli.Context) bool
 // ── Synced steward-topics record (multi-machine) ─────────────────────────────
 //
 // agent-teams-5y8a.1: a non-owning relay must recognize ANOTHER machine's
-// steward Briefings/direct topic and SKIP it, rather than mis-routing it
-// into the untied/fallback path (agent-teams-5y8a.5). Recognizing a peer's
-// topic requires cross-machine sync — the local StewardBriefingThreadPath /
-// StewardDirectThreadPath files only ever hold THIS machine's own refs.
+// steward Briefings topic and SKIP it, rather than mis-routing it into the
+// untied/fallback path (agent-teams-5y8a.5). Recognizing a peer's topic
+// requires cross-machine sync — the local StewardBriefingThreadPath file
+// only ever holds THIS machine's own ref. (Direct traffic no longer has a
+// dedicated topic to sync — agent-teams-4x83 replaced it with @mention
+// addressing in the shared General channel, routed by bot identity rather
+// than by thread ref.)
 //
 // Storage: the dolt-synced memory store, reserved key
 // steward:topics:<hostname> (hostname = os.Hostname(), one key per
-// machine), value = JSON {"briefing":"<ref>","direct":"<ref>"} (see
-// StewardTopicsRecord below). Rationale, recorded here so the choice isn't
-// re-litigated downstream: only the Dolt DB has automatic cross-machine
-// push/pull; the memory store is already ateam-owned and, unlike a plain
-// bead, does NOT trip `ateam audit` (which flags any non-tracking issue
-// created in the global workspace). "steward" here is a reserved
-// pseudo-role for this key's namespace only — it does NOT participate in
-// the role/tier machinery (`ateam learn`/`learnings`/`condense`) real agent
-// roles (planner, implementer, dri, ...) use; callers build the key via
+// machine), value = JSON {"briefing":"<ref>"} (see StewardTopicsRecord
+// below). Rationale, recorded here so the choice isn't re-litigated
+// downstream: only the Dolt DB has automatic cross-machine push/pull; the
+// memory store is already ateam-owned and, unlike a plain bead, does NOT
+// trip `ateam audit` (which flags any non-tracking issue created in the
+// global workspace). "steward" here is a reserved pseudo-role for this
+// key's namespace only — it does NOT participate in the role/tier
+// machinery (`ateam learn`/`learnings`/`condense`) real agent roles
+// (planner, implementer, dri, ...) use; callers build the key via
 // StewardTopicsKey below, not via learnKey.
+//
+// Legacy tolerance: records published by peers still on the older schema
+// may carry a "direct" JSON key. ParseStewardTopicsRecord must keep parsing
+// those cleanly — Go's json.Unmarshal ignores unknown fields by default, so
+// simply dropping the Direct field below is sufficient; see
+// TestParseStewardTopicsRecord_ToleratesLegacyDirectField.
 
 // stewardTopicsKeyPrefix is the reserved memory-store key prefix one
 // machine's steward publishes its topic refs under; see StewardTopicsKey.
@@ -717,12 +718,11 @@ func StewardTopicsKey(hostname string) string {
 }
 
 // StewardTopicsRecord is the JSON value schema stored at
-// StewardTopicsKey(hostname): the publishing machine's Briefing and Direct
-// thread refs, so a non-owning relay can recognize (and skip) traffic
-// addressed to another machine's steward topics.
+// StewardTopicsKey(hostname): the publishing machine's Briefing thread ref,
+// so a non-owning relay can recognize (and skip) traffic addressed to
+// another machine's steward topics.
 type StewardTopicsRecord struct {
 	Briefing string `json:"briefing"`
-	Direct   string `json:"direct"`
 }
 
 // Marshal renders r as the JSON value stored at StewardTopicsKey.
@@ -751,11 +751,11 @@ func ParseStewardTopicsRecord(value string) (StewardTopicsRecord, error) {
 //	func publishStewardTopics(ctx *cli.Context) error
 //	func isKnownStewardTopic(ctx *cli.Context, threadRef string) bool
 //
-// publishStewardTopics upserts THIS machine's {briefing, direct} thread
-// refs (StewardBriefingThreadPath / StewardDirectThreadPath) into the
-// synced store at StewardTopicsKey(os.Hostname()) as a StewardTopicsRecord.
+// publishStewardTopics upserts THIS machine's briefing thread ref
+// (StewardBriefingThreadPath) into the synced store at
+// StewardTopicsKey(os.Hostname()) as a StewardTopicsRecord.
 // isKnownStewardTopic reports whether threadRef is in the synced union of
-// ALL machines' published topic refs AND is not this machine's own local
-// briefing/direct ref (i.e. it's owned by another steward) — consumed by
+// ALL machines' published briefing refs AND is not this machine's own local
+// briefing ref (i.e. it's owned by another steward) — consumed by
 // relay-gating (agent-teams-5y8a.5) as the peer-topic skip check ahead of
 // the bd label query.
