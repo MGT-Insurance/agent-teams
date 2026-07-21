@@ -198,8 +198,15 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 				continue
 			}
 
+			// STRICT (Eric, at-gqqd): content-less reply (no text, no
+			// caption) — drop at the relay; never forward to the steward.
+			if isContentLess(msg) {
+				fmt.Fprintln(os.Stderr, "telegram: dropping content-less reply (no text/caption)")
+				continue
+			}
+
 			var reply transport.Reply
-			reply.Text = msg.Text
+			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
@@ -212,6 +219,72 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			}
 		}
 	}
+}
+
+// isContentLess reports whether msg has no actionable body: no text and no
+// caption. Media type alone (sticker, photo, voice, video, video_note,
+// animation, document, audio) is NOT sufficient — text or a caption is
+// required. Sticker and video_note are never captioned by Telegram, so under
+// this predicate they always report content-less. This is the single,
+// isolated content-less decision point (STRICT, Eric, at-gqqd): flipping the
+// policy is a one-function edit.
+func isContentLess(msg *message) bool {
+	return msg.Text == "" && msg.Caption == ""
+}
+
+// messageBody returns the actionable, non-empty body to relay for msg. If
+// msg.Text is non-empty it is returned unchanged (existing text-message
+// behavior). Otherwise a bracketed placeholder is built from msg's media
+// content — detection order matters: animation is checked BEFORE document
+// because Telegram sends both an animation and a document object for GIFs.
+// When msg.Caption is non-empty it is appended after the bracket separated
+// by a single space (caption applies to photo/video/document/audio/
+// animation/voice — not sticker or video_note, which Telegram never
+// captions). A non-nil msg that matches none of the known types falls back
+// to "[non-text message]": messageBody never returns "" for a non-nil msg,
+// so no empty envelope can be produced again, even for currently-unhandled
+// content (location, contact, poll, dice, venue, game).
+func messageBody(msg *message) string {
+	if msg.Text != "" {
+		return msg.Text
+	}
+
+	switch {
+	case msg.Sticker != nil:
+		if msg.Sticker.Emoji != "" {
+			return "[sticker " + msg.Sticker.Emoji + "]"
+		}
+		return "[sticker]"
+	case msg.Animation != nil:
+		return withCaption("[animation]", msg.Caption)
+	case msg.Photo != nil:
+		return withCaption("[photo]", msg.Caption)
+	case msg.Voice != nil:
+		return withCaption("[voice message]", msg.Caption)
+	case msg.VideoNote != nil:
+		return "[video note]"
+	case msg.Video != nil:
+		return withCaption("[video]", msg.Caption)
+	case msg.Audio != nil:
+		return withCaption("[audio]", msg.Caption)
+	case msg.Document != nil:
+		label := "[document]"
+		if msg.Document.FileName != "" {
+			label = "[document: " + msg.Document.FileName + "]"
+		}
+		return withCaption(label, msg.Caption)
+	default:
+		return "[non-text message]"
+	}
+}
+
+// withCaption appends caption to label separated by a single space, or
+// returns label unchanged if caption is empty.
+func withCaption(label, caption string) string {
+	if caption == "" {
+		return label
+	}
+	return label + " " + caption
 }
 
 // parseMentions extracts @-mentioned usernames from msg's "mention" entities
@@ -426,8 +499,41 @@ type message struct {
 	MessageThreadID int             `json:"message_thread_id"`
 	IsTopicMessage  bool            `json:"is_topic_message"`
 	Text            string          `json:"text"`
+	Caption         string          `json:"caption"`
 	Entities        []messageEntity `json:"entities"`
 	Chat            chat            `json:"chat"`
+
+	// Media fields — present only for the corresponding non-text message
+	// type. messageBody uses these purely for content-type detection
+	// (non-nil check); Sticker.Emoji and Document.FileName are the only
+	// nested values actually read. Typed as *json.RawMessage (not a bare
+	// json.RawMessage) where only presence matters, to avoid modeling
+	// Telegram's full nested shapes: a bare json.RawMessage captures the
+	// literal bytes of an explicit JSON null, so it decodes to a non-nil
+	// (but "null"-valued) slice for `"photo": null` — wrongly signaling
+	// presence. The pointer form correctly decodes an explicit null to a
+	// nil pointer, matching the absent-key case, just like Sticker/Document
+	// below.
+	Sticker   *sticker         `json:"sticker"`
+	Animation *json.RawMessage `json:"animation"`
+	Photo     *json.RawMessage `json:"photo"`
+	Voice     *json.RawMessage `json:"voice"`
+	VideoNote *json.RawMessage `json:"video_note"`
+	Video     *json.RawMessage `json:"video"`
+	Audio     *json.RawMessage `json:"audio"`
+	Document  *document        `json:"document"`
+}
+
+// sticker carries the sticker's emoji, if any — the only semantic signal a
+// bare sticker placeholder can surface (see messageBody).
+type sticker struct {
+	Emoji string `json:"emoji"`
+}
+
+// document carries the document's original filename, if any (see
+// messageBody).
+type document struct {
+	FileName string `json:"file_name"`
 }
 
 type chat struct {

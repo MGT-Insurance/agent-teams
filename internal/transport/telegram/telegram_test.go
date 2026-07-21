@@ -652,6 +652,253 @@ func TestReceive_GeneralTopicID1_EmitsEmptyThreadRef(t *testing.T) {
 	}
 }
 
+// ── Receive: media-only messages get a non-empty placeholder body ────────────
+//
+// TestReceive_MessageBody_MediaPlaceholders drives synthetic getUpdates JSON
+// through the REAL Receive path (not messageBody directly) for the core
+// media types plus a plain-text control and the fallback case, proving an
+// actionable, non-empty reply.Text reaches the handler for every one of
+// them — closing the empty-envelope bug end-to-end at the mock-HTTP level.
+// TestReceive_MessageBody_MediaPlaceholders drives synthetic getUpdates JSON
+// through the real Receive path and asserts, per STRICT (Eric, at-gqqd,
+// isContentLess): a reply with no text and no caption is dropped before the
+// handler ever runs, while a reply carrying text or a caption reaches the
+// handler with messageBody's usual formatting. Cases set `want` (forwards,
+// asserted against reply.Text) xor `wantDrop` (never reaches the handler).
+func TestReceive_MessageBody_MediaPlaceholders(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	baseMsg := func(id int, extra map[string]any) map[string]any {
+		m := map[string]any{
+			"message_id":        id,
+			"message_thread_id": 5,
+			"is_topic_message":  true,
+			"chat":              map[string]any{"id": chatIDInt},
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	type testCase struct {
+		name     string
+		msg      map[string]any
+		want     string
+		wantDrop bool
+	}
+	cases := []testCase{
+		{
+			name: "plain text passes through unchanged",
+			msg:  baseMsg(1, map[string]any{"text": "hello world"}),
+			want: "hello world",
+		},
+		{
+			name:     "bare sticker with emoji drops (no caption)",
+			msg:      baseMsg(2, map[string]any{"sticker": map[string]any{"emoji": "😀"}}),
+			wantDrop: true,
+		},
+		{
+			name:     "bare sticker without emoji drops (no caption)",
+			msg:      baseMsg(3, map[string]any{"sticker": map[string]any{}}),
+			wantDrop: true,
+		},
+		{
+			name: "photo with caption forwards",
+			msg: baseMsg(4, map[string]any{
+				"photo":   []map[string]any{{"file_id": "AAA", "width": 100, "height": 100}},
+				"caption": "beach sunset",
+			}),
+			want: "[photo] beach sunset",
+		},
+		{
+			name: "bare photo without caption drops",
+			msg: baseMsg(15, map[string]any{
+				"photo": []map[string]any{{"file_id": "III", "width": 100, "height": 100}},
+			}),
+			wantDrop: true,
+		},
+		{
+			name:     "bare voice note drops (no caption)",
+			msg:      baseMsg(5, map[string]any{"voice": map[string]any{"file_id": "BBB", "duration": 5}}),
+			wantDrop: true,
+		},
+		{
+			name: "bare document with file_name drops (no caption)",
+			msg: baseMsg(6, map[string]any{
+				"document": map[string]any{"file_id": "CCC", "file_name": "report.pdf"},
+			}),
+			wantDrop: true,
+		},
+		{
+			name: "bare animation drops (no caption; animation checked before document — GIF sends both)",
+			msg: baseMsg(7, map[string]any{
+				"animation": map[string]any{"file_id": "DDD"},
+				"document":  map[string]any{"file_id": "DDD", "file_name": "gif.mp4"},
+			}),
+			wantDrop: true,
+		},
+		{
+			name:     "reaction-like empty-body message drops (unrecognized, no text/caption/media)",
+			msg:      baseMsg(8, map[string]any{}),
+			wantDrop: true,
+		},
+		{
+			// A `"photo": null` message with no text and no caption is
+			// content-less under isContentLess, so Receive drops it before
+			// messageBody (and its null-photo decode branch) is ever
+			// reached — this case is drop coverage only. The
+			// *json.RawMessage null-vs-absent decode guard itself (the
+			// json.RawMessage vs *json.RawMessage bug, at-gqqd) is
+			// exercised directly by
+			// TestMessageBody_ExplicitNullPhotoDecodesAsAbsent below.
+			name:     "explicit JSON null for photo drops (content-less: no text/caption)",
+			msg:      baseMsg(9, map[string]any{"photo": nil}),
+			wantDrop: true,
+		},
+		{
+			name:     "bare video message drops (no caption)",
+			msg:      baseMsg(10, map[string]any{"video": map[string]any{"file_id": "EEE", "duration": 12}}),
+			wantDrop: true,
+		},
+		{
+			name:     "bare audio message drops (no caption)",
+			msg:      baseMsg(11, map[string]any{"audio": map[string]any{"file_id": "FFF", "duration": 30}}),
+			wantDrop: true,
+		},
+		{
+			name:     "video_note message drops (Telegram never captions video_note)",
+			msg:      baseMsg(12, map[string]any{"video_note": map[string]any{"file_id": "GGG", "duration": 3}}),
+			wantDrop: true,
+		},
+		{
+			name: "voice message with caption forwards",
+			msg: baseMsg(13, map[string]any{
+				"voice":   map[string]any{"file_id": "HHH", "duration": 4},
+				"caption": "quick update",
+			}),
+			want: "[voice message] quick update",
+		},
+		{
+			// This fixture forges a Caption on a sticker to exercise
+			// messageBody's sticker branch, which ignores caption entirely
+			// — a state that is IMPOSSIBLE in real Telegram traffic (real
+			// stickers are never captioned, so real sticker replies always
+			// have Caption=="" and always drop, per the bare-sticker cases
+			// above). The frozen predicate keys only off the raw
+			// Text/Caption fields with no media-type branching, so this
+			// forged non-empty Caption alone makes the message
+			// content-bearing and it forwards; messageBody then still
+			// strips the caption for stickers, producing "[sticker 🎉]".
+			// Do not read this case as "captioned stickers survive the
+			// filter in production" — they don't, because they don't exist.
+			name: "sticker with forged caption forwards (Caption non-empty keeps it content-bearing); messageBody still ignores the caption text",
+			msg: baseMsg(14, map[string]any{
+				"sticker": map[string]any{"emoji": "🎉"},
+				"caption": "should be ignored",
+			}),
+			want: "[sticker 🎉]",
+		},
+	}
+
+	// Trailing marker message: guaranteed to forward (plain text), used
+	// solely to deterministically stop Receive once the whole batch has
+	// been processed, regardless of how many preceding cases dropped.
+	const markerText = "END OF BATCH MARKER"
+	updates := make([]map[string]any, 0, len(cases)+1)
+	for i, tc := range cases {
+		updates = append(updates, map[string]any{
+			"update_id": 100 + i,
+			"message":   tc.msg,
+		})
+	}
+	updates = append(updates, map[string]any{
+		"update_id": 100 + len(cases),
+		"message":   baseMsg(999, map[string]any{"text": markerText}),
+	})
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		} else {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		if r.Text == markerText {
+			return sentinel
+		}
+		return nil
+	})
+
+	var wantForward []testCase
+	for _, tc := range cases {
+		if !tc.wantDrop {
+			wantForward = append(wantForward, tc)
+		}
+	}
+
+	// received must be exactly the forwarding cases, in order, followed by
+	// the trailing marker — proving every dropped case's handler call never
+	// happened (a stray call would shift this count and the per-position
+	// assertions below).
+	if len(received) != len(wantForward)+1 {
+		t.Fatalf("got %d replies, want %d (forwarding cases) + 1 (marker)", len(received), len(wantForward)+1)
+	}
+	for i, tc := range wantForward {
+		if received[i].Text != tc.want {
+			t.Errorf("%s: reply.Text = %q, want %q", tc.name, received[i].Text, tc.want)
+		}
+		if received[i].Text == "" {
+			t.Errorf("%s: reply.Text is empty — messageBody must never return \"\"", tc.name)
+		}
+	}
+	if last := received[len(received)-1].Text; last != markerText {
+		t.Errorf("final reply.Text = %q, want marker %q", last, markerText)
+	}
+}
+
+// ── messageBody: direct decode-level regression test ─────────────────────────
+
+// TestMessageBody_ExplicitNullPhotoDecodesAsAbsent exercises the JSON decode
+// itself — not the Receive drop filter, which now intercepts a null-photo
+// message before messageBody ever runs since it carries no text/caption
+// (see case 9 of TestReceive_MessageBody_MediaPlaceholders above). This test
+// guards the *json.RawMessage fix (at-gqqd) directly: a bare json.RawMessage
+// captures the literal bytes of an explicit JSON null, decoding "photo": null
+// to a non-nil 4-byte "null" slice that would wrongly satisfy messageBody's
+// `case msg.Photo != nil`. The pointer form must decode explicit null to a
+// nil pointer, same as an absent key.
+func TestMessageBody_ExplicitNullPhotoDecodesAsAbsent(t *testing.T) {
+	var msg message
+	if err := json.Unmarshal([]byte(`{"photo": null}`), &msg); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if msg.Photo != nil {
+		t.Fatalf("msg.Photo = %v, want nil after decoding explicit JSON null (a bare json.RawMessage would leave it non-nil)", msg.Photo)
+	}
+
+	// Observable consequence: messageBody must not treat this as a photo —
+	// it falls through to the default placeholder instead of "[photo]".
+	if got := messageBody(&msg); got == "[photo]" {
+		t.Errorf("messageBody with explicit-null photo returned %q, want it NOT to match the photo case", got)
+	}
+}
+
 // ── @mention parsing ──────────────────────────────────────────────────────────
 
 // newMentionTestServer builds a server that answers getMe with username and
