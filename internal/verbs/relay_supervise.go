@@ -102,6 +102,11 @@ func defaultRelaySpawn(ctx *cli.Context) (int, error) {
 	cmd := exec.Command("ateam", "relay")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	// Explicitly pin AGENT_TEAMS_HOME to the spawning ctx's resolved home.
+	// Appended after os.Environ() so it wins over any inherited value —
+	// the relay must never be able to resolve a different workspace (and
+	// thus a different bot token) than the ctx that spawned it.
+	cmd.Env = append(os.Environ(), "AGENT_TEAMS_HOME="+ctx.Home)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start ateam relay: %w", err)

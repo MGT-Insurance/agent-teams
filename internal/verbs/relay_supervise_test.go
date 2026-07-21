@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
@@ -135,6 +136,62 @@ func TestEnsureRelayRunning_SpawnFailure_Propagates(t *testing.T) {
 	}
 	if _, err := os.Stat(relayPidfilePath(ctx)); !os.IsNotExist(err) {
 		t.Errorf("expected no pidfile written on spawn failure, stat err: %v", err)
+	}
+}
+
+// ── defaultRelaySpawn ────────────────────────────────────────────────────────
+
+// TestDefaultRelaySpawn_PinsAgentTeamsHomeEnv is a regression guard for
+// agent-teams-5y8a.14's second bug: defaultRelaySpawn must pin the child's
+// AGENT_TEAMS_HOME to ctx.Home regardless of what the parent ateam process's
+// own environment carries, so a relay spawned from a test/temp ctx.Home can
+// never resolve the real workspace (and real bot token) instead. Exercises
+// defaultRelaySpawn directly via a fake `ateam` on PATH that captures its
+// received env instead of actually polling a transport.
+func TestDefaultRelaySpawn_PinsAgentTeamsHomeEnv(t *testing.T) {
+	scriptDir := t.TempDir()
+	captureFile := filepath.Join(scriptDir, "captured-env")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$AGENT_TEAMS_HOME\" > %q\n", captureFile)
+	if err := os.WriteFile(filepath.Join(scriptDir, "ateam"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ateam script: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+	os.Setenv("PATH", scriptDir+string(os.PathListSeparator)+oldPath)
+
+	// Simulate a parent environment with a DIFFERENT AGENT_TEAMS_HOME set —
+	// the fix must override this, not inherit it.
+	oldHome, hadHome := os.LookupEnv("AGENT_TEAMS_HOME")
+	t.Cleanup(func() {
+		if hadHome {
+			os.Setenv("AGENT_TEAMS_HOME", oldHome)
+		} else {
+			os.Unsetenv("AGENT_TEAMS_HOME")
+		}
+	})
+	os.Setenv("AGENT_TEAMS_HOME", "/should-not-be-used")
+
+	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+
+	if _, err := defaultRelaySpawn(ctx); err != nil {
+		t.Fatalf("defaultRelaySpawn: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got []byte
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(captureFile); err == nil {
+			got = b
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got == nil {
+		t.Fatal("fake ateam never captured AGENT_TEAMS_HOME (spawn may have failed silently)")
+	}
+	if want := ctx.Home + "\n"; string(got) != want {
+		t.Errorf("child AGENT_TEAMS_HOME = %q, want %q", got, want)
 	}
 }
 
