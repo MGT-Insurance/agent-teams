@@ -130,11 +130,18 @@ The relay's last-resort catch-all: a reply the mechanical router couldn't place 
 
 ```bash
 ateam execution-status
+ateam hung-scan
 claude agents --all --json
 ```
 
-- **Nudge**: any DRI idle suspiciously long with no gate set gets a status-check message — `ateam mail send <id> --file <note-file> --sender steward` asking what's going on. Purely mechanical: idle + no gate is the whole trigger, no judgment call beyond that.
-- **Flag anomalies**: zombie sessions, or an initiative with a missing watcher (`ateam watchers`). For a clear-cut orphan — a background session whose worktree cwd no longer exists — the one autonomous cleanup allowed is `ateam reap-orphans`. Anything less clear-cut goes to Eric (a note, or a message in the relevant topic), not autonomous action.
+`ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK`, each carrying `hung` (true once STUCK has crossed the durable stuck-since threshold), `cwd_present`, and `pid_present`. This replaces the old eyeballed nudge with ground truth. Per entry:
+
+- **STUCK with `hung:true`** — a live session, idle past threshold, no gate raised. Escalate: compose a DIGESTED message (situation, your recommendation — respawn vs. leave it — and the alternative) and send it to the initiative's OWN topic, `ateam notify <id> --file <msg-file>`. This is a judgment call, not a mechanical trigger — never respawn autonomously. A reply comes back as an ordinary steward-reply; record the verdict under `unblock-action`.
+- **DEAD with `cwd_present:false`** — worktree gone, orphan. Unchanged: the one autonomous cleanup allowed is `ateam reap-orphans`.
+- **DEAD with `cwd_present:true`** (pid nil, worktree still present — tracked-but-dead) — escalate exactly like the HUNG case above, recommending `claude respawn <shortid>` in place (cross-reference `claude agents --all --json` by worktree for the matching short id) vs. leave-it. No autonomous revive.
+- **STUCK under threshold, AWAITING-HUMAN, or WORKING** — no action.
+
+**Flag other anomalies**: zombie sessions, or an initiative with a missing watcher (`ateam watchers`) — outside what hung-scan covers, so still a note to Eric, not autonomous action.
 
 ## 3. Authority rules (v1, absolute)
 
