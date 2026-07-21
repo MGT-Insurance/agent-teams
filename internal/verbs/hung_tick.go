@@ -105,13 +105,13 @@ func defaultHungTopicPost(t transport.Transport, msg transport.OutboundMessage) 
 	return err
 }
 
-// hungWakeBody is the Relay->Steward wake-nudge text, folded into the
-// existing BuildStewardReplyEnvelope(id, body) (steward_seams.go, frozen
-// contract) so the Steward's existing envelope parsing resolves the
-// initiative id exactly the same way it does for a real Eric reply. The
-// "[hung-scan]" prefix and body wording are what make clear this is a
-// mechanical nudge, not Eric — combined with the mail bead's own `--sender
-// hung-scan` metadata (defaultHungWakeSend above).
+// hungWakeBody is the Relay->Steward wake-nudge text, folded into
+// BuildStewardHungWakeEnvelope(id, body) (steward_seams.go) — a dedicated
+// envelope kind the Steward recognizes as a mechanical wake, never an Eric
+// reply. The "[hung-scan]" prefix and body wording are what make clear to a
+// human reading raw mail that this is a mechanical nudge, not Eric —
+// combined with the mail bead's own `--sender hung-scan` metadata
+// (defaultHungWakeSend above).
 func hungWakeBody(id, title string, attempt int, stuckSince string) string {
 	return fmt.Sprintf(
 		"[hung-scan] %s (%s) has been STUCK since %s with no gate raised (wake attempt %d/%d). Please check on it.",
@@ -128,13 +128,13 @@ func hungAlertBody(id, title, stuckSince string) string {
 	)
 }
 
-// sendHungWakeEnvelope builds the steward-reply envelope for a wake nudge,
-// writes it to a temp file, and hands it to send — mirroring relay.go's
-// sendEnvelopeToSteward write-temp/send/cleanup shape (that helper is a
-// relayKong method; this is a free function since the tick has no
-// relayKong receiver).
+// sendHungWakeEnvelope builds the steward-hung-wake envelope for a wake
+// nudge, writes it to a temp file, and hands it to send — mirroring
+// relay.go's sendEnvelopeToSteward write-temp/send/cleanup shape (that
+// helper is a relayKong method; this is a free function since the tick has
+// no relayKong receiver).
 func sendHungWakeEnvelope(ctx *cli.Context, send hungWakeSendFunc, id, body string) error {
-	envelope, err := BuildStewardReplyEnvelope(id, body)
+	envelope, err := BuildStewardHungWakeEnvelope(id, body)
 	if err != nil {
 		return fmt.Errorf("build wake envelope: %w", err)
 	}

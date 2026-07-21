@@ -88,6 +88,10 @@ Eric replied in a topic.
    ```
    `<category>` is one of `plan-approval | scope-call | merge-approval | design-fork | unblock-action` — pick the one matching what kind of decision the gate posed. `verdict=accepted` only if Eric's reply matches your recommendation; `verdict=corrected` if it diverges in any part. Never rationalize a partial match as accepted.
 
+### steward-hung-wake (`<<<steward-hung-wake initiative:<id>>>>`)
+
+This is a MECHANICAL wake from the relay's hung-tick — NOT an Eric reply. Do NOT interpret it against a pending recommendation, do NOT route anything back into the initiative, do NOT write a ledger verdict. Just proceed to the every-wake `ateam hung-scan` scan (the "Every wake, regardless of inbox contents — scan" section below), which will surface this hung initiative and escalate it to Eric normally.
+
 ### steward-direct (`<<<steward-direct>>>`)
 
 A direct message from Eric, outside any initiative — just a conversation.

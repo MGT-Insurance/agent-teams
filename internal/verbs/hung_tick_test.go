@@ -391,12 +391,12 @@ func TestPostHungAlert_PostsCannedBodyToKnownTopic(t *testing.T) {
 
 // ── sendHungWakeEnvelope ──────────────────────────────────────────────────────
 
-// TestSendHungWakeEnvelope_WrapsBodyInStewardReplyEnvelope confirms the wake
-// nudge is folded into the existing BuildStewardReplyEnvelope(id, body) —
-// the same envelope kind/parsing the Steward already uses for a real Eric
-// reply (steward_seams.go, frozen contract) — so the Steward's routing
-// resolves the initiative id without any new envelope format.
-func TestSendHungWakeEnvelope_WrapsBodyInStewardReplyEnvelope(t *testing.T) {
+// TestSendHungWakeEnvelope_WrapsBodyInStewardHungWakeEnvelope confirms the
+// wake nudge is folded into BuildStewardHungWakeEnvelope(id, body) — a
+// dedicated envelope kind distinct from a real Eric reply (agent-teams-6rru.16
+// — steward_seams.go) — so the Steward can recognize the mechanical wake
+// without misreading it as an Eric reply.
+func TestSendHungWakeEnvelope_WrapsBodyInStewardHungWakeEnvelope(t *testing.T) {
 	var gotFile, gotContent string
 	send := func(_ *cli.Context, file string) error {
 		gotFile = file
@@ -412,7 +412,7 @@ func TestSendHungWakeEnvelope_WrapsBodyInStewardReplyEnvelope(t *testing.T) {
 	if err := sendHungWakeEnvelope(ctx, send, "at-6", "hung-scan wake body"); err != nil {
 		t.Fatalf("sendHungWakeEnvelope: %v", err)
 	}
-	want, _ := BuildStewardReplyEnvelope("at-6", "hung-scan wake body")
+	want, _ := BuildStewardHungWakeEnvelope("at-6", "hung-scan wake body")
 	if gotContent != want {
 		t.Errorf("envelope written = %q, want %q", gotContent, want)
 	}

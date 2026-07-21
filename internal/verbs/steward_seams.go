@@ -287,6 +287,72 @@ func ParseStewardReplyEnvelope(text string) (StewardReplyEnvelope, bool) {
 	return StewardReplyEnvelope{InitiativeID: idPart, Body: body}, true
 }
 
+// ── Hung-wake→Steward envelope ───────────────────────────────────────────────
+//
+// agent-teams-6rru.16: the relay's hung-tick escalation ladder
+// (sendHungWakeEnvelope, hung_tick.go) originally reused StewardReplyEnvelope
+// for its mechanical wake nudges. That made the Steward's steward-reply
+// handler treat the nudge as a genuine Eric reply — interpreting it against
+// a pending recommendation, routing a bogus answer back into the initiative,
+// and recording a spurious unblock-action ledger verdict — even though a
+// hung-tick wake carries no Eric reply and often no pending recommendation
+// at all. Distinct envelope kind so the Steward can tell a mechanical wake
+// from a real Eric reply without any heuristic on the body text: it should
+// just fall through to the every-wake `ateam hung-scan` scan, which
+// surfaces the hung initiative and escalates normally.
+
+const stewardHungWakeOpenPrefix = "<<<steward-hung-wake initiative:"
+
+// BuildStewardHungWakeEnvelope renders the self-contained Hung-wake→Steward
+// envelope:
+//
+//	<<<steward-hung-wake initiative:<id>>>>
+//	<body>
+//	>>>
+//
+// body is hungWakeBody's output (hung_tick.go) — carries the initiative id
+// plus a short human-readable line so a person reading raw mail understands
+// this is a mechanical wake, not an Eric reply.
+func BuildStewardHungWakeEnvelope(initiativeID, body string) (string, error) {
+	if initiativeID == "" {
+		return "", fmt.Errorf("steward hung-wake envelope: initiative id is empty")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s%s\n", stewardHungWakeOpenPrefix, initiativeID, stewardEnvelopeClose)
+	b.WriteString(body)
+	b.WriteString("\n" + stewardEnvelopeClose)
+	return b.String(), nil
+}
+
+// IsStewardHungWake reports whether text is a well-formed Hung-wake→Steward
+// envelope produced by BuildStewardHungWakeEnvelope, returning the recovered
+// initiative id and body when it is. Returns ok=false when text isn't
+// well-formed: no header or a missing closing sentinel line — same
+// validation as the other envelopes' Parse* functions, just surfaced as a
+// three-value return instead of a struct.
+func IsStewardHungWake(text string) (initiativeID, body string, ok bool) {
+	if !strings.HasPrefix(text, stewardHungWakeOpenPrefix) {
+		return "", "", false
+	}
+	nl := strings.IndexByte(text, '\n')
+	if nl == -1 {
+		return "", "", false
+	}
+	header, rest := text[:nl], text[nl+1:]
+
+	initiativeID, ok = strings.CutSuffix(header[len(stewardHungWakeOpenPrefix):], stewardEnvelopeClose)
+	if !ok || initiativeID == "" {
+		return "", "", false
+	}
+
+	body, ok = strings.CutSuffix(rest, "\n"+stewardEnvelopeClose)
+	if !ok {
+		return "", "", false
+	}
+
+	return initiativeID, body, true
+}
+
 // ── Closed-initiative→Steward envelope ───────────────────────────────────────
 //
 // The relay safety net (agent-teams-7dup.2): a human reply arrives in a
