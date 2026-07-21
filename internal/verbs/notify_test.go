@@ -369,32 +369,135 @@ func TestNotify_BadInitiativeID(t *testing.T) {
 
 // TestNotify_LabelWriteFailureIsNonFatal confirms that a failure to record the
 // thread label does not cause Run to return an error (non-fatal per contract).
-func TestNotify_LabelWriteFailureIsNonFatal(t *testing.T) {
+// TestNotify_LabelWriteFailure_RetriedThenLoud confirms the Part A hardening
+// (agent-teams-6rru.10, comment on .1): when the thread label write
+// repeatedly fails after a successful Send, sendAndLabelThread retries it
+// (bounded by labelWriteMaxAttempts) and then surfaces the failure loudly —
+// Run returns a non-nil error (no longer swallowed to a stderr-only warning
+// as before) and stderr makes clear the topic is replyable but unroutable.
+func TestNotify_LabelWriteFailure_RetriedThenLoud(t *testing.T) {
 	bodyFile := makeTempBodyFile(t, "body")
 	ft := &fakeTransport{returnRef: "55"}
 	nbd := &notifyFakeBD{
 		issue: bd.Issue{ID: "at-00o", Title: "x"},
 	}
+	attempts := 0
 	cmd := &notifyKong{
 		ID:           "at-00o",
 		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
+			attempts++
 			return fmt.Errorf("bd label add: permission denied")
 		},
 	}
-	ctx, out, errBuf := newNotifyCtx(nbd)
+	ctx, _, errBuf := newNotifyCtx(nbd)
 	err := cmd.Run(ctx)
-	if err != nil {
-		t.Fatalf("Run should succeed despite label write failure, got: %v", err)
+	if err == nil {
+		t.Fatal("expected Run to return an error once retries are exhausted (loud, not swallowed)")
 	}
-	// thread_ref still printed.
-	if !strings.Contains(out.String(), "thread_ref: 55") {
+	if attempts != labelWriteMaxAttempts {
+		t.Errorf("labelAdd attempts = %d, want %d (bounded retry)", attempts, labelWriteMaxAttempts)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("returned error = %q, want it to wrap the underlying labelAdd error", err.Error())
+	}
+	if !strings.Contains(errBuf.String(), "UNROUTABLE") {
+		t.Errorf("expected a loud UNROUTABLE diagnostic on stderr, got: %q", errBuf.String())
+	}
+}
+
+// TestNotify_LabelWriteFailure_RetrySucceedsWithinBound confirms a transient
+// label-write failure that succeeds within the bounded retry window does not
+// fail Run and does not surface a loud failure.
+func TestNotify_LabelWriteFailure_RetrySucceedsWithinBound(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	ft := &fakeTransport{returnRef: "66"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{ID: "at-00p", Title: "x"},
+	}
+	attempts := 0
+	cmd := &notifyKong{
+		ID:           "at-00p",
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			attempts++
+			if attempts < labelWriteMaxAttempts {
+				return fmt.Errorf("transient dolt lock contention")
+			}
+			return nil
+		},
+	}
+	ctx, out, errBuf := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run should succeed once the retry lands within bound, got: %v", err)
+	}
+	if attempts != labelWriteMaxAttempts {
+		t.Errorf("labelAdd attempts = %d, want %d (succeeds on final attempt)", attempts, labelWriteMaxAttempts)
+	}
+	if !strings.Contains(out.String(), "thread_ref: 66") {
 		t.Errorf("output missing thread_ref: %q", out.String())
 	}
-	// Warning emitted to stderr.
-	if !strings.Contains(errBuf.String(), "warning") {
-		t.Errorf("expected warning on stderr, got: %q", errBuf.String())
+	if strings.Contains(errBuf.String(), "UNROUTABLE") {
+		t.Errorf("should not surface a loud failure when the retry succeeds, stderr: %q", errBuf.String())
+	}
+}
+
+// pushRecordingBD is a cli.BDRunner that records every Run call (joined
+// args) and answers `show` with a configured issue — used to verify
+// sendAndLabelThread's post-label-write best-effort `dolt push`
+// (agent-teams-6rru.10 Part A) without pulling in notifyFakeBD's
+// label-add-specific bookkeeping.
+type pushRecordingBD struct {
+	issue bd.Issue
+	calls []string
+}
+
+func (f *pushRecordingBD) Run(args ...string) (string, error) {
+	f.calls = append(f.calls, strings.Join(args, " "))
+	if len(args) > 0 && args[0] == "show" {
+		raw, err := json.Marshal([]bd.Issue{f.issue})
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
+	}
+	return "", nil
+}
+
+func (f *pushRecordingBD) RunJSON(dst any, args ...string) error {
+	return fmt.Errorf("pushRecordingBD: unexpected RunJSON(%v)", args)
+}
+
+// TestNotify_LabelWriteSuccess_AttemptsDoltPush confirms that a successful
+// label write is followed by a best-effort `bd dolt push` (agent-teams-6rru.10
+// Part A) so peer machines can pull the label before a reply arrives.
+func TestNotify_LabelWriteSuccess_AttemptsDoltPush(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	ft := &fakeTransport{returnRef: "88"}
+	pbd := &pushRecordingBD{issue: bd.Issue{ID: "at-00q", Title: "x"}}
+	cmd := &notifyKong{
+		ID:           "at-00q",
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			_, err := b.Run("label", "add", id, strings.TrimPrefix(label, "thread:"))
+			return err
+		},
+	}
+	ctx, _, _ := newNotifyCtx(pbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	found := false
+	for _, c := range pbd.calls {
+		if c == "dolt push" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'dolt push' call after a successful label write, got calls: %v", pbd.calls)
 	}
 }
 

@@ -330,9 +330,23 @@ func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue) {
 		Title:        issue.Title,
 		Body:         "Initiative registered: " + c.Problem,
 	}
-	if _, err := sendAndLabelThread(ctx, issue.ID, t, msg, c.labelAdd, "dispatch"); err != nil {
-		fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not open initiative topic (fail-soft): %v\n", err)
+	returnedRef, err := sendAndLabelThread(ctx, issue.ID, t, msg, c.labelAdd, "dispatch")
+	if err == nil {
+		return
 	}
+	if returnedRef != "" {
+		// Send succeeded (returnedRef is set) but the thread label never
+		// landed — sendAndLabelThread already retried and logged the loud
+		// stderr error. This is the "worse than no topic" case (Part A,
+		// agent-teams-6rru.10 comment on .1): the topic is replyable but the
+		// relay can never map a reply back to this initiative. Still
+		// fail-soft for dispatch (must not fail dispatch), but say so
+		// explicitly instead of reusing the generic "could not open"
+		// message, which would wrongly suggest no topic exists at all.
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: initiative topic (ref %s) created but UNROUTABLE — thread label never recorded (fail-soft): %v\n", returnedRef, err)
+		return
+	}
+	fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not open initiative topic (fail-soft): %v\n", err)
 }
 
 // ---- resume (kong) ----------------------------------------------------------
