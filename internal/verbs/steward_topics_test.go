@@ -7,8 +7,8 @@ import (
 )
 
 // TestPublishStewardTopics_WritesRecord verifies publishStewardTopics reads
-// this machine's local briefing/direct thread-ref files and upserts them as
-// a StewardTopicsRecord under StewardTopicsKey(os.Hostname()) via the raw
+// this machine's local briefing thread-ref file and upserts it as a
+// StewardTopicsRecord under StewardTopicsKey(os.Hostname()) via the raw
 // "remember" storage path (not learnKey).
 func TestPublishStewardTopics_WritesRecord(t *testing.T) {
 	var calls [][]string
@@ -24,9 +24,6 @@ func TestPublishStewardTopics_WritesRecord(t *testing.T) {
 
 	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-ref-1"); err != nil {
 		t.Fatalf("seed briefing thread ref: %v", err)
-	}
-	if err := writeThreadRefFile(StewardDirectThreadPath(ctx), "direct-ref-1"); err != nil {
-		t.Fatalf("seed direct thread ref: %v", err)
 	}
 
 	if err := publishStewardTopics(ctx); err != nil {
@@ -48,7 +45,7 @@ func TestPublishStewardTopics_WritesRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseStewardTopicsRecord: %v", err)
 	}
-	want := StewardTopicsRecord{Briefing: "briefing-ref-1", Direct: "direct-ref-1"}
+	want := StewardTopicsRecord{Briefing: "briefing-ref-1"}
 	if got != want {
 		t.Errorf("published record = %+v, want %+v", got, want)
 	}
@@ -76,9 +73,9 @@ func TestPublishStewardTopics_BDErrorPropagates(t *testing.T) {
 }
 
 // TestIsKnownStewardTopic_RoundTrip is the core-path loop-closing test:
-// publish this machine's own refs, seed a peer machine's record directly in
+// publish this machine's own ref, seed a peer machine's record directly in
 // the fake store, and verify isKnownStewardTopic distinguishes all three
-// cases required by the bead's acceptance criteria: own refs -> false,
+// cases required by the bead's acceptance criteria: own ref -> false,
 // seeded other-steward ref -> true, unknown ref -> false.
 func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 	hostname, err := os.Hostname()
@@ -86,11 +83,11 @@ func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 		t.Fatalf("os.Hostname: %v", err)
 	}
 
-	ownRecordJSON, err := StewardTopicsRecord{Briefing: "own-briefing", Direct: "own-direct"}.Marshal()
+	ownRecordJSON, err := StewardTopicsRecord{Briefing: "own-briefing"}.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal own record: %v", err)
 	}
-	peerRecordJSON, err := StewardTopicsRecord{Briefing: "peer-briefing", Direct: "peer-direct"}.Marshal()
+	peerRecordJSON, err := StewardTopicsRecord{Briefing: "peer-briefing"}.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal peer record: %v", err)
 	}
@@ -108,12 +105,9 @@ func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	// This machine's own local refs, as they'd be persisted by notify.go.
+	// This machine's own local ref, as it'd be persisted by notify.go.
 	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "own-briefing"); err != nil {
 		t.Fatalf("seed own briefing thread ref: %v", err)
-	}
-	if err := writeThreadRefFile(StewardDirectThreadPath(ctx), "own-direct"); err != nil {
-		t.Fatalf("seed own direct thread ref: %v", err)
 	}
 
 	cases := []struct {
@@ -122,9 +116,7 @@ func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 		want      bool
 	}{
 		{"own briefing ref", "own-briefing", false},
-		{"own direct ref", "own-direct", false},
 		{"peer briefing ref", "peer-briefing", true},
-		{"peer direct ref", "peer-direct", true},
 		{"unknown ref", "some-other-thread-ref", false},
 	}
 	for _, tc := range cases {

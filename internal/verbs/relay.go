@@ -46,6 +46,20 @@ type knownStewardTopicFunc func(ctx *cli.Context, threadRef string) bool
 // ref, and a General-topic/DM message has no real thread to report.
 const nonTopicThreadRefPlaceholder = "(general)"
 
+// firstBotMention returns the first entry in mentions that looks like a bot
+// username (Telegram requires every bot's username to end in "bot"), or ""
+// if none do. mentions is already lowercased by the transport, so this is a
+// plain case-sensitive suffix check. Used by handleReply's non-topic rule 2
+// to skip traffic addressed to some other bot without a peer-bot registry.
+func firstBotMention(mentions []string) string {
+	for _, m := range mentions {
+		if strings.HasSuffix(m, "bot") {
+			return m
+		}
+	}
+	return ""
+}
+
 // defaultBDQuery runs `bd list --status=open --label=<label> --json` against
 // the global workspace home and returns matching issues.
 func defaultBDQuery(home, label string) ([]bd.Issue, error) {
@@ -180,9 +194,9 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 // (privacy OFF, #114/#115), so EVERY machine's relay receives EVERY human
 // message. Exactly-once routing means each relay must SUPPRESS the
 // branches it does not own, not rescue a drop. This machine's own steward
-// topics (direct/briefing short-circuits below) are never suppressed — they
-// only ever match THIS machine's own persisted thread refs. Everything else
-// is gated: a TIED reply (thread resolves to exactly one open initiative)
+// topics (briefing short-circuit below) is never suppressed — it only ever
+// matches THIS machine's own persisted thread ref. Everything else is
+// gated: a TIED reply (thread resolves to exactly one open initiative)
 // routes only when claimsLocally reports this machine holds that
 // initiative's checkout; UNTIED traffic (no thread ref, a bd query error,
 // or zero/2+ open matches) routes only when isFallbackResponder reports
@@ -190,13 +204,29 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 // thread ref is a KNOWN peer steward topic (knownStewardTopic) is skipped
 // outright — that peer's own relay already routes it locally.
 func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
-	// Non-topic messages (General topic, DMs) arrive with ThreadRef == "".
-	// Gated on isFallbackResponder: only the designated fallback machine
-	// forwards General-topic traffic, landing the agent-teams-17xs.8
-	// decision (route it to the Steward rather than dropping it) scoped to
-	// that one machine so N machines don't all forward the same stray
-	// message. Every other machine keeps the original silent skip.
+	// Non-topic messages (General channel) arrive with ThreadRef == "".
+	// Single-channel @mention addressing (agent-teams-4x83) replaces the old
+	// per-machine [Direct] topic short-circuit and applies, in order:
+	//
+	//  1. reply.MentionsSelf: this bot was @mentioned — route to MY steward
+	//     as a steward-direct envelope, regardless of fallback-responder
+	//     status. Reuses handleDirectReply/BuildStewardDirectEnvelope.
+	//     Peers naturally skip this rule since MentionsSelf is false for them.
+	//  2. Else, a mentioned username ends in "bot" (Telegram platform rule —
+	//     all bot usernames must end in "bot") and it is not me: some OTHER
+	//     bot was addressed — skip silently (no registry, no metadata).
+	//  3. Else (no bot mention at all — including a human-only mention like
+	//     "@eric"): existing fallback-responder steward-unrouted behavior,
+	//     unchanged.
 	if reply.ThreadRef == "" {
+		if reply.MentionsSelf {
+			fmt.Fprintln(ctx.Stderr, "ateam relay: mentions me — routing to steward")
+			return c.handleDirectReply(ctx, reply)
+		}
+		if mentioned := firstBotMention(reply.Mentions); mentioned != "" {
+			fmt.Fprintf(ctx.Stderr, "ateam relay: mentions @%s — not me, skipping\n", mentioned)
+			return nil
+		}
 		if !c.isFallbackResponder(ctx) {
 			fmt.Fprintln(ctx.Stderr, "ateam relay: skipping non-topic message (no thread ref)")
 			return nil
@@ -204,23 +234,6 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		fmt.Fprintln(ctx.Stderr, "ateam relay: routing non-topic message to steward (no thread ref)")
 		c.sendUnroutedToSteward(ctx, nonTopicThreadRefPlaceholder, "non-topic message (no thread ref)", reply.Text)
 		return nil
-	}
-
-	// Direct-channel short-circuit: a message posted in the Steward's
-	// dedicated direct-message topic (contract: DirectHandle,
-	// StewardDirectThreadPath in steward_seams.go) has no initiative bead
-	// behind it, so the bd label lookup below would always miss and the
-	// message would die silently. If this reply's thread ref matches the
-	// persisted direct-channel thread ref, route it to the Steward as a
-	// steward-direct envelope, bypassing the initiative lookup entirely. An
-	// absent/empty thread-ref file (direct channel never opened yet, or a
-	// read failure) falls through to the existing initiative-reply path
-	// below.
-	directRef, err := readThreadRefFile(StewardDirectThreadPath(ctx))
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: read steward direct thread ref: %v\n", err)
-	} else if directRef != "" && reply.ThreadRef == directRef {
-		return c.handleDirectReply(ctx, reply)
 	}
 
 	// Briefing-channel short-circuit: a message posted in the Steward's

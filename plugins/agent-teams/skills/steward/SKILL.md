@@ -94,14 +94,14 @@ This is a MECHANICAL wake from the relay's hung-tick — NOT an Eric reply. Do N
 
 ### steward-direct (`<<<steward-direct>>>`)
 
-A direct message from Eric, outside any initiative — just a conversation.
+A direct message from Eric, outside any initiative — just a conversation. Single-channel addressing: Eric sent this by @mentioning your bot in the shared Telegram General channel, not by posting to a dedicated topic.
 
 1. There is NO initiative to enrich. Optionally pull `ateam execution-status` if he's asking about the landscape, but otherwise just answer him.
-2. Reply on the SAME direct channel: write the reply to a temp file, then
+2. Reply the same way: write the reply to a temp file, then
    ```bash
    ateam notify direct --file <reply-file>
    ```
-   It lands in the Steward's dedicated direct-message topic on Telegram.
+   It posts straight to the shared General channel — no dedicated topic, no thread ref.
 3. Nothing goes to the ledger — a direct chat is not a gated decision.
 
 ### steward-briefing-reply (`<<<steward-briefing-reply>>>`)
