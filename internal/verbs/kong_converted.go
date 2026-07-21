@@ -1088,6 +1088,7 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterMailKong(p)
 	RegisterRouteEventKong(p)
 	RegisterStatusKong(p)
+	RegisterHungScanKong(p)
 	RegisterWatchersKong(p)
 	RegisterReapOrphansKong(p)
 	RegisterNotifyKong(p)
