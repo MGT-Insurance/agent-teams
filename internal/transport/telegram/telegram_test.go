@@ -628,6 +628,81 @@ func TestReceive_MentionsSelf_CallsGetMeExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestReceive_GetMeFailsThenSucceeds_MentionsSelfMatchesAfterRecovery proves
+// a transient getMe failure on Receive's first loop iteration doesn't
+// permanently disable MentionsSelf: getMe is retried at the top of each
+// subsequent iteration (paced by the existing getUpdates poll, no separate
+// retry loop) until it succeeds, after which mentions of this bot resolve
+// correctly.
+func TestReceive_GetMeFailsThenSucceeds_MentionsSelfMatchesAfterRecovery(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":       10,
+				"is_topic_message": false,
+				"text":             "hey @StewardBot need help",
+				"entities": []map[string]any{
+					{"type": "mention", "offset": 4, "length": 11},
+				},
+				"chat": map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	getMeCalls := 0
+	pollCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			getMeCalls++
+			if getMeCalls == 1 {
+				// Transient failure on the first attempt.
+				jsonResponse(w, 200, map[string]any{"ok": false, "description": "temporary failure"})
+				return
+			}
+			jsonResponse(w, 200, map[string]any{
+				"ok":     true,
+				"result": map[string]any{"username": "stewardbot"},
+			})
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			pollCalls++
+			if pollCalls == 1 {
+				// First poll: no updates yet, giving getMe a second loop
+				// iteration to retry before any message arrives.
+				jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+				return
+			}
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if getMeCalls != 2 {
+		t.Fatalf("getMe calls: got %d, want 2 (fails once, retried and succeeds on the next iteration)", getMeCalls)
+	}
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1", len(received))
+	}
+	if !received[0].MentionsSelf {
+		t.Error("MentionsSelf: got false, want true — getMe should have recovered by the time the mention arrived")
+	}
+}
+
 func TestReceive_MentionsOtherBot_NotSelf(t *testing.T) {
 	const chatID = "-100111222333"
 	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)

@@ -24,9 +24,10 @@
 // getUpdates long-poll. Messages where is_topic_message==true and the chat id
 // matches the configured supergroup are delivered with their ThreadRef set;
 // non-topic messages (General channel) are delivered with Reply{ThreadRef:
-// ""} — the relay routes those by @mention rather than bouncing them. Before
-// polling, Receive resolves this bot's own @username once via getMe so
-// inbound messages can report Reply.MentionsSelf.
+// ""} — the relay routes those by @mention rather than bouncing them. Receive
+// resolves this bot's own @username via getMe from within the poll loop
+// (retried each iteration while unresolved) so inbound messages can report
+// Reply.MentionsSelf.
 package telegram
 
 import (
@@ -62,10 +63,11 @@ type Telegram struct {
 	httpClient httpDoer
 	baseURL    string // overridable in tests; defaults to "https://api.telegram.org"
 
-	// ownUsername is this bot's own @username (lowercased, "@" stripped),
-	// resolved once via getMe at the start of Receive and cached here. Never
-	// resolved in New — New must stay network-free for send-only/Enabled
-	// paths. Empty until Receive has run (or if getMe failed).
+	// ownUsername is this bot's own @username (lowercased, "@" stripped).
+	// Resolved via getMe from within Receive's poll loop — retried at the
+	// top of each iteration while still empty (see Receive) — and cached
+	// here once resolved. Never resolved in New — New must stay
+	// network-free for send-only/Enabled paths.
 	ownUsername string
 }
 
@@ -145,23 +147,27 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 // non-topic messages from the configured chat are emitted as Reply{ThreadRef:""}
 // so the relay can bounce them with "reply inside the initiative's topic."
 //
-// Before polling, Receive resolves this bot's own @username via getMe exactly
-// once and caches it on the struct (never in New — New must stay
-// network-free for send-only/Enabled paths). A getMe failure is logged and
-// non-fatal: polling proceeds with ownUsername empty, so MentionsSelf simply
-// never matches until the next Receive call succeeds.
+// Before each poll, Receive resolves this bot's own @username via getMe if it
+// isn't already known (never in New — New must stay network-free for
+// send-only/Enabled paths). A getMe failure is logged and non-fatal: polling
+// proceeds with ownUsername still empty, so MentionsSelf simply never
+// matches yet; getMe is retried at the top of the next loop iteration —
+// paced by the existing getUpdates long-poll / error-retry sleep, no
+// separate retry loop — until it succeeds, after which the result is cached
+// and never re-fetched.
 //
 // Receive runs until handler returns a non-nil error, which is propagated.
 func (t *Telegram) Receive(handler func(transport.Reply) error) error {
-	username, err := t.getMe()
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "telegram: getMe: %v\n", err)
-	} else {
-		t.ownUsername = username
-	}
-
 	var offset int
 	for {
+		if t.ownUsername == "" {
+			if username, err := t.getMe(); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "telegram: getMe: %v\n", err)
+			} else {
+				t.ownUsername = username
+			}
+		}
+
 		updates, err := t.getUpdates(offset)
 		if err != nil {
 			// Transient network errors: log and retry.
