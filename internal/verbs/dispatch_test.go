@@ -1605,3 +1605,234 @@ func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
 		t.Errorf("stderr missing 'fail-soft' warning: %q", stderr.String())
 	}
 }
+
+// ── dispatch: eager Telegram topic creation (agent-teams-6rru.1) ────────────
+
+// TestDispatch_EagerTopic_CreatesAndLabelsThread confirms dispatch eagerly
+// calls Send with ThreadRef="" right after the initiative bead is created,
+// and records the returned ref as "thread:<ref>" on that bead.
+func TestDispatch_EagerTopic_CreatesAndLabelsThread(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-eager1"
+				issue.Title = "Eager topic test"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "555"}
+	var recordedID, recordedLabel string
+	cmd := &dispatchKong{
+		Problem:          "Eager topic test",
+		Slug:             "eager-topic-test",
+		Repo:             repoDir,
+		NoLaunch:         true,
+		SkipEpic:         true,
+		git:              fg,
+		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		transportEnabled: func(home string) bool { return true },
+		transportFor:     fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			recordedID = id
+			recordedLabel = label
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ThreadRef != "" {
+		t.Errorf("expected ThreadRef empty on eager creation, got %q", ft.calls[0].ThreadRef)
+	}
+	if ft.calls[0].InitiativeID != "at-eager1" {
+		t.Errorf("InitiativeID = %q, want at-eager1", ft.calls[0].InitiativeID)
+	}
+	if ft.calls[0].Title != "Eager topic test" {
+		t.Errorf("Title = %q, want %q", ft.calls[0].Title, "Eager topic test")
+	}
+	wantBody := "Initiative registered: Eager topic test"
+	if ft.calls[0].Body != wantBody {
+		t.Errorf("Body = %q, want %q", ft.calls[0].Body, wantBody)
+	}
+
+	if recordedID != "at-eager1" {
+		t.Errorf("labelAdd id = %q, want at-eager1", recordedID)
+	}
+	if recordedLabel != "thread:555" {
+		t.Errorf("labelAdd label = %q, want thread:555", recordedLabel)
+	}
+}
+
+// TestDispatch_EagerTopic_ThenNotify_ReusesThread confirms a later `ateam
+// notify` on the same initiative reuses the thread dispatch already opened,
+// rather than opening a second topic.
+func TestDispatch_EagerTopic_ThenNotify_ReusesThread(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-eager2"
+				issue.Title = "Reuse thread test"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "777"}
+	var recordedLabel string
+	cmd := &dispatchKong{
+		Problem:          "Reuse thread test",
+		Slug:             "reuse-thread-test",
+		Repo:             repoDir,
+		NoLaunch:         true,
+		SkipEpic:         true,
+		git:              fg,
+		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		transportEnabled: func(home string) bool { return true },
+		transportFor:     fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			recordedLabel = label
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("dispatch: unexpected error: %v", err)
+	}
+	if recordedLabel != "thread:777" {
+		t.Fatalf("expected thread label thread:777 recorded, got %q", recordedLabel)
+	}
+
+	// A later notify reuses the stored thread; no second topic is created.
+	bodyFile := makeTempBodyFile(t, "follow-up")
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{
+			ID:     "at-eager2",
+			Title:  "Reuse thread test",
+			Labels: []string{recordedLabel},
+		},
+	}
+	notifyCmd := &notifyKong{
+		ID:           "at-eager2",
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	notifyCtx, _, _ := newNotifyCtx(nbd)
+	if err := notifyCmd.Run(notifyCtx); err != nil {
+		t.Fatalf("notify: unexpected error: %v", err)
+	}
+
+	if len(ft.calls) != 2 {
+		t.Fatalf("expected 2 total Send calls (dispatch + notify), got %d", len(ft.calls))
+	}
+	if ft.calls[1].ThreadRef != "777" {
+		t.Errorf("notify Send ThreadRef = %q, want 777 (reused, no second topic)", ft.calls[1].ThreadRef)
+	}
+}
+
+// TestDispatch_EagerTopic_TransportDisabled_NoSend confirms a machine with no
+// transport configured skips eager topic creation entirely (silent skip, no
+// stderr warning — the normal state for installs without Telegram set up).
+func TestDispatch_EagerTopic_TransportDisabled_NoSend(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-notrans"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "should-not-be-used"}
+	cmd := &dispatchKong{
+		Problem:          "No transport test",
+		Slug:             "no-transport-test",
+		Repo:             repoDir,
+		NoLaunch:         true,
+		SkipEpic:         true,
+		git:              fg,
+		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		transportEnabled: func(home string) bool { return false },
+		transportFor:     fakeTransportFor(ft, nil),
+		labelAdd:         func(b cli.BDRunner, id, label string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("dispatch should succeed when transport disabled, got: %v", err)
+	}
+	if len(ft.calls) != 0 {
+		t.Errorf("Send should not be called when transportEnabled returns false, got %d calls", len(ft.calls))
+	}
+	if stderr.String() != "" {
+		t.Errorf("expected no stderr warning when transport is simply not configured, got: %q", stderr.String())
+	}
+}
+
+// TestDispatch_EagerTopic_SendError_FailSoft confirms a transport error
+// during the eager Send warns to stderr but does not fail dispatch, and does
+// not record a thread label (nothing to label — the topic never opened).
+func TestDispatch_EagerTopic_SendError_FailSoft(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-senderr"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnErr: fmt.Errorf("simulated telegram outage")}
+	labelAddCalled := false
+	cmd := &dispatchKong{
+		Problem:          "Send error test",
+		Slug:             "send-error-test",
+		Repo:             repoDir,
+		NoLaunch:         true,
+		SkipEpic:         true,
+		git:              fg,
+		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		transportEnabled: func(home string) bool { return true },
+		transportFor:     fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			labelAddCalled = true
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("dispatch should succeed despite topic Send failure, got: %v", err)
+	}
+	if labelAddCalled {
+		t.Error("labelAdd must not be called when Send fails")
+	}
+	if !strings.Contains(stderr.String(), "fail-soft") {
+		t.Errorf("stderr missing 'fail-soft' warning: %q", stderr.String())
+	}
+}

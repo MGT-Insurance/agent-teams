@@ -47,7 +47,7 @@ type Transport interface {
 type OutboundMessage struct {
 	InitiativeID string // our-side recipient handle (e.g. "at-00o")
 	ThreadRef    string // transport thread to continue, or "" to open a new one
-	Title        string // short subject; rendered as "[<InitiativeID>] <Title>"
+	Title        string // short subject; rendering is transport-specific (e.g. telegram uses it as the forum topic name)
 	Body         string // the question / note text
 }
 

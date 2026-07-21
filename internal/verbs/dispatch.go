@@ -12,6 +12,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
 // RegisterDispatchKong registers dispatch verbs onto p using native kong structs.
@@ -20,10 +21,13 @@ func RegisterDispatchKong(p *cli.Parser) {
 		launch: launchBGSession,
 	})
 	p.AddVerb("dispatch", "Create a worktree, register an initiative, and optionally launch a DRI session.", &dispatchKong{
-		git:        gitutil.New(),
-		launch:     launchBGSession,
-		launchRaw:  rawLaunchBGSession,
-		createEpic: createEpicInRepo,
+		git:              gitutil.New(),
+		launch:           launchBGSession,
+		launchRaw:        rawLaunchBGSession,
+		createEpic:       createEpicInRepo,
+		transportFor:     transport.For,
+		transportEnabled: transport.Enabled,
+		labelAdd:         defaultLabelAdd,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
 		launch:    launchBGSession,
@@ -98,7 +102,22 @@ type dispatchKong struct {
 	launch     launchFunc      `kong:"-"`
 	createEpic epicCreatorFunc `kong:"-"`
 	launchRaw  rawLaunchFunc   `kong:"-"`
+
+	// transportFor, transportEnabled, and labelAdd back the eager Telegram
+	// (or configured transport) topic creation below. Injected at
+	// registration time so tests can substitute fakes without touching a
+	// real transport; a test that leaves any of the three nil simply does
+	// not exercise eager topic creation (mirrors createEpic's nil-check
+	// pattern above).
+	transportFor     transportForFunc     `kong:"-"`
+	transportEnabled transportEnabledFunc `kong:"-"`
+	labelAdd         labelAddFunc         `kong:"-"`
 }
+
+// transportEnabledFunc is the function type for checking whether a usable
+// transport is configured (transport.Enabled). Injected so tests can
+// substitute a fake without touching real transport config/env.
+type transportEnabledFunc func(home string) bool
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *dispatchKong) Run(ctx *cli.Context) error {
@@ -236,6 +255,13 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		}
 	}
 
+	// 7.5. Eagerly create the initiative's Telegram topic (fail-soft): best-
+	// effort, mirrors the epic-creation fail-soft above. A machine with no
+	// transport configured, or any error along the way, must not fail dispatch.
+	if c.transportEnabled != nil && c.transportFor != nil && c.labelAdd != nil {
+		c.createInitialTopic(ctx, issue)
+	}
+
 	// 8. Launch background DRI unless --no-launch.
 	if !c.NoLaunch {
 		if c.LaunchPrompt != "" {
@@ -274,6 +300,39 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		printWatchControl(ctx.Stdout, sessionName)
 	}
 	return nil
+}
+
+// createInitialTopic eagerly opens the initiative's Telegram (or configured
+// transport) forum topic and records the returned thread ref as a
+// "thread:<ref>" label on the freshly-created initiative bead, so the first
+// `ateam notify` reuses this topic instead of opening a second one. The
+// initial message body carries the id (Initiative registered: <problem>) so
+// it is discoverable in the topic even though the friendly title carries no
+// id.
+//
+// Best-effort and fail-soft, mirroring the epic-creation fail-soft above:
+// no transport configured is a silent skip (the normal state for installs
+// without Telegram set up); any error resolving or sending through the
+// transport is warned to ctx.Stderr. Nothing here can fail dispatch — the
+// bd create above has already succeeded by the time this runs.
+func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue) {
+	if !c.transportEnabled(ctx.Home) {
+		return
+	}
+	t, err := c.transportFor(ctx.Home)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not open initiative topic (fail-soft): %v\n", err)
+		return
+	}
+
+	msg := transport.OutboundMessage{
+		InitiativeID: issue.ID,
+		Title:        issue.Title,
+		Body:         "Initiative registered: " + c.Problem,
+	}
+	if _, err := sendAndLabelThread(ctx, issue.ID, t, msg, c.labelAdd, "dispatch"); err != nil {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not open initiative topic (fail-soft): %v\n", err)
+	}
 }
 
 // ---- resume (kong) ----------------------------------------------------------

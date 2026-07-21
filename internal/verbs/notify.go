@@ -116,25 +116,39 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 		Body:         string(body),
 	}
 
-	returnedRef, err := t.Send(msg)
+	returnedRef, err := sendAndLabelThread(ctx, c.ID, t, msg, c.labelAdd, "ateam notify")
 	if err != nil {
 		return fmt.Errorf("ateam notify: send: %w", err)
-	}
-
-	// If this was a new topic, record the thread label so subsequent notifies
-	// reuse it and the relay can reverse-map (contract section 2).
-	if threadRef == "" && returnedRef != "" {
-		label := "thread:" + returnedRef
-		if labErr := c.labelAdd(ctx.BD, c.ID, label); labErr != nil {
-			// Non-fatal: notify succeeded; label write failure is surfaced but
-			// does not break the caller.
-			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not record thread label on %s: %v\n", c.ID, labErr)
-		}
 	}
 
 	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)
 	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", c.ID)
 	return nil
+}
+
+// sendAndLabelThread calls t.Send(msg) and, if msg opened a new topic
+// (msg.ThreadRef == "" and Send returned a non-empty ref), records
+// "thread:<ref>" on the initiative bead via labelAdd so subsequent sends
+// reuse the topic and the relay can reverse-map replies (contract section
+// 2). Shared by notify's first-send path and dispatch's eager topic
+// creation, so there is exactly one create+label code path.
+//
+// A label-write failure does not fail the send: it is warned to ctx.Stderr
+// (prefixed by errPrefix) and the returned error stays nil.
+func sendAndLabelThread(ctx *cli.Context, id string, t transport.Transport, msg transport.OutboundMessage, labelAdd labelAddFunc, errPrefix string) (string, error) {
+	returnedRef, err := t.Send(msg)
+	if err != nil {
+		return "", err
+	}
+	if msg.ThreadRef == "" && returnedRef != "" {
+		label := "thread:" + returnedRef
+		if labErr := labelAdd(ctx.BD, id, label); labErr != nil {
+			// Non-fatal: the send succeeded; label write failure is surfaced
+			// but does not break the caller.
+			fmt.Fprintf(ctx.Stderr, "%s: warning: could not record thread label on %s: %v\n", errPrefix, id, labErr)
+		}
+	}
+	return returnedRef, nil
 }
 
 // runBriefing handles the reserved BriefingHandle: no initiative bead behind
