@@ -16,13 +16,17 @@
 // One Telegram forum topic per initiative. Send with ThreadRef=="" opens a new
 // topic via createForumTopic and returns its message_thread_id as threadRef.
 // Subsequent sends pass that threadRef as message_thread_id to sendMessage.
+// Send with General==true skips topic creation entirely and posts straight
+// to the General channel (no message_thread_id), returning "".
 //
 // # Inbound
 //
-// getUpdates long-poll. Only messages where is_topic_message==true and the
-// chat id matches the configured supergroup are delivered to the handler.
-// Non-topic messages (General topic, DMs) emit a Reply{ThreadRef: ""} so the
-// relay can bounce them.
+// getUpdates long-poll. Messages where is_topic_message==true and the chat id
+// matches the configured supergroup are delivered with their ThreadRef set;
+// non-topic messages (General channel) are delivered with Reply{ThreadRef:
+// ""} — the relay routes those by @mention rather than bouncing them. Before
+// polling, Receive resolves this bot's own @username once via getMe so
+// inbound messages can report Reply.MentionsSelf.
 package telegram
 
 import (
@@ -37,6 +41,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -56,6 +61,12 @@ type Telegram struct {
 	chatID     string
 	httpClient httpDoer
 	baseURL    string // overridable in tests; defaults to "https://api.telegram.org"
+
+	// ownUsername is this bot's own @username (lowercased, "@" stripped),
+	// resolved once via getMe at the start of Receive and cached here. Never
+	// resolved in New — New must stay network-free for send-only/Enabled
+	// paths. Empty until Receive has run (or if getMe failed).
+	ownUsername string
 }
 
 // httpDoer is the subset of *http.Client used by Telegram. Injected for tests.
@@ -89,10 +100,20 @@ func New(home string, client httpDoer) (*Telegram, error) {
 // Name returns "telegram".
 func (t *Telegram) Name() string { return "telegram" }
 
-// Send delivers msg to the human. If msg.ThreadRef is "", a new forum topic is
-// opened via createForumTopic and its id is returned as threadRef. Otherwise
-// sendMessage is called with msg.ThreadRef as message_thread_id.
+// Send delivers msg to the human. If msg.General is true, the message is
+// posted to the General channel: no forum topic is opened, no
+// message_thread_id is sent, and "" is returned. Otherwise, if msg.ThreadRef
+// is "", a new forum topic is opened via createForumTopic and its id is
+// returned as threadRef; if msg.ThreadRef is non-empty, sendMessage is called
+// with it as message_thread_id.
 func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
+	if msg.General {
+		if err := t.sendMessage("", msg.Body); err != nil {
+			return "", fmt.Errorf("telegram: sendMessage: %w", err)
+		}
+		return "", nil
+	}
+
 	threadRef := msg.ThreadRef
 
 	if threadRef == "" {
@@ -124,8 +145,21 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 // non-topic messages from the configured chat are emitted as Reply{ThreadRef:""}
 // so the relay can bounce them with "reply inside the initiative's topic."
 //
+// Before polling, Receive resolves this bot's own @username via getMe exactly
+// once and caches it on the struct (never in New — New must stay
+// network-free for send-only/Enabled paths). A getMe failure is logged and
+// non-fatal: polling proceeds with ownUsername empty, so MentionsSelf simply
+// never matches until the next Receive call succeeds.
+//
 // Receive runs until handler returns a non-nil error, which is propagated.
 func (t *Telegram) Receive(handler func(transport.Reply) error) error {
+	username, err := t.getMe()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "telegram: getMe: %v\n", err)
+	} else {
+		t.ownUsername = username
+	}
+
 	var offset int
 	for {
 		updates, err := t.getUpdates(offset)
@@ -152,6 +186,7 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 
 			var reply transport.Reply
 			reply.Text = msg.Text
+			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
 				reply.ThreadRef = strconv.Itoa(msg.MessageThreadID)
@@ -165,7 +200,63 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 	}
 }
 
+// parseMentions extracts @-mentioned usernames from msg's "mention" entities
+// ("text_mention" entities are for users without usernames and never apply to
+// bots, so they're ignored). Telegram entity Offset/Length are UTF-16 code
+// unit counts, not bytes or runes, so msg.Text is re-encoded to UTF-16 before
+// slicing — otherwise a multi-byte character before the mention would
+// misalign the extraction. Returns the mentions (lowercased, "@" stripped)
+// and whether this transport's own username is among them.
+func (t *Telegram) parseMentions(msg *message) (mentions []string, mentionsSelf bool) {
+	if len(msg.Entities) == 0 {
+		return nil, false
+	}
+	units := utf16.Encode([]rune(msg.Text))
+	for _, e := range msg.Entities {
+		if e.Type != "mention" {
+			continue
+		}
+		if e.Offset < 0 || e.Length < 0 || e.Offset+e.Length > len(units) {
+			continue
+		}
+		name := strings.ToLower(strings.TrimPrefix(string(utf16.Decode(units[e.Offset:e.Offset+e.Length])), "@"))
+		if name == "" {
+			continue
+		}
+		mentions = append(mentions, name)
+		if t.ownUsername != "" && name == t.ownUsername {
+			mentionsSelf = true
+		}
+	}
+	return mentions, mentionsSelf
+}
+
 // ── Telegram Bot API calls ────────────────────────────────────────────────────
+
+// getMe calls getMe and returns this bot's own @username, lowercased and with
+// the "@" stripped (the Bot API's username field never includes one).
+func (t *Telegram) getMe() (string, error) {
+	resp, err := t.httpClient.Get(t.apiURL("getMe"))
+	if err != nil {
+		return "", t.sanitizeTransportErr(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Username string `json:"username"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(resp.Body, &r); err != nil {
+		return "", err
+	}
+	if !r.OK {
+		return "", fmt.Errorf("API error: %s", r.Description)
+	}
+	return strings.ToLower(strings.TrimPrefix(r.Result.Username, "@")), nil
+}
 
 // apiURL constructs the Bot API endpoint URL for a method.
 func (t *Telegram) apiURL(method string) string {
@@ -250,13 +341,19 @@ func (t *Telegram) CloseTopic(threadRef string) error {
 	return nil
 }
 
-// sendMessage posts text into a forum topic.
+// sendMessage posts text into a forum topic, or into the General channel when
+// threadRef is "" (Telegram posts to General when message_thread_id is
+// omitted from the request entirely — an empty-string value is not
+// equivalent and must not be sent).
 func (t *Telegram) sendMessage(threadRef, text string) error {
-	resp, err := t.httpClient.PostForm(t.apiURL("sendMessage"), url.Values{
-		"chat_id":           {t.chatID},
-		"message_thread_id": {threadRef},
-		"text":              {text},
-	})
+	values := url.Values{
+		"chat_id": {t.chatID},
+		"text":    {text},
+	}
+	if threadRef != "" {
+		values.Set("message_thread_id", threadRef)
+	}
+	resp, err := t.httpClient.PostForm(t.apiURL("sendMessage"), values)
 	if err != nil {
 		return t.sanitizeTransportErr(err)
 	}
@@ -311,15 +408,24 @@ type update struct {
 }
 
 type message struct {
-	MessageID       int    `json:"message_id"`
-	MessageThreadID int    `json:"message_thread_id"`
-	IsTopicMessage  bool   `json:"is_topic_message"`
-	Text            string `json:"text"`
-	Chat            chat   `json:"chat"`
+	MessageID       int             `json:"message_id"`
+	MessageThreadID int             `json:"message_thread_id"`
+	IsTopicMessage  bool            `json:"is_topic_message"`
+	Text            string          `json:"text"`
+	Entities        []messageEntity `json:"entities"`
+	Chat            chat            `json:"chat"`
 }
 
 type chat struct {
 	ID int64 `json:"id"`
+}
+
+// messageEntity is a Telegram MessageEntity. Offset and Length are UTF-16
+// code unit counts, per the Bot API spec — see parseMentions.
+type messageEntity struct {
+	Type   string `json:"type"`
+	Offset int    `json:"offset"`
+	Length int    `json:"length"`
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

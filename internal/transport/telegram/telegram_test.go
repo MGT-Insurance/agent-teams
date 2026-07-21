@@ -384,6 +384,10 @@ func TestReceive_RejectsDifferentChatID(t *testing.T) {
 
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
 		callCount++
 		if callCount == 1 {
 			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
@@ -420,6 +424,10 @@ func TestReceive_OffsetAdvances(t *testing.T) {
 	callCount := 0
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
 		rawURL := r.URL.String()
 		parsed, _ := url.Parse(rawURL)
 		capturedOffsets = append(capturedOffsets, parsed.Query().Get("offset"))
@@ -512,6 +520,10 @@ func TestReceive_GeneralTopicID1_EmitsEmptyThreadRef(t *testing.T) {
 
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
 		callCount++
 		if callCount == 1 {
 			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
@@ -538,6 +550,264 @@ func TestReceive_GeneralTopicID1_EmitsEmptyThreadRef(t *testing.T) {
 	}
 	if received[0].Text != "general msg" {
 		t.Errorf("General topic Text: got %q", received[0].Text)
+	}
+}
+
+// ── @mention parsing ──────────────────────────────────────────────────────────
+
+// newMentionTestServer builds a server that answers getMe with username and
+// getUpdates with the given updates (once; empty thereafter). Returns the
+// server and a pointer to the getMe call count.
+func newMentionTestServer(username string, updates []map[string]any) (*httptest.Server, *int) {
+	getMeCalls := 0
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			getMeCalls++
+			jsonResponse(w, 200, map[string]any{
+				"ok":     true,
+				"result": map[string]any{"username": username},
+			})
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			callCount++
+			if callCount == 1 {
+				jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+			} else {
+				jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return srv, &getMeCalls
+}
+
+func TestReceive_MentionsSelf_CallsGetMeExactlyOnce(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":       10,
+				"is_topic_message": false,
+				"text":             "hey @StewardBot need help",
+				"entities": []map[string]any{
+					{"type": "mention", "offset": 4, "length": 11},
+				},
+				"chat": map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	srv, getMeCalls := newMentionTestServer("stewardbot", updates)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if *getMeCalls != 1 {
+		t.Errorf("getMe calls: got %d, want 1", *getMeCalls)
+	}
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1", len(received))
+	}
+	if !received[0].MentionsSelf {
+		t.Error("MentionsSelf: got false, want true (mention case-folded to own username)")
+	}
+	if len(received[0].Mentions) != 1 || received[0].Mentions[0] != "stewardbot" {
+		t.Errorf("Mentions: got %v, want [stewardbot]", received[0].Mentions)
+	}
+}
+
+func TestReceive_MentionsOtherBot_NotSelf(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":       10,
+				"is_topic_message": false,
+				"text":             "hey @xbot handle this",
+				"entities": []map[string]any{
+					{"type": "mention", "offset": 4, "length": 5},
+				},
+				"chat": map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	srv, _ := newMentionTestServer("stewardbot", updates)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1", len(received))
+	}
+	if received[0].MentionsSelf {
+		t.Error("MentionsSelf: got true, want false (mentions another bot, not me)")
+	}
+	if len(received[0].Mentions) != 1 || received[0].Mentions[0] != "xbot" {
+		t.Errorf("Mentions: got %v, want [xbot]", received[0].Mentions)
+	}
+}
+
+func TestReceive_NoEntities_EmptyMentions(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":       10,
+				"is_topic_message": false,
+				"text":             "just a plain message",
+				"chat":             map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	srv, _ := newMentionTestServer("stewardbot", updates)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1", len(received))
+	}
+	if len(received[0].Mentions) != 0 {
+		t.Errorf("Mentions: got %v, want empty", received[0].Mentions)
+	}
+	if received[0].MentionsSelf {
+		t.Error("MentionsSelf: got true, want false")
+	}
+}
+
+// TestReceive_UTF16Offset_MultiByteCharBeforeMention proves entity
+// offset/length are consumed as UTF-16 code units, not runes: "😀" is one
+// rune but two UTF-16 code units, so a rune-indexed extraction would
+// misalign and miss the mention entirely.
+func TestReceive_UTF16Offset_MultiByteCharBeforeMention(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	text := "😀 @stewardbot hi"
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":       10,
+				"is_topic_message": false,
+				"text":             text,
+				"entities": []map[string]any{
+					// offset 3 = 2 UTF-16 units for the emoji + 1 for the space.
+					{"type": "mention", "offset": 3, "length": 11},
+				},
+				"chat": map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	srv, _ := newMentionTestServer("stewardbot", updates)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1", len(received))
+	}
+	if !received[0].MentionsSelf {
+		t.Error("MentionsSelf: got false, want true — offset must be decoded as UTF-16 code units")
+	}
+	if len(received[0].Mentions) != 1 || received[0].Mentions[0] != "stewardbot" {
+		t.Errorf("Mentions: got %v, want [stewardbot]", received[0].Mentions)
+	}
+}
+
+// ── Send: General channel ─────────────────────────────────────────────────────
+
+func TestSend_General_OmitsThreadIDAndReturnsEmpty(t *testing.T) {
+	const chatID = "-100123456789"
+
+	var gotCreateTopic, gotSendMessage, sawThreadIDKey bool
+	var gotText string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/createForumTopic"):
+			gotCreateTopic = true
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{"message_thread_id": 1}})
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			gotSendMessage = true
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			_, sawThreadIDKey = r.PostForm["message_thread_id"]
+			gotText = r.FormValue("text")
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	threadRef, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		Title:        "Steward",
+		Body:         "hello from general",
+		General:      true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if threadRef != "" {
+		t.Errorf("threadRef: got %q, want empty", threadRef)
+	}
+	if gotCreateTopic {
+		t.Error("createForumTopic should not be called for General sends")
+	}
+	if !gotSendMessage {
+		t.Error("sendMessage was not called")
+	}
+	if sawThreadIDKey {
+		t.Error("message_thread_id key must be omitted from PostForm values for General sends")
+	}
+	if gotText != "hello from general" {
+		t.Errorf("sendMessage text: got %q, want %q", gotText, "hello from general")
 	}
 }
 
