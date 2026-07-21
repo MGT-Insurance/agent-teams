@@ -553,6 +553,134 @@ func TestReceive_GeneralTopicID1_EmitsEmptyThreadRef(t *testing.T) {
 	}
 }
 
+// ── Receive: media-only messages get a non-empty placeholder body ────────────
+//
+// TestReceive_MessageBody_MediaPlaceholders drives synthetic getUpdates JSON
+// through the REAL Receive path (not messageBody directly) for the core
+// media types plus a plain-text control and the fallback case, proving an
+// actionable, non-empty reply.Text reaches the handler for every one of
+// them — closing the empty-envelope bug end-to-end at the mock-HTTP level.
+func TestReceive_MessageBody_MediaPlaceholders(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	baseMsg := func(id int, extra map[string]any) map[string]any {
+		m := map[string]any{
+			"message_id":        id,
+			"message_thread_id": 5,
+			"is_topic_message":  true,
+			"chat":              map[string]any{"id": chatIDInt},
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	type testCase struct {
+		name string
+		msg  map[string]any
+		want string
+	}
+	cases := []testCase{
+		{
+			name: "plain text passes through unchanged",
+			msg:  baseMsg(1, map[string]any{"text": "hello world"}),
+			want: "hello world",
+		},
+		{
+			name: "sticker with emoji",
+			msg:  baseMsg(2, map[string]any{"sticker": map[string]any{"emoji": "😀"}}),
+			want: "[sticker 😀]",
+		},
+		{
+			name: "sticker without emoji",
+			msg:  baseMsg(3, map[string]any{"sticker": map[string]any{}}),
+			want: "[sticker]",
+		},
+		{
+			name: "photo with caption",
+			msg: baseMsg(4, map[string]any{
+				"photo":   []map[string]any{{"file_id": "AAA", "width": 100, "height": 100}},
+				"caption": "beach sunset",
+			}),
+			want: "[photo] beach sunset",
+		},
+		{
+			name: "voice note",
+			msg:  baseMsg(5, map[string]any{"voice": map[string]any{"file_id": "BBB", "duration": 5}}),
+			want: "[voice message]",
+		},
+		{
+			name: "document with file_name",
+			msg: baseMsg(6, map[string]any{
+				"document": map[string]any{"file_id": "CCC", "file_name": "report.pdf"},
+			}),
+			want: "[document: report.pdf]",
+		},
+		{
+			name: "animation checked before document (GIF sends both)",
+			msg: baseMsg(7, map[string]any{
+				"animation": map[string]any{"file_id": "DDD"},
+				"document":  map[string]any{"file_id": "DDD", "file_name": "gif.mp4"},
+			}),
+			want: "[animation]",
+		},
+		{
+			name: "unrecognized media falls back to non-empty placeholder",
+			msg:  baseMsg(8, map[string]any{}),
+			want: "[non-text message]",
+		},
+	}
+
+	updates := make([]map[string]any, len(cases))
+	for i, tc := range cases {
+		updates[i] = map[string]any{
+			"update_id": 100 + i,
+			"message":   tc.msg,
+		}
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		} else {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		if len(received) >= len(cases) {
+			return sentinel
+		}
+		return nil
+	})
+
+	if len(received) != len(cases) {
+		t.Fatalf("got %d replies, want %d", len(received), len(cases))
+	}
+	for i, tc := range cases {
+		if received[i].Text != tc.want {
+			t.Errorf("%s: reply.Text = %q, want %q", tc.name, received[i].Text, tc.want)
+		}
+		if received[i].Text == "" {
+			t.Errorf("%s: reply.Text is empty — messageBody must never return \"\"", tc.name)
+		}
+	}
+}
+
 // ── @mention parsing ──────────────────────────────────────────────────────────
 
 // newMentionTestServer builds a server that answers getMe with username and
