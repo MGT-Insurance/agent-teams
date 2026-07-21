@@ -97,11 +97,15 @@ func stewardInit(ctx *cli.Context) (string, error) {
 // removing StewardSessionDir (marker included) and the doorbell, which is
 // what disables gate->steward routing going forward (the agent-teams-e3mq.24
 // guard in notifyToSteward short-circuits once the marker is gone) and stops
-// wake-watcher.sh from recognizing this cwd as the Steward's session.
+// wake-watcher.sh from recognizing this cwd as the Steward's session. It also
+// tears down the singleton `ateam relay` process started by `ateam steward
+// start` (agent-teams-5y8a.4, relay_supervise.go) — de-stewarding a machine
+// should leave nothing behind still polling the transport.
 type stewardRemoveKong struct {
 	Purge bool `name:"purge" help:"Also delete the ledger and briefing-thread (default: kept, for relocating the Steward to another machine)."`
 
-	agentsFunc agentsJSONFunc `kong:"-"`
+	agentsFunc agentsJSONFunc  `kong:"-"`
+	killFunc   stewardKillFunc `kong:"-"`
 }
 
 // Run removes the Steward's session dir and doorbell (idempotent — nothing
@@ -121,6 +125,10 @@ func (c *stewardRemoveKong) Run(ctx *cli.Context) error {
 	if agentsFunc == nil {
 		agentsFunc = defaultAgentsJSONAll
 	}
+	kill := c.killFunc
+	if kill == nil {
+		kill = defaultStewardKill
+	}
 
 	sessionDir := StewardSessionDir(ctx)
 	if sessions, err := agentsFunc(); err == nil {
@@ -130,6 +138,12 @@ func (c *stewardRemoveKong) Run(ctx *cli.Context) error {
 	}
 	// Best-effort: a failure to query live sessions is not reported or
 	// treated as an error — this check never blocks removal.
+
+	if pid := teardownRelay(ctx, kill); pid != 0 {
+		fmt.Fprintf(ctx.Stdout, "stopped: relay (pid %d)\n", pid)
+	} else {
+		fmt.Fprintln(ctx.Stdout, "note: no relay running")
+	}
 
 	removedSession, err := removeIfExists(sessionDir)
 	if err != nil {

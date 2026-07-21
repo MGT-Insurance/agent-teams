@@ -183,6 +183,8 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 	if threadRef == "" && returnedRef != "" {
 		if writeErr := writeThreadRefFile(path, returnedRef); writeErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not persist briefing thread ref: %v\n", writeErr)
+		} else if pubErr := publishStewardTopics(ctx); pubErr != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not publish steward topics: %v\n", pubErr)
 		}
 	}
 
@@ -241,6 +243,8 @@ func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
 	if threadRef == "" && returnedRef != "" {
 		if writeErr := writeThreadRefFile(path, returnedRef); writeErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not persist direct thread ref: %v\n", writeErr)
+		} else if pubErr := publishStewardTopics(ctx); pubErr != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not publish steward topics: %v\n", pubErr)
 		}
 	}
 

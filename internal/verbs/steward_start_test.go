@@ -26,7 +26,8 @@ func TestStewardStart_NoPriorState_InitsAndLaunches(t *testing.T) {
 			launchDir = dir
 			return nil
 		},
-		killFunc: func(pid int) {},
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -63,7 +64,8 @@ func TestStewardStart_LiveSteward_Refuses(t *testing.T) {
 			launchCalled = true
 			return nil
 		},
-		killFunc: func(pid int) {},
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -88,6 +90,7 @@ func TestStewardStart_LiveSteward_FallsBackToSessionIDWhenShortIDEmpty(t *testin
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{CWD: sessionDir, PID: &livePID, SessionID: "full-session-id"}}, nil
 		},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -120,7 +123,8 @@ func TestStewardStart_DeadPidfile_CleansAndProceeds(t *testing.T) {
 			launchCalled = true
 			return nil
 		},
-		killFunc: func(pid int) { killCalled = true },
+		killFunc:       func(pid int) { killCalled = true },
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -179,7 +183,8 @@ func TestStewardStart_LiveOrphanWatcher_KillsCleansAndProceeds(t *testing.T) {
 			launchCalled = true
 			return nil
 		},
-		killFunc: defaultStewardKill,
+		killFunc:       defaultStewardKill,
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -217,7 +222,8 @@ func TestStewardStart_NoPidfile_ProceedsSilently(t *testing.T) {
 			launchCalled = true
 			return nil
 		},
-		killFunc: func(pid int) {},
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -268,7 +274,8 @@ func TestStewardStart_AgentsQueryFails_WarnsAndProceeds(t *testing.T) {
 			launchCalled = true
 			return nil
 		},
-		killFunc: func(pid int) { killCalled = true },
+		killFunc:       func(pid int) { killCalled = true },
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -304,7 +311,8 @@ func TestStewardStart_LaunchFailure_Propagates(t *testing.T) {
 		launchFunc: func(ctx *cli.Context, dir string) error {
 			return fmt.Errorf("boom")
 		},
-		killFunc: func(pid int) {},
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -327,7 +335,8 @@ func TestStewardStart_LaunchInvokedWithSessionDir(t *testing.T) {
 			gotDir = dir
 			return nil
 		},
-		killFunc: func(pid int) {},
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {

@@ -109,6 +109,20 @@ func (f *fakeSendCapture) send(_ *cli.Context, file string) error {
 	return f.err
 }
 
+// ── ownership-gating default fakes (agent-teams-5y8a.5) ─────────────────────
+//
+// alwaysClaimsLocally / alwaysFallbackResponder / neverKnownStewardTopic are
+// the behavior-preserving defaults for the three new relay-gating seams
+// (claimsLocally, isFallbackResponder, knownStewardTopic) wired into every
+// existing relayKong literal below: those tests predate multi-machine
+// gating and assume single-machine behavior — this machine claims every
+// tied initiative, is always the fallback responder for untied traffic, and
+// never sees a peer steward topic. Tests that exercise the gating itself
+// (below the existing suite) override the relevant one.
+func alwaysClaimsLocally(bd.Issue) bool                { return true }
+func alwaysFallbackResponder(*cli.Context) bool        { return true }
+func neverKnownStewardTopic(*cli.Context, string) bool { return false }
+
 // newRelayCtx builds a cli.Context with captured stdout/stderr buffers.
 func newRelayCtx(t *testing.T) *cli.Context {
 	t.Helper()
@@ -131,10 +145,13 @@ func TestRelay_EnabledFalse_CleanExit(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return false },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      newFakeBDQuery().query,
-		send:         (&fakeSend{}).send,
+		enabled:             func(string) bool { return false },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSend{}).send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -153,10 +170,13 @@ func TestRelay_EnabledFalse_CleanExit(t *testing.T) {
 func TestRelay_EnabledFalse_NoStderrNoise(t *testing.T) {
 	ctx := newRelayCtx(t)
 	cmd := &relayKong{
-		enabled:      func(string) bool { return false },
-		transportFor: func(string) (transport.Transport, error) { return &relayFakeTransport{}, nil },
-		bdQuery:      newFakeBDQuery().query,
-		send:         (&fakeSend{}).send,
+		enabled:             func(string) bool { return false },
+		transportFor:        func(string) (transport.Transport, error) { return &relayFakeTransport{}, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSend{}).send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	_ = cmd.Run(ctx)
 	if relayStderr(ctx) != "" {
@@ -181,10 +201,13 @@ func TestRelay_MappedThread_SendCalled(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -214,10 +237,13 @@ func TestRelay_EmptyThreadRef_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      newFakeBDQuery().query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -244,11 +270,14 @@ func TestRelay_UnmappedThread_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:       func(string) bool { return true },
-		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:       newFakeBDQuery().query, // returns empty for "thread:99"
-		bdQueryClosed: newFakeBDQuery().query, // no closed match either — safety net finds nothing
-		send:          fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query, // returns empty for "thread:99"
+		bdQueryClosed:       newFakeBDQuery().query, // no closed match either — safety net finds nothing
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -294,11 +323,14 @@ func TestRelay_ClosedInitiativeThread_RoutesToSteward(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:       func(string) bool { return true },
-		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:       bdq.query,
-		bdQueryClosed: bdqClosed.query,
-		send:          fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		bdQueryClosed:       bdqClosed.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -343,11 +375,14 @@ func TestRelay_AmbiguousClosedInitiativeThread_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:       func(string) bool { return true },
-		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:       bdq.query,
-		bdQueryClosed: bdqClosed.query,
-		send:          fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		bdQueryClosed:       bdqClosed.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -386,11 +421,14 @@ func TestRelay_ClosedInitiativeQueryError_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:       func(string) bool { return true },
-		transportFor:  func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:       bdq.query,
-		bdQueryClosed: bdqClosed.query,
-		send:          fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		bdQueryClosed:       bdqClosed.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -433,10 +471,13 @@ func TestRelay_AmbiguousThread_Skipped(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -490,10 +531,13 @@ func TestRelay_BadReplyDoesNotAbort(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         sendFn,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                sendFn,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("loop must not abort on a bad reply, got: %v", err)
@@ -534,10 +578,13 @@ func TestRelay_BDQueryError_RoutesToSteward(t *testing.T) {
 	ctx := newRelayCtx(t)
 
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("bd error must not abort loop, got: %v", err)
@@ -594,7 +641,10 @@ func TestRelay_DirectThread_RoutesToSteward(t *testing.T) {
 			bdQueryCalled = true
 			return nil, nil
 		},
-		send: fs.send,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -632,10 +682,13 @@ func TestRelay_DirectThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.
 		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
 	}
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -663,10 +716,13 @@ func TestRelay_NoDirectThreadFile_FallsThroughToInitiativePath(t *testing.T) {
 		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
 	}
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -705,7 +761,10 @@ func TestRelay_BriefingThread_RoutesToSteward(t *testing.T) {
 			bdQueryCalled = true
 			return nil, nil
 		},
-		send: fs.send,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -743,10 +802,13 @@ func TestRelay_BriefingThread_NonMatchingThreadRef_TakesInitiativePath(t *testin
 		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
 	}
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -774,10 +836,13 @@ func TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath(t *testing.T) {
 		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
 	}
 	cmd := &relayKong{
-		enabled:      func(string) bool { return true },
-		transportFor: func(string) (transport.Transport, error) { return ft, nil },
-		bdQuery:      bdq.query,
-		send:         fs.send,
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -787,5 +852,215 @@ func TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath(t *testing.T) {
 	}
 	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
 		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// ── handler: multi-machine ownership gating (agent-teams-5y8a.5) ────────────
+
+// TestRelay_TiedReply_NotClaimedLocally_Skipped verifies the tied-reply gate:
+// when a reply's thread resolves to exactly one open initiative but
+// claimsLocally reports THIS machine does not hold that initiative's
+// checkout, the reply is skipped rather than routed — only the owning
+// machine's relay forwards a tied reply.
+func TestRelay_TiedReply_NotClaimedLocally_Skipped(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       func(bd.Issue) bool { return false },
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 0 {
+		t.Errorf("expected no send calls (not claimed locally), got %d", len(fs.calls))
+	}
+	if !strings.Contains(relayStderr(ctx), "not claimed locally") {
+		t.Errorf("expected 'not claimed locally' in stderr, got: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_UntiedReply_NotFallbackResponder_Skipped verifies the untied
+// catch-all gate: when a reply's thread has no open (or closed) initiative
+// match and isFallbackResponder reports THIS machine is not the designated
+// fallback responder, the reply is skipped — not routed to the Steward —
+// so only the fallback machine forwards untied traffic.
+func TestRelay_UntiedReply_NotFallbackResponder_Skipped(t *testing.T) {
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "99", Text: "reply"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query, // no open match for "thread:99"
+		bdQueryClosed:       newFakeBDQuery().query, // no closed match either
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 0 {
+		t.Errorf("expected no send calls (not fallback responder), got %d", len(fs.calls))
+	}
+	if !strings.Contains(relayStderr(ctx), "not fallback responder") {
+		t.Errorf("expected 'not fallback responder' in stderr, got: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_UntiedReply_FallbackResponder_RoutesUnrouted verifies that the
+// designated fallback responder still routes untied traffic to the Steward
+// as a steward-unrouted envelope — the gate above only suppresses
+// non-fallback machines.
+func TestRelay_UntiedReply_FallbackResponder_RoutesUnrouted(t *testing.T) {
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "99", Text: "reply"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		bdQueryClosed:       newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return true },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call (fallback responder routes untied reply), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "99" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "99")
+	}
+}
+
+// TestRelay_PeerStewardTopic_Skipped verifies the peer-topic gate: when a
+// reply's thread ref is a KNOWN steward topic belonging to ANOTHER machine
+// (knownStewardTopic true), the reply is skipped before the bd label query
+// even runs — that peer's own relay already routes it locally.
+func TestRelay_PeerStewardTopic_Skipped(t *testing.T) {
+	bdQueryCalled := false
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "peer-briefing-9", Text: "reply in a peer's topic"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery: func(home, label string) ([]bd.Issue, error) {
+			bdQueryCalled = true
+			return nil, nil
+		},
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   func(*cli.Context, string) bool { return true },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bdQueryCalled {
+		t.Error("bd query must not be called for a known peer steward topic")
+	}
+	if len(fs.calls) != 0 {
+		t.Errorf("expected no send calls (peer steward topic), got %d", len(fs.calls))
+	}
+	if !strings.Contains(relayStderr(ctx), "skipping peer steward topic") {
+		t.Errorf("expected 'skipping peer steward topic' in stderr, got: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_NonTopic_FallbackResponder_RoutesUnrouted verifies the
+// agent-teams-17xs.8 decision scoped to the fallback responder: a
+// General-topic/DM reply (ThreadRef=="") is routed to the Steward as a
+// steward-unrouted envelope when this machine is the designated fallback
+// responder, instead of being silently dropped.
+func TestRelay_NonTopic_FallbackResponder_RoutesUnrouted(t *testing.T) {
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "", Text: "reply in general"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return true },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call (fallback responder routes non-topic message), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "reply in general" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "reply in general")
+	}
+}
+
+// TestRelay_NonTopic_NotFallbackResponder_Skipped verifies that a
+// non-fallback machine keeps the original silent skip for a General-topic/DM
+// reply — only the designated fallback responder forwards it.
+func TestRelay_NonTopic_NotFallbackResponder_Skipped(t *testing.T) {
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "", Text: "reply in general"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 0 {
+		t.Errorf("expected no send calls, got %d", len(fs.calls))
+	}
+	if !strings.Contains(relayStderr(ctx), "skipping non-topic message") {
+		t.Errorf("expected 'skipping non-topic message' in stderr, got: %q", relayStderr(ctx))
 	}
 }

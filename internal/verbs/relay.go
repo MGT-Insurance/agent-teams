@@ -31,6 +31,20 @@ type relayBDQueryFunc func(home, label string) ([]bd.Issue, error)
 // arg. Injected so tests can capture calls without running a subprocess.
 type relaySendFunc func(ctx *cli.Context, file string) error
 
+// knownStewardTopicFunc reports whether threadRef is a KNOWN steward topic
+// (briefing/direct) belonging to ANOTHER machine, per the synced record
+// frozen by steward_seams.go (StewardTopicsKey/StewardTopicsRecord).
+// Injected so tests can substitute a fake without touching the memory
+// store. Default: isKnownStewardTopic (steward_topics.go,
+// agent-teams-5y8a.3).
+type knownStewardTopicFunc func(ctx *cli.Context, threadRef string) bool
+
+// nonTopicThreadRefPlaceholder stands in for reply.ThreadRef when routing a
+// non-topic (ThreadRef=="") message via sendUnroutedToSteward:
+// BuildStewardUnroutedEnvelope (steward_seams.go) rejects an empty thread
+// ref, and a General-topic/DM message has no real thread to report.
+const nonTopicThreadRefPlaceholder = "(general)"
+
 // defaultBDQuery runs `bd list --status=open --label=<label> --json` against
 // the global workspace home and returns matching issues.
 func defaultBDQuery(home, label string) ([]bd.Issue, error) {
@@ -83,11 +97,14 @@ func defaultRelaySend(_ *cli.Context, file string) error {
 // RegisterRelayKong registers the relay verb onto p using a native kong struct.
 func RegisterRelayKong(p *cli.Parser) {
 	p.AddVerb("relay", "Long-poll the configured transport and relay human replies to the Steward.", &relayKong{
-		enabled:       transport.Enabled,
-		transportFor:  transport.For,
-		bdQuery:       defaultBDQuery,
-		bdQueryClosed: defaultBDQueryClosed,
-		send:          defaultRelaySend,
+		enabled:             transport.Enabled,
+		transportFor:        transport.For,
+		bdQuery:             defaultBDQuery,
+		bdQueryClosed:       defaultBDQueryClosed,
+		send:                defaultRelaySend,
+		claimsLocally:       claimsInitiativeLocally,
+		isFallbackResponder: isFallbackResponder,
+		knownStewardTopic:   isKnownStewardTopic,
 	})
 }
 
@@ -98,6 +115,12 @@ type relayKong struct {
 	bdQuery       relayBDQueryFunc       `kong:"-"`
 	bdQueryClosed relayBDQueryClosedFunc `kong:"-"`
 	send          relaySendFunc          `kong:"-"`
+
+	// Multi-machine ownership-gating seams (agent-teams-5y8a.5) — see the
+	// doc comment on handleReply below for what each gates.
+	claimsLocally       claimsLocallyFunc       `kong:"-"`
+	isFallbackResponder isFallbackResponderFunc `kong:"-"`
+	knownStewardTopic   knownStewardTopicFunc   `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -131,11 +154,35 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 // handleReply routes one inbound human reply. Returns nil always (log-and-skip
 // on routing failures) unless the error is permanent-transport-level, in which
 // case returning non-nil aborts Receive.
+//
+// Multi-machine gating (agent-teams-5y8a.5): in Design A every machine runs
+// one bot + one relay + one steward, all in the same Telegram forum
+// (privacy OFF, #114/#115), so EVERY machine's relay receives EVERY human
+// message. Exactly-once routing means each relay must SUPPRESS the
+// branches it does not own, not rescue a drop. This machine's own steward
+// topics (direct/briefing short-circuits below) are never suppressed — they
+// only ever match THIS machine's own persisted thread refs. Everything else
+// is gated: a TIED reply (thread resolves to exactly one open initiative)
+// routes only when claimsLocally reports this machine holds that
+// initiative's checkout; UNTIED traffic (no thread ref, a bd query error,
+// or zero/2+ open matches) routes only when isFallbackResponder reports
+// this machine is the designated fallback responder; and a reply whose
+// thread ref is a KNOWN peer steward topic (knownStewardTopic) is skipped
+// outright — that peer's own relay already routes it locally.
 func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	// Non-topic messages (General topic, DMs) arrive with ThreadRef == "".
-	// Log and skip; bounce is a deferred enhancement (s4lq).
+	// Gated on isFallbackResponder: only the designated fallback machine
+	// forwards General-topic traffic, landing the agent-teams-17xs.8
+	// decision (route it to the Steward rather than dropping it) scoped to
+	// that one machine so N machines don't all forward the same stray
+	// message. Every other machine keeps the original silent skip.
 	if reply.ThreadRef == "" {
-		fmt.Fprintln(ctx.Stderr, "ateam relay: skipping non-topic message (no thread ref)")
+		if !c.isFallbackResponder(ctx) {
+			fmt.Fprintln(ctx.Stderr, "ateam relay: skipping non-topic message (no thread ref)")
+			return nil
+		}
+		fmt.Fprintln(ctx.Stderr, "ateam relay: routing non-topic message to steward (no thread ref)")
+		c.sendUnroutedToSteward(ctx, nonTopicThreadRefPlaceholder, "non-topic message (no thread ref)", reply.Text)
 		return nil
 	}
 
@@ -173,12 +220,29 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		return c.handleBriefingReply(ctx, reply)
 	}
 
+	// Peer steward-topic skip (agent-teams-5y8a.5): a reply whose thread ref
+	// is a KNOWN steward topic belonging to ANOTHER machine (synced via
+	// steward:topics:<hostname>, steward_topics.go) is that peer's own
+	// briefing/direct traffic — its relay already short-circuits it locally
+	// above. isKnownStewardTopic excludes THIS machine's own local refs, so
+	// the short-circuits above always fire first for topics we own; this
+	// check only ever matches a peer's. Skip before the bd label query so a
+	// peer's topic ref never falls into the untied/fallback path below.
+	if c.knownStewardTopic(ctx, reply.ThreadRef) {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: skipping peer steward topic (thread %q)\n", reply.ThreadRef)
+		return nil
+	}
+
 	label := "thread:" + reply.ThreadRef
 	home := workspace.Home()
 
 	issues, err := c.bdQuery(home, label)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query for label %q failed: %v — skipping\n", label, err)
+		if !c.isFallbackResponder(ctx) {
+			fmt.Fprintln(ctx.Stderr, "ateam relay: not fallback responder — skipping unrouted reply")
+			return nil
+		}
 		c.sendUnroutedToSteward(ctx, reply.ThreadRef, fmt.Sprintf("bd query error: %v", err), reply.Text)
 		return nil
 	}
@@ -194,6 +258,14 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	switch len(open) {
 	case 0:
+		// Untied (agent-teams-5y8a.5): only the designated fallback
+		// responder attempts the closed-initiative safety net or the
+		// unrouted catch-all below — every other machine sees the same
+		// untied reply and must suppress it rather than also routing it.
+		if !c.isFallbackResponder(ctx) {
+			fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping untied reply (thread %q)\n", reply.ThreadRef)
+			return nil
+		}
 		routed, reason := c.routeClosedInitiativeSafetyNet(ctx, home, label, reply)
 		if routed {
 			return nil
@@ -202,8 +274,20 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
 		return nil
 	case 1:
-		// Exactly one match — hand off to the Steward.
+		// Tied (agent-teams-5y8a.5): only the machine that holds this
+		// initiative's checkout routes it — every other machine sees the
+		// same tied reply and must suppress it to avoid duplicate routing.
+		if !c.claimsLocally(open[0]) {
+			fmt.Fprintf(ctx.Stderr, "ateam relay: not claimed locally — skipping tied reply for %s (thread %q)\n", open[0].ID, reply.ThreadRef)
+			return nil
+		}
 	default:
+		// Untied/ambiguous (agent-teams-5y8a.5): same fallback-only gate as
+		// the case-0 branch above.
+		if !c.isFallbackResponder(ctx) {
+			fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping ambiguous reply (thread %q)\n", reply.ThreadRef)
+			return nil
+		}
 		reason := fmt.Sprintf("ambiguous: %d open initiatives", len(open))
 		fmt.Fprintf(ctx.Stderr, "ateam relay: ambiguous: %d open initiatives carry label %q — skipping\n", len(open), label)
 		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
