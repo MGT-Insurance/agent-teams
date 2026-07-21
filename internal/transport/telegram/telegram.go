@@ -105,11 +105,7 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 		// title. No [<InitiativeID>] prefix: the id is meaningless noise in
 		// the title and stays available internally via the thread:<ref>
 		// bead label (routing) and this topic's first message body.
-		topicName := msg.Title
-		if len(topicName) > maxTopicNameLen {
-			topicName = topicName[:maxTopicNameLen]
-		}
-		id, err := t.createForumTopic(topicName)
+		id, err := t.createForumTopic(truncateUTF8(msg.Title, maxTopicNameLen))
 		if err != nil {
 			return "", fmt.Errorf("telegram: createForumTopic: %w", err)
 		}
@@ -353,4 +349,24 @@ func loadSecret(home, envKey, relPath string) (string, error) {
 
 func decodeJSON(r io.Reader, dst any) error {
 	return json.NewDecoder(r).Decode(dst)
+}
+
+// truncateUTF8 truncates s to at most maxBytes bytes without splitting a
+// multi-byte UTF-8 rune (agent-teams-6rru.14: a byte-index slice can cut a
+// rune in half, sending invalid UTF-8 to the Telegram API). Ranging over a
+// string yields the byte offset of each rune boundary in increasing order;
+// the last offset at or below maxBytes is the largest length that is still
+// a complete sequence of runes.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := 0
+	for i := range s {
+		if i > maxBytes {
+			break
+		}
+		cut = i
+	}
+	return s[:cut]
 }

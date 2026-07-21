@@ -164,6 +164,8 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 
 	fmt.Fprintf(ctx.Stdout, "ateam relay: starting on transport %q\n", t.Name())
 
+	go runHungTick(ctx, t)
+
 	return t.Receive(func(reply transport.Reply) error {
 		return c.handleReply(ctx, reply)
 	})

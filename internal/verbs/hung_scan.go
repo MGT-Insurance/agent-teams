@@ -89,14 +89,23 @@ type hungScanEntry struct {
 }
 
 // hungAnchor is the durable per-initiative record persisted at
-// hungStatePath: when the initiative was first observed STUCK, plus room for
-// a future "alerted-at" marker. AlertedAt is not written by this bead — it's
-// threaded through (kept, never overwritten) so agent-teams-6rru.9's
-// periodic relay tick can stamp it the first time it posts the mechanical
-// HUNG alert for this stuck episode, without needing a schema migration.
+// hungStatePath: when the initiative was first observed STUCK, plus the
+// escalation-ladder state for the current STUCK episode. StuckSince is
+// written by both `ateam hung-scan` and the periodic relay tick (via
+// scanHung, shared by both). AlertedAt/WakeAttempts/LastWakeAt are written
+// ONLY by agent-teams-6rru.9's periodic relay tick (hung_tick.go) — the
+// tick is the sole writer of the ladder fields, so no lock is needed
+// between it and hung-scan's own StuckSince-only writes (scanHung never
+// touches these three). Because scanHung carries forward the whole
+// hungAnchor struct for a still-STUCK id and drops it entirely once an
+// initiative is observed non-STUCK, the ladder fields ride the same
+// per-episode lifecycle as StuckSince with no extra bookkeeping: a fresh
+// episode always starts with these zero-valued.
 type hungAnchor struct {
-	StuckSince string `json:"stuck_since"`
-	AlertedAt  string `json:"alerted_at,omitempty"`
+	StuckSince   string `json:"stuck_since"`
+	AlertedAt    string `json:"alerted_at,omitempty"`
+	WakeAttempts int    `json:"wake_attempts,omitempty"`
+	LastWakeAt   string `json:"last_wake_at,omitempty"`
 }
 
 // hungStatePath returns the path to the durable anchor-state file:
