@@ -757,6 +757,35 @@ func TestRelay_MentionsHumanOnly_FallsThroughToRule3(t *testing.T) {
 	}
 }
 
+// TestFirstBotMention exercises firstBotMention directly — the pure function
+// backing rule 2's "some other bot was addressed" decision — for edge cases
+// the handler-level tests above don't reach: no mentions at all, an
+// all-human mention list, and multiple bot mentions in one message (first
+// one wins, mirroring Telegram's platform rule that every bot username ends
+// in "bot").
+func TestFirstBotMention(t *testing.T) {
+	tests := []struct {
+		name     string
+		mentions []string
+		want     string
+	}{
+		{name: "nil", mentions: nil, want: ""},
+		{name: "empty", mentions: []string{}, want: ""},
+		{name: "human only", mentions: []string{"eric"}, want: ""},
+		{name: "single bot", mentions: []string{"otherbot"}, want: "otherbot"},
+		{name: "human then bot", mentions: []string{"eric", "otherbot"}, want: "otherbot"},
+		{name: "multiple bots, first wins", mentions: []string{"firstbot", "secondbot"}, want: "firstbot"},
+		{name: "bot then human then bot", mentions: []string{"leadbot", "eric", "trailingbot"}, want: "leadbot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstBotMention(tt.mentions); got != tt.want {
+				t.Errorf("firstBotMention(%v) = %q, want %q", tt.mentions, got, tt.want)
+			}
+		})
+	}
+}
+
 // ── handler: briefing-channel short-circuit ───────────────────────────────────
 
 // TestRelay_BriefingThread_RoutesToSteward verifies that a reply whose thread
