@@ -148,33 +148,46 @@ func saveHungState(path string, m map[string]hungAnchor) error {
 // package doc comment for why this is a separate verb rather than an
 // extension of execution-status.
 //
-// Evaluation order (first match wins):
-//  1. DEAD  — worktree directory missing (orphan), OR no live session
-//     matches it, OR the matched session's PID is nil (tracked-but-dead).
-//  2. WORKING — matched session is actively working (status=="busy" or
+// Evaluation order (first match wins; agent-teams-6rru.13 split DEAD into
+// two separate checks straddling the gate check, so a gated-but-not-live
+// initiative reports AWAITING-HUMAN instead of DEAD — DEAD used to preempt
+// the gate check unconditionally whenever PID was absent, defeating
+// AWAITING-HUMAN's entire purpose for exactly the initiatives it exists to
+// catch):
+//  1. DEAD  — worktree directory missing (orphan).
+//  2. AWAITING-HUMAN — labels carry "human" AND ("gate:question" OR
+//     "gate:review") — checked regardless of PID presence, since a real gate
+//     means the initiative is waiting on the human, not hung.
+//  3. DEAD  — no live session matches worktree, OR the matched session's
+//     PID is nil (tracked-but-dead) — reached only once a real gate has
+//     already been ruled out.
+//  4. WORKING — matched session is actively working (status=="busy" or
 //     state=="working"; same predicate as isActivelyWorking).
-//  3. AWAITING-HUMAN — idle/waiting AND labels carry "human" AND
-//     ("gate:question" OR "gate:review").
-//  4. STUCK — everything else: a live session, idle/waiting, no gate.
+//  5. STUCK — everything else: a live session, idle/waiting, no gate.
 //
-// matched is nil when no session's cwd resolves to worktree.
+// matched is nil when no session matches worktree (see
+// matchSessionByWorktree).
 func classifyInitiative(labels []string, sessions []agentSession, worktree string, dirExists dirExistsFunc) (classification string, matched *agentSession, cwdPresent bool) {
 	cwdPresent = worktree != "" && dirExists(worktree)
 	matched = matchSessionByWorktree(sessions, worktree)
 	pidPresent := matched != nil && matched.PID != nil
 
-	if !cwdPresent || !pidPresent {
+	if !cwdPresent {
 		return hungClassDead, matched, cwdPresent
-	}
-
-	if matched.Status == "busy" || matched.State == "working" {
-		return hungClassWorking, matched, cwdPresent
 	}
 
 	hasHuman := hasLabel(labels, "human")
 	hasGate := hasLabel(labels, "gate:question") || hasLabel(labels, "gate:review")
 	if hasHuman && hasGate {
 		return hungClassAwaitingHuman, matched, cwdPresent
+	}
+
+	if !pidPresent {
+		return hungClassDead, matched, cwdPresent
+	}
+
+	if matched.Status == "busy" || matched.State == "working" {
+		return hungClassWorking, matched, cwdPresent
 	}
 
 	return hungClassStuck, matched, cwdPresent

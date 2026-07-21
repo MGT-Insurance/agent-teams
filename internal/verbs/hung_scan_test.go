@@ -99,6 +99,63 @@ func TestClassifyInitiative(t *testing.T) {
 			wantClass: hungClassStuck,
 			wantCwd:   true,
 		},
+		{
+			// agent-teams-6rru.13: DEAD used to short-circuit before the
+			// gate check ran whenever pid was absent -- a genuinely gated
+			// initiative whose session died must classify AWAITING-HUMAN,
+			// not DEAD.
+			name:      "pid absent (tracked-but-dead) + human + gate:question => AWAITING-HUMAN, not DEAD",
+			labels:    []string{"human", "gate:question"},
+			sessions:  []agentSession{{CWD: wt, Status: ""}}, // PID nil
+			dirExists: dirExists,
+			wantClass: hungClassAwaitingHuman,
+			wantCwd:   true,
+		},
+		{
+			name:      "no session matched at all + human + gate:review => AWAITING-HUMAN, not DEAD",
+			labels:    []string{"human", "gate:review"},
+			sessions:  nil, // matched is nil -> pid trivially absent
+			dirExists: dirExists,
+			wantClass: hungClassAwaitingHuman,
+			wantCwd:   true,
+		},
+		{
+			// cwd-missing must still preempt the gate check -- DEAD wins
+			// regardless of labels once the worktree itself is gone.
+			name:      "cwd missing overrides gate labels too => DEAD",
+			labels:    []string{"human", "gate:review"},
+			sessions:  []agentSession{{CWD: wt, Status: "idle", PID: &pid}},
+			dirExists: dirMissing,
+			wantClass: hungClassDead,
+			wantCwd:   false,
+		},
+		{
+			// agent-teams-6rru.15 repro at the classifyInitiative level: a
+			// live session whose cwd wandered into a sibling track
+			// worktree is matched by Name and classifies WORKING, not
+			// DEAD.
+			name:      "wandered live session (Name matches, cwd is a sibling track worktree) => WORKING, not DEAD",
+			labels:    nil,
+			sessions:  []agentSession{{CWD: wt + "-track-h", Name: filepath.Base(wt), Status: "busy", PID: &pid}},
+			dirExists: dirExists,
+			wantClass: hungClassWorking,
+			wantCwd:   true,
+		},
+		{
+			// Full at-wisp-e50 repro: a dead duplicate session sits at the
+			// registered worktree's cwd, while the live session has
+			// wandered into a track worktree -- same Name on both. The
+			// live one must win, classifying WORKING.
+			name:   "dead duplicate at registered cwd + live wandered session (same Name) => WORKING",
+			labels: nil,
+			sessions: []agentSession{
+				{CWD: wt, Name: filepath.Base(wt)},                                         // dead duplicate, no pid
+				{CWD: wt + "-track-h", Name: filepath.Base(wt), Status: "busy", PID: &pid}, // live, wandered
+			},
+			dirExists: dirExists,
+			wantClass: hungClassWorking,
+			wantCwd:   true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -206,6 +263,59 @@ func TestScanHung_AwaitingHuman_NotHung(t *testing.T) {
 	anchors := loadHungState(hungStatePath(ctx))
 	if _, ok := anchors["at-1"]; ok {
 		t.Error("expected no anchor persisted for an AWAITING-HUMAN initiative")
+	}
+}
+
+// TestScanHung_AwaitingHuman_PidAbsent is agent-teams-6rru.13's gap: a
+// genuinely gated initiative whose session has died (PID absent, not just
+// idle) must still classify AWAITING-HUMAN, not DEAD.
+func TestScanHung_AwaitingHuman_PidAbsent(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{
+		ID: "at-1", Title: "one", Description: "worktree: " + wt,
+		Labels: []string{"human", "gate:question"}, Status: "open",
+	}}
+	ctx := makeHungCtx(t, issues)
+
+	sessions := []agentSession{{CWD: wt, Status: ""}} // PID nil: tracked-but-dead
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if out[0].Classification != hungClassAwaitingHuman {
+		t.Fatalf("classification = %q, want AWAITING-HUMAN", out[0].Classification)
+	}
+	if out[0].PIDPresent {
+		t.Error("pid_present should be false")
+	}
+	if out[0].Hung {
+		t.Error("AWAITING-HUMAN must never be hung")
+	}
+}
+
+// TestScanHung_WanderedLiveSession_WorksNotDead is the agent-teams-6rru.15
+// repro at the scanHung integration level: a live session whose cwd wandered
+// into a sibling track worktree (not the registered worktree) is matched via
+// Name and classifies WORKING, not DEAD.
+func TestScanHung_WanderedLiveSession_WorksNotDead(t *testing.T) {
+	registeredWt := t.TempDir()
+	issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + registeredWt, Status: "open"}}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 18349
+	trackWt := t.TempDir() // stands in for a sibling track worktree
+	sessions := []agentSession{
+		{CWD: trackWt, Name: filepath.Base(registeredWt), Status: "busy", PID: &pid},
+	}
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if out[0].Classification != hungClassWorking {
+		t.Fatalf("classification = %q, want WORKING (session cwd wandered but Name matches)", out[0].Classification)
+	}
+	if !out[0].PIDPresent {
+		t.Error("expected pid_present=true for the wandered live session")
 	}
 }
 
