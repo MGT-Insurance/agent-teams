@@ -1661,15 +1661,18 @@ func TestReceive_ContentLessDropLogged(t *testing.T) {
 	}
 }
 
-// TestNew_StartupConfigLine_ContainsChatIDNotToken mirrors the
-// assertErrorHasNoToken security rationale: New's one-time startup config
-// line must report the chat id but never the bot token. Captured by
-// temporarily redirecting the package-level os.Stderr (New's default
-// logOut) to a pipe.
-func TestNew_StartupConfigLine_ContainsChatIDNotToken(t *testing.T) {
+// TestNew_WritesNothingToLog is the regression guard for the bug this test
+// was reworked to catch: the one-time startup config line used to live in
+// New(), but New is also the registered transport factory — transport.
+// Enabled and transport.For call it to merely PROBE config resolvability
+// (internal/verbs/notify.go's gate auto-notify, internal/verbs/dispatch.go's
+// transportEnabled) — so every ateam notify/gate/dispatch call was printing
+// relay-startup noise to stderr. New() must write nothing to the log;
+// captured by temporarily redirecting the package-level os.Stderr (New's
+// default logOut) to a pipe.
+func TestNew_WritesNothingToLog(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
-	const chatID = "-100999888777"
-	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", chatID)
+	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -1690,8 +1693,56 @@ func TestNew_StartupConfigLine_ContainsChatIDNotToken(t *testing.T) {
 	if _, err := io.Copy(&buf, r); err != nil {
 		t.Fatalf("read captured stderr: %v", err)
 	}
-	got := buf.String()
+	if buf.Len() != 0 {
+		t.Fatalf("New() must write nothing to the log (it's also transport.Enabled/transport.For's config-probe path), got: %q", buf.String())
+	}
+}
 
+// TestReceive_StartupConfigLine_ContainsChatIDNotToken mirrors the
+// assertErrorHasNoToken security rationale, now against the config line's
+// actual home: the top of Receive (the relay-poller-only path). Asserted
+// via an injected logOut buffer rather than a real stderr capture — simpler
+// now that the line no longer fires inside New.
+func TestReceive_StartupConfigLine_ContainsChatIDNotToken(t *testing.T) {
+	const chatID = "-100999888777"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{
+			"ok": true,
+			"result": []map[string]any{
+				{
+					"update_id": 1,
+					"message": map[string]any{
+						"message_id":        1,
+						"message_thread_id": 5,
+						"is_topic_message":  true,
+						"text":              "hi",
+						"chat":              map[string]any{"id": chatIDInt},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	tg := &Telegram{
+		token:      fakeToken,
+		chatID:     chatID,
+		httpClient: &http.Client{},
+		baseURL:    srv.URL,
+	}
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(transport.Reply) error { return sentinel })
+
+	got := logBuf.String()
 	if !strings.Contains(got, chatID) {
 		t.Errorf("expected startup config line to contain chat id %q, got:\n%s", chatID, got)
 	}

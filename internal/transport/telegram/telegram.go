@@ -113,16 +113,13 @@ func New(home string, client httpDoer) (*Telegram, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 45 * time.Second}
 	}
-	tg := &Telegram{
+	return &Telegram{
 		token:      token,
 		chatID:     chatID,
 		httpClient: client,
 		baseURL:    "https://api.telegram.org",
 		logOut:     os.Stderr,
-	}
-	// One-time startup config line — chat id only, never the token.
-	tg.logf(0, "config: chat_id=%s, token configured (%d bytes)", chatID, len(token))
-	return tg, nil
+	}, nil
 }
 
 // Name returns "telegram".
@@ -187,6 +184,14 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 //
 // Receive runs until handler returns a non-nil error, which is propagated.
 func (t *Telegram) Receive(handler func(transport.Reply) error) error {
+	// One-time startup config line — chat id only, never the token. Emitted
+	// here (not in New) because New is also the registered transport
+	// factory: transport.Enabled and transport.For construct a Telegram to
+	// merely probe config (notify.go, dispatch.go, gate auto-notify) and
+	// must never print relay-startup noise. Receive is only ever called by
+	// the relay poller, so this fires exactly once per relay startup.
+	t.logf(0, "config: chat_id=%s, token configured (%d bytes)", t.chatID, len(t.token))
+
 	var offset int
 	for {
 		if t.ownUsername == "" {
