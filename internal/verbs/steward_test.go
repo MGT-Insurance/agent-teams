@@ -608,6 +608,18 @@ func TestStewardLedgerRecall_NoLedgerFile(t *testing.T) {
 	}
 }
 
+func TestStewardLedgerRecall_EmptyJSONIsArrayNotNull(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardLedgerRecallKong{Category: "scope-call", JSON: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "[]" {
+		t.Errorf("expected empty JSON array %q; got: %q", "[]", got)
+	}
+}
+
 func TestStewardLedgerRecall_SkipsMalformedLine(t *testing.T) {
 	home := t.TempDir()
 	ctx, stdout, stderr := makeCtx(&fakeBD{}, home)

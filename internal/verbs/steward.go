@@ -497,6 +497,9 @@ func (c *stewardLedgerRecallKong) Run(ctx *cli.Context) error {
 	}
 
 	if c.JSON {
+		if recs == nil {
+			recs = []StewardLedgerRecord{} // emit [] not null on empty
+		}
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetEscapeHTML(false)
 		return enc.Encode(recs)
