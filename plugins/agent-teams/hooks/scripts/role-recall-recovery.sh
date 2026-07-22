@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
-# SessionStart(matcher=compact) hook for agent-teams: post-compact role
-# learnings + steward ledger context (agent-teams-7ew5.2.4 — the heavier,
-# less-frequent leg of the durable learnings+ledger re-injection mechanism,
-# agent-teams-7ew5.2.1). Runs as a SIBLING to compact-recovery.sh under the
-# same "compact" matcher — file-disjoint, does not touch that script.
+# SessionStart(matcher=clear|compact) hook for agent-teams: role learnings +
+# steward ledger context on context-wiping session boundaries
+# (agent-teams-7ew5.2.4; narrowed from compact-only to clear|compact by
+# agent-teams-7ew5.2.8). /clear and /compact are the only two SessionStart
+# reasons that BOTH wipe learnings from context AND don't re-run the
+# skill prose that would otherwise reload them:
+#   - startup: a fresh session loads learnings via skill prose (DRI Phase 0 /
+#     steward SKILL) — and a fresh DRI's session marker isn't written yet, so
+#     this hook would no-op anyway. Deliberately excluded.
+#   - resume: the full conversation is preserved (respawn/wake revives in
+#     place), so learnings already sit in context — re-injecting would
+#     duplicate them, and background sessions resume often (token waste).
+#     Deliberately excluded.
+# The old per-turn UserPromptSubmit leg (prime-role-learnings.sh) this used
+# to sit alongside is gone entirely — learnings are static within a
+# session-epoch, so per-turn injection was unnecessarily frequent. Runs in
+# its OWN SessionStart matcher block, separate from compact-recovery.sh's
+# "compact"-only matcher — that script handles a different concern
+# (initiative-context re-injection) and its matcher is intentionally left
+# narrower, untouched by this change.
 #
 # Resolves this session's role (dri/steward/none) via the shared
 # lib/resolve-session-role.sh. role=dri gets `ateam learnings dri`. role=
@@ -11,10 +26,12 @@
 # (`ateam steward ledger stats`) and, for each of the five fixed decision
 # categories, `ateam steward ledger recall <category> --limit 3` — skipping
 # any category reporting exactly "no ledger entries" to keep the payload
-# tight. Emitted as plain stdout text (NOT JSON — SessionStart-compact output
-# is raw text, matching compact-recovery.sh's own pattern, unlike
-# UserPromptSubmit's jq/additionalContext shape). Silent no-op for any
-# session with no resolved role.
+# tight. Emitted as plain stdout text (NOT JSON — SessionStart output is raw
+# text, matching compact-recovery.sh's own pattern, unlike UserPromptSubmit's
+# jq/additionalContext shape). Silent no-op for any session with no resolved
+# role. This logic is reason-independent — it behaves identically regardless
+# of which of the two matched reasons (clear or compact) triggered it; the
+# script never reads or branches on a "reason"/"source" field.
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
@@ -56,10 +73,10 @@ hook_log_note "note" "role-resolved role=${role}"
 STEWARD_LEDGER_CATEGORIES="plan-approval scope-call merge-approval design-fork unblock-action"
 
 if [ "$role" = "dri" ]; then
-  echo "## agent-teams: dri role learnings (post-compaction recovery)"
+  echo "## agent-teams: dri role learnings (session-start recovery)"
   "$ATEAM" learnings dri 2>/dev/null || true
 elif [ "$role" = "steward" ]; then
-  echo "## agent-teams: steward role learnings (post-compaction recovery)"
+  echo "## agent-teams: steward role learnings (session-start recovery)"
   "$ATEAM" learnings steward 2>/dev/null || true
   echo ""
   echo "## agent-teams: steward ledger track record"

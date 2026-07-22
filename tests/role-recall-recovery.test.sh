@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# role-recall-recovery.test.sh — coverage for the SessionStart(compact)
-# post-compact role learnings + steward ledger context hook
-# (agent-teams-7ew5.2.4).
+# role-recall-recovery.test.sh — coverage for the
+# SessionStart(clear|compact) role learnings + steward ledger context hook
+# (agent-teams-7ew5.2.4; narrowed from compact-only to clear|compact — the
+# only two SessionStart reasons that both wipe learnings from context and
+# don't re-run the skill prose that would otherwise reload them — and
+# absorbing the deleted prime-role-learnings.sh's coverage, by
+# agent-teams-7ew5.2.8).
 #
 # Drives the hook script directly against a temp AGENT_TEAMS_HOME, with a
 # fake ateam shim recognizing `learnings <role>`, `steward ledger stats`, and
@@ -73,6 +77,14 @@ run_hook() {
   ( cd "$cwd" && printf '{"session_id":"%s"}' "$sid" | "$SCRIPT" ) 2>/dev/null
 }
 
+run_hook_reason() {
+  # run_hook_reason <cwd> <session_id> <reason> — mirrors the extra "source"
+  # field Claude Code includes on SessionStart stdin; the script itself never
+  # reads it (reason-independent), so this only proves output is unaffected.
+  local cwd="$1" sid="$2" reason="$3"
+  ( cd "$cwd" && printf '{"session_id":"%s","source":"%s"}' "$sid" "$reason" | "$SCRIPT" ) 2>/dev/null
+}
+
 # ── Case: dri marker present -> dri learnings only, no ledger content ────────
 DRI_SID="dri-sess-0001"
 mkdir -p "$AGENT_TEAMS_HOME/dri-sessions"
@@ -133,6 +145,57 @@ if awk -F'\t' '$3=="role-recall-recovery.sh" && index($6,"reason=no-role"){f=1} 
   pass "no role -> logs reason=no-role"
 else
   fail "no role -> expected reason=no-role in hooks.log; tail: $(tail -5 "$HOOKS_LOG" 2>/dev/null)"
+fi
+
+# ── Case: malformed/path-traversal session_id -> silent no-op (treated as no
+# role, never an error — valid_session_id rejects it before any marker path
+# is built) ────────────────────────────────────────────────────────────────
+TRAVERSAL_SID="../../etc/passwd"
+out=$(run_hook "$PLAIN_DIR" "$TRAVERSAL_SID")
+if [ -z "$out" ]; then
+  pass "path-traversal session_id -> empty stdout"
+else
+  fail "path-traversal session_id -> expected empty stdout; got: $out"
+fi
+if [ -e "$AGENT_TEAMS_HOME/dri-sessions/$TRAVERSAL_SID" ]; then
+  fail "path-traversal session_id -> unexpectedly created a marker path"
+else
+  pass "path-traversal session_id -> zero side effects (no marker path created)"
+fi
+
+# ── Case: ateam/workspace missing -> silent no-op, reason=missing-deps ───────
+out=$( (cd "$PLAIN_DIR" && printf '{"session_id":"%s"}' "$DRI_SID" | AGENT_TEAMS_HOME="$T/nope-ws" "$SCRIPT") 2>/dev/null )
+if [ -z "$out" ]; then
+  pass "missing workspace -> empty stdout"
+else
+  fail "missing workspace -> expected empty stdout; got: $out"
+fi
+NOPE_LOG="$T/nope-ws/debug/hooks.log"
+if awk -F'\t' '$3=="role-recall-recovery.sh" && index($6,"reason=missing-deps"){f=1} END{exit !f}' "$NOPE_LOG" 2>/dev/null; then
+  pass "missing workspace -> logs reason=missing-deps"
+else
+  fail "missing workspace -> expected reason=missing-deps in hooks.log; tail: $(tail -5 "$NOPE_LOG" 2>/dev/null)"
+fi
+
+# ── Case: reason-independence — identical dri-role output across both
+# matched SessionStart reasons (clear, compact) ──────────────────────────────
+out_clear=$(run_hook_reason "$PLAIN_DIR" "$DRI_SID" "clear")
+out_compact=$(run_hook_reason "$PLAIN_DIR" "$DRI_SID" "compact")
+
+all_have_dri=true
+for o in "$out_clear" "$out_compact"; do
+  printf '%s' "$o" | grep -q "LEARNINGS:dri" || all_have_dri=false
+done
+if [ "$all_have_dri" = "true" ]; then
+  pass "dri role -> LEARNINGS:dri present under clear/compact reasons alike"
+else
+  fail "dri role -> expected LEARNINGS:dri under every reason; got clear=[$out_clear] compact=[$out_compact]"
+fi
+
+if [ "$out_clear" = "$out_compact" ]; then
+  pass "dri role -> byte-identical output regardless of reason (clear vs compact)"
+else
+  fail "dri role -> output differs by reason; clear=[$out_clear] compact=[$out_compact]"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
