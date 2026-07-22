@@ -56,6 +56,11 @@ func Factory(home string) (transport.Transport, error) {
 // longPollTimeout is the getUpdates long-poll duration.
 const longPollTimeout = 30
 
+// maxTopicNameLen is a defensive cap on the forum topic name. msg.Title is
+// already ≤72 chars (dispatch's shortTitle cap) by the time it reaches here;
+// this backstops any caller that isn't already bounded.
+const maxTopicNameLen = 64
+
 // Telegram implements transport.Transport via the Telegram Bot API.
 type Telegram struct {
 	token      string
@@ -119,9 +124,11 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	threadRef := msg.ThreadRef
 
 	if threadRef == "" {
-		// Open a new forum topic named "[<InitiativeID>] <Title>".
-		topicName := fmt.Sprintf("[%s] %s", msg.InitiativeID, msg.Title)
-		id, err := t.createForumTopic(topicName)
+		// Open a new forum topic named after the initiative's friendly
+		// title. No [<InitiativeID>] prefix: the id is meaningless noise in
+		// the title and stays available internally via the thread:<ref>
+		// bead label (routing) and this topic's first message body.
+		id, err := t.createForumTopic(truncateUTF8(msg.Title, maxTopicNameLen))
 		if err != nil {
 			return "", fmt.Errorf("telegram: createForumTopic: %w", err)
 		}
@@ -129,10 +136,11 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	}
 
 	// Build the message body. On reuse of an existing thread the title is
-	// included as a header so replies stay scannable.
+	// included as a header (no [<InitiativeID>] prefix, same rationale as
+	// the topic name) so replies stay scannable.
 	body := msg.Body
 	if msg.ThreadRef != "" {
-		body = fmt.Sprintf("[%s] %s\n\n%s", msg.InitiativeID, msg.Title, msg.Body)
+		body = fmt.Sprintf("%s\n\n%s", msg.Title, msg.Body)
 	}
 
 	if err := t.sendMessage(threadRef, body); err != nil {
@@ -559,4 +567,24 @@ func loadSecret(home, envKey, relPath string) (string, error) {
 
 func decodeJSON(r io.Reader, dst any) error {
 	return json.NewDecoder(r).Decode(dst)
+}
+
+// truncateUTF8 truncates s to at most maxBytes bytes without splitting a
+// multi-byte UTF-8 rune (agent-teams-6rru.14: a byte-index slice can cut a
+// rune in half, sending invalid UTF-8 to the Telegram API). Ranging over a
+// string yields the byte offset of each rune boundary in increasing order;
+// the last offset at or below maxBytes is the largest length that is still
+// a complete sequence of runes.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := 0
+	for i := range s {
+		if i > maxBytes {
+			break
+		}
+		cut = i
+	}
+	return s[:cut]
 }

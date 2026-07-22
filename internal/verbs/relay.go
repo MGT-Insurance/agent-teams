@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -97,6 +98,19 @@ func defaultBDQueryClosed(home, label string) ([]bd.Issue, error) {
 	return issues, nil
 }
 
+// relayDoltPullFunc pulls the global workspace's dolt-backed beads DB from
+// its remote. Used only by freshenBeforeUntied below to absorb cross-machine
+// label-sync lag before conceding a reply is genuinely untied
+// (agent-teams-6rru.10 Part B). Injected so tests can substitute a fake
+// without touching dolt/git.
+type relayDoltPullFunc func(home string) error
+
+// defaultDoltPull runs `bd -C <home> dolt pull`.
+func defaultDoltPull(home string) error {
+	_, err := bd.NewClient(home).Run("dolt", "pull")
+	return err
+}
+
 // defaultRelaySend execs `ateam mail send steward --file <file> --sender
 // human` as a subprocess so the relay loop is not blocked by the in-process
 // send machinery. The Steward is always the recipient; it reads the mapped
@@ -115,6 +129,8 @@ func RegisterRelayKong(p *cli.Parser) {
 		transportFor:        transport.For,
 		bdQuery:             defaultBDQuery,
 		bdQueryClosed:       defaultBDQueryClosed,
+		doltPull:            defaultDoltPull,
+		sleeper:             defaultSleeper,
 		send:                defaultRelaySend,
 		claimsLocally:       claimsInitiativeLocally,
 		isFallbackResponder: isFallbackResponder,
@@ -128,6 +144,8 @@ type relayKong struct {
 	transportFor  relayTransportForFunc  `kong:"-"`
 	bdQuery       relayBDQueryFunc       `kong:"-"`
 	bdQueryClosed relayBDQueryClosedFunc `kong:"-"`
+	doltPull      relayDoltPullFunc      `kong:"-"`
+	sleeper       sleeperFunc            `kong:"-"`
 	send          relaySendFunc          `kong:"-"`
 
 	// Multi-machine ownership-gating seams (agent-teams-5y8a.5) — see the
@@ -159,6 +177,8 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 	}
 
 	fmt.Fprintf(ctx.Stdout, "ateam relay: starting on transport %q\n", t.Name())
+
+	go runHungTick(ctx, t)
 
 	return t.Receive(func(reply transport.Reply) error {
 		return c.handleReply(ctx, reply)
@@ -249,34 +269,57 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	label := "thread:" + reply.ThreadRef
 	home := workspace.Home()
 
-	issues, err := c.bdQuery(home, label)
-	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query for label %q failed: %v — skipping\n", label, err)
+	issues, queryErr := c.bdQuery(home, label)
+	var open []bd.Issue
+	untied := false
+	if queryErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query for label %q failed: %v — skipping\n", label, queryErr)
+		untied = true
+	} else {
+		// Filter to open issues only (bdQuery already filters, but guard
+		// against implementations that do not).
+		for _, iss := range issues {
+			if strings.EqualFold(iss.Status, "open") {
+				open = append(open, iss)
+			}
+		}
+		untied = len(open) == 0
+	}
+
+	if untied {
+		// Untied (agent-teams-5y8a.5): only the designated fallback
+		// responder attempts the freshen-then-safety-net path below — every
+		// other machine sees the same untied reply and must suppress it
+		// rather than also routing it.
 		if !c.isFallbackResponder(ctx) {
-			fmt.Fprintln(ctx.Stderr, "ateam relay: not fallback responder — skipping unrouted reply")
+			if queryErr != nil {
+				fmt.Fprintln(ctx.Stderr, "ateam relay: not fallback responder — skipping unrouted reply")
+			} else {
+				fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping untied reply (thread %q)\n", reply.ThreadRef)
+			}
 			return nil
 		}
-		c.sendUnroutedToSteward(ctx, reply.ThreadRef, fmt.Sprintf("bd query error: %v", err), reply.Text)
-		return nil
-	}
 
-	// Filter to open issues only (bdQuery already filters, but guard against
-	// implementations that do not).
-	var open []bd.Issue
-	for _, iss := range issues {
-		if strings.EqualFold(iss.Status, "open") {
-			open = append(open, iss)
+		// Freshen before conceding the reply is genuinely untied
+		// (agent-teams-6rru.10 Part B): the thread label can still be
+		// invisible here even though it exists — same-machine commit lag
+		// (notify/dispatch just wrote it) or cross-machine dolt-sync lag
+		// (a DIFFERENT machine wrote it and this one hasn't pulled yet).
+		// Applies whether "untied" came from the query-error branch above
+		// or the zero-open-match case below — either way it just means "no
+		// resolution yet from the local view", not "genuinely untied". A
+		// successful freshen feeds directly into the same routing below, so
+		// there is exactly one tied/ambiguous decision point either way.
+		if freshOpen := c.freshenBeforeUntied(ctx, home, label); len(freshOpen) > 0 {
+			fmt.Fprintf(ctx.Stderr, "ateam relay: freshen resolved label %q (%d open match(es)) — routing, not straying\n", label, len(freshOpen))
+			open = freshOpen
+			untied = false
 		}
 	}
 
-	switch len(open) {
-	case 0:
-		// Untied (agent-teams-5y8a.5): only the designated fallback
-		// responder attempts the closed-initiative safety net or the
-		// unrouted catch-all below — every other machine sees the same
-		// untied reply and must suppress it rather than also routing it.
-		if !c.isFallbackResponder(ctx) {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping untied reply (thread %q)\n", reply.ThreadRef)
+	if untied {
+		if queryErr != nil {
+			c.sendUnroutedToSteward(ctx, reply.ThreadRef, fmt.Sprintf("bd query error: %v", queryErr), reply.Text)
 			return nil
 		}
 		routed, reason := c.routeClosedInitiativeSafetyNet(ctx, home, label, reply)
@@ -286,6 +329,9 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		fmt.Fprintf(ctx.Stderr, "ateam relay: no open initiative found for label %q — skipping\n", label)
 		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
 		return nil
+	}
+
+	switch len(open) {
 	case 1:
 		// Tied (agent-teams-5y8a.5): only the machine that holds this
 		// initiative's checkout routes it — every other machine sees the
@@ -295,8 +341,10 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 			return nil
 		}
 	default:
-		// Untied/ambiguous (agent-teams-5y8a.5): same fallback-only gate as
-		// the case-0 branch above.
+		// Ambiguous (agent-teams-5y8a.5): same fallback-only gate as the
+		// untied branch above. (len(open) can't be 0 here — the untied
+		// block above always either returns or clears untied by producing a
+		// non-empty open.)
 		if !c.isFallbackResponder(ctx) {
 			fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping ambiguous reply (thread %q)\n", reply.ThreadRef)
 			return nil
@@ -317,6 +365,51 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	c.sendEnvelopeToSteward(ctx, envelope, fmt.Sprintf("initiative %s", id))
 	return nil
+}
+
+// relayFreshenBackoff is the short bounded backoff freshenBeforeUntied sleeps
+// before its re-query, absorbing same-machine label-commit lag (this
+// process's view of a label notify/dispatch just wrote locally hasn't
+// caught up yet). Small enough not to stall the relay's Receive loop.
+const relayFreshenBackoff = 250 * time.Millisecond
+
+// freshenBeforeUntied re-resolves label against a fresh view before
+// handleReply's untied path concedes the reply is genuinely untied
+// (agent-teams-6rru.10 Part B — the routing-race fix: a topic created by
+// Send is replyable immediately, but its thread label is written after Send
+// and may not be visible yet, either on this machine or (multi-machine) on
+// whichever machine's relay fields the reply).
+//
+// Performs at most ONE dolt-pull (absorbs cross-machine label-sync lag —
+// the label may have been written by a DIFFERENT machine's notify/dispatch
+// and not yet synced here) and, after one short bounded backoff (absorbs
+// same-machine label-commit lag), ONE re-query — never a retry loop, so a
+// reply that is genuinely untied is never held up for long. A pull failure
+// (no remote configured, transient network hiccup) is warned and
+// non-fatal: the re-query still picks up a same-machine write even without
+// a working remote. A re-query failure is also warned. Either way the
+// caller treats a nil/empty return as "still untied".
+func (c *relayKong) freshenBeforeUntied(ctx *cli.Context, home, label string) []bd.Issue {
+	if c.doltPull != nil {
+		if err := c.doltPull(home); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam relay: freshen: dolt pull failed (continuing): %v\n", err)
+		}
+	}
+	if c.sleeper != nil {
+		c.sleeper(relayFreshenBackoff)
+	}
+	issues, err := c.bdQuery(home, label)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam relay: freshen: re-query for label %q failed: %v\n", label, err)
+		return nil
+	}
+	var open []bd.Issue
+	for _, iss := range issues {
+		if strings.EqualFold(iss.Status, "open") {
+			open = append(open, iss)
+		}
+	}
+	return open
 }
 
 // routeClosedInitiativeSafetyNet handles the case-0 branch of handleReply:

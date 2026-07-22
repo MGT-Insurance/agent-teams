@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -116,25 +117,74 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 		Body:         string(body),
 	}
 
-	returnedRef, err := t.Send(msg)
+	returnedRef, err := sendAndLabelThread(ctx, c.ID, t, msg, c.labelAdd, "ateam notify")
 	if err != nil {
 		return fmt.Errorf("ateam notify: send: %w", err)
-	}
-
-	// If this was a new topic, record the thread label so subsequent notifies
-	// reuse it and the relay can reverse-map (contract section 2).
-	if threadRef == "" && returnedRef != "" {
-		label := "thread:" + returnedRef
-		if labErr := c.labelAdd(ctx.BD, c.ID, label); labErr != nil {
-			// Non-fatal: notify succeeded; label write failure is surfaced but
-			// does not break the caller.
-			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not record thread label on %s: %v\n", c.ID, labErr)
-		}
 	}
 
 	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)
 	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", c.ID)
 	return nil
+}
+
+// labelWriteMaxAttempts bounds sendAndLabelThread's label-write retry loop
+// (agent-teams-6rru.10 Part A): a topic whose thread label never lands is
+// replyable but permanently unroutable — worse than no topic at all — so
+// the old single-shot best-effort write is no longer acceptable. Bounded so
+// a persistently failing write (bd/dolt genuinely broken) still returns
+// promptly.
+const labelWriteMaxAttempts = 3
+
+// labelWriteRetryDelay is the fixed backoff between label-write attempts,
+// absorbing a transient local write conflict (e.g. another bd command
+// briefly holding the dolt working-set lock).
+const labelWriteRetryDelay = 50 * time.Millisecond
+
+// sendAndLabelThread calls t.Send(msg) and, if msg opened a new topic
+// (msg.ThreadRef == "" and Send returned a non-empty ref), records
+// "thread:<ref>" on the initiative bead via labelAdd so subsequent sends
+// reuse the topic and the relay can reverse-map replies (contract section
+// 2). Shared by notify's first-send path and dispatch's eager topic
+// creation, so there is exactly one create+label code path.
+//
+// The label write is retried up to labelWriteMaxAttempts times. If it still
+// hasn't landed, that is surfaced LOUDLY (agent-teams-6rru.10 Part A): a
+// stderr error plus a non-nil returned error, no longer swallowed to a
+// best-effort warning. returnedRef is still returned alongside the error
+// (Send already succeeded) so a caller that must stay fail-soft — dispatch's
+// createInitialTopic — can tell "topic exists but is unroutable" apart from
+// "no topic at all".
+//
+// On a successful label write, this also attempts a best-effort `bd dolt
+// push` so peer machines can pull the label before a reply arrives — the
+// cross-machine half of the timing window relay.go's freshen-before-untied
+// (agent-teams-6rru.10 Part B) exists to absorb from the reader's side. A
+// push failure is warned and does not affect the returned error.
+func sendAndLabelThread(ctx *cli.Context, id string, t transport.Transport, msg transport.OutboundMessage, labelAdd labelAddFunc, errPrefix string) (string, error) {
+	returnedRef, err := t.Send(msg)
+	if err != nil {
+		return "", err
+	}
+	if msg.ThreadRef == "" && returnedRef != "" {
+		label := "thread:" + returnedRef
+		var labErr error
+		for attempt := 1; attempt <= labelWriteMaxAttempts; attempt++ {
+			if labErr = labelAdd(ctx.BD, id, label); labErr == nil {
+				break
+			}
+			if attempt < labelWriteMaxAttempts {
+				time.Sleep(labelWriteRetryDelay)
+			}
+		}
+		if labErr != nil {
+			fmt.Fprintf(ctx.Stderr, "%s: ERROR: could not record thread label %q on %s after %d attempts — topic is replyable but UNROUTABLE: %v\n", errPrefix, label, id, labelWriteMaxAttempts, labErr)
+			return returnedRef, fmt.Errorf("record thread label %q on %s after %d attempts: %w", label, id, labelWriteMaxAttempts, labErr)
+		}
+		if _, pushErr := ctx.BD.Run("dolt", "push"); pushErr != nil {
+			fmt.Fprintf(ctx.Stderr, "%s: warning: could not push thread label for %s to remote (peers will pick it up on their next sync): %v\n", errPrefix, id, pushErr)
+		}
+	}
+	return returnedRef, nil
 }
 
 // runBriefing handles the reserved BriefingHandle: no initiative bead behind

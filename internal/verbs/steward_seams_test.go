@@ -108,6 +108,49 @@ func TestStewardReplyEnvelope_RoundTrip(t *testing.T) {
 	}
 }
 
+// ── Hung-wake→Steward envelope round-trip ────────────────────────────────────
+
+func TestStewardHungWakeEnvelope_RoundTrip(t *testing.T) {
+	body := "[hung-scan] agent-teams-e3mq (some title) has been STUCK since 2026-07-21T00:00:00Z with no gate raised (wake attempt 1/2). Please check on it."
+	text, err := verbs.BuildStewardHungWakeEnvelope("agent-teams-e3mq", body)
+	if err != nil {
+		t.Fatalf("BuildStewardHungWakeEnvelope: %v", err)
+	}
+
+	want := "<<<steward-hung-wake initiative:agent-teams-e3mq>>>\n" + body + "\n>>>"
+	if text != want {
+		t.Fatalf("BuildStewardHungWakeEnvelope =\n%q\nwant\n%q", text, want)
+	}
+
+	gotID, gotBody, ok := verbs.IsStewardHungWake(text)
+	if !ok {
+		t.Fatalf("IsStewardHungWake: ok=false, want true")
+	}
+	if gotID != "agent-teams-e3mq" {
+		t.Errorf("initiativeID = %q, want %q", gotID, "agent-teams-e3mq")
+	}
+	if gotBody != body {
+		t.Errorf("body = %q, want %q", gotBody, body)
+	}
+
+	// A hung-wake envelope must NOT be matched by the steward-reply parser —
+	// this is the exact mix-up agent-teams-6rru.16 fixes (a mechanical wake
+	// misread as a genuine Eric reply).
+	if _, ok := verbs.ParseStewardReplyEnvelope(text); ok {
+		t.Errorf("ParseStewardReplyEnvelope(hung-wake text) ok=true, want false")
+	}
+}
+
+func TestIsStewardHungWake_RejectsStewardReplyEnvelope(t *testing.T) {
+	replyText, err := verbs.BuildStewardReplyEnvelope("agent-teams-e3mq", "Go with design A.")
+	if err != nil {
+		t.Fatalf("BuildStewardReplyEnvelope: %v", err)
+	}
+	if _, _, ok := verbs.IsStewardHungWake(replyText); ok {
+		t.Errorf("IsStewardHungWake(reply text) ok=true, want false")
+	}
+}
+
 // ── Closed-initiative→Steward envelope round-trip ────────────────────────────
 
 func TestStewardClosedInitiativeEnvelope_RoundTrip(t *testing.T) {
@@ -276,9 +319,9 @@ func TestParseStewardDirectEnvelope_Malformed(t *testing.T) {
 
 // ── Cross-parser rejection matrix ────────────────────────────────────────────
 
-// TestStewardEnvelopes_CrossParserRejection feeds each of the four envelope
-// formats to all four parsers and confirms only the matching parser accepts
-// — no cross-match between gate/reply/closed-initiative/direct.
+// TestStewardEnvelopes_CrossParserRejection feeds each of the five envelope
+// formats to all five parsers and confirms only the matching parser accepts
+// — no cross-match between gate/reply/hung-wake/closed-initiative/direct.
 func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 	gateText, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, "body")
 	if err != nil {
@@ -287,6 +330,10 @@ func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 	replyText, err := verbs.BuildStewardReplyEnvelope("agent-teams-e3mq", "body")
 	if err != nil {
 		t.Fatalf("BuildStewardReplyEnvelope: %v", err)
+	}
+	hungWakeText, err := verbs.BuildStewardHungWakeEnvelope("agent-teams-e3mq", "body")
+	if err != nil {
+		t.Fatalf("BuildStewardHungWakeEnvelope: %v", err)
 	}
 	closedInitiativeText, err := verbs.BuildStewardClosedInitiativeEnvelope("agent-teams-e3mq", "body")
 	if err != nil {
@@ -300,6 +347,7 @@ func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 	texts := map[string]string{
 		"gate":              gateText,
 		"reply":             replyText,
+		"hung-wake":         hungWakeText,
 		"closed-initiative": closedInitiativeText,
 		"direct":            directText,
 	}
@@ -310,6 +358,9 @@ func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 		}
 		if _, ok := verbs.ParseStewardReplyEnvelope(text); ok != (textName == "reply") {
 			t.Errorf("ParseStewardReplyEnvelope(%s) ok=%v, want %v", textName, ok, textName == "reply")
+		}
+		if _, _, ok := verbs.IsStewardHungWake(text); ok != (textName == "hung-wake") {
+			t.Errorf("IsStewardHungWake(%s) ok=%v, want %v", textName, ok, textName == "hung-wake")
 		}
 		if _, ok := verbs.ParseStewardClosedInitiativeEnvelope(text); ok != (textName == "closed-initiative") {
 			t.Errorf("ParseStewardClosedInitiativeEnvelope(%s) ok=%v, want %v", textName, ok, textName == "closed-initiative")

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -152,7 +153,7 @@ func TestSend_NewThread_CallsCreateForumTopicThenSendMessage(t *testing.T) {
 	if !gotSendMessage {
 		t.Error("sendMessage was not called")
 	}
-	wantName := "[at-00o] Blocked on review"
+	wantName := "Blocked on review"
 	if gotTopicName != wantName {
 		t.Errorf("topic name: got %q, want %q", gotTopicName, wantName)
 	}
@@ -169,6 +170,104 @@ func TestSend_NewThread_CallsCreateForumTopicThenSendMessage(t *testing.T) {
 	// Body sent directly (no title prefix) on new-thread path.
 	if gotSendText != "Need your approval." {
 		t.Errorf("sendMessage text: got %q, want %q", gotSendText, "Need your approval.")
+	}
+}
+
+// TestSend_NewThread_TopicNameCappedAt64Chars confirms the defensive
+// maxTopicNameLen backstop: a Title longer than 64 chars is truncated before
+// createForumTopic is called, and carries no [<InitiativeID>] prefix.
+func TestSend_NewThread_TopicNameCappedAt64Chars(t *testing.T) {
+	const chatID = "-100123456789"
+	longTitle := strings.Repeat("x", 100)
+
+	var gotTopicName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/createForumTopic"):
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			gotTopicName = r.FormValue("name")
+			jsonResponse(w, 200, map[string]any{
+				"ok":     true,
+				"result": map[string]any{"message_thread_id": 1},
+			})
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	if _, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		ThreadRef:    "",
+		Title:        longTitle,
+		Body:         "body",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if len(gotTopicName) != maxTopicNameLen {
+		t.Errorf("topic name length: got %d, want %d", len(gotTopicName), maxTopicNameLen)
+	}
+	if gotTopicName != longTitle[:maxTopicNameLen] {
+		t.Errorf("topic name: got %q, want %q", gotTopicName, longTitle[:maxTopicNameLen])
+	}
+}
+
+// TestSend_NewThread_TopicNameTruncationIsRuneSafe confirms
+// agent-teams-6rru.14's fix: a Title whose multi-byte rune straddles byte 64
+// (the maxTopicNameLen cap) is truncated at the last full rune boundary at
+// or below the cap, never mid-rune. 62 ASCII 'x' bytes are followed by a
+// 4-byte emoji occupying bytes 62-65 — straddling the byte-64 cut point —
+// followed by more ASCII that would never survive truncation either way.
+func TestSend_NewThread_TopicNameTruncationIsRuneSafe(t *testing.T) {
+	const chatID = "-100123456789"
+	const asciiPrefixLen = 62
+	title := strings.Repeat("x", asciiPrefixLen) + "😀" + strings.Repeat("y", 20)
+
+	var gotTopicName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/createForumTopic"):
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			gotTopicName = r.FormValue("name")
+			jsonResponse(w, 200, map[string]any{
+				"ok":     true,
+				"result": map[string]any{"message_thread_id": 1},
+			})
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	if _, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		ThreadRef:    "",
+		Title:        title,
+		Body:         "body",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if !utf8.ValidString(gotTopicName) {
+		t.Errorf("topic name is not valid UTF-8: %q", gotTopicName)
+	}
+	if len(gotTopicName) > maxTopicNameLen {
+		t.Errorf("topic name length: got %d bytes, want <= %d", len(gotTopicName), maxTopicNameLen)
+	}
+	wantTopicName := strings.Repeat("x", asciiPrefixLen)
+	if gotTopicName != wantTopicName {
+		t.Errorf("topic name: got %q, want %q (emoji should be dropped, not split)", gotTopicName, wantTopicName)
 	}
 }
 
@@ -217,7 +316,7 @@ func TestSend_ExistingThread_SkipsCreateForumTopic(t *testing.T) {
 	if gotSendThreadID != "7" {
 		t.Errorf("sendMessage thread_id: got %q, want %q", gotSendThreadID, "7")
 	}
-	wantText := "[at-00o] Status update\n\nAll good."
+	wantText := "Status update\n\nAll good."
 	if gotSendText != wantText {
 		t.Errorf("sendMessage text:\ngot  %q\nwant %q", gotSendText, wantText)
 	}

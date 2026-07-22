@@ -308,16 +308,50 @@ func defaultResume(ctx *cli.Context, id, launchPrompt, model string) error {
 	return cmd.Run(ctx)
 }
 
-// hasLiveSession reports whether any session in sessions has a cwd matching
-// worktreePath (symlink-normalised, see canonicalPath).
+// hasLiveSession reports whether any session in sessions matches
+// worktreePath (see matchSessionByWorktree).
 func hasLiveSession(sessions []agentSession, worktreePath string) bool {
 	return matchSessionByWorktree(sessions, worktreePath) != nil
 }
 
-// matchSessionByWorktree returns a pointer to the first session in sessions
-// whose cwd resolves (symlink-normalised, see canonicalPath) to worktreePath,
-// or nil if none match.
+// matchSessionByWorktree returns the session in sessions that best matches
+// worktreePath. Background sessions carry Name = filepath.Base of the
+// REGISTERED worktree they were dispatched with (`-n <name>`, dispatch.go)
+// and Name stays stable even after the session's cwd wanders into a sibling
+// track worktree — so Name is the durable initiative<->session link and is
+// matched FIRST, preferring a PID-present (live) match over a PID-nil (dead)
+// one so a live session always wins over a dead duplicate parked at the
+// registered worktree's cwd (agent-teams-6rru.15; also fixes the mail-send
+// duplicate-DRI bug at at-wisp-e50, since this helper backs messaging.go's
+// liveness check too). Exact canonicalPath(CWD) equality remains a fallback
+// for sessions with no Name (e.g. foreground/interactive sessions, which are
+// never dispatched with `-n` and so can only be found by cwd).
+//
+// Precedence:
+//  1. Name == filepath.Base(canonicalPath(worktreePath)) AND PID != nil.
+//  2. Name == filepath.Base(canonicalPath(worktreePath)), any PID state.
+//  3. exact canonicalPath(CWD) == canonicalPath(worktreePath).
+//
+// Returns nil if none match.
 func matchSessionByWorktree(sessions []agentSession, worktreePath string) *agentSession {
+	wantName := filepath.Base(canonicalPath(worktreePath))
+
+	var deadNamed *agentSession
+	for i := range sessions {
+		if sessions[i].Name == "" || sessions[i].Name != wantName {
+			continue
+		}
+		if sessions[i].PID != nil {
+			return &sessions[i]
+		}
+		if deadNamed == nil {
+			deadNamed = &sessions[i]
+		}
+	}
+	if deadNamed != nil {
+		return deadNamed
+	}
+
 	want := canonicalPath(worktreePath)
 	for i := range sessions {
 		if canonicalPath(sessions[i].CWD) == want {

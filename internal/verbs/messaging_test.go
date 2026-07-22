@@ -69,6 +69,78 @@ func TestHasLiveSession_SymlinkedCwd(t *testing.T) {
 	}
 }
 
+// ── matchSessionByWorktree (Name-first matching, agent-teams-6rru.15) ───────
+
+// TestMatchSessionByWorktree_NameMatchesWanderedCwd is the agent-teams-6rru.15
+// repro: a live session's cwd has wandered into a sibling track worktree
+// (not the registered worktree), but its Name (the `-n` dispatch value =
+// filepath.Base of the registered worktree, stable across cwd-wander) still
+// matches — so it must be found via Name even though cwd does not match.
+func TestMatchSessionByWorktree_NameMatchesWanderedCwd(t *testing.T) {
+	pid := 42
+	registered := "/repo-root/at-lcrp"
+	sessions := []agentSession{
+		{CWD: "/repo-root/at-lcrp-track-h", Name: "at-lcrp", Status: "busy", PID: &pid},
+	}
+	got := matchSessionByWorktree(sessions, registered)
+	if got == nil {
+		t.Fatal("expected a match via Name despite cwd mismatch")
+	}
+	if got.PID == nil || *got.PID != pid {
+		t.Error("expected the wandered-cwd session to be returned")
+	}
+}
+
+// TestMatchSessionByWorktree_LiveNamedWinsOverDeadDuplicate covers the full
+// at-wisp-e50 / agent-teams-6rru.15 repro: a dead duplicate session sitting
+// at the registered worktree's cwd (Name matches, PID nil) alongside the
+// live session that wandered into a track worktree (Name matches, PID
+// present) — the live one must win regardless of slice order.
+func TestMatchSessionByWorktree_LiveNamedWinsOverDeadDuplicate(t *testing.T) {
+	pid := 7
+	registered := "/repo-root/at-lcrp"
+
+	deadDuplicate := agentSession{CWD: registered, Name: "at-lcrp"} // no PID
+	liveWandered := agentSession{CWD: "/repo-root/at-lcrp-track-h", Name: "at-lcrp", Status: "busy", PID: &pid}
+
+	for _, order := range [][]agentSession{
+		{deadDuplicate, liveWandered},
+		{liveWandered, deadDuplicate},
+	} {
+		got := matchSessionByWorktree(order, registered)
+		if got == nil {
+			t.Fatal("expected a match")
+		}
+		if got.PID == nil {
+			t.Error("expected the LIVE named session to be returned, got the dead duplicate")
+		}
+	}
+}
+
+// TestMatchSessionByWorktree_NoNameFallsBackToCwd is a regression guard for
+// foreground/interactive sessions, which are never dispatched with `-n` and
+// so carry no Name — the exact-cwd fallback must still find them.
+func TestMatchSessionByWorktree_NoNameFallsBackToCwd(t *testing.T) {
+	registered := "/repo-root/at-lcrp"
+	sessions := []agentSession{{CWD: registered, Status: "busy"}}
+	got := matchSessionByWorktree(sessions, registered)
+	if got == nil {
+		t.Fatal("expected cwd-fallback match for a nameless session")
+	}
+}
+
+// TestMatchSessionByWorktree_NoMatchAtAll is the true-DEAD case: no session
+// matches by Name or by cwd.
+func TestMatchSessionByWorktree_NoMatchAtAll(t *testing.T) {
+	if matchSessionByWorktree(nil, "/repo-root/at-lcrp") != nil {
+		t.Error("expected nil for no sessions")
+	}
+	sessions := []agentSession{{CWD: "/other/path", Name: "other"}}
+	if matchSessionByWorktree(sessions, "/repo-root/at-lcrp") != nil {
+		t.Error("expected nil when nothing matches by Name or cwd")
+	}
+}
+
 // ── senderFromNotes ───────────────────────────────────────────────────────────
 
 func TestSenderFromNotes_Present(t *testing.T) {

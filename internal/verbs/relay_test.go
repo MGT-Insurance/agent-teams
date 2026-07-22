@@ -1012,6 +1012,223 @@ func TestRelay_UntiedReply_FallbackResponder_RoutesUnrouted(t *testing.T) {
 	}
 }
 
+// ── freshen-before-untied (agent-teams-6rru.10 Part B) ───────────────────────
+
+// sequencedBDQuery returns a different (possibly erroring) result on each
+// successive call for a configured label, tracking a call count — used to
+// exercise freshenBeforeUntied, where the SAME label is queried twice
+// (initial + freshen) and must resolve differently across the two calls.
+// Any other label returns a zero-match result, matching newFakeBDQuery's
+// default.
+type sequencedBDQuery struct {
+	label   string
+	results [][]bd.Issue // results[i] is returned on the (i+1)th call for label
+	errs    []error      // errs[i], if non-nil, is returned instead of results[i]
+	calls   int
+}
+
+func (s *sequencedBDQuery) query(_, label string) ([]bd.Issue, error) {
+	if label != s.label {
+		return nil, nil
+	}
+	i := s.calls
+	s.calls++
+	if i < len(s.errs) && s.errs[i] != nil {
+		return nil, s.errs[i]
+	}
+	if i >= len(s.results) {
+		i = len(s.results) - 1
+	}
+	if i < 0 {
+		return nil, nil
+	}
+	return s.results[i], nil
+}
+
+// TestRelay_UntiedReply_FreshenResolves_RoutesTied confirms the core Part-B
+// fix: when the first query finds zero open matches but a freshen (dolt pull
+// + one bounded-backoff re-query) resolves to exactly one, the reply is
+// routed as tied — not strayed to the unrouted catch-all.
+func TestRelay_UntiedReply_FreshenResolves_RoutesTied(t *testing.T) {
+	sbdq := &sequencedBDQuery{
+		label: "thread:83",
+		results: [][]bd.Issue{
+			nil,                              // first query: label not yet visible
+			{{ID: "at-083", Status: "open"}}, // freshen re-query: now visible
+		},
+	}
+	pullCalls := 0
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "83", Text: "on it"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             sbdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+		doltPull: func(home string) error {
+			pullCalls++
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sbdq.calls != 2 {
+		t.Fatalf("expected 2 bdQuery calls (initial + freshen), got %d", sbdq.calls)
+	}
+	if pullCalls != 1 {
+		t.Errorf("expected exactly 1 doltPull call, got %d", pullCalls)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (routed after freshen, not strayed), got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-083" {
+		t.Errorf("envelope InitiativeID = %q, want at-083 (routed after freshen, not strayed)", env.InitiativeID)
+	}
+	if !strings.Contains(relayStderr(ctx), "freshen resolved") {
+		t.Errorf("expected a 'freshen resolved' diagnostic on stderr, got: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_UntiedReply_FreshenStillZero_StraysOnce confirms existing
+// behavior is preserved when freshen does NOT resolve the label: the reply
+// is still strayed to the unrouted catch-all, and exactly once (not once per
+// query attempt).
+func TestRelay_UntiedReply_FreshenStillZero_StraysOnce(t *testing.T) {
+	sbdq := &sequencedBDQuery{
+		label:   "thread:71",
+		results: [][]bd.Issue{nil, nil}, // still zero after freshen
+	}
+	pullCalls := 0
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "71", Text: "reply"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             sbdq.query,
+		bdQueryClosed:       newFakeBDQuery().query, // no closed match either
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+		doltPull: func(home string) error {
+			pullCalls++
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sbdq.calls != 2 {
+		t.Fatalf("expected 2 bdQuery calls (initial + freshen), got %d", sbdq.calls)
+	}
+	if pullCalls != 1 {
+		t.Errorf("expected exactly 1 doltPull call, got %d", pullCalls)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (stray, unchanged behavior), got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "71" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "71")
+	}
+}
+
+// TestRelay_TiedReply_FreshenNotInvoked confirms freshen is gated to the
+// untied path only: an already-tied reply (exactly one open match on the
+// first query) must never trigger a dolt pull or a second query.
+func TestRelay_TiedReply_FreshenNotInvoked(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:54"] = []bd.Issue{{ID: "at-054", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "54", Text: "reply"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+		doltPull: func(home string) error {
+			t.Fatal("doltPull must not be called for an already-tied reply (freshen is gated to the untied path only)")
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-054" {
+		t.Errorf("envelope InitiativeID = %q, want at-054", env.InitiativeID)
+	}
+}
+
+// TestRelay_BDQueryError_FreshenResolves_RoutesTied confirms freshen also
+// applies symmetrically to the bd-query-error branch (not just the
+// zero-open-match branch): a query error on the first attempt, resolved by
+// the freshen re-query, routes as tied rather than straying with the
+// original "bd query error" reason.
+func TestRelay_BDQueryError_FreshenResolves_RoutesTied(t *testing.T) {
+	sbdq := &sequencedBDQuery{
+		label: "thread:78",
+		errs:  []error{fmt.Errorf("bd timeout")}, // first call errors
+		results: [][]bd.Issue{
+			nil,                              // unused: call 0 errors instead
+			{{ID: "at-078", Status: "open"}}, // freshen re-query succeeds
+		},
+	}
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "78", Text: "reply"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             sbdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+		doltPull:            func(home string) error { return nil },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sbdq.calls != 2 {
+		t.Fatalf("expected 2 bdQuery calls (initial error + freshen), got %d", sbdq.calls)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected exactly 1 send call (routed after freshen, not strayed), got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-078" {
+		t.Errorf("envelope InitiativeID = %q, want at-078", env.InitiativeID)
+	}
+}
+
 // TestRelay_PeerStewardTopic_Skipped verifies the peer-topic gate: when a
 // reply's thread ref is a KNOWN steward topic belonging to ANOTHER machine
 // (knownStewardTopic true), the reply is skipped before the bd label query
