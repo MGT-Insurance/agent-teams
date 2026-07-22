@@ -58,7 +58,7 @@ Each unread message body is a self-contained, sentinel-delimited envelope (`inte
 
 A DRI parked on a gate.
 
-1. Enrich the embedded ask with `ateam show <id>` (recent notes/history for that initiative) and `ateam execution-status` (current state, so you can note anything relevant happening elsewhere).
+1. Enrich the embedded ask with `ateam show <id>` (recent notes/history for that initiative) and `ateam execution-status` (current state, so you can note anything relevant happening elsewhere). **Then recall whether Eric has decided a call like this before**: `ateam recall steward <keywords>` (the category plus a word or two from the ask) surfaces any lesson you captured from a past correction. A long-running steward compacts repeatedly, so don't assume the startup `ateam learnings steward` load is still in context — pull the relevant lesson at decision time and let it shape your recommendation.
 2. Compose a DIGESTED message to Eric — assume he has **not** seen the session:
    - The situation, in plain language.
    - Your recommendation.
@@ -87,6 +87,7 @@ Eric replied in a topic.
      --verdict accepted|corrected
    ```
    `<category>` is one of `plan-approval | scope-call | merge-approval | design-fork | unblock-action` — pick the one matching what kind of decision the gate posed. `verdict=accepted` only if Eric's reply matches your recommendation; `verdict=corrected` if it diverges in any part. Never rationalize a partial match as accepted.
+4. **If `corrected` — capture what Eric decided as a learning.** The ledger records only *that* you were off, never *what the right call was* — that corrective signal is the highest-value thing you can learn, so distill it immediately (`ateam learn steward <slug> --file <tmpfile>`, see §6). Shape RULE/TRIGGER/APPLY: RULE = the principle Eric applied, TRIGGER = the situation features that distinguish it (initiative kind, the specific plan/scope/merge facts), APPLY = what to recommend when it recurs. Keep it a reusable rule, not a transcript. The ledger is the tally; this is the lesson — it's what makes your next recommendation closer to Eric's. (v1 authority unchanged — you still escalate every gate.)
 
 ### steward-hung-wake (`<<<steward-hung-wake initiative:<id>>>>`)
 
@@ -171,6 +172,8 @@ ateam learn steward <slug> --file <tmpfile>
 ```
 
 Shape the body as RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY (what to do), with PROVENANCE as a bare initiative-id parenthetical.
+
+**The highest-value moment to capture a learning is when Eric CORRECTS a recommendation** — §2's steward-reply handler makes this a required step on every `corrected` verdict. These captured lessons are what `ateam recall steward` resurfaces at decision time.
 
 `ateam learnings steward` (see Startup, above) only auto-injects the hot+fresh tiers. To search the FULL set (including cold/archived entries) for a specific term, run `ateam recall steward <query>` — a substring search over key+body that prints matches directly.
 
