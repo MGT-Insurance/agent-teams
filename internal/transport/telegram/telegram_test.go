@@ -404,6 +404,141 @@ func TestCloseTopic_ConnectionFailure_NoTokenInError(t *testing.T) {
 	assertErrorHasNoToken(t, err)
 }
 
+// ── Ack (read receipts, agent-teams-a0ml.3) ──────────────────────────────────
+
+func TestAck_Success(t *testing.T) {
+	const chatID = "-100123456789"
+	var gotChatID, gotMessageID string
+	var gotReaction []map[string]string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/setMessageReaction") {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
+		gotChatID = r.FormValue("chat_id")
+		gotMessageID = r.FormValue("message_id")
+		if err := json.Unmarshal([]byte(r.FormValue("reaction")), &gotReaction); err != nil {
+			t.Errorf("unmarshal reaction param: %v", err)
+		}
+		jsonResponse(w, 200, map[string]any{"ok": true, "result": true})
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	if err := tg.Ack(transport.Reply{MessageRef: "42"}); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	if gotChatID != chatID {
+		t.Errorf("chat_id: got %q, want %q", gotChatID, chatID)
+	}
+	if gotMessageID != "42" {
+		t.Errorf("message_id: got %q, want %q", gotMessageID, "42")
+	}
+	if len(gotReaction) != 1 || gotReaction[0]["type"] != "emoji" || gotReaction[0]["emoji"] != ackReactionEmoji {
+		t.Errorf("reaction: got %+v, want [{type:emoji emoji:%q}]", gotReaction, ackReactionEmoji)
+	}
+}
+
+func TestAck_EmptyMessageRef_NoHTTPCall(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		jsonResponse(w, 200, map[string]any{"ok": true, "result": true})
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, "-100123456789")
+	err := tg.Ack(transport.Reply{MessageRef: ""})
+	if err == nil {
+		t.Fatal("expected error for empty MessageRef")
+	}
+	if called {
+		t.Error("expected no HTTP call for empty MessageRef")
+	}
+}
+
+func TestAck_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, 200, map[string]any{"ok": false, "description": "REACTION_INVALID"})
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, "-100123456789")
+	err := tg.Ack(transport.Reply{MessageRef: "42"})
+	if err == nil {
+		t.Fatal("expected error for API-level failure")
+	}
+	if !strings.Contains(err.Error(), "REACTION_INVALID") {
+		t.Errorf("error = %q, want it to mention API description", err.Error())
+	}
+}
+
+func TestAck_ConnectionFailure_NoTokenInError(t *testing.T) {
+	tg := newConnFailureTelegram(t)
+	err := tg.Ack(transport.Reply{MessageRef: "42"})
+	assertErrorHasNoToken(t, err)
+}
+
+// TestReceive_PopulatesMessageRefFromMessageID verifies that Receive fills
+// reply.MessageRef from the update's message_id, driven through the real
+// getUpdates -> Receive path (not by constructing a transport.Reply
+// directly), so the ack seam has something to ack downstream.
+func TestReceive_PopulatesMessageRefFromMessageID(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":        77,
+				"is_topic_message":  true,
+				"message_thread_id": 5,
+				"text":              "hi",
+				"chat":              map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		} else {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1", len(received))
+	}
+	if received[0].MessageRef != "77" {
+		t.Errorf("MessageRef: got %q, want %q", received[0].MessageRef, "77")
+	}
+	if received[0].ThreadRef != "5" {
+		t.Errorf("ThreadRef: got %q, want %q", received[0].ThreadRef, "5")
+	}
+}
+
 // ── Receive: is_topic_message filter ─────────────────────────────────────────
 
 func TestReceive_FiltersIsTopicMessage(t *testing.T) {

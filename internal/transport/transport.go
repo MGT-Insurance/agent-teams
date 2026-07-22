@@ -75,6 +75,12 @@ type Reply struct {
 	// MentionsSelf is true iff this transport's own identity (e.g. the bot's
 	// own @username) is among Mentions.
 	MentionsSelf bool
+	// MessageRef is an opaque, transport-native handle to THIS inbound
+	// message, used only to ack it back (e.g. a read receipt). Telegram
+	// fills it with the message_id as a string. Empty when the transport
+	// can't address individual messages. Relay-opaque: no relay knowledge
+	// enters this package.
+	MessageRef string
 }
 
 // factory is the function signature all transport constructors must satisfy.

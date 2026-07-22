@@ -61,6 +61,12 @@ const longPollTimeout = 30
 // this backstops any caller that isn't already bounded.
 const maxTopicNameLen = 64
 
+// ackReactionEmoji is the read-receipt reaction set on the originating
+// message via setMessageReaction (agent-teams-a0ml.3). "eyes" — reads as
+// "seen" — and is in Telegram's default allowed-reaction set. One emoji
+// only (Eric).
+const ackReactionEmoji = "\U0001F440"
+
 // Telegram implements transport.Transport via the Telegram Bot API.
 type Telegram struct {
 	token      string
@@ -238,6 +244,7 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			var reply transport.Reply
 			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
+			reply.MessageRef = strconv.Itoa(msg.MessageID)
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
 				reply.ThreadRef = strconv.Itoa(msg.MessageThreadID)
@@ -445,6 +452,52 @@ func (t *Telegram) CloseTopic(threadRef string) error {
 	resp, err := t.httpClient.PostForm(t.apiURL("closeForumTopic"), url.Values{
 		"chat_id":           {t.chatID},
 		"message_thread_id": {threadRef},
+	})
+	if err != nil {
+		return t.sanitizeTransportErr(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(resp.Body, &r); err != nil {
+		return err
+	}
+	if !r.OK {
+		return fmt.Errorf("API error: %s", r.Description)
+	}
+	return nil
+}
+
+// Ack marks reply's originating message with the read-receipt reaction via
+// setMessageReaction. It satisfies the verbs package's optional
+// relayAcker-shaped interface (asserted at Run(), mirroring the CloseTopic /
+// topicCloser precedent above) rather than being added to transport.Transport,
+// which stays initiative/relay-agnostic.
+func (t *Telegram) Ack(reply transport.Reply) error {
+	if reply.MessageRef == "" {
+		return errors.New("empty message ref")
+	}
+	return t.setMessageReaction(reply.MessageRef)
+}
+
+// setMessageReaction sets ackReactionEmoji as the reaction on messageID via
+// the Bot API setMessageReaction method. The reaction param is built with
+// json.Marshal (not a hand-built string) so the emoji is correctly JSON-
+// encoded regardless of content.
+func (t *Telegram) setMessageReaction(messageID string) error {
+	reaction, err := json.Marshal([]map[string]string{
+		{"type": "emoji", "emoji": ackReactionEmoji},
+	})
+	if err != nil {
+		return err
+	}
+	resp, err := t.httpClient.PostForm(t.apiURL("setMessageReaction"), url.Values{
+		"chat_id":    {t.chatID},
+		"message_id": {messageID},
+		"reaction":   {string(reaction)},
 	})
 	if err != nil {
 		return t.sanitizeTransportErr(err)

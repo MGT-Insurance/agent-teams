@@ -1441,3 +1441,482 @@ func TestRelay_StderrLines_AllTimestamped(t *testing.T) {
 		}
 	}
 }
+
+// ── read receipts (agent-teams-a0ml.3) ───────────────────────────────────────
+//
+// Single ack choke point: sendEnvelopeToSteward fires ackForward on every
+// send that returns a nil error, regardless of which branch of handleReply
+// reached it. These tests exercise that choke point from each side: fires on
+// every branch that forwards to the Steward (including the
+// ambiguous/query-error/no-open unrouted fallback sends — the DRI-approved
+// divergence from the narrower "forward" definition), does not fire on any
+// branch that never calls send, and does not fire when send itself fails.
+
+// fakeAck records every messageRef acked (in call order), or returns err if
+// configured — the ack-seam counterpart to fakeSend/fakeSendCapture above.
+type fakeAck struct {
+	refs []string
+	err  error
+}
+
+func (f *fakeAck) ack(messageRef string) error {
+	f.refs = append(f.refs, messageRef)
+	return f.err
+}
+
+// fakeAckerTransport embeds relayFakeTransport and additionally implements
+// the relayAcker interface, recording every Ack call. Used only by
+// TestRelay_Ack_DefaultWiring_AutoDetectsAckerTransport to verify Run()'s
+// own type-assertion wiring (c.ack left unset by the test) — every other ack
+// test here injects fakeAck.ack directly as the seam.
+type fakeAckerTransport struct {
+	relayFakeTransport
+	acked []transport.Reply
+}
+
+func (f *fakeAckerTransport) Ack(reply transport.Reply) error {
+	f.acked = append(f.acked, reply)
+	return nil
+}
+
+// TestRelay_Ack_DefaultWiring_AutoDetectsAckerTransport verifies that Run(),
+// with c.ack left unset, type-asserts the resolved transport against
+// relayAcker and wires a working ack closure from it — the auto-wiring path
+// used in production (RegisterRelayKong leaves ack unset).
+func TestRelay_Ack_DefaultWiring_AutoDetectsAckerTransport(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	ft := &fakeAckerTransport{
+		relayFakeTransport: relayFakeTransport{
+			replies: []transport.Reply{{ThreadRef: "42", Text: "looks good", MessageRef: "555"}},
+		},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                (&fakeSend{}).send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+		// ack intentionally left unset — Run() must auto-wire it from ft.
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ft.acked) != 1 || ft.acked[0].MessageRef != "555" {
+		t.Errorf("acked = %+v, want one Ack call with MessageRef %q", ft.acked, "555")
+	}
+}
+
+// TestRelay_Ack_TransportWithoutAckerInterface_NoOp verifies that when the
+// resolved transport does not implement relayAcker (relayFakeTransport,
+// used throughout this file, does not), forwarding still succeeds and no
+// read-receipt log line is emitted — the no-ack seam is a clean no-op, not
+// an error.
+func TestRelay_Ack_TransportWithoutAckerInterface_NoOp(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected forwarding to still succeed, got %d send calls", len(fs.calls))
+	}
+	if strings.Contains(relayStderr(ctx), "read receipt") {
+		t.Errorf("expected no read-receipt log line when transport lacks Ack, stderr: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_Ack_FiresOnTiedClaimedLocally verifies the base forwarding case:
+// a tied reply claimed locally acks its MessageRef after a successful send.
+func TestRelay_Ack_FiresOnTiedClaimedLocally(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                (&fakeSend{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+	if !strings.Contains(relayStderr(ctx), "read receipt sent") {
+		t.Errorf("expected 'read receipt sent' in stderr, got: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_Ack_FiresOnClosedInitiativeSafetyNet verifies the closed-
+// initiative safety-net forward (routeClosedInitiativeSafetyNet) also acks.
+func TestRelay_Ack_FiresOnClosedInitiativeSafetyNet(t *testing.T) {
+	bdq := newFakeBDQuery() // no open matches
+	bdqClosed := newFakeBDQuery()
+	bdqClosed.results["thread:50"] = []bd.Issue{{ID: "at-050", Status: "closed"}}
+
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "50", Text: "still relevant?", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		bdQueryClosed:       bdqClosed.query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_FiresOnMentionsSelf verifies the direct/@mention-self
+// forward (handleDirectReply) also acks.
+func TestRelay_Ack_FiresOnMentionsSelf(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "@stewardbot hello",
+			Mentions:     []string{"stewardbot"},
+			MentionsSelf: true,
+			MessageRef:   "555",
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_FiresOnBriefingReply verifies the briefing-channel
+// short-circuit forward (handleBriefingReply) also acks.
+func TestRelay_Ack_FiresOnBriefingReply(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-5"); err != nil {
+		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "briefing-5", Text: "status?", MessageRef: "555"}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_FiresOnNonTopicFallbackUnrouted verifies the non-topic
+// (General-channel) fallback-responder unrouted forward also acks — the
+// DRI-approved divergence: this reaches the Steward via
+// sendUnroutedToSteward -> sendEnvelopeToSteward, so it qualifies as a
+// forward even though it carries no bd-resolved initiative.
+func TestRelay_Ack_FiresOnNonTopicFallbackUnrouted(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "", Text: "reply in general", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return true },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_FiresOnAmbiguousFallbackUnrouted verifies the ambiguous
+// (2+ open initiatives) fallback-responder unrouted forward also acks.
+func TestRelay_Ack_FiresOnAmbiguousFallbackUnrouted(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:7"] = []bd.Issue{
+		{ID: "at-001", Status: "open"},
+		{ID: "at-002", Status: "open"},
+	}
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "7", Text: "reply", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_FiresOnQueryErrorFallbackUnrouted verifies the top-level
+// bd-query-error fallback-responder unrouted forward also acks.
+func TestRelay_Ack_FiresOnQueryErrorFallbackUnrouted(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.err["thread:5"] = fmt.Errorf("bd timeout")
+
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "5", Text: "reply", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnPeerStewardTopic verifies the peer
+// steward-topic skip (never calls send) never acks.
+func TestRelay_Ack_DoesNotFireOnPeerStewardTopic(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "peer-briefing-9", Text: "reply", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   func(*cli.Context, string) bool { return true },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls (peer steward topic never sends), got %v", fa.refs)
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnNotFallbackResponderSkip verifies the
+// not-fallback-responder skip (untied reply, never calls send) never acks.
+func TestRelay_Ack_DoesNotFireOnNotFallbackResponderSkip(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "99", Text: "reply", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		bdQueryClosed:       newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls (not fallback responder never sends), got %v", fa.refs)
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnMentionsOtherBot verifies the
+// mentions-other-bot skip (never calls send) never acks.
+func TestRelay_Ack_DoesNotFireOnMentionsOtherBot(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "@otherbot handle this",
+			Mentions:     []string{"otherbot"},
+			MentionsSelf: false,
+			MessageRef:   "555",
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSend{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls (mentions other bot never sends), got %v", fa.refs)
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnTiedNotClaimedLocally verifies the
+// tied-not-claimed-locally skip (never calls send) never acks.
+func TestRelay_Ack_DoesNotFireOnTiedNotClaimedLocally(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                (&fakeSend{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       func(bd.Issue) bool { return false },
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls (not claimed locally never sends), got %v", fa.refs)
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnSendFailure verifies that a forwarding path
+// whose send itself fails never acks — only c.send's nil-error path reaches
+// ackForward.
+func TestRelay_Ack_DoesNotFireOnSendFailure(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fa := &fakeAck{}
+	fs := &fakeSend{err: fmt.Errorf("send failed")}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good", MessageRef: "555"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected send to be attempted once, got %d calls", len(fs.calls))
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls on send failure, got %v", fa.refs)
+	}
+}
