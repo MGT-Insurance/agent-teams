@@ -1,8 +1,10 @@
 package telegram
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +22,11 @@ import (
 
 // ── test helpers ─────────────────────────────────────────────────────────────
 
-// newTestTelegram builds a Telegram pointed at srv with a fake token and chat.
+// newTestTelegram builds a Telegram pointed at srv with a fake token and
+// chat. logOut defaults to io.Discard so the many existing Receive-driving
+// tests don't spam test stderr with a heartbeat line per loop iteration;
+// tests that need to assert on log output set tg.logOut to a *bytes.Buffer
+// directly after construction.
 func newTestTelegram(t *testing.T, srv *httptest.Server, chatID string) *Telegram {
 	t.Helper()
 	tg := &Telegram{
@@ -28,8 +34,30 @@ func newTestTelegram(t *testing.T, srv *httptest.Server, chatID string) *Telegra
 		chatID:     chatID,
 		httpClient: &http.Client{},
 		baseURL:    srv.URL,
+		logOut:     io.Discard,
 	}
 	return tg
+}
+
+// logLineDepth returns the transport.Logf indentation depth of line — the
+// number of two-space indent groups immediately after the fixed-width
+// "YYYY-MM-DD HH:MM:SS " timestamp prefix (20 chars: 19-char timestamp + 1
+// separator space).
+func logLineDepth(t *testing.T, line string) int {
+	t.Helper()
+	const prefixLen = len("2006-01-02 15:04:05 ")
+	if len(line) < prefixLen {
+		t.Fatalf("log line too short to carry a timestamp prefix: %q", line)
+	}
+	rest := line[prefixLen:]
+	spaces := 0
+	for _, r := range rest {
+		if r != ' ' {
+			break
+		}
+		spaces++
+	}
+	return spaces / 2
 }
 
 // jsonResponse writes a JSON body with the given status code.
@@ -1378,4 +1406,296 @@ func TestGetUpdates_ConnectionFailure_NoTokenInError(t *testing.T) {
 	tg := newConnFailureTelegram(t)
 	_, err := tg.getUpdates(0)
 	assertErrorHasNoToken(t, err)
+}
+
+// ── logging (agent-teams-a0ml.1) ─────────────────────────────────────────────
+
+// TestReceive_PollHeartbeat_LogsOffsetAndUpdateCount proves REQUIRED #2 (a
+// heartbeat every poll cycle, even a zero-update one) and SUGGESTED #1
+// (offset before/after in the same line). The heartbeat is emitted after the
+// per-update loop, so a poll whose handler call returns the sentinel never
+// logs its own heartbeat (Receive returns immediately) — the fixture
+// therefore lets the first real message's handler return nil (so its poll's
+// heartbeat logs normally) and only stops on a later marker message.
+func TestReceive_PollHeartbeat_LogsOffsetAndUpdateCount(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	msg := func(id int, extra map[string]any) map[string]any {
+		m := map[string]any{
+			"message_id":        id,
+			"message_thread_id": 3,
+			"is_topic_message":  true,
+			"chat":              map[string]any{"id": chatIDInt},
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		switch callCount {
+		case 1:
+			// Zero updates — heartbeat must still fire.
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		case 2:
+			jsonResponse(w, 200, map[string]any{
+				"ok": true,
+				"result": []map[string]any{
+					{"update_id": 100, "message": msg(1, map[string]any{"text": "msg1"})},
+				},
+			})
+		case 3:
+			jsonResponse(w, 200, map[string]any{
+				"ok": true,
+				"result": []map[string]any{
+					{"update_id": 200, "message": msg(2, map[string]any{"text": "marker"})},
+				},
+			})
+		default:
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		if r.Text == "marker" {
+			return sentinel
+		}
+		return nil
+	})
+
+	got := logBuf.String()
+	if !strings.Contains(got, "poll: offset=0 -> 0, 0 update(s)") {
+		t.Errorf("expected zero-update heartbeat line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "poll: offset=0 -> 101, 1 update(s)") {
+		t.Errorf("expected offset-advance heartbeat line, got:\n%s", got)
+	}
+}
+
+// TestReceive_BotIdentityLoggedExactlyOnce reuses the
+// TestReceive_MentionsSelf_CallsGetMeExactlyOnce fixture and additionally
+// asserts the "bot identity resolved" line appears exactly once — the
+// existing if t.ownUsername == "" guard means it must not repeat on later
+// iterations after resolution.
+func TestReceive_BotIdentityLoggedExactlyOnce(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":       10,
+				"is_topic_message": false,
+				"text":             "hey @StewardBot need help",
+				"entities": []map[string]any{
+					{"type": "mention", "offset": 4, "length": 11},
+				},
+				"chat": map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	srv, _ := newMentionTestServer("stewardbot", updates)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(transport.Reply) error { return sentinel })
+
+	got := logBuf.String()
+	if n := strings.Count(got, "bot identity resolved: @stewardbot"); n != 1 {
+		t.Errorf("expected bot identity log line exactly once, got %d in:\n%s", n, got)
+	}
+}
+
+// TestReceive_ChatIDRejectLogged proves the chat-id-reject filtering
+// decision (previously silent) now produces a depth-1 log line, reusing the
+// TestReceive_RejectsDifferentChatID fixture.
+func TestReceive_ChatIDRejectLogged(t *testing.T) {
+	const allowedChatID = "-100111222333"
+	allowedInt, _ := strconv.ParseInt(allowedChatID, 10, 64)
+	wrongInt := allowedInt + 1
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":        10,
+				"message_thread_id": 5,
+				"is_topic_message":  true,
+				"text":              "from wrong chat",
+				"chat":              map[string]any{"id": wrongInt},
+			},
+		},
+		{
+			"update_id": 2,
+			"message": map[string]any{
+				"message_id":        11,
+				"message_thread_id": 6,
+				"is_topic_message":  true,
+				"text":              "from right chat",
+				"chat":              map[string]any{"id": allowedInt},
+			},
+		},
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		} else {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, allowedChatID)
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(transport.Reply) error { return sentinel })
+
+	var found string
+	for _, line := range strings.Split(logBuf.String(), "\n") {
+		if strings.Contains(line, "update 1: rejected (chat") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected chat-id-reject log line, got:\n%s", logBuf.String())
+	}
+	if depth := logLineDepth(t, found); depth != 1 {
+		t.Errorf("expected depth-1 log line, got depth %d: %q", depth, found)
+	}
+}
+
+// TestReceive_ContentLessDropLogged proves the content-less-drop decision
+// (STRICT, at-gqqd) now produces a depth-1 log line instead of the old
+// unstamped fmt.Fprintln.
+func TestReceive_ContentLessDropLogged(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	updates := []map[string]any{
+		{
+			"update_id": 1,
+			"message": map[string]any{
+				"message_id":        10,
+				"message_thread_id": 5,
+				"is_topic_message":  true,
+				"chat":              map[string]any{"id": chatIDInt},
+				// no text, no caption, no media — content-less.
+			},
+		},
+		{
+			"update_id": 2,
+			"message": map[string]any{
+				"message_id":        11,
+				"message_thread_id": 5,
+				"is_topic_message":  true,
+				"text":              "forwards",
+				"chat":              map[string]any{"id": chatIDInt},
+			},
+		},
+	}
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		} else {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(transport.Reply) error { return sentinel })
+
+	var found string
+	for _, line := range strings.Split(logBuf.String(), "\n") {
+		if strings.Contains(line, "update 1: dropped (no text/caption)") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected content-less-drop log line, got:\n%s", logBuf.String())
+	}
+	if depth := logLineDepth(t, found); depth != 1 {
+		t.Errorf("expected depth-1 log line, got depth %d: %q", depth, found)
+	}
+}
+
+// TestNew_StartupConfigLine_ContainsChatIDNotToken mirrors the
+// assertErrorHasNoToken security rationale: New's one-time startup config
+// line must report the chat id but never the bot token. Captured by
+// temporarily redirecting the package-level os.Stderr (New's default
+// logOut) to a pipe.
+func TestNew_StartupConfigLine_ContainsChatIDNotToken(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
+	const chatID = "-100999888777"
+	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", chatID)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+
+	_, newErr := New(t.TempDir(), &http.Client{})
+
+	w.Close()
+	os.Stderr = orig
+	if newErr != nil {
+		t.Fatalf("New: %v", newErr)
+	}
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	got := buf.String()
+
+	if !strings.Contains(got, chatID) {
+		t.Errorf("expected startup config line to contain chat id %q, got:\n%s", chatID, got)
+	}
+	if strings.Contains(got, fakeToken) {
+		t.Fatalf("startup config line leaked the bot token: %s", got)
+	}
 }

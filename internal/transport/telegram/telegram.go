@@ -74,6 +74,23 @@ type Telegram struct {
 	// here once resolved. Never resolved in New — New must stay
 	// network-free for send-only/Enabled paths.
 	ownUsername string
+
+	// logOut is where Receive's poll-cycle log lines (transport.Logf) are
+	// written. Defaults to os.Stderr in New(); a nil logOut (e.g. a struct
+	// literal built directly in tests) falls back to os.Stderr too, via
+	// logf below.
+	logOut io.Writer
+}
+
+// logf writes one timestamped, indentation-scoped log line via
+// transport.Logf, falling back to os.Stderr when t.logOut is nil (struct
+// literals built directly in tests don't always set it).
+func (t *Telegram) logf(depth int, format string, args ...any) {
+	w := t.logOut
+	if w == nil {
+		w = os.Stderr
+	}
+	transport.Logf(w, depth, format, args...)
 }
 
 // httpDoer is the subset of *http.Client used by Telegram. Injected for tests.
@@ -96,12 +113,16 @@ func New(home string, client httpDoer) (*Telegram, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 45 * time.Second}
 	}
-	return &Telegram{
+	tg := &Telegram{
 		token:      token,
 		chatID:     chatID,
 		httpClient: client,
 		baseURL:    "https://api.telegram.org",
-	}, nil
+		logOut:     os.Stderr,
+	}
+	// One-time startup config line — chat id only, never the token.
+	tg.logf(0, "config: chat_id=%s, token configured (%d bytes)", chatID, len(token))
+	return tg, nil
 }
 
 // Name returns "telegram".
@@ -170,16 +191,19 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 	for {
 		if t.ownUsername == "" {
 			if username, err := t.getMe(); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "telegram: getMe: %v\n", err)
+				t.logf(0, "getMe: %v", err)
 			} else {
 				t.ownUsername = username
+				t.logf(0, "bot identity resolved: @%s", username)
 			}
 		}
+
+		before := offset
 
 		updates, err := t.getUpdates(offset)
 		if err != nil {
 			// Transient network errors: log and retry.
-			_, _ = fmt.Fprintf(os.Stderr, "telegram: getUpdates: %v\n", err)
+			t.logf(0, "poll error (getUpdates): %v — retrying in 2s", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -195,13 +219,14 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			// Reject messages from other chats.
 			chatIDStr := strconv.FormatInt(msg.Chat.ID, 10)
 			if chatIDStr != t.chatID {
+				t.logf(1, "update %d: rejected (chat %s != configured %s)", upd.UpdateID, chatIDStr, t.chatID)
 				continue
 			}
 
 			// STRICT (Eric, at-gqqd): content-less reply (no text, no
 			// caption) — drop at the relay; never forward to the steward.
 			if isContentLess(msg) {
-				fmt.Fprintln(os.Stderr, "telegram: dropping content-less reply (no text/caption)")
+				t.logf(1, "update %d: dropped (no text/caption)", upd.UpdateID)
 				continue
 			}
 
@@ -218,6 +243,12 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 				return err
 			}
 		}
+
+		// One depth-0 heartbeat per poll cycle — REQUIRED #2 (a zero-update
+		// poll and a normal poll share this same line) and SUGGESTED #1
+		// (offset before/after) combined. Emitted after the per-update loop
+		// so offset reflects any advance.
+		t.logf(0, "poll: offset=%d -> %d, %d update(s)", before, offset, len(updates))
 	}
 }
 

@@ -240,11 +240,11 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 		case hungActionWake:
 			body := hungWakeBody(entry.ID, entry.Title, updated.WakeAttempts, entry.StuckSince)
 			if err := sendHungWakeEnvelope(ctx, deps.wakeSend, entry.ID, body); err != nil {
-				fmt.Fprintf(ctx.Stderr, "ateam relay: hung tick: wake steward for %s failed: %v\n", entry.ID, err)
+				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: wake steward for %s failed: %v", entry.ID, err)
 			}
 		case hungActionAlert:
 			if err := postHungAlert(ctx, deps, entry); err != nil {
-				fmt.Fprintf(ctx.Stderr, "ateam relay: hung tick: post canned alert for %s failed: %v\n", entry.ID, err)
+				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: post canned alert for %s failed: %v", entry.ID, err)
 			}
 		case hungActionNone:
 			// Already alerted this episode — the ladder is unchanged
@@ -285,7 +285,7 @@ func runHungTick(ctx *cli.Context, t transport.Transport) {
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := doHungTick(ctx, deps); err != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: hung tick: %v\n", err)
+			transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: %v", err)
 		}
 	}
 }

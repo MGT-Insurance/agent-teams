@@ -46,6 +46,11 @@ type knownStewardTopicFunc func(ctx *cli.Context, threadRef string) bool
 // ref, and a General-topic/DM message has no real thread to report.
 const nonTopicThreadRefPlaceholder = "(general)"
 
+// replyPreviewLen caps how much of a reply's text appears in the "received
+// message" log line (transport.PreviewText). N=70 per "N ≈ 60-80" guidance —
+// not configurable, no new flags.
+const replyPreviewLen = 70
+
 // firstBotMention returns the first entry in mentions that looks like a bot
 // username (Telegram requires every bot's username to end in "bot"), or ""
 // if none do. mentions is already lowercased by the transport, so this is a
@@ -176,7 +181,7 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam relay: resolve transport: %w", err)
 	}
 
-	fmt.Fprintf(ctx.Stdout, "ateam relay: starting on transport %q\n", t.Name())
+	transport.Logf(ctx.Stderr, 0, "starting on transport %q", t.Name())
 
 	go runHungTick(ctx, t)
 
@@ -204,6 +209,12 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 // thread ref is a KNOWN peer steward topic (knownStewardTopic) is skipped
 // outright — that peer's own relay already routes it locally.
 func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
+	// Canonical "message received" line (REQUIRED #3) — transport-agnostic,
+	// so it covers every transport, not just Telegram. Emitted first, before
+	// any routing decision, so every reply that reaches handleReply produces
+	// this line regardless of which branch below it ultimately takes.
+	transport.Logf(ctx.Stderr, 1, "received message (thread=%q): %q", reply.ThreadRef, transport.PreviewText(reply.Text, replyPreviewLen))
+
 	// Non-topic messages (General channel) arrive with ThreadRef == "".
 	// Single-channel @mention addressing (agent-teams-4x83) replaces the old
 	// per-machine [Direct] topic short-circuit and applies, in order:
@@ -220,18 +231,18 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	//     unchanged.
 	if reply.ThreadRef == "" {
 		if reply.MentionsSelf {
-			fmt.Fprintln(ctx.Stderr, "ateam relay: mentions me — routing to steward")
+			transport.Logf(ctx.Stderr, 2, "mentions me — routing to steward")
 			return c.handleDirectReply(ctx, reply)
 		}
 		if mentioned := firstBotMention(reply.Mentions); mentioned != "" {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: mentions @%s — not me, skipping\n", mentioned)
+			transport.Logf(ctx.Stderr, 2, "mentions @%s — not me, skipping", mentioned)
 			return nil
 		}
 		if !c.isFallbackResponder(ctx) {
-			fmt.Fprintln(ctx.Stderr, "ateam relay: skipping non-topic message (no thread ref)")
+			transport.Logf(ctx.Stderr, 2, "skipping non-topic message (no thread ref)")
 			return nil
 		}
-		fmt.Fprintln(ctx.Stderr, "ateam relay: routing non-topic message to steward (no thread ref)")
+		transport.Logf(ctx.Stderr, 2, "routing non-topic message to steward (no thread ref)")
 		c.sendUnroutedToSteward(ctx, nonTopicThreadRefPlaceholder, "non-topic message (no thread ref)", reply.Text)
 		return nil
 	}
@@ -248,7 +259,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	// below.
 	briefingRef, err := readThreadRefFile(StewardBriefingThreadPath(ctx))
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: read steward briefing thread ref: %v\n", err)
+		transport.Logf(ctx.Stderr, 2, "read steward briefing thread ref: %v", err)
 	} else if briefingRef != "" && reply.ThreadRef == briefingRef {
 		return c.handleBriefingReply(ctx, reply)
 	}
@@ -262,7 +273,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	// check only ever matches a peer's. Skip before the bd label query so a
 	// peer's topic ref never falls into the untied/fallback path below.
 	if c.knownStewardTopic(ctx, reply.ThreadRef) {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: skipping peer steward topic (thread %q)\n", reply.ThreadRef)
+		transport.Logf(ctx.Stderr, 2, "skipping peer steward topic (thread %q)", reply.ThreadRef)
 		return nil
 	}
 
@@ -273,7 +284,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	var open []bd.Issue
 	untied := false
 	if queryErr != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query for label %q failed: %v — skipping\n", label, queryErr)
+		transport.Logf(ctx.Stderr, 2, "bd query for label %q failed: %v — skipping", label, queryErr)
 		untied = true
 	} else {
 		// Filter to open issues only (bdQuery already filters, but guard
@@ -293,9 +304,9 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		// rather than also routing it.
 		if !c.isFallbackResponder(ctx) {
 			if queryErr != nil {
-				fmt.Fprintln(ctx.Stderr, "ateam relay: not fallback responder — skipping unrouted reply")
+				transport.Logf(ctx.Stderr, 2, "not fallback responder — skipping unrouted reply")
 			} else {
-				fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping untied reply (thread %q)\n", reply.ThreadRef)
+				transport.Logf(ctx.Stderr, 2, "not fallback responder — skipping untied reply (thread %q)", reply.ThreadRef)
 			}
 			return nil
 		}
@@ -311,7 +322,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		// successful freshen feeds directly into the same routing below, so
 		// there is exactly one tied/ambiguous decision point either way.
 		if freshOpen := c.freshenBeforeUntied(ctx, home, label); len(freshOpen) > 0 {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: freshen resolved label %q (%d open match(es)) — routing, not straying\n", label, len(freshOpen))
+			transport.Logf(ctx.Stderr, 2, "freshen resolved label %q (%d open match(es)) — routing, not straying", label, len(freshOpen))
 			open = freshOpen
 			untied = false
 		}
@@ -326,7 +337,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		if routed {
 			return nil
 		}
-		fmt.Fprintf(ctx.Stderr, "ateam relay: no open initiative found for label %q — skipping\n", label)
+		transport.Logf(ctx.Stderr, 2, "no open initiative found for label %q — skipping", label)
 		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
 		return nil
 	}
@@ -337,7 +348,7 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		// initiative's checkout routes it — every other machine sees the
 		// same tied reply and must suppress it to avoid duplicate routing.
 		if !c.claimsLocally(open[0]) {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: not claimed locally — skipping tied reply for %s (thread %q)\n", open[0].ID, reply.ThreadRef)
+			transport.Logf(ctx.Stderr, 2, "not claimed locally — skipping tied reply for %s (thread %q)", open[0].ID, reply.ThreadRef)
 			return nil
 		}
 	default:
@@ -346,20 +357,27 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		// block above always either returns or clears untied by producing a
 		// non-empty open.)
 		if !c.isFallbackResponder(ctx) {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: not fallback responder — skipping ambiguous reply (thread %q)\n", reply.ThreadRef)
+			transport.Logf(ctx.Stderr, 2, "not fallback responder — skipping ambiguous reply (thread %q)", reply.ThreadRef)
 			return nil
 		}
 		reason := fmt.Sprintf("ambiguous: %d open initiatives", len(open))
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ambiguous: %d open initiatives carry label %q — skipping\n", len(open), label)
+		transport.Logf(ctx.Stderr, 2, "ambiguous: %d open initiatives carry label %q — skipping", len(open), label)
 		c.sendUnroutedToSteward(ctx, reply.ThreadRef, reason, reply.Text)
 		return nil
 	}
 
 	id := open[0].ID
 
+	// REQUIRED #4: the explicit resolution-outcome line — the gap that let
+	// the original bug hide. Every OTHER terminal branch of handleReply
+	// already logs a skip/ambiguous/unrouted reason at depth 2 above; this
+	// success line means every reply now produces exactly one depth-2 "what
+	// happened to this message" line, with no silent branch left over.
+	transport.Logf(ctx.Stderr, 2, "routed to initiative %s (%s)", id, open[0].Title)
+
 	envelope, err := BuildStewardReplyEnvelope(id, reply.Text)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward reply envelope for %s: %v — skipping\n", id, err)
+		transport.Logf(ctx.Stderr, 2, "build steward reply envelope for %s: %v — skipping", id, err)
 		return nil
 	}
 
@@ -392,7 +410,7 @@ const relayFreshenBackoff = 250 * time.Millisecond
 func (c *relayKong) freshenBeforeUntied(ctx *cli.Context, home, label string) []bd.Issue {
 	if c.doltPull != nil {
 		if err := c.doltPull(home); err != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam relay: freshen: dolt pull failed (continuing): %v\n", err)
+			transport.Logf(ctx.Stderr, 2, "freshen: dolt pull failed (continuing): %v", err)
 		}
 	}
 	if c.sleeper != nil {
@@ -400,7 +418,7 @@ func (c *relayKong) freshenBeforeUntied(ctx *cli.Context, home, label string) []
 	}
 	issues, err := c.bdQuery(home, label)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: freshen: re-query for label %q failed: %v\n", label, err)
+		transport.Logf(ctx.Stderr, 2, "freshen: re-query for label %q failed: %v", label, err)
 		return nil
 	}
 	var open []bd.Issue
@@ -432,7 +450,7 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 	}
 	all, err := c.bdQueryClosed(home, label)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: bd query (closed) for label %q failed: %v\n", label, err)
+		transport.Logf(ctx.Stderr, 2, "bd query (closed) for label %q failed: %v", label, err)
 		return false, fmt.Sprintf("bd query error: %v", err)
 	}
 
@@ -457,7 +475,7 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 
 	envelope, err := BuildStewardClosedInitiativeEnvelope(id, reply.Text)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward closed-initiative envelope for %s: %v — skipping\n", id, err)
+		transport.Logf(ctx.Stderr, 2, "build steward closed-initiative envelope for %s: %v — skipping", id, err)
 		return false, fmt.Sprintf("build closed-initiative envelope failed: %v", err)
 	}
 
@@ -469,7 +487,7 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 		return true, ""
 	}
 
-	fmt.Fprintf(ctx.Stderr, "ateam relay: routed message to steward for closed initiative %s (label %q)\n", id, label)
+	transport.Logf(ctx.Stderr, 2, "routed message to steward for closed initiative %s (label %q)", id, label)
 	return true, ""
 }
 
@@ -480,7 +498,7 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) error {
 	envelope, err := BuildStewardDirectEnvelope(reply.Text)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward direct envelope: %v — skipping\n", err)
+		transport.Logf(ctx.Stderr, 2, "build steward direct envelope: %v — skipping", err)
 		return nil
 	}
 
@@ -495,7 +513,7 @@ func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) e
 func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply) error {
 	envelope, err := BuildStewardBriefingReplyEnvelope(reply.Text)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward briefing-reply envelope: %v — skipping\n", err)
+		transport.Logf(ctx.Stderr, 2, "build steward briefing-reply envelope: %v — skipping", err)
 		return nil
 	}
 
@@ -516,7 +534,7 @@ func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply)
 func (c *relayKong) sendUnroutedToSteward(ctx *cli.Context, threadRef, reason, body string) {
 	envelope, err := BuildStewardUnroutedEnvelope(threadRef, reason, body)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: build steward unrouted envelope: %v — skipping\n", err)
+		transport.Logf(ctx.Stderr, 2, "build steward unrouted envelope: %v — skipping", err)
 		return
 	}
 
@@ -542,13 +560,13 @@ func (c *relayKong) sendUnroutedToSteward(ctx *cli.Context, threadRef, reason, b
 func (c *relayKong) sendEnvelopeToSteward(ctx *cli.Context, envelope, failCtx string) (wrote bool, err error) {
 	tmpPath, err := writeEnvelopeToTemp(envelope)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: %v — skipping\n", err)
+		transport.Logf(ctx.Stderr, 2, "%v — skipping", err)
 		return false, err
 	}
 	defer os.Remove(tmpPath)
 
 	if err := c.send(ctx, tmpPath); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam relay: ateam mail send %s failed (%s): %v — skipping\n", StewardHandle, failCtx, err)
+		transport.Logf(ctx.Stderr, 2, "ateam mail send %s failed (%s): %v — skipping", StewardHandle, failCtx, err)
 		return true, err
 	}
 	return true, nil

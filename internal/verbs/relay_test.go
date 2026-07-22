@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1330,5 +1331,113 @@ func TestRelay_NonTopic_NotFallbackResponder_Skipped(t *testing.T) {
 	}
 	if !strings.Contains(relayStderr(ctx), "skipping non-topic message") {
 		t.Errorf("expected 'skipping non-topic message' in stderr, got: %q", relayStderr(ctx))
+	}
+}
+
+// ── logging (agent-teams-a0ml.1) ─────────────────────────────────────────────
+
+// TestRelay_MappedThread_LogsRoutedToInitiativeWithTitle proves REQUIRED #4
+// (the explicit resolution-outcome line — the gap that let the original bug
+// hide): a successfully-routed reply logs both the initiative id and its
+// title.
+func TestRelay_MappedThread_LogsRoutedToInitiativeWithTitle(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open", Title: "Ship the thing"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	stderr := relayStderr(ctx)
+	if !strings.Contains(stderr, "routed to initiative at-001") {
+		t.Errorf("expected 'routed to initiative at-001' in stderr, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "Ship the thing") {
+		t.Errorf("expected issue title 'Ship the thing' in stderr, got: %q", stderr)
+	}
+}
+
+// TestRelay_LongReplyText_TruncatedInLog proves the "received message" log
+// line previews reply.Text at 70 runes rather than dumping the full body.
+func TestRelay_LongReplyText_TruncatedInLog(t *testing.T) {
+	longText := strings.Repeat("x", 100)
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open", Title: "Ship the thing"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: longText}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	stderr := relayStderr(ctx)
+	if strings.Contains(stderr, longText) {
+		t.Errorf("expected long reply text to be truncated in the log, but the full 100-char body appeared: %q", stderr)
+	}
+	wantPreview := strings.Repeat("x", 70) + "..."
+	if !strings.Contains(stderr, wantPreview) {
+		t.Errorf("expected truncated preview %q in stderr, got: %q", wantPreview, stderr)
+	}
+}
+
+// TestRelay_StderrLines_AllTimestamped proves every non-empty stderr line
+// relay.go emits — from the startup banner through every handleReply branch
+// — starts with a "YYYY-MM-DD HH:MM:SS" timestamp (transport.Logf).
+func TestRelay_StderrLines_AllTimestamped(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open", Title: "Ship the thing"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	timestampPrefix := regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} `)
+	for _, line := range strings.Split(relayStderr(ctx), "\n") {
+		if line == "" {
+			continue
+		}
+		if !timestampPrefix.MatchString(line) {
+			t.Errorf("stderr line missing timestamp prefix: %q", line)
+		}
 	}
 }
