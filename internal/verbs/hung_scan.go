@@ -90,21 +90,18 @@ type hungScanEntry struct {
 
 // hungAnchor is the durable per-initiative record persisted at
 // hungStatePath: when the initiative was first observed STUCK, plus the
-// escalation-ladder state for the current STUCK episode. StuckSince is
-// written by both `ateam hung-scan` and the periodic relay tick (via
-// scanHung, shared by both). AlertedAt/WakeAttempts/LastWakeAt are advanced
-// ONLY by agent-teams-6rru.9's periodic relay tick (hung_tick.go). There is
-// NO sole-writer invariant, though: scanHung round-trips the WHOLE anchor —
-// ladder fields included — for a still-STUCK id, re-persisting them on every
-// scan, and scanHung runs in BOTH the tick process and the `ateam hung-scan`
-// CLI the Steward invokes each wake. Concurrent CLI-vs-tick writes are
-// therefore possible. saveHungState is atomic (temp file + os.Rename,
-// agent-teams-6rru.17), which eliminates the torn-read/empty-map failure
-// mode entirely; what remains is a residual sub-millisecond lost-update on
-// the ladder fields if a CLI scan and a tick save interleave. That residual
-// race is bounded (at most one duplicate wake/alert), self-healing (the next
-// tick reconverges), and tracked in agent-teams-6rru.18 — it is deliberately
-// NOT fixed here.
+// escalation-ladder state for the current STUCK episode.
+//
+// agent-teams-6rru.19: the periodic relay tick (hung_tick.go's doHungTick) is
+// the SOLE writer of this file. scanHung is the shared classification+anchor
+// engine behind both the tick and the `ateam hung-scan` CLI, but it only
+// persists when called with persist=true — the tick path. The CLI path
+// (hungScanKong.Run) always calls it with persist=false: it may SEE the
+// anchor state (to report StuckSince/elapsed on an already-STUCK id) but
+// never writes it. With exactly one writer, there is no concurrent-write race
+// to reason about and no lock is needed. This supersedes agent-teams-6rru.18,
+// which tracked a residual lost-update race between a CLI scan and a tick
+// save; that race no longer exists because the CLI scan never writes.
 //
 // Because scanHung carries forward the whole hungAnchor struct for a
 // still-STUCK id and drops it entirely once an initiative is observed
@@ -254,12 +251,20 @@ func classifyInitiative(labels []string, sessions []agentSession, worktree strin
 // fakes; ctx supplies ctx.BD (to list open initiatives) and ctx.Home (to
 // locate the durable anchor-state file via hungStatePath/StewardHome).
 //
+// persist controls whether this call is allowed to write the anchor-state
+// file (agent-teams-6rru.19: single-writer invariant — see hungAnchor's doc
+// comment). scanHung always LOADS existing anchors and classifies/reports
+// against them regardless of persist, so a read-only caller still sees an
+// accurate StuckSince/elapsed for an already-anchored STUCK id; it just never
+// calls saveHungState. doHungTick (hung_tick.go) is the only caller that
+// passes persist=true; hungScanKong.Run below always passes false.
+//
 // Graceful degrade: if agentsFunc fails, every entry gets classification
 // "unknown" and the anchor-state file is left untouched (we have no
 // evidence to justify clearing anchors), mirroring execution-status's
 // degrade behavior. scanHung itself only returns an error when the
 // underlying `bd list` call fails.
-func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time) ([]hungScanEntry, error) {
+func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time, persist bool) ([]hungScanEntry, error) {
 	statePath := hungStatePath(ctx)
 	prevAnchors := loadHungState(statePath)
 
@@ -324,7 +329,13 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time)
 	// dropped by construction — newAnchors only ever holds this scan's STUCK
 	// ids, which is exactly the "cleared on any non-STUCK observation"
 	// contract the bead asks for.
-	if agentsErr == nil {
+	//
+	// persist gates the write itself: only the tick path (persist=true) may
+	// call saveHungState (agent-teams-6rru.19 single-writer invariant). The
+	// CLI path (persist=false) computes newAnchors identically above — so
+	// StuckSince/elapsed in the returned entries are still accurate — it just
+	// never reaches this write.
+	if persist && agentsErr == nil {
 		if err := saveHungState(statePath, newAnchors); err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam hung-scan: persist anchor state: %v\n", err)
 		}
@@ -344,12 +355,17 @@ type hungScanKong struct {
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+//
+// agent-teams-6rru.19: this CLI path is READ-ONLY — it calls scanHung with
+// persist=false, so it never writes hung-state.json. The periodic relay tick
+// (hung_tick.go's doHungTick) is the sole writer; see hungAnchor's doc
+// comment (hung_scan.go) for the single-writer invariant this maintains.
 func (c *hungScanKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam hung-scan: nil context")
 	}
 
-	out, err := scanHung(ctx, c.agentsFunc, c.now)
+	out, err := scanHung(ctx, c.agentsFunc, c.now, false)
 	if err != nil {
 		return fmt.Errorf("ateam hung-scan: %w", err)
 	}

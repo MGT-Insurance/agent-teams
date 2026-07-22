@@ -199,7 +199,7 @@ func TestScanHung_NoAgents_GracefulDegrade(t *testing.T) {
 	ctx := makeHungCtx(t, issues)
 
 	agentsErr := fmt.Errorf("claude not in PATH")
-	out, err := scanHung(ctx, func() ([]agentSession, error) { return nil, agentsErr }, fixedNow(time.Now()))
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return nil, agentsErr }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestScanHung_Working_NotHung(t *testing.T) {
 
 	pid := 1
 	sessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
-	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestScanHung_AwaitingHuman_NotHung(t *testing.T) {
 
 	pid := 1
 	sessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
-	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestScanHung_AwaitingHuman_PidAbsent(t *testing.T) {
 	ctx := makeHungCtx(t, issues)
 
 	sessions := []agentSession{{CWD: wt, Status: ""}} // PID nil: tracked-but-dead
-	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestScanHung_WanderedLiveSession_WorksNotDead(t *testing.T) {
 	sessions := []agentSession{
 		{CWD: trackWt, Name: filepath.Base(registeredWt), Status: "busy", PID: &pid},
 	}
-	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestScanHung_Dead_PidNilAndCwdMissing(t *testing.T) {
 	issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
 	ctx := makeHungCtx(t, issues)
 	sessions := []agentSession{{CWD: wt, Status: "idle"}} // PID nil
-	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()))
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestScanHung_Dead_PidNilAndCwdMissing(t *testing.T) {
 	ctx2 := makeHungCtx(t, issues2)
 	pid := 1
 	sessions2 := []agentSession{{CWD: missingWt, Status: "idle", PID: &pid}}
-	out2, err := scanHung(ctx2, func() ([]agentSession, error) { return sessions2, nil }, fixedNow(time.Now()))
+	out2, err := scanHung(ctx2, func() ([]agentSession, error) { return sessions2, nil }, fixedNow(time.Now()), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
 
 	// First scan: STUCK, anchor set, not yet hung.
-	out, err := scanHung(ctx, agentsFunc, fixedNow(t0))
+	out, err := scanHung(ctx, agentsFunc, fixedNow(t0), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 
 	// Second scan, 5 minutes later: still STUCK, anchor NOT reset, not yet hung.
 	t1 := t0.Add(5 * time.Minute)
-	out, err = scanHung(ctx, agentsFunc, fixedNow(t1))
+	out, err = scanHung(ctx, agentsFunc, fixedNow(t1), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 
 	// Third scan, 20 minutes past t0 (past the 15m threshold): HUNG, anchor still unchanged.
 	t2 := t0.Add(20 * time.Minute)
-	out, err = scanHung(ctx, agentsFunc, fixedNow(t2))
+	out, err = scanHung(ctx, agentsFunc, fixedNow(t2), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 
 	// Fourth scan: session goes busy (WORKING). Anchor must be cleared.
 	busySessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
-	out, err = scanHung(ctx, func() ([]agentSession, error) { return busySessions, nil }, fixedNow(t2.Add(time.Minute)))
+	out, err = scanHung(ctx, func() ([]agentSession, error) { return busySessions, nil }, fixedNow(t2.Add(time.Minute)), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	// Fifth scan: back to idle/STUCK. A NEW stuck-since must be recorded
 	// (proving the anchor was genuinely cleared, not just left stale).
 	t3 := t2.Add(2 * time.Minute)
-	out, err = scanHung(ctx, agentsFunc, fixedNow(t3))
+	out, err = scanHung(ctx, agentsFunc, fixedNow(t3), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
 	}
@@ -530,5 +530,87 @@ func TestHungScanKong_Run_EmitsJSON(t *testing.T) {
 	}
 	if !strings.Contains(got, `"id":"at-1"`) {
 		t.Errorf("output missing expected id: %s", got)
+	}
+}
+
+// TestHungScanKong_Run_DoesNotPersist is the core agent-teams-6rru.19
+// regression test: the CLI hung-scan path (hungScanKong.Run -> scanHung with
+// persist=false) must never write hung-state.json, even when it classifies an
+// initiative STUCK (the case that, before this bead, drove a saveHungState
+// call on every invocation). With no pre-existing state file, Run must leave
+// none behind.
+func TestHungScanKong_Run_DoesNotPersist(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 1
+	sessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}} // STUCK: idle, no gate
+	cmd := &hungScanKong{
+		agentsFunc: func() ([]agentSession, error) { return sessions, nil },
+		now:        time.Now,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := ctx.Stdout.(*strings.Builder).String()
+	if !strings.Contains(got, `"classification":"STUCK"`) {
+		t.Fatalf("expected STUCK classification (the write-triggering case pre-.19), got: %s", got)
+	}
+
+	statePath := hungStatePath(ctx)
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("expected no hung-state.json to be created by the CLI path, stat err = %v", err)
+	}
+	if anchors := loadHungState(statePath); len(anchors) != 0 {
+		t.Errorf("expected loadHungState to return empty after a read-only CLI scan, got %+v", anchors)
+	}
+}
+
+// TestScanHung_PersistFalse_LeavesExistingAnchorFileUnchanged is the
+// companion core-path test: when a hung-state.json already exists,
+// scanHung(..., persist=false) must leave it byte-for-byte unchanged, even
+// though it still classifies (and would, if persist=true, re-anchor) a STUCK
+// initiative on this scan.
+func TestScanHung_PersistFalse_LeavesExistingAnchorFileUnchanged(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+	ctx := makeHungCtx(t, issues)
+
+	statePath := hungStatePath(ctx)
+	seeded := map[string]hungAnchor{
+		"at-1": {StuckSince: "2026-07-21T09:00:00Z"},
+	}
+	if err := saveHungState(statePath, seeded); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read seeded state file: %v", err)
+	}
+
+	// A different STUCK session at a later time than the seeded StuckSince --
+	// if persist were true this would leave StuckSince unchanged (already
+	// anchored) but still trigger a write of newAnchors. With persist=false
+	// no write may occur at all.
+	pid := 1
+	sessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return sessions, nil }, fixedNow(time.Now()), false)
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if out[0].Classification != hungClassStuck {
+		t.Fatalf("classification = %q, want STUCK", out[0].Classification)
+	}
+	if out[0].StuckSince != seeded["at-1"].StuckSince {
+		t.Errorf("read-only scan should still report the existing anchor's stuck_since: got %q, want %q", out[0].StuckSince, seeded["at-1"].StuckSince)
+	}
+
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state file after read-only scan: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("hung-state.json changed after a persist=false scan:\n before: %s\n after:  %s", before, after)
 	}
 }

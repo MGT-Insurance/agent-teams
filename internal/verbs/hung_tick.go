@@ -193,22 +193,24 @@ type hungTickDeps struct {
 	transport  transport.Transport
 }
 
-// doHungTick runs one periodic tick. scanHung (reused, unmodified) computes
-// this scan's classifications and persists the anchor state (StuckSince plus
-// whatever ladder fields it round-trips forward); doHungTick then re-loads
-// that same state and applies the escalation ladder ONLY to entries scanHung
-// flagged Hung, mutating just the ladder fields
+// doHungTick runs one periodic tick. scanHung (reused, called with
+// persist=true) computes this scan's classifications and persists the anchor
+// state (StuckSince plus whatever ladder fields it round-trips forward);
+// doHungTick then re-loads that same state and applies the escalation ladder
+// ONLY to entries scanHung flagged Hung, mutating just the ladder fields
 // (WakeAttempts/AlertedAt/LastWakeAt) and re-saving when the ladder actually
 // advanced. This second pass is the only place the ladder fields are
-// ADVANCED, but it is NOT the sole writer of them: scanHung re-persists the
-// whole anchor (ladder fields included) for still-STUCK ids, and scanHung
-// also runs in the `ateam hung-scan` CLI, so a CLI scan and this tick can
-// race on the state file. saveHungState is atomic (agent-teams-6rru.17), so
-// that race can never produce a torn read; the residual sub-millisecond
-// lost-update it leaves is bounded, self-healing, and tracked in
-// agent-teams-6rru.18 — see hungAnchor's doc comment.
+// ADVANCED.
+//
+// agent-teams-6rru.19: this tick is the SOLE writer of hung-state.json. The
+// `ateam hung-scan` CLI (hung_scan.go's hungScanKong.Run) always calls
+// scanHung with persist=false, so it never writes — there is no concurrent
+// writer to race with, and saveHungState's atomicity (agent-teams-6rru.17)
+// is now a pure torn-write guard against this single writer's own
+// crash-mid-write case, not a mitigation for a lost update. This supersedes
+// agent-teams-6rru.18, which tracked that now-eliminated race.
 func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
-	entries, err := scanHung(ctx, deps.agentsFunc, deps.now)
+	entries, err := scanHung(ctx, deps.agentsFunc, deps.now, true)
 	if err != nil {
 		return fmt.Errorf("hung tick: scan: %w", err)
 	}
@@ -247,10 +249,11 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 		case hungActionNone:
 			// Already alerted this episode — the ladder is unchanged
 			// (nextHungLadderAction returned anchor untouched), so skip the
-			// write entirely. Re-saving byte-identical state every tick only
-			// widens the window for a concurrent scanHung write to lose an
-			// update (agent-teams-6rru.18); persisting only when the ladder
-			// actually advances keeps that window as small as possible.
+			// write entirely rather than re-saving byte-identical state every
+			// tick. Pure write-amplification avoidance, not a race
+			// mitigation: this tick is the sole writer of hung-state.json
+			// (agent-teams-6rru.19), so there is no concurrent writer to
+			// leave a shrinking or widening window for.
 			continue
 		}
 
