@@ -654,6 +654,12 @@ type StewardLedgerRecord struct {
 	Initiative     string                `json:"initiative"`
 	Recommendation string                `json:"recommendation"`
 	Verdict        StewardLedgerVerdict  `json:"verdict"`
+	// Decision is what Eric actually decided. Required when Verdict is
+	// StewardLedgerVerdictCorrected (the recommendation alone doesn't say
+	// what the right call was); optional otherwise. `omitempty` keeps
+	// ledger lines written before this field existed backward-compatible —
+	// they unmarshal with Decision == "".
+	Decision string `json:"decision,omitempty"`
 }
 
 // Validate reports whether r has all required fields set and recognized
@@ -673,6 +679,9 @@ func (r StewardLedgerRecord) Validate() error {
 	}
 	if !r.Verdict.Valid() {
 		return fmt.Errorf("steward ledger record: invalid verdict %q", r.Verdict)
+	}
+	if r.Verdict == StewardLedgerVerdictCorrected && r.Decision == "" {
+		return fmt.Errorf("steward ledger record: verdict=corrected requires --decision (what Eric actually decided)")
 	}
 	return nil
 }
