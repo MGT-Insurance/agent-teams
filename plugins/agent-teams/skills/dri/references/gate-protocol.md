@@ -53,6 +53,20 @@ The `--file` prose form remains supported as a fallback — use it when the ask 
 
 Guidance: name the fork. The structured form works because it forces you to state _what decision_ the human is actually making, not just what you need to explain. If you can't fill in `--decision` with one concrete line, the question is not crisp yet — refine it before gating.
 
+## The design-pivot gate
+
+A design pivot is any divergence from the human's dispatched framing: a different mechanism than the one the human named, a new code path instead of reusing one the human pointed at, or a scope-class escalation (minor -> major). ANY such pivot is a MANDATORY plan-review (QUESTION) gate, raised AT THE MOMENT OF DIVERGENCE — not folded into a later PR description or headlined after the fact. The gate note must carry three elements:
+
+- **Mechanism evidence** — what investigation showed about the named mechanism (e.g. why it doesn't fit).
+- **Recommendation** — the DRI's or planner's recommended design.
+- **Literal-reading alternative** — what implementing the human's original framing verbatim would look like, so the human can compare against the pivot.
+
+**The skip is void on pivot.** A plan-gate skip that held for the ORIGINAL framing (e.g. the small-work skip for trivial, fully-specified work) does NOT carry over to a pivoted design — the skip decision must be re-evaluated from scratch against the NEW design the moment it diverges.
+
+**"Verify, don't assume" corrects diagnosis, not design.** An instruction to verify a hypothesis authorizes confirming or correcting the underlying facts — it never authorizes silently substituting a different design once the facts are confirmed. Neither the DRI nor the planner may self-ratify a pivot, no matter how strong the mechanism evidence — "settled by mechanism" is never a valid basis for skipping this gate.
+
+Provenance: at-9qfb (2026-07-22) — a planner's mechanism-driven pivot was self-ratified and delivered without a plan gate; the human explicitly rejected it ("You pivoted to a major change with no plan gate").
+
 ## Raising a gate
 
 1. **Record the question/note AND flag needs-human** in one call:
