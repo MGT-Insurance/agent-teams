@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -39,6 +40,7 @@ type stewardCmd struct {
 type stewardLedgerCmd struct {
 	Record stewardLedgerRecordKong `cmd:"" name:"record" help:"Append one decision to the Steward's ledger."`
 	Stats  stewardLedgerStatsKong  `cmd:"" name:"stats" help:"Report per-category accept/correct counts from the ledger."`
+	Recall stewardLedgerRecallKong `cmd:"" name:"recall" help:"Recall recent decisions for one category (most recent first)."`
 }
 
 // ── steward init ──────────────────────────────────────────────────────────────
@@ -256,12 +258,15 @@ type stewardLedgerRecordKong struct {
 	Initiative     string `name:"initiative" required:"" help:"Initiative id the decision concerns."`
 	Recommendation string `name:"recommendation" required:"" help:"What the Steward recommended."`
 	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected" help:"Outcome: accepted or corrected."`
+	Decision       string `name:"decision" help:"What Eric actually decided (REQUIRED when verdict=corrected)."`
 }
 
 // Run builds a StewardLedgerRecord, validates it against the contract's
-// enums (defense-in-depth alongside the kong `enum:""` tags above — this
-// path also fires when Run is called directly in tests, bypassing kong
-// parsing), and appends it as one JSONL line to StewardLedgerPath.
+// enums and cross-field rules (defense-in-depth alongside the kong
+// `enum:""` tags above — this path also fires when Run is called directly
+// in tests, bypassing kong parsing) — this is also where verdict=corrected
+// requiring --decision is enforced, via MarshalLine's call to Validate() —
+// and appends it as one JSONL line to StewardLedgerPath.
 func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward ledger record: nil context")
@@ -273,6 +278,7 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 		Initiative:     c.Initiative,
 		Recommendation: c.Recommendation,
 		Verdict:        StewardLedgerVerdict(c.Verdict),
+		Decision:       c.Decision,
 	}
 
 	line, err := rec.MarshalLine()
@@ -424,4 +430,93 @@ func writeStewardStatsTable(ctx *cli.Context, rows []stewardCategoryStats) error
 		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%.0f%%\n", r.Category, r.Total, r.Accepted, r.Corrected, r.AcceptRate*100)
 	}
 	return w.Flush()
+}
+
+// ── steward ledger recall ────────────────────────────────────────────────────
+
+// stewardLedgerDefaultRecallLimit is the default cap on the number of
+// records `steward ledger recall` returns when --limit is unset (or, in a
+// direct-Run test call that bypasses kong's `default:""` tag, left zero).
+const stewardLedgerDefaultRecallLimit = 10
+
+// stewardLedgerRecallKong is the kong struct for `ateam steward ledger
+// recall <category>`. Category is a required positional arg with no kong
+// `enum:""` tag (same reasoning as stats' --category filter above): kong
+// enum validation would need special-casing, and Run must validate anyway
+// to cover the direct-Run-call test path that bypasses kong parsing.
+type stewardLedgerRecallKong struct {
+	Category string `arg:"" name:"category" required:"" help:"Decision category to recall (plan-approval|scope-call|merge-approval|design-fork|unblock-action)."`
+	Limit    int    `name:"limit" default:"10" help:"Max records to return (most recent first)."`
+	JSON     bool   `name:"json" help:"Output records as JSON."`
+}
+
+// Run reads StewardLedgerPath, filters to c.Category, orders most-recent-
+// first, and caps at c.Limit. A missing ledger is not an error — it reports
+// no entries. Malformed lines are skipped with a warning to stderr, same as
+// stats.
+func (c *stewardLedgerRecallKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam steward ledger recall: nil context")
+	}
+	if !StewardLedgerCategory(c.Category).Valid() {
+		return cli.Usagef("ateam steward ledger recall: invalid category %q", c.Category)
+	}
+
+	data, err := os.ReadFile(StewardLedgerPath(ctx))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("ateam steward ledger recall: read ledger: %w", err)
+	}
+
+	var recs []StewardLedgerRecord
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		rec, err := ParseStewardLedgerRecord([]byte(line))
+		if err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam steward ledger recall: warning: skipping malformed line: %v\n", err)
+			continue
+		}
+		if string(rec.Category) != c.Category {
+			continue
+		}
+		recs = append(recs, rec)
+	}
+
+	sort.Slice(recs, func(i, j int) bool {
+		return recs[i].Timestamp.After(recs[j].Timestamp)
+	})
+
+	limit := c.Limit
+	if limit <= 0 {
+		limit = stewardLedgerDefaultRecallLimit
+	}
+	if len(recs) > limit {
+		recs = recs[:limit]
+	}
+
+	if c.JSON {
+		if recs == nil {
+			recs = []StewardLedgerRecord{} // emit [] not null on empty
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(recs)
+	}
+
+	if len(recs) == 0 {
+		fmt.Fprintln(ctx.Stdout, "no ledger entries")
+		return nil
+	}
+
+	for _, r := range recs {
+		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  verdict=%s\n", r.Timestamp.Format(time.RFC3339), r.Category, r.Initiative, r.Verdict)
+		fmt.Fprintf(ctx.Stdout, "  recommendation: %s\n", r.Recommendation)
+		if r.Decision != "" {
+			fmt.Fprintf(ctx.Stdout, "  decision: %s\n", r.Decision)
+		}
+		fmt.Fprintln(ctx.Stdout)
+	}
+	return nil
 }

@@ -401,6 +401,54 @@ func TestStewardLedgerRecord_MarshalParseRoundTrip(t *testing.T) {
 		got.Recommendation != rec.Recommendation || got.Verdict != rec.Verdict {
 		t.Errorf("ParseStewardLedgerRecord = %+v, want %+v", got, rec)
 	}
+	if got.Decision != "" {
+		t.Errorf("Decision = %q, want empty (not set on this record)", got.Decision)
+	}
+}
+
+// TestStewardLedgerRecord_MarshalParseRoundTrip_PreservesDecision verifies
+// the agent-teams-7ew5.1 Decision field round-trips through MarshalLine and
+// ParseStewardLedgerRecord.
+func TestStewardLedgerRecord_MarshalParseRoundTrip_PreservesDecision(t *testing.T) {
+	rec := verbs.StewardLedgerRecord{
+		Timestamp:      time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+		Category:       verbs.StewardLedgerCategoryScopeCall,
+		Initiative:     "agent-teams-e3mq",
+		Recommendation: "narrow scope to API layer",
+		Verdict:        verbs.StewardLedgerVerdictCorrected,
+		Decision:       "keep the UI layer too, just stub the backend",
+	}
+
+	line, err := rec.MarshalLine()
+	if err != nil {
+		t.Fatalf("MarshalLine: %v", err)
+	}
+
+	got, err := verbs.ParseStewardLedgerRecord(line)
+	if err != nil {
+		t.Fatalf("ParseStewardLedgerRecord: %v", err)
+	}
+	if got.Decision != rec.Decision {
+		t.Errorf("Decision = %q, want %q", got.Decision, rec.Decision)
+	}
+}
+
+// TestParseStewardLedgerRecord_ToleratesLegacyLineWithoutDecision verifies a
+// ledger line written before agent-teams-7ew5.1 (no "decision" key) still
+// parses cleanly, with Decision defaulting to "".
+func TestParseStewardLedgerRecord_ToleratesLegacyLineWithoutDecision(t *testing.T) {
+	line := `{"ts":"2026-07-13T12:00:00Z","category":"merge-approval","initiative":"agent-teams-e3mq","recommendation":"merge PR #100","verdict":"accepted"}`
+
+	got, err := verbs.ParseStewardLedgerRecord([]byte(line))
+	if err != nil {
+		t.Fatalf("ParseStewardLedgerRecord: %v", err)
+	}
+	if got.Decision != "" {
+		t.Errorf("Decision = %q, want empty for legacy line", got.Decision)
+	}
+	if got.Verdict != verbs.StewardLedgerVerdictAccepted {
+		t.Errorf("Verdict = %q, want accepted", got.Verdict)
+	}
 }
 
 // ── Synced steward-topics record (agent-teams-5y8a.1) ────────────────────────
@@ -465,6 +513,7 @@ func TestStewardLedgerRecord_ValidateRejectsBadEnums(t *testing.T) {
 		Initiative:     "agent-teams-e3mq",
 		Recommendation: "do the thing",
 		Verdict:        verbs.StewardLedgerVerdictCorrected,
+		Decision:       "narrow to just the API layer",
 	}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("Validate on well-formed record: %v", err)
@@ -486,5 +535,36 @@ func TestStewardLedgerRecord_ValidateRejectsBadEnums(t *testing.T) {
 	noInitiative.Initiative = ""
 	if err := noInitiative.Validate(); err == nil {
 		t.Error("Validate: expected error for empty initiative, got nil")
+	}
+}
+
+// TestStewardLedgerRecord_ValidateRequiresDecisionOnCorrected verifies the
+// agent-teams-7ew5.1 rule: verdict=corrected requires a non-empty Decision
+// (what Eric actually decided), while verdict=accepted leaves it optional.
+func TestStewardLedgerRecord_ValidateRequiresDecisionOnCorrected(t *testing.T) {
+	base := verbs.StewardLedgerRecord{
+		Timestamp:      time.Now(),
+		Category:       verbs.StewardLedgerCategoryScopeCall,
+		Initiative:     "agent-teams-e3mq",
+		Recommendation: "do the thing",
+	}
+
+	correctedNoDecision := base
+	correctedNoDecision.Verdict = verbs.StewardLedgerVerdictCorrected
+	if err := correctedNoDecision.Validate(); err == nil {
+		t.Error("Validate: expected error for corrected verdict with empty Decision, got nil")
+	}
+
+	correctedWithDecision := base
+	correctedWithDecision.Verdict = verbs.StewardLedgerVerdictCorrected
+	correctedWithDecision.Decision = "narrow to just the API layer"
+	if err := correctedWithDecision.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error for corrected verdict with Decision set: %v", err)
+	}
+
+	acceptedNoDecision := base
+	acceptedNoDecision.Verdict = verbs.StewardLedgerVerdictAccepted
+	if err := acceptedNoDecision.Validate(); err != nil {
+		t.Errorf("Validate: unexpected error for accepted verdict with empty Decision: %v", err)
 	}
 }

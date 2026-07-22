@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -339,6 +340,7 @@ func TestStewardLedgerRecord_CreatesParentDirs(t *testing.T) {
 		Initiative:     "at-x",
 		Recommendation: "narrow scope",
 		Verdict:        "corrected",
+		Decision:       "narrow to just the API layer",
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -388,6 +390,58 @@ func TestStewardLedgerRecord_NilContext(t *testing.T) {
 	}
 }
 
+// TestStewardLedgerRecord_CorrectedWithoutDecisionRejected verifies the
+// agent-teams-7ew5.1 CLI-boundary rule: `record --verdict corrected` without
+// `--decision` fails, and nothing is written to the ledger.
+func TestStewardLedgerRecord_CorrectedWithoutDecisionRejected(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardLedgerRecordKong{
+		Category:       "scope-call",
+		Initiative:     "at-x",
+		Recommendation: "narrow scope",
+		Verdict:        "corrected",
+	}
+	if err := cmd.Run(ctx); err == nil {
+		t.Fatal("expected error for corrected verdict without --decision, got nil")
+	}
+	if _, err := os.Stat(StewardLedgerPath(ctx)); !os.IsNotExist(err) {
+		t.Errorf("expected no ledger file written on validation failure")
+	}
+}
+
+// TestStewardLedgerRecord_CorrectedWithDecisionWrites verifies --decision is
+// threaded onto the written record and round-trips through
+// ParseStewardLedgerRecord.
+func TestStewardLedgerRecord_CorrectedWithDecisionWrites(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardLedgerRecordKong{
+		Category:       "scope-call",
+		Initiative:     "at-x",
+		Recommendation: "narrow scope",
+		Verdict:        "corrected",
+		Decision:       "keep the UI layer too, just stub the backend",
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(StewardLedgerPath(ctx))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	rec, err := ParseStewardLedgerRecord([]byte(strings.TrimSpace(string(data))))
+	if err != nil {
+		t.Fatalf("ParseStewardLedgerRecord: %v", err)
+	}
+	if rec.Decision != cmd.Decision {
+		t.Errorf("Decision = %q, want %q", rec.Decision, cmd.Decision)
+	}
+}
+
 // ── steward ledger stats ─────────────────────────────────────────────────────
 
 func TestStewardLedgerStats_RoundTrip(t *testing.T) {
@@ -396,7 +450,7 @@ func TestStewardLedgerStats_RoundTrip(t *testing.T) {
 
 	records := []*stewardLedgerRecordKong{
 		{Category: "merge-approval", Initiative: "at-a", Recommendation: "r1", Verdict: "accepted"},
-		{Category: "merge-approval", Initiative: "at-a", Recommendation: "r2", Verdict: "corrected"},
+		{Category: "merge-approval", Initiative: "at-a", Recommendation: "r2", Verdict: "corrected", Decision: "hold the merge"},
 		{Category: "scope-call", Initiative: "at-b", Recommendation: "r3", Verdict: "accepted"},
 	}
 	for _, r := range records {
@@ -469,6 +523,148 @@ func TestStewardLedgerStats_InvalidCategoryRejected(t *testing.T) {
 
 func TestStewardLedgerStats_NilContext(t *testing.T) {
 	if err := (&stewardLedgerStatsKong{}).Run(nil); err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── steward ledger recall ────────────────────────────────────────────────────
+
+func TestStewardLedgerRecall_FiltersByCategoryAndOrdersMostRecentFirst(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	records := []*stewardLedgerRecordKong{
+		{Category: "scope-call", Initiative: "at-a", Recommendation: "r1", Verdict: "corrected", Decision: "decision-1"},
+		{Category: "merge-approval", Initiative: "at-b", Recommendation: "r2", Verdict: "accepted"},
+		{Category: "scope-call", Initiative: "at-c", Recommendation: "r3", Verdict: "corrected", Decision: "decision-3"},
+	}
+	for _, r := range records {
+		if err := r.Run(ctx); err != nil {
+			t.Fatalf("seed record: %v", err)
+		}
+	}
+	stdout.Reset()
+
+	if err := (&stewardLedgerRecallKong{Category: "scope-call", JSON: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got []StewardLedgerRecord
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal output: %v (out=%s)", err, stdout.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 scope-call records, got %d: %+v", len(got), got)
+	}
+	// Most recent first: r3 (at-c) was recorded after r1 (at-a).
+	if got[0].Initiative != "at-c" || got[1].Initiative != "at-a" {
+		t.Errorf("expected most-recent-first order [at-c, at-a], got [%s, %s]", got[0].Initiative, got[1].Initiative)
+	}
+	for _, r := range got {
+		if r.Category != StewardLedgerCategoryScopeCall {
+			t.Errorf("expected only scope-call records, got %+v", r)
+		}
+	}
+}
+
+func TestStewardLedgerRecall_RespectsLimit(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	for i := 0; i < 5; i++ {
+		rec := &stewardLedgerRecordKong{
+			Category:       "unblock-action",
+			Initiative:     "at-x",
+			Recommendation: fmt.Sprintf("r%d", i),
+			Verdict:        "accepted",
+		}
+		if err := rec.Run(ctx); err != nil {
+			t.Fatalf("seed record: %v", err)
+		}
+	}
+	stdout.Reset()
+
+	if err := (&stewardLedgerRecallKong{Category: "unblock-action", Limit: 2, JSON: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got []StewardLedgerRecord
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 records (limit), got %d", len(got))
+	}
+}
+
+func TestStewardLedgerRecall_NoLedgerFile(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardLedgerRecallKong{Category: "scope-call"}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "no ledger entries") {
+		t.Errorf("expected 'no ledger entries'; got: %q", stdout.String())
+	}
+}
+
+func TestStewardLedgerRecall_EmptyJSONIsArrayNotNull(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardLedgerRecallKong{Category: "scope-call", JSON: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "[]" {
+		t.Errorf("expected empty JSON array %q; got: %q", "[]", got)
+	}
+}
+
+func TestStewardLedgerRecall_SkipsMalformedLine(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, stderr := makeCtx(&fakeBD{}, home)
+
+	rec := &stewardLedgerRecordKong{Category: "scope-call", Initiative: "at-a", Recommendation: "r1", Verdict: "accepted"}
+	if err := rec.Run(ctx); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+	// Append a malformed line directly.
+	f, err := os.OpenFile(StewardLedgerPath(ctx), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	if _, err := f.WriteString("not json\n"); err != nil {
+		t.Fatalf("write malformed line: %v", err)
+	}
+	f.Close()
+	stdout.Reset()
+
+	if err := (&stewardLedgerRecallKong{Category: "scope-call", JSON: true}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got []StewardLedgerRecord
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 valid record (malformed line skipped), got %d", len(got))
+	}
+	if !strings.Contains(stderr.String(), "warning") {
+		t.Errorf("expected warning on stderr for malformed line, got: %q", stderr.String())
+	}
+}
+
+func TestStewardLedgerRecall_InvalidCategoryRejected(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardLedgerRecallKong{Category: "bogus"}).Run(ctx); err == nil {
+		t.Fatal("expected error for invalid category, got nil")
+	}
+}
+
+func TestStewardLedgerRecall_NilContext(t *testing.T) {
+	if err := (&stewardLedgerRecallKong{Category: "scope-call"}).Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
 	}
 }
