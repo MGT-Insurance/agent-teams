@@ -33,8 +33,14 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 # every case that doesn't apply here (no open initiative for cwd, Steward
 # session, missing session id) and idempotent on re-run (respawn re-fires
 # this hook with the same session id). Fail-soft: never let this block or
-# noise a session start.
-"$ATEAM" tie-session --session-id "$HOOK_SESSION_ID" >/dev/null 2>&1 || true
+# noise a session start. Output is captured (not discarded) because the
+# cross-open-initiative conflict warning on stderr is deliberately loud
+# (Eric: "error/warn path, not a silent second tie") — route any non-empty
+# output through the structured hook log instead of a bare redirect.
+tie_session_out=$("$ATEAM" tie-session --session-id "$HOOK_SESSION_ID" 2>&1) || true
+if [ -n "$tie_session_out" ]; then
+  hook_log_note "note" "tie-session: ${tie_session_out}"
+fi
 
 # ── Steward branch: this is the Steward's own session, not an initiative ────
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-steward.sh

@@ -35,7 +35,9 @@ type tieSessionKong struct {
 // cases:
 //
 //   - no session id available (neither --session-id nor
-//     $CLAUDE_CODE_SESSION_ID is set) -> exit 0, no output, no bd calls.
+//     $CLAUDE_CODE_SESSION_ID is set, or the resolved value is the literal
+//     "unknown" sentinel the hook scripts fall back to when stdin carries no
+//     .session_id) -> exit 0, no output, no bd calls.
 //   - cwd is the Steward's own session (isStewardSession) -> exit 0, no
 //     output, no bd calls — the Steward is not an initiative bead.
 //   - no initiative-id arg was given AND cwd resolves to no open initiative
@@ -59,7 +61,11 @@ func (c *tieSessionKong) Run(ctx *cli.Context) error {
 	if sessionID == "" {
 		sessionID = os.Getenv(sessionIDEnvVar)
 	}
-	if sessionID == "" {
+	// "unknown" is the sentinel session-start-inbox.sh (and its sibling hook
+	// scripts) fall back to when stdin carries no .session_id — treat it
+	// exactly like no session id at all so it's never written to the
+	// registry as a garbage "session: unknown" line.
+	if sessionID == "" || sessionID == "unknown" {
 		return nil // no session id available — silent no-op
 	}
 

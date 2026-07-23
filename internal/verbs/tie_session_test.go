@@ -164,6 +164,22 @@ func TestTieSession_NoOp_NoSessionID(t *testing.T) {
 	}
 }
 
+func TestTieSession_NoOp_UnknownSentinel(t *testing.T) {
+	fbd := noCallBD(t)
+	ctx, stdout, stderr := makeCtx(fbd, t.TempDir())
+
+	// "unknown" is what session-start-inbox.sh (and its sibling hook scripts)
+	// pass as --session-id when stdin carries no .session_id; it must be
+	// treated exactly like no session id, never written to the registry.
+	cmd := &tieSessionKong{InitiativeID: "at-target", SessionID: "unknown"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("expected clean no-op, got error: %v", err)
+	}
+	if stdout.String() != "" || stderr.String() != "" {
+		t.Errorf("expected no output, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestTieSession_NoOp_NoOpenInitiativeForCwd(t *testing.T) {
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {

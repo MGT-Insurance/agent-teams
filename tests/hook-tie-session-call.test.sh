@@ -18,8 +18,10 @@ fail() { echo "FAIL $*"; FAIL=$((FAIL+1)); }
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
-# ── Fake ateam binary: records every invocation's args, and can be told to
-# fail on tie-session specifically (TIE_SESSION_EXIT) to exercise fail-soft.
+# ── Fake ateam binary: records every invocation's args, can be told to fail
+# on tie-session specifically (TIE_SESSION_EXIT) to exercise fail-soft, and
+# can be told to print output on tie-session (TIE_SESSION_OUTPUT) to exercise
+# the hook's capture-and-log-non-empty-output path (agent-teams-zalv.14).
 FAKE_PLUGIN_ROOT="$T/plugin-root"
 mkdir -p "$FAKE_PLUGIN_ROOT/bin"
 CALL_LOG="$T/ateam-calls.log"
@@ -27,8 +29,14 @@ CALL_LOG="$T/ateam-calls.log"
 cat > "$FAKE_PLUGIN_ROOT/bin/ateam" <<'SHIM'
 #!/usr/bin/env bash
 echo "$@" >> "$CALL_LOG"
-if [ "$1" = "tie-session" ] && [ "${TIE_SESSION_EXIT:-0}" != "0" ]; then
-  exit "${TIE_SESSION_EXIT}"
+if [ "$1" = "tie-session" ]; then
+  if [ "${TIE_SESSION_EXIT:-0}" != "0" ]; then
+    exit "${TIE_SESSION_EXIT}"
+  fi
+  if [ -n "${TIE_SESSION_OUTPUT:-}" ]; then
+    echo "${TIE_SESSION_OUTPUT}" >&2
+  fi
+  exit 0
 fi
 if [ "$1" = "mail" ] && [ "${2:-}" = "inbox" ]; then
   echo "no unread mail"
@@ -92,6 +100,61 @@ if grep -q '^mail inbox --peek$' "$CALL_LOG"; then
   pass "case2: hook continued past the failing tie-session call to the mail-peek call"
 else
   fail "case2: hook did not reach the mail-peek call after tie-session errored: $(cat "$CALL_LOG")"
+fi
+
+# ── Case 3: stdin has no parseable .session_id -> HOOK_SESSION_ID resolves
+# to the "unknown" sentinel (line 16's fallback; jq's own exit-0-empty-output
+# behavior on a truly empty pipe means garbage/unparseable stdin is what
+# actually exercises the `|| echo "unknown"` fallback here, not an empty
+# pipe). The hook still calls tie-session unconditionally (the no-op guard
+# for "unknown" lives in the verb — see internal/verbs/tie_session_test.go —
+# not in the hook), and since the stub produces no output for this call
+# (mirroring the verb's real silent no-op), nothing gets logged ────────────
+: > "$CALL_LOG"
+HOOKS_LOG="$AGENT_TEAMS_HOME/debug/hooks.log"
+rm -f "$HOOKS_LOG"
+if out3=$(cd "$T/wt" && printf 'not-json' | "$SCRIPT"); then
+  rc3=0
+else
+  rc3=$?
+fi
+if [ "$rc3" -ne 0 ]; then
+  fail "case3: script exited $rc3, want 0"
+else
+  pass "case3: script exits 0 with no .session_id on stdin"
+fi
+if grep -q '^tie-session --session-id unknown$' "$CALL_LOG"; then
+  pass "case3: hook calls tie-session with the unknown sentinel (verb-level no-op is not this test's concern)"
+else
+  fail "case3: expected tie-session call not found in log: $(cat "$CALL_LOG")"
+fi
+if [ -f "$HOOKS_LOG" ] && grep -q 'tie-session:' "$HOOKS_LOG"; then
+  fail "case3: expected no tie-session note logged for a silent no-op, found: $(grep 'tie-session:' "$HOOKS_LOG")"
+else
+  pass "case3: no tie-session note logged when the call produced no output"
+fi
+
+# ── Case 4: tie-session emits a cross-open-initiative conflict warning ─────
+# (or any non-empty output) -> the hook must capture it and route it through
+# hook_log_note instead of swallowing it via >/dev/null ────────────────────
+: > "$CALL_LOG"
+rm -f "$HOOKS_LOG"
+export TIE_SESSION_OUTPUT="ateam tie-session: session sess-conflict already tied to at-other (open) -- not re-tying"
+if out4=$(cd "$T/wt" && echo '{"session_id":"sess-conflict"}' | "$SCRIPT"); then
+  rc4=0
+else
+  rc4=$?
+fi
+unset TIE_SESSION_OUTPUT
+if [ "$rc4" -ne 0 ]; then
+  fail "case4: script exited $rc4, want 0"
+else
+  pass "case4: script exits 0 when tie-session emits a warning"
+fi
+if [ -f "$HOOKS_LOG" ] && grep -q 'tie-session: ateam tie-session: session sess-conflict already tied to at-other' "$HOOKS_LOG"; then
+  pass "case4: tie-session's conflict warning ended up in the structured hook log"
+else
+  fail "case4: expected warning not found in hook log: $(cat "$HOOKS_LOG" 2>/dev/null || echo MISSING)"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
