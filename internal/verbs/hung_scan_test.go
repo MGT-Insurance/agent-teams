@@ -162,7 +162,8 @@ func TestClassifyInitiative(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotClass, _, gotCwd := classifyInitiative(tc.labels, tc.sessions, wt, tc.dirExists)
+			iss := bd.Issue{Description: "worktree: " + wt + "\n"}
+			gotClass, _, gotCwd := classifyInitiative(tc.labels, tc.sessions, iss, tc.dirExists)
 			if gotClass != tc.wantClass {
 				t.Errorf("classification = %q, want %q", gotClass, tc.wantClass)
 			}
@@ -170,6 +171,124 @@ func TestClassifyInitiative(t *testing.T) {
 				t.Errorf("cwdPresent = %v, want %v", gotCwd, tc.wantCwd)
 			}
 		})
+	}
+}
+
+// ── classifyInitiative: session-set aggregation (agent-teams-zalv.4 / at-ps11) ──
+//
+// Truth table from the contract (agent-teams-zalv.1 §6), exercised against a
+// session-tied initiative (session: lines present, so matchSessionsForInitiative
+// takes the session-id-set path, not the legacy worktree/Name fallback).
+
+func TestClassifyInitiative_SessionSet_AnyBusyWorking(t *testing.T) {
+	const wt = "/fake/wt"
+	dirExists := func(string) bool { return true }
+	pidA, pidB := 1, 2
+	iss := bd.Issue{Description: "worktree: " + wt + "\nsession: sess-a\nsession: sess-b\n"}
+	sessions := []agentSession{
+		{SessionID: "sess-a", Status: "idle", PID: &pidA},
+		{SessionID: "sess-b", Status: "busy", PID: &pidB},
+	}
+	class, matched, _ := classifyInitiative(nil, sessions, iss, dirExists)
+	if class != hungClassWorking {
+		t.Errorf("classification = %q, want WORKING (any tied session busy)", class)
+	}
+	if len(matched) != 2 {
+		t.Errorf("matched = %v, want both tied sessions returned", matched)
+	}
+}
+
+func TestClassifyInitiative_SessionSet_AllIdleNoGateStuck(t *testing.T) {
+	const wt = "/fake/wt"
+	dirExists := func(string) bool { return true }
+	pidA, pidB := 1, 2
+	iss := bd.Issue{Description: "worktree: " + wt + "\nsession: sess-a\nsession: sess-b\n"}
+	sessions := []agentSession{
+		{SessionID: "sess-a", Status: "idle", PID: &pidA},
+		{SessionID: "sess-b", Status: "waiting", PID: &pidB},
+	}
+	class, _, _ := classifyInitiative(nil, sessions, iss, dirExists)
+	if class != hungClassStuck {
+		t.Errorf("classification = %q, want STUCK (all tied sessions idle/waiting, no gate)", class)
+	}
+}
+
+func TestClassifyInitiative_SessionSet_NoneAliveDead(t *testing.T) {
+	const wt = "/fake/wt"
+	dirExists := func(string) bool { return true }
+	iss := bd.Issue{Description: "worktree: " + wt + "\nsession: sess-a\nsession: sess-b\n"}
+	// Neither session id appears live (PID present) in the agents snapshot —
+	// matchSessionsForInitiative returns an empty tied set.
+	sessions := []agentSession{}
+	class, matched, _ := classifyInitiative(nil, sessions, iss, dirExists)
+	if class != hungClassDead {
+		t.Errorf("classification = %q, want DEAD (no tied session alive)", class)
+	}
+	if len(matched) != 0 {
+		t.Errorf("matched = %v, want empty", matched)
+	}
+}
+
+// TestClassifyInitiative_SessionSet_DriftedButAlive_WorksNotDead is the
+// at-gusm fix itself (agent-teams-zalv.1 provenance): a DRI's cwd drifted
+// into a track worktree with NO Name set (an interactive session, which
+// carries no Name — Name is background-only). The old worktree/Name join
+// would find nothing and report DEAD. Tying by session id instead finds the
+// live, busy session regardless of where its cwd wandered.
+func TestClassifyInitiative_SessionSet_DriftedButAlive_WorksNotDead(t *testing.T) {
+	const wt = "/fake/wt"
+	dirExists := func(string) bool { return true } // the registered worktree still exists on disk
+	pid := 42
+	iss := bd.Issue{Description: "worktree: " + wt + "\nsession: sess-dri\n"}
+	sessions := []agentSession{
+		// cwd has drifted into an unrelated sibling worktree; no Name at all
+		// (interactive session) -- only SessionID ties it back.
+		{SessionID: "sess-dri", CWD: "/fake/wt-track-h", Status: "busy", PID: &pid},
+	}
+	class, matched, cwdPresent := classifyInitiative(nil, sessions, iss, dirExists)
+	if class != hungClassWorking {
+		t.Errorf("classification = %q, want WORKING (drifted-but-alive session tied by id)", class)
+	}
+	if !cwdPresent {
+		t.Error("cwdPresent should be true: the registered worktree directory still exists")
+	}
+	if len(matched) != 1 || matched[0].SessionID != "sess-dri" {
+		t.Errorf("matched = %v, want the drifted session tied by id", matched)
+	}
+
+	// Same drifted session, but idle instead of busy -> STUCK, not DEAD.
+	sessionsIdle := []agentSession{
+		{SessionID: "sess-dri", CWD: "/fake/wt-track-h", Status: "idle", PID: &pid},
+	}
+	class2, _, _ := classifyInitiative(nil, sessionsIdle, iss, dirExists)
+	if class2 != hungClassStuck {
+		t.Errorf("classification = %q, want STUCK (drifted-but-alive, idle, no gate)", class2)
+	}
+}
+
+// TestClassifyInitiative_LegacyNoSessionLines_UnchangedByteForByte pins that
+// a legacy initiative (no session: lines at all) still classifies via the
+// worktree/Name fallback exactly as it did before this bead — i.e. it takes
+// the SAME path as every case in TestClassifyInitiative above. This test adds
+// an explicit label for the migration guarantee (agent-teams-zalv.1 §5).
+func TestClassifyInitiative_LegacyNoSessionLines_UnchangedByteForByte(t *testing.T) {
+	const wt = "/fake/wt"
+	dirExists := func(string) bool { return true }
+	pid := 7
+	iss := bd.Issue{Description: "worktree: " + wt + "\n"} // no session: lines
+	if hasSessionLine(iss.Description) {
+		t.Fatal("test setup: description must have no session: lines")
+	}
+	sessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
+	class, matched, cwdPresent := classifyInitiative(nil, sessions, iss, dirExists)
+	if class != hungClassWorking {
+		t.Errorf("classification = %q, want WORKING", class)
+	}
+	if !cwdPresent {
+		t.Error("cwdPresent should be true")
+	}
+	if len(matched) != 1 {
+		t.Errorf("matched = %v, want exactly the one worktree-matched session", matched)
 	}
 }
 

@@ -1079,6 +1079,139 @@ func TestSendKong_RespawnError_WarnsButSucceeds(t *testing.T) {
 	}
 }
 
+// ── sendKong: session-set-first liveness (agent-teams-zalv.4 / at-ps11) ──────
+
+// sessionTiedFakeBD builds a fakeBD whose `bd show` returns an initiative
+// with the given session: lines (plus a worktree: line so recipientWorktree
+// still succeeds) — exercising the session-id-set path of
+// matchSessionsForInitiative rather than the legacy worktree/Name fallback.
+func sessionTiedFakeBD(recipientID, wt, msgID string, sessionIDs []string) *fakeBD {
+	desc := "worktree: " + wt + "\n"
+	for _, id := range sessionIDs {
+		desc += "session: " + id + "\n"
+	}
+	return &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = msgID
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: recipientID, Description: desc}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+}
+
+// TestSendKong_SessionTied_PicksPrimaryLiveSession: two tied sessions, both
+// live — the PRIMARY (first-registered, sess-a) must be the doorbell/respawn
+// target, not sess-b, even though sess-b appears later in the agents
+// snapshot (agent-teams-zalv.1 §3).
+func TestSendKong_SessionTied_PicksPrimaryLiveSession(t *testing.T) {
+	sf := newSendFixture(t)
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			pidA, pidB := 1, 2
+			return []agentSession{
+				// Snapshot order deliberately reversed vs. registration order.
+				{ID: "sess-b-short", SessionID: "sess-b", CWD: "/somewhere/else", Status: "idle", PID: &pidB},
+				{ID: "sess-a-short", SessionID: "sess-a", CWD: "/somewhere/else-a", Status: "idle", PID: &pidA},
+			}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true }, // still present: recipient is deaf
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(sessionTiedFakeBD("at-kong-recip", sf.recipientWt, "at-kong-msg1", []string{"sess-a", "sess-b"}), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "sess-a-short" {
+		t.Errorf("respawn target = %q, want the PRIMARY session's id sess-a-short", respawnedID)
+	}
+	if !strings.Contains(stdout.String(), "respawned sess-a-short") {
+		t.Errorf("stdout missing primary respawn notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_SessionTied_PrimaryDead_FallsBackToLaterLiveSession: the
+// primary (sess-a) is not in the agents snapshot at all (dead/gone) — the
+// doorbell/respawn target must fall back to the next live tied session
+// (sess-b), per the contract's "fall back to any live tied session if the
+// primary is gone."
+func TestSendKong_SessionTied_PrimaryDead_FallsBackToLaterLiveSession(t *testing.T) {
+	sf := newSendFixture(t)
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			pidB := 2
+			return []agentSession{
+				{ID: "sess-b-short", SessionID: "sess-b", CWD: "/somewhere/else", Status: "idle", PID: &pidB},
+			}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(sessionTiedFakeBD("at-kong-recip", sf.recipientWt, "at-kong-msg1", []string{"sess-a", "sess-b"}), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "sess-b-short" {
+		t.Errorf("respawn target = %q, want the fallback live session sess-b-short (primary sess-a is gone)", respawnedID)
+	}
+	if !strings.Contains(stdout.String(), "respawned sess-b-short") {
+		t.Errorf("stdout missing fallback respawn notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_SteardRecipient_SessionLinesNeverConsulted regression-guards
+// agent-teams-zalv.1's "Steward routing is UNAFFECTED": sendKong.Run must
+// never call bd.ShowIssue for the Steward handle (stewardSendFakeBD fails the
+// test on any bd Run call), so it can never consult session: lines for the
+// Steward — liveness stays on the marker/handle (StewardSessionDir) +
+// worktree/Name match exactly as before this bead.
+func TestSendKong_StewardRecipient_SessionLinesNeverConsulted(t *testing.T) {
+	home := t.TempDir()
+	file := makeTempFile(t, "hello steward")
+	ctx, stdout, _ := makeCtx(stewardSendFakeBD(t, "at-steward-msg3"), home)
+	stewardDir := StewardSessionDir(ctx)
+
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: StewardHandle,
+		File:        file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "stew5678", CWD: stewardDir, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "stew5678" {
+		t.Errorf("respawn not called with correct short id via the marker/handle path; got %q", respawnedID)
+	}
+	if !strings.Contains(stdout.String(), "respawned stew5678") {
+		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}
+
 func TestSendKong_NilContext(t *testing.T) {
 	cmd := &sendKong{RecipientID: "at-x", File: "/tmp/x"}
 	if err := cmd.Run(nil); err == nil {
@@ -1332,7 +1465,7 @@ func TestRecipientWorktree_StewardHandle_NoBDShowCall(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	wt, err := recipientWorktree(ctx, StewardHandle)
+	_, wt, err := recipientWorktree(ctx, StewardHandle)
 	if err != nil {
 		t.Fatalf("recipientWorktree: %v", err)
 	}
