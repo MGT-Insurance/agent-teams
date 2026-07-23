@@ -27,6 +27,15 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ]; } || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 [ -d "$ATH/.beads" ] || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 
+# ── Self-registration: tie this session's id to its initiative ─────────────
+# (agent-teams-zalv.3, at-ps11 — resolved writer mechanism). `ateam
+# tie-session` resolves the initiative from cwd and is a silent no-op for
+# every case that doesn't apply here (no open initiative for cwd, Steward
+# session, missing session id) and idempotent on re-run (respawn re-fires
+# this hook with the same session id). Fail-soft: never let this block or
+# noise a session start.
+"$ATEAM" tie-session --session-id "$HOOK_SESSION_ID" >/dev/null 2>&1 || true
+
 # ── Steward branch: this is the Steward's own session, not an initiative ────
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-steward.sh
 . "$(dirname "$0")/lib/resolve-steward.sh"
