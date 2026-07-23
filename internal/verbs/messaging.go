@@ -93,7 +93,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	fmt.Fprintf(ctx.Stdout, "message_id: %s\n", issue.ID)
 	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
 
-	issue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
 	if liveErr != nil {
 		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
 		return nil
@@ -124,7 +124,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	var entry *agentSession
 	if c.RecipientID == StewardHandle {
 		entry = matchSessionByWorktree(sessions, wtPath)
-	} else if matched := matchSessionsForInitiative(sessions, issue); len(matched) > 0 {
+	} else if matched := matchSessionsForInitiative(sessions, recipIssue); len(matched) > 0 {
 		entry = &matched[0]
 	}
 	if entry == nil {
