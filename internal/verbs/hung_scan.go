@@ -190,11 +190,11 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 }
 
 // classifyInitiative returns the hung-scan classification for one
-// initiative, given its labels, the current live sessions, and its worktree
-// path. Mirrors computeExecutionStatus's first-match-wins style
-// (status.go), but with a distinct rule set and outcome enum — see the
-// package doc comment for why this is a separate verb rather than an
-// extension of execution-status.
+// initiative, given its labels, the current live sessions, and the
+// initiative's bd.Issue (for its worktree: line and session: lines). Mirrors
+// computeExecutionStatus's first-match-wins style (status.go), but with a
+// distinct rule set and outcome enum — see the package doc comment for why
+// this is a separate verb rather than an extension of execution-status.
 //
 // Evaluation order (first match wins; agent-teams-6rru.13 split DEAD into
 // two separate checks straddling the gate check, so a gated-but-not-live
@@ -206,19 +206,31 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 //  2. AWAITING-HUMAN — labels carry "human" AND ("gate:question" OR
 //     "gate:review") — checked regardless of PID presence, since a real gate
 //     means the initiative is waiting on the human, not hung.
-//  3. DEAD  — no live session matches worktree, OR the matched session's
-//     PID is nil (tracked-but-dead) — reached only once a real gate has
-//     already been ruled out.
-//  4. WORKING — matched session is actively working (status=="busy" or
-//     state=="working"; same predicate as isActivelyWorking).
-//  5. STUCK — everything else: a live session, idle/waiting, no gate.
+//  3. DEAD  — no tied session is alive (matchSessionsForInitiative returned
+//     no live entry) — reached only once a real gate has already been ruled
+//     out.
+//  4. WORKING — ANY live tied session is actively working (status=="busy"
+//     or state=="working"; same predicate as isActivelyWorking).
+//  5. STUCK — everything else: at least one live tied session, all
+//     idle/waiting, no gate.
 //
-// matched is nil when no session matches worktree (see
-// matchSessionByWorktree).
-func classifyInitiative(labels []string, sessions []agentSession, worktree string, dirExists dirExistsFunc) (classification string, matched *agentSession, cwdPresent bool) {
+// matched is the tied-session set from matchSessionsForInitiative
+// (agent-teams-zalv.1 §6): for a session-tied initiative this holds only
+// LIVE sessions, primary-first; for a legacy initiative (no session: lines)
+// it falls back to the single matchSessionByWorktree result, which — unlike
+// the session-set path — may be a PID-nil (tracked-but-dead) session, so
+// pidPresent below is computed from the live subset, not len(matched).
+func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, dirExists dirExistsFunc) (classification string, matched []agentSession, cwdPresent bool) {
+	worktree := worktreePath(iss.Description)
 	cwdPresent = worktree != "" && dirExists(worktree)
-	matched = matchSessionByWorktree(sessions, worktree)
-	pidPresent := matched != nil && matched.PID != nil
+	matched = matchSessionsForInitiative(sessions, iss)
+
+	var live []agentSession
+	for _, s := range matched {
+		if s.PID != nil {
+			live = append(live, s)
+		}
+	}
 
 	if !cwdPresent {
 		return hungClassDead, matched, cwdPresent
@@ -230,12 +242,14 @@ func classifyInitiative(labels []string, sessions []agentSession, worktree strin
 		return hungClassAwaitingHuman, matched, cwdPresent
 	}
 
-	if !pidPresent {
+	if len(live) == 0 {
 		return hungClassDead, matched, cwdPresent
 	}
 
-	if matched.Status == "busy" || matched.State == "working" {
-		return hungClassWorking, matched, cwdPresent
+	for _, s := range live {
+		if s.Status == "busy" || s.State == "working" {
+			return hungClassWorking, matched, cwdPresent
+		}
 	}
 
 	return hungClassStuck, matched, cwdPresent
@@ -292,7 +306,7 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			continue
 		}
 
-		class, matched, cwdPresent := classifyInitiative(iss.Labels, sessions, wt, defaultDirExists)
+		class, matched, cwdPresent := classifyInitiative(iss.Labels, sessions, iss, defaultDirExists)
 
 		entry := hungScanEntry{
 			ID:             iss.ID,
@@ -301,9 +315,12 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			Classification: class,
 			CWDPresent:     cwdPresent,
 		}
-		if matched != nil {
-			entry.SessionStatus = matched.Status
-			entry.PIDPresent = matched.PID != nil
+		if len(matched) > 0 {
+			// Report the primary (first tied session) for the diagnostic
+			// session_status/pid_present fields — matchSessionsForInitiative
+			// returns primary-first (agent-teams-zalv.1 §3).
+			entry.SessionStatus = matched[0].Status
+			entry.PIDPresent = matched[0].PID != nil
 		}
 
 		if class == hungClassStuck {

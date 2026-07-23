@@ -112,7 +112,26 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 			i, s.ID, s.CWD, s.Status, s.PID != nil, canonicalPath(s.CWD) == want)
 	}
 
-	entry := matchSessionByWorktree(sessions, wtPath)
+	// Resolve the liveness/respawn target via matchSessionsForInitiative
+	// (agent-teams-zalv.1 §3/§4a): take the PRIMARY (first live tied
+	// session); falls back to the worktree/Name match for legacy entries
+	// with no session: lines. The Steward is not an initiative bead (no bd
+	// show possible) and is NOT tied via session: lines — it keeps the
+	// original worktree/Name match untouched (agent-teams-zalv.1 "Steward
+	// routing is UNAFFECTED").
+	var entry *agentSession
+	if c.RecipientID == StewardHandle {
+		entry = matchSessionByWorktree(sessions, wtPath)
+	} else if iss, err := bd.ShowIssue(ctx.BD, c.RecipientID); err == nil {
+		if matched := matchSessionsForInitiative(sessions, iss); len(matched) > 0 {
+			entry = &matched[0]
+		}
+	} else {
+		// Degrade to the worktree/Name match — recipientWorktree above
+		// already succeeded for this id, so this is a defensive fallback,
+		// not the expected path.
+		entry = matchSessionByWorktree(sessions, wtPath)
+	}
 	if entry == nil {
 		// The Steward has no initiative-resume path (there's no "/dri <id>" to
 		// launch it with) — auto-relaunch is e3mq.10's scope. Just leave the
