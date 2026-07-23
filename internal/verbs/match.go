@@ -79,7 +79,19 @@ func hasSessionLine(description string) bool {
 // if sessionID is already recorded on a DIFFERENT open initiative, returns an
 // error instead of silently tying the session to two initiatives at once
 // (agent-teams-zalv.1 §2).
+//
+// Validation: sessionID must be non-empty and contain no whitespace (including
+// newlines) — it is spliced verbatim into a "session: <id>" description line,
+// so an unvalidated value could inject extra lines or corrupt the field parse
+// for a future untrusted caller. Rejected before any read/write.
 func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("appendSessionID: sessionID must not be empty")
+	}
+	if strings.ContainsAny(sessionID, " \t\r\n") {
+		return fmt.Errorf("appendSessionID: sessionID must not contain whitespace: %q", sessionID)
+	}
+
 	issue, err := bd.ShowIssue(ctx.BD, initiativeID)
 	if err != nil {
 		return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)

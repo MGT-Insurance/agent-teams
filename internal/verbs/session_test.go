@@ -75,6 +75,60 @@ func TestHasSessionLine(t *testing.T) {
 
 // ── appendSessionID ──────────────────────────────────────────────────────────
 
+// TestAppendSessionID_RejectsInvalidSessionID covers the input-validation gate
+// (agent-teams-zalv.12 finding 3): empty and whitespace-containing sessionID
+// values (including an injection attempt via an embedded "\nsession: evil"
+// line) must be rejected before any bd show/update call.
+func TestAppendSessionID_RejectsInvalidSessionID(t *testing.T) {
+	for _, sessionID := range []string{"", "a b", "a\nsession: evil"} {
+		f := &fakeBD{
+			runFn: func(args ...string) (string, error) {
+				t.Fatalf("unexpected bd call for invalid sessionID %q: %v", sessionID, args)
+				return "", nil
+			},
+			runJSONFn: func(dst any, args ...string) error {
+				t.Fatalf("unexpected bd call for invalid sessionID %q: %v", sessionID, args)
+				return nil
+			},
+		}
+		ctx, _, _ := makeCtx(f, t.TempDir())
+
+		if err := appendSessionID(ctx, "at-init", sessionID); err == nil {
+			t.Errorf("appendSessionID(%q): expected an error, got nil", sessionID)
+		}
+	}
+}
+
+// TestAppendSessionID_AcceptsNormalSessionID is the control case for the
+// validation gate above: an ordinary uuid-ish id must pass validation and
+// proceed to the existing bd show/update flow unimpeded.
+func TestAppendSessionID_AcceptsNormalSessionID(t *testing.T) {
+	var updateCalled bool
+	f := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			switch args[0] {
+			case "show":
+				return issueJSON(bd.Issue{ID: "at-init", Description: "problem: x\n"}), nil
+			case "update":
+				updateCalled = true
+				return "", nil
+			}
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			return json.Unmarshal([]byte(issuesJSON(bd.Issue{ID: "at-init", Status: "open", Description: "problem: x\n"})), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(f, t.TempDir())
+
+	if err := appendSessionID(ctx, "at-init", "0199a1b2-c3d4-7e5f-8a6b-1234567890ab"); err != nil {
+		t.Fatalf("appendSessionID: unexpected error: %v", err)
+	}
+	if !updateCalled {
+		t.Error("appendSessionID: expected bd update to be called for a valid new session id")
+	}
+}
+
 func TestAppendSessionID_IdempotentReAppendIsNoOp(t *testing.T) {
 	var updateCalled bool
 	f := &fakeBD{

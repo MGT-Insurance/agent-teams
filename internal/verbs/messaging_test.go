@@ -1465,7 +1465,7 @@ func TestRecipientWorktree_StewardHandle_NoBDShowCall(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	wt, err := recipientWorktree(ctx, StewardHandle)
+	_, wt, err := recipientWorktree(ctx, StewardHandle)
 	if err != nil {
 		t.Fatalf("recipientWorktree: %v", err)
 	}

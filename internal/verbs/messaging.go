@@ -93,7 +93,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	fmt.Fprintf(ctx.Stdout, "message_id: %s\n", issue.ID)
 	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
 
-	wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	issue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
 	if liveErr != nil {
 		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
 		return nil
@@ -118,19 +118,14 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	// with no session: lines. The Steward is not an initiative bead (no bd
 	// show possible) and is NOT tied via session: lines — it keeps the
 	// original worktree/Name match untouched (agent-teams-zalv.1 "Steward
-	// routing is UNAFFECTED").
+	// routing is UNAFFECTED"). recipientWorktree above already fetched the
+	// recipient issue once (single bd.ShowIssue per send); reuse it here
+	// instead of fetching again.
 	var entry *agentSession
 	if c.RecipientID == StewardHandle {
 		entry = matchSessionByWorktree(sessions, wtPath)
-	} else if iss, err := bd.ShowIssue(ctx.BD, c.RecipientID); err == nil {
-		if matched := matchSessionsForInitiative(sessions, iss); len(matched) > 0 {
-			entry = &matched[0]
-		}
-	} else {
-		// Degrade to the worktree/Name match — recipientWorktree above
-		// already succeeded for this id, so this is a defensive fallback,
-		// not the expected path.
-		entry = matchSessionByWorktree(sessions, wtPath)
+	} else if matched := matchSessionsForInitiative(sessions, issue); len(matched) > 0 {
+		entry = &matched[0]
 	}
 	if entry == nil {
 		// The Steward has no initiative-resume path (there's no "/dri <id>" to
@@ -432,26 +427,30 @@ func touchFile(path string) error {
 	return os.Chtimes(path, now, now)
 }
 
-// recipientWorktree looks up the initiative by id and extracts its worktree
-// path from the description. The Steward is a machine-scoped singleton, not
+// recipientWorktree looks up the initiative by id, extracts its worktree
+// path from the description, and returns the fetched issue alongside it so
+// callers (sendKong.Run) can reuse it for session-set matching instead of
+// fetching it a second time. The Steward is a machine-scoped singleton, not
 // an initiative bead — id == StewardHandle resolves directly to
 // StewardSessionDir instead of going through bd show (which would error,
 // since "steward" isn't an initiative), so the liveness/deaf-check/respawn
 // escalation below runs for the Steward exactly like it does for any other
 // recipient (mirrors isStewardSession/resolveInboxRecipient's precedent).
-func recipientWorktree(ctx *cli.Context, id string) (string, error) {
+// The returned bd.Issue is the zero value for the Steward case (unused by
+// callers, since the Steward short-circuits to the worktree/Name match).
+func recipientWorktree(ctx *cli.Context, id string) (bd.Issue, string, error) {
 	if id == StewardHandle {
-		return StewardSessionDir(ctx), nil
+		return bd.Issue{}, StewardSessionDir(ctx), nil
 	}
 	issue, err := bd.ShowIssue(ctx.BD, id)
 	if err != nil {
-		return "", fmt.Errorf("bd show %s: %w", id, err)
+		return bd.Issue{}, "", fmt.Errorf("bd show %s: %w", id, err)
 	}
 	wt := worktreePath(issue.Description)
 	if wt == "" {
-		return "", fmt.Errorf("initiative %s has no worktree: line", id)
+		return bd.Issue{}, "", fmt.Errorf("initiative %s has no worktree: line", id)
 	}
-	return wt, nil
+	return issue, wt, nil
 }
 
 // resolveMyInitiative finds the open initiative whose worktree: line matches
