@@ -7,9 +7,9 @@
 package verbs
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
@@ -80,7 +80,7 @@ func (c *tieSessionKong) Run(ctx *cli.Context) error {
 	}
 
 	if err := appendSessionID(ctx, initiativeID, sessionID); err != nil {
-		if strings.Contains(err.Error(), "is already tied to open initiative") {
+		if errors.Is(err, errSessionTiedElsewhere) {
 			fmt.Fprintf(ctx.Stderr, "ateam tie-session: %v\n", err)
 			return nil
 		}

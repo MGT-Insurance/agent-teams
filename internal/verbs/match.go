@@ -2,6 +2,7 @@
 package verbs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,13 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
+
+// errSessionTiedElsewhere is the sentinel wrapped by appendSessionID's
+// one-open-initiative guard. Callers that need to distinguish this specific
+// conflict from any other appendSessionID failure (e.g. tie_session.go's
+// warn-but-don't-break-session-start path) should use errors.Is against this
+// value rather than matching on the error string.
+var errSessionTiedElsewhere = errors.New("session already tied to another open initiative")
 
 // canonicalPath resolves symlinks in p so cwd-vs-worktree comparisons aren't
 // defeated by symlinked directories (e.g. macOS /tmp -> /private/tmp). Falls
@@ -113,8 +121,8 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		for _, id := range sessionIDs(other.Description) {
 			if id == sessionID {
 				return fmt.Errorf(
-					"appendSessionID: session %s is already tied to open initiative %s — refusing to also tie it to %s",
-					sessionID, other.ID, initiativeID)
+					"appendSessionID: session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
+					sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
 			}
 		}
 	}

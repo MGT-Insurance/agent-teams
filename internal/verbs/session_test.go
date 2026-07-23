@@ -6,6 +6,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -178,6 +179,9 @@ func TestAppendSessionID_CrossOpenInitiativeGuardRejects(t *testing.T) {
 	err := appendSessionID(ctx, "at-new", "sess-1")
 	if err == nil {
 		t.Fatal("appendSessionID: expected an error tying a session already on a different open initiative")
+	}
+	if !errors.Is(err, errSessionTiedElsewhere) {
+		t.Errorf("appendSessionID: error %v should wrap errSessionTiedElsewhere", err)
 	}
 	if !strings.Contains(err.Error(), "at-other") {
 		t.Errorf("appendSessionID: error %q should name the conflicting initiative", err.Error())
