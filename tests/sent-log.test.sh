@@ -187,23 +187,34 @@ echo "$sent_stderr" | grep -qi "malformed" \
 echo "case6 PASS: malformed line skipped with a warning, both surrounding records still read back"
 
 # ── Case 7: §1 build gate — OutboundMessage literal count == Sender field count ─
+#
+# Matches BOTH the package-qualified literal (transport.OutboundMessage{,
+# used everywhere outside package transport) and the unqualified literal
+# (OutboundMessage{, only meaningful written inside package transport
+# itself) — a send path added inside package transport would use the
+# unqualified form and was previously invisible to this gate
+# (agent-teams-48dh.28). Excludes full-line comments so a doc comment that
+# merely MENTIONS "OutboundMessage{" (e.g. transport.go's field doc) can't
+# inflate the count — see case10 below, which proves the comment exclusion
+# doesn't also blind the gate to a real unqualified literal.
 count_literals() {
-  grep -rn "transport\.OutboundMessage{" --include="*.go" "$ROOT" 2>/dev/null \
+  grep -rn "OutboundMessage{" --include="*.go" "$ROOT" 2>/dev/null \
     | grep -v "_test\.go" \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
     | wc -l | tr -d ' '
 }
 
 # For each literal site, look at the following 20 lines for a "Sender:"
 # field. The literals here are all short (well under 20 lines to their
 # closing brace), so this window can't spill into the next literal — the
-# six sites are each 40+ lines apart.
+# sites are each 40+ lines apart.
 count_sender_fields() {
   local total=0
   while IFS=: read -r file line; do
     if sed -n "${line},$((line+20))p" "$file" | grep -q "Sender:"; then
       total=$((total+1))
     fi
-  done < <(grep -rn "transport\.OutboundMessage{" --include="*.go" "$ROOT" 2>/dev/null | grep -v "_test\.go" | cut -d: -f1,2)
+  done < <(grep -rn "OutboundMessage{" --include="*.go" "$ROOT" 2>/dev/null | grep -v "_test\.go" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1,2)
   echo "$total"
 }
 
@@ -243,6 +254,108 @@ echo "case8 PASS: removing one Sender: field broke the gate ($broken_lit_count !
 # Restore and reset the trap to plain cleanup for the rest of the script.
 cp "$T/hung_tick.go.bak" "$target_file"
 trap 'rm -rf "$T"' EXIT
+
+# ── Case 9: egress gate — pins the chokepoint the construction gate can't see
+# (agent-teams-48dh.28). Case7/8 count OutboundMessage LITERAL constructions,
+# which is blind to a capability that POSTs message text to the Bot API
+# directly without building one — CloseTopic and Ack already do this today,
+# carrying no text, so they're already invisible to case7/8 and harmless.
+# This gate instead pins EGRESS: exactly one apiURL("sendMessage") call in
+# telegram.go, exactly two t.sendMessage( call sites and BOTH inside Send,
+# and none of the other message-bearing Bot API methods present. A future
+# capability that emits user-visible text without going through Send adds
+# one of those and trips this immediately, even though it adds zero
+# OutboundMessage literals.
+TELEGRAM_GO="$ROOT/internal/transport/telegram/telegram.go"
+cp "$TELEGRAM_GO" "$T/telegram.go.bak"
+trap 'cp "$T/telegram.go.bak" "$TELEGRAM_GO" 2>/dev/null || true; rm -rf "$T"' EXIT
+
+count_send_message_egress() {
+  grep -c 'apiURL("sendMessage")' "$TELEGRAM_GO"
+}
+
+count_send_message_call_sites() {
+  grep -c '\bt\.sendMessage(' "$TELEGRAM_GO"
+}
+
+# Line range of the Send method body: from its signature to the next
+# top-level "func " (exclusive).
+send_method_range() {
+  awk '
+    /^func \(t \*Telegram\) Send\(/ { start=NR; next }
+    start && /^func / { print start","(NR-1); exit }
+  ' "$TELEGRAM_GO"
+}
+
+send_range="$(send_method_range)"
+[ -n "$send_range" ] \
+  || { echo "FAIL case9 setup: could not locate Send method bounds in telegram.go"; exit 1; }
+send_start="${send_range%,*}"
+send_end="${send_range#*,}"
+call_sites_inside_send=$(sed -n "${send_start},${send_end}p" "$TELEGRAM_GO" | grep -c '\bt\.sendMessage(')
+
+egress_count=$(count_send_message_egress)
+callsite_count=$(count_send_message_call_sites)
+
+[ "$egress_count" = "1" ] \
+  || { echo "FAIL case9: expected exactly 1 apiURL(\"sendMessage\") egress, found $egress_count"; exit 1; }
+[ "$callsite_count" = "2" ] \
+  || { echo "FAIL case9: expected exactly 2 t.sendMessage( call sites, found $callsite_count"; exit 1; }
+[ "$call_sites_inside_send" = "2" ] \
+  || { echo "FAIL case9: expected both t.sendMessage( call sites inside Send (lines $send_start-$send_end), found $call_sites_inside_send"; exit 1; }
+for forbidden in sendPhoto sendDocument sendAnimation copyMessage forwardMessage editMessageText; do
+  if grep -q "$forbidden" "$TELEGRAM_GO"; then
+    echo "FAIL case9: forbidden message-bearing Bot API method '$forbidden' found in telegram.go"
+    exit 1
+  fi
+done
+echo "case9 PASS: egress gate — exactly one sendMessage chokepoint, both call sites inside Send, no other message-bearing methods present"
+
+# ── Case 9b: prove the egress gate actually trips (a stray sendPhoto reference) ─
+printf '\n// case9b-injected: sendPhoto\n' >> "$TELEGRAM_GO"
+tripped=0
+for forbidden in sendPhoto sendDocument sendAnimation copyMessage forwardMessage editMessageText; do
+  if grep -q "$forbidden" "$TELEGRAM_GO"; then
+    tripped=1
+    break
+  fi
+done
+cp "$T/telegram.go.bak" "$TELEGRAM_GO"
+[ "$tripped" = "1" ] \
+  || { echo "FAIL case9b: injecting a stray sendPhoto reference did not trip the forbidden-method check"; exit 1; }
+echo "case9b PASS: a stray sendPhoto reference trips the egress gate, as required"
+
+# Reset the trap to plain cleanup for the rest of the script.
+trap 'rm -rf "$T"' EXIT
+
+# ── Case 10: prove the qualification-hole fix (an in-package unqualified literal) ─
+# Before agent-teams-48dh.28, count_literals only matched the package-
+# qualified "transport.OutboundMessage{", so a literal written inside
+# package transport itself (which uses the unqualified "OutboundMessage{")
+# was invisible to case7/8's gate. Prove the fix: a transient file inside
+# package transport containing an unqualified, Sender-less literal must now
+# inflate lit_count without inflating sender_count, tripping the 6==6 check.
+PROBE_GO="$ROOT/internal/transport/zz_case10_probe.go"
+trap 'rm -f "$PROBE_GO"; rm -rf "$T"' EXIT
+cat > "$PROBE_GO" <<'EOF'
+package transport
+
+// zz_case10_probe.go is a transient probe written by
+// tests/sent-log.test.sh case10 to prove the qualification-hole fix. It is
+// deleted before the script exits and never reaches git.
+var _ = OutboundMessage{}
+EOF
+
+probe_lit_count=$(count_literals)
+probe_sender_count=$(count_sender_fields)
+rm -f "$PROBE_GO"
+trap 'rm -rf "$T"' EXIT
+
+[ "$probe_lit_count" != "$probe_sender_count" ] \
+  || { echo "FAIL case10: an in-package unqualified OutboundMessage{} literal with no Sender field did not trip the gate (still $probe_lit_count==$probe_sender_count)"; exit 1; }
+[ "$probe_lit_count" = "7" ] \
+  || { echo "FAIL case10: expected the probe literal to raise lit_count to 7, got $probe_lit_count"; exit 1; }
+echo "case10 PASS: an in-package unqualified literal now counts and trips the gate ($probe_lit_count != $probe_sender_count), as required"
 
 echo ""
 echo "ALL CASES PASSED — sent-log loop closed and build gate proven."

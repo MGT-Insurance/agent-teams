@@ -14,6 +14,7 @@ package transport
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
@@ -150,7 +151,32 @@ func For(home string) (Transport, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isNilTransport(t) {
+		return nil, fmt.Errorf("transport: factory %q returned a nil transport", name)
+	}
 	return newLoggingTransport(t, home), nil
+}
+
+// isNilTransport reports whether t is nil either as an interface (no value
+// at all) or as a non-nil interface holding a nil concrete pointer/map/
+// slice/chan/func value — a "typed nil". Capability's `t != nil` guard
+// (capability.go:39) is an interface comparison and does not stop the
+// latter: a factory that forwards a (*Foo, error) return through a
+// Transport-returning wrapper, where Foo is nil, produces exactly that
+// shape, and callers using the skip-if-absent branch on an optional
+// capability panic instead of skipping (agent-teams-48dh.30). Rejecting it
+// here, once, means every For caller gets an error instead of a later panic.
+func isNilTransport(t Transport) bool {
+	if t == nil {
+		return true
+	}
+	v := reflect.ValueOf(t)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // selectedName resolves the configured transport name.
