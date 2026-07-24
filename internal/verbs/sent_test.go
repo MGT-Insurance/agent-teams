@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,22 @@ import (
 // sentTS renders a timestamp d before now in the log's RFC3339 UTC form.
 func sentTS(d time.Duration) string {
 	return time.Now().Add(-d).UTC().Format(time.RFC3339)
+}
+
+// sentBodyAlphabet cycles through 62 distinct characters, none of them
+// whitespace. Deliberately not a repeated character: a homogeneous fixture
+// makes the position of a cut unobservable in the output, which lets a
+// wrong cut point pass any containment-based assertion.
+const sentBodyAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// sentBodySeq returns n runes of the alphabet cycle starting at index
+// start, so the caller can name an exact slice of the body by position.
+func sentBodySeq(start, n int) string {
+	var b strings.Builder
+	for i := start; i < start+n; i++ {
+		b.WriteByte(sentBodyAlphabet[i%len(sentBodyAlphabet)])
+	}
+	return b.String()
 }
 
 // sentLine marshals rec the way the decorator writes it, without the
@@ -160,7 +177,42 @@ func TestSentInvalidSenderIsUsageError(t *testing.T) {
 // truncation rule, including the newline collapse the tabwriter table needs
 // to keep its columns aligned.
 func TestSentTruncatesBodyByDefaultNotWithFull(t *testing.T) {
-	body := strings.Repeat("a", 300) + "\nsecond line\n" + strings.Repeat("b", 300)
+	// FIXTURE DESIGN, both halves load-bearing — a repeated-character body
+	// cannot witness this and silently weakens every assertion below.
+	//
+	// Non-repeating content: sentBodySeq gives every rune index a distinct
+	// neighbourhood, so the exact cut POSITION is observable in the output.
+	// With a homogeneous run like "aaaa…" a cut anywhere in a wide range
+	// produces output a substring check still accepts.
+	//
+	// Whitespace INSIDE the budget (at rune 50, well under 200): this is
+	// what makes collapse-then-truncate and truncate-then-collapse diverge.
+	// Past the cutoff the two orderings are byte-identical and a swapped
+	// implementation passes.
+	// Contract §7 fixes the budget at 200 runes. Restated here as a LITERAL,
+	// never derived from sentBodyTruncRunes: an expectation computed from
+	// the constant under test follows that constant wherever it goes and so
+	// can never witness it being wrong. This guard is what catches the
+	// budget itself drifting.
+	const wantTruncRunes = 200
+	if sentBodyTruncRunes != wantTruncRunes {
+		t.Fatalf("contract §7 fixes the truncated body at %d runes, but sentBodyTruncRunes is %d", wantTruncRunes, sentBodyTruncRunes)
+	}
+
+	const headRunes = 50
+	head := sentBodySeq(0, headRunes)
+	tail := sentBodySeq(headRunes, 300)
+	body := head + "\n\t  \n" + tail
+
+	// Collapse first: the five-character whitespace run becomes ONE space,
+	// so a full 199 runes of content survive the cut. Truncate first and
+	// five of those runes are spent on whitespace about to be discarded,
+	// leaving four fewer content runes.
+	wantCell := head + " " + sentBodySeq(headRunes, wantTruncRunes-1-headRunes-1) + "…"
+	if got := len([]rune(wantCell)); got != wantTruncRunes {
+		t.Fatalf("fixture is wrong: expected cell is %d runes, want %d", got, wantTruncRunes)
+	}
+
 	lines := []string{sentLine(t, sentlog.Record{
 		Timestamp: sentTS(time.Minute), Sender: sentlog.KindNotify, Initiative: "at-aaa", Title: "big", Body: body, Outcome: sentlog.OutcomeSent,
 	})}
@@ -173,17 +225,26 @@ func TestSentTruncatesBodyByDefaultNotWithFull(t *testing.T) {
 	if !strings.Contains(table, "TIME") || !strings.Contains(table, "BODY") {
 		t.Fatalf("default output is not the §7 table:\n%s", table)
 	}
-	if strings.Contains(table, strings.Repeat("b", 300)) {
-		t.Fatalf("default output must truncate the body:\n%s", table)
+
+	// Header, separator, one row — a multi-line body must not spill into
+	// extra rows and break the column alignment.
+	rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("a multi-line body must collapse to one table row, got %d lines:\n%s", len(rows), table)
 	}
-	if !strings.Contains(table, "…") {
-		t.Fatalf("truncated body should carry the ellipsis:\n%s", table)
+
+	// EXACT EQUALITY on the isolated cell, never strings.Contains: a
+	// containment check on self-similar content slides, and would accept a
+	// whole range of wrong cut points. tabwriter pads with two or more
+	// spaces and the four preceding columns are space-free, so splitting on
+	// runs of 2+ spaces isolates the BODY cell exactly — the single space
+	// inside the collapsed body does not split.
+	cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+	if len(cells) != 5 {
+		t.Fatalf("expected 5 table cells, got %d: %q", len(cells), rows[2])
 	}
-	if want := strings.Repeat("a", sentBodyTruncRunes-1) + "…"; !strings.Contains(table, want) {
-		t.Fatalf("body should be cut at %d runes:\n%s", sentBodyTruncRunes, table)
-	}
-	if strings.Count(strings.TrimSpace(table), "\n") != 2 {
-		t.Fatalf("a multi-line body must collapse to one table row:\n%s", table)
+	if cells[4] != wantCell {
+		t.Fatalf("BODY cell wrong — whitespace must be collapsed BEFORE truncating, and the cut must land at %d runes.\n got: %q\nwant: %q", wantTruncRunes, cells[4], wantCell)
 	}
 
 	ctxFull, stdoutFull, _ := sentCtx(t, lines...)
