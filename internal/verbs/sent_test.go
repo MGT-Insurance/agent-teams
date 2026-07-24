@@ -802,20 +802,29 @@ func TestSentFullTitleLineCannotBeForged(t *testing.T) {
 }
 
 // sentFieldPayload carries one of each class contract §7 AMENDMENT 4(b)
-// rule 1 names — a C0 control, DEL, a C1 control, and a bidi override —
+// rule 1 names — a C0 control, DEL, a C1 control, and the bidi formatters —
 // separated by distinct letters so the position of every substitution is
 // individually observable.
+//
+// The bidi clause is not one range but THREE independent sub-clauses in the
+// sanitizer (sent.go): the LRM/RLM marks (U+200E/U+200F), the embeddings and
+// overrides (U+202A-U+202E), and the isolates (U+2066-U+2069). A payload
+// carrying only U+202E witnesses the middle sub-clause alone — dropping just
+// the marks or just the isolates from the sanitizer would leave the suite
+// green (agent-teams-48dh.32). So this payload carries one rune from each: an
+// override (U+202E), an isolate (U+2066), and a mark (U+200E), pinning every
+// sub-clause independently.
 //
 // Deliberately contains NO whitespace. That is the whole point of this
 // fixture: rule 1 is the SANITIZE half of sentSafeField, and a payload made
 // of newlines is defeated by the whitespace COLLAPSE half instead, which
 // makes the sanitizer unobservable. TestSentFullCannotForgeARecordFromAny
 // Field uses exactly such a newline payload and therefore pins rule 2 only.
-const sentFieldPayload = "x\x1by\x07z\u202Ew\x7fv\u009bu"
+const sentFieldPayload = "x\x1by\x07z\u202Ew\x7fv\u009bu\u2066t\u200Es"
 
 // sentFieldPayloadRendered is what rule 1 requires that render as. A
 // LITERAL, never computed from sentSanitize.
-const sentFieldPayloadRendered = "x\uFFFDy\uFFFDz\uFFFDw\uFFFDv\uFFFDu"
+const sentFieldPayloadRendered = "x\uFFFDy\uFFFDz\uFFFDw\uFFFDv\uFFFDu\uFFFDt\uFFFDs"
 
 // TestSentSanitizesEveryRenderedField enforces contract §7 AMENDMENT 4(b)
 // rule 1 field by field: EVERY rendered field — "ts, sender, initiative,
