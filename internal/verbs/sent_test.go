@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
@@ -266,6 +267,109 @@ func TestSentTruncatesBodyByDefaultNotWithFull(t *testing.T) {
 	got := sentRunJSON(t, &sentKong{}, ctxJSON, stdoutJSON)
 	if len(got) != 1 || got[0].Body != body {
 		t.Fatalf("--json must never truncate the body, got %q", got[0].Body)
+	}
+}
+
+// sentCJKSeq returns n DISTINCT runes from the CJK Unified Ideographs
+// block, starting at offset start. Two properties, both load-bearing:
+// every rune is 3 bytes in UTF-8, which is what makes a byte-based cut
+// observable at all; and they are distinct rather than a repeated
+// "漢字漢字…", so the cut POSITION stays observable here too and the exact
+// -equality assertion below cannot slide.
+func sentCJKSeq(start, n int) string {
+	var b strings.Builder
+	for i := start; i < start+n; i++ {
+		b.WriteRune(rune(0x4e00 + i))
+	}
+	return b.String()
+}
+
+// TestSentTruncatesByRunesNotBytes pins the budget's UNIT. It is a separate
+// test from the ASCII case rather than an extra record in that fixture
+// because the two pin different properties and neither substitutes for the
+// other: the ASCII body carries whitespace inside the budget, which is what
+// witnesses collapse-before-truncate, and a non-ASCII body is the only
+// thing that can witness runes-not-bytes.
+//
+// This is the regression contract §7 AMENDMENT 3 was raised to prevent. §7
+// as frozen named telegram.truncateUTF8, which is BYTE-based; amendment 3
+// superseded it with verbs.truncate precisely because 200 bytes of CJK is
+// about 66 runes. An all-ASCII fixture cannot tell the two apart — byte
+// count equals rune count — so without this case the suite pinned every
+// part of amendment 3 except its reason for existing. Measured with a
+// byte-truncating binary on a 300-character CJK body: 68 runes shown
+// instead of 200, and the cut landed mid-codepoint, writing U+FFFD into a
+// durable audit record.
+func TestSentTruncatesByRunesNotBytes(t *testing.T) {
+	// Contract §7 fixes the budget at 200 RUNES. Restated as a literal,
+	// never derived from sentBodyTruncRunes, for the same reason as in the
+	// ASCII case: an expectation computed from the constant under test
+	// follows that constant wherever it goes.
+	const wantTruncRunes = 200
+
+	const bodyRunes = 300
+	body := sentCJKSeq(0, bodyRunes)
+
+	// The fixture guard. If someone ever swaps this body for an ASCII one
+	// the test still passes against a byte-based cut, and silently stops
+	// testing anything — which is exactly how this hole was left open the
+	// first time.
+	if len(body) == len([]rune(body)) {
+		t.Fatalf("fixture must be multi-byte or it cannot witness a byte-based cut: %d bytes, %d runes", len(body), len([]rune(body)))
+	}
+
+	// No whitespace in the body, so the collapse is a no-op here and the
+	// cut is the only thing under test: 199 runes of content plus the
+	// ellipsis. A byte-based cut at 199 BYTES yields 66 runes and a split
+	// codepoint.
+	wantCell := sentCJKSeq(0, wantTruncRunes-1) + "…"
+	if got := len([]rune(wantCell)); got != wantTruncRunes {
+		t.Fatalf("fixture is wrong: expected cell is %d runes, want %d", got, wantTruncRunes)
+	}
+
+	lines := []string{sentLine(t, sentlog.Record{
+		Timestamp: sentTS(time.Minute), Sender: sentlog.KindNotify, Initiative: "at-cjk", Title: "cjk", Body: body, Outcome: sentlog.OutcomeSent,
+	})}
+
+	ctx, stdout, _ := sentCtx(t, lines...)
+	if err := (&sentKong{}).Run(ctx); err != nil {
+		t.Fatalf("default Run: %v", err)
+	}
+	table := stdout.String()
+
+	rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("expected header, separator and one row, got %d lines:\n%s", len(rows), table)
+	}
+	// Same isolation as the ASCII case: the four preceding columns are
+	// space-free, tabwriter pads with 2+ spaces, and this body contains no
+	// spaces at all.
+	cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+	if len(cells) != 5 {
+		t.Fatalf("expected 5 table cells, got %d: %q", len(cells), rows[2])
+	}
+	cell := cells[4]
+
+	// Three independent properties of the same cell, reported with Errorf
+	// rather than Fatalf so a byte-based cut trips all three visibly. Under
+	// Fatalf the first failure would hide the other two, leaving them
+	// unproven against the mutation they exist to catch — a dead assertion
+	// nobody would notice.
+	if !utf8.ValidString(cell) {
+		t.Errorf("BODY cell is not valid UTF-8 — the cut split a codepoint: %q", cell)
+	}
+	if got := len([]rune(cell)); got != wantTruncRunes {
+		t.Errorf("BODY cell is %d runes, want %d — the budget is RUNES, not bytes (contract §7 amendment 3)", got, wantTruncRunes)
+	}
+	if cell != wantCell {
+		t.Errorf("BODY cell wrong.\n got: %q\nwant: %q", cell, wantCell)
+	}
+
+	// --json still carries the whole body, multi-byte and untruncated.
+	ctxJSON, stdoutJSON, _ := sentCtx(t, lines...)
+	got := sentRunJSON(t, &sentKong{}, ctxJSON, stdoutJSON)
+	if len(got) != 1 || got[0].Body != body {
+		t.Fatalf("--json must never truncate the body, got %d runes", len([]rune(got[0].Body)))
 	}
 }
 
