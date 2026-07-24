@@ -1098,6 +1098,95 @@ func TestSentTableSanitizesEveryColumnNotJustTheBody(t *testing.T) {
 	}
 }
 
+// sentCollapsePayload carries every whitespace form the table's COLLAPSE stage
+// must fold, and NO control character, so it isolates the collapse half of
+// sentSafeField from the sanitize half: sentSanitize passes '\t' and '\n'
+// through unchanged, so only the collapse (strings.Fields/Join) removes them.
+//
+// Each form breaks the table a different way if collapse is dropped
+// (agent-teams-48dh.27, a newline in a tabwriter cell is the .16 class):
+//   - the '\n' opens a second physical line, so the one data row becomes two;
+//   - the '\t' is read by tabwriter as a column delimiter, forging an extra
+//     column;
+//   - the double space in "COLUMNS  HERE" forges a column boundary to a reader
+//     (and to any parser that splits on run-of-spaces) with no control char at
+//     all — the case a whitespace-free payload cannot witness.
+const sentCollapsePayload = "at-evil\tEXTRA\nCOLUMNS  HERE"
+
+// sentCollapsePayloadRendered is that payload after collapse: one run of
+// whitespace per gap becomes a single space. A LITERAL, never computed from
+// strings.Fields, so it cannot track a change to the code under test.
+const sentCollapsePayloadRendered = "at-evil EXTRA COLUMNS HERE"
+
+// TestSentTableCollapsesWhitespaceInEveryNonBodyColumn pins the whitespace
+// COLLAPSE stage for the non-body table columns (agent-teams-48dh.27). It is
+// the collapse counterpart to TestSentTableSanitizesEveryColumnNotJustTheBody:
+// dropping the collapse from those columns — sentSafeField(s) ->
+// sentSanitize(s) inside sentTableField — left the whole suite green, because
+// every existing table assertion used either a control-character payload
+// (which collapse does not touch) or a single-token value (which has no
+// whitespace to fold).
+//
+// TIME is deliberately absent: that column renders sentDisplayTS(e.ts), the
+// re-formatted parse of rec.Timestamp, so a record cannot inject whitespace
+// into it — a whitespace timestamp fails time.Parse and the record is skipped
+// before rendering (TestSentSkipsUnparseableTimestamp). The reachable non-body
+// columns are SENDER, INITIATIVE, and OUTCOME, each copied from the log
+// verbatim.
+func TestSentTableCollapsesWhitespaceInEveryNonBodyColumn(t *testing.T) {
+	const (
+		colTime = iota
+		colSender
+		colInitiative
+		colOutcome
+		colBody
+	)
+	cases := []struct {
+		field  string
+		mutate func(r *sentlog.Record)
+		col    int
+	}{
+		{"sender", func(r *sentlog.Record) { r.Sender = sentlog.Kind(sentCollapsePayload) }, colSender},
+		{"initiative", func(r *sentlog.Record) { r.Initiative = sentCollapsePayload }, colInitiative},
+		{"outcome", func(r *sentlog.Record) { r.Outcome = sentCollapsePayload }, colOutcome},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			rec := sentlog.Record{
+				Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify,
+				Initiative: "at-real", Title: "t", Body: "clean", Outcome: sentlog.OutcomeSent,
+			}
+			tc.mutate(&rec)
+
+			ctx, stdout, _ := sentCtx(t, sentLine(t, rec))
+			if err := (&sentKong{}).Run(ctx); err != nil {
+				t.Fatalf("default Run: %v", err)
+			}
+			table := stdout.String()
+
+			// One record must render as exactly three physical lines: header,
+			// separator, one data row. A '\n' left in a cell opens a fourth.
+			rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+			if len(rows) != 3 {
+				t.Fatalf("hostile %s field opened extra table rows — collapse dropped a newline; got %d lines:\n%s",
+					tc.field, len(rows), table)
+			}
+			// Exactly five cells. A '\t' forges a tabwriter column; a double
+			// space forges one to the run-of-spaces split. Either raises the
+			// count.
+			cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+			if len(cells) != 5 {
+				t.Fatalf("hostile %s field forged table columns — collapse dropped a tab or double space; got %d cells: %q",
+					tc.field, len(cells), rows[2])
+			}
+			if cells[tc.col] != sentCollapsePayloadRendered {
+				t.Fatalf("table cell %d (%s) not collapsed.\n got: %q\nwant: %q",
+					tc.col, tc.field, cells[tc.col], sentCollapsePayloadRendered)
+			}
+		})
+	}
+}
+
 // ── agent-teams-48dh.23: file order is the SOLE ordering key ─────────────
 
 // sentOrderFixture builds log lines in file (append) order from ts/title
