@@ -23,6 +23,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/cost"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
@@ -541,6 +542,7 @@ func (c *closeKong) sendCloseSignal(ctx *cli.Context) {
 		ThreadRef:    threadRef,
 		Title:        issue.Title,
 		Body:         closeSignalFarewell,
+		Sender:       sentlog.KindClose,
 	}
 	if _, sendErr := t.Send(msg); sendErr != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam close: warning: farewell message failed: %v\n", sendErr)
@@ -1095,4 +1097,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterRelayKong(p)
 	RegisterStewardKong(p)
 	RegisterTieSessionKong(p)
+	RegisterSentKong(p)
 }
