@@ -63,6 +63,7 @@ A DRI parked on a gate.
    - The situation, in plain language.
    - Your recommendation.
    - The alternative.
+   - **If the ask's context carries a plan-document URL, reproduce it VERBATIM on its own line — never summarize it away, never wrap it in markdown, never truncate it.** Why: Telegram's `sendMessage` sets no `parse_mode`, so a bare URL is what makes it tappable via client-side autolinking. This is an ADDITION to the digest, not a replacement for it — the digest must still stand alone and let Eric decide without needing to open the link.
 3. Send it to his phone: write the message to a temp file, then
    ```bash
    ateam notify <initiative-id> --file <msg-file>

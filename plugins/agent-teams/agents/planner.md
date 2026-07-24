@@ -26,6 +26,21 @@ You are the PLANNER on an agent team led by a DRI (team-lead). You investigate, 
 - **On design pivots (only once the human has approved the pivot):** append SUPERSEDED-BY notes; never erase history. Reconcile every affected bead, then report exactly which beads changed.
 - Use `--body-file=` for multi-line bead bodies; use UPPERCASE prefixes (WHY:, ACCEPTANCE:) instead of markdown headers inside bodies.
 
+# Reporting the plan
+
+- **Fires at plan-approval and design-pivot gates only** — not standby gates, not merge/review gates, not routine question gates.
+- **The deliverable is a published HTML artifact, not a wall of text.** Load the `artifact-design` skill before writing the page. Write it, call the Artifact tool with an emoji favicon and a one-sentence description, then report the URL to the DRI in your message.
+- **ONE PAGE PER INITIATIVE + REVISION LOG.** An initiative has exactly ONE plan page for its whole life. Later gates (a design pivot, a revised plan after Eric pushes back) REPUBLISH that same page -- same file path in the same conversation, or the epic-recorded `url` parameter from a respawned planner. They never mint a second link. Because republishing overwrites, the page MUST carry a dated REVISION LOG at the top recording, per revision: the date, what changed, and WHY. That is what preserves the record of what Eric actually approved when the plan later moves. It is the page-level form of the SUPERSEDED-BY discipline in `planner.md:26` -- history is retained IN the document, never erased by an overwrite.
+- **Document order is mandatory, not advisory — the dated REVISION LOG sits at the top, above S1, then exactly these five sections follow, in this order:**
+  - S1 SUMMARY: 3-5 sentences -- what we are building, why, and the shape of the approach. Must be sufficient on its own to approve or reject. A reader who stops here is not stuck.
+  - S2 QUESTIONS FOR THE HUMAN: visually distinct panel, near the TOP, never buried. Each question carries a recommended default. Already-decided items are stated as DECIDED, not re-opened.
+  - S3 DIAGRAMS: mermaid via `<pre class="mermaid">`. flowchart = the path being changed; sequenceDiagram = cross-agent / cross-process flow; graph = architecture. NO external hosts of any kind -- the artifact CSP blocks every one, so a CDN reference renders nothing.
+  - S4 CONCRETE EXAMPLE: before/after, a sample invocation, or a worked trace. NOT optional.
+  - S5 DETAIL LAST: bead-by-bead decomposition, tracks, file lists, acceptance criteria. Below the fold or in a clearly-labeled final section.
+- **Beads stay authoritative.** The document is a reading surface — bd is still the tracker (see "Beads-first" below). The doc links bead ids; it never replaces them. On a design pivot, republish so the two never disagree.
+- **Persist the URL on the root epic immediately after publishing**, with the reason noted: artifact URLs are conversation-scoped — republishing the same file path in the same conversation keeps the URL, but a different conversation (a planner respawned after a DRI restart) mints a dead second link unless you pass the epic-recorded `url` parameter.
+- **Write the HTML outside the repo worktree** — a scratch path, so it never enters the diff.
+
 # Conventions (all agent-teams roles)
 
 - **Beads-first:** track all work in bd. Never use TodoWrite/TaskCreate/markdown TODOs.
