@@ -514,12 +514,24 @@ type sentFullBlock struct {
 	header, title, body string
 }
 
+// sentFullBodyPrefixLiteral is sent.go's body-line prefix "  | " written as a
+// TEST literal, deliberately NOT a reference to the production
+// sentFullBodyPrefix constant. A parser that reads the constant under test
+// shrinks with it: mutating sentFullBodyPrefix from "  | " to "  " left every
+// full-mode test green, because sentParseFull matched the shrunk prefix too
+// and still parsed the same number of blocks — the assertion moved with the
+// thing it claimed to pin (agent-teams-48dh.25, the same disease as .11/.12/
+// .13/.16). Hardcoding the bytes here pins the prefix to exactly "  | ",
+// which is what keeps it distinct from the "  title: " and "  body:" forms so
+// no prefixed body line can be read as either.
+const sentFullBodyPrefixLiteral = "  | "
+
 // sentParseFull parses --full output back into records using ONLY the
 // documented block structure: a header at column 0, "  title: ", "  body:",
-// then every body line under sentFullBodyPrefix, terminated by an empty
-// line. It is deliberately strict — an unparseable line is a failure, not a
-// skip — because "body text produced a line that isn't a legal body line"
-// is exactly the bug under test.
+// then every body line under the hardcoded "  | " prefix, terminated by an
+// empty line. It is deliberately strict — an unparseable line is a failure,
+// not a skip — because "body text produced a line that isn't a legal body
+// line" is exactly the bug under test.
 func sentParseFull(t *testing.T, out string) []sentFullBlock {
 	t.Helper()
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
@@ -541,8 +553,8 @@ func sentParseFull(t *testing.T, out string) []sentFullBlock {
 		}
 		i++
 		var body []string
-		for i < len(lines) && strings.HasPrefix(lines[i], sentFullBodyPrefix) {
-			body = append(body, strings.TrimPrefix(lines[i], sentFullBodyPrefix))
+		for i < len(lines) && strings.HasPrefix(lines[i], sentFullBodyPrefixLiteral) {
+			body = append(body, strings.TrimPrefix(lines[i], sentFullBodyPrefixLiteral))
 			i++
 		}
 		b.body = strings.Join(body, "\n")
@@ -694,21 +706,125 @@ func TestSentFullCannotForgeARecordFromAnyField(t *testing.T) {
 	}
 }
 
+// sentForgedTitleBody is a body that forges all THREE structural line forms of
+// a --full block: a header at column 0, the two-space "title:" line, and the
+// "body:" marker. TestSentFullCannotForgeARecordFromBodyText's fixture forges
+// only the column-0 header, which sentFullHeaderRe catches, so it is inert
+// against the title-indent rule — which is exactly why that hole survived
+// (agent-teams-48dh.25).
+//
+// The two lines that matter here are the UNINDENTED "title:" and "body:".
+// Under the shipped code they render prefixed as "  | title: FORGED-TITLE"
+// and "  | body:", neither of which is the "  title: " / "  body:" form, so
+// nothing is forged. Shrink the body prefix to the title indent's width
+// ("  | " -> "  ", contract §7 AMENDMENT 4(b) rule 2's exact failure) and they
+// render as "  title: FORGED-TITLE" and "  body:" — byte-identical to genuine
+// title and body-marker lines. Eric reading `ateam sent --full` during an
+// audit would see a record attribute that is not in sent.jsonl.
+const sentForgedTitleBody = "harmless intro line\n" +
+	"2026-01-01T00:00:00Z  close  initiative=at-FORGED  outcome=failed\n" +
+	"title: FORGED-TITLE\n" +
+	"body:\n" +
+	"still body"
+
+// sentFullTitleLineRe matches a genuine --full title line: exactly two leading
+// spaces then "title: ". HARDCODED, never sent.go's "  title: " indent read
+// back through a constant — the whole point of .25 is that an assertion built
+// from the production spelling moves with it.
+var sentFullTitleLineRe = regexp.MustCompile(`(?m)^  title: `)
+
+// sentFullBodyMarkerRe matches the genuine "  body:" marker line, hardcoded
+// for the same reason.
+var sentFullBodyMarkerRe = regexp.MustCompile(`(?m)^  body:$`)
+
+// TestSentFullTitleLineCannotBeForged pins contract §7 AMENDMENT 4(b) rule 2's
+// remaining half: the body-line prefix and the title indent (and the header's
+// column 0) must stay mutually distinguishable, so no prefixed body line can
+// be read as a title, a body marker, or a header. The count of each of those
+// three line forms must equal the number of records on disk — a body that
+// forges one of them can only ADD to a count, never hide.
+//
+// Every expectation is matched on a hardcoded literal, never on
+// sentFullBodyPrefix / the production title indent: sentParseFull previously
+// parsed body lines with the production prefix constant, so shrinking the
+// constant shrank the parser with it and the forgery went unseen. This test
+// (and sentParseFull, now hardcoded) fail instead.
+func TestSentFullTitleLineCannotBeForged(t *testing.T) {
+	recs := []sentlog.Record{
+		{Timestamp: "2026-07-24T17:38:50Z", Sender: sentlog.KindNotify, Initiative: "at-real", Title: "real1", Body: "genuinely sent", Outcome: sentlog.OutcomeSent},
+		{Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify, Initiative: "at-evil", Title: "real2", Body: sentForgedTitleBody, Outcome: sentlog.OutcomeSent},
+	}
+	lines := make([]string, len(recs))
+	for i, r := range recs {
+		lines[i] = sentLine(t, r)
+	}
+
+	ctx, stdout, _ := sentCtx(t, lines...)
+	if err := (&sentKong{Full: true}).Run(ctx); err != nil {
+		t.Fatalf("--full Run: %v", err)
+	}
+	out := stdout.String()
+
+	// The three structural line forms of a block. Each must appear exactly
+	// once per record on disk; a body that forges one raises its count.
+	checks := []struct {
+		name string
+		re   *regexp.Regexp
+	}{
+		{"header (column 0, initiative=)", sentFullHeaderRe},
+		{"title line (two-space indent)", sentFullTitleLineRe},
+		{"body marker (  body:)", sentFullBodyMarkerRe},
+	}
+	for _, c := range checks {
+		if n := len(c.re.FindAllString(out, -1)); n != len(recs) {
+			t.Fatalf("%d records on disk rendered %d %s lines — body text forged one:\n%s",
+				len(recs), n, c.name, out)
+		}
+	}
+
+	// And the invariant stated directly: every genuine body line begins with
+	// the hardcoded "  | " prefix, so it cannot collide with the "  title: "
+	// or "  body:" forms whatever the body contains. Asserted on the literal,
+	// not on sentFullBodyPrefix.
+	blocks := sentParseFull(t, out)
+	if len(blocks) != len(recs) {
+		t.Fatalf("expected %d blocks, got %d:\n%s", len(recs), len(blocks), out)
+	}
+	if blocks[0].title != "real2" || blocks[1].title != "real1" {
+		t.Fatalf("titles wrong/out of order: %q, %q", blocks[0].title, blocks[1].title)
+	}
+	// The forged block's body must survive whole inside its own record —
+	// unforgeable AND untruncated.
+	if blocks[0].body != sentForgedTitleBody {
+		t.Fatalf("forged body must be shown whole inside its record.\n got: %q\nwant: %q",
+			blocks[0].body, sentForgedTitleBody)
+	}
+}
+
 // sentFieldPayload carries one of each class contract §7 AMENDMENT 4(b)
-// rule 1 names — a C0 control, DEL, a C1 control, and a bidi override —
+// rule 1 names — a C0 control, DEL, a C1 control, and the bidi formatters —
 // separated by distinct letters so the position of every substitution is
 // individually observable.
+//
+// The bidi clause is not one range but THREE independent sub-clauses in the
+// sanitizer (sent.go): the LRM/RLM marks (U+200E/U+200F), the embeddings and
+// overrides (U+202A-U+202E), and the isolates (U+2066-U+2069). A payload
+// carrying only U+202E witnesses the middle sub-clause alone — dropping just
+// the marks or just the isolates from the sanitizer would leave the suite
+// green (agent-teams-48dh.32). So this payload carries one rune from each: an
+// override (U+202E), an isolate (U+2066), and a mark (U+200E), pinning every
+// sub-clause independently.
 //
 // Deliberately contains NO whitespace. That is the whole point of this
 // fixture: rule 1 is the SANITIZE half of sentSafeField, and a payload made
 // of newlines is defeated by the whitespace COLLAPSE half instead, which
 // makes the sanitizer unobservable. TestSentFullCannotForgeARecordFromAny
 // Field uses exactly such a newline payload and therefore pins rule 2 only.
-const sentFieldPayload = "x\x1by\x07z\u202Ew\x7fv\u009bu"
+const sentFieldPayload = "x\x1by\x07z\u202Ew\x7fv\u009bu\u2066t\u200Es"
 
 // sentFieldPayloadRendered is what rule 1 requires that render as. A
 // LITERAL, never computed from sentSanitize.
-const sentFieldPayloadRendered = "x\uFFFDy\uFFFDz\uFFFDw\uFFFDv\uFFFDu"
+const sentFieldPayloadRendered = "x\uFFFDy\uFFFDz\uFFFDw\uFFFDv\uFFFDu\uFFFDt\uFFFDs"
 
 // TestSentSanitizesEveryRenderedField enforces contract §7 AMENDMENT 4(b)
 // rule 1 field by field: EVERY rendered field — "ts, sender, initiative,
@@ -988,6 +1104,95 @@ func TestSentTableSanitizesEveryColumnNotJustTheBody(t *testing.T) {
 	}
 	if bad := sentTerminalActiveRunes(stdout.String(), "\n"); len(bad) != 0 {
 		t.Fatalf("INITIATIVE column must be sanitized too, found %U in:\n%q", bad, stdout.String())
+	}
+}
+
+// sentCollapsePayload carries every whitespace form the table's COLLAPSE stage
+// must fold, and NO control character, so it isolates the collapse half of
+// sentSafeField from the sanitize half: sentSanitize passes '\t' and '\n'
+// through unchanged, so only the collapse (strings.Fields/Join) removes them.
+//
+// Each form breaks the table a different way if collapse is dropped
+// (agent-teams-48dh.27, a newline in a tabwriter cell is the .16 class):
+//   - the '\n' opens a second physical line, so the one data row becomes two;
+//   - the '\t' is read by tabwriter as a column delimiter, forging an extra
+//     column;
+//   - the double space in "COLUMNS  HERE" forges a column boundary to a reader
+//     (and to any parser that splits on run-of-spaces) with no control char at
+//     all — the case a whitespace-free payload cannot witness.
+const sentCollapsePayload = "at-evil\tEXTRA\nCOLUMNS  HERE"
+
+// sentCollapsePayloadRendered is that payload after collapse: one run of
+// whitespace per gap becomes a single space. A LITERAL, never computed from
+// strings.Fields, so it cannot track a change to the code under test.
+const sentCollapsePayloadRendered = "at-evil EXTRA COLUMNS HERE"
+
+// TestSentTableCollapsesWhitespaceInEveryNonBodyColumn pins the whitespace
+// COLLAPSE stage for the non-body table columns (agent-teams-48dh.27). It is
+// the collapse counterpart to TestSentTableSanitizesEveryColumnNotJustTheBody:
+// dropping the collapse from those columns — sentSafeField(s) ->
+// sentSanitize(s) inside sentTableField — left the whole suite green, because
+// every existing table assertion used either a control-character payload
+// (which collapse does not touch) or a single-token value (which has no
+// whitespace to fold).
+//
+// TIME is deliberately absent: that column renders sentDisplayTS(e.ts), the
+// re-formatted parse of rec.Timestamp, so a record cannot inject whitespace
+// into it — a whitespace timestamp fails time.Parse and the record is skipped
+// before rendering (TestSentSkipsUnparseableTimestamp). The reachable non-body
+// columns are SENDER, INITIATIVE, and OUTCOME, each copied from the log
+// verbatim.
+func TestSentTableCollapsesWhitespaceInEveryNonBodyColumn(t *testing.T) {
+	const (
+		colTime = iota
+		colSender
+		colInitiative
+		colOutcome
+		colBody
+	)
+	cases := []struct {
+		field  string
+		mutate func(r *sentlog.Record)
+		col    int
+	}{
+		{"sender", func(r *sentlog.Record) { r.Sender = sentlog.Kind(sentCollapsePayload) }, colSender},
+		{"initiative", func(r *sentlog.Record) { r.Initiative = sentCollapsePayload }, colInitiative},
+		{"outcome", func(r *sentlog.Record) { r.Outcome = sentCollapsePayload }, colOutcome},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			rec := sentlog.Record{
+				Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify,
+				Initiative: "at-real", Title: "t", Body: "clean", Outcome: sentlog.OutcomeSent,
+			}
+			tc.mutate(&rec)
+
+			ctx, stdout, _ := sentCtx(t, sentLine(t, rec))
+			if err := (&sentKong{}).Run(ctx); err != nil {
+				t.Fatalf("default Run: %v", err)
+			}
+			table := stdout.String()
+
+			// One record must render as exactly three physical lines: header,
+			// separator, one data row. A '\n' left in a cell opens a fourth.
+			rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+			if len(rows) != 3 {
+				t.Fatalf("hostile %s field opened extra table rows — collapse dropped a newline; got %d lines:\n%s",
+					tc.field, len(rows), table)
+			}
+			// Exactly five cells. A '\t' forges a tabwriter column; a double
+			// space forges one to the run-of-spaces split. Either raises the
+			// count.
+			cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+			if len(cells) != 5 {
+				t.Fatalf("hostile %s field forged table columns — collapse dropped a tab or double space; got %d cells: %q",
+					tc.field, len(cells), rows[2])
+			}
+			if cells[tc.col] != sentCollapsePayloadRendered {
+				t.Fatalf("table cell %d (%s) not collapsed.\n got: %q\nwant: %q",
+					tc.col, tc.field, cells[tc.col], sentCollapsePayloadRendered)
+			}
+		})
 	}
 }
 
