@@ -344,7 +344,7 @@ func TestSend_ExistingThread_SkipsCreateForumTopic(t *testing.T) {
 	if gotSendThreadID != "7" {
 		t.Errorf("sendMessage thread_id: got %q, want %q", gotSendThreadID, "7")
 	}
-	wantText := "Status update\n\nAll good."
+	wantText := "All good."
 	if gotSendText != wantText {
 		t.Errorf("sendMessage text:\ngot  %q\nwant %q", gotSendText, wantText)
 	}
