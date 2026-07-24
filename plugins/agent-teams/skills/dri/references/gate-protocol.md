@@ -53,6 +53,15 @@ The `--file` prose form remains supported as a fallback — use it when the ask 
 
 Guidance: name the fork. The structured form works because it forces you to state _what decision_ the human is actually making, not just what you need to explain. If you can't fill in `--decision` with one concrete line, the question is not crisp yet — refine it before gating.
 
+## The plan-approval gate
+
+A plan-approval gate carries a plan-document URL. So does a design-pivot gate (below), when the planner has republished the page for the pivot. Standby gates, merge/review gates, and routine question gates never carry one — this is the one gate flavor with a document behind it.
+
+- **Authorship.** The planner authors the plan page and publishes it with the Artifact tool — it holds the content and has the tool. The DRI does not write the page; it only links it at the gate.
+- **URL-carry rule.** The artifact URL goes as the FIRST line of `--context-file`. Budget for it: `--context-file` caps at 280 chars; a claude.ai artifact URL runs ~68 chars, leaving ~210 chars of prose — plan for that budget up front rather than discovering the cap by rejection.
+- **The ask must stand alone.** `--decision` / `--recommendation` / `--alternative` stay authoritative regardless of the link — Eric must be able to decide from the ask text alone. The plan-doc URL is enrichment, never a dependency; this is also the graceful-degradation guarantee if claude.ai doesn't open cleanly on his phone.
+- **Interaction with the design-pivot gate's `--file` fallback.** When mechanism evidence pushes a design-pivot gate past the structured form into the `--file` prose fallback described below, the plan-doc URL still goes near the top of the note file, on its own line, ahead of the labeled Mechanism evidence / Recommendation / Literal-reading alternative lines.
+
 ## The design-pivot gate
 
 A design pivot is any divergence from the human's dispatched framing: a different mechanism than the one the human named, a new code path instead of reusing one the human pointed at, or a scope-class escalation (minor -> major). ANY such pivot is a MANDATORY plan-review (QUESTION) gate, raised AT THE MOMENT OF DIVERGENCE — not folded into a later PR description or headlined after the fact. The gate note must carry three elements:

@@ -159,15 +159,12 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 		threadRef = id
 	}
 
-	// Build the message body. On reuse of an existing thread the title is
-	// included as a header (no [<InitiativeID>] prefix, same rationale as
-	// the topic name) so replies stay scannable.
-	body := msg.Body
-	if msg.ThreadRef != "" {
-		body = fmt.Sprintf("%s\n\n%s", msg.Title, msg.Body)
-	}
-
-	if err := t.sendMessage(threadRef, body); err != nil {
+	// On reuse of an existing thread, msg.Title is deliberately NOT
+	// prepended to the body: the forum topic (opened above, or on a prior
+	// call for this thread) is already named after that same title, so
+	// restating it under a heading that says the same thing is noise, not
+	// an aid to scanning. Send msg.Body verbatim.
+	if err := t.sendMessage(threadRef, msg.Body); err != nil {
 		return "", fmt.Errorf("telegram: sendMessage: %w", err)
 	}
 	return threadRef, nil
