@@ -267,6 +267,18 @@ func sentDisplayTS(ts time.Time) string {
 	return ts.UTC().Format(time.RFC3339Nano)
 }
 
+// sentFieldTruncRunes is the rune budget for the table's four non-body
+// columns (agent-teams-48dh.22). The body has had a budget since §7; these
+// had none, and tabwriter sizes each column to its WIDEST cell — so one
+// oversized field in one record indents every GENUINE record's columns by
+// that width, pushing them off the screen. The damage lands on the honest
+// records, and nothing looks wrong.
+//
+// 40 clears every legitimate value with room to spare: the widest is the
+// 30-rune normalized timestamp above, with sender kinds at 15 and initiative
+// ids well under that.
+const sentFieldTruncRunes = 40
+
 // writeSentTable renders entries as contract §7's tab-aligned default table
 // (TIME, SENDER, INITIATIVE, OUTCOME, BODY(trunc)), matching
 // writeStewardStatsTable's shape.
@@ -276,11 +288,18 @@ func writeSentTable(ctx *cli.Context, entries []sentEntry) error {
 	fmt.Fprintln(w, "----\t------\t----------\t-------\t----")
 	for _, e := range entries {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			sentSafeField(sentDisplayTS(e.ts)), sentSafeField(string(e.rec.Sender)),
-			sentSafeField(e.rec.Initiative), sentSafeField(string(e.rec.Outcome)),
+			sentTableField(sentDisplayTS(e.ts)), sentTableField(string(e.rec.Sender)),
+			sentTableField(e.rec.Initiative), sentTableField(string(e.rec.Outcome)),
 			sentTableBody(e.rec.Body))
 	}
 	return w.Flush()
+}
+
+// sentTableField renders one non-body table cell: sentSafeField, then the
+// column's rune budget. Table only — --full gives each record its own lines,
+// so a long field there costs one long line and cannot displace anything.
+func sentTableField(s string) string {
+	return truncate(sentSafeField(s), sentFieldTruncRunes)
 }
 
 // sentTableBody renders one body for the table's BODY column: every run of

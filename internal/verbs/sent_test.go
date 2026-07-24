@@ -1201,6 +1201,116 @@ func TestSentRendersParsedTimestampNormalizedToUTC(t *testing.T) {
 	}
 }
 
+// ── agent-teams-48dh.22: every table column has a width budget ────────────
+
+// sentWidestLine returns the length in runes of the longest line in s.
+// Runes, not bytes: the damage is measured in terminal columns.
+func sentWidestLine(s string) int {
+	widest := 0
+	for _, line := range strings.Split(s, "\n") {
+		if n := len([]rune(line)); n > widest {
+			widest = n
+		}
+	}
+	return widest
+}
+
+// TestSentTableColumnsAreWidthBudgeted pins agent-teams-48dh.22: one
+// oversized field in ONE record must not widen the table for the others.
+//
+// tabwriter sizes each column to its WIDEST cell, so before the fix a single
+// 4000-character field indented every GENUINE record's SENDER / INITIATIVE /
+// OUTCOME / BODY by ~4000 columns — measured at 205 visual rows on a 100-col
+// terminal for a three-record log. Nothing is deleted and nothing reads as
+// wrong; the reader simply cannot see any record. It scaled linearly with no
+// cap: 100000 fractional digits gave a 100070-character line.
+//
+// The payload is a run of 'A': no whitespace and no control characters, so
+// it is inert to BOTH other halves of the field pipeline. Removing
+// sentSafeField's collapse or its sanitize leaves this test green — which is
+// the point, because those two rules are pinned elsewhere
+// (TestSentSanitizesEveryRenderedField, TestSentFullCannotForgeARecordFrom
+// AnyField) and this one must fail for the budget and nothing else.
+func TestSentTableColumnsAreWidthBudgeted(t *testing.T) {
+	// The ceiling is stated here rather than read from sentFieldTruncRunes:
+	// an expectation computed from the constant under test follows it
+	// wherever it goes and can never witness the budget being removed.
+	// Deliberately loose — it is a bound on the HARM (a table that still fits
+	// a terminal), not a restatement of the constant.
+	const maxWidening = 64
+
+	oversized := strings.Repeat("A", 4000)
+
+	cases := []struct {
+		field  string
+		mutate func(r *sentlog.Record)
+	}{
+		// The ts route is closed by the RFC3339Nano re-render rather than by
+		// truncate (a 4000-digit fraction is a VALID RFC3339 value, so Run
+		// accepts the record), which is why the payload here is a fraction
+		// and not a run of 'A'.
+		{"ts", func(r *sentlog.Record) {
+			r.Timestamp = "2026-07-24T12:00:00." + strings.Repeat("9", 4000) + "Z"
+		}},
+		{"sender", func(r *sentlog.Record) { r.Sender = sentlog.Kind(oversized) }},
+		{"initiative", func(r *sentlog.Record) { r.Initiative = oversized }},
+		{"outcome", func(r *sentlog.Record) { r.Outcome = oversized }},
+	}
+
+	// The all-ordinary baseline: the same three records with nothing
+	// oversized. Measured, not assumed, so the comparison below is against
+	// what this table actually costs rather than a guessed number.
+	ordinary := func(t *testing.T) []sentlog.Record {
+		t.Helper()
+		return []sentlog.Record{
+			{Timestamp: "2026-07-24T18:21:55Z", Sender: sentlog.KindNotify, Initiative: "at-real", Title: "a", Body: "first genuine record", Outcome: sentlog.OutcomeSent},
+			{Timestamp: "2026-07-24T18:22:55Z", Sender: sentlog.KindNotifyBriefing, Initiative: "at-real", Title: "b", Body: "hostile carrier record", Outcome: sentlog.OutcomeSent},
+			{Timestamp: "2026-07-24T18:23:55Z", Sender: sentlog.KindClose, Initiative: "at-real", Title: "c", Body: "second genuine record", Outcome: sentlog.OutcomeFailed},
+		}
+	}
+
+	render := func(t *testing.T, recs []sentlog.Record) string {
+		t.Helper()
+		lines := make([]string, len(recs))
+		for i, r := range recs {
+			lines[i] = sentLine(t, r)
+		}
+		ctx, stdout, _ := sentCtx(t, lines...)
+		if err := (&sentKong{}).Run(ctx); err != nil {
+			t.Fatalf("default Run: %v", err)
+		}
+		return stdout.String()
+	}
+
+	baseline := sentWidestLine(render(t, ordinary(t)))
+
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			recs := ordinary(t)
+			tc.mutate(&recs[1]) // the middle record carries the payload
+			out := render(t, recs)
+
+			if got := sentWidestLine(out); got > baseline+maxWidening {
+				t.Errorf("a 4000-character %s widened the table to %d runes (all-ordinary baseline %d) — one record's field must not push every genuine record's columns off the screen:\n%.400s",
+					tc.field, got, baseline, out)
+			}
+
+			// The genuine records must still BE there and still be readable
+			// as rows — a budget that achieved its width by dropping records
+			// would satisfy the check above.
+			rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+			if len(rows) != 5 {
+				t.Fatalf("expected header, separator and 3 rows, got %d lines:\n%.400s", len(rows), out)
+			}
+			for _, want := range []string{"first genuine record", "second genuine record"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("genuine record %q is missing from the table:\n%.400s", want, out)
+				}
+			}
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
