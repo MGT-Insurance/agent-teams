@@ -202,21 +202,16 @@ func TestLiveGit_WorkProductFlatline_RealArtifactsBoundaryAndLadder(t *testing.T
 	if err := doHungTick(ctx, deps); err != nil {
 		t.Fatalf("tick @46m: %v", err)
 	}
-	// KNOWN BUG (agent-teams-sgr5.7, filed by this test): the spec/ladder
-	// contract says the 3rd tick past 30m (WakeAttempts already at the cap)
-	// should send NO further wake. In the real implementation it fires AGAIN
-	// here -- WorkProductLastProgressAt is persisted at whole-second
-	// precision (RFC3339) but compared against a freshly-recomputed,
-	// sub-second-precision `lastProgress` every tick, so a real (unchanged)
-	// git index mtime is almost always ".After()" its own truncated prior
-	// value, making scanHung believe "real progress happened" every tick and
-	// wiping WorkProductWakeAttempts/AlertedAt back to zero each time. This
-	// is logged, not asserted as a hard failure, so this test documents
-	// today's real behavior without red-lining the suite for a known,
-	// separately-tracked bug (see agent-teams-sgr5.7 for the fix and the
-	// dedicated repro below for the more severe alert-repeat symptom).
+	// Regression guard for agent-teams-sgr5.7: the spec/ladder contract says
+	// the 3rd tick past 30m (WakeAttempts already at the cap) sends NO
+	// further wake. Before the fix, WorkProductLastProgressAt's
+	// whole-second-precision persistence compared against a
+	// freshly-recomputed sub-second-precision `lastProgress` made every
+	// unchanged tick look like "real progress happened," wiping
+	// WorkProductWakeAttempts/AlertedAt back to zero each time and firing a
+	// 3rd wake here. Now asserted as a hard failure.
 	if len(wake.bodies) != 2 {
-		t.Logf("KNOWN BUG agent-teams-sgr5.7: @46m tick sent %d cumulative wakes, spec wants 2 (ladder should be exhausted, not yet past 1h)", len(wake.bodies))
+		t.Fatalf("@46m tick: got %d cumulative wake sends, want 2 (ladder should be exhausted, not yet past 1h)", len(wake.bodies))
 	}
 	if len(ft.calls) != 0 {
 		t.Fatalf("@46m tick: got %d direct alerts, want 0 (not yet past 1h)", len(ft.calls))
@@ -319,17 +314,15 @@ func TestLiveGit_WorkProductFlatline_TrackWorktreeUnionKeepsClockFresh(t *testin
 }
 
 // TestLiveGit_WorkProductLadder_KnownBug_AlertRepeatsPastOneHour is a pinned
-// repro for agent-teams-sgr5.7 (filed by this tester from this exact test
-// file): once a work-product flatline crosses the 1h direct-alert threshold,
-// the SAME sub-second-precision-loss bug that defeats the "second wake" also
-// wipes WorkProductAlertedAt back to "" every tick, defeating the "alert
-// exactly once per episode" guard in nextWorkProductLadderAction. Left
-// t.Skip'd so the suite stays green for a known, separately-tracked issue;
-// un-skip once agent-teams-sgr5.7 is fixed to turn this into a real
-// regression guard against the fix regressing.
+// regression guard for agent-teams-sgr5.7: once a work-product flatline
+// crosses the 1h direct-alert threshold, a sub-second-precision-loss bug
+// used to wipe WorkProductAlertedAt back to "" every tick (comparing a
+// freshly-recomputed, full-precision lastProgress against its own
+// whole-second-truncated persisted prior self), defeating the "alert
+// exactly once per episode" guard in nextWorkProductLadderAction. Fixed by
+// truncating lastProgress to second precision before the comparison in
+// scanHung (internal/verbs/hung_scan.go).
 func TestLiveGit_WorkProductLadder_KnownBug_AlertRepeatsPastOneHour(t *testing.T) {
-	t.Skip("known bug agent-teams-sgr5.7: direct alert incorrectly repeats every tick past 1h instead of firing once per episode -- un-skip once fixed")
-
 	primary := t.TempDir()
 	mustGitRepo(t, primary)
 	mustClaimedBeadRepo(t, primary)

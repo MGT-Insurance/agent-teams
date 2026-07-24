@@ -477,7 +477,13 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			lastProgress, newHash, newHashAt := computeWorkProductClock(probes, beadUpdated, newAnchor.WorkProductStatusHash, prevHashAt, nowT)
 
 			prevLastProgress, hadPrevProgress := parseTimeOK(newAnchor.WorkProductLastProgressAt)
-			if !lastProgress.IsZero() && (!hadPrevProgress || lastProgress.After(prevLastProgress)) {
+			// WorkProductLastProgressAt is persisted at whole-second
+			// precision (time.RFC3339), but lastProgress is freshly
+			// recomputed every tick at full (sub-second) precision from
+			// real git index/commit mtimes. Truncate to second precision
+			// before comparing so an unchanged flatline doesn't alias as
+			// "progress" against its own truncated prior self.
+			if !lastProgress.IsZero() && (!hadPrevProgress || lastProgress.Truncate(time.Second).After(prevLastProgress)) {
 				// Real work-product progress since we last looked — the D6
 				// ladder episode (if any) is over.
 				newAnchor.WorkProductAlertedAt = ""
