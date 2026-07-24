@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 )
 
 // Sender pushes one message to the human.
@@ -54,6 +56,13 @@ type OutboundMessage struct {
 	// returned. Mutually exclusive in intent with ThreadRef, though a
 	// transport should prefer General when both are set.
 	General bool
+	// Sender is the compile-time-declared identity of the call site issuing
+	// this send (agent-teams-48dh, contract agent-teams-48dh.1 §1/§3).
+	// REQUIRED: every OutboundMessage{ literal in non-test Go must set this.
+	// An empty or unrecognised value is recorded as sentlog.KindUndeclared by
+	// the logging decorator installed in For, with a stderr warning — the
+	// record is still written, never dropped.
+	Sender sentlog.Kind
 }
 
 // Reply is an inbound human response received by the transport.
@@ -120,6 +129,12 @@ func Enabled(home string) bool {
 // "telegram" when no config is found. Returns an error if the selected name is
 // not registered.
 //
+// The returned Transport is wrapped in an unexported logging decorator
+// (agent-teams-48dh contract §1) that appends one sentlog record per Send —
+// this is the ONLY place that decorator is installed, so every real send
+// through this package is logged regardless of which transport is selected.
+// Enabled, below, is a config probe only and does NOT wrap.
+//
 // home is the resolved workspace home (workspace.Home()).
 func For(home string) (Transport, error) {
 	name := selectedName(home)
@@ -131,7 +146,11 @@ func For(home string) (Transport, error) {
 		}
 		return nil, fmt.Errorf("transport: unknown transport %q (registered: %s)", name, strings.Join(known, ", "))
 	}
-	return f(home)
+	t, err := f(home)
+	if err != nil {
+		return nil, err
+	}
+	return newLoggingTransport(t, home), nil
 }
 
 // selectedName resolves the configured transport name.

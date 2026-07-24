@@ -21,6 +21,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
@@ -178,6 +179,12 @@ func postHungAlert(ctx *cli.Context, deps hungTickDeps, entry hungScanEntry) err
 		ThreadRef:    threadRef,
 		Title:        entry.Title,
 		Body:         hungAlertBody(entry.ID, entry.Title, entry.StuckSince),
+		// KindRelayHung is explicit, never derived from environment: this
+		// goroutine runs inside the long-lived `ateam relay` OS process,
+		// which inherits a stale CLAUDE_CODE_SESSION_ID from whatever
+		// session originally started it. Deriving sender identity from env
+		// here would misattribute every hung-alert to that stale session.
+		Sender: sentlog.KindRelayHung,
 	}
 	return deps.topicPost(deps.transport, msg)
 }
