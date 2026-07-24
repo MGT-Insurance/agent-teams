@@ -364,16 +364,18 @@ func TestDoHungTick_EpisodeEnds_LadderResetsOnReentry(t *testing.T) {
 		t.Fatalf("tick 1: wake calls = %d, want 1", len(wake.bodies))
 	}
 
-	// Episode ends: session goes busy (WORKING). scanHung drops the anchor
-	// entirely (existing, verified behavior — see TestScanHung_StuckAnchorLifecycle).
+	// Episode ends: session goes busy (WORKING). scanHung clears the STUCK
+	// sub-state (agent-teams-sgr5 D1/D3: an anchor may still persist to
+	// carry the durable work-product clock, but StuckSince/WakeAttempts must
+	// not survive — see TestScanHung_StuckAnchorLifecycle).
 	deps.agentsFunc = func() ([]agentSession, error) { return busySessions, nil }
 	deps.now = fixedNow(t0.Add(time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
 		t.Fatalf("tick 2 (goes WORKING): %v", err)
 	}
 	anchors := loadHungState(hungStatePath(ctx))
-	if _, ok := anchors["at-3"]; ok {
-		t.Fatal("expected anchor cleared once the initiative leaves STUCK")
+	if anchor, ok := anchors["at-3"]; ok && anchor.StuckSince != "" {
+		t.Fatalf("expected STUCK sub-state cleared once the initiative leaves STUCK, got StuckSince=%q", anchor.StuckSince)
 	}
 	if len(wake.bodies) != 1 {
 		t.Errorf("no additional wake once WORKING, got %d", len(wake.bodies))
@@ -428,7 +430,7 @@ func TestPostHungAlert_NoThreadLabel_ReturnsError(t *testing.T) {
 	entry := hungScanEntry{ID: "at-4", Title: "no topic yet", Hung: true, StuckSince: "2026-07-21T09:00:00Z"}
 	deps := hungTickDeps{topicPost: defaultHungTopicPost, transport: ft}
 
-	err := postHungAlert(ctx, deps, entry)
+	err := postHungAlert(ctx, deps, entry, hungAlertBody(entry.ID, entry.Title, entry.StuckSince))
 	if err == nil {
 		t.Fatal("expected an error when the initiative has no thread label")
 	}
@@ -448,7 +450,7 @@ func TestPostHungAlert_PostsCannedBodyToKnownTopic(t *testing.T) {
 	entry := hungScanEntry{ID: "at-5", Title: "known topic", Hung: true, StuckSince: "2026-07-21T09:00:00Z"}
 	deps := hungTickDeps{topicPost: defaultHungTopicPost, transport: ft}
 
-	if err := postHungAlert(ctx, deps, entry); err != nil {
+	if err := postHungAlert(ctx, deps, entry, hungAlertBody(entry.ID, entry.Title, entry.StuckSince)); err != nil {
 		t.Fatalf("postHungAlert: %v", err)
 	}
 	if len(ft.calls) != 1 {

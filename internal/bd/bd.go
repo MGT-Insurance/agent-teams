@@ -103,6 +103,7 @@ type Issue struct {
 	Description string   `json:"description"`
 	Status      string   `json:"status"`
 	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
 	Labels      []string `json:"labels"`
 	Notes       string   `json:"notes"`
 	Assignee    string   `json:"assignee"`

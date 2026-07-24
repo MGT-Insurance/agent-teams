@@ -129,12 +129,14 @@ ateam hung-scan
 claude agents --all --json
 ```
 
-`ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK`, each carrying `hung` (true once STUCK crosses the durable stuck-since threshold), `cwd_present`, and `pid_present` — ground truth, not an eyeballed nudge. Per entry:
+`ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK`, with `hung`, `cwd_present`, `pid_present`, `mode`, `dead_hung` (DEAD-with-worktree past 15 min), and work-product fields `wp_last_progress_at`/`wp_flat_seconds`/`wp_trip_eligible`/`failure_tokens_found` — ground truth, not an eyeballed nudge. Per entry:
 
 - **STUCK with `hung:true`** — live session, idle past threshold, no gate raised. Escalate: a DIGESTED message per §5's hung-escalation spec, to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`). Judgment call, never autonomous. Reply comes back as an ordinary steward-reply; record under `unblock-action`.
 - **DEAD with `cwd_present:false`** — orphan. Unchanged: the one autonomous cleanup allowed is `ateam reap-orphans`.
-- **DEAD with `cwd_present:true`** (tracked-but-dead) — escalate like STUCK above, recommending `claude respawn <shortid>` (cross-reference `claude agents --all --json` by worktree) vs. leave-it. No autonomous revive.
-- **STUCK under threshold, AWAITING-HUMAN, or WORKING** — no action.
+- **DEAD with `cwd_present:true` and `dead_hung:true`** — escalate like STUCK above, recommending `claude respawn <shortid>` (cross-reference `claude agents --all --json` by worktree) vs. leave-it. No autonomous revive. Also wakes you mechanically at the 15-min mark.
+- **WORKING with `wp_trip_eligible:true`** — the busy-forever case: `mode:bg`, git/bead artifacts flat ≥30 min, bead claimed; the mechanical wake carries the evidence. Busy session + recent command launch in transcript + no failure tokens → reply "healthy, watching". Otherwise (failure tokens, or staged work sitting with nothing plausibly in flight) → nudge the DRI (`ateam notify <id>`) like STUCK; record under `unblock-action`. At 1 h flat a direct alert to Eric fires automatically — not yours to trigger, and your wake doesn't close the episode; watch until a git/bead change resets the clock.
+- **STUCK under threshold, AWAITING-HUMAN, or WORKING without `wp_trip_eligible`** — no action.
+- **`mode:interactive`** — excluded from every mechanical wake path; visible in the scan for your judgment only.
 
 **Flag other anomalies**: zombie sessions, or an initiative with a missing watcher (`ateam watchers`) — outside what hung-scan covers, still a note to Eric, not autonomous action.
 
