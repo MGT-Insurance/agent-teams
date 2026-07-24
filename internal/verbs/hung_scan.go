@@ -86,6 +86,30 @@ type hungScanEntry struct {
 	SessionStatus       string `json:"session_status"`
 	PIDPresent          bool   `json:"pid_present"`
 	CWDPresent          bool   `json:"cwd_present"`
+
+	// Mode is the initiative's "mode: bg|interactive" description line
+	// (modeValue, dispatch.go). Empty for legacy initiatives predating the
+	// field. D5: mode=="interactive" excludes an initiative from every
+	// mechanical escalation path below, regardless of classification.
+	Mode string `json:"mode,omitempty"`
+
+	// D4 — DEAD-with-worktree-present ladder fields. Populated only when
+	// Classification==DEAD and CWDPresent==true; zero-valued otherwise,
+	// mirroring how StuckSince/StuckElapsedSeconds/Hung are only meaningful
+	// for STUCK above.
+	DeadSince          string `json:"dead_since,omitempty"`
+	DeadElapsedSeconds int64  `json:"dead_elapsed_seconds,omitempty"`
+	DeadHung           bool   `json:"dead_hung,omitempty"`
+
+	// D1/D2/D9 — work-product clock + trip gating. WorkProductLastProgress
+	// is "" (unknown) whenever no git/bead signal was available at all
+	// (e.g. no real git worktree could be probed and the bead has no
+	// updated_at) — callers must not treat that as "flat forever".
+	WorkProductLastProgress string `json:"wp_last_progress_at,omitempty"`
+	WorkProductFlatSeconds  int64  `json:"wp_flat_seconds,omitempty"`
+	WorkProductTripEligible bool   `json:"wp_trip_eligible,omitempty"`
+	WorkProductDowngraded   bool   `json:"wp_downgraded,omitempty"` // transcript corroborator held it
+	FailureTokensFound      bool   `json:"failure_tokens_found,omitempty"`
 }
 
 // hungAnchor is the durable per-initiative record persisted at
@@ -113,6 +137,36 @@ type hungAnchor struct {
 	AlertedAt    string `json:"alerted_at,omitempty"`
 	WakeAttempts int    `json:"wake_attempts,omitempty"`
 	LastWakeAt   string `json:"last_wake_at,omitempty"`
+
+	// D4 — DEAD-with-worktree-present ladder: same shape/semantics as the
+	// STUCK fields above (StuckSince/AlertedAt/WakeAttempts/LastWakeAt), but
+	// tracking a durable "dead since" episode instead. Kept as distinct
+	// fields (not shared with the STUCK ones) so a future change where an
+	// initiative could carry both anchors simultaneously doesn't cross-talk;
+	// today classification is exclusive so at most one set is ever live.
+	DeadSince        string `json:"dead_since,omitempty"`
+	DeadAlertedAt    string `json:"dead_alerted_at,omitempty"`
+	DeadWakeAttempts int    `json:"dead_wake_attempts,omitempty"`
+	DeadLastWakeAt   string `json:"dead_last_wake_at,omitempty"`
+
+	// D1/D3 — durable work-product tracking, independent of session status
+	// (a busy/idle blip never touches these). WorkProductStatusHash/At track
+	// the combined git-status-porcelain hash across the initiative's unioned
+	// worktrees (the one component with no artifact timestamp of its own);
+	// WorkProductLastProgressAt is the last computed work-product clock
+	// value, persisted so the tick can detect "did progress actually
+	// advance since last observation" and reset the D6 ladder fields below
+	// when it did (a real work-product change ends the episode; a busy
+	// session blip does not).
+	WorkProductStatusHash     string `json:"wp_status_hash,omitempty"`
+	WorkProductStatusHashAt   string `json:"wp_status_hash_at,omitempty"`
+	WorkProductLastProgressAt string `json:"wp_last_progress_at,omitempty"`
+
+	// D6 — work-product-flatline ladder state: distinct pacing from STUCK's
+	// (30m wake / 1h direct alert, not STUCK's 15m/attempt-count ladder).
+	WorkProductAlertedAt    string `json:"wp_alerted_at,omitempty"`
+	WorkProductWakeAttempts int    `json:"wp_wake_attempts,omitempty"`
+	WorkProductLastWakeAt   string `json:"wp_last_wake_at,omitempty"`
 }
 
 // hungStatePath returns the path to the durable anchor-state file:
@@ -295,6 +349,7 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 
 	for _, iss := range issues {
 		wt := worktreePath(iss.Description)
+		mode := modeValue(iss.Description)
 
 		if agentsErr != nil {
 			out = append(out, hungScanEntry{
@@ -302,6 +357,7 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 				Title:          iss.Title,
 				Worktree:       wt,
 				Classification: hungClassUnknown,
+				Mode:           mode,
 			})
 			continue
 		}
@@ -314,6 +370,7 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			Worktree:       wt,
 			Classification: class,
 			CWDPresent:     cwdPresent,
+			Mode:           mode,
 		}
 		if len(matched) > 0 {
 			// Report the primary (first tied session) for the diagnostic
@@ -323,29 +380,167 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			entry.PIDPresent = matched[0].PID != nil
 		}
 
-		if class == hungClassStuck {
+		// newAnchor/keep decide what (if anything) is carried into
+		// newAnchors for this id this scan. Exactly one of the STUCK/DEAD-
+		// with-worktree/WORKING branches below applies (classification is
+		// exclusive); AWAITING-HUMAN and true-DEAD (worktree gone) fall
+		// through to keep==false, dropping any anchor entirely — mirroring
+		// the original "cleared on any non-STUCK observation" contract, now
+		// extended to the new sub-states (D3/D4).
+		var newAnchor hungAnchor
+		keep := false
+
+		switch {
+		case class == hungClassStuck:
+			// Unchanged STUCK semantics (backward compat): StuckSince is set
+			// fresh only when there was no live StuckSince episode already;
+			// otherwise the whole prior anchor carries forward untouched
+			// (which also naturally preserves any WorkProduct* sub-state —
+			// D3 durability — since we mutate individual fields below rather
+			// than replacing the struct).
 			anchor, existed := prevAnchors[iss.ID]
 			if !existed || anchor.StuckSince == "" {
-				anchor = hungAnchor{StuckSince: nowT.UTC().Format(time.RFC3339)}
+				anchor.StuckSince = nowT.UTC().Format(time.RFC3339)
+				anchor.AlertedAt = ""
+				anchor.WakeAttempts = 0
+				anchor.LastWakeAt = ""
 			}
-			newAnchors[iss.ID] = anchor
+			// Not DEAD this tick — any stale DEAD sub-episode is over.
+			anchor.DeadSince, anchor.DeadAlertedAt, anchor.DeadLastWakeAt = "", "", ""
+			anchor.DeadWakeAttempts = 0
+			newAnchor = anchor
+			keep = true
 
-			if since, parseErr := time.Parse(time.RFC3339, anchor.StuckSince); parseErr == nil {
+			if since, parseErr := time.Parse(time.RFC3339, newAnchor.StuckSince); parseErr == nil {
 				elapsed := nowT.Sub(since)
-				entry.StuckSince = anchor.StuckSince
+				entry.StuckSince = newAnchor.StuckSince
 				entry.StuckElapsedSeconds = int64(elapsed.Seconds())
 				entry.Hung = elapsed >= hungStuckThreshold
 			}
+
+		case class == hungClassDead && cwdPresent:
+			// D4: DEAD-with-worktree-present joins the ladder, same
+			// tick-observation-based anchor/clear mechanics as STUCK's
+			// (not the new durable-artifact style — this is "STUCK's
+			// mechanism, applied to DEAD", not a new durability contract).
+			anchor, existed := prevAnchors[iss.ID]
+			if !existed || anchor.DeadSince == "" {
+				anchor.DeadSince = nowT.UTC().Format(time.RFC3339)
+				anchor.DeadAlertedAt = ""
+				anchor.DeadWakeAttempts = 0
+				anchor.DeadLastWakeAt = ""
+			}
+			// Not STUCK this tick — any stale STUCK sub-episode is over.
+			anchor.StuckSince, anchor.AlertedAt, anchor.LastWakeAt = "", "", ""
+			anchor.WakeAttempts = 0
+			newAnchor = anchor
+			keep = true
+
+			if since, parseErr := time.Parse(time.RFC3339, newAnchor.DeadSince); parseErr == nil {
+				elapsed := nowT.Sub(since)
+				entry.DeadSince = newAnchor.DeadSince
+				entry.DeadElapsedSeconds = int64(elapsed.Seconds())
+				entry.DeadHung = elapsed >= hungDeadWorktreeThreshold
+			}
+
+		case class == hungClassWorking:
+			// D1/D3: the busy-forever gap. No session-status-based anchor
+			// applies here (that's the whole point) — only the durable
+			// work-product clock below, computed unconditionally so a
+			// flickering busy/idle/dead sequence never resets it.
+			anchor := prevAnchors[iss.ID]
+			anchor.StuckSince, anchor.AlertedAt, anchor.LastWakeAt = "", "", ""
+			anchor.WakeAttempts = 0
+			anchor.DeadSince, anchor.DeadAlertedAt, anchor.DeadLastWakeAt = "", "", ""
+			anchor.DeadWakeAttempts = 0
+			newAnchor = anchor
+			keep = true
+		}
+
+		// D1/D2/D3/D6/D9: work-product clock + trip gating, computed
+		// whenever there is a live anchor to carry (STUCK/DEAD-with-
+		// worktree/WORKING all qualify) and the initiative isn't
+		// mode:interactive (D5 excludes interactive sessions from every
+		// mechanical path, including this one).
+		if keep && mode != "interactive" {
+			worktrees := discoverWorktrees(wt, trackWorktreePaths(iss.Description), iss.ID, hungDirListFunc)
+			probes := make([]gitProbeResult, 0, len(worktrees))
+			for _, w := range worktrees {
+				probes = append(probes, hungGitProbeFunc(w))
+			}
+
+			var beadUpdated time.Time
+			if t, err := time.Parse(time.RFC3339, iss.UpdatedAt); err == nil {
+				beadUpdated = t
+			}
+			prevHashAt, _ := parseTimeOK(newAnchor.WorkProductStatusHashAt)
+			lastProgress, newHash, newHashAt := computeWorkProductClock(probes, beadUpdated, newAnchor.WorkProductStatusHash, prevHashAt, nowT)
+
+			prevLastProgress, hadPrevProgress := parseTimeOK(newAnchor.WorkProductLastProgressAt)
+			// WorkProductLastProgressAt is persisted at whole-second
+			// precision (time.RFC3339), but lastProgress is freshly
+			// recomputed every tick at full (sub-second) precision from
+			// real git index/commit mtimes. Truncate to second precision
+			// before comparing so an unchanged flatline doesn't alias as
+			// "progress" against its own truncated prior self.
+			if !lastProgress.IsZero() && (!hadPrevProgress || lastProgress.Truncate(time.Second).After(prevLastProgress)) {
+				// Real work-product progress since we last looked — the D6
+				// ladder episode (if any) is over.
+				newAnchor.WorkProductAlertedAt = ""
+				newAnchor.WorkProductWakeAttempts = 0
+				newAnchor.WorkProductLastWakeAt = ""
+			}
+			newAnchor.WorkProductStatusHash = newHash
+			if !newHashAt.IsZero() {
+				newAnchor.WorkProductStatusHashAt = newHashAt.UTC().Format(time.RFC3339)
+			}
+
+			if !lastProgress.IsZero() {
+				newAnchor.WorkProductLastProgressAt = lastProgress.UTC().Format(time.RFC3339)
+				entry.WorkProductLastProgress = newAnchor.WorkProductLastProgressAt
+				flat := nowT.Sub(lastProgress)
+				if flat < 0 {
+					flat = 0
+				}
+				entry.WorkProductFlatSeconds = int64(flat.Seconds())
+
+				// Cost gate (signal-survey.md §1c/§4): only reach into the
+				// project repo's own bd DB and the session transcript once
+				// the cheap git/bead-registry signal already suggests
+				// staleness past the flatline threshold.
+				if class == hungClassWorking && mode == "bg" && flat >= hungWorkProductFlatThreshold {
+					claimed, _ := hungProjectClaimedBeadFunc(wt)
+
+					var recentWork, failureTokens bool
+					if len(matched) > 0 && matched[0].SessionID != "" {
+						recentWork, failureTokens, _ = hungTranscriptTailFunc(matched[0].CWD, matched[0].SessionID, nowT.Add(-hungTranscriptCorroboratorWindow))
+					}
+					entry.FailureTokensFound = failureTokens
+
+					wouldTripIgnoringCorroborator := workProductTripEligible(mode, iss.Labels, claimed, flat, false)
+					eligible := workProductTripEligible(mode, iss.Labels, claimed, flat, recentWork)
+					entry.WorkProductTripEligible = eligible
+					entry.WorkProductDowngraded = wouldTripIgnoringCorroborator && !eligible
+				}
+			}
+		}
+
+		if keep {
+			newAnchors[iss.ID] = newAnchor
 		}
 
 		out = append(out, entry)
 	}
 
-	// Anchors for any id not re-added above (non-STUCK this scan, or the
-	// initiative closed and dropped out of the open list entirely) are
-	// dropped by construction — newAnchors only ever holds this scan's STUCK
-	// ids, which is exactly the "cleared on any non-STUCK observation"
-	// contract the bead asks for.
+	// Anchors for any id not re-added above (AWAITING-HUMAN this scan, truly
+	// DEAD with no worktree, or the initiative closed and dropped out of the
+	// open list entirely) are dropped by construction — newAnchors only ever
+	// holds ids classified STUCK, DEAD-with-worktree-present, or WORKING
+	// this scan (agent-teams-sgr5: D3/D4 extended "cleared on any
+	// non-qualifying observation" from STUCK-only to all three tracked
+	// sub-states; a gate or a closed initiative still drops everything,
+	// including the D1/D3 work-product clock state, per D3's "a gate...
+	// clears it" rule).
 	//
 	// persist gates the write itself: only the tick path (persist=true) may
 	// call saveHungState (agent-teams-6rru.19 single-writer invariant). The
