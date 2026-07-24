@@ -549,7 +549,7 @@ func (c *closeKong) sendCloseSignal(ctx *cli.Context) {
 		return
 	}
 
-	closer, ok := t.(topicCloser)
+	closer, ok := transport.Capability[topicCloser](t)
 	if !ok {
 		return
 	}
