@@ -514,12 +514,24 @@ type sentFullBlock struct {
 	header, title, body string
 }
 
+// sentFullBodyPrefixLiteral is sent.go's body-line prefix "  | " written as a
+// TEST literal, deliberately NOT a reference to the production
+// sentFullBodyPrefix constant. A parser that reads the constant under test
+// shrinks with it: mutating sentFullBodyPrefix from "  | " to "  " left every
+// full-mode test green, because sentParseFull matched the shrunk prefix too
+// and still parsed the same number of blocks — the assertion moved with the
+// thing it claimed to pin (agent-teams-48dh.25, the same disease as .11/.12/
+// .13/.16). Hardcoding the bytes here pins the prefix to exactly "  | ",
+// which is what keeps it distinct from the "  title: " and "  body:" forms so
+// no prefixed body line can be read as either.
+const sentFullBodyPrefixLiteral = "  | "
+
 // sentParseFull parses --full output back into records using ONLY the
 // documented block structure: a header at column 0, "  title: ", "  body:",
-// then every body line under sentFullBodyPrefix, terminated by an empty
-// line. It is deliberately strict — an unparseable line is a failure, not a
-// skip — because "body text produced a line that isn't a legal body line"
-// is exactly the bug under test.
+// then every body line under the hardcoded "  | " prefix, terminated by an
+// empty line. It is deliberately strict — an unparseable line is a failure,
+// not a skip — because "body text produced a line that isn't a legal body
+// line" is exactly the bug under test.
 func sentParseFull(t *testing.T, out string) []sentFullBlock {
 	t.Helper()
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
@@ -541,8 +553,8 @@ func sentParseFull(t *testing.T, out string) []sentFullBlock {
 		}
 		i++
 		var body []string
-		for i < len(lines) && strings.HasPrefix(lines[i], sentFullBodyPrefix) {
-			body = append(body, strings.TrimPrefix(lines[i], sentFullBodyPrefix))
+		for i < len(lines) && strings.HasPrefix(lines[i], sentFullBodyPrefixLiteral) {
+			body = append(body, strings.TrimPrefix(lines[i], sentFullBodyPrefixLiteral))
 			i++
 		}
 		b.body = strings.Join(body, "\n")
@@ -691,6 +703,101 @@ func TestSentFullCannotForgeARecordFromAnyField(t *testing.T) {
 				t.Fatalf("expected 2 blocks, got %d:\n%s", len(blocks), out)
 			}
 		})
+	}
+}
+
+// sentForgedTitleBody is a body that forges all THREE structural line forms of
+// a --full block: a header at column 0, the two-space "title:" line, and the
+// "body:" marker. TestSentFullCannotForgeARecordFromBodyText's fixture forges
+// only the column-0 header, which sentFullHeaderRe catches, so it is inert
+// against the title-indent rule — which is exactly why that hole survived
+// (agent-teams-48dh.25).
+//
+// The two lines that matter here are the UNINDENTED "title:" and "body:".
+// Under the shipped code they render prefixed as "  | title: FORGED-TITLE"
+// and "  | body:", neither of which is the "  title: " / "  body:" form, so
+// nothing is forged. Shrink the body prefix to the title indent's width
+// ("  | " -> "  ", contract §7 AMENDMENT 4(b) rule 2's exact failure) and they
+// render as "  title: FORGED-TITLE" and "  body:" — byte-identical to genuine
+// title and body-marker lines. Eric reading `ateam sent --full` during an
+// audit would see a record attribute that is not in sent.jsonl.
+const sentForgedTitleBody = "harmless intro line\n" +
+	"2026-01-01T00:00:00Z  close  initiative=at-FORGED  outcome=failed\n" +
+	"title: FORGED-TITLE\n" +
+	"body:\n" +
+	"still body"
+
+// sentFullTitleLineRe matches a genuine --full title line: exactly two leading
+// spaces then "title: ". HARDCODED, never sent.go's "  title: " indent read
+// back through a constant — the whole point of .25 is that an assertion built
+// from the production spelling moves with it.
+var sentFullTitleLineRe = regexp.MustCompile(`(?m)^  title: `)
+
+// sentFullBodyMarkerRe matches the genuine "  body:" marker line, hardcoded
+// for the same reason.
+var sentFullBodyMarkerRe = regexp.MustCompile(`(?m)^  body:$`)
+
+// TestSentFullTitleLineCannotBeForged pins contract §7 AMENDMENT 4(b) rule 2's
+// remaining half: the body-line prefix and the title indent (and the header's
+// column 0) must stay mutually distinguishable, so no prefixed body line can
+// be read as a title, a body marker, or a header. The count of each of those
+// three line forms must equal the number of records on disk — a body that
+// forges one of them can only ADD to a count, never hide.
+//
+// Every expectation is matched on a hardcoded literal, never on
+// sentFullBodyPrefix / the production title indent: sentParseFull previously
+// parsed body lines with the production prefix constant, so shrinking the
+// constant shrank the parser with it and the forgery went unseen. This test
+// (and sentParseFull, now hardcoded) fail instead.
+func TestSentFullTitleLineCannotBeForged(t *testing.T) {
+	recs := []sentlog.Record{
+		{Timestamp: "2026-07-24T17:38:50Z", Sender: sentlog.KindNotify, Initiative: "at-real", Title: "real1", Body: "genuinely sent", Outcome: sentlog.OutcomeSent},
+		{Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify, Initiative: "at-evil", Title: "real2", Body: sentForgedTitleBody, Outcome: sentlog.OutcomeSent},
+	}
+	lines := make([]string, len(recs))
+	for i, r := range recs {
+		lines[i] = sentLine(t, r)
+	}
+
+	ctx, stdout, _ := sentCtx(t, lines...)
+	if err := (&sentKong{Full: true}).Run(ctx); err != nil {
+		t.Fatalf("--full Run: %v", err)
+	}
+	out := stdout.String()
+
+	// The three structural line forms of a block. Each must appear exactly
+	// once per record on disk; a body that forges one raises its count.
+	checks := []struct {
+		name string
+		re   *regexp.Regexp
+	}{
+		{"header (column 0, initiative=)", sentFullHeaderRe},
+		{"title line (two-space indent)", sentFullTitleLineRe},
+		{"body marker (  body:)", sentFullBodyMarkerRe},
+	}
+	for _, c := range checks {
+		if n := len(c.re.FindAllString(out, -1)); n != len(recs) {
+			t.Fatalf("%d records on disk rendered %d %s lines — body text forged one:\n%s",
+				len(recs), n, c.name, out)
+		}
+	}
+
+	// And the invariant stated directly: every genuine body line begins with
+	// the hardcoded "  | " prefix, so it cannot collide with the "  title: "
+	// or "  body:" forms whatever the body contains. Asserted on the literal,
+	// not on sentFullBodyPrefix.
+	blocks := sentParseFull(t, out)
+	if len(blocks) != len(recs) {
+		t.Fatalf("expected %d blocks, got %d:\n%s", len(recs), len(blocks), out)
+	}
+	if blocks[0].title != "real2" || blocks[1].title != "real1" {
+		t.Fatalf("titles wrong/out of order: %q, %q", blocks[0].title, blocks[1].title)
+	}
+	// The forged block's body must survive whole inside its own record —
+	// unforgeable AND untruncated.
+	if blocks[0].body != sentForgedTitleBody {
+		t.Fatalf("forged body must be shown whole inside its record.\n got: %q\nwant: %q",
+			blocks[0].body, sentForgedTitleBody)
 	}
 }
 
