@@ -1,11 +1,11 @@
-// This file implements `ateam sent` (agent-teams-48dh.2, contract
+// This file implements `ateam sent` (agent-teams-48dh.2 and .3, contract
 // agent-teams-48dh.1 §7): readback of the sent-message audit log. Modeled on
 // stewardLedgerRecallKong.Run (steward.go:457+) — reads the whole file,
 // filters, orders most-recent-first, caps at --limit.
 //
-// FROZEN surface for THIS bead (contract §7 lists the full eventual set):
-// --sender, --since, --limit, --json only. --initiative, --full, and the
-// truncated human table land in agent-teams-48dh.3 — do not add them here.
+// The surface is now the complete frozen §7 set: --sender, --since,
+// --initiative, --limit, --full, --json. Do not extend it without a contract
+// amendment on agent-teams-48dh.1 first.
 package verbs
 
 import (
@@ -14,6 +14,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -30,24 +31,50 @@ func RegisterSentKong(p *cli.Parser) {
 // verb's own default (contract §7: "--limit N default 20").
 const sentDefaultLimit = 20
 
-// validSenderKinds enumerates the six real sender kinds (contract §3) for
-// the --sender usage-error message. KindUndeclared is deliberately excluded:
-// it is a guard value no caller may request explicitly.
-var validSenderKinds = []sentlog.Kind{
+// sentBodyTruncRunes is how much of a body the default table shows
+// (contract §7: "truncate the displayed body to 200 runes"). Bodies are
+// routinely multi-KB Steward digests, so an untruncated default makes the
+// common case unreadable; --full and --json opt out.
+const sentBodyTruncRunes = 200
+
+// queryableSenderKinds enumerates the sender values --sender accepts.
+//
+// SEVEN QUERYABLE, SIX SETTABLE — the asymmetry is deliberate (contract §7
+// AMENDMENT 2). KindUndeclared stays out of sentlog.knownKinds so no call
+// site can ever SET it, but it is exactly the row a bug report is most
+// likely to be about — a send site that failed to identify itself — so it
+// must be reachable from the CLI without falling back to --json plus manual
+// filtering.
+var queryableSenderKinds = []sentlog.Kind{
 	sentlog.KindNotify,
 	sentlog.KindNotifyBriefing,
 	sentlog.KindNotifyDirect,
 	sentlog.KindDispatch,
 	sentlog.KindClose,
 	sentlog.KindRelayHung,
+	sentlog.KindUndeclared,
+}
+
+// queryableSender reports whether s is an accepted --sender value. Not
+// sentlog.Kind.Known(): that answers "may a call site declare this?", which
+// is the stricter six-value question. See queryableSenderKinds.
+func queryableSender(s string) bool {
+	for _, k := range queryableSenderKinds {
+		if string(k) == s {
+			return true
+		}
+	}
+	return false
 }
 
 // sentKong is the kong struct for `ateam sent`.
 type sentKong struct {
-	Sender string        `name:"sender" help:"Filter to one sender kind (notify|notify-briefing|notify-direct|dispatch|close|relay-hung)."`
-	Since  time.Duration `name:"since" help:"Only records with ts >= now-since, e.g. 30m or 6h."`
-	Limit  int           `name:"limit" default:"20" help:"Max records to return (most recent first)."`
-	JSON   bool          `name:"json" help:"Output records as JSON."`
+	Sender     string        `name:"sender" help:"Filter to one sender kind (notify|notify-briefing|notify-direct|dispatch|close|relay-hung|UNDECLARED)."`
+	Since      time.Duration `name:"since" help:"Only records with ts >= now-since, e.g. 30m or 6h."`
+	Initiative string        `name:"initiative" help:"Filter to records whose initiative field matches exactly."`
+	Limit      int           `name:"limit" default:"20" help:"Max records to return, most recent first. Zero or negative means the default of 20, not unlimited."`
+	Full       bool          `name:"full" help:"Print whole bodies instead of the truncated table."`
+	JSON       bool          `name:"json" help:"Output records as JSON (never truncated)."`
 }
 
 // sentEntry pairs a decoded Record with its parsed timestamp so sorting and
@@ -57,9 +84,9 @@ type sentEntry struct {
 	ts  time.Time
 }
 
-// Run reads sentlog.Path(ctx.Home), filters to c.Sender/c.Since (AND'd),
-// orders most-recent-first, and caps at c.Limit. A missing log is not an
-// error — it reports "no messages". Malformed lines (bad JSON, or a
+// Run reads sentlog.Path(ctx.Home), filters to c.Sender/c.Since/c.Initiative
+// (AND'd), orders most-recent-first, and caps at c.Limit. A missing log is
+// not an error — it reports "no messages". Malformed lines (bad JSON, or a
 // timestamp that fails RFC3339 parsing) are skipped with a stderr warning;
 // a corrupted line never makes the rest of the log unreadable.
 func (c *sentKong) Run(ctx *cli.Context) error {
@@ -67,9 +94,9 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam sent: nil context")
 	}
 
-	if c.Sender != "" && !sentlog.Kind(c.Sender).Known() {
-		valid := make([]string, len(validSenderKinds))
-		for i, k := range validSenderKinds {
+	if c.Sender != "" && !queryableSender(c.Sender) {
+		valid := make([]string, len(queryableSenderKinds))
+		for i, k := range queryableSenderKinds {
 			valid[i] = string(k)
 		}
 		return cli.Usagef("ateam sent: invalid --sender %q (valid: %s)", c.Sender, strings.Join(valid, ", "))
@@ -109,6 +136,9 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		if c.Sender != "" && string(rec.Sender) != c.Sender {
 			continue
 		}
+		if c.Initiative != "" && rec.Initiative != c.Initiative {
+			continue
+		}
 		if hasCutoff && ts.Before(cutoff) {
 			continue
 		}
@@ -119,6 +149,12 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		return entries[i].ts.After(entries[j].ts)
 	})
 
+	// A non-positive --limit falls back to the documented default rather
+	// than meaning "unlimited". Explicit, not incidental: `--limit 0` on an
+	// audit log reads as "give me everything", and silently honouring that
+	// would dump a multi-MB log to a terminal. It also catches a direct Run
+	// call in a test, which bypasses kong's `default:"20"` tag and so
+	// arrives with Limit left at the zero value.
 	limit := c.Limit
 	if limit <= 0 {
 		limit = sentDefaultLimit
@@ -146,15 +182,44 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		return nil
 	}
 
-	// Minimal plain-text default. The truncated tabwriter table (contract
-	// §7's TIME/SENDER/INITIATIVE/OUTCOME/BODY(trunc) columns) needs --full
-	// to make sense of the untruncated case, and both land in .3 — this is
-	// deliberately not that table yet.
+	if c.Full {
+		writeSentFull(ctx, recs)
+		return nil
+	}
+	return writeSentTable(ctx, recs)
+}
+
+// writeSentTable renders recs as contract §7's tab-aligned default table
+// (TIME, SENDER, INITIATIVE, OUTCOME, BODY(trunc)), matching
+// writeStewardStatsTable's shape.
+func writeSentTable(ctx *cli.Context, recs []sentlog.Record) error {
+	w := tabwriter.NewWriter(ctx.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tSENDER\tINITIATIVE\tOUTCOME\tBODY")
+	fmt.Fprintln(w, "----\t------\t----------\t-------\t----")
+	for _, r := range recs {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Timestamp, r.Sender, r.Initiative, r.Outcome, sentTableBody(r.Body))
+	}
+	return w.Flush()
+}
+
+// sentTableBody renders one body for the table's BODY column: every run of
+// whitespace collapsed to a single space, then truncated to
+// sentBodyTruncRunes runes. The collapse is required, not cosmetic — a
+// newline inside a tabwriter cell ends the row early and destroys the
+// column alignment for the whole table, and bodies here are multi-line
+// Steward digests.
+func sentTableBody(body string) string {
+	return truncate(strings.Join(strings.Fields(body), " "), sentBodyTruncRunes)
+}
+
+// writeSentFull prints one block per record with the body untruncated
+// (--full). Not the table: a multi-KB body cannot live in a tabwriter cell,
+// so the format that shows whole bodies has to be the block form.
+func writeSentFull(ctx *cli.Context, recs []sentlog.Record) {
 	for _, r := range recs {
 		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  outcome=%s\n", r.Timestamp, r.Sender, r.Initiative, r.Outcome)
 		fmt.Fprintf(ctx.Stdout, "  title: %s\n", r.Title)
 		fmt.Fprintf(ctx.Stdout, "  body: %s\n", r.Body)
 		fmt.Fprintln(ctx.Stdout)
 	}
-	return nil
 }
