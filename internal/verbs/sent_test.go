@@ -397,10 +397,15 @@ func TestSentSkipsUnparseableTimestamp(t *testing.T) {
 // TestSentNonPositiveLimitUsesDefault pins that --limit 0 and a negative
 // --limit mean the documented default of 20, not "unlimited".
 func TestSentNonPositiveLimitUsesDefault(t *testing.T) {
+	// Appended oldest-first, which is the only order the log can actually be
+	// written in: sentlog.Append is O_APPEND, so file order IS send order,
+	// and file order is what `ateam sent` orders on (agent-teams-48dh.23).
+	// r24, the last line, is therefore the most recent record.
+	const n = sentDefaultLimit + 5
 	var lines []string
-	for i := 0; i < sentDefaultLimit+5; i++ {
+	for i := 0; i < n; i++ {
 		lines = append(lines, sentLine(t, sentlog.Record{
-			Timestamp: sentTS(time.Duration(i) * time.Minute), Sender: sentlog.KindNotify, Initiative: "at-aaa", Title: fmt.Sprintf("r%02d", i), Outcome: sentlog.OutcomeSent,
+			Timestamp: sentTS(time.Duration(n-1-i) * time.Minute), Sender: sentlog.KindNotify, Initiative: "at-aaa", Title: fmt.Sprintf("r%02d", i), Outcome: sentlog.OutcomeSent,
 		}))
 	}
 
@@ -410,9 +415,9 @@ func TestSentNonPositiveLimitUsesDefault(t *testing.T) {
 		if len(got) != sentDefaultLimit {
 			t.Fatalf("--limit %d returned %d records, want the default %d", limit, len(got), sentDefaultLimit)
 		}
-		// Most recent first: the newest record is the 0-minutes-old one.
-		if got[0].Title != "r00" {
-			t.Fatalf("--limit %d: first record %q, want the most recent r00", limit, got[0].Title)
+		// Most recent first: the newest record is the last one appended.
+		if got[0].Title != "r24" {
+			t.Fatalf("--limit %d: first record %q, want the most recent r24", limit, got[0].Title)
 		}
 	}
 
@@ -983,6 +988,326 @@ func TestSentTableSanitizesEveryColumnNotJustTheBody(t *testing.T) {
 	}
 	if bad := sentTerminalActiveRunes(stdout.String(), "\n"); len(bad) != 0 {
 		t.Fatalf("INITIATIVE column must be sanitized too, found %U in:\n%q", bad, stdout.String())
+	}
+}
+
+// ── agent-teams-48dh.23: file order is the SOLE ordering key ─────────────
+
+// sentOrderFixture builds log lines in file (append) order from ts/title
+// pairs. Written as explicit pairs rather than generated, because every case
+// below is precisely a log whose claimed timestamps DISAGREE with the order
+// the records were appended in — the disagreement is the fixture.
+func sentOrderFixture(t *testing.T, tsThenTitle ...string) []string {
+	t.Helper()
+	if len(tsThenTitle)%2 != 0 {
+		t.Fatalf("fixture needs ts/title pairs, got %d values", len(tsThenTitle))
+	}
+	var lines []string
+	for i := 0; i < len(tsThenTitle); i += 2 {
+		lines = append(lines, sentLine(t, sentlog.Record{
+			Timestamp: tsThenTitle[i], Sender: sentlog.KindNotify,
+			Initiative: "at-order", Title: tsThenTitle[i+1], Outcome: sentlog.OutcomeSent,
+		}))
+	}
+	return lines
+}
+
+// TestSentOrdersByFileOrderNotClaimedTimestamp pins agent-teams-48dh.23: the
+// order is the exact reverse of file order, and the record's own timestamp
+// is never an ordering key.
+//
+// Every case is a log where the two disagree, so an implementation that
+// orders on the claimed ts — the shipped behaviour, and the 48dh.11 fix's
+// behaviour outside an exact tie — gets a different answer. The `want`
+// orders are literals, never computed by reversing the fixture, so nothing
+// about the expectation can move with the code under test.
+//
+// The first case needs NO attacker: a backwards clock step is an ordinary
+// NTP/DST/sleep-wake event. The other two need a raw writer of sent.jsonl
+// (the 48dh.16 premise) — the decorator itself only ever writes
+// time.Now().UTC().Format(time.RFC3339), which is second-granular and always
+// Z.
+func TestSentOrdersByFileOrderNotClaimedTimestamp(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string
+		// want is the full listing, most recent first.
+		want []string
+		// wantLimit3 is what `ateam sent --limit 3` must answer — the query
+		// this log exists for ("what was the last thing sent to Eric?").
+		wantLimit3 []string
+	}{
+		{
+			// The clock steps back ten minutes between r04 and r05, so the
+			// five most recently appended records all claim EARLIER instants
+			// than the five before them. Measured on the shipped code:
+			// --limit 3 answered r04, r03, r02 — three wrong messages, none
+			// of them among the last five sent.
+			name: "clock-stepped-backwards",
+			lines: sentOrderFixture(t,
+				"2026-07-24T18:20:30Z", "r00",
+				"2026-07-24T18:20:31Z", "r01",
+				"2026-07-24T18:20:32Z", "r02",
+				"2026-07-24T18:20:33Z", "r03",
+				"2026-07-24T18:20:34Z", "r04",
+				"2026-07-24T18:10:35Z", "r05", // <- clock stepped back here
+				"2026-07-24T18:10:36Z", "r06",
+				"2026-07-24T18:10:37Z", "r07",
+				"2026-07-24T18:10:38Z", "r08",
+				"2026-07-24T18:10:39Z", "r09",
+			),
+			want:       []string{"r09", "r08", "r07", "r06", "r05", "r04", "r03", "r02", "r01", "r00"},
+			wantLimit3: []string{"r09", "r08", "r07"},
+		},
+		{
+			// time.Parse(RFC3339) honours fractional seconds even though the
+			// decorator never writes them, so one record can place itself
+			// INSIDE a group of same-second records — a position 48dh.11's
+			// tiebreak cannot reach, because the timestamps are not Equal.
+			// Under a ts-ordered implementation the jumper takes the top slot
+			// and r03 — genuinely the fourth-from-last record appended —
+			// disappears from --limit 3 while sitting in the log.
+			name: "sub-second-timestamp-jumps-a-tie-group",
+			lines: sentOrderFixture(t,
+				"2026-07-24T17:37:58Z", "r00",
+				"2026-07-24T17:37:58Z", "r01",
+				"2026-07-24T17:37:58Z", "r02",
+				"2026-07-24T17:37:58.999999999Z", "r03",
+				"2026-07-24T17:37:58Z", "r04",
+				"2026-07-24T17:37:58Z", "r05",
+				"2026-07-24T17:37:58Z", "r06",
+			),
+			want:       []string{"r06", "r05", "r04", "r03", "r02", "r01", "r00"},
+			wantLimit3: []string{"r06", "r05", "r04"},
+		},
+		{
+			// time.Parse accepts offsets to ±23:59, so a record resolves up
+			// to ~24h away from the wall time it displays. r02 resolves ~24h
+			// in the FUTURE and takes the top slot under ts ordering,
+			// displacing a genuine record out of --limit 3; r01 resolves ~24h
+			// in the PAST and sinks to the bottom.
+			name: "nonzero-utc-offset",
+			lines: sentOrderFixture(t,
+				"2026-07-24T18:21:55Z", "r00",
+				"2026-07-24T18:22:55+23:59", "r01", // resolves ~24h in the past
+				"2026-07-24T18:19:55-23:59", "r02", // resolves ~24h in the future
+				"2026-07-24T18:22:55Z", "r03",
+				"2026-07-24T18:23:55Z", "r04",
+			),
+			want:       []string{"r04", "r03", "r02", "r01", "r00"},
+			wantLimit3: []string{"r04", "r03", "r02"},
+		},
+	}
+
+	// Subtests rather than a bare loop: each case is a distinct route to the
+	// same defect, and a Fatalf in one must not stop the others from running.
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, stdout, _ := sentCtx(t, tc.lines...)
+			got := sentRunJSON(t, &sentKong{Limit: 100}, ctx, stdout)
+			if !equalStrings(sentTitles(got), tc.want) {
+				t.Errorf("order must be the exact reverse of file order, whatever the records claim.\n got: %v\nwant: %v",
+					sentTitles(got), tc.want)
+			}
+
+			// --limit is asserted separately, not inferred from the full
+			// listing: the limit is applied AFTER ordering, and "the newest N
+			// are the first N of a correct order" is the property that
+			// actually failed in the field.
+			ctxLim, stdoutLim, _ := sentCtx(t, tc.lines...)
+			gotLim := sentRunJSON(t, &sentKong{Limit: 3}, ctxLim, stdoutLim)
+			if !equalStrings(sentTitles(gotLim), tc.wantLimit3) {
+				t.Errorf("--limit 3 must return the last 3 records APPENDED.\n got: %v\nwant: %v",
+					sentTitles(gotLim), tc.wantLimit3)
+			}
+		})
+	}
+}
+
+// TestSentRendersParsedTimestampNormalizedToUTC pins that the human-readable
+// modes render the PARSED time.Time as RFC3339Nano in UTC, never the raw
+// rec.Timestamp string (agent-teams-48dh.23).
+//
+// Two properties in one rule. A record stamped with a nonzero UTC offset
+// otherwise DISPLAYS one instant while resolving to another up to ~24h away,
+// which is what made the TIME column read as unordered. And a fractional
+// part is unbounded in length on the way in — time.Parse consumes 4000
+// digits happily — while Format emits at most nine, so the re-render is also
+// what bounds the TIME column (agent-teams-48dh.22's timestamp route).
+func TestSentRendersParsedTimestampNormalizedToUTC(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		// want is a LITERAL, never computed from the renderer: an expectation
+		// derived from the code under test follows it wherever it goes.
+		want string
+	}{
+		{"offset-normalized-to-utc", "2026-07-24T15:24:25-23:59", "2026-07-25T15:23:25Z"},
+		{"subsecond-precision-kept", "2026-07-24T17:37:25.500Z", "2026-07-24T17:37:25.5Z"},
+		{"unbounded-fraction-bounded-by-the-re-render",
+			"2026-07-24T12:00:00." + strings.Repeat("9", 4000) + "Z",
+			"2026-07-24T12:00:00.999999999Z"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			line := sentLine(t, sentlog.Record{
+				Timestamp: tc.raw, Sender: sentlog.KindNotify,
+				Initiative: "at-ts", Title: "t", Body: "clean", Outcome: sentlog.OutcomeSent,
+			})
+
+			ctx, stdout, _ := sentCtx(t, line)
+			if err := (&sentKong{}).Run(ctx); err != nil {
+				t.Fatalf("default Run: %v", err)
+			}
+			table := stdout.String()
+			rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+			if len(rows) != 3 {
+				t.Fatalf("expected header, separator and one row, got %d lines:\n%s", len(rows), table)
+			}
+			// Same isolation as the other table tests: tabwriter pads with
+			// 2+ spaces and no cell here contains a space.
+			cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+			if len(cells) != 5 {
+				t.Fatalf("expected 5 table cells, got %d: %q", len(cells), rows[2])
+			}
+			if cells[0] != tc.want {
+				t.Errorf("TIME cell must be the parsed ts re-rendered in UTC.\n got: %q\nwant: %q", cells[0], tc.want)
+			}
+
+			// --full echoes the same field, so it gets the same rule.
+			ctxFull, stdoutFull, _ := sentCtx(t, line)
+			if err := (&sentKong{Full: true}).Run(ctxFull); err != nil {
+				t.Fatalf("--full Run: %v", err)
+			}
+			blocks := sentParseFull(t, stdoutFull.String())
+			if len(blocks) != 1 {
+				t.Fatalf("expected 1 block, got %d:\n%s", len(blocks), stdoutFull.String())
+			}
+			wantHeader := tc.want + "  notify  initiative=at-ts  outcome=sent"
+			if blocks[0].header != wantHeader {
+				t.Errorf("--full header wrong.\n got: %q\nwant: %q", blocks[0].header, wantHeader)
+			}
+
+			// --json is the machine path: it must still carry the raw string
+			// byte-exact, so the forensic record of what was actually written
+			// is not lost to the display rule.
+			ctxJSON, stdoutJSON, _ := sentCtx(t, line)
+			got := sentRunJSON(t, &sentKong{}, ctxJSON, stdoutJSON)
+			if len(got) != 1 || got[0].Timestamp != tc.raw {
+				t.Errorf("--json must return the ts byte-exact, got %q", got[0].Timestamp)
+			}
+		})
+	}
+}
+
+// ── agent-teams-48dh.22: every table column has a width budget ────────────
+
+// sentWidestLine returns the length in runes of the longest line in s.
+// Runes, not bytes: the damage is measured in terminal columns.
+func sentWidestLine(s string) int {
+	widest := 0
+	for _, line := range strings.Split(s, "\n") {
+		if n := len([]rune(line)); n > widest {
+			widest = n
+		}
+	}
+	return widest
+}
+
+// TestSentTableColumnsAreWidthBudgeted pins agent-teams-48dh.22: one
+// oversized field in ONE record must not widen the table for the others.
+//
+// tabwriter sizes each column to its WIDEST cell, so before the fix a single
+// 4000-character field indented every GENUINE record's SENDER / INITIATIVE /
+// OUTCOME / BODY by ~4000 columns — measured at 205 visual rows on a 100-col
+// terminal for a three-record log. Nothing is deleted and nothing reads as
+// wrong; the reader simply cannot see any record. It scaled linearly with no
+// cap: 100000 fractional digits gave a 100070-character line.
+//
+// The payload is a run of 'A': no whitespace and no control characters, so
+// it is inert to BOTH other halves of the field pipeline. Removing
+// sentSafeField's collapse or its sanitize leaves this test green — which is
+// the point, because those two rules are pinned elsewhere
+// (TestSentSanitizesEveryRenderedField, TestSentFullCannotForgeARecordFrom
+// AnyField) and this one must fail for the budget and nothing else.
+func TestSentTableColumnsAreWidthBudgeted(t *testing.T) {
+	// The ceiling is stated here rather than read from sentFieldTruncRunes:
+	// an expectation computed from the constant under test follows it
+	// wherever it goes and can never witness the budget being removed.
+	// Deliberately loose — it is a bound on the HARM (a table that still fits
+	// a terminal), not a restatement of the constant.
+	const maxWidening = 64
+
+	oversized := strings.Repeat("A", 4000)
+
+	cases := []struct {
+		field  string
+		mutate func(r *sentlog.Record)
+	}{
+		// The ts route is closed by the RFC3339Nano re-render rather than by
+		// truncate (a 4000-digit fraction is a VALID RFC3339 value, so Run
+		// accepts the record), which is why the payload here is a fraction
+		// and not a run of 'A'.
+		{"ts", func(r *sentlog.Record) {
+			r.Timestamp = "2026-07-24T12:00:00." + strings.Repeat("9", 4000) + "Z"
+		}},
+		{"sender", func(r *sentlog.Record) { r.Sender = sentlog.Kind(oversized) }},
+		{"initiative", func(r *sentlog.Record) { r.Initiative = oversized }},
+		{"outcome", func(r *sentlog.Record) { r.Outcome = oversized }},
+	}
+
+	// The all-ordinary baseline: the same three records with nothing
+	// oversized. Measured, not assumed, so the comparison below is against
+	// what this table actually costs rather than a guessed number.
+	ordinary := func(t *testing.T) []sentlog.Record {
+		t.Helper()
+		return []sentlog.Record{
+			{Timestamp: "2026-07-24T18:21:55Z", Sender: sentlog.KindNotify, Initiative: "at-real", Title: "a", Body: "first genuine record", Outcome: sentlog.OutcomeSent},
+			{Timestamp: "2026-07-24T18:22:55Z", Sender: sentlog.KindNotifyBriefing, Initiative: "at-real", Title: "b", Body: "hostile carrier record", Outcome: sentlog.OutcomeSent},
+			{Timestamp: "2026-07-24T18:23:55Z", Sender: sentlog.KindClose, Initiative: "at-real", Title: "c", Body: "second genuine record", Outcome: sentlog.OutcomeFailed},
+		}
+	}
+
+	render := func(t *testing.T, recs []sentlog.Record) string {
+		t.Helper()
+		lines := make([]string, len(recs))
+		for i, r := range recs {
+			lines[i] = sentLine(t, r)
+		}
+		ctx, stdout, _ := sentCtx(t, lines...)
+		if err := (&sentKong{}).Run(ctx); err != nil {
+			t.Fatalf("default Run: %v", err)
+		}
+		return stdout.String()
+	}
+
+	baseline := sentWidestLine(render(t, ordinary(t)))
+
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			recs := ordinary(t)
+			tc.mutate(&recs[1]) // the middle record carries the payload
+			out := render(t, recs)
+
+			if got := sentWidestLine(out); got > baseline+maxWidening {
+				t.Errorf("a 4000-character %s widened the table to %d runes (all-ordinary baseline %d) — one record's field must not push every genuine record's columns off the screen:\n%.400s",
+					tc.field, got, baseline, out)
+			}
+
+			// The genuine records must still BE there and still be readable
+			// as rows — a budget that achieved its width by dropping records
+			// would satisfy the check above.
+			rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+			if len(rows) != 5 {
+				t.Fatalf("expected header, separator and 3 rows, got %d lines:\n%.400s", len(rows), out)
+			}
+			for _, want := range []string{"first genuine record", "second genuine record"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("genuine record %q is missing from the table:\n%.400s", want, out)
+				}
+			}
+		})
 	}
 }
 

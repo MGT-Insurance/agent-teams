@@ -26,6 +26,12 @@ func newLoggingTransport(inner Transport, home string) *loggingTransport {
 // Name passes straight through to the wrapped transport.
 func (l *loggingTransport) Name() string { return l.inner.Name() }
 
+// Unwrap exposes the wrapped transport so optional capabilities the decorator
+// does not implement (topicCloser, relayAcker) remain discoverable through it
+// via Capability. Without this, wrapping silently strips every capability
+// outside Name/Send/Receive (agent-teams-48dh.19).
+func (l *loggingTransport) Unwrap() Transport { return l.inner }
+
 // Receive passes straight through to the wrapped transport — outbound only
 // for v1 (contract §1).
 func (l *loggingTransport) Receive(handler func(Reply) error) error {

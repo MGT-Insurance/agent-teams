@@ -198,7 +198,7 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 	}
 
 	if c.ack == nil {
-		if acker, ok := t.(relayAcker); ok {
+		if acker, ok := transport.Capability[relayAcker](t); ok {
 			c.ack = func(messageRef string) error {
 				return acker.Ack(transport.Reply{MessageRef: messageRef})
 			}
