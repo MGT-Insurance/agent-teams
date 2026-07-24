@@ -1094,4 +1094,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterNotifyKong(p)
 	RegisterRelayKong(p)
 	RegisterStewardKong(p)
+	RegisterTieSessionKong(p)
 }

@@ -16,6 +16,7 @@
 - **Operate on track worktrees via `-C`/absolute paths.** Create them with `git worktree add` / `bd worktree create` and hand each implementer its absolute path. Never chdir or call `EnterWorktree` into a track worktree to operate in it.
 - Non-isolated team agents inherit the lead's cwd at spawn, so a drifted lead cascades miss-targeting to every agent it spawns — another reason the lead must never drift.
 - **Observed root cause (at-9iq).** The drift was triggered by a spawned implementer calling `EnterWorktree`, not the lead directly. A non-isolated subagent's `EnterWorktree` mutates the shared session cwd and drifts the lead. This is why spawn instructions must forbid it (see "## Team" above).
+- **The session tie is the backstop, not a license to drift (at-ps11).** Every session self-registers a `session: <id>` line on its initiative at SessionStart (`ateam tie-session`, wired into the session-start hook), and mail routing and hung-scan match by that session-id set first (dashboard follow-up: agent-teams-zalv.7) — so a drifted-but-alive DRI is still found by id instead of being misclassified DEAD or double-spawned (the at-gusm failure). Cwd discipline stays mandatory anyway: the tie's own one-time bootstrap resolves the initiative FROM cwd at SessionStart, and `ateam mail inbox` self-identification plus legacy (pre-tie) initiatives still match by cwd/worktree. Belt and suspenders — the tie catches the drift you failed to prevent; it does not make drift safe.
 
 ## Worktrees (parallel tracks)
 
