@@ -1,11 +1,10 @@
 // Package verbs — hung_workproduct.go implements the work-product stall
-// tripwire redesign (at-jolk, agent-teams-sgr5, D1/D2/D3/D5-D8): a stall
+// tripwire redesign (at-jolk, agent-teams-sgr5, D1/D2/D3/D5/D9): a stall
 // signal orthogonal to `claude agents` session status, so a bg initiative
 // whose tied session reports "busy" forever (waiting on a dead child) is
 // still caught once its git/bead artifacts stop moving. See
 // research/tripwire-design.md for the full rationale and the numbered
-// decisions this file implements. (D9's track-worktree union/fallback lands
-// in a follow-up bead, agent-teams-sgr5.2.)
+// decisions (D1-D9) this file implements.
 package verbs
 
 import (
@@ -15,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -75,6 +75,7 @@ var (
 	hungGitProbeFunc           gitWorkProductProbeFunc = defaultGitWorkProductProbe
 	hungProjectClaimedBeadFunc projectClaimedBeadFunc  = defaultProjectHasClaimedBead
 	hungTranscriptTailFunc     transcriptTailFunc      = defaultTranscriptTail
+	hungDirListFunc            dirListFunc             = defaultDirList
 )
 
 // parseTimeOK parses s as RFC3339, returning (zero, false) for an empty or
@@ -90,6 +91,69 @@ func parseTimeOK(s string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return t, true
+}
+
+// ── D9: worktree discovery (union of worktree:/track-worktree: + fallback) ───
+
+// dirListFunc lists the names of directory entries under dir (not full
+// paths). Injected so the D9 fallback heuristic is testable without a real
+// filesystem tree.
+type dirListFunc func(dir string) ([]string, error)
+
+// defaultDirList lists the directory-only entries of dir.
+func defaultDirList(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names, nil
+}
+
+// discoverWorktrees unions the primary registered worktree with any explicit
+// "track-worktree:" lines (D9). When there are NO explicit track-worktree
+// lines (legacy initiatives, predating the D9 convention), it additionally
+// applies the documented fallback heuristic: any sibling directory under the
+// primary worktree's parent whose name contains initiativeID as a substring
+// is treated as an additional worktree to probe. Returns a de-duplicated,
+// sorted (for determinism) list; primary is always included first if
+// non-empty, though the sort makes final ordering deterministic rather than
+// insertion-order.
+func discoverWorktrees(primary string, explicit []string, initiativeID string, listDir dirListFunc) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+
+	add(primary)
+	for _, p := range explicit {
+		add(p)
+	}
+
+	if len(explicit) == 0 && primary != "" && initiativeID != "" && listDir != nil {
+		parent := filepath.Dir(primary)
+		names, err := listDir(parent)
+		if err == nil {
+			for _, name := range names {
+				if strings.Contains(name, initiativeID) {
+					add(filepath.Join(parent, name))
+				}
+			}
+		}
+	}
+
+	sort.Strings(out)
+	return out
 }
 
 // ── D1: git work-product probe ────────────────────────────────────────────────

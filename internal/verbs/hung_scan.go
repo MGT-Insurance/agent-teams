@@ -463,12 +463,10 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 		// mode:interactive (D5 excludes interactive sessions from every
 		// mechanical path, including this one).
 		if keep && mode != "interactive" {
-			// D9 (agent-teams-sgr5.2) will extend this to union track-
-			// worktree lines; for now (D1-D8) the probe is just the
-			// initiative's own registered worktree.
-			var probes []gitProbeResult
-			if wt != "" {
-				probes = append(probes, hungGitProbeFunc(wt))
+			worktrees := discoverWorktrees(wt, trackWorktreePaths(iss.Description), iss.ID, hungDirListFunc)
+			probes := make([]gitProbeResult, 0, len(worktrees))
+			for _, w := range worktrees {
+				probes = append(probes, hungGitProbeFunc(w))
 			}
 
 			var beadUpdated time.Time

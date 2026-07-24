@@ -17,6 +17,12 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
 
 There is NO `phase:` or `status:` field. The DRI maintains no phase; execution-state (IN-PROGRESS / REVIEWABLE / NEEDS-DECISION) is computed by the dashboard from gate labels and the live session's run/park state.
 
+**`track-worktree:` (repeatable, D9 — agent-teams-sgr5).** Zero or more additional lines, one per implementer worktree the DRI spawns beyond its own `worktree:` checkout:
+
+    track-worktree: <abs path of an implementer's own worktree>
+
+Unlike every other field above (written once at `ateam register` time), this one accumulates over the initiative's life — append a new line each time you spawn an implementer into a fresh track worktree; never remove an old one. See execution.md's "Worktrees (parallel tracks)" section for the exact append recipe. hung-scan's work-product stall detector unions this set with the primary `worktree:` line when it probes for git activity, so a track worktree's real progress is what keeps the initiative from reading as flatlined — omitting this line doesn't break anything outright (a path-substring fallback covers legacy/missed cases) but does leave detection weaker for that worktree.
+
 ## Standby field (frozen contract — `--standby`)
 
 An initiative dispatched with `--standby` is registered and its DRI launched, but the DRI **parks on startup waiting for human direction** instead of entering clarify/plan/implement. This keeps `ateam dispatch` / `/dispatch-dri` mechanical (no judgment, no investigation) while the standby *behavior* lives in `/dri`, which already knows how to park on human gates.

@@ -117,6 +117,67 @@ func TestComputeWorkProductClock_HashChangeTracksTimestampNotMtime(t *testing.T)
 	}
 }
 
+// ── discoverWorktrees (D9) ─────────────────────────────────────────────────────
+
+func TestDiscoverWorktrees_ExplicitTrackLinesUnioned(t *testing.T) {
+	primary := "/wt/at-abc-dri"
+	explicit := []string{"/wt/at-abc-impl1", "/wt/at-abc-impl2"}
+	got := discoverWorktrees(primary, explicit, "at-abc", func(string) ([]string, error) {
+		t.Fatal("listDir must not be called when explicit track-worktree lines exist")
+		return nil, nil
+	})
+	want := []string{"/wt/at-abc-dri", "/wt/at-abc-impl1", "/wt/at-abc-impl2"}
+	if strings.Join(got, ",") != strings.Join(sortedCopy(want), ",") {
+		t.Errorf("discoverWorktrees = %v, want %v", got, want)
+	}
+}
+
+func sortedCopy(ss []string) []string {
+	out := append([]string(nil), ss...)
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
+func TestDiscoverWorktrees_FallbackBySubstringWhenNoExplicitLines(t *testing.T) {
+	primary := "/root/at-xyz-dri"
+	listDir := func(dir string) ([]string, error) {
+		if dir != "/root" {
+			t.Fatalf("listDir called with %q, want /root (primary's parent)", dir)
+		}
+		return []string{"at-xyz-dri", "at-xyz-impl-1", "unrelated-other-initiative"}, nil
+	}
+	got := discoverWorktrees(primary, nil, "at-xyz", listDir)
+	want := []string{"/root/at-xyz-dri", "/root/at-xyz-impl-1"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("discoverWorktrees fallback = %v, want %v", got, want)
+	}
+}
+
+func TestDiscoverWorktrees_NoFallbackWhenExplicitLinesPresent(t *testing.T) {
+	// Even if a sibling directory would match the id substring, the fallback
+	// must not run once explicit track-worktree lines exist (D9: fallback is
+	// for LEGACY sessions only).
+	called := false
+	listDir := func(string) ([]string, error) {
+		called = true
+		return []string{"at-xyz-impl-2"}, nil
+	}
+	got := discoverWorktrees("/root/at-xyz-dri", []string{"/root/at-xyz-impl-1"}, "at-xyz", listDir)
+	if called {
+		t.Error("fallback listDir must not run when explicit track-worktree lines are present")
+	}
+	want := []string{"/root/at-xyz-dri", "/root/at-xyz-impl-1"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("discoverWorktrees = %v, want %v", got, want)
+	}
+}
+
 // ── isContentTypedWorkTurn (D2/D7 transcript classification) ──────────────────
 
 func TestIsContentTypedWorkTurn(t *testing.T) {
@@ -673,5 +734,19 @@ func TestDoHungTick_ModeInteractive_NoEscalationButStillJournaled(t *testing.T) 
 	}
 	if !strings.Contains(string(data), `"id":"at-1"`) {
 		t.Errorf("journal missing the interactive initiative's entry: %q", data)
+	}
+}
+
+// ── D9: track-worktree matcher (parsing, mirrors sessionIDs' own tests) ───────
+
+func TestTrackWorktreePaths(t *testing.T) {
+	desc := "worktree: /a/dri\ntrack-worktree: /a/impl-1\ntrack-worktree: /a/impl-2\n"
+	got := trackWorktreePaths(desc)
+	want := []string{"/a/impl-1", "/a/impl-2"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("trackWorktreePaths = %v, want %v", got, want)
+	}
+	if got := trackWorktreePaths("worktree: /a/dri\n"); got != nil {
+		t.Errorf("trackWorktreePaths with no lines = %v, want nil", got)
 	}
 }

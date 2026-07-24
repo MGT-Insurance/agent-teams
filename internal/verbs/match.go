@@ -62,6 +62,21 @@ func sessionIDs(description string) []string {
 	return ids
 }
 
+// trackWorktreePaths parses all "track-worktree: <path>" lines from
+// description, in registration order (agent-teams-sgr5.2 / D9): the DRI
+// records one such line per implementer worktree it spawns, extending the
+// at-ps11 session-tie pattern from sessions to worktrees. Mirrors sessionIDs
+// above byte-for-byte in shape.
+func trackWorktreePaths(description string) []string {
+	var paths []string
+	for _, line := range strings.Split(description, "\n") {
+		if strings.HasPrefix(line, "track-worktree: ") {
+			paths = append(paths, strings.TrimRight(strings.TrimPrefix(line, "track-worktree: "), " \t\r"))
+		}
+	}
+	return paths
+}
+
 // hasSessionLine reports whether any line in description starts with
 // "session:" — the migration discriminator (mirrors hasWorktreeLine): an
 // initiative with no session: lines is a legacy entry and matchers must fall
