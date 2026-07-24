@@ -161,7 +161,9 @@ If four hours pass with no message to Eric, post one briefing line confirming wh
 
 **Orienting clause — required for gate-escalation, hung-escalation, reply-ack, and anomaly-flag** (topic-scoped): one clause naming the concrete thing at stake, in Eric's terms, <=12 words or folded into the first line (gate-escalation's "what it buys" line covers it). Replaces the mechanical title Telegram used to prepend, now deleted. NOT the banned restatement below: REQUIRED = the thing, named plainly; BANNED = the initiative title, bead id, or verbatim topic-name copy.
 
-Terse: no process narration, no restating what he already knows — this governs only the message that reaches Eric. Internal record-keeping (ledger, learnings, your own notes) stays full; terseness never applies to it.
+Terse: no process narration, no restating what he already knows, no back-references — name the thing instead of pointing at it. This governs only the message that reaches Eric. Internal record-keeping (ledger, learnings, your own notes) stays full; terseness never applies to it.
+
+Disclosure: a mistake that changed the work gets one plain line to Eric — no apology, no retrospective on how it happened. The learning capture (§6) is not a substitute for telling him, and telling him is not a substitute for the capture — both, every time.
 
 | Kind | Trigger | Eric must | Budget | Required first line | Banned |
 |---|---|---|---|---|---|
@@ -172,6 +174,7 @@ Terse: no process narration, no restating what he already knows — this governs
 | briefing-post | cross-initiative material, or the heartbeat above | KNOW | T-BRIEF, 176w | the headline — what changed, or the one thing needing him | per-initiative status with nothing to report; anything already sent to that initiative's topic |
 | briefing-ack | steward-briefing-reply | DO NOTHING | T-ACK, 25w | routing confirmation | re-answering in Briefings what was already routed to a topic |
 | anomaly-flag | zombie session, missing watcher | KNOW, or ACT | T-ACK if nothing needed, T-DECIDE if it needs a call | what's broken as an EFFECT, not a mechanism | watcher/pidfile internals unless he must run a command; batching unrelated anomalies together |
+| status-change | steward-initiated — a thing of his changed state, nothing asked of him now | KNOW | 35w | what changed, named — never "your request" or "the thing you asked about" | the reason chain; progress on initiatives he never touched; any decision that needs an answer now — that is gate-escalation |
 | topic-open | machine-authored, `dispatch.go:331` | n/a | not shortened this pass (§F) | n/a | not Steward prose — listed only so it isn't mistaken for it |
 
 Worked before/after specimens per kind: references/message-style.md.
