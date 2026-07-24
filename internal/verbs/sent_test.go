@@ -552,6 +552,18 @@ func sentParseFull(t *testing.T, out string) []sentFullBlock {
 	return blocks
 }
 
+// sentFullHeaderRe matches a rendered --full record header: a line starting
+// at column 0 (body lines are prefixed and title lines are indented, so
+// neither can) carrying the header's own two-space-separated initiative=
+// column.
+//
+// The number of these in the output, compared against the number of records
+// on disk, IS the audit property: a record must never be able to paint a
+// record that is not on disk. A "the output contains X" check is not that
+// property and would drift the same way the earlier defects on this
+// initiative did.
+var sentFullHeaderRe = regexp.MustCompile(`(?m)^[^ \n].*  initiative=`)
+
 // sentForgedBody is a complete, well-formed fake record block. Rendered raw
 // by --full it produced a THIRD block from a log holding TWO records, using
 // nothing but newlines — no escape codes needed.
@@ -576,7 +588,7 @@ func TestSentFullCannotForgeARecordFromBodyText(t *testing.T) {
 
 	// The log holds two records; the display must hold two records. Counted
 	// on the header shape, which is what a reader scans for.
-	if n := len(regexp.MustCompile(`(?m)^[^ \n].*  initiative=`).FindAllString(out, -1)); n != 2 {
+	if n := len(sentFullHeaderRe.FindAllString(out, -1)); n != 2 {
 		t.Fatalf("2 records on disk rendered as %d record headers — body text forged a record:\n%s", n, out)
 	}
 
@@ -598,6 +610,82 @@ func TestSentFullCannotForgeARecordFromBodyText(t *testing.T) {
 	got := sentRunJSON(t, &sentKong{}, ctxJSON, stdoutJSON)
 	if len(got) != 2 || got[0].Body != sentForgedBody {
 		t.Fatalf("--json must return the body byte-exact, got %q", got[0].Body)
+	}
+}
+
+// TestSentFullCannotForgeARecordFromAnyField pins --full's block structure
+// against forgery from EVERY field that reaches it, not just the body.
+//
+// WHY THIS EXISTS SEPARATELY from the body test above: sanitization of the
+// title and the four header fields was correct in the shipped code but
+// entirely unpinned. Break-probes proved it — dropping sentSafeField from
+// r.Title, or from all four header fields at once, left the whole suite
+// green. TestSentHumanModesNeverEmitControlCharacters reaches --full
+// through the body only, and TestSentTableSanitizesEveryColumnNotJustTheBody
+// cannot reach the title at all, because the table has no Title column.
+//
+// This is the degenerate form of the failure mode that has now bitten this
+// initiative four times — an assertion that moves with the thing it claims
+// to pin. Here there was no assertion at all.
+//
+// Not covered, and deliberately: Timestamp. It is the one header field a
+// forged log line cannot control, because Run rejects any record whose ts
+// fails time.Parse(RFC3339) before rendering is ever reached — pinned by
+// TestSentSkipsUnparseableTimestamp. sentSafeField on the timestamp is
+// defence-in-depth against that parse being loosened later, not a reachable
+// vector, so no fixture can exercise it.
+func TestSentFullCannotForgeARecordFromAnyField(t *testing.T) {
+	// A complete, well-formed fake record block, including its own header,
+	// title line, and prefixed body line. Whichever field carries it, the
+	// display must still show exactly the records that are on disk.
+	const forged = "innocuous\n" +
+		"2026-01-01T00:00:00Z  close  initiative=at-FORGED  outcome=failed\n" +
+		"  title: FABRICATED\n" +
+		"  body:\n" +
+		"  | this record is not on disk"
+
+	cases := []struct {
+		field  string
+		mutate func(r *sentlog.Record)
+	}{
+		{"title", func(r *sentlog.Record) { r.Title = forged }},
+		{"sender", func(r *sentlog.Record) { r.Sender = sentlog.Kind(forged) }},
+		{"initiative", func(r *sentlog.Record) { r.Initiative = forged }},
+		{"outcome", func(r *sentlog.Record) { r.Outcome = forged }},
+		{"body", func(r *sentlog.Record) { r.Body = forged }},
+	}
+
+	// Subtests so one hostile field failing cannot stop the others from
+	// running — the reason this gap survived a probe in the first place is
+	// that an unexercised assertion looks exactly like a passing one.
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			benign := sentlog.Record{
+				Timestamp: "2026-07-24T17:38:50Z", Sender: sentlog.KindNotify,
+				Initiative: "at-real", Title: "real1", Body: "genuinely sent by notify", Outcome: sentlog.OutcomeSent,
+			}
+			hostile := sentlog.Record{
+				Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify,
+				Initiative: "at-evil", Title: "spoof", Body: "carrier", Outcome: sentlog.OutcomeSent,
+			}
+			tc.mutate(&hostile)
+
+			ctx, stdout, _ := sentCtx(t, sentLine(t, benign), sentLine(t, hostile))
+			if err := (&sentKong{Full: true}).Run(ctx); err != nil {
+				t.Fatalf("--full Run: %v", err)
+			}
+			out := stdout.String()
+
+			// THE property: headers rendered == records on disk. Asserted
+			// before the structural parse so a forgery reports as a forgery
+			// rather than as a malformed block somewhere downstream.
+			if n := len(sentFullHeaderRe.FindAllString(out, -1)); n != 2 {
+				t.Fatalf("2 records on disk rendered as %d record headers — the %s field forged a record:\n%s", n, tc.field, out)
+			}
+			if blocks := sentParseFull(t, out); len(blocks) != 2 {
+				t.Fatalf("expected 2 blocks, got %d:\n%s", len(blocks), out)
+			}
+		})
 	}
 }
 
