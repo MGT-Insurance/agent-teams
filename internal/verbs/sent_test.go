@@ -160,7 +160,21 @@ func TestSentInvalidSenderIsUsageError(t *testing.T) {
 // truncation rule, including the newline collapse the tabwriter table needs
 // to keep its columns aligned.
 func TestSentTruncatesBodyByDefaultNotWithFull(t *testing.T) {
-	body := strings.Repeat("a", 300) + "\nsecond line\n" + strings.Repeat("b", 300)
+	// The whitespace run sits at rune 50 — INSIDE the 200-rune budget — so
+	// that collapse-then-truncate and truncate-then-collapse produce
+	// DIFFERENT strings. Placing it past the cutoff instead makes the two
+	// orderings byte-identical, and this test would then pass against an
+	// implementation that truncates first (spending budget on whitespace
+	// that is about to be collapsed away).
+	const headRunes = 50
+	body := strings.Repeat("a", headRunes) + "\n\t  \n" + strings.Repeat("b", 300)
+
+	// Collapse first: the five-character whitespace run becomes one space,
+	// so a full 199 runes of content survive the cut. Truncate first and
+	// five of those runes are spent on whitespace, leaving four fewer 'b's.
+	tailRunes := sentBodyTruncRunes - 1 - headRunes - len(" ")
+	wantCell := strings.Repeat("a", headRunes) + " " + strings.Repeat("b", tailRunes) + "…"
+
 	lines := []string{sentLine(t, sentlog.Record{
 		Timestamp: sentTS(time.Minute), Sender: sentlog.KindNotify, Initiative: "at-aaa", Title: "big", Body: body, Outcome: sentlog.OutcomeSent,
 	})}
@@ -173,17 +187,21 @@ func TestSentTruncatesBodyByDefaultNotWithFull(t *testing.T) {
 	if !strings.Contains(table, "TIME") || !strings.Contains(table, "BODY") {
 		t.Fatalf("default output is not the §7 table:\n%s", table)
 	}
-	if strings.Contains(table, strings.Repeat("b", 300)) {
-		t.Fatalf("default output must truncate the body:\n%s", table)
+
+	// Header, separator, one row — a multi-line body must not spill into
+	// extra rows and break the column alignment.
+	rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("a multi-line body must collapse to one table row, got %d lines:\n%s", len(rows), table)
 	}
-	if !strings.Contains(table, "…") {
-		t.Fatalf("truncated body should carry the ellipsis:\n%s", table)
+
+	// Exact cell, not a substring both orderings would satisfy: BODY is the
+	// last column, so the row ends with it.
+	if !strings.HasSuffix(rows[2], wantCell) {
+		t.Fatalf("BODY cell wrong — whitespace must be collapsed BEFORE truncating.\n got: %q\nwant suffix: %q", rows[2], wantCell)
 	}
-	if want := strings.Repeat("a", sentBodyTruncRunes-1) + "…"; !strings.Contains(table, want) {
-		t.Fatalf("body should be cut at %d runes:\n%s", sentBodyTruncRunes, table)
-	}
-	if strings.Count(strings.TrimSpace(table), "\n") != 2 {
-		t.Fatalf("a multi-line body must collapse to one table row:\n%s", table)
+	if got := len([]rune(wantCell)); got != sentBodyTruncRunes {
+		t.Fatalf("fixture is wrong: expected cell is %d runes, want %d", got, sentBodyTruncRunes)
 	}
 
 	ctxFull, stdoutFull, _ := sentCtx(t, lines...)
