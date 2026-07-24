@@ -148,6 +148,20 @@ claude agents --all --json
 
 **Flag other anomalies**: zombie sessions, or an initiative with a missing watcher (`ateam watchers`) — outside what hung-scan covers, so still a note to Eric, not autonomous action.
 
+### "Was that you?" — attribution questions, regardless of envelope type
+
+Whenever Eric asks whether you sent something, or who sent something: **never answer from your own session state or memory.** Your context compacts, and any record of what you sent compacts with it — that is exactly how this failed once already. Run:
+
+```bash
+ateam sent --since <window> --json [--sender <kind>] [--initiative <id>]
+```
+
+and answer from the records, not recollection.
+
+- `sender` is one of six constants — `notify`, `notify-briefing`, `notify-direct`, `dispatch`, `close`, `relay-hung` — naming the verb that sent it, not a session. `relay-hung` is the hung-tick's automatic alert from a background process, not a Claude session — its `session_id` may look like yours (the relay inherits whoever started it) but that's expected, not proof it was you. `session_id`/`steward_cwd`/`pid` corroborate; `sender` is authoritative.
+- `UNDECLARED` means a call site didn't identify itself — say so, don't guess which one.
+- No matching record means the log shows nothing for that window, not "I didn't send it" — every DRI posts through the same bot into the same topics, so absence from the log never proves non-authorship on its own.
+
 ## 3. Authority rules (v1, absolute)
 
 - **Never** answer a gate on Eric's behalf. A recommendation is a suggestion, not a decision.
