@@ -689,6 +689,193 @@ func TestSentFullCannotForgeARecordFromAnyField(t *testing.T) {
 	}
 }
 
+// sentFieldPayload carries one of each class contract §7 AMENDMENT 4(b)
+// rule 1 names — a C0 control, DEL, a C1 control, and a bidi override —
+// separated by distinct letters so the position of every substitution is
+// individually observable.
+//
+// Deliberately contains NO whitespace. That is the whole point of this
+// fixture: rule 1 is the SANITIZE half of sentSafeField, and a payload made
+// of newlines is defeated by the whitespace COLLAPSE half instead, which
+// makes the sanitizer unobservable. TestSentFullCannotForgeARecordFromAny
+// Field uses exactly such a newline payload and therefore pins rule 2 only.
+const sentFieldPayload = "x\x1by\x07z\u202Ew\x7fv\u009bu"
+
+// sentFieldPayloadRendered is what rule 1 requires that render as. A
+// LITERAL, never computed from sentSanitize.
+const sentFieldPayloadRendered = "x\uFFFDy\uFFFDz\uFFFDw\uFFFDv\uFFFDu"
+
+// TestSentSanitizesEveryRenderedField enforces contract §7 AMENDMENT 4(b)
+// rule 1 field by field: EVERY rendered field — "ts, sender, initiative,
+// outcome, title, body, not the body alone" — has C0 controls, DEL, C1
+// controls and the bidi formatters replaced with U+FFFD.
+//
+// WHY THIS IS NOT THE SAME TEST as TestSentFullCannotForgeARecordFromAny
+// Field, which also covers every field: that test's payload is a record
+// block made of NEWLINES, and newlines are killed by sentSafeField's
+// whitespace collapse before the sanitizer is ever reached. Break-probing
+// proved the difference — mutating sentSafeField(r.Title) to keep the
+// collapse and drop ONLY the sanitize half left the whole suite green, as
+// did the same mutation on all four --full header fields. Rule 2 was
+// pinned; rule 1 was not. A control character in a title reached the
+// terminal with nothing objecting.
+//
+// That is the fifth instance on this initiative of an assertion that does
+// not pin what it appears to, and the first one found in a test written to
+// close a previous instance of it.
+func TestSentSanitizesEveryRenderedField(t *testing.T) {
+	// The four columns of the default table, in order, so a case can name
+	// the cell it owns. Title has no column; body is index 4.
+	const (
+		colTime = iota
+		colSender
+		colInitiative
+		colOutcome
+		colBody
+	)
+
+	cases := []struct {
+		field  string
+		mutate func(r *sentlog.Record)
+		// Exact expected --full block. Literals, not built from the
+		// renderer's format string.
+		wantHeader string
+		wantTitle  string
+		wantBody   string
+		// Index of the table column this field owns, or -1 if the table
+		// does not render it.
+		tableCol int
+	}{
+		{
+			field:  "sender",
+			mutate: func(r *sentlog.Record) { r.Sender = sentlog.Kind(sentFieldPayload) },
+			wantHeader: "2026-07-24T17:40:30Z  " + sentFieldPayloadRendered +
+				"  initiative=at-real  outcome=sent",
+			wantTitle: "real1", wantBody: "clean", tableCol: colSender,
+		},
+		{
+			field:  "initiative",
+			mutate: func(r *sentlog.Record) { r.Initiative = sentFieldPayload },
+			wantHeader: "2026-07-24T17:40:30Z  notify  initiative=" + sentFieldPayloadRendered +
+				"  outcome=sent",
+			wantTitle: "real1", wantBody: "clean", tableCol: colInitiative,
+		},
+		{
+			field:  "outcome",
+			mutate: func(r *sentlog.Record) { r.Outcome = sentFieldPayload },
+			wantHeader: "2026-07-24T17:40:30Z  notify  initiative=at-real  outcome=" +
+				sentFieldPayloadRendered,
+			wantTitle: "real1", wantBody: "clean", tableCol: colOutcome,
+		},
+		{
+			field:      "title",
+			mutate:     func(r *sentlog.Record) { r.Title = sentFieldPayload },
+			wantHeader: "2026-07-24T17:40:30Z  notify  initiative=at-real  outcome=sent",
+			wantTitle:  sentFieldPayloadRendered,
+			wantBody:   "clean",
+			// The table has no Title column. Asserted as -1 rather than
+			// silently skipped, so this reads as a fact about the format
+			// and not as an assertion someone forgot to write.
+			tableCol: -1,
+		},
+		{
+			field:      "body",
+			mutate:     func(r *sentlog.Record) { r.Body = sentFieldPayload },
+			wantHeader: "2026-07-24T17:40:30Z  notify  initiative=at-real  outcome=sent",
+			wantTitle:  "real1",
+			wantBody:   sentFieldPayloadRendered,
+			tableCol:   colBody,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			rec := sentlog.Record{
+				Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify,
+				Initiative: "at-real", Title: "real1", Body: "clean", Outcome: sentlog.OutcomeSent,
+			}
+			tc.mutate(&rec)
+			line := sentLine(t, rec)
+
+			// ── --full: exact equality on all three parts of the block ──
+			ctxFull, stdoutFull, _ := sentCtx(t, line)
+			if err := (&sentKong{Full: true}).Run(ctxFull); err != nil {
+				t.Fatalf("--full Run: %v", err)
+			}
+			full := stdoutFull.String()
+			if bad := sentTerminalActiveRunes(full, "\n\t"); len(bad) != 0 {
+				t.Errorf("--full leaked terminal-active runes %U from the %s field:\n%q", bad, tc.field, full)
+			}
+			blocks := sentParseFull(t, full)
+			if len(blocks) != 1 {
+				t.Fatalf("expected 1 block, got %d:\n%s", len(blocks), full)
+			}
+			if blocks[0].header != tc.wantHeader {
+				t.Errorf("--full header wrong.\n got: %q\nwant: %q", blocks[0].header, tc.wantHeader)
+			}
+			if blocks[0].title != tc.wantTitle {
+				t.Errorf("--full title wrong.\n got: %q\nwant: %q", blocks[0].title, tc.wantTitle)
+			}
+			if blocks[0].body != tc.wantBody {
+				t.Errorf("--full body wrong.\n got: %q\nwant: %q", blocks[0].body, tc.wantBody)
+			}
+
+			// ── default table ──
+			ctx, stdout, _ := sentCtx(t, line)
+			if err := (&sentKong{}).Run(ctx); err != nil {
+				t.Fatalf("default Run: %v", err)
+			}
+			table := stdout.String()
+			// Universal for every case, including title. For title this
+			// cannot fail today — the field is not rendered — and is kept
+			// as a guard against a Title column being added later without
+			// sanitizing it. It is not this case's real coverage; the
+			// --full assertions above are.
+			if bad := sentTerminalActiveRunes(table, "\n"); len(bad) != 0 {
+				t.Errorf("table leaked terminal-active runes %U from the %s field:\n%q", bad, tc.field, table)
+			}
+			if tc.tableCol < 0 {
+				return
+			}
+			rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+			if len(rows) != 3 {
+				t.Fatalf("expected header, separator and one row, got %d lines:\n%s", len(rows), table)
+			}
+			cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+			if len(cells) != 5 {
+				t.Fatalf("expected 5 table cells, got %d: %q", len(cells), rows[2])
+			}
+			if cells[tc.tableCol] != sentFieldPayloadRendered {
+				t.Errorf("table cell %d (%s) wrong.\n got: %q\nwant: %q",
+					tc.tableCol, tc.field, cells[tc.tableCol], sentFieldPayloadRendered)
+			}
+		})
+	}
+
+	// The sixth field, and the reason there is no ts case above: a forged
+	// ts never reaches either renderer, because Run rejects any record
+	// whose ts fails time.Parse(RFC3339). Asserted rather than asserted-in-
+	// a-comment, so "no timestamp case" is a pinned property of the read
+	// path instead of an unexplained hole someone later fills with a
+	// fixture that cannot fail.
+	t.Run("timestamp-is-rejected-before-rendering", func(t *testing.T) {
+		line := sentLine(t, sentlog.Record{
+			Timestamp: sentFieldPayload, Sender: sentlog.KindNotify,
+			Initiative: "at-real", Title: "real1", Body: "clean", Outcome: sentlog.OutcomeSent,
+		})
+		ctx, stdout, stderr := sentCtx(t, line)
+		if err := (&sentKong{Full: true}).Run(ctx); err != nil {
+			t.Fatalf("--full Run: %v", err)
+		}
+		if got := stdout.String(); got != "no messages\n" {
+			t.Fatalf("a record with a control-character ts must not render at all, got:\n%q", got)
+		}
+		if !strings.Contains(stderr.String(), "unparseable timestamp") {
+			t.Fatalf("skipping it should warn on stderr, got %q", stderr.String())
+		}
+	})
+}
+
 // sentControlBody carries one of each hostile class: NUL, BEL, BS, a real
 // CSI sequence, and an unterminated RIGHT-TO-LEFT OVERRIDE. Every rune is
 // distinct so the position of each substitution is observable.
