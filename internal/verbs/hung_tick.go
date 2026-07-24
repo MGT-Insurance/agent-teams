@@ -75,6 +75,49 @@ func nextHungLadderAction(anchor hungAnchor, nowRFC3339 string) (hungAnchor, hun
 	return anchor, hungActionAlert
 }
 
+// nextDeadLadderAction is D4's counterpart to nextHungLadderAction: the same
+// attempt-count/pacing mechanics ("existing wake pacing" per the bead),
+// operating on the Dead* anchor fields instead of the STUCK ones, so a
+// DEAD-with-worktree-present episode gets its own independent ladder state.
+func nextDeadLadderAction(anchor hungAnchor, nowRFC3339 string) (hungAnchor, hungLadderAction) {
+	if anchor.DeadAlertedAt != "" {
+		return anchor, hungActionNone
+	}
+	if anchor.DeadWakeAttempts < hungWakeAttemptsBeforeDirectAlert {
+		anchor.DeadWakeAttempts++
+		anchor.DeadLastWakeAt = nowRFC3339
+		return anchor, hungActionWake
+	}
+	anchor.DeadAlertedAt = nowRFC3339
+	return anchor, hungActionAlert
+}
+
+// nextWorkProductLadderAction is D6's distinct-pacing ladder: unlike the
+// attempt-count-driven STUCK/DEAD ladders, both the wake and the direct
+// alert are gated on ELAPSED FLATLINE DURATION rather than tick-count, per
+// D6's explicit thresholds ("steward wake at 30 min flatline... direct
+// Telegram alert if the flatline persists past 1h"). The alert is a hard
+// backstop keyed on the 1h threshold alone — it still fires even if, for
+// whatever reason, fewer than hungWakeAttemptsBeforeDirectAlert wakes were
+// sent (e.g. every wake attempt failed), since D6 frames the alert as an
+// unconditional escalation once the flatline crosses 1h, not as "after N
+// wakes".
+func nextWorkProductLadderAction(anchor hungAnchor, flatline time.Duration, nowRFC3339 string) (hungAnchor, hungLadderAction) {
+	if anchor.WorkProductAlertedAt != "" {
+		return anchor, hungActionNone
+	}
+	if flatline >= hungWorkProductAlertThreshold {
+		anchor.WorkProductAlertedAt = nowRFC3339
+		return anchor, hungActionAlert
+	}
+	if flatline >= hungWorkProductFlatThreshold && anchor.WorkProductWakeAttempts < hungWakeAttemptsBeforeDirectAlert {
+		anchor.WorkProductWakeAttempts++
+		anchor.WorkProductLastWakeAt = nowRFC3339
+		return anchor, hungActionWake
+	}
+	return anchor, hungActionNone
+}
+
 // hungWakeSendFunc sends a wake nudge to the Steward for a HUNG initiative.
 // Mirrors relaySendFunc's shape (relay.go) but with a distinct sender
 // identity so the Steward — and anyone reading the mail bead's `notes:
@@ -128,6 +171,55 @@ func hungAlertBody(id, title, stuckSince string) string {
 	)
 }
 
+// hungDeadWakeBody is D4's wake-nudge text for a DEAD-with-worktree-present
+// episode — mirrors hungWakeBody's shape/wording so the Steward recognizes
+// the same mechanical-nudge pattern for a different underlying condition.
+func hungDeadWakeBody(id, title string, attempt int, deadSince string) string {
+	return fmt.Sprintf(
+		"[hung-scan] %s (%s) is DEAD (worktree present, no live session) since %s (wake attempt %d/%d). Please check on it.",
+		id, title, deadSince, attempt, hungWakeAttemptsBeforeDirectAlert,
+	)
+}
+
+// hungDeadAlertBody is D4's canned direct alert once the DEAD ladder is
+// exhausted.
+func hungDeadAlertBody(id, title, deadSince string) string {
+	return fmt.Sprintf(
+		"HUNG: %s (%s) has been DEAD (worktree present, no live session) since %s and the Steward did not respond to %d wake attempt(s). This is an automated alert — please check on this initiative directly.",
+		id, title, deadSince, hungWakeAttemptsBeforeDirectAlert,
+	)
+}
+
+// workProductEvidence renders D7's failure-token corroborator as a short,
+// human-readable evidence suffix — empty when no tokens were found, since
+// D7 is severity/evidence-only, never a standalone trigger.
+func workProductEvidence(failureTokensFound bool) string {
+	if !failureTokensFound {
+		return ""
+	}
+	return " Transcript shows failure tokens (killed/failed/timeout/connection-closed) — likely a genuine stall, not a long-running healthy task."
+}
+
+// hungWorkProductWakeBody is D6's wake-nudge text for a work-product
+// flatline episode (D1: the busy-forever gap — the tied session may still
+// report "busy", so this note explicitly frames it as a work-product signal,
+// not a session-idle one).
+func hungWorkProductWakeBody(id, title, lastProgressAt string, failureTokensFound bool) string {
+	return fmt.Sprintf(
+		"[hung-scan] %s (%s) has a flat work product (no git/bead change) since %s — the session may still report busy.%s Please check on it.",
+		id, title, lastProgressAt, workProductEvidence(failureTokensFound),
+	)
+}
+
+// hungWorkProductAlertBody is D6's canned direct alert once the work-product
+// flatline crosses hungWorkProductAlertThreshold.
+func hungWorkProductAlertBody(id, title, lastProgressAt string, failureTokensFound bool) string {
+	return fmt.Sprintf(
+		"HUNG: %s (%s) has had a flat work product (no git/bead change) since %s, past the %s direct-alert threshold.%s This is an automated alert — please check on this initiative directly.",
+		id, title, lastProgressAt, hungWorkProductAlertThreshold, workProductEvidence(failureTokensFound),
+	)
+}
+
 // sendHungWakeEnvelope builds the steward-hung-wake envelope for a wake
 // nudge, writes it to a temp file, and hands it to send — mirroring
 // relay.go's sendEnvelopeToSteward write-temp/send/cleanup shape (that
@@ -157,12 +249,14 @@ func hungAlertThreadRef(ctx *cli.Context, id string) (string, error) {
 	return threadLabelValue(issue.Labels), nil
 }
 
-// postHungAlert resolves entry's own topic and posts the canned alert into
-// it. A missing thread ref (no topic yet), a bd lookup failure, or no
-// transport configured is returned as an error for the caller to log —
-// best-effort, mirroring every other send path in this package; it never
-// panics or aborts the tick loop.
-func postHungAlert(ctx *cli.Context, deps hungTickDeps, entry hungScanEntry) error {
+// postHungAlert resolves entry's own topic and posts body into it. A missing
+// thread ref (no topic yet), a bd lookup failure, or no transport configured
+// is returned as an error for the caller to log — best-effort, mirroring
+// every other send path in this package; it never panics or aborts the tick
+// loop. body is caller-supplied (rather than computed here) so the same
+// plumbing serves all three ladders (STUCK/DEAD/work-product), each with its
+// own canned wording.
+func postHungAlert(ctx *cli.Context, deps hungTickDeps, entry hungScanEntry, body string) error {
 	threadRef, err := hungAlertThreadRef(ctx, entry.ID)
 	if err != nil {
 		return fmt.Errorf("look up initiative topic: %w", err)
@@ -177,7 +271,7 @@ func postHungAlert(ctx *cli.Context, deps hungTickDeps, entry hungScanEntry) err
 		InitiativeID: entry.ID,
 		ThreadRef:    threadRef,
 		Title:        entry.Title,
-		Body:         hungAlertBody(entry.ID, entry.Title, entry.StuckSince),
+		Body:         body,
 	}
 	return deps.topicPost(deps.transport, msg)
 }
@@ -209,6 +303,22 @@ type hungTickDeps struct {
 // is now a pure torn-write guard against this single writer's own
 // crash-mid-write case, not a mitigation for a lost update. This supersedes
 // agent-teams-6rru.18, which tracked that now-eliminated race.
+// ladderActionName renders action as the short string the D8 journal
+// records ("" for hungActionNone — the common no-op case is deliberately
+// left blank rather than a magic "none" literal, per the sentinel-literal
+// discipline: absence of an action IS the zero value here, not a token
+// masquerading as one).
+func ladderActionName(action hungLadderAction) string {
+	switch action {
+	case hungActionWake:
+		return "wake"
+	case hungActionAlert:
+		return "alert"
+	default:
+		return ""
+	}
+}
+
 func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	entries, err := scanHung(ctx, deps.agentsFunc, deps.now, true)
 	if err != nil {
@@ -219,46 +329,122 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	anchors := loadHungState(statePath)
 	nowRFC3339 := deps.now().UTC().Format(time.RFC3339)
 	changed := false
+	journalPath := hungJournalPath(StewardHome(ctx))
 
 	for _, entry := range entries {
-		if !entry.Hung {
-			continue
-		}
+		ladder := ""
+		ladderAction := ""
 
-		anchor, ok := anchors[entry.ID]
-		if !ok {
-			// scanHung just classified this entry Hung, so it must have
-			// persisted a StuckSince anchor for it; treat a missing one
-			// defensively as a fresh episode (no wake attempts yet) rather
-			// than skip it outright.
-			anchor = hungAnchor{StuckSince: entry.StuckSince}
-		}
+		// D5: mode:interactive initiatives are excluded from every
+		// mechanical escalation path below (STUCK/DEAD/work-product ladders
+		// alike) — they are still classified and journaled above/below for
+		// visibility, just never nudged or alerted on.
+		if entry.Mode != "interactive" {
+			switch {
+			case entry.Hung:
+				// STUCK ladder — unchanged mechanics/pacing (backward compat).
+				ladder = "stuck"
+				anchor, ok := anchors[entry.ID]
+				if !ok {
+					// scanHung just classified this entry Hung, so it must
+					// have persisted a StuckSince anchor for it; treat a
+					// missing one defensively as a fresh episode (no wake
+					// attempts yet) rather than skip it outright.
+					anchor = hungAnchor{StuckSince: entry.StuckSince}
+				}
+				updated, action := nextHungLadderAction(anchor, nowRFC3339)
+				switch action {
+				case hungActionWake:
+					body := hungWakeBody(entry.ID, entry.Title, updated.WakeAttempts, entry.StuckSince)
+					if err := sendHungWakeEnvelope(ctx, deps.wakeSend, entry.ID, body); err != nil {
+						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: wake steward for %s failed: %v", entry.ID, err)
+					}
+				case hungActionAlert:
+					if err := postHungAlert(ctx, deps, entry, hungAlertBody(entry.ID, entry.Title, entry.StuckSince)); err != nil {
+						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: post canned alert for %s failed: %v", entry.ID, err)
+					}
+				}
+				if action != hungActionNone {
+					anchors[entry.ID] = updated
+					changed = true
+					ladderAction = ladderActionName(action)
+				}
 
-		updated, action := nextHungLadderAction(anchor, nowRFC3339)
+			case entry.DeadHung:
+				// D4: DEAD-with-worktree-present ladder — same pacing as
+				// STUCK's, independent anchor state.
+				ladder = "dead"
+				anchor, ok := anchors[entry.ID]
+				if !ok {
+					anchor = hungAnchor{DeadSince: entry.DeadSince}
+				}
+				updated, action := nextDeadLadderAction(anchor, nowRFC3339)
+				switch action {
+				case hungActionWake:
+					body := hungDeadWakeBody(entry.ID, entry.Title, updated.DeadWakeAttempts, entry.DeadSince)
+					if err := sendHungWakeEnvelope(ctx, deps.wakeSend, entry.ID, body); err != nil {
+						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: wake steward for %s (dead) failed: %v", entry.ID, err)
+					}
+				case hungActionAlert:
+					if err := postHungAlert(ctx, deps, entry, hungDeadAlertBody(entry.ID, entry.Title, entry.DeadSince)); err != nil {
+						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: post canned alert for %s (dead) failed: %v", entry.ID, err)
+					}
+				}
+				if action != hungActionNone {
+					anchors[entry.ID] = updated
+					changed = true
+					ladderAction = ladderActionName(action)
+				}
 
-		switch action {
-		case hungActionWake:
-			body := hungWakeBody(entry.ID, entry.Title, updated.WakeAttempts, entry.StuckSince)
-			if err := sendHungWakeEnvelope(ctx, deps.wakeSend, entry.ID, body); err != nil {
-				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: wake steward for %s failed: %v", entry.ID, err)
+			case entry.WorkProductTripEligible:
+				// D1/D2/D6: work-product-flatline ladder — elapsed-duration
+				// gated (30m wake / 1h alert), not attempt-count gated.
+				ladder = "workproduct"
+				anchor := anchors[entry.ID] // zero value if absent — safe fallback
+				flat := time.Duration(entry.WorkProductFlatSeconds) * time.Second
+				updated, action := nextWorkProductLadderAction(anchor, flat, nowRFC3339)
+				switch action {
+				case hungActionWake:
+					body := hungWorkProductWakeBody(entry.ID, entry.Title, entry.WorkProductLastProgress, entry.FailureTokensFound)
+					if err := sendHungWakeEnvelope(ctx, deps.wakeSend, entry.ID, body); err != nil {
+						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: wake steward for %s (work-product) failed: %v", entry.ID, err)
+					}
+				case hungActionAlert:
+					if err := postHungAlert(ctx, deps, entry, hungWorkProductAlertBody(entry.ID, entry.Title, entry.WorkProductLastProgress, entry.FailureTokensFound)); err != nil {
+						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: post canned alert for %s (work-product) failed: %v", entry.ID, err)
+					}
+				}
+				if action != hungActionNone {
+					anchors[entry.ID] = updated
+					changed = true
+					ladderAction = ladderActionName(action)
+				}
 			}
-		case hungActionAlert:
-			if err := postHungAlert(ctx, deps, entry); err != nil {
-				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: post canned alert for %s failed: %v", entry.ID, err)
-			}
-		case hungActionNone:
-			// Already alerted this episode — the ladder is unchanged
-			// (nextHungLadderAction returned anchor untouched), so skip the
-			// write entirely rather than re-saving byte-identical state every
-			// tick. Pure write-amplification avoidance, not a race
-			// mitigation: this tick is the sole writer of hung-state.json
-			// (agent-teams-6rru.19), so there is no concurrent writer to
-			// leave a shrinking or widening window for.
-			continue
 		}
 
-		anchors[entry.ID] = updated
-		changed = true
+		// D8: append-only journal line for every non-WORKING classification,
+		// PLUS any WORKING entry this tick actually flagged trip-eligible —
+		// a session reporting WORKING throughout (D1's own motivating gap)
+		// is exactly the case D8 exists to make reconstructable, so
+		// excluding it purely because its classification says "WORKING"
+		// would defeat the journal's headline purpose.
+		if entry.Classification != hungClassWorking || entry.WorkProductTripEligible {
+			je := hungJournalEntry{
+				Timestamp:              nowRFC3339,
+				InitiativeID:           entry.ID,
+				Classification:         entry.Classification,
+				Mode:                   entry.Mode,
+				StuckElapsedSeconds:    entry.StuckElapsedSeconds,
+				DeadElapsedSeconds:     entry.DeadElapsedSeconds,
+				WorkProductFlatSeconds: entry.WorkProductFlatSeconds,
+				WorkProductTripped:     entry.WorkProductTripEligible,
+				Ladder:                 ladder,
+				LadderAction:           ladderAction,
+			}
+			if err := appendHungJournal(journalPath, je); err != nil {
+				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+			}
+		}
 	}
 
 	if changed {

@@ -354,9 +354,13 @@ func TestScanHung_Working_NotHung(t *testing.T) {
 		t.Errorf("stuck_since = %q, want empty for WORKING", out[0].StuckSince)
 	}
 
+	// agent-teams-sgr5 (D1/D3): an anchor now DOES persist for a WORKING
+	// initiative — it carries the durable work-product clock state, which
+	// must survive exactly this kind of busy tick rather than being cleared
+	// by it. What must still be absent is any STUCK-specific sub-state.
 	anchors := loadHungState(hungStatePath(ctx))
-	if _, ok := anchors["at-1"]; ok {
-		t.Error("expected no anchor persisted for a WORKING initiative")
+	if anchor, ok := anchors["at-1"]; ok && anchor.StuckSince != "" {
+		t.Errorf("expected no STUCK anchor for a WORKING initiative, got StuckSince=%q", anchor.StuckSince)
 	}
 }
 
@@ -544,7 +548,9 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 		t.Errorf("stuck_since changed across scans: got %q, want unchanged %q", out[0].StuckSince, firstStuckSince)
 	}
 
-	// Fourth scan: session goes busy (WORKING). Anchor must be cleared.
+	// Fourth scan: session goes busy (WORKING). The STUCK sub-state must be
+	// cleared (agent-teams-sgr5 D1/D3: an anchor may still persist to carry
+	// the durable work-product clock, but StuckSince must not survive).
 	busySessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
 	out, err = scanHung(ctx, func() ([]agentSession, error) { return busySessions, nil }, fixedNow(t2.Add(time.Minute)), true)
 	if err != nil {
@@ -554,8 +560,8 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 		t.Fatalf("classification = %q, want WORKING", out[0].Classification)
 	}
 	anchors = loadHungState(hungStatePath(ctx))
-	if _, ok := anchors["at-1"]; ok {
-		t.Error("expected anchor to be cleared once the initiative stops being STUCK")
+	if anchor, ok := anchors["at-1"]; ok && anchor.StuckSince != "" {
+		t.Errorf("expected STUCK sub-state cleared once the initiative stops being STUCK, got StuckSince=%q", anchor.StuckSince)
 	}
 
 	// Fifth scan: back to idle/STUCK. A NEW stuck-since must be recorded

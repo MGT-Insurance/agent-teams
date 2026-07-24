@@ -574,6 +574,18 @@ func worktreePath(description string) string {
 	return ""
 }
 
+// modeValue extracts the value of the first "mode: <value>" line from
+// description (e.g. "bg" or "interactive"). Returns "" if no such line is
+// present — legacy initiatives registered before this field existed.
+func modeValue(description string) string {
+	for _, line := range strings.Split(description, "\n") {
+		if strings.HasPrefix(line, "mode: ") {
+			return strings.TrimRight(strings.TrimPrefix(line, "mode: "), " \t\r")
+		}
+	}
+	return ""
+}
+
 // extractEpicID scans body for the first "epic: <id>" line and returns the id.
 // Returns "" if no such line is present.
 func extractEpicID(body string) string {
