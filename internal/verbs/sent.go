@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -77,19 +76,13 @@ type sentKong struct {
 	JSON       bool          `name:"json" help:"Output records as JSON (never truncated)."`
 }
 
-// sentEntry pairs a decoded Record with its parsed timestamp so sorting and
-// --since filtering don't re-parse the ts string repeatedly.
-//
-// idx is the record's position in the log file, ascending. It exists purely
-// to make the most-recent-first order TOTAL: ts is RFC3339 at one-second
-// granularity, so ties are routine (a dispatch and the notify that follows
-// it land in the same second), and without a tiebreak the order inside a
-// second is whatever the sort algorithm happens to produce — which then
-// makes --limit drop a real record and show an older one in its place.
+// sentEntry pairs a decoded Record with its parsed timestamp. The ts is
+// carried so --since doesn't re-parse the string, and so the human-readable
+// modes can render the PARSED value rather than echoing the raw one — it is
+// NOT an ordering key (see Run, agent-teams-48dh.23).
 type sentEntry struct {
 	rec sentlog.Record
 	ts  time.Time
-	idx int
 }
 
 // Run reads sentlog.Path(ctx.Home), filters to c.Sender/c.Since/c.Initiative
@@ -150,21 +143,30 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		if hasCutoff && ts.Before(cutoff) {
 			continue
 		}
-		// len(entries) is strictly increasing in file order, and the log is
-		// O_APPEND, so it IS the chronological position of the record.
-		entries = append(entries, sentEntry{rec: rec, ts: ts, idx: len(entries)})
+		entries = append(entries, sentEntry{rec: rec, ts: ts})
 	}
 
-	// Most recent first, ties broken by REVERSE file order. The reverse is
-	// the point: a stable sort is not a fix here, because stability
-	// preserves ASCENDING file order within a tie — i.e. oldest-first
-	// inside each second, wrong at every tied position.
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].ts.Equal(entries[j].ts) {
-			return entries[i].idx > entries[j].idx
-		}
-		return entries[i].ts.After(entries[j].ts)
-	})
+	// FILE ORDER IS THE SOLE ORDERING KEY (agent-teams-48dh.23). entries is
+	// built in file order and the log is O_APPEND, so file order IS send
+	// order by construction; most-recent-first is therefore exactly the
+	// reverse, and there is deliberately no comparison function here at all.
+	//
+	// The record's timestamp is a CLAIM written by whichever short-lived
+	// process made the send, and sorting on it makes `ateam sent --limit 3`
+	// answer with three wrong messages after an ordinary backwards clock step
+	// (NTP correction, DST, sleep/wake) — no attacker needed. A raw writer
+	// can do worse: sub-second precision places a record inside a group the
+	// decorator can only write at one-second granularity, and an offset up to
+	// ±23:59 resolves ~24h away from what it displays. An audit log whose job
+	// is "what did we send, in what order" must not let a claim outrank the
+	// structural fact. This also subsumes agent-teams-48dh.11's tiebreak:
+	// with file order as the only key there are no ties left to break.
+	//
+	// --since still filters on the claimed ts (agent-teams-48dh.24) — that is
+	// a separate, open design question, not something this ordering fixes.
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
 
 	// A non-positive --limit falls back to the documented default rather
 	// than meaning "unlimited". Explicit, not incidental: `--limit 0` on an
@@ -180,12 +182,11 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		entries = entries[:limit]
 	}
 
-	recs := make([]sentlog.Record, len(entries))
-	for i, e := range entries {
-		recs[i] = e.rec
-	}
-
 	if c.JSON {
+		recs := make([]sentlog.Record, len(entries))
+		for i, e := range entries {
+			recs[i] = e.rec
+		}
 		if recs == nil {
 			recs = []sentlog.Record{} // emit [] not null on empty
 		}
@@ -194,16 +195,16 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		return enc.Encode(recs)
 	}
 
-	if len(recs) == 0 {
+	if len(entries) == 0 {
 		fmt.Fprintln(ctx.Stdout, "no messages")
 		return nil
 	}
 
 	if c.Full {
-		writeSentFull(ctx, recs)
+		writeSentFull(ctx, entries)
 		return nil
 	}
-	return writeSentTable(ctx, recs)
+	return writeSentTable(ctx, entries)
 }
 
 // sentSanitize replaces every rune that could let record content — bodies
@@ -251,18 +252,33 @@ func sentSafeField(s string) string {
 	return sentSanitize(strings.Join(strings.Fields(s), " "))
 }
 
-// writeSentTable renders recs as contract §7's tab-aligned default table
+// sentDisplayTS renders a record's PARSED timestamp for the human-readable
+// modes, normalized to UTC with sub-second precision preserved
+// (agent-teams-48dh.23).
+//
+// Never the raw rec.Timestamp string. Two things follow from rendering the
+// parsed value: the TIME column reads as ordered, because a record stamped
+// with a nonzero UTC offset can no longer display one instant while
+// resolving to another up to ~24h away; and the field is bounded to 30 runes
+// by construction, because time.Parse(RFC3339) accepts fractional seconds of
+// UNLIMITED length (100,000 digits parse fine) while Format never emits more
+// than nine.
+func sentDisplayTS(ts time.Time) string {
+	return ts.UTC().Format(time.RFC3339Nano)
+}
+
+// writeSentTable renders entries as contract §7's tab-aligned default table
 // (TIME, SENDER, INITIATIVE, OUTCOME, BODY(trunc)), matching
 // writeStewardStatsTable's shape.
-func writeSentTable(ctx *cli.Context, recs []sentlog.Record) error {
+func writeSentTable(ctx *cli.Context, entries []sentEntry) error {
 	w := tabwriter.NewWriter(ctx.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "TIME\tSENDER\tINITIATIVE\tOUTCOME\tBODY")
 	fmt.Fprintln(w, "----\t------\t----------\t-------\t----")
-	for _, r := range recs {
+	for _, e := range entries {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			sentSafeField(r.Timestamp), sentSafeField(string(r.Sender)),
-			sentSafeField(r.Initiative), sentSafeField(string(r.Outcome)),
-			sentTableBody(r.Body))
+			sentSafeField(sentDisplayTS(e.ts)), sentSafeField(string(e.rec.Sender)),
+			sentSafeField(e.rec.Initiative), sentSafeField(string(e.rec.Outcome)),
+			sentTableBody(e.rec.Body))
 	}
 	return w.Flush()
 }
@@ -292,10 +308,11 @@ const sentFullBodyPrefix = "  | "
 // so the format that shows whole bodies has to be the block form. Line
 // structure is preserved — prefixed, not escaped — because these bodies are
 // digests, and %q on a multi-KB digest is unreadable.
-func writeSentFull(ctx *cli.Context, recs []sentlog.Record) {
-	for _, r := range recs {
+func writeSentFull(ctx *cli.Context, entries []sentEntry) {
+	for _, e := range entries {
+		r := e.rec
 		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  outcome=%s\n",
-			sentSafeField(r.Timestamp), sentSafeField(string(r.Sender)),
+			sentSafeField(sentDisplayTS(e.ts)), sentSafeField(string(r.Sender)),
 			sentSafeField(r.Initiative), sentSafeField(string(r.Outcome)))
 		fmt.Fprintf(ctx.Stdout, "  title: %s\n", sentSafeField(r.Title))
 		fmt.Fprintln(ctx.Stdout, "  body:")
