@@ -1,8 +1,10 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -114,6 +116,134 @@ func TestComputeWorkProductClock_HashChangeTracksTimestampNotMtime(t *testing.T)
 	lastProgress4, _, hashAt4 := computeWorkProductClock(probes("dirty-v2"), time.Time{}, hash3, hashAt3, t3)
 	if !hashAt4.Equal(t2) || !lastProgress4.Equal(t2) {
 		t.Errorf("hashAt/lastProgress on a genuinely-unchanged hash = %v/%v, want both carried forward as %v", hashAt4, lastProgress4, t2)
+	}
+}
+
+// ── D1: git probe — index-path cache + timeout/failure degrade (review fix,
+// agent-teams-sgr5.6) ──────────────────────────────────────────────────────────
+
+// initGitWorktree creates a minimal real git repo at t.TempDir() with one
+// commit, so the probe/resolver below exercise real git subprocesses rather
+// than a fake.
+func initGitWorktree(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "f.txt")
+	run("commit", "-m", "initial")
+	return dir
+}
+
+// resetGitIndexPathCache clears the package-level cache before/after a test
+// so tests don't leak cached entries into each other (t.TempDir() paths are
+// unique per test anyway, but this keeps the map from growing unbounded
+// across the whole test binary run).
+func resetGitIndexPathCache(t *testing.T) {
+	t.Helper()
+	gitIndexPathCacheMu.Lock()
+	gitIndexPathCache = map[string]string{}
+	gitIndexPathCacheMu.Unlock()
+	t.Cleanup(func() {
+		gitIndexPathCacheMu.Lock()
+		gitIndexPathCache = map[string]string{}
+		gitIndexPathCacheMu.Unlock()
+	})
+}
+
+func TestResolveGitIndexPath_CacheHitAvoidsReinvocation(t *testing.T) {
+	resetGitIndexPathCache(t)
+	worktree := initGitWorktree(t)
+	ctx := context.Background()
+
+	first := resolveGitIndexPath(ctx, worktree)
+	if first == "" {
+		t.Fatalf("resolveGitIndexPath: expected a resolved index path on a real repo")
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Fatalf("resolved index path does not exist: %v", err)
+	}
+
+	// Break git resolution for a fresh (uncached) call by pointing PATH at an
+	// empty directory -- if the second call to the SAME worktree actually
+	// re-invoked git instead of hitting the cache, it would now fail/return
+	// "" since git can't be found.
+	t.Setenv("PATH", t.TempDir())
+	second := resolveGitIndexPath(ctx, worktree)
+	if second != first {
+		t.Errorf("resolveGitIndexPath with git unavailable = %q, want cached %q (cache hit should avoid re-invoking git)", second, first)
+	}
+}
+
+func TestResolveGitIndexPath_StaleCacheEntryReResolved(t *testing.T) {
+	resetGitIndexPathCache(t)
+	worktree := initGitWorktree(t)
+	ctx := context.Background()
+
+	// Seed the cache with a path that doesn't exist on disk -- simulating a
+	// stale entry (worktree moved/removed since the path was cached).
+	gitIndexPathCacheMu.Lock()
+	gitIndexPathCache[worktree] = filepath.Join(worktree, "definitely-not-the-real-index")
+	gitIndexPathCacheMu.Unlock()
+
+	got := resolveGitIndexPath(ctx, worktree)
+	if got == "" {
+		t.Fatalf("resolveGitIndexPath: expected re-resolution of a stale cache entry, got empty")
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Errorf("re-resolved index path does not exist: %v (got %q)", err, got)
+	}
+	if got == filepath.Join(worktree, "definitely-not-the-real-index") {
+		t.Errorf("resolveGitIndexPath returned the stale cached path instead of re-resolving")
+	}
+}
+
+func TestDefaultGitWorkProductProbe_NonRepoDegradesToNoSignal(t *testing.T) {
+	resetGitIndexPathCache(t)
+	// A plain non-git directory: `git status --porcelain` fails immediately,
+	// so the whole probe must report Available=false (no fabricated
+	// flatline, no fabricated fresh progress) rather than a partial result.
+	result := defaultGitWorkProductProbe(t.TempDir())
+	if result.Available {
+		t.Errorf("defaultGitWorkProductProbe on a non-repo = %+v, want Available=false", result)
+	}
+	if !result.IndexMtime.IsZero() || !result.CommitTime.IsZero() || result.StatusHash != "" {
+		t.Errorf("defaultGitWorkProductProbe on a non-repo should be zero-valued throughout, got %+v", result)
+	}
+}
+
+func TestResolveGitIndexPath_TimeoutOrCancelDegradesToNoSignal(t *testing.T) {
+	resetGitIndexPathCache(t)
+	worktree := initGitWorktree(t)
+
+	// An already-canceled context stands in for a timeout: exec.CommandContext
+	// fails immediately, exercising the same failure path a real 5s timeout
+	// would. resolveGitIndexPath must degrade silently to "" (no signal),
+	// never fabricate a path.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := resolveGitIndexPath(ctx, worktree)
+	if got != "" {
+		t.Errorf("resolveGitIndexPath with a canceled context = %q, want empty (degrade to no-signal)", got)
+	}
+
+	// The cache must not have been poisoned with an empty/bad entry: a
+	// subsequent call with a live context still resolves correctly.
+	live := resolveGitIndexPath(context.Background(), worktree)
+	if live == "" {
+		t.Errorf("resolveGitIndexPath after a prior canceled call = empty, want a real resolution once given a live context")
 	}
 }
 

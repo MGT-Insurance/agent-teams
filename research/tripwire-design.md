@@ -47,8 +47,11 @@ Two ambient findings that shape the design:
 Per bg initiative, per tick: measure time since the last work-product
 change — git index mtime + `git status --porcelain` hash change on the
 initiative's worktrees, last commit time, and bead `updated_at` (already in
-the payload hung-scan fetches). Near-free (two file stats + one local git
-subprocess per worktree; no global-DB contention). This is the only signal
+the payload hung-scan fetches). Near-free (one file stat plus two local git
+subprocesses per worktree per tick in the common case — the index-path
+resolution itself is cached per worktree, and each git call is bounded by a
+5s timeout that degrades silently to no-signal on failure; no global-DB
+contention). This is the only signal
 that catches the busy-forever mode: it would have flagged at-pp7z by ~23:00,
 six hours before the actual recovery.
 

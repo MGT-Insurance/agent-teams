@@ -8,6 +8,7 @@
 package verbs
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -174,8 +176,68 @@ type gitProbeResult struct {
 // substitute a fake without a real git subprocess/repo.
 type gitWorkProductProbeFunc func(worktree string) gitProbeResult
 
+// gitProbeTimeout bounds every individual git subprocess this file execs
+// (review fix, agent-teams-sgr5.6): these ticks run machine-wide and
+// unattended, so one wedged git (lock contention, a stale/dead network
+// mount under the worktree) must never stall the whole tick. On timeout the
+// call fails exactly like any other exec error and the affected component
+// degrades to no-signal — never a fabricated flatline or fresh progress.
+const gitProbeTimeout = 5 * time.Second
+
+// gitIndexPathCache memoizes the resolved absolute index-file path per
+// worktree (review fix, agent-teams-sgr5.6): `git rev-parse --git-path
+// index` only changes if the worktree is reconfigured (rare), so re-running
+// it every hungTickInterval (5 min) for the lifetime of an initiative is
+// wasted subprocess cost. Guarded by gitIndexPathCacheMu since the relay's
+// tick goroutine and any concurrent `ateam hung-scan` CLI invocation could
+// in principle call the probe from more than one goroutine in the same
+// process.
+var (
+	gitIndexPathCacheMu sync.Mutex
+	gitIndexPathCache   = map[string]string{}
+)
+
+// resolveGitIndexPath returns the absolute index-file path for worktree,
+// using gitIndexPathCache when the previously-resolved path still exists on
+// disk. A cached path that no longer os.Stat's (worktree removed/moved,
+// index file relocated) is treated as stale and re-resolved via `git
+// rev-parse --git-path index`, bounded by ctx. Returns "" if resolution
+// fails or times out — callers must treat that as no signal, never as "no
+// index file" (which would be a false flatline).
+func resolveGitIndexPath(ctx context.Context, worktree string) string {
+	gitIndexPathCacheMu.Lock()
+	cached, ok := gitIndexPathCache[worktree]
+	gitIndexPathCacheMu.Unlock()
+	if ok {
+		if _, err := os.Stat(cached); err == nil {
+			return cached
+		}
+		// Stale: the cached path no longer exists (worktree removed/moved,
+		// or the index file itself relocated). Fall through and re-resolve.
+	}
+
+	indexRelOut, err := exec.CommandContext(ctx, "git", "-C", worktree, "rev-parse", "--git-path", "index").Output()
+	if err != nil {
+		return ""
+	}
+	indexPath := strings.TrimSpace(string(indexRelOut))
+	if indexPath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(worktree, indexPath)
+	}
+
+	gitIndexPathCacheMu.Lock()
+	gitIndexPathCache[worktree] = indexPath
+	gitIndexPathCacheMu.Unlock()
+	return indexPath
+}
+
 // defaultGitWorkProductProbe runs three cheap, LOCAL git subprocesses against
-// worktree (never touches the global bd workspace or the network):
+// worktree (never touches the global bd workspace or the network), each
+// bounded by gitProbeTimeout so a wedged git process degrades this
+// component to no-signal instead of stalling the tick:
 //
 //  1. `git status --porcelain` — doubles as the availability check (a
 //     non-repo or missing directory fails this first, cheaply) and gives the
@@ -184,29 +246,31 @@ type gitWorkProductProbeFunc func(worktree string) gitProbeResult
 //     this worktree (worktrees have a `.git` file pointing at a per-worktree
 //     index under the shared repo's `.git/worktrees/<name>/index`; rev-parse
 //     resolves this correctly without hand-parsing the pointer file), then
-//     os.Stat's it for ModTime.
+//     os.Stat's it for ModTime. The resolution itself is cached per worktree
+//     (resolveGitIndexPath) so this subprocess only actually runs once per
+//     worktree in the common case, not every tick.
 //  3. `git log -1 --format=%ct` — last commit's Unix timestamp; empty output
 //     (repo with zero commits) leaves CommitTime zero, not an error.
 func defaultGitWorkProductProbe(worktree string) gitProbeResult {
-	statusOut, err := exec.Command("git", "-C", worktree, "status", "--porcelain").Output()
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer statusCancel()
+	statusOut, err := exec.CommandContext(statusCtx, "git", "-C", worktree, "status", "--porcelain").Output()
 	if err != nil {
 		return gitProbeResult{}
 	}
 	result := gitProbeResult{Available: true, StatusHash: sha256Hex(statusOut)}
 
-	if indexRelOut, err := exec.Command("git", "-C", worktree, "rev-parse", "--git-path", "index").Output(); err == nil {
-		indexPath := strings.TrimSpace(string(indexRelOut))
-		if indexPath != "" {
-			if !filepath.IsAbs(indexPath) {
-				indexPath = filepath.Join(worktree, indexPath)
-			}
-			if info, statErr := os.Stat(indexPath); statErr == nil {
-				result.IndexMtime = info.ModTime()
-			}
+	indexCtx, indexCancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer indexCancel()
+	if indexPath := resolveGitIndexPath(indexCtx, worktree); indexPath != "" {
+		if info, statErr := os.Stat(indexPath); statErr == nil {
+			result.IndexMtime = info.ModTime()
 		}
 	}
 
-	if commitOut, err := exec.Command("git", "-C", worktree, "log", "-1", "--format=%ct").Output(); err == nil {
+	commitCtx, commitCancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer commitCancel()
+	if commitOut, err := exec.CommandContext(commitCtx, "git", "-C", worktree, "log", "-1", "--format=%ct").Output(); err == nil {
 		if s := strings.TrimSpace(string(commitOut)); s != "" {
 			if sec, parseErr := strconv.ParseInt(s, 10, 64); parseErr == nil {
 				result.CommitTime = time.Unix(sec, 0).UTC()
