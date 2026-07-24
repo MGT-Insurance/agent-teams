@@ -75,7 +75,7 @@ func (l *loggingTransport) record(msg OutboundMessage, threadRef string, sendErr
 	rec.Body = msg.Body
 	if sendErr != nil {
 		rec.Outcome = sentlog.OutcomeFailed
-		rec.Error = sendErr.Error()
+		rec.Error = sentlog.RedactError(sendErr)
 	} else {
 		rec.Outcome = sentlog.OutcomeSent
 	}

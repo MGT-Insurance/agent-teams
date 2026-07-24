@@ -89,7 +89,7 @@ type Record struct {
 	Title      string `json:"title"`      // OutboundMessage.Title
 	Body       string `json:"body"`       // OutboundMessage.Body, FULL, never truncated
 	Outcome    string `json:"outcome"`    // "sent" | "failed" ONLY
-	Error      string `json:"error"`      // "" on success; sanitizeTransportErr'd message on failure
+	Error      string `json:"error"`      // "" on success; on failure, RedactError(sendErr) — embedded URLs reduced to scheme://host (§6, amended)
 
 	SessionID  string `json:"session_id"`  // DERIVED (§4). May be "". MAY BE STALE.
 	Cwd        string `json:"cwd"`         // DERIVED

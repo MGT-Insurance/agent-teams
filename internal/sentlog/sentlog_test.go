@@ -2,6 +2,7 @@ package sentlog
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,5 +177,33 @@ func TestKindKnown(t *testing.T) {
 		if k.Known() {
 			t.Errorf("Kind(%q).Known() = true, want false", k)
 		}
+	}
+}
+
+// TestRedactErrorStripsURLCredentials verifies RedactError reduces an
+// embedded URL to scheme://host (dropping a bot-token-shaped path, plus any
+// userinfo/query), leaves a plain non-URL error message untouched, and
+// returns "" for a nil error.
+func TestRedactErrorStripsURLCredentials(t *testing.T) {
+	if got := RedactError(nil); got != "" {
+		t.Errorf("RedactError(nil) = %q, want \"\"", got)
+	}
+
+	plain := errors.New("boom")
+	if got := RedactError(plain); got != "boom" {
+		t.Errorf("RedactError(plain) = %q, want %q (no URL, untouched)", got, "boom")
+	}
+
+	const token = "123456:AAFsecretBotTokenValueXYZ"
+	urlErr := errors.New(`Post "https://api.telegram.org/bot` + token + `/sendMessage": dial tcp: connection refused`)
+	got := RedactError(urlErr)
+	if strings.Contains(got, token) {
+		t.Fatalf("RedactError leaked the token: %q", got)
+	}
+	if !strings.Contains(got, "https://api.telegram.org") {
+		t.Fatalf("RedactError dropped the host, want it preserved: %q", got)
+	}
+	if strings.Contains(got, "/sendMessage") {
+		t.Fatalf("RedactError should drop the path entirely, got: %q", got)
 	}
 }

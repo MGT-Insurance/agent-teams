@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -168,5 +169,36 @@ func TestLoggingTransportReturnsInnerErrorVerbatimAndRecordsFailedOutcome(t *tes
 	// was returned.
 	if rec["thread_ref"] != "existing-ref" {
 		t.Fatalf("thread_ref = %v, want existing-ref (msg.ThreadRef fallback on failure)", rec["thread_ref"])
+	}
+}
+
+// TestLoggingTransportRedactsURLCredentialsFromError: loggingTransport is
+// generic — it wraps whatever Transport For returns and cannot call into
+// that transport's own error-sanitizer (today, Telegram's
+// sanitizeTransportErr). If some future transport's Send returns an error
+// with a credential embedded in a URL (a bot-token-shaped path, here), that
+// credential must not land on disk. Asserts on the raw bytes written to
+// sentlog.Path(home), not on a return value (contract §6, amended).
+func TestLoggingTransportRedactsURLCredentialsFromError(t *testing.T) {
+	home := t.TempDir()
+	const token = "123456:AAFsecretBotTokenValueXYZ"
+	sendErr := fmt.Errorf("Post %q: dial tcp: connection refused", "https://api.telegram.org/bot"+token+"/sendMessage")
+	inner := &fakeTransport{name: "fake", sendErr: sendErr}
+	lt := newLoggingTransport(inner, home)
+
+	msg := OutboundMessage{InitiativeID: "at-test", Sender: sentlog.KindNotify}
+	if _, err := lt.Send(msg); err == nil {
+		t.Fatalf("expected Send to return the inner error")
+	}
+
+	data, err := os.ReadFile(sentlog.Path(home))
+	if err != nil {
+		t.Fatalf("read sentlog: %v", err)
+	}
+	if strings.Contains(string(data), token) {
+		t.Fatalf("token leaked into sent-log on disk: %s", data)
+	}
+	if !strings.Contains(string(data), "api.telegram.org") {
+		t.Fatalf("expected host to survive redaction, got: %s", data)
 	}
 }
