@@ -79,10 +79,11 @@ idling 16 minutes is normal; no automated ladder should alert a human about
 their own pacing. (Resolves the concern noted on agent-teams-zalv.15.)
 
 **D6 — Ladder pacing for the work-product path: steward wake at 30 min
-flatline, second wake per existing ladder, direct Telegram alert only if the
-flatline persists past 2 h.** False positives (long test suites, long reads
+flatline, second wake per existing ladder, direct Telegram alert if the
+flatline persists past 1 h.** (Eric set 1 h at plan approval; the draft
+proposed 2 h.) False positives (long test suites, long reads
 mid-implementation) hit the steward — cheap, triageable — not Eric. at-pp7z
-under this ladder: first wake ~23:00, direct alert ~00:30, vs the actual
+under this ladder: first wake ~23:00, direct alert ~23:30, vs the actual
 05:28.
 
 **D7 — Failure-token corroborator (severity, not trigger).** Grep the
@@ -118,7 +119,9 @@ after any downtime instead of restarting the clock.
 - **False positives:** an implementer legitimately quiet for 30+ min inside
   a claimed bead (long test run, long read) wakes the steward. Accepted:
   wake cost is low, triage is the steward's job, and Eric is only alerted
-  after 2 h. The transcript corroborator (D2) suppresses the common cases.
+  after 1 h (his call at approval — a legit quiet stretch longer than that
+  costs him one dismissable Telegram ping). The transcript corroborator (D2)
+  suppresses the common cases.
 - **False negatives:** stalls during planning/investigation (no claimed
   implementation bead) don't trip the work-product clock — only the existing
   idle-STUCK path and D7 tokens can catch those. Accepted for v1.

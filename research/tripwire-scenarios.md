@@ -5,7 +5,7 @@ what the detector observes, what fires, when, and who hears about it.
 Ticks are every 5 minutes. "Work-product clock" = time since the last git
 change (index/status), commit, or bead update on the initiative's worktrees.
 Thresholds: 15 min for a dead session, 30 min for a work-product flatline,
-direct alert to Eric only past 2 h.
+direct alert to Eric past 1 h (set by Eric at plan approval).
 
 ## Scenario 1 — the at-pp7z overnight stall, replayed
 
@@ -18,10 +18,10 @@ Bg initiative, implementer working in a track worktree, bead claimed.
 | 23:00 | Tick: clock at 30 min; mode bg, no gate, bead claimed, no real assistant turns in last 30 min | still WORKING | **Steward wake #1** with evidence: "flat 30 min, bead claimed, session busy" |
 | 23:23 | Background tasks report `status=killed` in the transcript | invisible | Failure tokens found → wake note upgraded to urgent |
 | 23:30 | Still flat | still WORKING | **Steward wake #2** — steward nudges/wakes the DRI; recovery likely starts here (in reality recovery took ~12 min once woken) |
-| 00:30 | If somehow still flat at 2 h | still WORKING | **Direct Telegram alert to Eric** |
+| 23:30 | If somehow still flat at 1 h | still WORKING | **Direct Telegram alert to Eric** |
 
 Actual incident: Eric's system noticed at 05:28. New design: steward acting
-by ~23:05, Eric (worst case) at 00:30 — and in the likely case Eric never
+by ~23:05, Eric (worst case) at 23:30 — and in the likely case Eric never
 needs to be woken at all.
 
 Key point: the session was **busy** all night, so the old idle-based STUCK
@@ -44,7 +44,9 @@ bead. Test output is gitignored — no work-product change while it runs.
 
 This is the accepted cost of the design: an occasional steward wake on long
 quiet-but-legit work. The steward absorbs it; Eric is only alerted if a
-flatline survives 2 full hours, which a healthy test run doesn't.
+flatline survives a full hour, which this test run doesn't. (A legit quiet
+stretch over 1 h does cost Eric one dismissable ping — his chosen
+tradeoff at approval.)
 
 ## Scenario 3 — dead session, worktree intact (the at-gusm class)
 
