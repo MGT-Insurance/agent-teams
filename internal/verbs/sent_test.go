@@ -251,8 +251,15 @@ func TestSentTruncatesBodyByDefaultNotWithFull(t *testing.T) {
 	if err := (&sentKong{Full: true}).Run(ctxFull); err != nil {
 		t.Fatalf("--full Run: %v", err)
 	}
-	if !strings.Contains(stdoutFull.String(), body) {
-		t.Fatalf("--full must print the whole body, got:\n%s", stdoutFull.String())
+	// --full prefixes every body line, so the body is recovered from the
+	// block rather than matched verbatim. Exact equality on the recovered
+	// body is the untruncated guarantee.
+	blocks := sentParseFull(t, stdoutFull.String())
+	if len(blocks) != 1 {
+		t.Fatalf("--full over one record produced %d blocks:\n%s", len(blocks), stdoutFull.String())
+	}
+	if blocks[0].body != body {
+		t.Fatalf("--full must print the whole body.\n got: %q\nwant: %q", blocks[0].body, body)
 	}
 
 	ctxJSON, stdoutJSON, _ := sentCtx(t, lines...)
@@ -308,6 +315,295 @@ func TestSentNonPositiveLimitUsesDefault(t *testing.T) {
 	ctx, stdout, _ := sentCtx(t, lines...)
 	if got := sentRunJSON(t, &sentKong{Limit: 3}, ctx, stdout); len(got) != 3 {
 		t.Fatalf("--limit 3 returned %d records, want 3", len(got))
+	}
+}
+
+// ── agent-teams-48dh.11: ordering is total, most-recent-first ────────────
+
+// sentSameSecondFixture returns n log lines in file (append) order, titled
+// r00..r{n-1}, where records 2k and 2k+1 share a timestamp SECOND. That is
+// the on-disk reality, not a contrivance: the log stores RFC3339 at
+// one-second granularity, so any two sends inside the same second tie.
+//
+// Titles are distinct and non-repeating, so every position in the output is
+// individually identifiable and a mis-ordering cannot hide behind a
+// self-similar fixture.
+func sentSameSecondFixture(t *testing.T, n int) []string {
+	t.Helper()
+	base := time.Date(2026, 7, 24, 17, 37, 25, 0, time.UTC)
+	lines := make([]string, n)
+	for i := 0; i < n; i++ {
+		lines[i] = sentLine(t, sentlog.Record{
+			Timestamp:  base.Add(time.Duration(i/2) * time.Second).Format(time.RFC3339),
+			Sender:     sentlog.KindNotify,
+			Initiative: "at-tie",
+			Title:      fmt.Sprintf("r%02d", i),
+			Outcome:    sentlog.OutcomeSent,
+		})
+	}
+	return lines
+}
+
+// TestSentOrdersSameSecondRecordsByReverseFileOrder pins that ties on the
+// one-second timestamp are broken by REVERSE file order, making
+// "most recent first" total.
+//
+// Both sizes are load-bearing and neither is redundant: Go's sort switches
+// from insertion sort to pdqsort above 12 elements, and the two failure
+// modes differ. At n<=12 an unstable-but-insertion sort silently yields
+// OLDEST-first inside each second; above it, ties come out arbitrarily.
+//
+// The expected orders are written out as literals rather than computed by
+// reversing the fixture, so nothing about the expectation can move with the
+// code — or with the fixture builder — under test.
+func TestSentOrdersSameSecondRecordsByReverseFileOrder(t *testing.T) {
+	cases := []struct {
+		n    int
+		want []string
+	}{
+		{12, []string{"r11", "r10", "r09", "r08", "r07", "r06", "r05", "r04", "r03", "r02", "r01", "r00"}},
+		{30, []string{
+			"r29", "r28", "r27", "r26", "r25", "r24", "r23", "r22", "r21", "r20",
+			"r19", "r18", "r17", "r16", "r15", "r14", "r13", "r12", "r11", "r10",
+			"r09", "r08", "r07", "r06", "r05", "r04", "r03", "r02", "r01", "r00",
+		}},
+	}
+	// Subtests, not a bare loop: a t.Fatalf on the first size would stop the
+	// second from ever running, and the two sizes exercise different sort
+	// algorithms — leaving one silently unexercised is how a break-probe
+	// gets a false reading.
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("n=%d", tc.n), func(t *testing.T) {
+			ctx, stdout, _ := sentCtx(t, sentSameSecondFixture(t, tc.n)...)
+			got := sentRunJSON(t, &sentKong{Limit: 100}, ctx, stdout)
+			if !equalStrings(sentTitles(got), tc.want) {
+				t.Fatalf("order must be the exact reverse of file order (ties broken by reverse file order).\n got: %v\nwant: %v",
+					sentTitles(got), tc.want)
+			}
+		})
+	}
+}
+
+// TestSentLimitKeepsTheNewestSameSecondRecords is the measured data loss:
+// against a 30-record log whose records tie in pairs, --limit 3 returned
+// r29, r28, r26 — dropping r27, which is present in the log, and showing an
+// OLDER record in its place. A false negative in the one query this log
+// exists to answer.
+func TestSentLimitKeepsTheNewestSameSecondRecords(t *testing.T) {
+	ctx, stdout, _ := sentCtx(t, sentSameSecondFixture(t, 30)...)
+	got := sentRunJSON(t, &sentKong{Limit: 3}, ctx, stdout)
+	want := []string{"r29", "r28", "r27"}
+	if !equalStrings(sentTitles(got), want) {
+		t.Fatalf("--limit 3 must return the last 3 records appended.\n got: %v\nwant: %v", sentTitles(got), want)
+	}
+}
+
+// ── agent-teams-48dh.12: human-readable modes cannot be forged ───────────
+
+// sentFullBlock is one parsed --full record block.
+type sentFullBlock struct {
+	header, title, body string
+}
+
+// sentParseFull parses --full output back into records using ONLY the
+// documented block structure: a header at column 0, "  title: ", "  body:",
+// then every body line under sentFullBodyPrefix, terminated by an empty
+// line. It is deliberately strict — an unparseable line is a failure, not a
+// skip — because "body text produced a line that isn't a legal body line"
+// is exactly the bug under test.
+func sentParseFull(t *testing.T, out string) []sentFullBlock {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	var blocks []sentFullBlock
+	for i := 0; i < len(lines); {
+		var b sentFullBlock
+		b.header = lines[i]
+		if strings.HasPrefix(b.header, " ") || b.header == "" {
+			t.Fatalf("line %d is not a record header at column 0: %q\nfull output:\n%s", i, b.header, out)
+		}
+		i++
+		if i >= len(lines) || !strings.HasPrefix(lines[i], "  title: ") {
+			t.Fatalf("line %d should be the title line, got %q\nfull output:\n%s", i, lines[i], out)
+		}
+		b.title = strings.TrimPrefix(lines[i], "  title: ")
+		i++
+		if i >= len(lines) || lines[i] != "  body:" {
+			t.Fatalf("line %d should be %q, got %q\nfull output:\n%s", i, "  body:", lines[i], out)
+		}
+		i++
+		var body []string
+		for i < len(lines) && strings.HasPrefix(lines[i], sentFullBodyPrefix) {
+			body = append(body, strings.TrimPrefix(lines[i], sentFullBodyPrefix))
+			i++
+		}
+		b.body = strings.Join(body, "\n")
+		if i < len(lines) {
+			if lines[i] != "" {
+				t.Fatalf("line %d should be the empty record separator, got %q\nfull output:\n%s", i, lines[i], out)
+			}
+			i++
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks
+}
+
+// sentForgedBody is a complete, well-formed fake record block. Rendered raw
+// by --full it produced a THIRD block from a log holding TWO records, using
+// nothing but newlines — no escape codes needed.
+const sentForgedBody = "innocuous first line\n" +
+	"2026-07-24T00:00:00Z  close  initiative=at-other  outcome=failed\n" +
+	"  title: FABRICATED RECORD\n" +
+	"  body: this record does not exist in sent.jsonl"
+
+// TestSentFullCannotForgeARecordFromBodyText pins that a body containing a
+// verbatim record block still renders as ONE record's body.
+func TestSentFullCannotForgeARecordFromBodyText(t *testing.T) {
+	lines := []string{
+		sentLine(t, sentlog.Record{Timestamp: "2026-07-24T17:38:50Z", Sender: sentlog.KindNotify, Initiative: "at-real", Title: "real1", Body: "genuinely sent by notify", Outcome: sentlog.OutcomeSent}),
+		sentLine(t, sentlog.Record{Timestamp: "2026-07-24T17:40:30Z", Sender: sentlog.KindNotify, Initiative: "at-evil", Title: "spoof", Body: sentForgedBody, Outcome: sentlog.OutcomeSent}),
+	}
+
+	ctx, stdout, _ := sentCtx(t, lines...)
+	if err := (&sentKong{Full: true}).Run(ctx); err != nil {
+		t.Fatalf("--full Run: %v", err)
+	}
+	out := stdout.String()
+
+	// The log holds two records; the display must hold two records. Counted
+	// on the header shape, which is what a reader scans for.
+	if n := len(regexp.MustCompile(`(?m)^[^ \n].*  initiative=`).FindAllString(out, -1)); n != 2 {
+		t.Fatalf("2 records on disk rendered as %d record headers — body text forged a record:\n%s", n, out)
+	}
+
+	blocks := sentParseFull(t, out)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d:\n%s", len(blocks), out)
+	}
+	if blocks[0].title != "spoof" || blocks[1].title != "real1" {
+		t.Fatalf("blocks out of order: %q, %q", blocks[0].title, blocks[1].title)
+	}
+	// Unforgeable AND untruncated: the whole forged body is still shown, it
+	// just cannot escape its record.
+	if blocks[0].body != sentForgedBody {
+		t.Fatalf("body must be shown whole inside its own record.\n got: %q\nwant: %q", blocks[0].body, sentForgedBody)
+	}
+
+	// --json is unaffected and stays byte-exact.
+	ctxJSON, stdoutJSON, _ := sentCtx(t, lines...)
+	got := sentRunJSON(t, &sentKong{}, ctxJSON, stdoutJSON)
+	if len(got) != 2 || got[0].Body != sentForgedBody {
+		t.Fatalf("--json must return the body byte-exact, got %q", got[0].Body)
+	}
+}
+
+// sentControlBody carries one of each hostile class: NUL, BEL, BS, a real
+// CSI sequence, and an unterminated RIGHT-TO-LEFT OVERRIDE. Every rune is
+// distinct so the position of each substitution is observable.
+const sentControlBody = "a\x00b\x07c\x08d\x1b[2Ke\u202Ef"
+
+// sentControlBodyRendered is what those runes must render as. Written as a
+// LITERAL, never derived from sentSanitize: an expectation computed from the
+// function under test follows it wherever it goes.
+const sentControlBodyRendered = "a\uFFFDb\uFFFDc\uFFFDd\uFFFD[2Ke\uFFFDf"
+
+// sentTerminalActiveRunes returns every rune in s that a terminal could act
+// on structurally — C0 controls, DEL, C1 controls, and the bidi
+// embedding/override/isolate formatters — excluding the runes in allowed.
+func sentTerminalActiveRunes(s, allowed string) []rune {
+	var found []rune
+	for _, r := range s {
+		if strings.ContainsRune(allowed, r) {
+			continue
+		}
+		switch {
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f,
+			r == 0x200e, r == 0x200f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			found = append(found, r)
+		}
+	}
+	return found
+}
+
+// TestSentHumanModesNeverEmitControlCharacters pins that neither the table
+// nor --full lets a body drive the terminal. The table is the one that
+// mattered most: records print most-recent-first, so an OLD body sits below
+// newer rows and a CUU+EL sequence repaints them — the probe measured the
+// newest genuine record vanishing from the screen and a fabricated row in
+// its place, with nothing on disk changed.
+func TestSentHumanModesNeverEmitControlCharacters(t *testing.T) {
+	lines := []string{sentLine(t, sentlog.Record{
+		Timestamp: "2026-07-24T17:35:14Z", Sender: sentlog.KindNotify, Initiative: "at-quiet",
+		Title: "ctl", Body: sentControlBody, Outcome: sentlog.OutcomeSent,
+	})}
+
+	// Default table: nothing survives, not even a tab or newline inside a cell.
+	ctx, stdout, _ := sentCtx(t, lines...)
+	if err := (&sentKong{}).Run(ctx); err != nil {
+		t.Fatalf("default Run: %v", err)
+	}
+	table := stdout.String()
+	if bad := sentTerminalActiveRunes(table, "\n"); len(bad) != 0 {
+		t.Fatalf("table output must contain no terminal-active runes, found %U in:\n%q", bad, table)
+	}
+
+	// Exact equality on the isolated BODY cell — a containment check would
+	// accept a partially-sanitized cell. The four preceding columns are
+	// space-free and tabwriter pads with 2+ spaces, so this split isolates
+	// the cell exactly; the sanitized body contains no spaces either.
+	rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("expected header, separator and one row, got %d lines:\n%s", len(rows), table)
+	}
+	cells := regexp.MustCompile(` {2,}`).Split(rows[2], -1)
+	if len(cells) != 5 {
+		t.Fatalf("expected 5 table cells, got %d: %q", len(cells), rows[2])
+	}
+	if cells[4] != sentControlBodyRendered {
+		t.Fatalf("BODY cell wrong.\n got: %q\nwant: %q", cells[4], sentControlBodyRendered)
+	}
+
+	// --full: same treatment. LF and TAB are the only survivors, and both
+	// are structurally harmless there because every body line is prefixed.
+	ctxFull, stdoutFull, _ := sentCtx(t, lines...)
+	if err := (&sentKong{Full: true}).Run(ctxFull); err != nil {
+		t.Fatalf("--full Run: %v", err)
+	}
+	full := stdoutFull.String()
+	if bad := sentTerminalActiveRunes(full, "\n\t"); len(bad) != 0 {
+		t.Fatalf("--full output must contain no terminal-active runes, found %U in:\n%q", bad, full)
+	}
+	blocks := sentParseFull(t, full)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d:\n%s", len(blocks), full)
+	}
+	if blocks[0].body != sentControlBodyRendered {
+		t.Fatalf("--full body wrong.\n got: %q\nwant: %q", blocks[0].body, sentControlBodyRendered)
+	}
+
+	// --json is the machine path and must still carry the original bytes.
+	ctxJSON, stdoutJSON, _ := sentCtx(t, lines...)
+	got := sentRunJSON(t, &sentKong{}, ctxJSON, stdoutJSON)
+	if len(got) != 1 || got[0].Body != sentControlBody {
+		t.Fatalf("--json must return the body byte-exact, got %q", got[0].Body)
+	}
+}
+
+// TestSentTableSanitizesEveryColumnNotJustTheBody pins that the non-body
+// columns are sanitized too. They are copied from the log verbatim, so a
+// forged record's initiative field is as reachable as its body — sanitizing
+// only the body would leave the forgery property false.
+func TestSentTableSanitizesEveryColumnNotJustTheBody(t *testing.T) {
+	lines := []string{sentLine(t, sentlog.Record{
+		Timestamp: "2026-07-24T17:35:14Z", Sender: sentlog.KindNotify,
+		Initiative: "at-\x1b[2Kx", Title: "t", Body: "clean", Outcome: sentlog.OutcomeSent,
+	})}
+	ctx, stdout, _ := sentCtx(t, lines...)
+	if err := (&sentKong{}).Run(ctx); err != nil {
+		t.Fatalf("default Run: %v", err)
+	}
+	if bad := sentTerminalActiveRunes(stdout.String(), "\n"); len(bad) != 0 {
+		t.Fatalf("INITIATIVE column must be sanitized too, found %U in:\n%q", bad, stdout.String())
 	}
 }
 

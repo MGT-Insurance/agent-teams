@@ -79,9 +79,17 @@ type sentKong struct {
 
 // sentEntry pairs a decoded Record with its parsed timestamp so sorting and
 // --since filtering don't re-parse the ts string repeatedly.
+//
+// idx is the record's position in the log file, ascending. It exists purely
+// to make the most-recent-first order TOTAL: ts is RFC3339 at one-second
+// granularity, so ties are routine (a dispatch and the notify that follows
+// it land in the same second), and without a tiebreak the order inside a
+// second is whatever the sort algorithm happens to produce — which then
+// makes --limit drop a real record and show an older one in its place.
 type sentEntry struct {
 	rec sentlog.Record
 	ts  time.Time
+	idx int
 }
 
 // Run reads sentlog.Path(ctx.Home), filters to c.Sender/c.Since/c.Initiative
@@ -142,10 +150,19 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 		if hasCutoff && ts.Before(cutoff) {
 			continue
 		}
-		entries = append(entries, sentEntry{rec: rec, ts: ts})
+		// len(entries) is strictly increasing in file order, and the log is
+		// O_APPEND, so it IS the chronological position of the record.
+		entries = append(entries, sentEntry{rec: rec, ts: ts, idx: len(entries)})
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
+	// Most recent first, ties broken by REVERSE file order. The reverse is
+	// the point: a stable sort is not a fix here, because stability
+	// preserves ASCENDING file order within a tie — i.e. oldest-first
+	// inside each second, wrong at every tied position.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].ts.Equal(entries[j].ts) {
+			return entries[i].idx > entries[j].idx
+		}
 		return entries[i].ts.After(entries[j].ts)
 	})
 
@@ -189,6 +206,51 @@ func (c *sentKong) Run(ctx *cli.Context) error {
 	return writeSentTable(ctx, recs)
 }
 
+// sentSanitize replaces every rune that could let record content — bodies
+// are agent-authored and arbitrary — drive the terminal or forge the shape
+// of the output (contract §7 AMENDMENT 4). Replaced with U+FFFD:
+//
+//   - C0 controls other than LF and TAB, and DEL. ESC drives the cursor:
+//     records print most-recent-first, so an OLD body sits BELOW newer rows
+//     and can repaint them with CUU+EL. BS/CR/NUL/BEL are the same class.
+//   - C1 controls (U+0080–U+009F); U+009B is CSI on terminals that decode
+//     them.
+//   - The bidi embedding/override/isolate formatters, which reorder
+//     rendered text and can be left unterminated by the 200-rune cut.
+//
+// Substitution rather than deletion, one rune out per rune in: the cut
+// point of the table's rune budget then does not move, and the reader can
+// see that something was there.
+//
+// LF and TAB survive because neither can forge structure once the two
+// human-readable modes are built as they are: the table collapses all
+// whitespace to single spaces BEFORE sanitizing, so neither ever reaches a
+// cell, and --full prefixes every body line, so an LF cannot begin a
+// structural line. Invalid UTF-8 also becomes U+FFFD — ranging over a
+// string decodes it that way — so no raw byte reaches the terminal.
+func sentSanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+			return '�'
+		case r == 0x200e, r == 0x200f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			return '�'
+		}
+		return r
+	}, s)
+}
+
+// sentSafeField renders one single-line field (ts, sender, initiative,
+// outcome, title) for either human-readable mode: whitespace collapsed to
+// single spaces so it cannot break a table row or start a line of its own,
+// then sanitized. Every one of these fields is copied from the log, so
+// every one of them is attacker-reachable, not just the body.
+func sentSafeField(s string) string {
+	return sentSanitize(strings.Join(strings.Fields(s), " "))
+}
+
 // writeSentTable renders recs as contract §7's tab-aligned default table
 // (TIME, SENDER, INITIATIVE, OUTCOME, BODY(trunc)), matching
 // writeStewardStatsTable's shape.
@@ -197,29 +259,49 @@ func writeSentTable(ctx *cli.Context, recs []sentlog.Record) error {
 	fmt.Fprintln(w, "TIME\tSENDER\tINITIATIVE\tOUTCOME\tBODY")
 	fmt.Fprintln(w, "----\t------\t----------\t-------\t----")
 	for _, r := range recs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Timestamp, r.Sender, r.Initiative, r.Outcome, sentTableBody(r.Body))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			sentSafeField(r.Timestamp), sentSafeField(string(r.Sender)),
+			sentSafeField(r.Initiative), sentSafeField(string(r.Outcome)),
+			sentTableBody(r.Body))
 	}
 	return w.Flush()
 }
 
 // sentTableBody renders one body for the table's BODY column: every run of
-// whitespace collapsed to a single space, then truncated to
+// whitespace collapsed to a single space, sanitized, then truncated to
 // sentBodyTruncRunes runes. The collapse is required, not cosmetic — a
 // newline inside a tabwriter cell ends the row early and destroys the
 // column alignment for the whole table, and bodies here are multi-line
-// Steward digests.
+// Steward digests. Truncation stays last so the 200-rune budget is spent on
+// what is actually displayed.
 func sentTableBody(body string) string {
-	return truncate(strings.Join(strings.Fields(body), " "), sentBodyTruncRunes)
+	return truncate(sentSafeField(body), sentBodyTruncRunes)
 }
+
+// sentFullBodyPrefix marks every line of a body under --full. This is what
+// makes the block form unforgeable: a record header starts at column 0 and
+// a title line starts with exactly two spaces, so no prefixed body line can
+// be read as either, no matter what the body contains. A body ends at its
+// last prefixed line — which also answers the non-hostile half of the
+// problem, since a multi-KB multi-line Steward digest otherwise gives the
+// reader no way to see where one record stops and the next begins.
+const sentFullBodyPrefix = "  | "
 
 // writeSentFull prints one block per record with the body untruncated
 // (--full). Not the table: a multi-KB body cannot live in a tabwriter cell,
-// so the format that shows whole bodies has to be the block form.
+// so the format that shows whole bodies has to be the block form. Line
+// structure is preserved — prefixed, not escaped — because these bodies are
+// digests, and %q on a multi-KB digest is unreadable.
 func writeSentFull(ctx *cli.Context, recs []sentlog.Record) {
 	for _, r := range recs {
-		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  outcome=%s\n", r.Timestamp, r.Sender, r.Initiative, r.Outcome)
-		fmt.Fprintf(ctx.Stdout, "  title: %s\n", r.Title)
-		fmt.Fprintf(ctx.Stdout, "  body: %s\n", r.Body)
+		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  outcome=%s\n",
+			sentSafeField(r.Timestamp), sentSafeField(string(r.Sender)),
+			sentSafeField(r.Initiative), sentSafeField(string(r.Outcome)))
+		fmt.Fprintf(ctx.Stdout, "  title: %s\n", sentSafeField(r.Title))
+		fmt.Fprintln(ctx.Stdout, "  body:")
+		for _, line := range strings.Split(sentSanitize(r.Body), "\n") {
+			fmt.Fprintf(ctx.Stdout, "%s%s\n", sentFullBodyPrefix, line)
+		}
 		fmt.Fprintln(ctx.Stdout)
 	}
 }
