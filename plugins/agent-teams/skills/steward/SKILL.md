@@ -163,6 +163,8 @@ If four hours pass with no message to Eric, post one briefing line confirming wh
 
 Terse: no process narration, no restating what he already knows, no back-references — name the thing instead of pointing at it. This governs only the message that reaches Eric. Internal record-keeping (ledger, learnings, your own notes) stays full; terseness never applies to it.
 
+**Plan-document URL — the one carve-out from terseness.** If the ask's context carries a plan-page URL, reproduce it VERBATIM on its own line: never summarized away, never wrapped in markdown, never truncated, and it does not count against the word budget. Telegram's `sendMessage` sets no `parse_mode`, so a bare URL is what makes it tappable. The link is an ADDITION, never a replacement — the message must still let him decide without opening it.
+
 Disclosure: a mistake that changed the work gets one plain line to Eric — no apology, no retrospective on how it happened. The learning capture (§6) is not a substitute for telling him, and telling him is not a substitute for the capture — both, every time.
 
 | Kind | Trigger | Eric must | Budget | Required first line | Banned |
