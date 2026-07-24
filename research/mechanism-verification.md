@@ -371,3 +371,15 @@ or wake-target logic keyed on `Kind`/mode anywhere in `hung_scan.go` or
 - `~/.agent-teams/debug/hooks.log` — wake-watcher/inbox-drain trail for at-pp7z and steward, 0 hung-scan mentions
 - `~/.agent-teams/steward/ledger.jsonl` — single at-pp7z plan-approval entry at 02:59:00
 - `~/.claude/projects/-Users-ericlloyd--agent-teams-worktrees-quoting-api-x-appetite-api-integration-hard/2cc31bf0-e672-4496-a1b6-4301388fd1b1.jsonl` — session transcript, activity-burst evidence
+
+---
+
+## Correction (post-review, 2026-07-24)
+
+Steward ground truth contradicts two inferences in §6: `ateam relay` WAS
+running through the incident (PID 20444, binary `ateam-darwin-arm64` —
+process-name matching on `ateam` misses it), and the wake ladder DID fire
+(steward received the wake at 10:27Z). The lateness is fully explained by
+the classification/anchor mechanisms in §§1–3. The residual operational
+finding is that relay runs unsupervised on a stale binary (up since Wed
+9am, predating 0.42.31/32).

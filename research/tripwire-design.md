@@ -29,12 +29,17 @@ Two ambient findings that shape the design:
 
 - **Mode is parsed but never used** — bg and interactive sessions are
   classified identically (the at-2bkv false-wake class).
-- **No audit trail, and the detector itself may not have been running.**
-  hung-scan keeps one mutable state file (now `{}`), logs nothing per tick,
-  and runs only as a goroutine inside `ateam relay` — for which no process,
-  log, or launchd job exists on this machine today. There is no evidence
-  the wake ladder actually fired the night of at-pp7z; the steward's own
-  inbox shows no doorbell in the 02:58–05:45 window.
+- **No audit trail, and the detector runs stale.** hung-scan keeps one
+  mutable state file (now `{}`) and logs nothing per tick — this incident
+  was nearly unreconstructable. [Corrected after steward review: an earlier
+  draft claimed relay wasn't running and the ladder may not have fired.
+  Wrong — relay IS running (PID 20444; the process check missed it because
+  the binary is named `ateam-darwin-arm64`), and the ladder DID fire (steward
+  received the wake at 10:27Z). The lateness was entirely the mechanism gaps
+  above.] The true operational finding: relay is an unsupervised singleton
+  that has been running the same stale binary since Wed 9am — predating
+  0.42.31/32 — so shipped fixes don't take effect until someone manually
+  restarts it, and nothing restarts it if it dies.
 
 ## Design decisions
 
@@ -99,11 +104,14 @@ Fallback heuristic (worktree path contains the initiative id) covers legacy
 sessions.
 
 **Out of scope — filed separately, flagged now because it caps everything
-above:** `ateam relay` supervision. hung-scan only exists while relay runs,
-and relay is unsupervised and currently not running. Recommend a sibling
-initiative (launchd supervision or steward-side relay-liveness check). The
+above:** `ateam relay` lifecycle. hung-scan only exists inside the relay
+process, which is an unsupervised singleton currently running a binary from
+before the last two releases — new detection code ships dead until relay is
+manually restarted, and nothing restarts it if it dies or the machine
+reboots. Recommend a sibling initiative (supervision + restart-on-upgrade,
+e.g. launchd or a steward-side relay-version/liveness check). The
 durable-timestamp design (D3) at least makes detection resume correctly
-after downtime instead of restarting the clock.
+after any downtime instead of restarting the clock.
 
 ## Tradeoffs, stated plainly
 
