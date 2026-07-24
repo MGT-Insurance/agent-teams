@@ -72,14 +72,6 @@ fi
 DRI_CWD="$T/dri-plain-cwd"
 mkdir -p "$DRI_CWD"
 
-prime_out=$( (cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/prime-role-learnings.sh") 2>/dev/null )
-prime_ctx=$(printf '%s' "$prime_out" | jq -r '.additionalContext // empty' 2>/dev/null || true)
-if printf '%s' "$prime_ctx" | grep -q "$DRI_MARKER_TEXT"; then
-  pass "DRI leg: prime-role-learnings.sh additionalContext contains real ateam learnings dri output"
-else
-  fail "DRI leg: expected seeded dri marker in prime-role-learnings.sh output; got: $prime_out"
-fi
-
 recall_out=$( (cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/role-recall-recovery.sh") 2>/dev/null )
 if printf '%s' "$recall_out" | grep -q "$DRI_MARKER_TEXT"; then
   pass "DRI leg: role-recall-recovery.sh stdout contains real ateam learnings dri output"
@@ -99,9 +91,9 @@ else
   pass "DRI leg: cleanup-dri-marker.sh removed the marker"
 fi
 
-post_cleanup_out=$( (cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/prime-role-learnings.sh") 2>/dev/null )
+post_cleanup_out=$( (cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/role-recall-recovery.sh") 2>/dev/null )
 if [ -z "$post_cleanup_out" ]; then
-  pass "DRI leg: prime-role-learnings.sh is silent after marker cleanup (no-role now)"
+  pass "DRI leg: role-recall-recovery.sh is silent after marker cleanup (no-role now)"
 else
   fail "DRI leg: expected empty output after marker cleanup; got: $post_cleanup_out"
 fi
@@ -115,14 +107,6 @@ mkdir -p "$STEWARD_DIR"
 : > "$STEWARD_DIR/.steward-session"
 
 STEWARD_SID="e2e-steward-session-0002"
-
-steward_prime_out=$( (cd "$STEWARD_DIR" && printf '{"session_id":"%s"}' "$STEWARD_SID" | "$HOOKS/prime-role-learnings.sh") 2>/dev/null )
-steward_prime_ctx=$(printf '%s' "$steward_prime_out" | jq -r '.additionalContext // empty' 2>/dev/null || true)
-if printf '%s' "$steward_prime_ctx" | grep -q "$STEWARD_MARKER_TEXT"; then
-  pass "Steward leg: prime-role-learnings.sh additionalContext contains real ateam learnings steward output"
-else
-  fail "Steward leg: expected seeded steward marker in prime-role-learnings.sh output; got: $steward_prime_out"
-fi
 
 steward_recall_out=$( (cd "$STEWARD_DIR" && printf '{"session_id":"%s"}' "$STEWARD_SID" | "$HOOKS/role-recall-recovery.sh") 2>/dev/null )
 if printf '%s' "$steward_recall_out" | grep -q "$STEWARD_MARKER_TEXT"; then
