@@ -1011,6 +1011,50 @@ func TestRelay_Direct_WithThreadRef_StillRoutesByThread(t *testing.T) {
 	}
 }
 
+// TestRelay_Direct_EmptyText_DoesNotPanic pins defensive behavior for a
+// Direct reply with empty Text. In practice this shape should never arrive:
+// telegram.go's isContentLess check drops a content-less DM at the
+// transport before Receive ever returns it. But nothing in
+// handleDirectReply or BuildStewardDirectEnvelope checks Text for
+// emptiness, so the shape is legal to construct here, and the relay must
+// not crash on it. Current behavior: it still forwards an envelope with an
+// empty body.
+func TestRelay_Direct_EmptyText_DoesNotPanic(t *testing.T) {
+	ctx := newRelayCtx(t)
+
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef: "",
+			Text:      "",
+			Direct:    true,
+		}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardDirectEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "" {
+		t.Errorf("envelope Body = %q, want empty", env.Body)
+	}
+}
+
 // TestFirstBotMention exercises firstBotMention directly — the pure function
 // backing rule 2's "some other bot was addressed" decision — for edge cases
 // the handler-level tests above don't reach: no mentions at all, an
@@ -2157,6 +2201,81 @@ func TestRelay_Ack_DoesNotFireOnSendFailure(t *testing.T) {
 		enabled:             func(string) bool { return true },
 		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:             bdq.query,
+		send:                fs.send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected send to be attempted once, got %d calls", len(fs.calls))
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls on send failure, got %v", fa.refs)
+	}
+}
+
+// TestRelay_Ack_FiresOnDirect verifies the Direct (DM) forward path acks.
+// Existing Ack coverage exercises MentionsSelf (TestRelay_Ack_FiresOnMentionsSelf)
+// and the tied-thread path, but handleDirectReply is a distinct code path
+// reached only when reply.Direct is true, and no prior test forwards down it
+// with Direct specifically set.
+func TestRelay_Ack_FiresOnDirect(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:  "",
+			Text:       "what is the status",
+			Direct:     true,
+			MessageRef: "555",
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnDirect_SendFailure verifies the Direct (DM)
+// forward path follows the same send-then-ack discipline as every other
+// forward: a failed send must not ack. TestRelay_Ack_DoesNotFireOnSendFailure
+// covers this discipline on the tied-thread path; this pins it specifically
+// on handleDirectReply (relay.go's sendEnvelopeToSteward is only acked after
+// c.send returns a nil error).
+func TestRelay_Ack_DoesNotFireOnDirect_SendFailure(t *testing.T) {
+	fa := &fakeAck{}
+	fs := &fakeSendCapture{err: fmt.Errorf("send failed")}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:  "",
+			Text:       "what is the status",
+			Direct:     true,
+			MessageRef: "555",
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
 		send:                fs.send,
 		ack:                 fa.ack,
 		claimsLocally:       alwaysClaimsLocally,
