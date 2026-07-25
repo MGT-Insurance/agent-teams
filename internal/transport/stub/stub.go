@@ -57,26 +57,43 @@ func (s *Stub) Name() string { return "stub" }
 // Send appends the outbound message to <dir>/sent.jsonl and returns a
 // deterministic threadRef from a counter stored in <dir>/next-ref.
 //
-// Neither a ChatRef-addressed send nor a General send models a forum topic:
-// the recorded thread_ref is "" and the next-ref counter is not bumped. That
-// mirrors the Telegram transport in both cases — a General-channel post opens
-// no topic, and a 1:1 chat has no topics to open at all. ChatRef is tested
-// first so the stub follows the precedence transport.OutboundMessage.ChatRef
-// mandates when both are set.
+// The switch below RESOLVES A DESTINATION rather than merely recording the
+// fields, mirroring telegram.Send's own structure case for case, and records
+// it as "destination". Recording the raw fields alone would let a test assert
+// that a reply carried a chat ref while staying blind to where the message
+// actually went; the resolved destination is the thing a DM reply is supposed
+// to get right, so it is what the test asserts on.
 //
-// chat_ref and general are recorded so the outbound leg is observable: the
-// destination of a reply is the whole point of a DM answer, and a test that
-// only saw the body could not tell a DM reply from a General broadcast.
+// ChatRef is the FIRST case, not an equal alternative to General, because
+// transport.OutboundMessage.ChatRef makes it beat General when both are set —
+// the opposite of the General-vs-ThreadRef precedence, deliberately, since
+// downgrading a reply meant for one private conversation into the shared
+// channel is a data-leak-shaped failure rather than a routing preference.
+// Ordering it structurally (first case wins) is why a message that somehow
+// arrives with both set still lands in the private chat.
+//
+// Neither of those two cases models a forum topic: thread_ref is "" and the
+// next-ref counter is not bumped. That mirrors the Telegram transport in both
+// cases — a General post opens no topic, and a 1:1 chat has no topics to open.
 func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 	threadRef := msg.ThreadRef
-	if msg.ChatRef != "" || msg.General {
+	var destination string
+	switch {
+	case msg.ChatRef != "":
 		threadRef = ""
-	} else if threadRef == "" {
-		ref, err := s.nextRef()
-		if err != nil {
-			return "", fmt.Errorf("stub: nextRef: %w", err)
+		destination = "chat:" + msg.ChatRef
+	case msg.General:
+		threadRef = ""
+		destination = "general"
+	default:
+		if threadRef == "" {
+			ref, err := s.nextRef()
+			if err != nil {
+				return "", fmt.Errorf("stub: nextRef: %w", err)
+			}
+			threadRef = ref
 		}
-		threadRef = ref
+		destination = "topic:" + threadRef
 	}
 
 	record := map[string]any{
@@ -86,6 +103,7 @@ func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 		"body":          msg.Body,
 		"chat_ref":      msg.ChatRef,
 		"general":       msg.General,
+		"destination":   destination,
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

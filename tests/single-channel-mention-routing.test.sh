@@ -54,10 +54,15 @@
 #              Direct path is deliberately not fallback-gated (a private-chat
 #              update reaches only the bot it was addressed to, so it is
 #              exactly-once by construction).
-#   outbound — `ateam notify direct --to <ref>` addresses the answer at that
-#              conversation (chat_ref recorded, General false); `--to general`
-#              is unchanged (General true, no chat_ref); an omitted --to still
-#              delivers to General but is loud at depth 0.
+#   outbound — `ateam notify direct --to <ref>` RESOLVES to that conversation
+#              ("chat:<ref>", General false); `--to general` is unchanged
+#              ("general", no chat_ref); an omitted --to still delivers to
+#              General but is loud at depth 0.
+#
+# The outbound assertions are on the destination the stub RESOLVES (its Send
+# mirrors telegram.Send's switch case for case, ChatRef first), not merely on
+# the fields recorded, so a reply that went to the shared channel instead of
+# back to the DM fails rather than passing on a carried-but-unused chat ref.
 #
 # ⚠️ SCOPE: this proves the PLUMBING, not the prose. It drives the binaries
 # directly, so it shows that a ref supplied on the command line reaches the
@@ -422,10 +427,16 @@ nt_ref_out=$(AGENT_TEAMS_HOME="$NT_HOME" AGENT_TEAMS_STUB_DIR="$NT_REF_STUB" AGE
 [ -f "$NT_REF_STUB/sent.jsonl" ] || fail notify_to_ref "stub sent.jsonl was not written"
 [ "$(wc -l < "$NT_REF_STUB/sent.jsonl" | tr -d ' ')" = "1" ] || fail notify_to_ref "expected exactly 1 line in sent.jsonl"
 nt_ref_record=$(head -n1 "$NT_REF_STUB/sent.jsonl")
+[ "$(echo "$nt_ref_record" | jq -r '.destination')" = "chat:$nt_ref" ] \
+  || fail notify_to_ref "the send RESOLVED to the wrong destination — a DM answer must land in the conversation the ref names, not the shared channel (got: '$nt_ref_record')"
 [ "$(echo "$nt_ref_record" | jq -r '.chat_ref')" = "$nt_ref" ] \
   || fail notify_to_ref "sent record chat_ref != the --to ref — the answer is NOT addressed at the DM (got: '$nt_ref_record')"
+# General must be false as well as the destination being right. The transport
+# is required to prefer ChatRef if both are ever set, but that guard is a last
+# line of defence: the chain must not hand the transport an ambiguous message
+# in the first place.
 [ "$(echo "$nt_ref_record" | jq -r '.general')" = "false" ] \
-  || fail notify_to_ref "sent record general is true — a ref-addressed answer must not be downgraded into the shared channel (got: '$nt_ref_record')"
+  || fail notify_to_ref "sent record general is true alongside a chat_ref — the chain handed the transport an ambiguous destination (got: '$nt_ref_record')"
 [ "$(echo "$nt_ref_record" | jq -r '.thread_ref')" = "" ] \
   || fail notify_to_ref "sent record thread_ref is not empty — a 1:1 chat has no forum topic (got: '$nt_ref_record')"
 [ ! -f "$NT_REF_STUB/next-ref" ] \
@@ -444,6 +455,8 @@ nt_gen_out=$(AGENT_TEAMS_HOME="$NT_HOME" AGENT_TEAMS_STUB_DIR="$NT_GEN_STUB" AGE
 
 [ "$(wc -l < "$NT_GEN_STUB/sent.jsonl" | tr -d ' ')" = "1" ] || fail notify_to_general "expected exactly 1 line in sent.jsonl"
 nt_gen_record=$(head -n1 "$NT_GEN_STUB/sent.jsonl")
+[ "$(echo "$nt_gen_record" | jq -r '.destination')" = "general" ] \
+  || fail notify_to_general "the send resolved somewhere other than the shared channel (got: '$nt_gen_record')"
 [ "$(echo "$nt_gen_record" | jq -r '.chat_ref')" = "" ] \
   || fail notify_to_general "sent record carries a chat_ref — 'general' must address the shared channel, not a conversation (got: '$nt_gen_record')"
 [ "$(echo "$nt_gen_record" | jq -r '.general')" = "true" ] \
@@ -468,6 +481,8 @@ echo "$nt_none_out" | grep -qF "FAULT: --to was omitted" \
 [ "$(wc -l < "$NT_NONE_STUB/sent.jsonl" | tr -d ' ')" = "1" ] \
   || fail notify_to_absent "the message was not delivered at all — the missing --to must warn, not drop"
 nt_none_record=$(head -n1 "$NT_NONE_STUB/sent.jsonl")
+[ "$(echo "$nt_none_record" | jq -r '.destination')" = "general" ] \
+  || fail notify_to_absent "an omitted --to resolved somewhere other than the shared channel (got: '$nt_none_record')"
 [ "$(echo "$nt_none_record" | jq -r '.general')" = "true" ] \
   || fail notify_to_absent "sent record general != true — an omitted --to must fall back to the shared channel (got: '$nt_none_record')"
 [ "$(echo "$nt_none_record" | jq -r '.chat_ref')" = "" ] \
