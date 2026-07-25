@@ -855,6 +855,159 @@ func TestNotify_Direct_ToAbsent_DeliversToGeneralAndLogsLoudly(t *testing.T) {
 	}
 }
 
+// ── --to on a handle that does not read it (agent-teams-ncn5.14) ──────────────
+//
+// The direct handle is the only reader of --to. The complementary case — a
+// direct send with --to must NOT draw this warning — is already pinned by
+// TestNotify_Direct_ToRef_AddressesConversation's empty-stderr assertion.
+
+// assertIgnoredToWarning pins the depth-0 diagnostic for a --to no code path
+// read. It must name the ignored value verbatim: "some --to was dropped" does
+// not tell the reader WHICH conversation they thought they were replying to.
+func assertIgnoredToWarning(t *testing.T, stderr, ref string) {
+	t.Helper()
+	var found string
+	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
+		if strings.Contains(line, "IGNORED") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a diagnostic reporting the ignored --to on stderr, got: %q", stderr)
+	}
+	if depth := logLineDepth(t, found); depth != 0 {
+		t.Errorf("expected depth-0 log line, got depth %d: %q", depth, found)
+	}
+	if !strings.Contains(found, ref) {
+		t.Errorf("diagnostic must name the ignored value %q verbatim: %q", ref, found)
+	}
+	if !strings.Contains(found, "--to") {
+		t.Errorf("diagnostic must name the flag: %q", found)
+	}
+}
+
+// TestNotify_Initiative_ToIgnored_WarnsAndStillSends confirms an initiative
+// send names a supplied --to at depth 0 rather than dropping it in silence,
+// and still delivers on the topic the bead's thread label pins. The send
+// proceeding is half the contract: --to cannot misroute a handle that never
+// reads it, so refusing the command would cost a message to buy nothing.
+func TestNotify_Initiative_ToIgnored_WarnsAndStillSends(t *testing.T) {
+	const ref = "8675309:42"
+	bodyFile := makeTempBodyFile(t, "initiative body")
+
+	ft := &fakeTransport{returnRef: "555"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{
+			ID:     "at-00o",
+			Title:  "my initiative",
+			Labels: []string{"at-00o", "thread:555"},
+		},
+	}
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		To:           ref,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called when a thread label already exists")
+			return nil
+		},
+	}
+
+	ctx, _, errBuf := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ThreadRef != "555" {
+		t.Errorf("ThreadRef = %q, want the recorded topic %q", ft.calls[0].ThreadRef, "555")
+	}
+	if ft.calls[0].ChatRef != "" {
+		t.Errorf("ChatRef = %q, want empty — --to must not leak into a non-direct send", ft.calls[0].ChatRef)
+	}
+	if ft.calls[0].General {
+		t.Error("expected General=false on an initiative send")
+	}
+
+	assertIgnoredToWarning(t, errBuf.String(), ref)
+}
+
+// TestNotify_Briefing_ToIgnored_WarnsAndStillSends is the same contract for the
+// briefing handle, whose destination comes from StewardBriefingThreadPath
+// rather than a bead label — a second handle that accepts --to and has nowhere
+// to put it.
+func TestNotify_Briefing_ToIgnored_WarnsAndStillSends(t *testing.T) {
+	const ref = "8675309:42"
+	bodyFile := makeTempBodyFile(t, "briefing body")
+
+	ft := &fakeTransport{returnRef: "777"}
+	cmd := &notifyKong{
+		ID:           BriefingHandle,
+		File:         bodyFile,
+		To:           ref,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called for the briefing handle")
+			return nil
+		},
+	}
+
+	ctx, _, errBuf := newNotifyCtx(&notifyFakeBD{})
+	ctx.Home = t.TempDir()
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ChatRef != "" {
+		t.Errorf("ChatRef = %q, want empty — --to must not leak into a briefing send", ft.calls[0].ChatRef)
+	}
+	if ft.calls[0].General {
+		t.Error("expected General=false on a briefing send")
+	}
+
+	assertIgnoredToWarning(t, errBuf.String(), ref)
+}
+
+// TestNotify_Initiative_NoTo_Silent confirms the warning is scoped to an
+// actually-supplied --to: the overwhelmingly common initiative send must stay
+// quiet, or the diagnostic becomes noise that trains the reader to ignore it.
+func TestNotify_Initiative_NoTo_Silent(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "initiative body")
+
+	ft := &fakeTransport{returnRef: "555"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{
+			ID:     "at-00o",
+			Title:  "my initiative",
+			Labels: []string{"at-00o", "thread:555"},
+		},
+	}
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called when a thread label already exists")
+			return nil
+		},
+	}
+
+	ctx, _, errBuf := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if errBuf.String() != "" {
+		t.Errorf("expected no diagnostic when --to is absent on an initiative send, got: %q", errBuf.String())
+	}
+}
+
 // TestNotify_NilContext confirms nil ctx returns an error immediately.
 func TestNotify_NilContext(t *testing.T) {
 	cmd := &notifyKong{

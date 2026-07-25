@@ -66,6 +66,16 @@ const generalDest = "general"
 // older prose during rollout will omit the flag on a legitimate General
 // reply; that must warn AND STILL DELIVER, because dropping Eric's replies
 // outright is strictly worse than the misrouting this flag exists to catch.
+//
+// The mirror case — To supplied where no code path reads it — resolves the
+// same way and for the same reason (agent-teams-ncn5.14). It is diagnosed in
+// Run and the send still goes out, because on a non-direct handle the flag
+// misroutes nothing: the destination is already pinned by the recorded topic,
+// so the only damage is that the caller believes something false. A warning
+// repairs the belief; rejecting would destroy the message instead. And the
+// steward prose that makes --to unomittable on the direct handle is itself
+// what makes a stray --to on an adjacent `ateam notify <initiative-id>` line
+// likely, so this is the muscle-memory slip that must not cost a message.
 type notifyKong struct {
 	ID    string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
 	File  string `name:"file" help:"Path to the message body file (required)." required:""`
@@ -100,6 +110,17 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 	body, err := os.ReadFile(c.File)
 	if err != nil {
 		return fmt.Errorf("ateam notify: read file: %w", err)
+	}
+
+	// runDirect is the only path that reads --to; every other handle is
+	// addressed by a topic it already recorded (a bead's "thread:<ref>" label,
+	// or StewardBriefingThreadPath for the briefing handle), leaving the flag
+	// nothing to select. Accepting it silently is the same silent-drop shape
+	// this epic exists to eliminate one flag over (agent-teams-ncn5.14), so it
+	// is named at depth 0 — but the send still proceeds. See notifyKong's doc
+	// for why this warns rather than rejects.
+	if c.To != "" && c.ID != DirectHandle {
+		transport.Logf(ctx.Stderr, 0, "ateam notify: warning: --to %q was IGNORED — only the %q handle reads --to. %q is addressed by the topic it already recorded, so this message is going exactly where it would have gone with no --to at all. To reply into the conversation a steward-direct envelope came from, the command is `ateam notify %s --to %s`.", c.To, DirectHandle, c.ID, DirectHandle, c.To)
 	}
 
 	if c.ID == BriefingHandle {
