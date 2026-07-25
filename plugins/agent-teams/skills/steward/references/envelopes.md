@@ -24,7 +24,11 @@ Why a `corrected` verdict gets an immediate learning, not just a ledger row: the
 
 ## steward-direct
 
-**Single-channel addressing.** Eric sends a direct message by @mentioning the bot in the shared Telegram General channel, not by posting to a dedicated topic — there is no per-conversation topic to reply into, which is why the dispatch rule replies with `ateam notify direct` and why that command posts straight back to General with no thread ref.
+**Two sources, one envelope kind.** Eric reaches the Steward outside any initiative in two ways: by @mentioning the bot in the shared General channel, or by DMing the bot 1:1. Both produce a steward-direct envelope, because to the Steward they are the same thing — a conversation with no initiative behind it and no dedicated topic to reply into. Neither ever carries a thread ref.
+
+The DM path additionally admits only allow-listed senders, so whether a given DM reaches you at all is settled upstream, before any envelope exists. That gate is not yours to reason about: act on the envelope you actually received, never on a belief about which paths are currently open.
+
+**Why the header carries a reply-to ref anyway.** What the two sources do NOT share is where the answer belongs: an @mention was asked in front of the group and is answered in front of the group, while a DM was asked privately and must be answered privately. Nothing in the envelope body distinguishes them, so the relay puts the distinction in the header — a DM gets `reply-to:<ref>`, an @mention gets a bare header. That ref is the transport's own opaque handle to the originating message; only the transport can read it, which is why the Steward's job is to copy it rather than interpret it, and why `ateam notify direct` always takes an explicit `--to` (the ref, or the literal `general`) instead of inferring a destination it cannot see.
 
 ## steward-briefing-reply
 
