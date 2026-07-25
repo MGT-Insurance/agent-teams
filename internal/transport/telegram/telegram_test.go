@@ -60,6 +60,25 @@ func logLineDepth(t *testing.T, line string) int {
 	return spaces / 2
 }
 
+// newUpdatesServer answers getUpdates with updates on the first call and an
+// empty batch on every call after — the fixture shape the Receive tests below
+// share.
+func newUpdatesServer(updates []map[string]any) *httptest.Server {
+	callCount := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			http.NotFound(w, r)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": updates})
+		} else {
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		}
+	}))
+}
+
 // jsonResponse writes a JSON body with the given status code.
 func jsonResponse(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1830,6 +1849,281 @@ func TestNew_WritesNothingToLog(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("New() must write nothing to the log (it's also transport.Enabled/transport.For's config-probe path), got: %q", buf.String())
+	}
+}
+
+// ── Direct chats / DM allow-list (agent-teams-ncn5.2) ────────────────────────
+
+// dmUpdate builds a private-chat (DM) update: no is_topic_message, no
+// message_thread_id, no entities, and a POSITIVE chat id which — per the Bot
+// API — is the sender's own Telegram user id.
+func dmUpdate(updateID, messageID int, senderID int64, text string) map[string]any {
+	return map[string]any{
+		"update_id": updateID,
+		"message": map[string]any{
+			"message_id": messageID,
+			"text":       text,
+			"chat":       map[string]any{"id": senderID, "type": "private"},
+			"from":       map[string]any{"id": senderID, "username": "eric", "is_bot": false},
+		},
+	}
+}
+
+// groupUpdate builds a topic message in the configured supergroup — the
+// existing, unchanged inbound path.
+func groupUpdate(updateID, messageID int, chatID int64, text string) map[string]any {
+	return map[string]any{
+		"update_id": updateID,
+		"message": map[string]any{
+			"message_id":        messageID,
+			"message_thread_id": 5,
+			"is_topic_message":  true,
+			"text":              text,
+			"chat":              map[string]any{"id": chatID, "type": "supergroup"},
+		},
+	}
+}
+
+// TestReceive_AllowlistedDM_AdmittedAsDirect proves the admitted half of the
+// gate end-to-end through the real Receive path: an allow-listed sender's DM
+// reaches the handler with Direct==true and an empty ThreadRef (a DM has
+// neither is_topic_message nor message_thread_id), while a message from the
+// configured supergroup in the same batch is untouched — Direct==false, its
+// ThreadRef still populated.
+func TestReceive_AllowlistedDM_AdmittedAsDirect(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+	const senderID = int64(12345678)
+
+	srv := newUpdatesServer([]map[string]any{
+		dmUpdate(1, 10, senderID, "hey, what's up"),
+		groupUpdate(2, 11, chatIDInt, "group message"),
+	})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		if len(received) >= 2 {
+			return sentinel
+		}
+		return nil
+	})
+
+	if len(received) != 2 {
+		t.Fatalf("got %d replies, want 2 (the DM and the group message)", len(received))
+	}
+	dm := received[0]
+	if !dm.Direct {
+		t.Error("DM Direct: got false, want true")
+	}
+	if dm.ThreadRef != "" {
+		t.Errorf("DM ThreadRef: got %q, want empty (a DM has no forum topic)", dm.ThreadRef)
+	}
+	if dm.Text != "hey, what's up" {
+		t.Errorf("DM Text: got %q", dm.Text)
+	}
+	if dm.MessageRef != "10" {
+		t.Errorf("DM MessageRef: got %q, want %q", dm.MessageRef, "10")
+	}
+	group := received[1]
+	if group.Direct {
+		t.Error("group message Direct: got true, want false")
+	}
+	if group.ThreadRef != "5" {
+		t.Errorf("group message ThreadRef: got %q, want %q", group.ThreadRef, "5")
+	}
+}
+
+// TestReceive_NonAllowlistedDM_DroppedAndSenderIDLogged proves the rejected
+// half: the DM never reaches the handler, and the depth-1 log line carries the
+// sender id — the number Eric copies into the allow-list, and the only
+// bootstrap path there is — while carrying NONE of the message text.
+func TestReceive_NonAllowlistedDM_DroppedAndSenderIDLogged(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+	const strangerID = int64(99887766)
+	const dmText = "private words that must not be logged"
+
+	srv := newUpdatesServer([]map[string]any{
+		dmUpdate(1, 10, strangerID, dmText),
+		groupUpdate(2, 11, chatIDInt, "marker"),
+	})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{12345678: true} // someone else
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (only the group marker)", len(received))
+	}
+	if received[0].Text != "marker" {
+		t.Errorf("received the DM instead of the marker: %q", received[0].Text)
+	}
+
+	got := logBuf.String()
+	var found string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "rejected DM") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a rejected-DM log line, got:\n%s", got)
+	}
+	if !strings.Contains(found, strconv.FormatInt(strangerID, 10)) {
+		t.Errorf("rejected-DM line must carry the sender id %d: %q", strangerID, found)
+	}
+	if depth := logLineDepth(t, found); depth != 1 {
+		t.Errorf("expected depth-1 log line, got depth %d: %q", depth, found)
+	}
+	if strings.Contains(got, dmText) {
+		t.Fatalf("log leaked the rejected DM's message text:\n%s", got)
+	}
+}
+
+// TestReceive_EmptyDMAllowlist_AdmitsNobody pins the default: with no
+// allow-list configured, a DM is dropped exactly as it was before DMs were
+// admitted at all.
+func TestReceive_EmptyDMAllowlist_AdmitsNobody(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	srv := newUpdatesServer([]map[string]any{
+		dmUpdate(1, 10, 12345678, "let me in"),
+		groupUpdate(2, 11, chatIDInt, "marker"),
+	})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID) // dmAllowlist left nil
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (only the group marker)", len(received))
+	}
+	if received[0].Text != "marker" {
+		t.Errorf("an empty allow-list admitted a DM: %q", received[0].Text)
+	}
+}
+
+// TestParseDMAllowlist_LinesCommasCommentsBlanks covers the documented format
+// in one pass: one-per-line, comma-separated, a trailing comment, a whole-line
+// comment, and blank lines.
+func TestParseDMAllowlist_LinesCommasCommentsBlanks(t *testing.T) {
+	raw := "# Eric's phones\n111, 222\n\n333 # laptop\n"
+
+	allow, err := parseDMAllowlist(raw)
+	if err != nil {
+		t.Fatalf("parseDMAllowlist: %v", err)
+	}
+	for _, id := range []int64{111, 222, 333} {
+		if !allow[id] {
+			t.Errorf("id %d: not allow-listed, want allow-listed (got map %v)", id, allow)
+		}
+	}
+	if len(allow) != 3 {
+		t.Errorf("allow-list size: got %d (%v), want 3", len(allow), allow)
+	}
+}
+
+// TestParseDMAllowlist_EmptyInputYieldsNoEntries pairs with
+// TestReceive_EmptyDMAllowlist_AdmitsNobody at the parse level: absent or
+// whitespace-only config must not become an entry.
+func TestParseDMAllowlist_EmptyInputYieldsNoEntries(t *testing.T) {
+	allow, err := parseDMAllowlist("")
+	if err != nil {
+		t.Fatalf("parseDMAllowlist(\"\"): %v", err)
+	}
+	if len(allow) != 0 {
+		t.Errorf("empty input produced %v, want no entries", allow)
+	}
+}
+
+// TestNew_MalformedDMAllowlist_FailsLoudlyNamingTheLine is the acceptance
+// criterion for the fail-loud rule: a bad entry must abort construction with
+// an error naming the offending line, never be skipped. A skipped entry means
+// Eric believes he is allow-listed when he is not, and the only symptom is a
+// DM that vanishes with no diagnostic.
+func TestNew_MalformedDMAllowlist_FailsLoudlyNamingTheLine(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
+	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
+	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "111\nnot-an-id\n222")
+
+	_, err := New(t.TempDir(), &http.Client{})
+	if err == nil {
+		t.Fatal("expected New to fail on a malformed allow-list entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "not-an-id") {
+		t.Errorf("error must name the offending entry: %v", err)
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error must name the offending line number: %v", err)
+	}
+}
+
+// TestNew_DMAllowlistFromFile_AdmitsOnlyListedSenders drives the real config
+// path Eric will use — <home>/telegram/dm-allowlist — through New and asserts
+// the resulting predicate, proving loadOptionalSecret and parseDMAllowlist are
+// wired into construction.
+func TestNew_DMAllowlistFromFile_AdmitsOnlyListedSenders(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
+	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
+	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "")
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "telegram"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "telegram", "dm-allowlist"), []byte("12345678\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tg, err := New(home, &http.Client{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !tg.allowsDirectChat(12345678) {
+		t.Error("allowsDirectChat(12345678): got false, want true (id is in the file)")
+	}
+	if tg.allowsDirectChat(99887766) {
+		t.Error("allowsDirectChat(99887766): got true, want false (id is not in the file)")
+	}
+}
+
+// TestNew_AbsentDMAllowlist_ConstructsAndAdmitsNobody proves the optional
+// loader does NOT inherit loadSecret's fail-on-absence behavior: an operator
+// who never configures a DM allow-list still gets a working transport, one
+// that admits no DMs.
+func TestNew_AbsentDMAllowlist_ConstructsAndAdmitsNobody(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
+	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
+	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "")
+
+	tg, err := New(t.TempDir(), &http.Client{})
+	if err != nil {
+		t.Fatalf("New with no allow-list configured must succeed, got: %v", err)
+	}
+	if tg.allowsDirectChat(12345678) {
+		t.Error("allowsDirectChat: got true with no allow-list configured, want false")
 	}
 }
 

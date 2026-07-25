@@ -11,6 +11,12 @@
 // Bot token: env AGENT_TEAMS_TELEGRAM_TOKEN, or file ~/.agent-teams/telegram/token (mode 0600).
 // Chat id:   env AGENT_TEAMS_TELEGRAM_CHAT_ID, or file ~/.agent-teams/telegram/chat-id (mode 0600).
 //
+// DM allow-list (OPTIONAL): env AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST, or file
+// ~/.agent-teams/telegram/dm-allowlist — the Telegram user ids permitted to
+// hold a 1:1 conversation with the bot, one per line or comma-separated (#
+// comments and blank lines ignored). Absent or empty admits no DMs at all; a
+// malformed entry is a startup error. See allowsDirectChat.
+//
 // # Thread model
 //
 // One Telegram forum topic per initiative. Send with ThreadRef=="" opens a new
@@ -86,6 +92,12 @@ type Telegram struct {
 	// literal built directly in tests) falls back to os.Stderr too, via
 	// logf below.
 	logOut io.Writer
+
+	// dmAllowlist is the set of Telegram user ids permitted to DM the bot,
+	// read by allowsDirectChat and by nothing else. Nil or empty admits
+	// nobody. Populated in New from the optional dm-allowlist config; see
+	// parseDMAllowlist for the format.
+	dmAllowlist map[int64]bool
 }
 
 // logf writes one timestamped, indentation-scoped log line via
@@ -116,15 +128,24 @@ func New(home string, client httpDoer) (*Telegram, error) {
 	if err != nil {
 		return nil, fmt.Errorf("telegram: chat-id: %w", err)
 	}
+	rawAllowlist, err := loadOptionalSecret(home, "AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "telegram/dm-allowlist")
+	if err != nil {
+		return nil, fmt.Errorf("telegram: dm-allowlist: %w", err)
+	}
+	dmAllowlist, err := parseDMAllowlist(rawAllowlist)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: dm-allowlist: %w", err)
+	}
 	if client == nil {
 		client = &http.Client{Timeout: 45 * time.Second}
 	}
 	return &Telegram{
-		token:      token,
-		chatID:     chatID,
-		httpClient: client,
-		baseURL:    "https://api.telegram.org",
-		logOut:     os.Stderr,
+		token:       token,
+		chatID:      chatID,
+		httpClient:  client,
+		baseURL:     "https://api.telegram.org",
+		logOut:      os.Stderr,
+		dmAllowlist: dmAllowlist,
 	}, nil
 }
 
@@ -176,6 +197,11 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 // non-topic messages from the configured chat are emitted as Reply{ThreadRef:""}
 // so the relay can bounce them with "reply inside the initiative's topic."
 //
+// A message from a private chat (a DM to the bot) is admitted only when
+// allowsDirectChat accepts its chat id — which, for a private chat, IS the
+// sender's own Telegram user id — and is then emitted with Reply.Direct ==
+// true and an empty ThreadRef (a DM has no forum topic).
+//
 // Before each poll, Receive resolves this bot's own @username via getMe if it
 // isn't already known (never in New — New must stay network-free for
 // send-only/Enabled paths). A getMe failure is logged and non-fatal: polling
@@ -224,9 +250,29 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 				continue
 			}
 
-			// Reject messages from other chats.
+			// Admission: the configured chat, or a private chat (DM) whose
+			// sender allowsDirectChat accepts. Everything else is rejected.
+			// The configured-chat branch is checked FIRST on purpose — the
+			// ordering must not depend on the fact that the configured id is
+			// a -100… supergroup and so can never be a private chat.
+			var direct bool
 			chatIDStr := strconv.FormatInt(msg.Chat.ID, 10)
-			if chatIDStr != t.chatID {
+			switch {
+			case chatIDStr == t.chatID:
+				// The configured supergroup — unchanged.
+			case msg.Chat.Type == "private":
+				if !t.allowsDirectChat(msg.Chat.ID) {
+					// Sender id (and @username, when Telegram supplies one)
+					// — NEVER the message text: an unauthorized sender's
+					// content does not belong in our logs. For a private
+					// chat chat.id IS the Telegram user id, so this line is
+					// the whole bootstrap path for getting a legitimate
+					// sender into the allow-list.
+					t.logf(1, "update %d: rejected DM (sender %d%s not in dm-allowlist)", upd.UpdateID, msg.Chat.ID, senderUsername(msg))
+					continue
+				}
+				direct = true
+			default:
 				t.logf(1, "update %d: rejected (chat %s != configured %s)", upd.UpdateID, chatIDStr, t.chatID)
 				continue
 			}
@@ -242,6 +288,7 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
 			reply.MessageRef = strconv.Itoa(msg.MessageID)
+			reply.Direct = direct
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
 				reply.ThreadRef = strconv.Itoa(msg.MessageThreadID)
@@ -270,6 +317,38 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 // policy is a one-function edit.
 func isContentLess(msg *message) bool {
 	return msg.Text == "" && msg.Caption == ""
+}
+
+// allowsDirectChat reports whether the bot will hold a 1:1 conversation with
+// chatID. For a Telegram private chat, chat.id IS the human's own user id, so
+// the allow-list is a list of Telegram user ids. This is the single, isolated
+// authorization decision point for direct chats (Eric, agent-teams-ncn5),
+// built the way isContentLess isolates the content-less policy above:
+// flipping the policy is a one-function edit.
+//
+// It takes a chat id rather than a message because BOTH directions run
+// through it — inbound it decides whether a DM is admitted at all, outbound it
+// validates the chat decoded from an OutboundMessage.ChatRef before the
+// transport will send there — so the two directions cannot drift apart.
+//
+// A nil or empty allow-list admits nobody. That is byte-identical to the
+// behavior before DMs were admitted at all, and it is the correct default for
+// a gate whose failure mode is "a stranger reaches an LLM with shell access":
+// an operator who upgrades without configuring anything sees no change.
+func (t *Telegram) allowsDirectChat(chatID int64) bool {
+	return t.dmAllowlist[chatID]
+}
+
+// senderUsername renders msg's sender @username as a leading-space-separated
+// suffix for a log line, or "" when the message carries no from or no
+// username. The rejected-DM line uses it so the record says WHO was rejected
+// as well as which id to allow-list — a bare numeric id is not something a
+// human recognizes.
+func senderUsername(msg *message) string {
+	if msg.From == nil || msg.From.Username == "" {
+		return ""
+	}
+	return " @" + msg.From.Username
 }
 
 // messageBody returns the actionable, non-empty body to relay for msg. If
@@ -588,6 +667,7 @@ type message struct {
 	Caption         string          `json:"caption"`
 	Entities        []messageEntity `json:"entities"`
 	Chat            chat            `json:"chat"`
+	From            *user           `json:"from"`
 
 	// Media fields — present only for the corresponding non-text message
 	// type. messageBody uses these purely for content-type detection
@@ -624,6 +704,20 @@ type document struct {
 
 type chat struct {
 	ID int64 `json:"id"`
+	// Type is the Telegram chat type: "private" (a 1:1 DM with the bot),
+	// "group", "supergroup", or "channel". Only "private" is read — see the
+	// admission switch in Receive.
+	Type string `json:"type"`
+}
+
+// user is the minimal Telegram User shape decoded from a message's from field
+// — modeled like sticker/document above: only what is actually read, which
+// here is the @username the rejected-DM log line reports. The sender's numeric
+// id is deliberately NOT taken from here: the allow-list is keyed on chat.id,
+// so that is the value the log line must print for it to be copy-pasteable
+// into the allow-list.
+type user struct {
+	Username string `json:"username"`
 }
 
 // messageEntity is a Telegram MessageEntity. Offset and Length are UTF-16
@@ -649,6 +743,65 @@ func loadSecret(home, envKey, relPath string) (string, error) {
 		return "", fmt.Errorf("env %s not set and %s: %w", envKey, p, err)
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// loadOptionalSecret is loadSecret's sibling for config that is ALLOWED to be
+// absent: env var → file at <home>/<relPath> → "". An absent file is not an
+// error — the feature is simply unconfigured. Any other read failure still is:
+// a file that exists but cannot be read is a misconfiguration, not an opt-out,
+// and treating it as "unconfigured" would silently disable the feature.
+//
+// loadSecret must keep erroring on absence and is deliberately left alone: the
+// token and chat id are required, and their absence has to fail loudly.
+func loadOptionalSecret(home, envKey, relPath string) (string, error) {
+	if v := os.Getenv(envKey); v != "" {
+		return strings.TrimSpace(v), nil
+	}
+	p := filepath.Join(home, relPath)
+	data, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", p, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// parseDMAllowlist parses the DM allow-list into the set allowsDirectChat
+// consults: Telegram user ids, one per line or comma-separated, with #
+// comments and blank lines ignored. Empty input yields a nil map, which admits
+// nobody.
+//
+// An entry that is not a positive integer is an ERROR naming the offending
+// line, never a skipped entry. A silently dropped id means the human believes
+// they are allow-listed when they are not, and the only symptom is a DM that
+// vanishes with no diagnostic — loud at startup beats silent at runtime. A
+// non-positive id is rejected for the same reason: Telegram user ids are
+// positive, so a negative one (e.g. a pasted -100… supergroup id) is an entry
+// that could never match.
+func parseDMAllowlist(raw string) (map[int64]bool, error) {
+	var allow map[int64]bool
+	for i, line := range strings.Split(raw, "\n") {
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		for _, field := range strings.Split(line, ",") {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(field, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, fmt.Errorf("line %d: %q is not a Telegram user id", i+1, field)
+			}
+			if allow == nil {
+				allow = make(map[int64]bool)
+			}
+			allow[id] = true
+		}
+	}
+	return allow, nil
 }
 
 func decodeJSON(r io.Reader, dst any) error {
