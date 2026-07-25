@@ -45,11 +45,31 @@ func defaultLabelAdd(b cli.BDRunner, id, label string) error {
 	return err
 }
 
-// notifyKong is the kong-native form of notifyCmd: `ateam notify <id> --file <path> [--title <t>]`.
+// generalDest is the one reserved --to value. It means "the shared General
+// channel" — i.e. exactly the pre-DM behavior of the direct handle. Every
+// other value is an opaque conversation ref that only the owning transport
+// may parse.
+//
+// The sentinel exists so that an ABSENT --to means exactly one thing: the
+// steward's prose was not followed. Without it, `ateam notify direct --file x`
+// with a dropped reply-to ref is byte-identical to the same command for a
+// legitimate General reply, and the failure this epic cares about becomes
+// undetectable.
+const generalDest = "general"
+
+// notifyKong is the kong-native form of notifyCmd: `ateam notify <id> --file <path> [--title <t>] [--to <ref|general>]`.
+//
+// To is deliberately NOT `required:""`. "Required" here is a requirement of
+// the prose the steward follows, enforced by a loud depth-0 diagnostic on
+// absence — not by kong rejecting the command. A steward session running
+// older prose during rollout will omit the flag on a legitimate General
+// reply; that must warn AND STILL DELIVER, because dropping Eric's replies
+// outright is strictly worse than the misrouting this flag exists to catch.
 type notifyKong struct {
 	ID    string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
 	File  string `name:"file" help:"Path to the message body file (required)." required:""`
 	Title string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, or \"Steward\" for the direct handle)."`
+	To    string `name:"to" help:"Conversation to reply in: the opaque ref from a steward-direct envelope, or the literal \"general\" for the shared General channel. Required for the direct handle."`
 
 	transportFor transportForFunc `kong:"-"`
 	labelAdd     labelAddFunc     `kong:"-"`
@@ -249,14 +269,41 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 // there is no thread ref to read, reuse, or persist, and no
 // publishStewardTopics call.
 //
+// --to selects the destination (agent-teams-ncn5.11), because a steward-direct
+// envelope can now originate from a 1:1 DM as well as from General, and the
+// answer belongs in the conversation the question came from:
+//
+//   - --to general → General:true, ChatRef:"" — the shared channel, exactly
+//     the pre-DM behavior.
+//   - --to <ref> → General:false, ChatRef:<ref> — the conversation that ref
+//     names. The value is OPAQUE here: notify does not parse it, validate its
+//     shape, or know it carries a chat id. Only the owning transport splits
+//     it, and only the owning transport decides whether that destination is
+//     permitted — so a ref notify would consider nonsense still reaches the
+//     transport, which is the layer entitled to reject it.
+//   - --to absent → treated as general, with a loud depth-0 diagnostic. See
+//     notifyKong's doc for why this warns instead of failing.
+//
+// Steps:
 //  1. Title from --title, or "Steward" if not given.
 //  2. Resolves the active transport via transport.For(workspace.Home()).
-//  3. Calls transport.Send with General:true; Send returns "" as threadRef.
+//  3. Calls transport.Send addressed per --to; Send returns "" as threadRef.
 //  4. Prints the thread ref (always empty) and a confirmation line.
 func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
 	title := c.Title
 	if title == "" {
 		title = "Steward"
+	}
+
+	to := c.To
+	if to == "" {
+		transport.Logf(ctx.Stderr, 0, "ateam notify: FAULT: --to was omitted on a %q send — the steward prose requires it. Falling back to the shared General channel; if this reply was meant for a DM, it is being delivered to the wrong conversation. Pass --to general for a General reply, or --to <ref> with the reply-to ref from the envelope.", DirectHandle)
+		to = generalDest
+	}
+	general := to == generalDest
+	chatRef := ""
+	if !general {
+		chatRef = to
 	}
 
 	home := workspace.Home()
@@ -269,7 +316,8 @@ func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
 		InitiativeID: c.ID,
 		Title:        title,
 		Body:         body,
-		General:      true,
+		General:      general,
+		ChatRef:      chatRef,
 	}
 
 	returnedRef, err := t.Send(msg)
