@@ -1994,6 +1994,23 @@ func groupUpdate(updateID, messageID int, chatID int64, text string) map[string]
 	}
 }
 
+// groupUpdateFrom is groupUpdate plus a from field — the shape a real
+// message from a human sender carries, needed to exercise the dm-allowlist
+// bootstrap log line (agent-teams-ncn5.15).
+func groupUpdateFrom(updateID, messageID int, chatID, senderID int64, username, text string) map[string]any {
+	return map[string]any{
+		"update_id": updateID,
+		"message": map[string]any{
+			"message_id":        messageID,
+			"message_thread_id": 5,
+			"is_topic_message":  true,
+			"text":              text,
+			"chat":              map[string]any{"id": chatID, "type": "supergroup"},
+			"from":              map[string]any{"id": senderID, "username": username, "is_bot": false},
+		},
+	}
+}
+
 // TestReceive_AllowlistedDM_AdmittedAsDirect proves the admitted half of the
 // gate end-to-end through the real Receive path: an allow-listed sender's DM
 // reaches the handler with Direct==true and an empty ThreadRef (a DM has
@@ -2173,6 +2190,67 @@ func TestReceive_NonAllowlistedDM_DroppedAndSenderIDLogged(t *testing.T) {
 	}
 }
 
+// TestReceive_GroupMessage_LogsSenderIDOnceForBootstrap proves the
+// dm-allowlist bootstrap half of agent-teams-ncn5.15: a sender's numeric id
+// is decoded from an ordinary group message and logged, so it's
+// discoverable from traffic Eric already generates rather than only from a
+// deliberately-triggered DM rejection. A second message from the same
+// sender must not log again — the whole point is a one-time lookup, not a
+// line per message — and the message text must never appear in the log.
+func TestReceive_GroupMessage_LogsSenderIDOnceForBootstrap(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+	const senderID = int64(55554444)
+	const msgText = "words that must not be logged"
+
+	srv := newUpdatesServer([]map[string]any{
+		groupUpdateFrom(1, 10, chatIDInt, senderID, "eric", msgText),
+		groupUpdateFrom(2, 11, chatIDInt, senderID, "eric", "second message, same sender"),
+	})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		if len(received) >= 2 {
+			return sentinel
+		}
+		return nil
+	})
+
+	if len(received) != 2 {
+		t.Fatalf("got %d replies, want 2 (bootstrap logging must not filter group messages)", len(received))
+	}
+
+	got := logBuf.String()
+	var senderLines []string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "sender id") {
+			senderLines = append(senderLines, line)
+		}
+	}
+	if len(senderLines) != 1 {
+		t.Fatalf("got %d sender-id log lines, want exactly 1 (once per sender, not once per message):\n%s", len(senderLines), got)
+	}
+	if !strings.Contains(senderLines[0], strconv.FormatInt(senderID, 10)) {
+		t.Errorf("sender-id line must carry the sender id %d: %q", senderID, senderLines[0])
+	}
+	if !strings.Contains(senderLines[0], "@eric") {
+		t.Errorf("sender-id line must carry the @username: %q", senderLines[0])
+	}
+	if depth := logLineDepth(t, senderLines[0]); depth != 1 {
+		t.Errorf("expected depth-1 log line, got depth %d: %q", depth, senderLines[0])
+	}
+	if strings.Contains(got, msgText) {
+		t.Fatalf("log leaked the group message's text:\n%s", got)
+	}
+}
+
 // TestReceive_EmptyDMAllowlist_AdmitsNobody pins the default: with no
 // allow-list configured, a DM is dropped exactly as it was before DMs were
 // admitted at all.
@@ -2252,6 +2330,70 @@ func TestNew_MalformedDMAllowlist_FailsLoudlyNamingTheLine(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "line 2") {
 		t.Errorf("error must name the offending line number: %v", err)
+	}
+}
+
+// TestNew_DMAllowlistFromFile_LeadingBlankLine_ReportsFileLineNumber is the
+// regression for agent-teams-ncn5.16: loadOptionalSecret used to trim the
+// file before parseDMAllowlist split it into lines, so a leading blank line
+// shifted every reported line number off by one from the file a human
+// actually opens to fix it. The fixture below MUST start with a literal
+// blank line — not a leading comment, which strings.TrimSpace never
+// touched and so never triggered the bug (see the correction on
+// agent-teams-ncn5.16's filing).
+//
+// File, physical lines: 1 blank, 2 "111", 3 "not-an-id". Before the fix,
+// trimming line 1 away made "not-an-id" (real line 3) get reported as line
+// 2 — the line Eric would "fix" is the wrong one.
+func TestNew_DMAllowlistFromFile_LeadingBlankLine_ReportsFileLineNumber(t *testing.T) {
+	pinTelegramEnv(t, fakeToken, "-100999888777", "")
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "telegram"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "telegram", "dm-allowlist"), []byte("\n111\nnot-an-id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New(home, &http.Client{})
+	if err == nil {
+		t.Fatal("expected New to fail on a malformed allow-list entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "not-an-id") {
+		t.Errorf("error must name the offending entry: %v", err)
+	}
+	if !strings.Contains(err.Error(), "line 3") {
+		t.Errorf("error must name the FILE's line 3 (1: blank, 2: 111, 3: not-an-id): %v", err)
+	}
+	if strings.Contains(err.Error(), "line 2") {
+		t.Errorf("error named the trimmed-text line instead of the file line: %v", err)
+	}
+}
+
+// TestLoadOptionalSecret_DoesNotTrim pins the mechanism behind the ncn5.16
+// fix directly: unlike loadSecret, loadOptionalSecret must return the file
+// (or env var) content byte-for-byte, leading/trailing whitespace and all,
+// because its one caller (parseDMAllowlist) reports errors by line number
+// against exactly what it's handed.
+func TestLoadOptionalSecret_DoesNotTrim(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "")
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "telegram"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const raw = "\n111\n"
+	if err := os.WriteFile(filepath.Join(home, "telegram", "dm-allowlist"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadOptionalSecret(home, "AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "telegram/dm-allowlist")
+	if err != nil {
+		t.Fatalf("loadOptionalSecret: %v", err)
+	}
+	if got != raw {
+		t.Errorf("got %q, want %q unchanged (loadOptionalSecret must not trim)", got, raw)
 	}
 }
 
