@@ -2202,6 +2202,274 @@ func TestReceive_EmptyDMAllowlist_AdmitsNobody(t *testing.T) {
 	}
 }
 
+// TestReceive_AllowlistedDMWithCaptionNoText_Forwards proves isContentLess
+// (telegram.go:264-273, in the admission switch) applies to DMs exactly as
+// it does to group messages (see TestReceive_MessageBody_MediaPlaceholders):
+// a DM carrying a caption but no text is content-bearing and forwards, not
+// silently dropped as content-less.
+func TestReceive_AllowlistedDMWithCaptionNoText_Forwards(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(12345678)
+
+	update := map[string]any{
+		"update_id": 1,
+		"message": map[string]any{
+			"message_id": 10,
+			"photo":      []map[string]any{{"file_id": "AAA", "width": 100, "height": 100}},
+			"caption":    "beach sunset",
+			"chat":       map[string]any{"id": senderID, "type": "private"},
+			"from":       map[string]any{"id": senderID, "username": "eric", "is_bot": false},
+		},
+	}
+
+	srv := newUpdatesServer([]map[string]any{update})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (caption makes it content-bearing)", len(received))
+	}
+	if !received[0].Direct {
+		t.Error("Direct: got false, want true")
+	}
+	if received[0].Text != "[photo] beach sunset" {
+		t.Errorf("Text: got %q, want %q", received[0].Text, "[photo] beach sunset")
+	}
+}
+
+// TestReceive_ContentLessDM_AuthorizationCheckedBeforeContentCheck pins the
+// admission switch's order (telegram.go: the allow-list gate runs first in
+// the switch, and the content-less check runs strictly after it, only for
+// messages that already passed admission). A non-allow-listed sender's
+// content-less DM is dropped for the AUTH reason ("rejected DM") and never
+// reaches the content-less check at all, while an allow-listed sender's
+// content-less DM passes the gate and is dropped by the content-less check
+// instead ("dropped (no text/caption)"). If a later change reordered these
+// two checks, one of these two rows would start logging the wrong line.
+func TestReceive_ContentLessDM_AuthorizationCheckedBeforeContentCheck(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	for _, tt := range []struct {
+		name           string
+		senderID       int64
+		allowlisted    bool
+		wantLogSubstr  string
+		dontWantSubstr string
+	}{
+		{
+			name:           "allow-listed sender: passes auth, dropped as content-less",
+			senderID:       12345678,
+			allowlisted:    true,
+			wantLogSubstr:  "dropped (no text/caption)",
+			dontWantSubstr: "rejected DM",
+		},
+		{
+			name:           "non-allow-listed sender: dropped at auth, content-less check never reached",
+			senderID:       99887766,
+			allowlisted:    false,
+			wantLogSubstr:  "rejected DM",
+			dontWantSubstr: "dropped (no text/caption)",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			contentLessDM := map[string]any{
+				"update_id": 1,
+				"message": map[string]any{
+					"message_id": 10,
+					"chat":       map[string]any{"id": tt.senderID, "type": "private"},
+					"from":       map[string]any{"id": tt.senderID, "username": "eric", "is_bot": false},
+					// no text, no caption — content-less.
+				},
+			}
+
+			srv := newUpdatesServer([]map[string]any{
+				contentLessDM,
+				groupUpdate(2, 11, chatIDInt, "marker"),
+			})
+			defer srv.Close()
+
+			tg := newTestTelegram(t, srv, chatID)
+			if tt.allowlisted {
+				tg.dmAllowlist = map[int64]bool{tt.senderID: true}
+			}
+			var logBuf bytes.Buffer
+			tg.logOut = &logBuf
+
+			var received []transport.Reply
+			sentinel := fmt.Errorf("stop")
+			_ = tg.Receive(func(r transport.Reply) error {
+				received = append(received, r)
+				return sentinel
+			})
+
+			if len(received) != 1 {
+				t.Fatalf("got %d replies, want 1 (only the trailing marker; the content-less DM must never reach the handler either way)", len(received))
+			}
+			if received[0].Text != "marker" {
+				t.Errorf("received the content-less DM instead of the marker: %q", received[0].Text)
+			}
+
+			got := logBuf.String()
+			if !strings.Contains(got, tt.wantLogSubstr) {
+				t.Errorf("expected log to contain %q, got:\n%s", tt.wantLogSubstr, got)
+			}
+			if strings.Contains(got, tt.dontWantSubstr) {
+				t.Errorf("expected log NOT to contain %q, got:\n%s", tt.dontWantSubstr, got)
+			}
+		})
+	}
+}
+
+// TestReceive_DMFromBot_TreatedIdenticallyToHuman documents a real gap: the
+// user struct (telegram.go) never decodes from.is_bot, so a DM whose sender
+// is itself a bot is indistinguishable from a human DM once it reaches this
+// package — an allow-listed bot id is admitted exactly like an allow-listed
+// human id. Pinned so that if is_bot decoding is ever added (and someone
+// wires up bot-filtering on top of it), the behavior change shows up as an
+// intentional diff here, not a silent one.
+func TestReceive_DMFromBot_TreatedIdenticallyToHuman(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(55566677)
+
+	update := map[string]any{
+		"update_id": 1,
+		"message": map[string]any{
+			"message_id": 10,
+			"text":       "beep boop",
+			"chat":       map[string]any{"id": senderID, "type": "private"},
+			"from":       map[string]any{"id": senderID, "username": "somebot", "is_bot": true},
+		},
+	}
+
+	srv := newUpdatesServer([]map[string]any{update})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (is_bot is not decoded, so an allow-listed bot sender is admitted like any other)", len(received))
+	}
+	if !received[0].Direct {
+		t.Error("Direct: got false, want true")
+	}
+	if received[0].Text != "beep boop" {
+		t.Errorf("Text: got %q", received[0].Text)
+	}
+}
+
+// TestReceive_PrivateChatIDEqualsConfiguredChatID_GroupBranchWins pins the
+// switch's case order (telegram.go: "The configured-chat branch is checked
+// FIRST on purpose"): if a private chat's id ever coincidentally matched the
+// configured chat id as a STRING, the configured-chat case wins — the
+// message is treated as the group, never evaluated as a DM. In production
+// this collision cannot happen (a configured chat id is always a negative
+// supergroup id and a private chat id is always positive — parseDMAllowlist
+// even rejects negative allow-list entries for exactly this reason), but the
+// switch itself does not encode that assumption. This test exercises the
+// ordering directly rather than trusting it holds by convention.
+func TestReceive_PrivateChatIDEqualsConfiguredChatID_GroupBranchWins(t *testing.T) {
+	const coincidentID = int64(555000111)
+	chatID := strconv.FormatInt(coincidentID, 10)
+
+	update := map[string]any{
+		"update_id": 1,
+		"message": map[string]any{
+			"message_id": 10,
+			"text":       "hello",
+			"chat":       map[string]any{"id": coincidentID, "type": "private"},
+			"from":       map[string]any{"id": coincidentID, "username": "eric", "is_bot": false},
+		},
+	}
+
+	srv := newUpdatesServer([]map[string]any{update})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID) // dmAllowlist left nil — irrelevant if the group branch wins
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (configured-chat branch must win even with no allow-list entry)", len(received))
+	}
+	if received[0].Direct {
+		t.Error("Direct: got true, want false (the configured-chat case must win over the private-chat case)")
+	}
+}
+
+// TestReceive_EditedMessageUpdate_SilentlyDropped documents a real gap: the
+// update struct (telegram.go) has no EditedMessage field, so an update whose
+// JSON carries "edited_message" instead of "message" decodes with
+// Message == nil and is dropped by the pre-existing `if msg == nil {
+// continue }` guard — with NO log line at all, not even at depth 1. This is
+// true for an edited DM exactly as it is for an edited group message;
+// nothing about it is DM-specific. Pinned so a later reader does not assume
+// edits are inspected anywhere in this package.
+func TestReceive_EditedMessageUpdate_SilentlyDropped(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(12345678)
+
+	editedUpdate := map[string]any{
+		"update_id": 1,
+		"edited_message": map[string]any{
+			"message_id": 10,
+			"text":       "edited text",
+			"chat":       map[string]any{"id": senderID, "type": "private"},
+			"from":       map[string]any{"id": senderID, "username": "eric", "is_bot": false},
+		},
+	}
+
+	srv := newUpdatesServer([]map[string]any{
+		editedUpdate,
+		dmUpdate(2, 11, senderID, "marker"),
+	})
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+	var logBuf bytes.Buffer
+	tg.logOut = &logBuf
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (only the trailing marker; edited_message is never inspected)", len(received))
+	}
+	if received[0].Text != "marker" {
+		t.Errorf("received the edited-message update instead of the marker: %q", received[0].Text)
+	}
+	if got := logBuf.String(); strings.Contains(got, "update 1:") {
+		t.Errorf("expected NO log line for update 1 (edited_message is dropped silently, not logged), got:\n%s", got)
+	}
+}
+
 // TestParseDMAllowlist_LinesCommasCommentsBlanks covers the documented format
 // in one pass: one-per-line, comma-separated, a trailing comment, a whole-line
 // comment, and blank lines.
