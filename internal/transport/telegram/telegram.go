@@ -287,7 +287,15 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			var reply transport.Reply
 			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
-			reply.MessageRef = strconv.Itoa(msg.MessageID)
+			// Composite "<chat_id>:<message_id>": a Telegram message id is
+			// unique only WITHIN its chat, so the chat has to travel with it
+			// or a ref fired against the wrong chat addresses an unrelated
+			// message there. Emitted in the same shape for every message,
+			// group and DM alike — one format, one parse, no branch. The ref
+			// is opaque outside this package (transport.Reply.MessageRef), so
+			// uniformity costs nothing and a field with two shapes is the
+			// thing that bites later.
+			reply.MessageRef = chatIDStr + ":" + strconv.Itoa(msg.MessageID)
 			reply.Direct = direct
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
@@ -552,18 +560,30 @@ func (t *Telegram) CloseTopic(threadRef string) error {
 // relayAcker-shaped interface (asserted at Run(), mirroring the CloseTopic /
 // topicCloser precedent above) rather than being added to transport.Transport,
 // which stays initiative/relay-agnostic.
+//
+// reply.MessageRef is the composite "<chat_id>:<message_id>" Receive emits;
+// both halves are required, because acking a DM's message id against the
+// configured supergroup would react to whatever unrelated group message
+// happens to hold that id.
 func (t *Telegram) Ack(reply transport.Reply) error {
 	if reply.MessageRef == "" {
 		return errors.New("empty message ref")
 	}
-	return t.setMessageReaction(reply.MessageRef)
+	chatID, messageID, ok := strings.Cut(reply.MessageRef, ":")
+	if !ok || chatID == "" || messageID == "" {
+		return fmt.Errorf("malformed message ref %q (want \"<chat_id>:<message_id>\")", reply.MessageRef)
+	}
+	return t.setMessageReaction(chatID, messageID)
 }
 
-// setMessageReaction sets ackReactionEmoji as the reaction on messageID via
-// the Bot API setMessageReaction method. The reaction param is built with
+// setMessageReaction sets ackReactionEmoji as the reaction on messageID in
+// chatID via the Bot API setMessageReaction method. The chat id is a
+// parameter rather than the configured t.chatID because Telegram message ids
+// are unique only within a chat: a read receipt has to be fired at the chat
+// the message actually came from. The reaction param is built with
 // json.Marshal (not a hand-built string) so the emoji is correctly JSON-
 // encoded regardless of content.
-func (t *Telegram) setMessageReaction(messageID string) error {
+func (t *Telegram) setMessageReaction(chatID, messageID string) error {
 	reaction, err := json.Marshal([]map[string]string{
 		{"type": "emoji", "emoji": ackReactionEmoji},
 	})
@@ -571,7 +591,7 @@ func (t *Telegram) setMessageReaction(messageID string) error {
 		return err
 	}
 	resp, err := t.httpClient.PostForm(t.apiURL("setMessageReaction"), url.Values{
-		"chat_id":    {t.chatID},
+		"chat_id":    {chatID},
 		"message_id": {messageID},
 		"reaction":   {string(reaction)},
 	})
