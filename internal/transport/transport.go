@@ -54,6 +54,21 @@ type OutboundMessage struct {
 	// returned. Mutually exclusive in intent with ThreadRef, though a
 	// transport should prefer General when both are set.
 	General bool
+	// ChatRef optionally targets a specific conversation instead of the
+	// configured channel — the transport-opaque ref of an inbound message
+	// (transport.Reply.MessageRef) whose conversation the reply belongs in.
+	// Empty means the configured channel, which is every existing caller's
+	// behavior. Opaque to every caller: only the owning transport parses it.
+	//
+	// Mutually exclusive in intent with General: a caller sets one or the
+	// other, never both. If both are set anyway, the transport MUST prefer
+	// ChatRef — the specific destination wins over the default channel. That
+	// is deliberately the OPPOSITE of the General-vs-ThreadRef precedence
+	// documented above, and the difference is the point: silently
+	// downgrading a reply meant for one specific conversation into the
+	// shared channel is a data-leak-shaped failure, not a routing
+	// preference.
+	ChatRef string
 }
 
 // Reply is an inbound human response received by the transport.
@@ -63,8 +78,10 @@ type OutboundMessage struct {
 // up the "thread:<ThreadRef>" label on the initiative bead.
 //
 // When the transport receives a non-topic message (e.g. a message in the
-// General topic), it emits a Reply with ThreadRef == "" so the relay can
-// bounce it with "reply inside the initiative's topic."
+// General topic), it emits a Reply with ThreadRef == "" and makes no routing
+// decision about it. The relay decides what such a message means, keying off
+// the addressing fields below (MentionsSelf, Mentions, Direct); the
+// transport's only obligation is to report those faithfully.
 type Reply struct {
 	InitiativeID string // filled by relay, not transport
 	ThreadRef    string // Telegram message_thread_id as string; "" for non-topic messages
@@ -75,11 +92,25 @@ type Reply struct {
 	// MentionsSelf is true iff this transport's own identity (e.g. the bot's
 	// own @username) is among Mentions.
 	MentionsSelf bool
+	// Direct is true when this reply arrived in a 1:1 conversation with the
+	// bot rather than a shared channel — a Telegram private-chat DM. In a 1:1
+	// conversation there is no one else to address, so the message is
+	// implicitly addressed to this bot: the relay treats Direct exactly as it
+	// treats an explicit @mention of itself (relay.go rule 1), without
+	// requiring the human to type one.
+	Direct bool
 	// MessageRef is an opaque, transport-native handle to THIS inbound
-	// message, used only to ack it back (e.g. a read receipt). Telegram
-	// fills it with the message_id as a string. Empty when the transport
-	// can't address individual messages. Relay-opaque: no relay knowledge
-	// enters this package.
+	// message. It serves two purposes: acking the message back (e.g. a read
+	// receipt), and addressing an outbound reply into the conversation the
+	// message came from (OutboundMessage.ChatRef). Empty when the transport
+	// can't address individual messages.
+	//
+	// The handle may be COMPOSITE. A transport whose message ids are unique
+	// only within a conversation is expected to encode the conversation into
+	// the ref, because the id alone cannot address the message. No code
+	// outside the owning transport may parse, split, or compare it —
+	// Relay-opaque, so no relay knowledge enters this package and no relay
+	// knowledge of the ref's shape leaks out of the transport.
 	MessageRef string
 }
 
@@ -148,3 +179,36 @@ func selectedName(home string) string {
 	}
 	return "telegram"
 }
+
+// Frozen function signatures — implemented in the direct-chat track's own
+// file, internal/transport/telegram/telegram.go (agent-teams-ncn5.2), which
+// this contract does not own:
+//
+//	func (t *Telegram) allowsDirectChat(chatID int64) bool
+//
+// allowsDirectChat is THE single, isolated authorization decision point for
+// 1:1 conversations, built the way isContentLess isolates the content-less
+// policy in that same file: flipping the policy is a one-function edit.
+//
+// Its parameter is the chat id rather than a message, deliberately, because
+// the same predicate must serve BOTH directions: inbound it decides whether a
+// private-chat message is admitted at all (and so emitted as a Reply with
+// Direct == true), outbound it validates the chat decoded from an
+// OutboundMessage.ChatRef before the transport will send there. One function,
+// one policy, both directions — so the two directions cannot drift apart.
+//
+// Only TWO of the four hardcoded Bot API destinations in that file become
+// per-message. The asymmetry is deliberate; do NOT parameterize the other two
+// for symmetry:
+//
+//   - setMessageReaction — per-message. Telegram message ids are unique only
+//     within a chat, so acking against the configured chat id would fire the
+//     read receipt at an unrelated message in the group.
+//   - sendMessage — per-message. This is what puts a reply back into the
+//     conversation it came from. For a private chat it must keep omitting
+//     message_thread_id entirely, which the existing empty-thread-ref path
+//     already does.
+//   - createForumTopic — STAYS on the configured chat id. Forum topics exist
+//     only in a supergroup with topics enabled; a topic in a private chat is
+//     not a thing, so a per-message chat ref here would be meaningless.
+//   - CloseTopic — STAYS on the configured chat id, same reason.
