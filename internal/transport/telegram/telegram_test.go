@@ -710,7 +710,8 @@ func TestReceive_FiltersIsTopicMessage(t *testing.T) {
 	if received[0].Text != "topic reply" {
 		t.Errorf("topic reply Text: got %q", received[0].Text)
 	}
-	// Second: non-topic — ThreadRef empty so relay can bounce.
+	// Second: non-topic — ThreadRef empty, leaving the routing decision to
+	// the relay's addressing fields.
 	if received[1].ThreadRef != "" {
 		t.Errorf("non-topic reply ThreadRef: got %q, want empty", received[1].ThreadRef)
 	}

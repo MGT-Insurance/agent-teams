@@ -28,12 +28,15 @@
 // # Inbound
 //
 // getUpdates long-poll. Messages where is_topic_message==true and the chat id
-// matches the configured supergroup are delivered with their ThreadRef set;
-// non-topic messages (General channel) are delivered with Reply{ThreadRef:
-// ""} — the relay routes those by @mention rather than bouncing them. Receive
-// resolves this bot's own @username via getMe from within the poll loop
-// (retried each iteration while unresolved) so inbound messages can report
-// Reply.MentionsSelf.
+// matches the configured supergroup are delivered with their ThreadRef set.
+// Two kinds of message are delivered with Reply{ThreadRef: ""} instead: a
+// non-topic message in the configured supergroup (the General channel), and
+// an admitted DM. This package makes no routing decision about either — the
+// relay does, keying off the addressing fields (Reply.MentionsSelf,
+// Reply.Mentions, Reply.Direct), which this package's only obligation is to
+// report faithfully. Receive resolves this bot's own @username via getMe from
+// within the poll loop (retried each iteration while unresolved) so inbound
+// messages can report Reply.MentionsSelf.
 package telegram
 
 import (
@@ -192,10 +195,11 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 }
 
 // Receive long-polls Telegram for updates, invoking handler for each inbound
-// message. Messages where is_topic_message==false or the chat id does not
-// match the configured supergroup are not passed to handler — except that
-// non-topic messages from the configured chat are emitted as Reply{ThreadRef:""}
-// so the relay can bounce them with "reply inside the initiative's topic."
+// message. Messages whose chat id does not match the configured supergroup
+// are not passed to handler (unless admitted as a DM, below); a message from
+// the configured chat that is not a topic message — the General channel — IS
+// passed, as Reply{ThreadRef: ""}, and the relay routes it by the addressing
+// fields rather than by its (absent) thread ref.
 //
 // A message from a private chat (a DM to the bot) is admitted only when
 // allowsDirectChat accepts its chat id — which, for a private chat, IS the
@@ -301,7 +305,10 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
 				reply.ThreadRef = strconv.Itoa(msg.MessageThreadID)
 			}
-			// ThreadRef == "" for non-topic messages; relay bounces these.
+			// ThreadRef stays "" for the two producers of a topic-less
+			// reply — a non-topic (General channel) message and a DM. The
+			// relay routes both off the addressing fields; this package
+			// makes no routing decision about either.
 
 			if err := handler(reply); err != nil {
 				return err
