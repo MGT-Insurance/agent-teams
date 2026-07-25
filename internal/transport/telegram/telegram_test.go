@@ -448,7 +448,7 @@ func TestAck_Success(t *testing.T) {
 	defer srv.Close()
 
 	tg := newTestTelegram(t, srv, chatID)
-	if err := tg.Ack(transport.Reply{MessageRef: "42"}); err != nil {
+	if err := tg.Ack(transport.Reply{MessageRef: chatID + ":42"}); err != nil {
 		t.Fatalf("Ack: %v", err)
 	}
 	if gotChatID != chatID {
@@ -487,7 +487,7 @@ func TestAck_APIError(t *testing.T) {
 	defer srv.Close()
 
 	tg := newTestTelegram(t, srv, "-100123456789")
-	err := tg.Ack(transport.Reply{MessageRef: "42"})
+	err := tg.Ack(transport.Reply{MessageRef: "-100123456789:42"})
 	if err == nil {
 		t.Fatal("expected error for API-level failure")
 	}
@@ -498,14 +498,100 @@ func TestAck_APIError(t *testing.T) {
 
 func TestAck_ConnectionFailure_NoTokenInError(t *testing.T) {
 	tg := newConnFailureTelegram(t)
-	err := tg.Ack(transport.Reply{MessageRef: "42"})
+	err := tg.Ack(transport.Reply{MessageRef: "-100123456789:42"})
 	assertErrorHasNoToken(t, err)
 }
 
+// TestAck_MalformedMessageRef_NoHTTPCall pins the same error discipline the
+// empty-ref check above has, for a ref that carries no usable chat: reject
+// before any HTTP call rather than post a half-formed request. The bare
+// integer case is the pre-composite shape — a ref in that shape must never
+// reach the API, because there is nothing to say WHICH chat it belongs to.
+func TestAck_MalformedMessageRef_NoHTTPCall(t *testing.T) {
+	for _, ref := range []string{"42", "-100123456789:", ":42", ":"} {
+		t.Run(ref, func(t *testing.T) {
+			called := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				jsonResponse(w, 200, map[string]any{"ok": true, "result": true})
+			}))
+			defer srv.Close()
+
+			tg := newTestTelegram(t, srv, "-100123456789")
+			if err := tg.Ack(transport.Reply{MessageRef: ref}); err == nil {
+				t.Errorf("Ack(%q): expected an error", ref)
+			}
+			if called {
+				t.Errorf("Ack(%q): expected no HTTP call", ref)
+			}
+		})
+	}
+}
+
+// TestAck_ChatIDComesFromMessageRefNotConfiguredChat is the regression guard
+// for agent-teams-ncn5.3: setMessageReaction must post the chat encoded in
+// the ref, not the configured supergroup it used to close over. Both rows run
+// against the SAME transport config (a supergroup chat id), so the private-
+// chat row fails the moment the chat id goes back to t.chatID.
+func TestAck_ChatIDComesFromMessageRefNotConfiguredChat(t *testing.T) {
+	const configuredChatID = "-100111222333"
+
+	cases := []struct {
+		name          string
+		ref           string
+		wantChatID    string
+		wantMessageID string
+	}{
+		{
+			name:          "group message acks in the supergroup",
+			ref:           configuredChatID + ":77",
+			wantChatID:    configuredChatID,
+			wantMessageID: "77",
+		},
+		{
+			name:          "DM acks in the private chat, not the supergroup",
+			ref:           "12345678:9",
+			wantChatID:    "12345678",
+			wantMessageID: "9",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotChatID, gotMessageID string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/setMessageReaction") {
+					http.NotFound(w, r)
+					return
+				}
+				if err := r.ParseForm(); err != nil {
+					t.Errorf("ParseForm: %v", err)
+				}
+				gotChatID = r.FormValue("chat_id")
+				gotMessageID = r.FormValue("message_id")
+				jsonResponse(w, 200, map[string]any{"ok": true, "result": true})
+			}))
+			defer srv.Close()
+
+			tg := newTestTelegram(t, srv, configuredChatID)
+			if err := tg.Ack(transport.Reply{MessageRef: tc.ref}); err != nil {
+				t.Fatalf("Ack: %v", err)
+			}
+			if gotChatID != tc.wantChatID {
+				t.Errorf("chat_id: got %q, want %q", gotChatID, tc.wantChatID)
+			}
+			if gotMessageID != tc.wantMessageID {
+				t.Errorf("message_id: got %q, want %q", gotMessageID, tc.wantMessageID)
+			}
+		})
+	}
+}
+
 // TestReceive_PopulatesMessageRefFromMessageID verifies that Receive fills
-// reply.MessageRef from the update's message_id, driven through the real
-// getUpdates -> Receive path (not by constructing a transport.Reply
-// directly), so the ack seam has something to ack downstream.
+// reply.MessageRef with the composite "<chat_id>:<message_id>", driven
+// through the real getUpdates -> Receive path (not by constructing a
+// transport.Reply directly), so the ack seam has something to ack downstream
+// that identifies both the message and the chat it lives in.
 func TestReceive_PopulatesMessageRefFromMessageID(t *testing.T) {
 	const chatID = "-100111222333"
 	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
@@ -550,8 +636,8 @@ func TestReceive_PopulatesMessageRefFromMessageID(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("got %d replies, want 1", len(received))
 	}
-	if received[0].MessageRef != "77" {
-		t.Errorf("MessageRef: got %q, want %q", received[0].MessageRef, "77")
+	if want := chatID + ":77"; received[0].MessageRef != want {
+		t.Errorf("MessageRef: got %q, want %q", received[0].MessageRef, want)
 	}
 	if received[0].ThreadRef != "5" {
 		t.Errorf("ThreadRef: got %q, want %q", received[0].ThreadRef, "5")
@@ -624,7 +710,8 @@ func TestReceive_FiltersIsTopicMessage(t *testing.T) {
 	if received[0].Text != "topic reply" {
 		t.Errorf("topic reply Text: got %q", received[0].Text)
 	}
-	// Second: non-topic — ThreadRef empty so relay can bounce.
+	// Second: non-topic — ThreadRef empty, leaving the routing decision to
+	// the relay's addressing fields.
 	if received[1].ThreadRef != "" {
 		t.Errorf("non-topic reply ThreadRef: got %q, want empty", received[1].ThreadRef)
 	}
@@ -1927,8 +2014,8 @@ func TestReceive_AllowlistedDM_AdmittedAsDirect(t *testing.T) {
 	if dm.Text != "hey, what's up" {
 		t.Errorf("DM Text: got %q", dm.Text)
 	}
-	if dm.MessageRef != "10" {
-		t.Errorf("DM MessageRef: got %q, want %q", dm.MessageRef, "10")
+	if want := strconv.FormatInt(senderID, 10) + ":10"; dm.MessageRef != want {
+		t.Errorf("DM MessageRef: got %q, want %q (composite, carrying the PRIVATE chat)", dm.MessageRef, want)
 	}
 	group := received[1]
 	if group.Direct {
@@ -1936,6 +2023,73 @@ func TestReceive_AllowlistedDM_AdmittedAsDirect(t *testing.T) {
 	}
 	if group.ThreadRef != "5" {
 		t.Errorf("group message ThreadRef: got %q, want %q", group.ThreadRef, "5")
+	}
+	if want := chatID + ":11"; group.MessageRef != want {
+		t.Errorf("group MessageRef: got %q, want %q (same composite shape as the DM)", group.MessageRef, want)
+	}
+}
+
+// TestReceive_ThenAck_DMReadReceiptLandsInThePrivateChat closes the loop the
+// composite ref exists for, end-to-end inside this package: an admitted DM's
+// ref is carried from Receive straight into Ack (exactly as the relay does)
+// and the resulting setMessageReaction must target the SENDER's private chat
+// — never the configured supergroup, where that message id belongs to some
+// unrelated older message.
+func TestReceive_ThenAck_DMReadReceiptLandsInThePrivateChat(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(12345678)
+	const dmMessageID = 10
+
+	var gotChatID, gotMessageID string
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			callCount++
+			if callCount == 1 {
+				jsonResponse(w, 200, map[string]any{
+					"ok":     true,
+					"result": []map[string]any{dmUpdate(1, dmMessageID, senderID, "hey")},
+				})
+				return
+			}
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": []any{}})
+		case strings.HasSuffix(r.URL.Path, "/setMessageReaction"):
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			gotChatID = r.FormValue("chat_id")
+			gotMessageID = r.FormValue("message_id")
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+
+	var received []transport.Reply
+	sentinel := fmt.Errorf("stop")
+	_ = tg.Receive(func(r transport.Reply) error {
+		received = append(received, r)
+		return sentinel
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("got %d replies, want 1 (the DM)", len(received))
+	}
+	if err := tg.Ack(received[0]); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+
+	wantChatID := strconv.FormatInt(senderID, 10)
+	if gotChatID != wantChatID {
+		t.Errorf("setMessageReaction chat_id: got %q, want %q (the private chat, NOT the configured supergroup %q)", gotChatID, wantChatID, chatID)
+	}
+	if gotMessageID != strconv.Itoa(dmMessageID) {
+		t.Errorf("setMessageReaction message_id: got %q, want %q", gotMessageID, strconv.Itoa(dmMessageID))
 	}
 }
 

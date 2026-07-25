@@ -28,12 +28,15 @@
 // # Inbound
 //
 // getUpdates long-poll. Messages where is_topic_message==true and the chat id
-// matches the configured supergroup are delivered with their ThreadRef set;
-// non-topic messages (General channel) are delivered with Reply{ThreadRef:
-// ""} — the relay routes those by @mention rather than bouncing them. Receive
-// resolves this bot's own @username via getMe from within the poll loop
-// (retried each iteration while unresolved) so inbound messages can report
-// Reply.MentionsSelf.
+// matches the configured supergroup are delivered with their ThreadRef set.
+// Two kinds of message are delivered with Reply{ThreadRef: ""} instead: a
+// non-topic message in the configured supergroup (the General channel), and
+// an admitted DM. This package makes no routing decision about either — the
+// relay does, keying off the addressing fields (Reply.MentionsSelf,
+// Reply.Mentions, Reply.Direct), which this package's only obligation is to
+// report faithfully. Receive resolves this bot's own @username via getMe from
+// within the poll loop (retried each iteration while unresolved) so inbound
+// messages can report Reply.MentionsSelf.
 package telegram
 
 import (
@@ -192,10 +195,11 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 }
 
 // Receive long-polls Telegram for updates, invoking handler for each inbound
-// message. Messages where is_topic_message==false or the chat id does not
-// match the configured supergroup are not passed to handler — except that
-// non-topic messages from the configured chat are emitted as Reply{ThreadRef:""}
-// so the relay can bounce them with "reply inside the initiative's topic."
+// message. Messages whose chat id does not match the configured supergroup
+// are not passed to handler (unless admitted as a DM, below); a message from
+// the configured chat that is not a topic message — the General channel — IS
+// passed, as Reply{ThreadRef: ""}, and the relay routes it by the addressing
+// fields rather than by its (absent) thread ref.
 //
 // A message from a private chat (a DM to the bot) is admitted only when
 // allowsDirectChat accepts its chat id — which, for a private chat, IS the
@@ -287,13 +291,24 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			var reply transport.Reply
 			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
-			reply.MessageRef = strconv.Itoa(msg.MessageID)
+			// Composite "<chat_id>:<message_id>": a Telegram message id is
+			// unique only WITHIN its chat, so the chat has to travel with it
+			// or a ref fired against the wrong chat addresses an unrelated
+			// message there. Emitted in the same shape for every message,
+			// group and DM alike — one format, one parse, no branch. The ref
+			// is opaque outside this package (transport.Reply.MessageRef), so
+			// uniformity costs nothing and a field with two shapes is the
+			// thing that bites later.
+			reply.MessageRef = chatIDStr + ":" + strconv.Itoa(msg.MessageID)
 			reply.Direct = direct
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
 				reply.ThreadRef = strconv.Itoa(msg.MessageThreadID)
 			}
-			// ThreadRef == "" for non-topic messages; relay bounces these.
+			// ThreadRef stays "" for the two producers of a topic-less
+			// reply — a non-topic (General channel) message and a DM. The
+			// relay routes both off the addressing fields; this package
+			// makes no routing decision about either.
 
 			if err := handler(reply); err != nil {
 				return err
@@ -552,18 +567,30 @@ func (t *Telegram) CloseTopic(threadRef string) error {
 // relayAcker-shaped interface (asserted at Run(), mirroring the CloseTopic /
 // topicCloser precedent above) rather than being added to transport.Transport,
 // which stays initiative/relay-agnostic.
+//
+// reply.MessageRef is the composite "<chat_id>:<message_id>" Receive emits;
+// both halves are required, because acking a DM's message id against the
+// configured supergroup would react to whatever unrelated group message
+// happens to hold that id.
 func (t *Telegram) Ack(reply transport.Reply) error {
 	if reply.MessageRef == "" {
 		return errors.New("empty message ref")
 	}
-	return t.setMessageReaction(reply.MessageRef)
+	chatID, messageID, ok := strings.Cut(reply.MessageRef, ":")
+	if !ok || chatID == "" || messageID == "" {
+		return fmt.Errorf("malformed message ref %q (want \"<chat_id>:<message_id>\")", reply.MessageRef)
+	}
+	return t.setMessageReaction(chatID, messageID)
 }
 
-// setMessageReaction sets ackReactionEmoji as the reaction on messageID via
-// the Bot API setMessageReaction method. The reaction param is built with
+// setMessageReaction sets ackReactionEmoji as the reaction on messageID in
+// chatID via the Bot API setMessageReaction method. The chat id is a
+// parameter rather than the configured t.chatID because Telegram message ids
+// are unique only within a chat: a read receipt has to be fired at the chat
+// the message actually came from. The reaction param is built with
 // json.Marshal (not a hand-built string) so the emoji is correctly JSON-
 // encoded regardless of content.
-func (t *Telegram) setMessageReaction(messageID string) error {
+func (t *Telegram) setMessageReaction(chatID, messageID string) error {
 	reaction, err := json.Marshal([]map[string]string{
 		{"type": "emoji", "emoji": ackReactionEmoji},
 	})
@@ -571,7 +598,7 @@ func (t *Telegram) setMessageReaction(messageID string) error {
 		return err
 	}
 	resp, err := t.httpClient.PostForm(t.apiURL("setMessageReaction"), url.Values{
-		"chat_id":    {t.chatID},
+		"chat_id":    {chatID},
 		"message_id": {messageID},
 		"reaction":   {string(reaction)},
 	})

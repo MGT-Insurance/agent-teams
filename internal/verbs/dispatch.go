@@ -12,6 +12,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
@@ -329,6 +330,7 @@ func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue) {
 		InitiativeID: issue.ID,
 		Title:        issue.Title,
 		Body:         "Initiative registered: " + c.Problem,
+		Sender:       sentlog.KindDispatch,
 	}
 	returnedRef, err := sendAndLabelThread(ctx, issue.ID, t, msg, c.labelAdd, "dispatch")
 	if err == nil {
