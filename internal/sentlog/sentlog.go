@@ -78,18 +78,41 @@ const (
 )
 
 // Record is one line of the sent-message log. Field order and json tags are
-// FROZEN (contract §2) — do not reorder, rename, or retype.
+// FROZEN (contract §2) — do not reorder, rename, or retype. ChatRef is an
+// addition, not part of the original freeze: see the AMENDMENT to §2 on
+// contract bead agent-teams-48dh.1 (agent-teams-ncn5.19).
 type Record struct {
 	Timestamp  string `json:"ts"`         // RFC3339 UTC
 	Sender     Kind   `json:"sender"`     // DECLARED (§3)
 	Transport  string `json:"transport"`  // from Transport.Name()
 	Initiative string `json:"initiative"` // OutboundMessage.InitiativeID, or reserved "briefing"/"direct"
 	ThreadRef  string `json:"thread_ref"` // resolved per §2.1
-	General    bool   `json:"general"`    // OutboundMessage.General
-	Title      string `json:"title"`      // OutboundMessage.Title
-	Body       string `json:"body"`       // OutboundMessage.Body, FULL, never truncated
-	Outcome    string `json:"outcome"`    // "sent" | "failed" ONLY
-	Error      string `json:"error"`      // "" on success; on failure, RedactError(sendErr) — embedded URLs reduced to scheme://host (§6, amended)
+	// ChatRef mirrors OutboundMessage.ChatRef verbatim — opaque, transport-
+	// native, ids only (never message text), exactly like ThreadRef above.
+	// "" for every record predating this field and for every General or
+	// forum-topic send, old or new: those never set OutboundMessage.ChatRef,
+	// so a JSON decode of an old line leaves this at its zero value with no
+	// version branch required. A reader distinguishes the three destination
+	// shapes with one uniform precedence check — ChatRef wins, then General,
+	// then ThreadRef — matching OutboundMessage's own documented precedence
+	// (transport.go) and telegram.go Send's `if msg.ChatRef != "" ||
+	// msg.General` ordering, so the log's read side cannot drift from the
+	// send side. AMENDMENT to §2, contract agent-teams-48dh.1
+	// (agent-teams-ncn5.19): a ChatRef-addressed DM previously logged
+	// byte-identical to a topic-less non-General send (thread_ref:""
+	// general:false), which made the log unable to answer "did the bot DM
+	// this human, and who" — the one send whose destination matters most.
+	// Deliberately NOT a fourth "normalized destination" field: General and
+	// ThreadRef already mirror their OutboundMessage counterparts 1:1, and
+	// adding a second, derived field encoding the same information a reader
+	// can already compute would duplicate state instead of exposing it (see
+	// §2.2's rejection of a redundant `verb` field for the same reason).
+	ChatRef string `json:"chat_ref"`
+	General bool   `json:"general"` // OutboundMessage.General
+	Title   string `json:"title"`   // OutboundMessage.Title
+	Body    string `json:"body"`    // OutboundMessage.Body, FULL, never truncated
+	Outcome string `json:"outcome"` // "sent" | "failed" ONLY
+	Error   string `json:"error"`   // "" on success; on failure, RedactError(sendErr) — embedded URLs reduced to scheme://host (§6, amended)
 
 	SessionID  string `json:"session_id"`  // DERIVED (§4). May be "". MAY BE STALE.
 	Cwd        string `json:"cwd"`         // DERIVED

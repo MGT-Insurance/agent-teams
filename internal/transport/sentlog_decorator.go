@@ -76,6 +76,7 @@ func (l *loggingTransport) record(msg OutboundMessage, threadRef string, sendErr
 	rec.Transport = l.inner.Name()
 	rec.Initiative = msg.InitiativeID
 	rec.ThreadRef = ref
+	rec.ChatRef = msg.ChatRef
 	rec.General = msg.General
 	rec.Title = msg.Title
 	rec.Body = msg.Body
