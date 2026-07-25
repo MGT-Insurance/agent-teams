@@ -90,7 +90,7 @@ func stewardInit(ctx *cli.Context) (string, error) {
 		return "", fmt.Errorf("stat marker: %w", err)
 	}
 
-	if err := installGlobalPrimeMD(ctx); err != nil {
+	if err := installGlobalPrimeMD(ctx, templates.GlobalPrimeMD); err != nil {
 		return "", fmt.Errorf("install global PRIME.md: %w", err)
 	}
 
@@ -111,45 +111,130 @@ func globalPrimeMDPath(ctx *cli.Context) string {
 	return filepath.Join(ctx.Home, ".beads", "PRIME.md")
 }
 
-// installGlobalPrimeMD writes templates.GlobalPrimeMD to globalPrimeMDPath,
-// creating $ATEAM_HOME/.beads if it doesn't already exist (mirrors the
+// globalPrimeSidecarPath returns $ATEAM_HOME/.prime-installed — records the
+// sha256 of the template content this tool last wrote to globalPrimeMDPath,
+// so a future revision of templates.GlobalPrimeMD can tell "our own earlier
+// template, safe to upgrade" apart from "a human edit or unknown origin,
+// never touch." Deliberately OUTSIDE .beads/: that directory is bd/dolt-
+// managed, and a PRIME.md committed into the memory repo would carry a
+// sidecar recorded on one machine that's simply wrong when read on another.
+// Sibling to .beads/ at the workspace root instead — the same place
+// per-machine local-only state already lives in this workspace (e.g.
+// StewardHome, mailbox/), never synced by dolt (which only manages .beads/)
+// and never swept into a git commit (this workspace's routine operation
+// never runs `git add -A`/commit against itself — see steward_seams.go's
+// StewardFallbackMarkerPath doc for the same local-file convention).
+func globalPrimeSidecarPath(ctx *cli.Context) string {
+	return filepath.Join(ctx.Home, ".prime-installed")
+}
+
+// writeSidecar records hash at sidecarPath as its entire contents (plus a
+// trailing newline, matching this file's other single-line marker writes —
+// see the session marker write in stewardInit above).
+func writeSidecar(sidecarPath, hash string) error {
+	return os.WriteFile(sidecarPath, []byte(hash+"\n"), 0o644)
+}
+
+// readSidecarHash reads the hash recorded at sidecarPath, reporting ok=false
+// if the file is absent, unreadable, or empty — any of which just means
+// "unknown provenance" to installGlobalPrimeMD's caller, never an error in
+// its own right.
+func readSidecarHash(sidecarPath string) (hash string, ok bool) {
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		return "", false
+	}
+	hash = strings.TrimSpace(string(data))
+	return hash, hash != ""
+}
+
+// installGlobalPrimeMD writes template to globalPrimeMDPath, creating
+// $ATEAM_HOME/.beads if it doesn't already exist (mirrors the
 // os.MkdirAll(filepath.Dir(ledgerPath), ...) pattern used by
 // stewardLedgerRecordKong.Run below — bd itself guarantees .beads exists for
 // any initialized workspace, but callers exercising stewardInit directly
 // against a bare temp dir should not have to pre-create it).
 //
-// Idempotent: content identical to the shipped template is a no-op — no
-// rewrite, no error, no log line. A file that's absent is created (fresh
-// install). A file that EXISTS with DIFFERENT content is presumed to be a
-// human edit and is never overwritten — silently clobbering it would lose
-// that edit with no way to notice. Instead this reports the divergence and
-// leaves the file untouched, so `ateam steward init`/`start` still succeeds
-// (fail-soft): a customized PRIME.md must never block steward startup, it
-// just keeps diverging from the shipped default until a human resolves it
-// by hand.
+// Idempotent, and upgrade-aware via globalPrimeSidecarPath's provenance
+// record (the sha256 of the template content this tool last wrote):
+//
+//   - Absent: write the template, record its hash in the sidecar, log
+//     "installed: <path>".
+//   - Present, content == current template: no-op. If the sidecar is
+//     missing or stale it's self-healed silently (no log line) — this is
+//     bookkeeping catching up to reality, not a state change worth
+//     reporting, and a self-heal write failure is not fatal: the only
+//     consequence of a still-missing/stale sidecar is that the NEXT
+//     template revision falls back to "unknown provenance" and refuses
+//     instead of upgrading — safe, never a data-loss risk.
+//   - Present, content != current template: this is either our own earlier
+//     shipped template (safe to upgrade) or a human edit / unknown origin
+//     (never touch). Distinguished by asking whether the sidecar's recorded
+//     hash matches sha256 of what's ON DISK right now: if it does, nobody
+//     has touched the file since we wrote it, so it's provably ours and
+//     gets overwritten with the new template (sidecar updated, "updated:
+//     <path> (shipped template revised)" logged). Otherwise — sidecar
+//     missing, or its hash doesn't match on-disk content — provenance is
+//     unknown, so the file is left untouched and reported ("note: ...
+//     looks like a human edit"), exactly as before this sidecar existed.
+//     A machine whose PRIME.md predates this mechanism has no sidecar and
+//     always lands here: conservative by design, since we'd rather leave a
+//     file alone than clobber one we can't prove we wrote.
+//
+// `ateam steward init`/`start` always succeeds regardless of which branch
+// fires (fail-soft): a divergent PRIME.md — human-edited or of unknown
+// origin — must never block steward startup. Genuine I/O errors (can't
+// read/write) ARE hard-fail, returned to the caller, matching the other two
+// stewardInit steps above.
 //
 // Notes go to ctx.Stderr, not ctx.Stdout: stewardInitKong.Run's only stdout
 // contract is the session directory on its own line
 // (TestStewardInit_CreatesSessionDirAndMarker asserts stdout == sessionDir
 // exactly), and this is incidental installer chatter, not that command's
 // primary output.
-func installGlobalPrimeMD(ctx *cli.Context) error {
+//
+// template is passed in (rather than reading templates.GlobalPrimeMD
+// directly) purely so tests can exercise the upgrade path — an on-disk file
+// that's our own earlier template but no longer matches the current one —
+// without mutating the embedded package var; stewardInit's only real caller
+// always passes templates.GlobalPrimeMD.
+func installGlobalPrimeMD(ctx *cli.Context, template string) error {
 	target := globalPrimeMDPath(ctx)
+	sidecar := globalPrimeSidecarPath(ctx)
+	currentHash := sha256Hex([]byte(template))
 
 	existing, err := os.ReadFile(target)
 	switch {
 	case err == nil:
-		if string(existing) == templates.GlobalPrimeMD {
+		if string(existing) == template {
+			if recorded, ok := readSidecarHash(sidecar); !ok || recorded != currentHash {
+				_ = writeSidecar(sidecar, currentHash)
+			}
 			return nil
 		}
+
+		if recorded, ok := readSidecarHash(sidecar); ok && recorded == sha256Hex(existing) {
+			if err := os.WriteFile(target, []byte(template), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", target, err)
+			}
+			if err := writeSidecar(sidecar, currentHash); err != nil {
+				return fmt.Errorf("write %s: %w", sidecar, err)
+			}
+			fmt.Fprintf(ctx.Stderr, "updated: %s (shipped template revised)\n", target)
+			return nil
+		}
+
 		fmt.Fprintf(ctx.Stderr, "note: %s differs from the shipped template — leaving it untouched (looks like a human edit)\n", target)
 		return nil
 	case os.IsNotExist(err):
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
 		}
-		if err := os.WriteFile(target, []byte(templates.GlobalPrimeMD), 0o644); err != nil {
+		if err := os.WriteFile(target, []byte(template), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", target, err)
+		}
+		if err := writeSidecar(sidecar, currentHash); err != nil {
+			return fmt.Errorf("write %s: %w", sidecar, err)
 		}
 		fmt.Fprintf(ctx.Stderr, "installed: %s\n", target)
 		return nil
