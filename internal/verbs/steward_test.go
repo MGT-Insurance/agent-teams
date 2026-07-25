@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/plugins/agent-teams/templates"
 )
 
 // ── steward init ──────────────────────────────────────────────────────────────
@@ -62,6 +63,260 @@ func TestStewardInit_Idempotent(t *testing.T) {
 func TestStewardInit_NilContext(t *testing.T) {
 	if err := (&stewardInitKong{}).Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── global PRIME.md install ──────────────────────────────────────────────────
+
+func TestStewardInit_InstallsGlobalPrimeMD(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	target := globalPrimeMDPath(ctx)
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("expected %s to exist: %v", target, err)
+	}
+	if string(got) != templates.GlobalPrimeMD {
+		t.Errorf("installed content = %q, want the shipped template", got)
+	}
+	if !strings.Contains(stderr.String(), "installed: "+target) {
+		t.Errorf("stderr = %q, want an %q note", stderr.String(), "installed: "+target)
+	}
+}
+
+func TestStewardInit_GlobalPrimeMDAlreadyCorrect_NoOp(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	target := globalPrimeMDPath(ctx)
+	fiBefore, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat after first init: %v", err)
+	}
+
+	// Second call: content already matches the shipped template exactly, so
+	// this must be a true no-op — no rewrite (mtime unchanged), no error, and
+	// no log line on either stream.
+	_, stdout2, stderr2 := makeCtx(&fakeBD{}, home)
+	ctx.Stdout, ctx.Stderr = stdout2, stderr2
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	fiAfter, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat after second init: %v", err)
+	}
+	if !fiAfter.ModTime().Equal(fiBefore.ModTime()) {
+		t.Errorf("PRIME.md was rewritten on an already-correct no-op call: mtime %v -> %v", fiBefore.ModTime(), fiAfter.ModTime())
+	}
+	if got := stderr2.String(); got != "" {
+		t.Errorf("stderr on no-op call = %q, want empty (no spurious log line)", got)
+	}
+}
+
+func TestStewardInit_GlobalPrimeMDHumanEdit_NotClobbered(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	target := globalPrimeMDPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	humanContent := "# My customized PRIME.md\n\nDon't touch this.\n"
+	if err := os.WriteFile(target, []byte(humanContent), 0o644); err != nil {
+		t.Fatalf("seed human-edited PRIME.md: %v", err)
+	}
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read %s: %v", target, err)
+	}
+	if string(got) != humanContent {
+		t.Errorf("human-edited PRIME.md was clobbered: got %q, want %q", got, humanContent)
+	}
+	if !strings.Contains(stderr.String(), target) || !strings.Contains(stderr.String(), "human edit") {
+		t.Errorf("stderr = %q, want an obvious divergence note naming %s", stderr.String(), target)
+	}
+}
+
+// ── global PRIME.md provenance sidecar (agent-teams-e81h.1 upgrade path) ─────
+
+// TestInstallGlobalPrimeMD_OurOlderTemplate_IsUpgraded covers the case a
+// machine already has v1 installed by this tool (matching sidecar) and the
+// shipped template is revised to v2: the old file must be overwritten and
+// the sidecar updated to v2's hash, since we can PROVE we wrote what's on
+// disk and nothing has touched it since.
+func TestInstallGlobalPrimeMD_OurOlderTemplate_IsUpgraded(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	const v1 = "template v1 content\n"
+	const v2 = "template v2 content, revised\n"
+
+	if err := installGlobalPrimeMD(ctx, v1); err != nil {
+		t.Fatalf("install v1: %v", err)
+	}
+
+	if err := installGlobalPrimeMD(ctx, v2); err != nil {
+		t.Fatalf("install v2: %v", err)
+	}
+
+	target := globalPrimeMDPath(ctx)
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read %s: %v", target, err)
+	}
+	if string(got) != v2 {
+		t.Errorf("PRIME.md = %q, want upgraded content %q", got, v2)
+	}
+	sidecar := globalPrimeSidecarPath(ctx)
+	recorded, ok := readSidecarHash(sidecar)
+	if !ok {
+		t.Fatalf("expected sidecar %s to exist after upgrade", sidecar)
+	}
+	if want := sha256Hex([]byte(v2)); recorded != want {
+		t.Errorf("sidecar hash = %q, want %q (sha256 of v2)", recorded, want)
+	}
+	if !strings.Contains(stderr.String(), "updated: "+target) {
+		t.Errorf("stderr = %q, want an %q note", stderr.String(), "updated: "+target)
+	}
+}
+
+// TestInstallGlobalPrimeMD_HumanEditWithStaleSidecar_NotUpgraded covers a
+// sidecar that's present but doesn't match what's actually on disk (the
+// file was edited after we last wrote it, or the sidecar is simply wrong) —
+// provenance is NOT provable, so this must refuse exactly like the no-
+// sidecar-at-all case, never upgrade.
+func TestInstallGlobalPrimeMD_HumanEditWithStaleSidecar_NotUpgraded(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	target := globalPrimeMDPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	editedContent := "# Edited after install\n"
+	if err := os.WriteFile(target, []byte(editedContent), 0o644); err != nil {
+		t.Fatalf("seed edited PRIME.md: %v", err)
+	}
+	// Sidecar recorded for a DIFFERENT template than what's on disk now —
+	// simulates an edit made after install, not a fresh human file.
+	sidecar := globalPrimeSidecarPath(ctx)
+	if err := writeSidecar(sidecar, sha256Hex([]byte("something else entirely"))); err != nil {
+		t.Fatalf("seed stale sidecar: %v", err)
+	}
+
+	const currentTemplate = "current shipped template\n"
+	if err := installGlobalPrimeMD(ctx, currentTemplate); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read %s: %v", target, err)
+	}
+	if string(got) != editedContent {
+		t.Errorf("edited PRIME.md was clobbered despite stale sidecar: got %q, want %q", got, editedContent)
+	}
+	if !strings.Contains(stderr.String(), "human edit") {
+		t.Errorf("stderr = %q, want a human-edit note", stderr.String())
+	}
+}
+
+// TestInstallGlobalPrimeMD_MissingSidecarButContentMatches_SelfHeals covers
+// a machine whose PRIME.md matches the current template exactly but has no
+// sidecar yet (e.g. it predates this mechanism, or the sidecar was lost) —
+// this is a true no-op on the file (no rewrite, no log line), but the
+// sidecar gets silently created so a FUTURE template revision can prove
+// provenance and upgrade instead of refusing.
+func TestInstallGlobalPrimeMD_MissingSidecarButContentMatches_SelfHeals(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	target := globalPrimeMDPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	const currentTemplate = "current shipped template\n"
+	if err := os.WriteFile(target, []byte(currentTemplate), 0o644); err != nil {
+		t.Fatalf("seed matching PRIME.md: %v", err)
+	}
+	sidecar := globalPrimeSidecarPath(ctx)
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatalf("expected no sidecar to exist yet, stat err = %v", err)
+	}
+
+	if err := installGlobalPrimeMD(ctx, currentTemplate); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read %s: %v", target, err)
+	}
+	if string(got) != currentTemplate {
+		t.Errorf("PRIME.md content changed on a no-op call: got %q, want %q", got, currentTemplate)
+	}
+	recorded, ok := readSidecarHash(sidecar)
+	if !ok {
+		t.Fatalf("expected sidecar %s to be self-healed into existence", sidecar)
+	}
+	if want := sha256Hex([]byte(currentTemplate)); recorded != want {
+		t.Errorf("self-healed sidecar hash = %q, want %q", recorded, want)
+	}
+	if got := stderr.String(); got != "" {
+		t.Errorf("stderr on self-heal no-op = %q, want empty (no spurious log line)", got)
+	}
+}
+
+// TestInstallGlobalPrimeMD_HumanEditNoSidecar_NotUpgraded covers a machine
+// that has never had this tool run against it: a divergent PRIME.md with no
+// sidecar at all. Provenance is unknown, so this must refuse — conservative
+// by design, since we'd rather leave a file alone than clobber one we can't
+// prove we wrote.
+func TestInstallGlobalPrimeMD_HumanEditNoSidecar_NotUpgraded(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	target := globalPrimeMDPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	preexistingContent := "# Pre-existing, never installed by us\n"
+	if err := os.WriteFile(target, []byte(preexistingContent), 0o644); err != nil {
+		t.Fatalf("seed pre-existing PRIME.md: %v", err)
+	}
+
+	const currentTemplate = "current shipped template\n"
+	if err := installGlobalPrimeMD(ctx, currentTemplate); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read %s: %v", target, err)
+	}
+	if string(got) != preexistingContent {
+		t.Errorf("pre-existing PRIME.md was clobbered: got %q, want %q", got, preexistingContent)
+	}
+	sidecar := globalPrimeSidecarPath(ctx)
+	if _, ok := readSidecarHash(sidecar); ok {
+		t.Errorf("expected no sidecar to be written when refusing an unknown-provenance file")
+	}
+	if !strings.Contains(stderr.String(), "human edit") {
+		t.Errorf("stderr = %q, want a human-edit note", stderr.String())
 	}
 }
 
