@@ -239,14 +239,19 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	// this line regardless of which branch below it ultimately takes.
 	transport.Logf(ctx.Stderr, 1, "received message (thread=%q): %q", reply.ThreadRef, transport.PreviewText(reply.Text, replyPreviewLen))
 
-	// Non-topic messages (General channel) arrive with ThreadRef == "".
-	// Single-channel @mention addressing (agent-teams-4x83) replaces the old
-	// per-machine [Direct] topic short-circuit and applies, in order:
+	// Non-topic messages (General channel) and 1:1 DMs to the bot both arrive
+	// with ThreadRef == "". Single-channel @mention addressing
+	// (agent-teams-4x83) replaces the old per-machine [Direct] topic
+	// short-circuit and applies, in order:
 	//
-	//  1. reply.MentionsSelf: this bot was @mentioned — route to MY steward
-	//     as a steward-direct envelope, regardless of fallback-responder
-	//     status. Reuses handleDirectReply/BuildStewardDirectEnvelope.
-	//     Peers naturally skip this rule since MentionsSelf is false for them.
+	//  1. reply.MentionsSelf or reply.Direct: this bot was addressed —
+	//     explicitly by @mention, or implicitly by being the only other party
+	//     in a 1:1 conversation (transport.Reply.Direct, agent-teams-ncn5).
+	//     Route to MY steward as a steward-direct envelope, regardless of
+	//     fallback-responder status. Reuses
+	//     handleDirectReply/BuildStewardDirectEnvelope. Peers naturally skip
+	//     this rule: MentionsSelf is false for them, and Telegram delivers a
+	//     private-chat update only to the bot it was addressed to.
 	//  2. Else, a mentioned username ends in "bot" (Telegram platform rule —
 	//     all bot usernames must end in "bot") and it is not me: some OTHER
 	//     bot was addressed — skip silently (no registry, no metadata).
@@ -254,8 +259,24 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	//     "@eric"): existing fallback-responder steward-unrouted behavior,
 	//     unchanged.
 	if reply.ThreadRef == "" {
-		if reply.MentionsSelf {
-			transport.Logf(ctx.Stderr, 2, "mentions me — routing to steward")
+		// Direct is deliberately NOT gated on isFallbackResponder, unlike
+		// rule 3 below. Rule 3 is gated because a non-topic GROUP message is
+		// delivered to every machine's relay in the shared forum, so exactly
+		// one must claim it (Design A, agent-teams-5y8a). A DM has no such
+		// problem: Telegram delivers a private-chat update only to the bot it
+		// was addressed to, so it reaches exactly one machine by construction
+		// and exactly-once already holds. Gating it would silently drop every
+		// DM sent to a non-fallback machine — the precise failure this rule
+		// exists to remove. Rule 1 also stays AHEAD of rule 2 so a DM whose
+		// text happens to name some other bot ("ask @otherbot about X") is
+		// never swallowed by the not-me skip: in a 1:1 the message is
+		// addressed to us no matter who it mentions.
+		if reply.MentionsSelf || reply.Direct {
+			if reply.Direct {
+				transport.Logf(ctx.Stderr, 2, "direct message (1:1 chat) — routing to steward")
+			} else {
+				transport.Logf(ctx.Stderr, 2, "mentions me — routing to steward")
+			}
 			return c.handleDirectReply(ctx, reply)
 		}
 		if mentioned := firstBotMention(reply.Mentions); mentioned != "" {
