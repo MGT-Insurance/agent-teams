@@ -10,6 +10,14 @@ until round 2 surfaced it). The other seven are empty on purpose. Do not fill
 them in from taste, inference, or a draft that has not come back from him — a
 fabricated specimen that later contradicts his taste is worse than a blank slot.
 
+## Why the cross-kind rules read the way they do
+
+**Silence and the four-hour heartbeat are one rule, not two.** Green gates being silent is only safe while something still proves the Steward is alive. Silence alone removes the only evidence of that — and detecting dead things is the Steward's own job, so a dead Steward is the failure nobody else is watching for. The heartbeat ships with the silence convention, never separately.
+
+**Why LIVE verification gets its one line.** A report that unit or gate tests passed tells Eric nothing he could not assume. Someone actually driving the real thing and watching it work is evidence he cannot get any other way, which is why it is the single exception to green-is-silent.
+
+**Why a plan-document URL goes in bare, not as markdown.** Telegram's `sendMessage` is called with no `parse_mode`, so a markdown link renders as literal text and a bare URL is what Telegram auto-links into something tappable on a phone. That is also why the URL is reproduced verbatim, never truncated, and never counted against the word budget.
+
 ## Calibrated
 
 ### gate-escalation
@@ -151,8 +159,10 @@ _(No calibrated specimen yet — awaiting Eric.)_
 
 ### topic-open
 
-The first message in a new initiative topic. Machine-authored, not
-Steward-authored, and unchanged in this pass by Eric's decision — listed here
-only so the nine-kind vocabulary stays complete.
+The first message in a new initiative topic. Machine-authored at
+`dispatch.go:331`, not Steward-authored, and not shortened this pass by Eric's
+decision (§F) — it is the one kind absent from SKILL.md §5's table, listed here
+only so the nine-kind vocabulary stays complete and so machine prose is never
+mistaken for Steward prose. Nothing about it is the Steward's to compose.
 
 _(No calibrated specimen yet — awaiting Eric.)_

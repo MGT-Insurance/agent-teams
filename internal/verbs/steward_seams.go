@@ -34,6 +34,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 )
 
 // ── Reserved handles/paths ───────────────────────────────────────────────────
@@ -68,7 +69,6 @@ const DirectHandle = "direct"
 const (
 	stewardDirName                = "steward"
 	stewardSessionDirName         = "session"
-	stewardSessionMarkerName      = ".steward-session"
 	stewardLedgerFileName         = "ledger.jsonl"
 	stewardBriefingThreadFileName = "briefing-thread"
 	stewardDoorbellFileSuffix     = ".wake"
@@ -92,8 +92,12 @@ func StewardSessionDir(ctx *cli.Context) string {
 // marker-based branch (Track A) checks for under $PWD to identify the
 // Steward's own session and set match_id=StewardHandle, bypassing the normal
 // "worktree:" line initiative lookup used for every other session.
+//
+// Delegates to sentlog.StewardMarkerPath so there is exactly one path
+// construction for this file (agent-teams-48dh contract §5) — sentlog's
+// isStewardCwd needs the same path and cannot import this package.
 func StewardSessionMarkerPath(ctx *cli.Context) string {
-	return filepath.Join(StewardSessionDir(ctx), stewardSessionMarkerName)
+	return sentlog.StewardMarkerPath(ctx.Home)
 }
 
 // StewardLedgerPath returns the path to the Steward's append-only decision

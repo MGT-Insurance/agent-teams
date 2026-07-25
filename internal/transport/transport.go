@@ -14,7 +14,10 @@ package transport
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
+
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 )
 
 // Sender pushes one message to the human.
@@ -69,6 +72,13 @@ type OutboundMessage struct {
 	// shared channel is a data-leak-shaped failure, not a routing
 	// preference.
 	ChatRef string
+	// Sender is the compile-time-declared identity of the call site issuing
+	// this send (agent-teams-48dh, contract agent-teams-48dh.1 §1/§3).
+	// REQUIRED: every OutboundMessage{ literal in non-test Go must set this.
+	// An empty or unrecognised value is recorded as sentlog.KindUndeclared by
+	// the logging decorator installed in For, with a stderr warning — the
+	// record is still written, never dropped.
+	Sender sentlog.Kind
 }
 
 // Reply is an inbound human response received by the transport.
@@ -151,6 +161,12 @@ func Enabled(home string) bool {
 // "telegram" when no config is found. Returns an error if the selected name is
 // not registered.
 //
+// The returned Transport is wrapped in an unexported logging decorator
+// (agent-teams-48dh contract §1) that appends one sentlog record per Send —
+// this is the ONLY place that decorator is installed, so every real send
+// through this package is logged regardless of which transport is selected.
+// Enabled, below, is a config probe only and does NOT wrap.
+//
 // home is the resolved workspace home (workspace.Home()).
 func For(home string) (Transport, error) {
 	name := selectedName(home)
@@ -162,7 +178,36 @@ func For(home string) (Transport, error) {
 		}
 		return nil, fmt.Errorf("transport: unknown transport %q (registered: %s)", name, strings.Join(known, ", "))
 	}
-	return f(home)
+	t, err := f(home)
+	if err != nil {
+		return nil, err
+	}
+	if isNilTransport(t) {
+		return nil, fmt.Errorf("transport: factory %q returned a nil transport", name)
+	}
+	return newLoggingTransport(t, home), nil
+}
+
+// isNilTransport reports whether t is nil either as an interface (no value
+// at all) or as a non-nil interface holding a nil concrete pointer/map/
+// slice/chan/func value — a "typed nil". Capability's `t != nil` guard
+// (capability.go:39) is an interface comparison and does not stop the
+// latter: a factory that forwards a (*Foo, error) return through a
+// Transport-returning wrapper, where Foo is nil, produces exactly that
+// shape, and callers using the skip-if-absent branch on an optional
+// capability panic instead of skipping (agent-teams-48dh.30). Rejecting it
+// here, once, means every For caller gets an error instead of a later panic.
+func isNilTransport(t Transport) bool {
+	if t == nil {
+		return true
+	}
+	v := reflect.ValueOf(t)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // selectedName resolves the configured transport name.
