@@ -195,6 +195,16 @@ Add that line to `~/.zshrc` (or `~/.bashrc`) so it persists, then open a new ter
 
 If the error is "unsupported platform" rather than "command not found", the symlink resolved correctly but the plugin's `bin/` directory is missing the platform binary — file an issue against the agent-teams plugin.
 
+### 5e. Install the global-workspace PRIME.md
+
+Left unset, `bd prime` dumps the ENTIRE all-role memory store into every session that resolves this workspace, on every PreCompact — hundreds of KB across hundreds of memories once the store has been running a while. The fix is a `PRIME.md` override at `$AGENT_TEAMS_HOME/.beads/PRIME.md`; `ateam steward init` installs it idempotently from the plugin's bundled template. Run it now rather than waiting for someone to happen to start a Steward session first:
+
+```bash
+ateam steward init
+```
+
+Expected: prints `installed: <path>/.beads/PRIME.md` on first run (or nothing about PRIME.md if it's already installed and unchanged — self-healing is silent), followed by the Steward session directory path. Safe to re-run: it never overwrites a human-edited or unrecognized PRIME.md.
+
 ### Allowlist `ateam`
 
 Add the following entry to the `permissions.allow` array in `~/.claude/settings.json` so workspace operations do not prompt:
@@ -353,6 +363,12 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    bd -C ~/.agent-teams forget dri:setup-smoke
    ateam sync
    ```
+
+5. Confirm step 5e's PRIME.md install actually took, not just that the workspace exists:
+   ```bash
+   ateam audit
+   ```
+   Expected: a `audit: bd prime clean — <n> bytes, no memory dump (budget 10240)` line (alongside the leaked-work-beads line). If instead you see `audit: FAILED — the global workspace has no installed PRIME.md`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md by hand).
 
 ## 10. Verify memory-routing hook is active
 
