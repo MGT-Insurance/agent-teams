@@ -172,6 +172,67 @@ func TestLoggingTransportReturnsInnerErrorVerbatimAndRecordsFailedOutcome(t *tes
 	}
 }
 
+// TestLoggingTransportChatRefRecordDistinguishableFromGeneral: the defect
+// this test exists to catch (agent-teams-ncn5.19) — a ChatRef-addressed DM
+// and a General send both leave ThreadRef=="" (neither opens a forum
+// topic), so before ChatRef was recorded the two records were byte-
+// identical on every destination field (thread_ref:"" general:false vs.
+// thread_ref:"" general:true was the ONLY prior signal, and General's own
+// send didn't even carry that distinction reliably once a ChatRef could
+// also be present). Assert the two records actually differ, not merely
+// that chat_ref is present on one of them.
+func TestLoggingTransportChatRefRecordDistinguishableFromGeneral(t *testing.T) {
+	home := t.TempDir()
+	inner := &fakeTransport{name: "fake"} // sendRef "" — matches real Send's ChatRef/General return of ""
+
+	lt := newLoggingTransport(inner, home)
+	dmMsg := OutboundMessage{
+		InitiativeID: "at-test",
+		Title:        "t",
+		Body:         "b",
+		ChatRef:      "555111234:98",
+		Sender:       sentlog.KindNotifyDirect,
+	}
+	if _, err := lt.Send(dmMsg); err != nil {
+		t.Fatalf("dm Send: %v", err)
+	}
+	dmRec := lastRecord(t, home)
+
+	generalMsg := OutboundMessage{
+		InitiativeID: "at-test",
+		Title:        "t",
+		Body:         "b",
+		General:      true,
+		Sender:       sentlog.KindNotifyDirect,
+	}
+	if _, err := lt.Send(generalMsg); err != nil {
+		t.Fatalf("general Send: %v", err)
+	}
+	generalRec := lastRecord(t, home)
+
+	if dmRec["chat_ref"] != "555111234:98" {
+		t.Fatalf("dm record chat_ref = %v, want 555111234:98", dmRec["chat_ref"])
+	}
+	if dmRec["general"] != false {
+		t.Fatalf("dm record general = %v, want false", dmRec["general"])
+	}
+	if generalRec["chat_ref"] != "" {
+		t.Fatalf("general record chat_ref = %v, want empty", generalRec["chat_ref"])
+	}
+	if generalRec["general"] != true {
+		t.Fatalf("general record general = %v, want true", generalRec["general"])
+	}
+	// The defect: both records share thread_ref=="" — proves the two sends
+	// are NOT distinguished by thread_ref/general alone, i.e. chat_ref is
+	// the field actually doing the work here, not incidental.
+	if dmRec["thread_ref"] != "" || generalRec["thread_ref"] != "" {
+		t.Fatalf("expected both records to share thread_ref==\"\" (the pre-fix collision), got dm=%v general=%v", dmRec["thread_ref"], generalRec["thread_ref"])
+	}
+	if dmRec["chat_ref"] == generalRec["chat_ref"] {
+		t.Fatalf("dm and general records are indistinguishable on chat_ref: both %v", dmRec["chat_ref"])
+	}
+}
+
 // TestLoggingTransportRedactsURLCredentialsFromError: loggingTransport is
 // generic — it wraps whatever Transport For returns and cannot call into
 // that transport's own error-sanitizer (today, Telegram's

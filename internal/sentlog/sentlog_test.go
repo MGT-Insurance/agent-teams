@@ -22,6 +22,7 @@ func TestMarshalLineRoundTrip(t *testing.T) {
 		Transport:  "telegram",
 		Initiative: "at-atnl",
 		ThreadRef:  "412",
+		ChatRef:    "555111234:98",
 		General:    false,
 		Title:      "Architecture Review",
 		Body:       "please review",
