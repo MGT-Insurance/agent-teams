@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/plugins/agent-teams/templates"
 )
 
 // ── steward init ──────────────────────────────────────────────────────────────
@@ -62,6 +63,91 @@ func TestStewardInit_Idempotent(t *testing.T) {
 func TestStewardInit_NilContext(t *testing.T) {
 	if err := (&stewardInitKong{}).Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── global PRIME.md install ──────────────────────────────────────────────────
+
+func TestStewardInit_InstallsGlobalPrimeMD(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	target := globalPrimeMDPath(ctx)
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("expected %s to exist: %v", target, err)
+	}
+	if string(got) != templates.GlobalPrimeMD {
+		t.Errorf("installed content = %q, want the shipped template", got)
+	}
+	if !strings.Contains(stderr.String(), "installed: "+target) {
+		t.Errorf("stderr = %q, want an %q note", stderr.String(), "installed: "+target)
+	}
+}
+
+func TestStewardInit_GlobalPrimeMDAlreadyCorrect_NoOp(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	target := globalPrimeMDPath(ctx)
+	fiBefore, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat after first init: %v", err)
+	}
+
+	// Second call: content already matches the shipped template exactly, so
+	// this must be a true no-op — no rewrite (mtime unchanged), no error, and
+	// no log line on either stream.
+	_, stdout2, stderr2 := makeCtx(&fakeBD{}, home)
+	ctx.Stdout, ctx.Stderr = stdout2, stderr2
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	fiAfter, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat after second init: %v", err)
+	}
+	if !fiAfter.ModTime().Equal(fiBefore.ModTime()) {
+		t.Errorf("PRIME.md was rewritten on an already-correct no-op call: mtime %v -> %v", fiBefore.ModTime(), fiAfter.ModTime())
+	}
+	if got := stderr2.String(); got != "" {
+		t.Errorf("stderr on no-op call = %q, want empty (no spurious log line)", got)
+	}
+}
+
+func TestStewardInit_GlobalPrimeMDHumanEdit_NotClobbered(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+
+	target := globalPrimeMDPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	humanContent := "# My customized PRIME.md\n\nDon't touch this.\n"
+	if err := os.WriteFile(target, []byte(humanContent), 0o644); err != nil {
+		t.Fatalf("seed human-edited PRIME.md: %v", err)
+	}
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read %s: %v", target, err)
+	}
+	if string(got) != humanContent {
+		t.Errorf("human-edited PRIME.md was clobbered: got %q, want %q", got, humanContent)
+	}
+	if !strings.Contains(stderr.String(), target) || !strings.Contains(stderr.String(), "human edit") {
+		t.Errorf("stderr = %q, want an obvious divergence note naming %s", stderr.String(), target)
 	}
 }
 

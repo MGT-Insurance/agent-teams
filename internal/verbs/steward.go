@@ -15,6 +15,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/plugins/agent-teams/templates"
 )
 
 // RegisterStewardKong registers the `steward` parent verb (init, ledger
@@ -89,7 +90,72 @@ func stewardInit(ctx *cli.Context) (string, error) {
 		return "", fmt.Errorf("stat marker: %w", err)
 	}
 
+	if err := installGlobalPrimeMD(ctx); err != nil {
+		return "", fmt.Errorf("install global PRIME.md: %w", err)
+	}
+
 	return sessionDir, nil
+}
+
+// globalPrimeMDPath returns $ATEAM_HOME/.beads/PRIME.md — the beads v1.1.0
+// (cmd/bd/prime.go) override path: `bd prime`, run against the global
+// agent-teams workspace, treats a PRIME.md file there as a total override of
+// its default output (which otherwise dumps the entire all-role memory store
+// into every session). Not one of the Steward*Path helpers in
+// steward_seams.go: that file is the frozen contract other tracks import
+// read-only, and this path isn't Steward-specific — it's a property of the
+// global workspace as a whole, installed by `ateam steward init` because
+// that's the existing one-time workspace-setup hook, not because it's
+// steward state.
+func globalPrimeMDPath(ctx *cli.Context) string {
+	return filepath.Join(ctx.Home, ".beads", "PRIME.md")
+}
+
+// installGlobalPrimeMD writes templates.GlobalPrimeMD to globalPrimeMDPath,
+// creating $ATEAM_HOME/.beads if it doesn't already exist (mirrors the
+// os.MkdirAll(filepath.Dir(ledgerPath), ...) pattern used by
+// stewardLedgerRecordKong.Run below — bd itself guarantees .beads exists for
+// any initialized workspace, but callers exercising stewardInit directly
+// against a bare temp dir should not have to pre-create it).
+//
+// Idempotent: content identical to the shipped template is a no-op — no
+// rewrite, no error, no log line. A file that's absent is created (fresh
+// install). A file that EXISTS with DIFFERENT content is presumed to be a
+// human edit and is never overwritten — silently clobbering it would lose
+// that edit with no way to notice. Instead this reports the divergence and
+// leaves the file untouched, so `ateam steward init`/`start` still succeeds
+// (fail-soft): a customized PRIME.md must never block steward startup, it
+// just keeps diverging from the shipped default until a human resolves it
+// by hand.
+//
+// Notes go to ctx.Stderr, not ctx.Stdout: stewardInitKong.Run's only stdout
+// contract is the session directory on its own line
+// (TestStewardInit_CreatesSessionDirAndMarker asserts stdout == sessionDir
+// exactly), and this is incidental installer chatter, not that command's
+// primary output.
+func installGlobalPrimeMD(ctx *cli.Context) error {
+	target := globalPrimeMDPath(ctx)
+
+	existing, err := os.ReadFile(target)
+	switch {
+	case err == nil:
+		if string(existing) == templates.GlobalPrimeMD {
+			return nil
+		}
+		fmt.Fprintf(ctx.Stderr, "note: %s differs from the shipped template — leaving it untouched (looks like a human edit)\n", target)
+		return nil
+	case os.IsNotExist(err):
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+		}
+		if err := os.WriteFile(target, []byte(templates.GlobalPrimeMD), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", target, err)
+		}
+		fmt.Fprintf(ctx.Stderr, "installed: %s\n", target)
+		return nil
+	default:
+		return fmt.Errorf("read %s: %w", target, err)
+	}
 }
 
 // ── steward remove ────────────────────────────────────────────────────────────
