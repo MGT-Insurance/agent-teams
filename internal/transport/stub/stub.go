@@ -55,13 +55,21 @@ type Stub struct {
 func (s *Stub) Name() string { return "stub" }
 
 // Send appends the outbound message to <dir>/sent.jsonl and returns a
-// deterministic threadRef from a counter stored in <dir>/next-ref. When
-// msg.General is true, no forum topic is modeled: the recorded thread_ref is
-// "" and the next-ref counter is not bumped, mirroring the Telegram
-// transport's General-channel Send.
+// deterministic threadRef from a counter stored in <dir>/next-ref.
+//
+// Neither a ChatRef-addressed send nor a General send models a forum topic:
+// the recorded thread_ref is "" and the next-ref counter is not bumped. That
+// mirrors the Telegram transport in both cases — a General-channel post opens
+// no topic, and a 1:1 chat has no topics to open at all. ChatRef is tested
+// first so the stub follows the precedence transport.OutboundMessage.ChatRef
+// mandates when both are set.
+//
+// chat_ref and general are recorded so the outbound leg is observable: the
+// destination of a reply is the whole point of a DM answer, and a test that
+// only saw the body could not tell a DM reply from a General broadcast.
 func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 	threadRef := msg.ThreadRef
-	if msg.General {
+	if msg.ChatRef != "" || msg.General {
 		threadRef = ""
 	} else if threadRef == "" {
 		ref, err := s.nextRef()
@@ -71,11 +79,13 @@ func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 		threadRef = ref
 	}
 
-	record := map[string]string{
+	record := map[string]any{
 		"initiative_id": msg.InitiativeID,
 		"thread_ref":    threadRef,
 		"title":         msg.Title,
 		"body":          msg.Body,
+		"chat_ref":      msg.ChatRef,
+		"general":       msg.General,
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -102,6 +112,12 @@ func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 // relay's @mention routing rules in e2e tests. The stub has no token/getMe,
 // so per-machine bot identity is modeled by each reply file setting
 // mentions_self directly rather than being derived from mentions.
+//
+// Optional "direct" (bool) and "message_ref" (string) model a 1:1 DM: the
+// stub has no chat types either, so a reply file declares Direct itself the
+// same way it declares mentions_self. message_ref is passed through verbatim
+// — it is transport-opaque above this layer, and the Telegram transport's
+// composite "<chat_id>:<message_id>" shape is just a string here.
 func (s *Stub) Receive(handler func(transport.Reply) error) error {
 	matches, err := filepath.Glob(filepath.Join(s.dir, "reply-*.json"))
 	if err != nil {
@@ -120,6 +136,8 @@ func (s *Stub) Receive(handler func(transport.Reply) error) error {
 			Text         string   `json:"text"`
 			Mentions     []string `json:"mentions"`
 			MentionsSelf bool     `json:"mentions_self"`
+			Direct       bool     `json:"direct"`
+			MessageRef   string   `json:"message_ref"`
 		}
 		if err := json.Unmarshal(data, &r); err != nil {
 			return fmt.Errorf("stub: parse %s: %w", path, err)
@@ -130,6 +148,8 @@ func (s *Stub) Receive(handler func(transport.Reply) error) error {
 			Text:         r.Text,
 			Mentions:     r.Mentions,
 			MentionsSelf: r.MentionsSelf,
+			Direct:       r.Direct,
+			MessageRef:   r.MessageRef,
 		}
 
 		if err := handler(reply); err != nil {
