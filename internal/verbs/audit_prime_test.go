@@ -20,14 +20,24 @@ import (
 )
 
 // auditPrimeWorkspace creates a throwaway workspace directory containing a
-// .beads subdirectory, so workspace.Initialized reports true for it.
+// .beads subdirectory (so workspace.Initialized reports true) with PRIME.md
+// installed — i.e. a correctly set-up workspace. Tests exercising a missing or
+// empty PRIME.md mutate it afterwards via auditPrimeMDPath.
 func auditPrimeWorkspace(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".beads"), 0o755); err != nil {
 		t.Fatalf("mkdir .beads: %v", err)
 	}
+	if err := os.WriteFile(auditPrimeMDPath(home), []byte(auditPrimeSuppressed), 0o644); err != nil {
+		t.Fatalf("write PRIME.md: %v", err)
+	}
 	return home
+}
+
+// auditPrimeMDPath is the installed-suppression-file path the audit asserts on.
+func auditPrimeMDPath(home string) string {
+	return filepath.Join(home, ".beads", "PRIME.md")
 }
 
 // auditPrimeBD returns a fakeBD whose `prime` call yields out. Any other
@@ -124,6 +134,9 @@ func TestAuditPrime_FailsWhenMemoriesReappendedDespitePrimeMD(t *testing.T) {
 // appends every memory. Also RED.
 func TestAuditPrime_FailsWhenPrimeMDMissing(t *testing.T) {
 	home := auditPrimeWorkspace(t)
+	if err := os.Remove(auditPrimeMDPath(home)); err != nil {
+		t.Fatalf("remove PRIME.md: %v", err)
+	}
 	out := "# Beads Workflow Context\n\n> Run `bd prime` after compaction.\n" + auditPrimeMemoryDump
 	ctx, _, stderr := makeCtx(auditPrimeBD(out, nil), home)
 
@@ -132,6 +145,73 @@ func TestAuditPrime_FailsWhenPrimeMDMissing(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "PRIME.md") {
 		t.Errorf("failure output should point at PRIME.md:\n%s", stderr.String())
+	}
+}
+
+// THE fresh-machine case, and the reason the file-existence assertion exists at
+// all: PRIME.md never got installed, but the memory store is still empty, so
+// prime is small and carries no memory heading. The OUTPUT assertion cannot see
+// this — only the existence assertion can. Must be RED.
+func TestAuditPrime_FailsWhenPrimeMDMissingOnEmptyWorkspace(t *testing.T) {
+	home := auditPrimeWorkspace(t)
+	if err := os.Remove(auditPrimeMDPath(home)); err != nil {
+		t.Fatalf("remove PRIME.md: %v", err)
+	}
+	// bd's own preamble on a workspace with zero memories: well under budget,
+	// no memory heading. Exactly what the output assertion calls healthy.
+	var calls []string
+	out := "# Beads Workflow Context\n\n> Run `bd prime` after compaction.\n"
+	if len(out) > primeBudgetBytes || strings.Contains(out, primeMemoriesHeading) {
+		t.Fatalf("fixture must be the shape the output assertion passes, or this test proves nothing")
+	}
+	ctx, stdout, stderr := makeCtx(auditPrimeBD(out, &calls), home)
+
+	if cli.ExitCode((&auditKong{}).Run(ctx)) != 1 {
+		t.Fatalf("fresh machine with no PRIME.md: want exit 1 — the output assertion alone would have passed this")
+	}
+	got := stderr.String()
+	for _, want := range []string{
+		"audit: FAILED",
+		"no installed PRIME.md",
+		"(missing)",
+		"ateam steward init",
+		auditPrimeMDPath(home),
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing-PRIME.md output missing %q:\n%s", want, got)
+		}
+	}
+	// The absent-file case must NOT drag the reader through override-semantics
+	// reasoning that has nothing to do with their problem.
+	if strings.Contains(got, "GH#3941") {
+		t.Errorf("absent PRIME.md should not print the override-semantics block:\n%s", got)
+	}
+	if strings.Contains(stdout.String(), "bd prime clean") {
+		t.Errorf("missing PRIME.md still printed the clean line:\n%s", stdout.String())
+	}
+	// Nothing to learn from prime once the suppression file is gone.
+	for _, c := range calls {
+		if c == "prime" {
+			t.Errorf("missing PRIME.md should short-circuit before running bd prime; got %v", calls)
+		}
+	}
+}
+
+// A zero-byte PRIME.md is a hole the output assertion can NEVER see: beads
+// v1.1.0 honours it as a total override and emits nothing at all, so prime
+// measures 0 bytes with no heading at any memory count.
+func TestAuditPrime_FailsWhenPrimeMDEmpty(t *testing.T) {
+	home := auditPrimeWorkspace(t)
+	if err := os.WriteFile(auditPrimeMDPath(home), nil, 0o644); err != nil {
+		t.Fatalf("truncate PRIME.md: %v", err)
+	}
+	ctx, _, stderr := makeCtx(auditPrimeBD("", nil), home)
+
+	if cli.ExitCode((&auditKong{}).Run(ctx)) != 1 {
+		t.Fatalf("empty PRIME.md: want exit 1")
+	}
+	if !strings.Contains(stderr.String(), "present but empty") {
+		t.Errorf("empty PRIME.md should be named as such:\n%s", stderr.String())
 	}
 }
 
