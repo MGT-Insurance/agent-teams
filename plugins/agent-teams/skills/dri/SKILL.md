@@ -31,7 +31,7 @@ Advisor setting: `${user_config.use_advisors}`. If this is not exactly `true`, s
 ## Phase 0 — Preflight
 
 - Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
-- Run `ateam learnings dri` and load its output into context — the only way `dri:` role learnings reach this session (unlike the four subagent roles, DRI has no SubagentStart hook to auto-inject them). When you act on a specific `dri:` learning, record it: from its key line `dri:<tier>:<slug>`, run `ateam applied dri <slug>` (bare slug — drop the tier). Cheap, fire-and-forget; it feeds impact-driven curation.
+- Run `ateam learnings dri` and load its output into context — on `startup`/`resume` nothing else injects `dri:` role learnings (unlike the four subagent roles, DRI has no SubagentStart hook to auto-inject them; `role-recall-recovery.sh` covers only SessionStart `clear|compact`). When you act on a specific `dri:` learning, record it: from its key line `dri:<tier>:<slug>`, run `ateam applied dri <slug>` (bare slug — drop the tier). Cheap, fire-and-forget; it feeds impact-driven curation.
 - Mark this session for durable learnings re-injection (survives compaction — see agent-teams-7ew5.2.1): `. "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/lib/resolve-session-role.sh" && dri_mark_session "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"`
 - Confirm cwd is the dedicated worktree/checkout for this initiative — the DRI owns its checkout exclusively.
 - **NEVER call `EnterWorktree`.** This checkout IS the isolation — there is nothing to enter; always use `-C <abs>` / absolute paths instead. Full drift mechanism, background-bootstrap-nudge caveat, and recovery: references/execution.md ("CWD discipline").
