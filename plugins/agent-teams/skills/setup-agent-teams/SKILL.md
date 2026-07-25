@@ -368,7 +368,7 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ```bash
    ateam audit
    ```
-   Expected: a `audit: bd prime clean — <n> bytes, no memory dump (budget 10240)` line (alongside the leaked-work-beads line). If instead you see `audit: FAILED — the global workspace has no installed PRIME.md`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md by hand).
+   Expected: an `audit: bd prime clean — <n> bytes, no memory dump (budget 10240)` line (alongside the leaked-work-beads line). If instead you see `audit: FAILED — the global workspace has no installed PRIME.md`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md by hand).
 
 ## 10. Verify memory-routing hook is active
 
