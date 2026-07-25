@@ -39,6 +39,30 @@ func newTestTelegram(t *testing.T, srv *httptest.Server, chatID string) *Telegra
 	return tg
 }
 
+// pinTelegramEnv pins EVERY env-var-then-file secret New consults — token,
+// chat id, DM allow-list — for the duration of the test. Every test that
+// calls New must go through it.
+//
+// One helper rather than a t.Setenv per test because the leak it prevents is
+// specifically the one an UNPINNED variable causes: New reads
+// AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST before falling back to the file, so on a
+// machine where the operator has exported it — exactly what running this
+// feature invites — an unpinned test builds a transport with a REAL
+// allow-list and then passes or fails on the developer's environment instead
+// of on the code. That failure surfaces on one machine, later, looking like
+// flakiness. Routing all three through one helper means the next optional
+// secret added to New is pinned by editing one place (agent-teams-ncn5.17).
+//
+// An empty value is not "unset": loadSecret/loadOptionalSecret treat it as
+// absent and fall through to <home>/telegram/<name>, which is how a test asks
+// for the file path to be exercised.
+func pinTelegramEnv(t *testing.T, token, chatID, dmAllowlist string) {
+	t.Helper()
+	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", token)
+	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", chatID)
+	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", dmAllowlist)
+}
+
 // logLineDepth returns the transport.Logf indentation depth of line — the
 // number of two-space indent groups immediately after the fixed-width
 // "YYYY-MM-DD HH:MM:SS " timestamp prefix (20 chars: 19-char timestamp + 1
@@ -1912,8 +1936,7 @@ func TestReceive_ContentLessDropLogged(t *testing.T) {
 // captured by temporarily redirecting the package-level os.Stderr (New's
 // default logOut) to a pipe.
 func TestNew_WritesNothingToLog(t *testing.T) {
-	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
-	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
+	pinTelegramEnv(t, fakeToken, "-100999888777", "")
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -2218,9 +2241,7 @@ func TestParseDMAllowlist_EmptyInputYieldsNoEntries(t *testing.T) {
 // Eric believes he is allow-listed when he is not, and the only symptom is a
 // DM that vanishes with no diagnostic.
 func TestNew_MalformedDMAllowlist_FailsLoudlyNamingTheLine(t *testing.T) {
-	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
-	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
-	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "111\nnot-an-id\n222")
+	pinTelegramEnv(t, fakeToken, "-100999888777", "111\nnot-an-id\n222")
 
 	_, err := New(t.TempDir(), &http.Client{})
 	if err == nil {
@@ -2239,9 +2260,8 @@ func TestNew_MalformedDMAllowlist_FailsLoudlyNamingTheLine(t *testing.T) {
 // the resulting predicate, proving loadOptionalSecret and parseDMAllowlist are
 // wired into construction.
 func TestNew_DMAllowlistFromFile_AdmitsOnlyListedSenders(t *testing.T) {
-	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
-	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
-	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "")
+	// Empty allow-list env so the file under home is the one exercised.
+	pinTelegramEnv(t, fakeToken, "-100999888777", "")
 
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, "telegram"), 0o700); err != nil {
@@ -2268,9 +2288,7 @@ func TestNew_DMAllowlistFromFile_AdmitsOnlyListedSenders(t *testing.T) {
 // who never configures a DM allow-list still gets a working transport, one
 // that admits no DMs.
 func TestNew_AbsentDMAllowlist_ConstructsAndAdmitsNobody(t *testing.T) {
-	t.Setenv("AGENT_TEAMS_TELEGRAM_TOKEN", fakeToken)
-	t.Setenv("AGENT_TEAMS_TELEGRAM_CHAT_ID", "-100999888777")
-	t.Setenv("AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "")
+	pinTelegramEnv(t, fakeToken, "-100999888777", "")
 
 	tg, err := New(t.TempDir(), &http.Client{})
 	if err != nil {
