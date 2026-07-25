@@ -413,27 +413,60 @@ func ParseStewardClosedInitiativeEnvelope(text string) (StewardClosedInitiativeE
 // ── Direct→Steward envelope ──────────────────────────────────────────────────
 //
 // Unlike the gate/reply envelopes above, a direct message carries no
-// initiative id — it's explicitly out-of-band, so the open sentinel is a
-// fixed header line rather than a prefix with trailing metadata.
+// initiative id — it's explicitly out-of-band. Its one piece of header
+// metadata is an OPTIONAL reply-to ref (agent-teams-ncn5.9), so the open
+// sentinel is a bare header line when there is none and a prefix with
+// trailing metadata when there is.
 
-const stewardDirectOpenPrefix = "<<<steward-direct>>>"
+const stewardDirectOpenPrefix = "<<<steward-direct"
 
 // StewardDirectEnvelope holds the parsed fields of a Direct→Steward
 // envelope (Eric messaging the Steward directly, outside any initiative
 // context).
 type StewardDirectEnvelope struct {
-	Body string
+	// ReplyTo is the opaque transport-native ref of the message this
+	// envelope carries (transport.Reply.MessageRef) — what the Steward hands
+	// back as `ateam notify direct --to <ref>` so its answer lands in the
+	// conversation the message came from (OutboundMessage.ChatRef) instead
+	// of the configured channel.
+	//
+	// Set ONLY for a 1:1 DM (relay.go handleDirectReply). An @mention in the
+	// General channel produces a steward-direct envelope too, and leaves
+	// this empty on purpose: that answer belongs in General, where the group
+	// can see it.
+	//
+	// OPAQUE end to end. Nothing here or in relay.go parses, splits, or
+	// compares it — only the owning transport understands its shape, which
+	// is composite for Telegram (see the transport.Reply.MessageRef doc).
+	// This envelope's only requirement on it is that it be a single line,
+	// since it rides in the single-line sentinel header below.
+	ReplyTo string
+	Body    string
 }
 
 // BuildStewardDirectEnvelope renders the self-contained Direct→Steward
-// envelope:
+// envelope, with replyTo:
+//
+//	<<<steward-direct reply-to:<ref>>>>
+//	<body>
+//	>>>
+//
+// and without (replyTo == ""):
 //
 //	<<<steward-direct>>>
 //	<body>
 //	>>>
-func BuildStewardDirectEnvelope(body string) (string, error) {
+//
+// An empty replyTo is a first-class case, not a degraded one — see the
+// ReplyTo field doc above. Parameter order matches every other builder in
+// this file: header metadata first, body last.
+func BuildStewardDirectEnvelope(replyTo, body string) (string, error) {
 	var b strings.Builder
 	b.WriteString(stewardDirectOpenPrefix)
+	if replyTo != "" {
+		fmt.Fprintf(&b, " reply-to:%s", replyTo)
+	}
+	b.WriteString(stewardEnvelopeClose)
 	b.WriteString("\n")
 	b.WriteString(body)
 	b.WriteString("\n" + stewardEnvelopeClose)
@@ -441,18 +474,39 @@ func BuildStewardDirectEnvelope(body string) (string, error) {
 }
 
 // ParseStewardDirectEnvelope parses an envelope produced by
-// BuildStewardDirectEnvelope. Returns false when text isn't well-formed: no
-// header line or a missing closing sentinel line.
+// BuildStewardDirectEnvelope. The reply-to ref is optional: a bare
+// "<<<steward-direct>>>" header parses fine with ReplyTo == "", which keeps
+// envelopes built by an older relay — in flight across a rolling restart, or
+// produced by the @mention path — readable unchanged. Returns false when
+// text isn't well-formed: no header line, header metadata that isn't a
+// non-empty " reply-to:<ref>", or a missing closing sentinel line.
 func ParseStewardDirectEnvelope(text string) (StewardDirectEnvelope, bool) {
-	header := stewardDirectOpenPrefix + "\n"
-	if !strings.HasPrefix(text, header) {
+	if !strings.HasPrefix(text, stewardDirectOpenPrefix) {
 		return StewardDirectEnvelope{}, false
 	}
-	body, ok := strings.CutSuffix(text[len(header):], "\n"+stewardEnvelopeClose)
+	nl := strings.IndexByte(text, '\n')
+	if nl == -1 {
+		return StewardDirectEnvelope{}, false
+	}
+	header, rest := text[:nl], text[nl+1:]
+
+	fields, ok := strings.CutSuffix(header[len(stewardDirectOpenPrefix):], stewardEnvelopeClose)
 	if !ok {
 		return StewardDirectEnvelope{}, false
 	}
-	return StewardDirectEnvelope{Body: body}, true
+	var replyTo string
+	if fields != "" {
+		replyTo, ok = strings.CutPrefix(fields, " reply-to:")
+		if !ok || replyTo == "" {
+			return StewardDirectEnvelope{}, false
+		}
+	}
+
+	body, ok := strings.CutSuffix(rest, "\n"+stewardEnvelopeClose)
+	if !ok {
+		return StewardDirectEnvelope{}, false
+	}
+	return StewardDirectEnvelope{ReplyTo: replyTo, Body: body}, true
 }
 
 // ── Briefing-reply→Steward envelope ──────────────────────────────────────────

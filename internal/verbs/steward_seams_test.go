@@ -289,7 +289,7 @@ func TestParseStewardUnroutedEnvelope_Malformed(t *testing.T) {
 
 func TestStewardDirectEnvelope_RoundTrip(t *testing.T) {
 	body := "Hey Steward, what's the status on the >>> deploy?\n\nAlso: any blockers?"
-	text, err := verbs.BuildStewardDirectEnvelope(body)
+	text, err := verbs.BuildStewardDirectEnvelope("", body)
 	if err != nil {
 		t.Fatalf("BuildStewardDirectEnvelope: %v", err)
 	}
@@ -306,14 +306,75 @@ func TestStewardDirectEnvelope_RoundTrip(t *testing.T) {
 	if got.Body != body {
 		t.Errorf("Body = %q, want %q", got.Body, body)
 	}
+	if got.ReplyTo != "" {
+		t.Errorf("ReplyTo = %q, want empty", got.ReplyTo)
+	}
+}
+
+// TestStewardDirectEnvelope_RoundTripWithReplyTo covers the DM shape
+// (agent-teams-ncn5.9): the opaque reply-to ref rides in the sentinel header
+// and comes back out of Parse byte-identical. The refs below deliberately
+// differ in shape — a composite "<chat>:<message>" and a bare id — because
+// nothing in this package may depend on which one the transport emits.
+func TestStewardDirectEnvelope_RoundTripWithReplyTo(t *testing.T) {
+	for _, replyTo := range []string{"-1001234567890:88", "88"} {
+		t.Run(replyTo, func(t *testing.T) {
+			body := "is the >>> deploy done?\n\nsecond line"
+			text, err := verbs.BuildStewardDirectEnvelope(replyTo, body)
+			if err != nil {
+				t.Fatalf("BuildStewardDirectEnvelope: %v", err)
+			}
+
+			want := "<<<steward-direct reply-to:" + replyTo + ">>>\n" + body + "\n>>>"
+			if text != want {
+				t.Fatalf("BuildStewardDirectEnvelope =\n%q\nwant\n%q", text, want)
+			}
+
+			got, ok := verbs.ParseStewardDirectEnvelope(text)
+			if !ok {
+				t.Fatalf("ParseStewardDirectEnvelope: ok=false, want true")
+			}
+			if got.ReplyTo != replyTo {
+				t.Errorf("ReplyTo = %q, want %q", got.ReplyTo, replyTo)
+			}
+			if got.Body != body {
+				t.Errorf("Body = %q, want %q", got.Body, body)
+			}
+		})
+	}
+}
+
+// TestParseStewardDirectEnvelope_LegacyNoReplyTo pins backward compatibility
+// with the pre-agent-teams-ncn5.9 wire format, which had no header metadata
+// at all: an envelope written by an older relay (in flight across a rolling
+// restart) must still parse, with ReplyTo empty rather than ok=false. The
+// literal text here is deliberately hardcoded, not built — that is the whole
+// point of the check.
+func TestParseStewardDirectEnvelope_LegacyNoReplyTo(t *testing.T) {
+	got, ok := verbs.ParseStewardDirectEnvelope("<<<steward-direct>>>\nhello steward\n>>>")
+	if !ok {
+		t.Fatalf("ParseStewardDirectEnvelope: ok=false for a legacy envelope, want true")
+	}
+	if got.ReplyTo != "" {
+		t.Errorf("ReplyTo = %q, want empty", got.ReplyTo)
+	}
+	if got.Body != "hello steward" {
+		t.Errorf("Body = %q, want %q", got.Body, "hello steward")
+	}
 }
 
 func TestParseStewardDirectEnvelope_Malformed(t *testing.T) {
-	if _, ok := verbs.ParseStewardDirectEnvelope("not an envelope"); ok {
-		t.Error("ParseStewardDirectEnvelope: expected ok=false for non-envelope text")
-	}
-	if _, ok := verbs.ParseStewardDirectEnvelope("<<<steward-direct>>>\nbody with no closer"); ok {
-		t.Error("ParseStewardDirectEnvelope: expected ok=false for missing closing sentinel")
+	for _, tt := range []struct{ name, text string }{
+		{"non-envelope text", "not an envelope"},
+		{"missing closing sentinel", "<<<steward-direct>>>\nbody with no closer"},
+		{"missing closing sentinel, with reply-to", "<<<steward-direct reply-to:12:3>>>\nbody with no closer"},
+		{"empty reply-to ref", "<<<steward-direct reply-to:>>>\nbody\n>>>"},
+		{"unrecognized header metadata", "<<<steward-direct chat:12>>>\nbody\n>>>"},
+		{"header not closed", "<<<steward-direct reply-to:12:3\nbody\n>>>"},
+	} {
+		if _, ok := verbs.ParseStewardDirectEnvelope(tt.text); ok {
+			t.Errorf("ParseStewardDirectEnvelope: expected ok=false for %s", tt.name)
+		}
 	}
 }
 
@@ -339,7 +400,9 @@ func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildStewardClosedInitiativeEnvelope: %v", err)
 	}
-	directText, err := verbs.BuildStewardDirectEnvelope("body")
+	// With a reply-to ref: the header-metadata variant is the one that could
+	// plausibly collide with another format's "<prefix> <key>:<value>" header.
+	directText, err := verbs.BuildStewardDirectEnvelope("-100123:88", "body")
 	if err != nil {
 		t.Fatalf("BuildStewardDirectEnvelope: %v", err)
 	}

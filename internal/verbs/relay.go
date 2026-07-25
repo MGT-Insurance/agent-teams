@@ -536,12 +536,26 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 	return true, ""
 }
 
-// handleDirectReply routes a reply whose thread ref matches the Steward's
-// persisted direct-message channel thread ref (see the short-circuit in
-// handleReply above): it wraps reply.Text in a steward-direct envelope and
-// sends it straight to the Steward, with no initiative lookup involved.
+// handleDirectReply routes a reply that addressed this bot directly — rule 1
+// in handleReply above, i.e. an @mention of this bot in the General channel
+// (reply.MentionsSelf) or a 1:1 DM (reply.Direct). It wraps reply.Text in a
+// steward-direct envelope and sends it straight to the Steward, with no
+// initiative lookup involved.
+//
+// The envelope carries a reply-to ref ONLY for a DM (agent-teams-ncn5.9), so
+// the Steward's answer goes back into that 1:1 chat. An @mention in General
+// deliberately carries none: its answer belongs in General, where the group
+// can see it — threading a group @mention back as a 1:1 would be a behavior
+// change nobody asked for. The ref is opaque here: reply.MessageRef is
+// carried through verbatim and never parsed, split, or compared (see the
+// transport.Reply.MessageRef doc).
 func (c *relayKong) handleDirectReply(ctx *cli.Context, reply transport.Reply) error {
-	envelope, err := BuildStewardDirectEnvelope(reply.Text)
+	var replyTo string
+	if reply.Direct {
+		replyTo = reply.MessageRef
+	}
+
+	envelope, err := BuildStewardDirectEnvelope(replyTo, reply.Text)
 	if err != nil {
 		transport.Logf(ctx.Stderr, 2, "build steward direct envelope: %v — skipping", err)
 		return nil

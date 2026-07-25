@@ -869,6 +869,71 @@ func TestRelay_Direct_MentioningOtherBot_StillRoutesToSteward(t *testing.T) {
 	}
 }
 
+// TestRelay_DirectEnvelope_CarriesReplyToRefOnlyForDM pins agent-teams-ncn5.9:
+// the steward-direct envelope carries the inbound MessageRef as its reply-to
+// ref for a DM, and carries NO ref for an @mention in General — even though
+// that @mention arrives with a perfectly good MessageRef — because its answer
+// belongs in General where the group can see it.
+//
+// The two DM rows differ only in the SHAPE of the ref (composite vs bare id).
+// Both must pass identically: the relay hands the ref through verbatim and
+// never parses it, so a transport changing what the ref looks like cannot
+// affect this code.
+func TestRelay_DirectEnvelope_CarriesReplyToRefOnlyForDM(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		direct       bool
+		mentionsSelf bool
+		messageRef   string
+		wantReplyTo  string
+	}{
+		{"DM, composite ref", true, false, "-1001234567890:88", "-1001234567890:88"},
+		{"DM, bare-id ref", true, false, "88", "88"},
+		{"@mention in General", false, true, "88", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newRelayCtx(t)
+
+			fs := &fakeSendCapture{}
+			ft := &relayFakeTransport{
+				replies: []transport.Reply{{
+					ThreadRef:    "",
+					Text:         "what is the status",
+					MentionsSelf: tt.mentionsSelf,
+					Direct:       tt.direct,
+					MessageRef:   tt.messageRef,
+				}},
+			}
+
+			cmd := &relayKong{
+				enabled:             func(string) bool { return true },
+				transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+				bdQuery:             newFakeBDQuery().query,
+				send:                fs.send,
+				claimsLocally:       alwaysClaimsLocally,
+				isFallbackResponder: alwaysFallbackResponder,
+				knownStewardTopic:   neverKnownStewardTopic,
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(fs.calls) != 1 {
+				t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+			}
+			env, ok := ParseStewardDirectEnvelope(fs.bodies[0])
+			if !ok {
+				t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+			}
+			if env.ReplyTo != tt.wantReplyTo {
+				t.Errorf("envelope ReplyTo = %q, want %q", env.ReplyTo, tt.wantReplyTo)
+			}
+			if env.Body != "what is the status" {
+				t.Errorf("envelope Body = %q, want %q", env.Body, "what is the status")
+			}
+		})
+	}
+}
+
 // TestRelay_NotDirect_NoMention_StillTakesRule3 is the regression guard for
 // the non-DM non-topic path: Direct==false with no bot mention must still
 // reach rule 3's fallback-responder steward-unrouted behavior, unchanged.
