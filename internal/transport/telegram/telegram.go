@@ -17,6 +17,17 @@
 // comments and blank lines ignored). Absent or empty admits no DMs at all; a
 // malformed entry is a startup error. See allowsDirectChat.
 //
+// Finding your own id (the bootstrap step: the allow-list wants a number,
+// not a username): post any message to the configured group as you
+// normally would — e.g. the General topic. The relay's log names your
+// numeric sender id the first time it sees you post there, on a line
+// containing "sender id <N>". That number IS the id to add to
+// dm-allowlist: a Telegram private chat's chat.id equals the sender's own
+// user id, the same value the allow-list is keyed on, so the id attached
+// to an ordinary group message is exactly the id a DM needs. Add it as its
+// own line (or comma-separated with others) — ids are positive integers.
+// See the sender-id-logging in Receive.
+//
 // # Thread model
 //
 // One Telegram forum topic per initiative. Send with ThreadRef=="" opens a new
@@ -108,6 +119,16 @@ type Telegram struct {
 	// nobody. Populated in New from the optional dm-allowlist config; see
 	// parseDMAllowlist for the format.
 	dmAllowlist map[int64]bool
+
+	// seenSenders records which senders' Telegram user ids have already
+	// been logged by the dm-allowlist bootstrap line in Receive
+	// (agent-teams-ncn5.15), so each sender's id is logged once per
+	// process lifetime rather than once per message — an active General
+	// topic would otherwise spam the relay log forever with information
+	// that's only useful once, at setup. Nil until the first group
+	// message arrives; reading a nil map is safe, only writes need the
+	// lazy-init check in Receive.
+	seenSenders map[int64]bool
 }
 
 // logf writes one timestamped, indentation-scoped log line via
@@ -332,7 +353,22 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			chatIDStr := strconv.FormatInt(msg.Chat.ID, 10)
 			switch {
 			case chatIDStr == t.chatID:
-				// The configured supergroup — unchanged.
+				// The configured supergroup. Log a sender's numeric id the
+				// first time it's seen here — the dm-allowlist bootstrap
+				// (agent-teams-ncn5.15): a Telegram private chat's chat.id
+				// IS the sender's own user id, so the number this line
+				// names is exactly the one to add to dm-allowlist. Once per
+				// sender per process lifetime (seenSenders), not once per
+				// message, so an active General topic doesn't spam the
+				// relay log with information that's only useful once, at
+				// setup.
+				if msg.From != nil && !t.seenSenders[msg.From.ID] {
+					if t.seenSenders == nil {
+						t.seenSenders = make(map[int64]bool)
+					}
+					t.seenSenders[msg.From.ID] = true
+					t.logf(1, "update %d: sender id %d%s (add to dm-allowlist to permit a DM)", upd.UpdateID, msg.From.ID, senderUsername(msg))
+				}
 			case msg.Chat.Type == "private":
 				if !t.allowsDirectChat(msg.Chat.ID) {
 					// Sender id (and @username, when Telegram supplies one)
@@ -814,12 +850,16 @@ type chat struct {
 }
 
 // user is the minimal Telegram User shape decoded from a message's from field
-// — modeled like sticker/document above: only what is actually read, which
-// here is the @username the rejected-DM log line reports. The sender's numeric
-// id is deliberately NOT taken from here: the allow-list is keyed on chat.id,
-// so that is the value the log line must print for it to be copy-pasteable
-// into the allow-list.
+// — modeled like sticker/document above: only what is actually read. ID is
+// the sender's numeric Telegram user id: for a DM the allow-list is keyed on
+// chat.id, not this field, but a GROUP message carries no other source for
+// it, and it's exactly what the dm-allowlist bootstrap line in Receive needs
+// (agent-teams-ncn5.15) — a Telegram private chat's chat.id equals the same
+// sender's id here, so the number surfaced from ordinary group traffic is
+// copy-pasteable straight into dm-allowlist. Username is the @username both
+// that line and the rejected-DM line report alongside it.
 type user struct {
+	ID       int64  `json:"id"`
 	Username string `json:"username"`
 }
 
@@ -854,11 +894,19 @@ func loadSecret(home, envKey, relPath string) (string, error) {
 // a file that exists but cannot be read is a misconfiguration, not an opt-out,
 // and treating it as "unconfigured" would silently disable the feature.
 //
+// Unlike loadSecret, the returned value is NOT trimmed (agent-teams-ncn5.16):
+// its one caller, parseDMAllowlist, reports parse errors by line number
+// against exactly the text it's given, and that number has to index the file
+// a human opens to fix it. Trimming here shifted every reported line number
+// whenever the file started with a blank line. parseDMAllowlist already
+// trims each field it parses, so nothing is lost by leaving the raw text
+// alone.
+//
 // loadSecret must keep erroring on absence and is deliberately left alone: the
 // token and chat id are required, and their absence has to fail loudly.
 func loadOptionalSecret(home, envKey, relPath string) (string, error) {
 	if v := os.Getenv(envKey); v != "" {
-		return strings.TrimSpace(v), nil
+		return v, nil
 	}
 	p := filepath.Join(home, relPath)
 	data, err := os.ReadFile(p)
@@ -868,7 +916,7 @@ func loadOptionalSecret(home, envKey, relPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", p, err)
 	}
-	return strings.TrimSpace(string(data)), nil
+	return string(data), nil
 }
 
 // parseDMAllowlist parses the DM allow-list into the set allowsDirectChat
