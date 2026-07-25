@@ -10,6 +10,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
@@ -115,6 +116,7 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 		ThreadRef:    threadRef,
 		Title:        title,
 		Body:         string(body),
+		Sender:       sentlog.KindNotify,
 	}
 
 	returnedRef, err := sendAndLabelThread(ctx, c.ID, t, msg, c.labelAdd, "ateam notify")
@@ -221,6 +223,7 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 		ThreadRef:    threadRef,
 		Title:        title,
 		Body:         body,
+		Sender:       sentlog.KindNotifyBriefing,
 	}
 
 	returnedRef, err := t.Send(msg)
@@ -270,6 +273,7 @@ func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
 		Title:        title,
 		Body:         body,
 		General:      true,
+		Sender:       sentlog.KindNotifyDirect,
 	}
 
 	returnedRef, err := t.Send(msg)
