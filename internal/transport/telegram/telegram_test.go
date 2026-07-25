@@ -1663,7 +1663,7 @@ func TestCreateForumTopic_ConnectionFailure_NoTokenInError(t *testing.T) {
 
 func TestSendMessage_ConnectionFailure_NoTokenInError(t *testing.T) {
 	tg := newConnFailureTelegram(t)
-	err := tg.sendMessage("7", "hello")
+	err := tg.sendMessage("-100123456789", "7", "hello")
 	assertErrorHasNoToken(t, err)
 }
 
@@ -2296,6 +2296,230 @@ func TestNew_AbsentDMAllowlist_ConstructsAndAdmitsNobody(t *testing.T) {
 	}
 	if tg.allowsDirectChat(12345678) {
 		t.Error("allowsDirectChat: got true with no allow-list configured, want false")
+	}
+}
+
+// ── Send: ChatRef — per-message chat id + outbound guard (ncn5.10) ───────────
+
+// sendCapture records what an outbound Send actually put on the wire.
+// httptest only, like every test in this file: one bot token permits exactly
+// ONE getUpdates consumer, and Eric's production relay holds it.
+type sendCapture struct {
+	sendCalls      int
+	topicCalls     int
+	chatID         string
+	sawThreadIDKey bool
+	text           string
+}
+
+// newSendCaptureServer answers sendMessage and createForumTopic into capture.
+func newSendCaptureServer(t *testing.T, capture *sendCapture) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			capture.sendCalls++
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			capture.chatID = r.FormValue("chat_id")
+			_, capture.sawThreadIDKey = r.PostForm["message_thread_id"]
+			capture.text = r.FormValue("text")
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		case strings.HasSuffix(r.URL.Path, "/createForumTopic"):
+			capture.topicCalls++
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{"message_thread_id": 1}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// TestSend_EmptyChatRef_PostsConfiguredChat is the regression guard on every
+// existing caller: with no ChatRef, a General send goes exactly where it went
+// before — the configured chat, no message_thread_id, no topic opened.
+func TestSend_EmptyChatRef_PostsConfiguredChat(t *testing.T) {
+	const chatID = "-100111222333"
+
+	var capture sendCapture
+	srv := newSendCaptureServer(t, &capture)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	threadRef, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		Title:        "Steward",
+		Body:         "hello from general",
+		General:      true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if threadRef != "" {
+		t.Errorf("threadRef: got %q, want empty", threadRef)
+	}
+	if capture.chatID != chatID {
+		t.Errorf("chat_id: got %q, want the configured chat %q", capture.chatID, chatID)
+	}
+	if capture.sawThreadIDKey {
+		t.Error("message_thread_id must be omitted entirely on a General send")
+	}
+	if capture.topicCalls != 0 {
+		t.Errorf("createForumTopic calls: got %d, want 0", capture.topicCalls)
+	}
+}
+
+// TestSend_AllowlistedChatRef_PostsPrivateChatAndOmitsThreadID is the new
+// capability: a reply addressed at an allow-listed DM lands in that private
+// chat, with message_thread_id omitted entirely (a private chat has no forum
+// topic) and no topic creation attempted.
+func TestSend_AllowlistedChatRef_PostsPrivateChatAndOmitsThreadID(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(12345678)
+
+	var capture sendCapture
+	srv := newSendCaptureServer(t, &capture)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+
+	threadRef, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		Title:        "Steward",
+		Body:         "answering your DM",
+		ChatRef:      "12345678:10",
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if threadRef != "" {
+		t.Errorf("threadRef: got %q, want empty (a DM has no forum topic)", threadRef)
+	}
+	if capture.chatID != "12345678" {
+		t.Errorf("chat_id: got %q, want the private chat %q (NOT the configured %q)", capture.chatID, "12345678", chatID)
+	}
+	if capture.sawThreadIDKey {
+		t.Error("message_thread_id must be omitted entirely for a private chat")
+	}
+	if capture.topicCalls != 0 {
+		t.Errorf("createForumTopic calls: got %d, want 0 — a topic in a private chat is not a thing", capture.topicCalls)
+	}
+	if capture.text != "answering your DM" {
+		t.Errorf("text: got %q", capture.text)
+	}
+}
+
+// TestSend_ChatRefBeatsGeneral pins the precedence transport.OutboundMessage
+// freezes, which is deliberately the OPPOSITE of General-beats-ThreadRef:
+// with both set, the specific conversation wins. Downgrading a reply meant
+// for one person into the shared channel is a data-leak-shaped failure, so
+// this is a correctness rule, not a preference.
+func TestSend_ChatRefBeatsGeneral(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(12345678)
+
+	var capture sendCapture
+	srv := newSendCaptureServer(t, &capture)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	tg.dmAllowlist = map[int64]bool{senderID: true}
+
+	if _, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		Title:        "Steward",
+		Body:         "meant for one person",
+		General:      true,
+		ChatRef:      "12345678:10",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if capture.chatID != "12345678" {
+		t.Errorf("chat_id: got %q, want the ChatRef's private chat %q — ChatRef must beat General", capture.chatID, "12345678")
+	}
+}
+
+// TestSend_RejectedChatRef_NoHTTPCall is the outbound guard. ChatRef arrives
+// having round-tripped through the steward (an LLM) and notify passes it
+// through unvalidated by design, so this is the only layer that can refuse a
+// destination — and refusing must mean sending nothing, never falling back to
+// the configured chat.
+func TestSend_RejectedChatRef_NoHTTPCall(t *testing.T) {
+	const chatID = "-100111222333"
+	const senderID = int64(12345678)
+
+	cases := []struct {
+		name    string
+		chatRef string
+	}{
+		{name: "a chat that is not allow-listed", chatRef: "99887766:10"},
+		{name: "a plausible-looking foreign supergroup", chatRef: "-100999888777:10"},
+		{name: "no chat/message split at all", chatRef: "12345678"},
+		{name: "empty chat half", chatRef: ":10"},
+		{name: "colon only", chatRef: ":"},
+		{name: "non-numeric chat id", chatRef: "not-a-chat:10"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var capture sendCapture
+			srv := newSendCaptureServer(t, &capture)
+			defer srv.Close()
+
+			tg := newTestTelegram(t, srv, chatID)
+			tg.dmAllowlist = map[int64]bool{senderID: true}
+
+			threadRef, err := tg.Send(transport.OutboundMessage{
+				InitiativeID: "at-00o",
+				Title:        "Steward",
+				Body:         "must not be delivered anywhere",
+				ChatRef:      tc.chatRef,
+			})
+			if err == nil {
+				t.Errorf("Send(ChatRef=%q): expected an error", tc.chatRef)
+			}
+			if threadRef != "" {
+				t.Errorf("Send(ChatRef=%q): threadRef = %q, want empty", tc.chatRef, threadRef)
+			}
+			if capture.sendCalls != 0 {
+				t.Errorf("Send(ChatRef=%q): sendMessage was called %d time(s) — a rejected destination must send NOTHING, not fall back to the configured chat", tc.chatRef, capture.sendCalls)
+			}
+			if capture.topicCalls != 0 {
+				t.Errorf("Send(ChatRef=%q): createForumTopic was called %d time(s), want 0", tc.chatRef, capture.topicCalls)
+			}
+		})
+	}
+}
+
+// TestSend_ConfiguredChatRef_Allowed covers the other admitted destination:
+// a ref naming the configured supergroup (the composite ref of a General-
+// channel message) posts back into it with no topic — the reply-in-place case
+// for group traffic.
+func TestSend_ConfiguredChatRef_Allowed(t *testing.T) {
+	const chatID = "-100111222333"
+
+	var capture sendCapture
+	srv := newSendCaptureServer(t, &capture)
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID) // dmAllowlist deliberately nil
+	if _, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		Title:        "Steward",
+		Body:         "replying in General",
+		ChatRef:      chatID + ":77",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if capture.chatID != chatID {
+		t.Errorf("chat_id: got %q, want %q", capture.chatID, chatID)
+	}
+	if capture.sawThreadIDKey {
+		t.Error("message_thread_id must be omitted entirely for a ChatRef send")
+	}
+	if capture.topicCalls != 0 {
+		t.Errorf("createForumTopic calls: got %d, want 0", capture.topicCalls)
 	}
 }
 
