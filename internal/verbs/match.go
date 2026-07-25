@@ -281,21 +281,29 @@ func (c *auditKong) Run(ctx *cli.Context) error {
 		issues = nil
 	}
 
+	ok := true
 	offenders := findOffenders(issues)
 	if len(offenders) == 0 {
 		fmt.Fprintln(ctx.Stdout, "audit: clean — global workspace contains only initiative-tracking beads")
-		return nil
+	} else {
+		ok = false
+		fmt.Fprintln(ctx.Stderr, "audit: LEAKED work beads in the global workspace — these belong in the PROJECT repo, NOT here:")
+		for _, iss := range offenders {
+			fmt.Fprintf(ctx.Stderr, "  %s\t%s\n", iss.ID, iss.Title)
+		}
+		fmt.Fprintln(ctx.Stderr, "")
+		fmt.Fprintln(ctx.Stderr, "The global workspace holds ONLY initiative-tracking beads + role memories.")
+		fmt.Fprintln(ctx.Stderr, "Move each to its project repo's .beads and delete it here (bd -C <workspace> delete <id>).")
 	}
 
-	fmt.Fprintln(ctx.Stderr, "audit: LEAKED work beads in the global workspace — these belong in the PROJECT repo, NOT here:")
-	for _, iss := range offenders {
-		fmt.Fprintf(ctx.Stderr, "  %s\t%s\n", iss.ID, iss.Title)
+	if !checkGlobalPrimeBudget(ctx) {
+		ok = false
 	}
-	fmt.Fprintln(ctx.Stderr, "")
-	fmt.Fprintln(ctx.Stderr, "The global workspace holds ONLY initiative-tracking beads + role memories.")
-	fmt.Fprintln(ctx.Stderr, "Move each to its project repo's .beads and delete it here (bd -C <workspace> delete <id>).")
 
-	return cli.Silent(1)
+	if !ok {
+		return cli.Silent(1)
+	}
+	return nil
 }
 
 // resumeMatchKong is the kong-converted form of resumeMatchCommand.
