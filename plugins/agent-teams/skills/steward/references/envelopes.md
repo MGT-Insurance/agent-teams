@@ -1,6 +1,8 @@
 # Why the inbound envelope kinds exist
 
-Rationale only — never the dispatch rules themselves. SKILL.md §2 is self-sufficient without this file; read it only for the "why" behind a rule that otherwise looks arbitrary. `internal/verbs/steward_seams.go` is the frozen contract for the envelope format itself.
+Rationale only — never the dispatch rules themselves. SKILL.md §2 is self-sufficient without this file; read it only for the "why" behind a rule that otherwise looks arbitrary.
+
+`internal/verbs/steward_seams.go` is the frozen contract for the envelope format itself. Read it if a parse ever looks off — never guess at the format.
 
 ## steward-closed-initiative
 
@@ -12,11 +14,21 @@ The relay's last-resort catch-all fires on three distinct failure modes: 2+ open
 
 **Multi-machine sync-lag caveat:** on a multi-machine setup, each machine syncs beads/topic-refs on its own schedule. A reply posted to another machine's steward/briefing topic, or concerning an initiative this machine doesn't own, can arrive here as a stray unrouted message simply because the sync that would have let this machine route it correctly hasn't landed yet. That's why the dispatch rule says to stay silent or minimal in that case — reacting confidently on stale state produces confusing double-replies once the sync catches up.
 
+## steward-reply — why the answer message is the unblock
+
+The parked DRI is waiting on the answer message itself; that mail is what it resumes on. Clearing the gate is a separate step the DRI performs for itself once it has processed the answer, which is why the Steward never calls `ateam clear-gate` — doing so would clear a gate the DRI has not yet acted on.
+
 ## steward-reply — the learning-capture rationale
 
 Why a `corrected` verdict gets an immediate learning, not just a ledger row: the ledger's `--decision` field captures the raw call for that one case, but a case-by-case log doesn't generalize — you'd have to re-derive the pattern from scratch on every similar future gate. A distilled RULE/TRIGGER/APPLY learning turns one correction into a reusable rule, which is the highest-value thing a persistent Steward can produce, because it's what makes the NEXT recommendation closer to Eric's actual preference instead of just repeating the same miss. The ledger is the tally; the learning is the lesson.
 
+## steward-direct
+
+**Single-channel addressing.** Eric sends a direct message by @mentioning the bot in the shared Telegram General channel, not by posting to a dedicated topic — there is no per-conversation topic to reply into, which is why the dispatch rule replies with `ateam notify direct` and why that command posts straight back to General with no thread ref.
+
 ## steward-briefing-reply
+
+The briefing-ack is never optional. A briefing reply has no initiative to route to, so silence on the Briefings thread reads as lost rather than as handled — the ack is the routing confirmation, not courtesy. That holds even when the substance itself is being routed to an initiative topic instead: the ack shrinks to a pointer, but it still gets sent.
 
 No bead lives behind the Briefings topic by design — it's cross-initiative by construction, so there's no single initiative record to anchor it to. That's also why it isn't a fixed "always bounce back to Briefings" case: unlike an initiative topic, there's no beads state to check for whether the topic itself is still "open."
 
