@@ -25,6 +25,13 @@
 // Send with General==true skips topic creation entirely and posts straight
 // to the General channel (no message_thread_id), returning "".
 //
+// Send with a non-empty ChatRef also skips topic creation and posts one
+// message into the conversation that ref names — a DM, or the configured
+// supergroup itself — returning "". The ref is the composite MessageRef
+// Receive emitted for an inbound message, and the chat it names is
+// authorized against allowsDirectChat before anything is sent; see
+// chatFromRef. It beats General when both are set.
+//
 // # Inbound
 //
 // getUpdates long-poll. Messages where is_topic_message==true and the chat id
@@ -155,15 +162,36 @@ func New(home string, client httpDoer) (*Telegram, error) {
 // Name returns "telegram".
 func (t *Telegram) Name() string { return "telegram" }
 
-// Send delivers msg to the human. If msg.General is true, the message is
-// posted to the General channel: no forum topic is opened, no
-// message_thread_id is sent, and "" is returned. Otherwise, if msg.ThreadRef
-// is "", a new forum topic is opened via createForumTopic and its id is
-// returned as threadRef; if msg.ThreadRef is non-empty, sendMessage is called
-// with it as message_thread_id.
+// Send delivers msg to the human.
+//
+// Two shapes, and the first one wins:
+//
+//   - msg.ChatRef non-empty, or msg.General true: one message, no forum topic,
+//     no message_thread_id, "" returned. ChatRef names the conversation to
+//     post into (a DM, or the configured supergroup's General channel);
+//     General means the configured supergroup's General channel. ChatRef is
+//     tested FIRST because transport.OutboundMessage makes it beat General
+//     when both are set: downgrading a reply meant for one conversation into
+//     the shared channel is a data-leak-shaped failure, not a routing
+//     preference. The destination it names is validated by chatFromRef before
+//     anything is sent.
+//   - otherwise the forum-topic path, unchanged and group-only: msg.ThreadRef
+//     == "" opens a new topic via createForumTopic and returns its id as
+//     threadRef; a non-empty msg.ThreadRef is passed to sendMessage as
+//     message_thread_id.
 func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
-	if msg.General {
-		if err := t.sendMessage("", msg.Body); err != nil {
+	if msg.ChatRef != "" || msg.General {
+		chatID := t.chatID
+		if msg.ChatRef != "" {
+			var err error
+			if chatID, err = t.chatFromRef(msg.ChatRef); err != nil {
+				return "", fmt.Errorf("telegram: chat ref: %w", err)
+			}
+		}
+		// Empty thread ref: sendMessage omits message_thread_id entirely,
+		// which is required for a private chat and is already what a General
+		// send does. No new branch, and no empty-string thread id.
+		if err := t.sendMessage(chatID, "", msg.Body); err != nil {
 			return "", fmt.Errorf("telegram: sendMessage: %w", err)
 		}
 		return "", nil
@@ -188,10 +216,51 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	// call for this thread) is already named after that same title, so
 	// restating it under a heading that says the same thing is noise, not
 	// an aid to scanning. Send msg.Body verbatim.
-	if err := t.sendMessage(threadRef, msg.Body); err != nil {
+	//
+	// t.chatID, not a resolved chat: this path is reachable only with an
+	// empty ChatRef, and forum topics exist only in the configured
+	// supergroup — createForumTopic and CloseTopic stay group-only for the
+	// same reason.
+	if err := t.sendMessage(t.chatID, threadRef, msg.Body); err != nil {
 		return "", fmt.Errorf("telegram: sendMessage: %w", err)
 	}
 	return threadRef, nil
+}
+
+// chatFromRef decodes and AUTHORIZES the destination named by an
+// OutboundMessage.ChatRef, returning the chat id to post to.
+//
+// The ref is the composite "<chat_id>:<message_id>" Receive emits as
+// Reply.MessageRef — one format, one parse, the same shape in both
+// directions. Only the chat half is used here; the message half is carried
+// along for the ref to stay a single opaque value outside this package, and
+// is deliberately not required to be present.
+//
+// The authorization is not redundant with the inbound gate. This value has
+// round-tripped through the STEWARD — an LLM rendering text a human wrote —
+// and `ateam notify --to <ref>` passes it through without parsing or
+// validating it, by design: the transport is the layer entitled to reject a
+// destination. Whatever arrives here becomes a chat_id on a live Bot API
+// call, so a garbled or manipulated ref would otherwise turn the bot into a
+// sender to an arbitrary Telegram chat. Permitted destinations are exactly
+// the configured chat plus whatever allowsDirectChat admits — the same
+// predicate the inbound gate uses, so the two directions cannot drift apart.
+// A rejection is an error and never a fallback to some other chat: silently
+// redirecting a message meant for one conversation is the failure this
+// guards against, not the recovery from it.
+func (t *Telegram) chatFromRef(ref string) (string, error) {
+	chatID, _, ok := strings.Cut(ref, ":")
+	if !ok || chatID == "" {
+		return "", fmt.Errorf("malformed ref %q (want \"<chat_id>:<message_id>\")", ref)
+	}
+	if chatID == t.chatID {
+		return chatID, nil
+	}
+	id, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil || !t.allowsDirectChat(id) {
+		return "", fmt.Errorf("refusing to send to chat %s: neither the configured chat nor in the dm-allowlist", chatID)
+	}
+	return chatID, nil
 }
 
 // Receive long-polls Telegram for updates, invoking handler for each inbound
@@ -620,13 +689,20 @@ func (t *Telegram) setMessageReaction(chatID, messageID string) error {
 	return nil
 }
 
-// sendMessage posts text into a forum topic, or into the General channel when
-// threadRef is "" (Telegram posts to General when message_thread_id is
-// omitted from the request entirely — an empty-string value is not
-// equivalent and must not be sent).
-func (t *Telegram) sendMessage(threadRef, text string) error {
+// sendMessage posts text into chatID — a forum topic within it when
+// threadRef is non-empty, otherwise the chat itself (the General channel of
+// a supergroup, or a private chat). Telegram posts without a topic when
+// message_thread_id is omitted from the request entirely; an empty-string
+// value is not equivalent and must not be sent, which is also what makes a
+// private-chat send work with no extra branch.
+//
+// The chat id is a parameter rather than the configured t.chatID so a reply
+// can land in the conversation it was addressed to; every caller resolves it
+// through Send, which is the single chokepoint all outbound message text
+// funnels through (tests/sent-log.test.sh case9 pins that).
+func (t *Telegram) sendMessage(chatID, threadRef, text string) error {
 	values := url.Values{
-		"chat_id": {t.chatID},
+		"chat_id": {chatID},
 		"text":    {text},
 	}
 	if threadRef != "" {
