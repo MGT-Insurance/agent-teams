@@ -758,6 +758,303 @@ func TestRelay_MentionsHumanOnly_FallsThroughToRule3(t *testing.T) {
 	}
 }
 
+// ── handler: Direct (1:1 DM) routing (agent-teams-ncn5.5) ────────────────────
+//
+// A DM to the bot arrives with ThreadRef=="" and MentionsSelf==false (nobody
+// types "@thebot" inside a DM to @thebot), so before rule 1 admitted
+// reply.Direct it fell past rules 1 and 2 into rule 3 — wrong envelope on a
+// fallback machine, silent drop on every other one. These tests pin rule 1's
+// Direct clause and its ordering ahead of rule 2.
+
+// TestRelay_Direct_RoutesToSteward_RegardlessOfFallbackStatus verifies a DM
+// (Direct==true, MentionsSelf==false, ThreadRef=="") produces a steward-direct
+// envelope whether or not this machine is the designated fallback responder.
+// Fallback-gating a DM would drop it on every non-fallback machine, so the
+// isFallbackResponder==false row is the load-bearing one.
+func TestRelay_Direct_RoutesToSteward_RegardlessOfFallbackStatus(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		isFallback bool
+	}{
+		{"fallback responder", true},
+		{"NOT fallback responder", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newRelayCtx(t)
+
+			bdQueryCalled := false
+			fs := &fakeSendCapture{}
+			ft := &relayFakeTransport{
+				replies: []transport.Reply{{
+					ThreadRef:    "",
+					Text:         "hey, what is the status",
+					MentionsSelf: false,
+					Direct:       true,
+				}},
+			}
+
+			cmd := &relayKong{
+				enabled:      func(string) bool { return true },
+				transportFor: func(string) (transport.Transport, error) { return ft, nil },
+				bdQuery: func(home, label string) ([]bd.Issue, error) {
+					bdQueryCalled = true
+					return nil, nil
+				},
+				send:                fs.send,
+				claimsLocally:       alwaysClaimsLocally,
+				isFallbackResponder: func(*cli.Context) bool { return tt.isFallback },
+				knownStewardTopic:   neverKnownStewardTopic,
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if bdQueryCalled {
+				t.Error("bd query must not be called for a direct message")
+			}
+			if len(fs.calls) != 1 {
+				t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+			}
+			env, ok := ParseStewardDirectEnvelope(fs.bodies[0])
+			if !ok {
+				t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+			}
+			if env.Body != "hey, what is the status" {
+				t.Errorf("envelope Body = %q, want %q", env.Body, "hey, what is the status")
+			}
+			if !strings.Contains(relayStderr(ctx), "direct message (1:1 chat)") {
+				t.Errorf("expected the DM-specific routing log in stderr, got: %q", relayStderr(ctx))
+			}
+		})
+	}
+}
+
+// TestRelay_Direct_MentioningOtherBot_StillRoutesToSteward verifies rule 1
+// wins over rule 2 for a DM: in a 1:1 conversation the message is addressed
+// to us no matter which other bot its text happens to name, so the "not me,
+// skipping" branch must not swallow it.
+func TestRelay_Direct_MentioningOtherBot_StillRoutesToSteward(t *testing.T) {
+	ctx := newRelayCtx(t)
+
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "can you ask @otherbot about the deploy",
+			Mentions:     []string{"otherbot"},
+			MentionsSelf: false,
+			Direct:       true,
+		}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call (rule 1 precedes rule 2), got %d", len(fs.calls))
+	}
+	if _, ok := ParseStewardDirectEnvelope(fs.bodies[0]); !ok {
+		t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+	}
+	if strings.Contains(relayStderr(ctx), "not me, skipping") {
+		t.Errorf("a DM must never take rule 2's other-bot skip, stderr: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_DirectEnvelope_CarriesReplyToRefOnlyForDM pins agent-teams-ncn5.9:
+// the steward-direct envelope carries the inbound MessageRef as its reply-to
+// ref for a DM, and carries NO ref for an @mention in General — even though
+// that @mention arrives with a perfectly good MessageRef — because its answer
+// belongs in General where the group can see it.
+//
+// The two DM rows differ only in the SHAPE of the ref (composite vs bare id).
+// Both must pass identically: the relay hands the ref through verbatim and
+// never parses it, so a transport changing what the ref looks like cannot
+// affect this code.
+func TestRelay_DirectEnvelope_CarriesReplyToRefOnlyForDM(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		direct       bool
+		mentionsSelf bool
+		messageRef   string
+		wantReplyTo  string
+	}{
+		{"DM, composite ref", true, false, "-1001234567890:88", "-1001234567890:88"},
+		{"DM, bare-id ref", true, false, "88", "88"},
+		{"@mention in General", false, true, "88", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newRelayCtx(t)
+
+			fs := &fakeSendCapture{}
+			ft := &relayFakeTransport{
+				replies: []transport.Reply{{
+					ThreadRef:    "",
+					Text:         "what is the status",
+					MentionsSelf: tt.mentionsSelf,
+					Direct:       tt.direct,
+					MessageRef:   tt.messageRef,
+				}},
+			}
+
+			cmd := &relayKong{
+				enabled:             func(string) bool { return true },
+				transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+				bdQuery:             newFakeBDQuery().query,
+				send:                fs.send,
+				claimsLocally:       alwaysClaimsLocally,
+				isFallbackResponder: alwaysFallbackResponder,
+				knownStewardTopic:   neverKnownStewardTopic,
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(fs.calls) != 1 {
+				t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+			}
+			env, ok := ParseStewardDirectEnvelope(fs.bodies[0])
+			if !ok {
+				t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+			}
+			if env.ReplyTo != tt.wantReplyTo {
+				t.Errorf("envelope ReplyTo = %q, want %q", env.ReplyTo, tt.wantReplyTo)
+			}
+			if env.Body != "what is the status" {
+				t.Errorf("envelope Body = %q, want %q", env.Body, "what is the status")
+			}
+		})
+	}
+}
+
+// TestRelay_NotDirect_NoMention_StillTakesRule3 is the regression guard for
+// the non-DM non-topic path: Direct==false with no bot mention must still
+// reach rule 3's fallback-responder steward-unrouted behavior, unchanged.
+func TestRelay_NotDirect_NoMention_StillTakesRule3(t *testing.T) {
+	ctx := newRelayCtx(t)
+
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:    "",
+			Text:         "general channel chatter",
+			MentionsSelf: false,
+			Direct:       false,
+		}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call (rule 3), got %d", len(fs.calls))
+	}
+	if _, ok := ParseStewardUnroutedEnvelope(fs.bodies[0]); !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if _, ok := ParseStewardDirectEnvelope(fs.bodies[0]); ok {
+		t.Error("a non-direct non-topic message must not produce a steward-direct envelope")
+	}
+}
+
+// TestRelay_Direct_WithThreadRef_StillRoutesByThread pins current behavior:
+// the ThreadRef=="" branch is entered first, so a Direct reply carrying a
+// non-empty thread ref never reaches rule 1 — it routes by thread like any
+// other topic reply. Asserted, not changed.
+func TestRelay_Direct_WithThreadRef_StillRoutesByThread(t *testing.T) {
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef: "42",
+			Text:      "looks good",
+			Direct:    true,
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if fs.envelopes[0].InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001 (thread routing, not direct)", fs.envelopes[0].InitiativeID)
+	}
+}
+
+// TestRelay_Direct_EmptyText_DoesNotPanic pins defensive behavior for a
+// Direct reply with empty Text. In practice this shape should never arrive:
+// telegram.go's isContentLess check drops a content-less DM at the
+// transport before Receive ever returns it. But nothing in
+// handleDirectReply or BuildStewardDirectEnvelope checks Text for
+// emptiness, so the shape is legal to construct here, and the relay must
+// not crash on it. Current behavior: it still forwards an envelope with an
+// empty body.
+func TestRelay_Direct_EmptyText_DoesNotPanic(t *testing.T) {
+	ctx := newRelayCtx(t)
+
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef: "",
+			Text:      "",
+			Direct:    true,
+		}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardDirectEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-direct envelope: %q", fs.bodies[0])
+	}
+	if env.Body != "" {
+		t.Errorf("envelope Body = %q, want empty", env.Body)
+	}
+}
+
 // TestFirstBotMention exercises firstBotMention directly — the pure function
 // backing rule 2's "some other bot was addressed" decision — for edge cases
 // the handler-level tests above don't reach: no mentions at all, an
@@ -1904,6 +2201,81 @@ func TestRelay_Ack_DoesNotFireOnSendFailure(t *testing.T) {
 		enabled:             func(string) bool { return true },
 		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
 		bdQuery:             bdq.query,
+		send:                fs.send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected send to be attempted once, got %d calls", len(fs.calls))
+	}
+	if len(fa.refs) != 0 {
+		t.Errorf("expected no ack calls on send failure, got %v", fa.refs)
+	}
+}
+
+// TestRelay_Ack_FiresOnDirect verifies the Direct (DM) forward path acks.
+// Existing Ack coverage exercises MentionsSelf (TestRelay_Ack_FiresOnMentionsSelf)
+// and the tied-thread path, but handleDirectReply is a distinct code path
+// reached only when reply.Direct is true, and no prior test forwards down it
+// with Direct specifically set.
+func TestRelay_Ack_FiresOnDirect(t *testing.T) {
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:  "",
+			Text:       "what is the status",
+			Direct:     true,
+			MessageRef: "555",
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
+// TestRelay_Ack_DoesNotFireOnDirect_SendFailure verifies the Direct (DM)
+// forward path follows the same send-then-ack discipline as every other
+// forward: a failed send must not ack. TestRelay_Ack_DoesNotFireOnSendFailure
+// covers this discipline on the tied-thread path; this pins it specifically
+// on handleDirectReply (relay.go's sendEnvelopeToSteward is only acked after
+// c.send returns a nil error).
+func TestRelay_Ack_DoesNotFireOnDirect_SendFailure(t *testing.T) {
+	fa := &fakeAck{}
+	fs := &fakeSendCapture{err: fmt.Errorf("send failed")}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{
+			ThreadRef:  "",
+			Text:       "what is the status",
+			Direct:     true,
+			MessageRef: "555",
+		}},
+	}
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
 		send:                fs.send,
 		ack:                 fa.ack,
 		claimsLocally:       alwaysClaimsLocally,

@@ -41,6 +41,42 @@
 # posts straight to the transport's General channel — no forum topic opened,
 # no thread ref persisted or returned.
 #
+# ── DM round trip (agent-teams-ncn5.6, the loop-closing bead for ncn5) ──────
+#
+# A 1:1 DM to the bot arrives with ThreadRef == "" like a General-channel
+# message, but with Direct == true and NO mentions — in a 1:1 there is nobody
+# else to address, so the relay treats Direct exactly as it treats an explicit
+# self-mention (rule 1). Two halves, both driven through the real binaries:
+#
+#   inbound  — a DM produces a steward-direct envelope whose sentinel header
+#              carries the reply-to ref, on BOTH machines. Machine B is not
+#              the fallback responder and routes it anyway: unlike rule 3, the
+#              Direct path is deliberately not fallback-gated (a private-chat
+#              update reaches only the bot it was addressed to, so it is
+#              exactly-once by construction).
+#   outbound — `ateam notify direct --to <ref>` RESOLVES to that conversation
+#              ("chat:<ref>", General false); `--to general` is unchanged
+#              ("general", no chat_ref); an omitted --to still delivers to
+#              General but is loud at depth 0.
+#
+# The outbound assertions are on the destination the stub RESOLVES (its Send
+# mirrors telegram.Send's switch case for case, ChatRef first), not merely on
+# the fields recorded, so a reply that went to the shared channel instead of
+# back to the DM fails rather than passing on a carried-but-unused chat ref.
+#
+# ⚠️ SCOPE: this proves the PLUMBING, not the prose. It drives the binaries
+# directly, so it shows that a ref supplied on the command line reaches the
+# right chat. It does NOT and CANNOT show that a real steward, reading only
+# the shipped SKILL.md, actually emits that ref — there is no model in this
+# test, and putting one in would make a deterministic shell test stochastic
+# and slow. That gap is covered by the separate agent-in-the-loop bead
+# (agent-teams-ncn5.13). A green run here is not evidence the prose works.
+#
+# ⚠️ There is deliberately no live Telegram test anywhere in this epic: one
+# bot token permits exactly ONE getUpdates consumer, and the production relay
+# is the steward's only inbound path from the human. A second poller silently
+# steals his messages. The stub transport exists so this bead needs none.
+#
 # Build: requires -tags e2e for the stub transport (same as
 # multi-machine-routing.test.sh).
 # Run:   bash tests/single-channel-mention-routing.test.sh
@@ -275,6 +311,70 @@ echo "$r3h_b_out" | grep -qi "skipping non-topic message" \
 echo "rule3h_b PASS: non-fallback machine B suppressed the identical human-only-mention message"
 
 echo ""
+echo "=== DM (rule 1, implicit): 1:1 message, no mentions -> BOTH machines route steward-direct with the ref ==="
+
+DM_A="$T/home-dm-a"
+DM_B="$T/home-dm-b"
+mkhome "$DM_A"
+mkhome "$DM_B"
+
+# Machine A is the designated fallback responder; machine B is not — the same
+# split as the rule 3 scenarios above, deliberately, because that is what
+# makes this scenario mean something. Rule 3 SUPPRESSES machine B for an
+# identical no-mention group message; a DM must NOT be suppressed that way.
+# Telegram delivers a private-chat update only to the bot it was addressed
+# to, so a DM is exactly-once by construction and needs no fallback gate;
+# gating it would silently drop every DM sent to a non-fallback machine.
+mkdir -p "$DM_A/steward"
+: > "$DM_A/steward/fallback-responder"
+AGENT_TEAMS_HOME="$DM_A" ateam steward init >/dev/null
+
+DM_A_STUB="$T/stub-dm-a"; mkdir -p "$DM_A_STUB"
+DM_B_STUB="$T/stub-dm-b"; mkdir -p "$DM_B_STUB"
+
+# The ref is composite ("<chat_id>:<message_id>") because a Telegram message
+# id is unique only within its chat. The colon inside it is why every
+# assertion below greps the whole header as a fixed string: a naive
+# split-on-colon would truncate the ref and still "pass".
+dm_ref="12345678:10"
+dm_text="what's the status?"
+# No mentions, no mentions_self — that absence IS the scenario. Nothing but
+# direct:true can route this message to a steward.
+printf '{"direct": true, "thread_ref": "", "message_ref": "%s", "text": "%s"}\n' "$dm_ref" "$dm_text" > "$DM_A_STUB/reply-001.json"
+printf '{"direct": true, "thread_ref": "", "message_ref": "%s", "text": "%s"}\n' "$dm_ref" "$dm_text" > "$DM_B_STUB/reply-001.json"
+
+dm_a_out=$(run_relay "$DM_A" "$DM_A_STUB")
+echo "$dm_a_out" | grep -qi "direct message (1:1 chat)" \
+  || fail dm_a "machine A relay stderr did not log the 1:1 direct-message routing decision (got: '$dm_a_out')"
+[ ! -f "$DM_A_STUB/reply-001.json" ] || fail dm_a "machine A stub did not consume reply-001.json"
+
+dm_a_count=$(steward_msg_count "$DM_A")
+[ "$dm_a_count" = "1" ] || fail dm_a "expected machine A to route exactly 1 steward message for the DM, got $dm_a_count"
+dm_a_body=$(steward_open_msgs "$DM_A" | jq -r '.[0].description')
+echo "$dm_a_body" | grep -qF "<<<steward-direct reply-to:$dm_ref>>>" \
+  || fail dm_a "machine A message missing a steward-direct header carrying the WHOLE composite ref (got: '$dm_a_body')"
+echo "$dm_a_body" | grep -qF "$dm_text" \
+  || fail dm_a "machine A message missing the DM text (got: '$dm_a_body')"
+
+echo "dm_a PASS: machine A routed the DM as a steward-direct envelope carrying the full reply-to ref"
+
+dm_b_out=$(run_relay "$DM_B" "$DM_B_STUB")
+echo "$dm_b_out" | grep -qi "direct message (1:1 chat)" \
+  || fail dm_b "machine B relay stderr did not log the 1:1 direct-message routing decision (got: '$dm_b_out')"
+if echo "$dm_b_out" | grep -qi "skipping non-topic message"; then
+  fail dm_b "machine B suppressed the DM as an unaddressed non-topic message — the Direct path must not be fallback-gated (got: '$dm_b_out')"
+fi
+
+dm_b_count=$(steward_msg_count "$DM_B")
+[ "$dm_b_count" = "1" ] \
+  || fail dm_b "expected non-fallback machine B to route the DM anyway (a DM is exactly-once by construction, so it is not fallback-gated), got $dm_b_count"
+dm_b_body=$(steward_open_msgs "$DM_B" | jq -r '.[0].description')
+echo "$dm_b_body" | grep -qF "<<<steward-direct reply-to:$dm_ref>>>" \
+  || fail dm_b "machine B message missing a steward-direct header carrying the WHOLE composite ref (got: '$dm_b_body')"
+
+echo "dm_b PASS: machine B — NOT the fallback responder — routed the identical DM as steward-direct too"
+
+echo ""
 echo "=== Outbound: 'ateam notify direct' posts to General — no thread ref, no topic ==="
 
 ND_HOME="$T/home-notify-direct"
@@ -306,4 +406,89 @@ sent_record=$(head -n1 "$ND_STUB/sent.jsonl")
 echo "notify_direct PASS: 'ateam notify direct' posted straight to the General channel — empty thread_ref, no forum topic opened"
 
 echo ""
-echo "ALL SCENARIOS PASSED — single-channel @mention routing (rule 1 self-mention, rule 2 foreign-bot skip x2, rule 3 no-bot-mention fallback x2, outbound notify direct) confirmed end-to-end against the real ateam relay/notify binary."
+echo "=== Outbound addressing: 'ateam notify direct --to' selects the conversation the answer lands in ==="
+
+# One home, three stub dirs: notify direct persists nothing per-send, so the
+# home is reusable, but each send needs its own sent.jsonl to assert against.
+NT_HOME="$T/home-notify-to"
+mkhome "$NT_HOME"
+printf 'Status: green across the board.\n' > "$T/nt-body.txt"
+
+nt_ref="12345678:10"
+
+# (a) --to <ref>: the answer is addressed at the conversation the ref names,
+#     not at the configured channel. This is the outbound half of the DM
+#     round trip — dm_a above proved the ref reaches the steward, this proves
+#     handing that ref back to notify puts the answer in the right chat.
+NT_REF_STUB="$T/stub-notify-to-ref"; mkdir -p "$NT_REF_STUB"
+nt_ref_out=$(AGENT_TEAMS_HOME="$NT_HOME" AGENT_TEAMS_STUB_DIR="$NT_REF_STUB" AGENT_TEAMS_TRANSPORT=stub \
+  ateam notify direct --to "$nt_ref" --file "$T/nt-body.txt" --title "Steward" 2>&1)
+
+[ -f "$NT_REF_STUB/sent.jsonl" ] || fail notify_to_ref "stub sent.jsonl was not written"
+[ "$(wc -l < "$NT_REF_STUB/sent.jsonl" | tr -d ' ')" = "1" ] || fail notify_to_ref "expected exactly 1 line in sent.jsonl"
+nt_ref_record=$(head -n1 "$NT_REF_STUB/sent.jsonl")
+[ "$(echo "$nt_ref_record" | jq -r '.destination')" = "chat:$nt_ref" ] \
+  || fail notify_to_ref "the send RESOLVED to the wrong destination — a DM answer must land in the conversation the ref names, not the shared channel (got: '$nt_ref_record')"
+[ "$(echo "$nt_ref_record" | jq -r '.chat_ref')" = "$nt_ref" ] \
+  || fail notify_to_ref "sent record chat_ref != the --to ref — the answer is NOT addressed at the DM (got: '$nt_ref_record')"
+# General must be false as well as the destination being right. The transport
+# is required to prefer ChatRef if both are ever set, but that guard is a last
+# line of defence: the chain must not hand the transport an ambiguous message
+# in the first place.
+[ "$(echo "$nt_ref_record" | jq -r '.general')" = "false" ] \
+  || fail notify_to_ref "sent record general is true alongside a chat_ref — the chain handed the transport an ambiguous destination (got: '$nt_ref_record')"
+[ "$(echo "$nt_ref_record" | jq -r '.thread_ref')" = "" ] \
+  || fail notify_to_ref "sent record thread_ref is not empty — a 1:1 chat has no forum topic (got: '$nt_ref_record')"
+[ ! -f "$NT_REF_STUB/next-ref" ] \
+  || fail notify_to_ref "stub's next-ref counter was bumped — a DM reply must not open/consume a thread ref"
+if echo "$nt_ref_out" | grep -q "FAULT"; then
+  fail notify_to_ref "notify direct emitted the missing---to FAULT diagnostic even though --to was supplied (got: '$nt_ref_out')"
+fi
+
+echo "notify_to_ref PASS: '--to <ref>' addressed the send at that conversation — chat_ref carried, General false, no topic"
+
+# (b) --to general: the mirror case. The pre-existing @mention reply path is
+#     provably unchanged — no chat_ref, General true.
+NT_GEN_STUB="$T/stub-notify-to-general"; mkdir -p "$NT_GEN_STUB"
+nt_gen_out=$(AGENT_TEAMS_HOME="$NT_HOME" AGENT_TEAMS_STUB_DIR="$NT_GEN_STUB" AGENT_TEAMS_TRANSPORT=stub \
+  ateam notify direct --to general --file "$T/nt-body.txt" --title "Steward" 2>&1)
+
+[ "$(wc -l < "$NT_GEN_STUB/sent.jsonl" | tr -d ' ')" = "1" ] || fail notify_to_general "expected exactly 1 line in sent.jsonl"
+nt_gen_record=$(head -n1 "$NT_GEN_STUB/sent.jsonl")
+[ "$(echo "$nt_gen_record" | jq -r '.destination')" = "general" ] \
+  || fail notify_to_general "the send resolved somewhere other than the shared channel (got: '$nt_gen_record')"
+[ "$(echo "$nt_gen_record" | jq -r '.chat_ref')" = "" ] \
+  || fail notify_to_general "sent record carries a chat_ref — 'general' must address the shared channel, not a conversation (got: '$nt_gen_record')"
+[ "$(echo "$nt_gen_record" | jq -r '.general')" = "true" ] \
+  || fail notify_to_general "sent record general != true (got: '$nt_gen_record')"
+[ ! -f "$NT_GEN_STUB/next-ref" ] \
+  || fail notify_to_general "stub's next-ref counter was bumped — a General post must not open/consume a thread ref"
+if echo "$nt_gen_out" | grep -q "FAULT"; then
+  fail notify_to_general "notify direct emitted the missing---to FAULT diagnostic even though --to general was supplied (got: '$nt_gen_out')"
+fi
+
+echo "notify_to_general PASS: '--to general' still posts to the shared channel — General true, no chat_ref"
+
+# (c) --to omitted: delivery is NOT dropped (it falls back to General), but
+#     the omission is loud at depth 0 — a silently-misdelivered DM answer is
+#     the failure this diagnostic exists to make visible.
+NT_NONE_STUB="$T/stub-notify-to-none"; mkdir -p "$NT_NONE_STUB"
+nt_none_out=$(AGENT_TEAMS_HOME="$NT_HOME" AGENT_TEAMS_STUB_DIR="$NT_NONE_STUB" AGENT_TEAMS_TRANSPORT=stub \
+  ateam notify direct --file "$T/nt-body.txt" --title "Steward" 2>&1)
+
+echo "$nt_none_out" | grep -qF "FAULT: --to was omitted" \
+  || fail notify_to_absent "notify direct did not emit the depth-0 FAULT diagnostic when --to was omitted (got: '$nt_none_out')"
+[ "$(wc -l < "$NT_NONE_STUB/sent.jsonl" | tr -d ' ')" = "1" ] \
+  || fail notify_to_absent "the message was not delivered at all — the missing --to must warn, not drop"
+nt_none_record=$(head -n1 "$NT_NONE_STUB/sent.jsonl")
+[ "$(echo "$nt_none_record" | jq -r '.destination')" = "general" ] \
+  || fail notify_to_absent "an omitted --to resolved somewhere other than the shared channel (got: '$nt_none_record')"
+[ "$(echo "$nt_none_record" | jq -r '.general')" = "true" ] \
+  || fail notify_to_absent "sent record general != true — an omitted --to must fall back to the shared channel (got: '$nt_none_record')"
+[ "$(echo "$nt_none_record" | jq -r '.chat_ref')" = "" ] \
+  || fail notify_to_absent "sent record carries a chat_ref with no --to supplied (got: '$nt_none_record')"
+
+echo "notify_to_absent PASS: an omitted --to still delivers to General AND is loud about it at depth 0"
+
+echo ""
+echo "ALL SCENARIOS PASSED — single-channel @mention routing (rule 1 self-mention, rule 2 foreign-bot skip x2, rule 3 no-bot-mention fallback x2, outbound notify direct), plus the DM round trip (1:1 inbound on both machines, --to ref/general/absent outbound) confirmed end-to-end against the real ateam relay/notify binary."

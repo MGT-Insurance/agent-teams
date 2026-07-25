@@ -79,16 +79,27 @@ Eric replied in a topic.
 
 A MECHANICAL wake from the relay's hung-tick — NOT an Eric reply. Do NOT interpret it against a pending recommendation, route anything back into the initiative, or write a ledger verdict. Just proceed to the every-wake scan below, which surfaces this hung initiative and escalates it normally.
 
-### steward-direct (`<<<steward-direct>>>`)
+### steward-direct (`<<<steward-direct>>>` or `<<<steward-direct reply-to:<ref>>>>`)
 
-A direct message from Eric, outside any initiative — just a conversation.
+A direct message from Eric, outside any initiative — just a conversation. It reached you one of two ways and the header says which: a 1:1 DM to the bot carries `reply-to:<ref>`, an @mention in the shared General channel carries nothing.
 
 1. There is NO initiative to enrich. Optionally pull `ateam execution-status` if he's asking about the landscape, but otherwise just answer him.
-2. Reply the same way: write the reply to a temp file, then
+2. Answer in the conversation he used. Write the reply to a temp file, then run the line matching the header you actually received:
+
    ```bash
-   ateam notify direct --file <reply-file>
+   # Header was <<<steward-direct reply-to:8675309:42>>> — a DM. Answer the DM.
+   ateam notify direct --to 8675309:42 --file <reply-file>
    ```
-   It posts to the shared General channel — no dedicated topic, no thread ref.
+   ```bash
+   # Header was <<<steward-direct>>> — an @mention. Answer in General.
+   ateam notify direct --to general --file <reply-file>
+   ```
+
+   **Never omit `--to`.** Not on either branch, not when General is obviously right. Those two commands differ only in that flag, so it is the only surviving record of which conversation you believed you were answering — omit it and a reply that went to the wrong place looks exactly like one that went to the right place.
+
+   **Copy the ref verbatim**: everything between `reply-to:` and the closing `>>>`, byte for byte. It is one opaque token, not a structure — it usually contains colons of its own (`8675309:42` is a single ref, not two fields), so never split it, trim it to its last part, reformat it, or retype it from memory.
+
+   **Never invent one.** A header with no `reply-to:` means `--to general` — for a message that arrived without a ref that IS the right destination, not a blank to fill. And never carry a ref over from an earlier envelope; each one addresses only its own conversation.
 
 ### steward-briefing-reply (`<<<steward-briefing-reply>>>`)
 
@@ -96,7 +107,7 @@ A human reply posted in the Briefings topic.
 
 1. There is NO initiative id attached. Interpret the reply against recent briefing context (what you last posted to `ateam notify briefing`) and `ateam execution-status`.
 2. Post ONE briefing-ack (T-ACK) into Briefings (`ateam notify briefing --file <reply-file>`) carrying the substance — a routing confirmation, not courtesy. Don't skip it even when the substance also goes elsewhere (step 3).
-3. If the reply references a specific initiative, route the substance there INSTEAD of duplicating it in Briefings — act on that DRI directly (`ateam mail send <id>`) or post there (`ateam notify <id>`), shrinking the Briefings ack to a pointer ("routed to <initiative>") — one message's content, not two. Use `ateam notify direct` if the reply is an aside, not cross-initiative material.
+3. If the reply references a specific initiative, route the substance there INSTEAD of duplicating it in Briefings — act on that DRI directly (`ateam mail send <id>`) or post there (`ateam notify <id>`), shrinking the Briefings ack to a pointer ("routed to <initiative>") — one message's content, not two. Use `ateam notify direct --to general` if the reply is an aside, not cross-initiative material.
 
 ### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
 
@@ -110,7 +121,7 @@ A human posted a message in a Telegram topic whose owning initiative is CLOSED i
 The relay's last-resort catch-all — a reply the mechanical router couldn't place at all.
 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") and use judgment: if `Reason`/`Body` make the target obvious (e.g. the body names an initiative id), act on it directly (`ateam mail send <id>` or `ateam notify <id>`).
-2. Otherwise, tell Eric directly that you saw an unroutable message and ask for clarification — `ateam notify direct --file <msg-file>` — including `Reason` and enough of `Body` that he can tell you what he meant.
+2. Otherwise, tell Eric directly that you saw an unroutable message and ask for clarification — `ateam notify direct --to general --file <msg-file>` — including `Reason` and enough of `Body` that he can tell you what he meant.
 3. Multi-machine: if `Body`/`Reason` look like a reply belonging to another machine's steward/briefing topic, stay silent or keep any response minimal — sync lag, not a message for you.
 
 ### Every wake, regardless of inbox contents — scan
@@ -205,7 +216,7 @@ Material that spans initiatives — prioritization calls, a machine-wide roundup
 ateam notify briefing --file <msg-file>
 ```
 
-Reach for `briefing` only when the message genuinely doesn't belong to one initiative. The other two targets are `ateam notify <initiative-id>` (per-initiative updates, its own topic) and `ateam notify direct` (direct chat outside any initiative — see steward-direct, §2).
+Reach for `briefing` only when the message genuinely doesn't belong to one initiative. The other two targets are `ateam notify <initiative-id>` (per-initiative updates, its own topic) and `ateam notify direct` (direct chat outside any initiative — always with `--to`, see steward-direct, §2).
 
 ## Not yet built
 

@@ -639,10 +639,11 @@ func TestNotify_Briefing_ExplicitTitle(t *testing.T) {
 // ── DirectHandle ──────────────────────────────────────────────────────────────
 
 // TestNotify_Direct_PostsToGeneralChannel confirms single-channel @mention
-// addressing (agent-teams-4x83):
+// addressing (agent-teams-4x83) under `--to general` — the regression guard on
+// today's behavior now that --to selects the destination (agent-teams-ncn5.11):
 //   - no bd lookup occurs for the direct handle (notifyFakeBD would error on
 //     an unexpected Run call if one were attempted)
-//   - Send is called with General:true and no ThreadRef
+//   - Send is called with General:true, ChatRef:"" and no ThreadRef
 //   - no thread-ref file is written (no dedicated topic to persist)
 //   - no labelAdd occurs
 //   - default title is "Steward" when --title is not given
@@ -656,6 +657,7 @@ func TestNotify_Direct_PostsToGeneralChannel(t *testing.T) {
 	cmd := &notifyKong{
 		ID:           DirectHandle,
 		File:         bodyFile,
+		To:           generalDest,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
 			t.Fatalf("labelAdd should not be called for the direct handle")
@@ -663,7 +665,7 @@ func TestNotify_Direct_PostsToGeneralChannel(t *testing.T) {
 		},
 	}
 
-	ctx, out, _ := newNotifyCtx(nbd)
+	ctx, out, errBuf := newNotifyCtx(nbd)
 	ctx.Home = home
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -675,8 +677,14 @@ func TestNotify_Direct_PostsToGeneralChannel(t *testing.T) {
 	if !ft.calls[0].General {
 		t.Error("expected General=true on direct-handle Send")
 	}
+	if ft.calls[0].ChatRef != "" {
+		t.Errorf("expected ChatRef empty for --to general, got %q", ft.calls[0].ChatRef)
+	}
 	if ft.calls[0].ThreadRef != "" {
 		t.Errorf("expected ThreadRef empty for a General send, got %q", ft.calls[0].ThreadRef)
+	}
+	if strings.Contains(errBuf.String(), "--to was omitted") {
+		t.Errorf("explicit --to general must not warn about an omitted flag: %q", errBuf.String())
 	}
 	if ft.calls[0].InitiativeID != DirectHandle {
 		t.Errorf("InitiativeID = %q, want %q", ft.calls[0].InitiativeID, DirectHandle)
@@ -711,6 +719,7 @@ func TestNotify_Direct_ExplicitTitle(t *testing.T) {
 		ID:           DirectHandle,
 		File:         bodyFile,
 		Title:        "Direct Line",
+		To:           generalDest,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
 	}
@@ -721,6 +730,281 @@ func TestNotify_Direct_ExplicitTitle(t *testing.T) {
 	}
 	if ft.calls[0].Title != "Direct Line" {
 		t.Errorf("Title = %q, want %q", ft.calls[0].Title, "Direct Line")
+	}
+}
+
+// ── DirectHandle --to routing (agent-teams-ncn5.11) ───────────────────────────
+
+// logLineDepth returns the transport.Logf indentation depth of line — the
+// number of two-space indent groups immediately after the fixed-width
+// "YYYY-MM-DD HH:MM:SS " timestamp prefix.
+func logLineDepth(t *testing.T, line string) int {
+	t.Helper()
+	const prefixLen = len("2006-01-02 15:04:05 ")
+	if len(line) < prefixLen {
+		t.Fatalf("log line too short to carry a timestamp prefix: %q", line)
+	}
+	spaces := 0
+	for _, r := range line[prefixLen:] {
+		if r != ' ' {
+			break
+		}
+		spaces++
+	}
+	return spaces / 2
+}
+
+// runDirectWithTo runs a direct-handle notify with the given --to value and
+// returns the fake transport plus the captured stderr.
+func runDirectWithTo(t *testing.T, to string) (*fakeTransport, string) {
+	t.Helper()
+	bodyFile := makeTempBodyFile(t, "direct message body")
+	ft := &fakeTransport{returnRef: ""}
+	cmd := &notifyKong{
+		ID:           DirectHandle,
+		File:         bodyFile,
+		To:           to,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called for the direct handle")
+			return nil
+		},
+	}
+	ctx, _, errBuf := newNotifyCtx(&notifyFakeBD{})
+	ctx.Home = t.TempDir()
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	return ft, errBuf.String()
+}
+
+// TestNotify_Direct_ToRef_AddressesConversation confirms `--to <ref>` routes the
+// reply into the conversation the ref names: ChatRef carries the value verbatim
+// and General is false, so the transport addresses that chat rather than the
+// shared channel.
+func TestNotify_Direct_ToRef_AddressesConversation(t *testing.T) {
+	const ref = "8675309:42"
+	ft, stderr := runDirectWithTo(t, ref)
+
+	if ft.calls[0].ChatRef != ref {
+		t.Errorf("ChatRef = %q, want %q", ft.calls[0].ChatRef, ref)
+	}
+	if ft.calls[0].General {
+		t.Error("expected General=false when --to names a conversation")
+	}
+	if stderr != "" {
+		t.Errorf("expected no diagnostic when --to is supplied, got: %q", stderr)
+	}
+}
+
+// TestNotify_Direct_ToRef_PassedThroughUnparsed confirms the ref is opaque to
+// notify: a value notify has no way to make sense of still reaches the
+// transport verbatim, because deciding whether a destination is well-formed or
+// permitted belongs to the owning transport, not here.
+func TestNotify_Direct_ToRef_PassedThroughUnparsed(t *testing.T) {
+	for _, ref := range []string{"not:a:real:ref", "  spaced  ", "GENERAL", "general-ish", "{}"} {
+		t.Run(ref, func(t *testing.T) {
+			ft, _ := runDirectWithTo(t, ref)
+			if ft.calls[0].ChatRef != ref {
+				t.Errorf("ChatRef = %q, want %q verbatim", ft.calls[0].ChatRef, ref)
+			}
+			if ft.calls[0].General {
+				t.Errorf("expected General=false for --to %q", ref)
+			}
+		})
+	}
+}
+
+// TestNotify_Direct_ToAbsent_DeliversToGeneralAndLogsLoudly confirms the
+// fallback contract for an omitted --to: the message STILL goes out, addressed
+// exactly as `--to general` would address it (losing the answer entirely is
+// worse than delivering it to the wrong place), and the omission is reported
+// as a depth-0 fault. The diagnostic is the whole point of the clause — an
+// absent --to is the only signal that the steward's prose was not followed, so
+// assert the log line, not just the send.
+func TestNotify_Direct_ToAbsent_DeliversToGeneralAndLogsLoudly(t *testing.T) {
+	ft, stderr := runDirectWithTo(t, "")
+
+	if !ft.calls[0].General {
+		t.Error("expected General=true on the omitted --to fallback")
+	}
+	if ft.calls[0].ChatRef != "" {
+		t.Errorf("expected ChatRef empty on the omitted --to fallback, got %q", ft.calls[0].ChatRef)
+	}
+
+	var found string
+	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
+		if strings.Contains(line, "--to") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a diagnostic naming --to on stderr, got: %q", stderr)
+	}
+	if depth := logLineDepth(t, found); depth != 0 {
+		t.Errorf("expected depth-0 log line, got depth %d: %q", depth, found)
+	}
+	for _, want := range []string{"FAULT", "omitted", "General"} {
+		if !strings.Contains(found, want) {
+			t.Errorf("diagnostic missing %q: %q", want, found)
+		}
+	}
+}
+
+// ── --to on a handle that does not read it (agent-teams-ncn5.14) ──────────────
+//
+// The direct handle is the only reader of --to. The complementary case — a
+// direct send with --to must NOT draw this warning — is already pinned by
+// TestNotify_Direct_ToRef_AddressesConversation's empty-stderr assertion.
+
+// assertIgnoredToWarning pins the depth-0 diagnostic for a --to no code path
+// read. It must name the ignored value verbatim: "some --to was dropped" does
+// not tell the reader WHICH conversation they thought they were replying to.
+func assertIgnoredToWarning(t *testing.T, stderr, ref string) {
+	t.Helper()
+	var found string
+	for _, line := range strings.Split(strings.TrimRight(stderr, "\n"), "\n") {
+		if strings.Contains(line, "IGNORED") {
+			found = line
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a diagnostic reporting the ignored --to on stderr, got: %q", stderr)
+	}
+	if depth := logLineDepth(t, found); depth != 0 {
+		t.Errorf("expected depth-0 log line, got depth %d: %q", depth, found)
+	}
+	if !strings.Contains(found, ref) {
+		t.Errorf("diagnostic must name the ignored value %q verbatim: %q", ref, found)
+	}
+	if !strings.Contains(found, "--to") {
+		t.Errorf("diagnostic must name the flag: %q", found)
+	}
+}
+
+// TestNotify_Initiative_ToIgnored_WarnsAndStillSends confirms an initiative
+// send names a supplied --to at depth 0 rather than dropping it in silence,
+// and still delivers on the topic the bead's thread label pins. The send
+// proceeding is half the contract: --to cannot misroute a handle that never
+// reads it, so refusing the command would cost a message to buy nothing.
+func TestNotify_Initiative_ToIgnored_WarnsAndStillSends(t *testing.T) {
+	const ref = "8675309:42"
+	bodyFile := makeTempBodyFile(t, "initiative body")
+
+	ft := &fakeTransport{returnRef: "555"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{
+			ID:     "at-00o",
+			Title:  "my initiative",
+			Labels: []string{"at-00o", "thread:555"},
+		},
+	}
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		To:           ref,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called when a thread label already exists")
+			return nil
+		},
+	}
+
+	ctx, _, errBuf := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ThreadRef != "555" {
+		t.Errorf("ThreadRef = %q, want the recorded topic %q", ft.calls[0].ThreadRef, "555")
+	}
+	if ft.calls[0].ChatRef != "" {
+		t.Errorf("ChatRef = %q, want empty — --to must not leak into a non-direct send", ft.calls[0].ChatRef)
+	}
+	if ft.calls[0].General {
+		t.Error("expected General=false on an initiative send")
+	}
+
+	assertIgnoredToWarning(t, errBuf.String(), ref)
+}
+
+// TestNotify_Briefing_ToIgnored_WarnsAndStillSends is the same contract for the
+// briefing handle, whose destination comes from StewardBriefingThreadPath
+// rather than a bead label — a second handle that accepts --to and has nowhere
+// to put it.
+func TestNotify_Briefing_ToIgnored_WarnsAndStillSends(t *testing.T) {
+	const ref = "8675309:42"
+	bodyFile := makeTempBodyFile(t, "briefing body")
+
+	ft := &fakeTransport{returnRef: "777"}
+	cmd := &notifyKong{
+		ID:           BriefingHandle,
+		File:         bodyFile,
+		To:           ref,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called for the briefing handle")
+			return nil
+		},
+	}
+
+	ctx, _, errBuf := newNotifyCtx(&notifyFakeBD{})
+	ctx.Home = t.TempDir()
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ChatRef != "" {
+		t.Errorf("ChatRef = %q, want empty — --to must not leak into a briefing send", ft.calls[0].ChatRef)
+	}
+	if ft.calls[0].General {
+		t.Error("expected General=false on a briefing send")
+	}
+
+	assertIgnoredToWarning(t, errBuf.String(), ref)
+}
+
+// TestNotify_Initiative_NoTo_Silent confirms the warning is scoped to an
+// actually-supplied --to: the overwhelmingly common initiative send must stay
+// quiet, or the diagnostic becomes noise that trains the reader to ignore it.
+func TestNotify_Initiative_NoTo_Silent(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "initiative body")
+
+	ft := &fakeTransport{returnRef: "555"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{
+			ID:     "at-00o",
+			Title:  "my initiative",
+			Labels: []string{"at-00o", "thread:555"},
+		},
+	}
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			t.Fatalf("labelAdd should not be called when a thread label already exists")
+			return nil
+		},
+	}
+
+	ctx, _, errBuf := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if errBuf.String() != "" {
+		t.Errorf("expected no diagnostic when --to is absent on an initiative send, got: %q", errBuf.String())
 	}
 }
 

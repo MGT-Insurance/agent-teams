@@ -11,6 +11,23 @@
 // Bot token: env AGENT_TEAMS_TELEGRAM_TOKEN, or file ~/.agent-teams/telegram/token (mode 0600).
 // Chat id:   env AGENT_TEAMS_TELEGRAM_CHAT_ID, or file ~/.agent-teams/telegram/chat-id (mode 0600).
 //
+// DM allow-list (OPTIONAL): env AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST, or file
+// ~/.agent-teams/telegram/dm-allowlist — the Telegram user ids permitted to
+// hold a 1:1 conversation with the bot, one per line or comma-separated (#
+// comments and blank lines ignored). Absent or empty admits no DMs at all; a
+// malformed entry is a startup error. See allowsDirectChat.
+//
+// Finding your own id (the bootstrap step: the allow-list wants a number,
+// not a username): post any message to the configured group as you
+// normally would — e.g. the General topic. The relay's log names your
+// numeric sender id the first time it sees you post there, on a line
+// containing "sender id <N>". That number IS the id to add to
+// dm-allowlist: a Telegram private chat's chat.id equals the sender's own
+// user id, the same value the allow-list is keyed on, so the id attached
+// to an ordinary group message is exactly the id a DM needs. Add it as its
+// own line (or comma-separated with others) — ids are positive integers.
+// See the sender-id-logging in Receive.
+//
 // # Thread model
 //
 // One Telegram forum topic per initiative. Send with ThreadRef=="" opens a new
@@ -19,15 +36,25 @@
 // Send with General==true skips topic creation entirely and posts straight
 // to the General channel (no message_thread_id), returning "".
 //
+// Send with a non-empty ChatRef also skips topic creation and posts one
+// message into the conversation that ref names — a DM, or the configured
+// supergroup itself — returning "". The ref is the composite MessageRef
+// Receive emitted for an inbound message, and the chat it names is
+// authorized against allowsDirectChat before anything is sent; see
+// chatFromRef. It beats General when both are set.
+//
 // # Inbound
 //
 // getUpdates long-poll. Messages where is_topic_message==true and the chat id
-// matches the configured supergroup are delivered with their ThreadRef set;
-// non-topic messages (General channel) are delivered with Reply{ThreadRef:
-// ""} — the relay routes those by @mention rather than bouncing them. Receive
-// resolves this bot's own @username via getMe from within the poll loop
-// (retried each iteration while unresolved) so inbound messages can report
-// Reply.MentionsSelf.
+// matches the configured supergroup are delivered with their ThreadRef set.
+// Two kinds of message are delivered with Reply{ThreadRef: ""} instead: a
+// non-topic message in the configured supergroup (the General channel), and
+// an admitted DM. This package makes no routing decision about either — the
+// relay does, keying off the addressing fields (Reply.MentionsSelf,
+// Reply.Mentions, Reply.Direct), which this package's only obligation is to
+// report faithfully. Receive resolves this bot's own @username via getMe from
+// within the poll loop (retried each iteration while unresolved) so inbound
+// messages can report Reply.MentionsSelf.
 package telegram
 
 import (
@@ -86,6 +113,22 @@ type Telegram struct {
 	// literal built directly in tests) falls back to os.Stderr too, via
 	// logf below.
 	logOut io.Writer
+
+	// dmAllowlist is the set of Telegram user ids permitted to DM the bot,
+	// read by allowsDirectChat and by nothing else. Nil or empty admits
+	// nobody. Populated in New from the optional dm-allowlist config; see
+	// parseDMAllowlist for the format.
+	dmAllowlist map[int64]bool
+
+	// seenSenders records which senders' Telegram user ids have already
+	// been logged by the dm-allowlist bootstrap line in Receive
+	// (agent-teams-ncn5.15), so each sender's id is logged once per
+	// process lifetime rather than once per message — an active General
+	// topic would otherwise spam the relay log forever with information
+	// that's only useful once, at setup. Nil until the first group
+	// message arrives; reading a nil map is safe, only writes need the
+	// lazy-init check in Receive.
+	seenSenders map[int64]bool
 }
 
 // logf writes one timestamped, indentation-scoped log line via
@@ -116,30 +159,60 @@ func New(home string, client httpDoer) (*Telegram, error) {
 	if err != nil {
 		return nil, fmt.Errorf("telegram: chat-id: %w", err)
 	}
+	rawAllowlist, err := loadOptionalSecret(home, "AGENT_TEAMS_TELEGRAM_DM_ALLOWLIST", "telegram/dm-allowlist")
+	if err != nil {
+		return nil, fmt.Errorf("telegram: dm-allowlist: %w", err)
+	}
+	dmAllowlist, err := parseDMAllowlist(rawAllowlist)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: dm-allowlist: %w", err)
+	}
 	if client == nil {
 		client = &http.Client{Timeout: 45 * time.Second}
 	}
 	return &Telegram{
-		token:      token,
-		chatID:     chatID,
-		httpClient: client,
-		baseURL:    "https://api.telegram.org",
-		logOut:     os.Stderr,
+		token:       token,
+		chatID:      chatID,
+		httpClient:  client,
+		baseURL:     "https://api.telegram.org",
+		logOut:      os.Stderr,
+		dmAllowlist: dmAllowlist,
 	}, nil
 }
 
 // Name returns "telegram".
 func (t *Telegram) Name() string { return "telegram" }
 
-// Send delivers msg to the human. If msg.General is true, the message is
-// posted to the General channel: no forum topic is opened, no
-// message_thread_id is sent, and "" is returned. Otherwise, if msg.ThreadRef
-// is "", a new forum topic is opened via createForumTopic and its id is
-// returned as threadRef; if msg.ThreadRef is non-empty, sendMessage is called
-// with it as message_thread_id.
+// Send delivers msg to the human.
+//
+// Two shapes, and the first one wins:
+//
+//   - msg.ChatRef non-empty, or msg.General true: one message, no forum topic,
+//     no message_thread_id, "" returned. ChatRef names the conversation to
+//     post into (a DM, or the configured supergroup's General channel);
+//     General means the configured supergroup's General channel. ChatRef is
+//     tested FIRST because transport.OutboundMessage makes it beat General
+//     when both are set: downgrading a reply meant for one conversation into
+//     the shared channel is a data-leak-shaped failure, not a routing
+//     preference. The destination it names is validated by chatFromRef before
+//     anything is sent.
+//   - otherwise the forum-topic path, unchanged and group-only: msg.ThreadRef
+//     == "" opens a new topic via createForumTopic and returns its id as
+//     threadRef; a non-empty msg.ThreadRef is passed to sendMessage as
+//     message_thread_id.
 func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
-	if msg.General {
-		if err := t.sendMessage("", msg.Body); err != nil {
+	if msg.ChatRef != "" || msg.General {
+		chatID := t.chatID
+		if msg.ChatRef != "" {
+			var err error
+			if chatID, err = t.chatFromRef(msg.ChatRef); err != nil {
+				return "", fmt.Errorf("telegram: chat ref: %w", err)
+			}
+		}
+		// Empty thread ref: sendMessage omits message_thread_id entirely,
+		// which is required for a private chat and is already what a General
+		// send does. No new branch, and no empty-string thread id.
+		if err := t.sendMessage(chatID, "", msg.Body); err != nil {
 			return "", fmt.Errorf("telegram: sendMessage: %w", err)
 		}
 		return "", nil
@@ -164,17 +237,64 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	// call for this thread) is already named after that same title, so
 	// restating it under a heading that says the same thing is noise, not
 	// an aid to scanning. Send msg.Body verbatim.
-	if err := t.sendMessage(threadRef, msg.Body); err != nil {
+	//
+	// t.chatID, not a resolved chat: this path is reachable only with an
+	// empty ChatRef, and forum topics exist only in the configured
+	// supergroup — createForumTopic and CloseTopic stay group-only for the
+	// same reason.
+	if err := t.sendMessage(t.chatID, threadRef, msg.Body); err != nil {
 		return "", fmt.Errorf("telegram: sendMessage: %w", err)
 	}
 	return threadRef, nil
 }
 
+// chatFromRef decodes and AUTHORIZES the destination named by an
+// OutboundMessage.ChatRef, returning the chat id to post to.
+//
+// The ref is the composite "<chat_id>:<message_id>" Receive emits as
+// Reply.MessageRef — one format, one parse, the same shape in both
+// directions. Only the chat half is used here; the message half is carried
+// along for the ref to stay a single opaque value outside this package, and
+// is deliberately not required to be present.
+//
+// The authorization is not redundant with the inbound gate. This value has
+// round-tripped through the STEWARD — an LLM rendering text a human wrote —
+// and `ateam notify --to <ref>` passes it through without parsing or
+// validating it, by design: the transport is the layer entitled to reject a
+// destination. Whatever arrives here becomes a chat_id on a live Bot API
+// call, so a garbled or manipulated ref would otherwise turn the bot into a
+// sender to an arbitrary Telegram chat. Permitted destinations are exactly
+// the configured chat plus whatever allowsDirectChat admits — the same
+// predicate the inbound gate uses, so the two directions cannot drift apart.
+// A rejection is an error and never a fallback to some other chat: silently
+// redirecting a message meant for one conversation is the failure this
+// guards against, not the recovery from it.
+func (t *Telegram) chatFromRef(ref string) (string, error) {
+	chatID, _, ok := strings.Cut(ref, ":")
+	if !ok || chatID == "" {
+		return "", fmt.Errorf("malformed ref %q (want \"<chat_id>:<message_id>\")", ref)
+	}
+	if chatID == t.chatID {
+		return chatID, nil
+	}
+	id, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil || !t.allowsDirectChat(id) {
+		return "", fmt.Errorf("refusing to send to chat %s: neither the configured chat nor in the dm-allowlist", chatID)
+	}
+	return chatID, nil
+}
+
 // Receive long-polls Telegram for updates, invoking handler for each inbound
-// message. Messages where is_topic_message==false or the chat id does not
-// match the configured supergroup are not passed to handler — except that
-// non-topic messages from the configured chat are emitted as Reply{ThreadRef:""}
-// so the relay can bounce them with "reply inside the initiative's topic."
+// message. Messages whose chat id does not match the configured supergroup
+// are not passed to handler (unless admitted as a DM, below); a message from
+// the configured chat that is not a topic message — the General channel — IS
+// passed, as Reply{ThreadRef: ""}, and the relay routes it by the addressing
+// fields rather than by its (absent) thread ref.
+//
+// A message from a private chat (a DM to the bot) is admitted only when
+// allowsDirectChat accepts its chat id — which, for a private chat, IS the
+// sender's own Telegram user id — and is then emitted with Reply.Direct ==
+// true and an empty ThreadRef (a DM has no forum topic).
 //
 // Before each poll, Receive resolves this bot's own @username via getMe if it
 // isn't already known (never in New — New must stay network-free for
@@ -224,9 +344,44 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 				continue
 			}
 
-			// Reject messages from other chats.
+			// Admission: the configured chat, or a private chat (DM) whose
+			// sender allowsDirectChat accepts. Everything else is rejected.
+			// The configured-chat branch is checked FIRST on purpose — the
+			// ordering must not depend on the fact that the configured id is
+			// a -100… supergroup and so can never be a private chat.
+			var direct bool
 			chatIDStr := strconv.FormatInt(msg.Chat.ID, 10)
-			if chatIDStr != t.chatID {
+			switch {
+			case chatIDStr == t.chatID:
+				// The configured supergroup. Log a sender's numeric id the
+				// first time it's seen here — the dm-allowlist bootstrap
+				// (agent-teams-ncn5.15): a Telegram private chat's chat.id
+				// IS the sender's own user id, so the number this line
+				// names is exactly the one to add to dm-allowlist. Once per
+				// sender per process lifetime (seenSenders), not once per
+				// message, so an active General topic doesn't spam the
+				// relay log with information that's only useful once, at
+				// setup.
+				if msg.From != nil && !t.seenSenders[msg.From.ID] {
+					if t.seenSenders == nil {
+						t.seenSenders = make(map[int64]bool)
+					}
+					t.seenSenders[msg.From.ID] = true
+					t.logf(1, "update %d: sender id %d%s (add to dm-allowlist to permit a DM)", upd.UpdateID, msg.From.ID, senderUsername(msg))
+				}
+			case msg.Chat.Type == "private":
+				if !t.allowsDirectChat(msg.Chat.ID) {
+					// Sender id (and @username, when Telegram supplies one)
+					// — NEVER the message text: an unauthorized sender's
+					// content does not belong in our logs. For a private
+					// chat chat.id IS the Telegram user id, so this line is
+					// the whole bootstrap path for getting a legitimate
+					// sender into the allow-list.
+					t.logf(1, "update %d: rejected DM (sender %d%s not in dm-allowlist)", upd.UpdateID, msg.Chat.ID, senderUsername(msg))
+					continue
+				}
+				direct = true
+			default:
 				t.logf(1, "update %d: rejected (chat %s != configured %s)", upd.UpdateID, chatIDStr, t.chatID)
 				continue
 			}
@@ -241,12 +396,24 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 			var reply transport.Reply
 			reply.Text = messageBody(msg)
 			reply.Mentions, reply.MentionsSelf = t.parseMentions(msg)
-			reply.MessageRef = strconv.Itoa(msg.MessageID)
+			// Composite "<chat_id>:<message_id>": a Telegram message id is
+			// unique only WITHIN its chat, so the chat has to travel with it
+			// or a ref fired against the wrong chat addresses an unrelated
+			// message there. Emitted in the same shape for every message,
+			// group and DM alike — one format, one parse, no branch. The ref
+			// is opaque outside this package (transport.Reply.MessageRef), so
+			// uniformity costs nothing and a field with two shapes is the
+			// thing that bites later.
+			reply.MessageRef = chatIDStr + ":" + strconv.Itoa(msg.MessageID)
+			reply.Direct = direct
 
 			if msg.IsTopicMessage && msg.MessageThreadID != 0 {
 				reply.ThreadRef = strconv.Itoa(msg.MessageThreadID)
 			}
-			// ThreadRef == "" for non-topic messages; relay bounces these.
+			// ThreadRef stays "" for the two producers of a topic-less
+			// reply — a non-topic (General channel) message and a DM. The
+			// relay routes both off the addressing fields; this package
+			// makes no routing decision about either.
 
 			if err := handler(reply); err != nil {
 				return err
@@ -270,6 +437,38 @@ func (t *Telegram) Receive(handler func(transport.Reply) error) error {
 // policy is a one-function edit.
 func isContentLess(msg *message) bool {
 	return msg.Text == "" && msg.Caption == ""
+}
+
+// allowsDirectChat reports whether the bot will hold a 1:1 conversation with
+// chatID. For a Telegram private chat, chat.id IS the human's own user id, so
+// the allow-list is a list of Telegram user ids. This is the single, isolated
+// authorization decision point for direct chats (Eric, agent-teams-ncn5),
+// built the way isContentLess isolates the content-less policy above:
+// flipping the policy is a one-function edit.
+//
+// It takes a chat id rather than a message because BOTH directions run
+// through it — inbound it decides whether a DM is admitted at all, outbound it
+// validates the chat decoded from an OutboundMessage.ChatRef before the
+// transport will send there — so the two directions cannot drift apart.
+//
+// A nil or empty allow-list admits nobody. That is byte-identical to the
+// behavior before DMs were admitted at all, and it is the correct default for
+// a gate whose failure mode is "a stranger reaches an LLM with shell access":
+// an operator who upgrades without configuring anything sees no change.
+func (t *Telegram) allowsDirectChat(chatID int64) bool {
+	return t.dmAllowlist[chatID]
+}
+
+// senderUsername renders msg's sender @username as a leading-space-separated
+// suffix for a log line, or "" when the message carries no from or no
+// username. The rejected-DM line uses it so the record says WHO was rejected
+// as well as which id to allow-list — a bare numeric id is not something a
+// human recognizes.
+func senderUsername(msg *message) string {
+	if msg.From == nil || msg.From.Username == "" {
+		return ""
+	}
+	return " @" + msg.From.Username
 }
 
 // messageBody returns the actionable, non-empty body to relay for msg. If
@@ -473,18 +672,30 @@ func (t *Telegram) CloseTopic(threadRef string) error {
 // relayAcker-shaped interface (asserted at Run(), mirroring the CloseTopic /
 // topicCloser precedent above) rather than being added to transport.Transport,
 // which stays initiative/relay-agnostic.
+//
+// reply.MessageRef is the composite "<chat_id>:<message_id>" Receive emits;
+// both halves are required, because acking a DM's message id against the
+// configured supergroup would react to whatever unrelated group message
+// happens to hold that id.
 func (t *Telegram) Ack(reply transport.Reply) error {
 	if reply.MessageRef == "" {
 		return errors.New("empty message ref")
 	}
-	return t.setMessageReaction(reply.MessageRef)
+	chatID, messageID, ok := strings.Cut(reply.MessageRef, ":")
+	if !ok || chatID == "" || messageID == "" {
+		return fmt.Errorf("malformed message ref %q (want \"<chat_id>:<message_id>\")", reply.MessageRef)
+	}
+	return t.setMessageReaction(chatID, messageID)
 }
 
-// setMessageReaction sets ackReactionEmoji as the reaction on messageID via
-// the Bot API setMessageReaction method. The reaction param is built with
+// setMessageReaction sets ackReactionEmoji as the reaction on messageID in
+// chatID via the Bot API setMessageReaction method. The chat id is a
+// parameter rather than the configured t.chatID because Telegram message ids
+// are unique only within a chat: a read receipt has to be fired at the chat
+// the message actually came from. The reaction param is built with
 // json.Marshal (not a hand-built string) so the emoji is correctly JSON-
 // encoded regardless of content.
-func (t *Telegram) setMessageReaction(messageID string) error {
+func (t *Telegram) setMessageReaction(chatID, messageID string) error {
 	reaction, err := json.Marshal([]map[string]string{
 		{"type": "emoji", "emoji": ackReactionEmoji},
 	})
@@ -492,7 +703,7 @@ func (t *Telegram) setMessageReaction(messageID string) error {
 		return err
 	}
 	resp, err := t.httpClient.PostForm(t.apiURL("setMessageReaction"), url.Values{
-		"chat_id":    {t.chatID},
+		"chat_id":    {chatID},
 		"message_id": {messageID},
 		"reaction":   {string(reaction)},
 	})
@@ -514,13 +725,20 @@ func (t *Telegram) setMessageReaction(messageID string) error {
 	return nil
 }
 
-// sendMessage posts text into a forum topic, or into the General channel when
-// threadRef is "" (Telegram posts to General when message_thread_id is
-// omitted from the request entirely — an empty-string value is not
-// equivalent and must not be sent).
-func (t *Telegram) sendMessage(threadRef, text string) error {
+// sendMessage posts text into chatID — a forum topic within it when
+// threadRef is non-empty, otherwise the chat itself (the General channel of
+// a supergroup, or a private chat). Telegram posts without a topic when
+// message_thread_id is omitted from the request entirely; an empty-string
+// value is not equivalent and must not be sent, which is also what makes a
+// private-chat send work with no extra branch.
+//
+// The chat id is a parameter rather than the configured t.chatID so a reply
+// can land in the conversation it was addressed to; every caller resolves it
+// through Send, which is the single chokepoint all outbound message text
+// funnels through (tests/sent-log.test.sh case9 pins that).
+func (t *Telegram) sendMessage(chatID, threadRef, text string) error {
 	values := url.Values{
-		"chat_id": {t.chatID},
+		"chat_id": {chatID},
 		"text":    {text},
 	}
 	if threadRef != "" {
@@ -588,6 +806,7 @@ type message struct {
 	Caption         string          `json:"caption"`
 	Entities        []messageEntity `json:"entities"`
 	Chat            chat            `json:"chat"`
+	From            *user           `json:"from"`
 
 	// Media fields — present only for the corresponding non-text message
 	// type. messageBody uses these purely for content-type detection
@@ -624,6 +843,24 @@ type document struct {
 
 type chat struct {
 	ID int64 `json:"id"`
+	// Type is the Telegram chat type: "private" (a 1:1 DM with the bot),
+	// "group", "supergroup", or "channel". Only "private" is read — see the
+	// admission switch in Receive.
+	Type string `json:"type"`
+}
+
+// user is the minimal Telegram User shape decoded from a message's from field
+// — modeled like sticker/document above: only what is actually read. ID is
+// the sender's numeric Telegram user id: for a DM the allow-list is keyed on
+// chat.id, not this field, but a GROUP message carries no other source for
+// it, and it's exactly what the dm-allowlist bootstrap line in Receive needs
+// (agent-teams-ncn5.15) — a Telegram private chat's chat.id equals the same
+// sender's id here, so the number surfaced from ordinary group traffic is
+// copy-pasteable straight into dm-allowlist. Username is the @username both
+// that line and the rejected-DM line report alongside it.
+type user struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
 }
 
 // messageEntity is a Telegram MessageEntity. Offset and Length are UTF-16
@@ -649,6 +886,73 @@ func loadSecret(home, envKey, relPath string) (string, error) {
 		return "", fmt.Errorf("env %s not set and %s: %w", envKey, p, err)
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// loadOptionalSecret is loadSecret's sibling for config that is ALLOWED to be
+// absent: env var → file at <home>/<relPath> → "". An absent file is not an
+// error — the feature is simply unconfigured. Any other read failure still is:
+// a file that exists but cannot be read is a misconfiguration, not an opt-out,
+// and treating it as "unconfigured" would silently disable the feature.
+//
+// Unlike loadSecret, the returned value is NOT trimmed (agent-teams-ncn5.16):
+// its one caller, parseDMAllowlist, reports parse errors by line number
+// against exactly the text it's given, and that number has to index the file
+// a human opens to fix it. Trimming here shifted every reported line number
+// whenever the file started with a blank line. parseDMAllowlist already
+// trims each field it parses, so nothing is lost by leaving the raw text
+// alone.
+//
+// loadSecret must keep erroring on absence and is deliberately left alone: the
+// token and chat id are required, and their absence has to fail loudly.
+func loadOptionalSecret(home, envKey, relPath string) (string, error) {
+	if v := os.Getenv(envKey); v != "" {
+		return v, nil
+	}
+	p := filepath.Join(home, relPath)
+	data, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", p, err)
+	}
+	return string(data), nil
+}
+
+// parseDMAllowlist parses the DM allow-list into the set allowsDirectChat
+// consults: Telegram user ids, one per line or comma-separated, with #
+// comments and blank lines ignored. Empty input yields a nil map, which admits
+// nobody.
+//
+// An entry that is not a positive integer is an ERROR naming the offending
+// line, never a skipped entry. A silently dropped id means the human believes
+// they are allow-listed when they are not, and the only symptom is a DM that
+// vanishes with no diagnostic — loud at startup beats silent at runtime. A
+// non-positive id is rejected for the same reason: Telegram user ids are
+// positive, so a negative one (e.g. a pasted -100… supergroup id) is an entry
+// that could never match.
+func parseDMAllowlist(raw string) (map[int64]bool, error) {
+	var allow map[int64]bool
+	for i, line := range strings.Split(raw, "\n") {
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		for _, field := range strings.Split(line, ",") {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(field, 10, 64)
+			if err != nil || id <= 0 {
+				return nil, fmt.Errorf("line %d: %q is not a Telegram user id", i+1, field)
+			}
+			if allow == nil {
+				allow = make(map[int64]bool)
+			}
+			allow[id] = true
+		}
+	}
+	return allow, nil
 }
 
 func decodeJSON(r io.Reader, dst any) error {
