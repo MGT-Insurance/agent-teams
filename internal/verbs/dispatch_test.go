@@ -1208,11 +1208,11 @@ func TestNewInitiativeKong_DriArgJoined(t *testing.T) {
 	}
 }
 
-// TestNewInitiativeKong_SingleWordDriArgIsInitiativeID verifies that a
-// single-token DriArgs value (e.g. an existing initiative id) is passed
-// through as ATEAM_INITIATIVE — the "driArg is an id" case from
-// agent-teams-142k.2.
-func TestNewInitiativeKong_SingleWordDriArgIsInitiativeID(t *testing.T) {
+// TestNewInitiativeKong_IDShapedDriArgIsInitiativeID verifies that a DriArgs
+// value matching the registry's id shape (initiativeIDPattern, e.g.
+// "at-1ldm") is passed through as ATEAM_INITIATIVE — the "driArg is an id"
+// case from agent-teams-142k.2.
+func TestNewInitiativeKong_IDShapedDriArgIsInitiativeID(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
@@ -1235,6 +1235,37 @@ func TestNewInitiativeKong_SingleWordDriArgIsInitiativeID(t *testing.T) {
 	}
 	if gotInitiative != "at-1ldm" {
 		t.Errorf("initiativeID = %q, want %q", gotInitiative, "at-1ldm")
+	}
+}
+
+// TestNewInitiativeKong_SingleWordNonIDShapedDriArgOmitsInitiativeID verifies
+// the false-negative bias explicitly: a single-word DriArgs value that does
+// NOT match the id shape (e.g. a bare one-word problem statement) must NOT be
+// passed through as ATEAM_INITIATIVE. Token count alone would misclassify
+// this; only the id-shape regex (initiativeIDPattern) tells them apart.
+func TestNewInitiativeKong_SingleWordNonIDShapedDriArgOmitsInitiativeID(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+
+	var gotRole, gotInitiative string
+	cmd := &newInitiativeKong{
+		Dir:     dir,
+		DriArgs: []string{"authentication"},
+		launch: func(_ *cli.Context, _, _, role, initiativeID string) error {
+			gotRole, gotInitiative = role, initiativeID
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotRole != "dri" {
+		t.Errorf("role = %q, want %q", gotRole, "dri")
+	}
+	if gotInitiative != "" {
+		t.Errorf("initiativeID = %q, want empty (single word, but not id-shaped)", gotInitiative)
 	}
 }
 

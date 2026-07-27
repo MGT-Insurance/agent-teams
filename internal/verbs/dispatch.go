@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -38,6 +39,16 @@ func RegisterDispatchKong(p *cli.Parser) {
 }
 
 // ---- new-initiative (kong) --------------------------------------------------
+
+// initiativeIDPattern matches agent-teams' registered-initiative id shape:
+// the "at-" prefix (seen throughout this package/tests, e.g. "at-1ldm",
+// "at-abc123") followed by one or more lowercase letters/digits. Used only to
+// classify new-initiative's single driArg as an id (vs. a free-text problem
+// statement) for the ATEAM_INITIATIVE env var — biased toward the
+// false-negative direction: a real id that fails this pattern just costs a
+// missing env var, whereas a false positive would inject a bogus initiative
+// id into a launched session's environment.
+var initiativeIDPattern = regexp.MustCompile(`^at-[a-z0-9]+$`)
 
 // newInitiativeKong is the kong-native form of new-initiative.
 // <directory> is required; remaining args form the problem statement / initiative id.
@@ -77,12 +88,14 @@ func (c *newInitiativeKong) Run(ctx *cli.Context) error {
 	if launch == nil {
 		launch = launchBGSession
 	}
-	// driArg is an initiative id only when it's a single token (e.g.
-	// "at-1ldm") — multi-word DriArgs is a free-text problem statement, which
-	// carries no initiative id yet (new-initiative registers one during /dri,
-	// not here). ATEAM_INITIATIVE is omitted rather than guessed wrong.
+	// driArg is an initiative id only when it matches the registry's id shape
+	// (initiativeIDPattern) — a free-text problem statement carries no
+	// initiative id yet (new-initiative registers one during /dri, not here),
+	// and naturally fails the pattern (any space, or a first word that isn't
+	// "at-something", fails to match). ATEAM_INITIATIVE is omitted rather
+	// than guessed wrong.
 	initiativeID := ""
-	if len(c.DriArgs) == 1 {
+	if initiativeIDPattern.MatchString(driArg) {
 		initiativeID = driArg
 	}
 	return launch(ctx, dir, driArg, "dri", initiativeID)
