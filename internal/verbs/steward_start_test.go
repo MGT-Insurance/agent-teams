@@ -352,3 +352,67 @@ func TestStewardStart_NilContext(t *testing.T) {
 		t.Fatal("expected error for nil context")
 	}
 }
+
+// ── stewardLaunchArgs: --settings ATEAM_ROLE=steward (agent-teams-142k.3) ───
+
+// TestStewardLaunchArgs_ContainsSettingsFlag verifies that the sanctioned
+// Steward launch argv carries "--settings" immediately followed by the exact
+// stewardSettingsJSON string — the mechanism that publishes ATEAM_ROLE=steward
+// per the role-signal contract (agent-teams-142k.1). No ATEAM_INITIATIVE (the
+// steward is fleet-scoped) and no autoCompactWindow (unchanged from before
+// this bead — see stewardSettingsJSON's doc comment).
+func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
+	args := stewardLaunchArgs()
+
+	found := false
+	for i, a := range args {
+		if a == "--settings" {
+			if i+1 >= len(args) {
+				t.Fatal("--settings has no following value in argv")
+			}
+			val := args[i+1]
+			if val != stewardSettingsJSON {
+				t.Errorf("value after --settings = %q, want %q", val, stewardSettingsJSON)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --settings; got: %v", args)
+	}
+	if stewardSettingsJSON != `{"env":{"ATEAM_ROLE":"steward"}}` {
+		t.Errorf("stewardSettingsJSON = %q, want %q", stewardSettingsJSON, `{"env":{"ATEAM_ROLE":"steward"}}`)
+	}
+}
+
+// TestStewardLaunchArgs_StandardArgsPresent verifies the remaining flags and
+// prompt are unchanged by the --settings addition.
+func TestStewardLaunchArgs_StandardArgsPresent(t *testing.T) {
+	args := stewardLaunchArgs()
+
+	hasPair := func(flag, val string) bool {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasPair("--permission-mode", "bypassPermissions") {
+		t.Errorf("argv missing \"--permission-mode\" \"bypassPermissions\" pair; got: %v", args)
+	}
+	found := false
+	for _, a := range args {
+		if a == "--bg" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --bg; got: %v", args)
+	}
+	if last := args[len(args)-1]; last != "/agent-teams:steward" {
+		t.Errorf("last argv element = %q, want %q", last, "/agent-teams:steward")
+	}
+}

@@ -4,7 +4,8 @@
 // documented in plugins/agent-teams/skills/steward/SKILL.md:
 //
 //	ateam steward init && cd ~/.agent-teams/steward/session && \
-//	  claude --bg --permission-mode bypassPermissions "/agent-teams:steward"
+//	  claude --bg --permission-mode bypassPermissions \
+//	    --settings '{"env":{"ATEAM_ROLE":"steward"}}' "/agent-teams:steward"
 package verbs
 
 import (
@@ -192,17 +193,39 @@ func defaultStewardKill(pid int) {
 // defaultStewardLaunch.
 type stewardLaunchFunc func(ctx *cli.Context, dir string) error
 
+// stewardSettingsJSON is the --settings JSON argument for the Steward launch,
+// publishing ATEAM_ROLE=steward per the role-signal contract
+// (agent-teams-142k.1). No ATEAM_INITIATIVE and no autoCompactWindow request:
+// the steward is fleet-scoped (no single initiative id) and, unlike bg DRI
+// sessions (see bgSessionSettingsJSON in dispatch.go), has never requested an
+// auto-compact window override — this change only adds the env map, it does
+// not change that.
+const stewardSettingsJSON = `{"env":{"ATEAM_ROLE":"steward"}}`
+
+// stewardLaunchArgs returns the argv slice (everything after "claude") for
+// the sanctioned Steward launch. Pure: extracted so tests can assert the argv
+// without exec-ing a real claude binary.
+func stewardLaunchArgs() []string {
+	return []string{
+		"--bg",
+		"--permission-mode", "bypassPermissions",
+		"--settings", stewardSettingsJSON,
+		"/agent-teams:steward",
+	}
+}
+
 // defaultStewardLaunch execs the sanctioned Steward launch command —
-// `claude --bg --permission-mode bypassPermissions /agent-teams:steward` —
-// with its working directory set to dir via exec.Command's .Dir (never
-// os.Chdir, which would change the whole ateam process's cwd). claude's own
-// stdout/stderr, including the background session id it prints, are streamed
-// straight through to ctx.Stdout/ctx.Stderr.
+// `claude --bg --permission-mode bypassPermissions --settings
+// '{"env":{"ATEAM_ROLE":"steward"}}' /agent-teams:steward` — with its working
+// directory set to dir via exec.Command's .Dir (never os.Chdir, which would
+// change the whole ateam process's cwd). claude's own stdout/stderr,
+// including the background session id it prints, are streamed straight
+// through to ctx.Stdout/ctx.Stderr.
 func defaultStewardLaunch(ctx *cli.Context, dir string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam steward start: 'claude' not found in PATH")
 	}
-	cmd := exec.Command("claude", "--bg", "--permission-mode", "bypassPermissions", "/agent-teams:steward")
+	cmd := exec.Command("claude", stewardLaunchArgs()...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout
 	cmd.Stderr = ctx.Stderr

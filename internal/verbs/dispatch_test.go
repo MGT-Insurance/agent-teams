@@ -127,7 +127,7 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -173,7 +173,7 @@ func TestDispatch_NotARepo(t *testing.T) {
 		Problem:  "Some work",
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -201,7 +201,7 @@ func TestDispatch_EmptySlug(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -228,7 +228,7 @@ func TestDispatch_WorktreeCollision(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -279,7 +279,7 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -310,7 +310,7 @@ func TestDispatch_MissingProblem(t *testing.T) {
 		Problem:  "",
 		NoLaunch: true,
 		git:      &fakeGit{},
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -344,7 +344,7 @@ func TestDispatch_IDOnly(t *testing.T) {
 		NoLaunch: true,
 		IDOnly:   true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -398,7 +398,7 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -452,7 +452,7 @@ func TestDispatch_Standby_WritesMarker(t *testing.T) {
 		NoLaunch: true,
 		Standby:  true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -505,7 +505,7 @@ func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -560,7 +560,7 @@ func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
 		NoLaunch: true,
 		BodyFile: ctxFile,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -596,7 +596,7 @@ func TestDispatch_BodyFile_Missing(t *testing.T) {
 		NoLaunch: true,
 		BodyFile: "/no/such/file/ever.txt",
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -631,7 +631,7 @@ func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
 		NoLaunch: true,
 		BodyFile: "/no/such/file/ever.txt",
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -681,7 +681,7 @@ func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
 		Repo:    repoDir,
 		// NoLaunch intentionally false: the error must fire before any launch.
 		git:    fg,
-		launch: func(_ *cli.Context, _, _ string) error { return nil },
+		launch: func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -738,7 +738,7 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -794,7 +794,7 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123", "", "")
+	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical memoryRoutingRule const.
@@ -828,7 +828,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
 	// caller (launchBGSession), not by bgSessionArgs itself.
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs(name, prompt, "", "")
+	args := bgSessionArgs(name, prompt, "", "", "", "")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -877,7 +877,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 // TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
 // replaces the "opus" default in the --model flag.
 func TestBGSessionArgs_ModelOverride(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "")
 
 	found := false
 	for i, a := range args {
@@ -903,7 +903,7 @@ func TestBGSessionArgs_ModelOverride(t *testing.T) {
 // TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
 // argument falls back to the "opus" default.
 func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "")
 
 	found := false
 	for i, a := range args {
@@ -922,7 +922,7 @@ func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
 // Per contract decision 7 (agent-teams-wvx2.1), this must be asserted at the
 // bgSessionArgs level (pure, no env reads).
 func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -943,7 +943,7 @@ func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
 // TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
 // defaults to "opus" and no "--advisor" flag appears anywhere in argv.
 func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1113,7 +1113,7 @@ func TestDispatchKong_FlagsRoundtrip(t *testing.T) {
 		IDOnly:     false,
 		NoLaunch:   true,
 		git:        fg,
-		launch:     func(_ *cli.Context, _, _ string) error { return nil },
+		launch:     func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -1154,7 +1154,7 @@ func TestDispatchKong_IDOnly(t *testing.T) {
 		IDOnly:   true,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -1179,12 +1179,12 @@ func TestNewInitiativeKong_DriArgJoined(t *testing.T) {
 	// Inject a stub launcher so the test NEVER execs a real `claude --bg`
 	// session (an un-stubbed launch leaks a detached session into dir, which
 	// t.TempDir() then deletes — orphaning it; see agent-teams-wwyd).
-	var gotDir, gotArg string
+	var gotDir, gotArg, gotRole, gotInitiative string
 	cmd := &newInitiativeKong{
 		Dir:     dir,
 		DriArgs: []string{"the", "problem", "statement"},
-		launch: func(_ *cli.Context, d, arg string) error {
-			gotDir, gotArg = d, arg
+		launch: func(_ *cli.Context, d, arg, role, initiativeID string) error {
+			gotDir, gotArg, gotRole, gotInitiative = d, arg, role, initiativeID
 			return nil
 		},
 	}
@@ -1197,6 +1197,75 @@ func TestNewInitiativeKong_DriArgJoined(t *testing.T) {
 	}
 	if gotDir != dir {
 		t.Errorf("dir = %q, want %q", gotDir, dir)
+	}
+	if gotRole != "dri" {
+		t.Errorf("role = %q, want %q", gotRole, "dri")
+	}
+	// A multi-word DriArgs is a free-text problem statement, not an id — the
+	// launcher doesn't know an initiative id yet, so it must be omitted.
+	if gotInitiative != "" {
+		t.Errorf("initiativeID = %q, want empty (multi-word DriArgs is a problem statement, not an id)", gotInitiative)
+	}
+}
+
+// TestNewInitiativeKong_IDShapedDriArgIsInitiativeID verifies that a DriArgs
+// value matching the registry's id shape (initiativeIDPattern, e.g.
+// "at-1ldm") is passed through as ATEAM_INITIATIVE — the "driArg is an id"
+// case from agent-teams-142k.2.
+func TestNewInitiativeKong_IDShapedDriArgIsInitiativeID(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+
+	var gotRole, gotInitiative string
+	cmd := &newInitiativeKong{
+		Dir:     dir,
+		DriArgs: []string{"at-1ldm"},
+		launch: func(_ *cli.Context, _, _, role, initiativeID string) error {
+			gotRole, gotInitiative = role, initiativeID
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotRole != "dri" {
+		t.Errorf("role = %q, want %q", gotRole, "dri")
+	}
+	if gotInitiative != "at-1ldm" {
+		t.Errorf("initiativeID = %q, want %q", gotInitiative, "at-1ldm")
+	}
+}
+
+// TestNewInitiativeKong_SingleWordNonIDShapedDriArgOmitsInitiativeID verifies
+// the false-negative bias explicitly: a single-word DriArgs value that does
+// NOT match the id shape (e.g. a bare one-word problem statement) must NOT be
+// passed through as ATEAM_INITIATIVE. Token count alone would misclassify
+// this; only the id-shape regex (initiativeIDPattern) tells them apart.
+func TestNewInitiativeKong_SingleWordNonIDShapedDriArgOmitsInitiativeID(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+
+	var gotRole, gotInitiative string
+	cmd := &newInitiativeKong{
+		Dir:     dir,
+		DriArgs: []string{"authentication"},
+		launch: func(_ *cli.Context, _, _, role, initiativeID string) error {
+			gotRole, gotInitiative = role, initiativeID
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotRole != "dri" {
+		t.Errorf("role = %q, want %q", gotRole, "dri")
+	}
+	if gotInitiative != "" {
+		t.Errorf("initiativeID = %q, want empty (single word, but not id-shaped)", gotInitiative)
 	}
 }
 
@@ -1216,12 +1285,12 @@ func TestResumeKong_DelegatesLaunch(t *testing.T) {
 		},
 	}
 
-	var launchedID string
+	var launchedID, launchedRole, launchedInitiative string
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 	cmd := &resumeKong{
 		ID: "at-rk1",
-		launch: func(_ *cli.Context, _, arg string) error {
-			launchedID = arg
+		launch: func(_ *cli.Context, _, arg, role, initiativeID string) error {
+			launchedID, launchedRole, launchedInitiative = arg, role, initiativeID
 			return nil
 		},
 	}
@@ -1231,6 +1300,12 @@ func TestResumeKong_DelegatesLaunch(t *testing.T) {
 	}
 	if launchedID != "at-rk1" {
 		t.Errorf("launch driArg = %q, want %q", launchedID, "at-rk1")
+	}
+	if launchedRole != "dri" {
+		t.Errorf("launch role = %q, want %q", launchedRole, "dri")
+	}
+	if launchedInitiative != "at-rk1" {
+		t.Errorf("launch initiativeID = %q, want %q", launchedInitiative, "at-rk1")
 	}
 }
 
@@ -1272,7 +1347,7 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		createEpic: func(repoPath, title string) (string, error) {
 			epicRepoGot = repoPath
 			epicTitleGot = title
@@ -1310,7 +1385,7 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 // reached bg sessions launched via the daemon's spare-session pool — see
 // agent-teams-g8xc).
 func TestBGSessionArgs_ContainsSettingsFlag(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
 
 	found := false
 	for i, a := range args {
@@ -1331,6 +1406,63 @@ func TestBGSessionArgs_ContainsSettingsFlag(t *testing.T) {
 	}
 	if autoCompactWindowSettingsJSON != `{"autoCompactWindow":200000}` {
 		t.Errorf("autoCompactWindowSettingsJSON = %q, want %q", autoCompactWindowSettingsJSON, `{"autoCompactWindow":200000}`)
+	}
+}
+
+// settingsValue extracts the value following "--settings" in args, or fails
+// the test if the flag is missing.
+func settingsValue(t *testing.T, args []string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == "--settings" {
+			if i+1 >= len(args) {
+				t.Fatal("--settings has no following value in argv")
+			}
+			return args[i+1]
+		}
+	}
+	t.Fatalf("argv missing --settings; got: %v", args)
+	return ""
+}
+
+// TestBGSessionArgs_SettingsEnv_RoleAndInitiative verifies the default /dri
+// path's merged --settings JSON: role and initiative id both present, in the
+// contract's documented field order (agent-teams-142k.1, PLAN.md §1).
+func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123")
+	got := settingsValue(t, args)
+	want := `{"autoCompactWindow":200000,"env":{"ATEAM_ROLE":"dri","ATEAM_INITIATIVE":"at-abc123"}}`
+	if got != want {
+		t.Errorf("--settings = %q, want %q", got, want)
+	}
+}
+
+// TestBGSessionArgs_SettingsEnv_RoleOnly verifies the new-initiative-with-a-
+// bare-problem-statement case: role present, ATEAM_INITIATIVE omitted
+// entirely (not an empty string) when the launcher doesn't know the id.
+func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "")
+	got := settingsValue(t, args)
+	want := `{"autoCompactWindow":200000,"env":{"ATEAM_ROLE":"dri"}}`
+	if got != want {
+		t.Errorf("--settings = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "ATEAM_INITIATIVE") {
+		t.Errorf("--settings must omit ATEAM_INITIATIVE when initiative id is unknown: %q", got)
+	}
+}
+
+// TestBGSessionArgs_SettingsEnv_Absent verifies that when both role and
+// initiative id are empty (e.g. a hypothetical bare launch), no "env" key
+// appears at all — byte-identical to the pre-142k autoCompactWindowSettingsJSON.
+func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
+	got := settingsValue(t, args)
+	if got != autoCompactWindowSettingsJSON {
+		t.Errorf("--settings = %q, want %q (no env key)", got, autoCompactWindowSettingsJSON)
+	}
+	if strings.Contains(got, "env") {
+		t.Errorf("--settings must omit \"env\" entirely when role and initiative id are both empty: %q", got)
 	}
 }
 
@@ -1360,7 +1492,7 @@ func TestDispatch_SkipEpic(t *testing.T) {
 		NoLaunch: true,
 		SkipEpic: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		createEpic: func(_, _ string) (string, error) {
 			epicCalled = true
 			return "at-should-not-be-created", nil
@@ -1401,8 +1533,8 @@ func TestDispatch_LaunchPrompt(t *testing.T) {
 		Repo:         repoDir,
 		LaunchPrompt: "/review-skill at-lp1",
 		git:          fg,
-		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, p, _, _ string) error {
+		launch:       func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, p, _, _, _, _ string) error {
 			capturedPrompt = p
 			return nil
 		},
@@ -1439,15 +1571,15 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(fbd, home)
 
-	var capturedPrompt string
+	var capturedPrompt, capturedRole, capturedInitiative string
 	cmd := &dispatchKong{
 		Problem:      "Substitution test",
 		Repo:         repoDir,
 		LaunchPrompt: "/review {id}",
 		git:          fg,
-		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, p, _, _ string) error {
-			capturedPrompt = p
+		launch:       func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, p, _, _, role, initiativeID string) error {
+			capturedPrompt, capturedRole, capturedInitiative = p, role, initiativeID
 			return nil
 		},
 	}
@@ -1460,6 +1592,13 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 	want := "/review at-sub1"
 	if capturedPrompt != want {
 		t.Errorf("prompt = %q, want %q ({id} must be substituted with initiative id)", capturedPrompt, want)
+	}
+	// The --launch-prompt path is role=dri, initiative id known (agent-teams-142k.2).
+	if capturedRole != "dri" {
+		t.Errorf("launchRaw role = %q, want %q", capturedRole, "dri")
+	}
+	if capturedInitiative != "at-sub1" {
+		t.Errorf("launchRaw initiativeID = %q, want %q", capturedInitiative, "at-sub1")
 	}
 }
 
@@ -1488,8 +1627,8 @@ func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 		LaunchPrompt: "/review {id}",
 		Model:        "sonnet",
 		git:          fg,
-		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, _, m, adv string) error {
+		launch:       func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, _, m, adv, _, _ string) error {
 			capturedModel = m
 			capturedAdvisor = adv
 			return nil
@@ -1535,8 +1674,8 @@ func TestDispatch_LaunchPrompt_AdvisorOverride(t *testing.T) {
 		Model:        "sonnet",
 		Advisor:      "opus",
 		git:          fg,
-		launch:       func(_ *cli.Context, _, _ string) error { return nil },
-		launchRaw: func(_ *cli.Context, _, _, m, adv string) error {
+		launch:       func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		launchRaw: func(_ *cli.Context, _, _, m, adv, _, _ string) error {
 			capturedModel = m
 			capturedAdvisor = adv
 			return nil
@@ -1587,7 +1726,7 @@ func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _ string) error { return nil },
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		createEpic: func(_, _ string) (string, error) {
 			return "", fmt.Errorf("bd: simulated epic failure")
 		},
@@ -1636,7 +1775,7 @@ func TestDispatch_EagerTopic_CreatesAndLabelsThread(t *testing.T) {
 		NoLaunch:         true,
 		SkipEpic:         true,
 		git:              fg,
-		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		launch:           func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		transportEnabled: func(home string) bool { return true },
 		transportFor:     fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
@@ -1703,7 +1842,7 @@ func TestDispatch_EagerTopic_ThenNotify_ReusesThread(t *testing.T) {
 		NoLaunch:         true,
 		SkipEpic:         true,
 		git:              fg,
-		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		launch:           func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		transportEnabled: func(home string) bool { return true },
 		transportFor:     fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {
@@ -1773,7 +1912,7 @@ func TestDispatch_EagerTopic_TransportDisabled_NoSend(t *testing.T) {
 		NoLaunch:         true,
 		SkipEpic:         true,
 		git:              fg,
-		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		launch:           func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		transportEnabled: func(home string) bool { return false },
 		transportFor:     fakeTransportFor(ft, nil),
 		labelAdd:         func(b cli.BDRunner, id, label string) error { return nil },
@@ -1817,7 +1956,7 @@ func TestDispatch_EagerTopic_SendError_FailSoft(t *testing.T) {
 		NoLaunch:         true,
 		SkipEpic:         true,
 		git:              fg,
-		launch:           func(_ *cli.Context, _, _ string) error { return nil },
+		launch:           func(_ *cli.Context, _, _, _, _ string) error { return nil },
 		transportEnabled: func(home string) bool { return true },
 		transportFor:     fakeTransportFor(ft, nil),
 		labelAdd: func(b cli.BDRunner, id, label string) error {

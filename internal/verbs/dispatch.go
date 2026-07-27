@@ -2,11 +2,13 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -37,6 +39,16 @@ func RegisterDispatchKong(p *cli.Parser) {
 }
 
 // ---- new-initiative (kong) --------------------------------------------------
+
+// initiativeIDPattern matches agent-teams' registered-initiative id shape:
+// the "at-" prefix (seen throughout this package/tests, e.g. "at-1ldm",
+// "at-abc123") followed by one or more lowercase letters/digits. Used only to
+// classify new-initiative's single driArg as an id (vs. a free-text problem
+// statement) for the ATEAM_INITIATIVE env var — biased toward the
+// false-negative direction: a real id that fails this pattern just costs a
+// missing env var, whereas a false positive would inject a bogus initiative
+// id into a launched session's environment.
+var initiativeIDPattern = regexp.MustCompile(`^at-[a-z0-9]+$`)
 
 // newInitiativeKong is the kong-native form of new-initiative.
 // <directory> is required; remaining args form the problem statement / initiative id.
@@ -76,7 +88,17 @@ func (c *newInitiativeKong) Run(ctx *cli.Context) error {
 	if launch == nil {
 		launch = launchBGSession
 	}
-	return launch(ctx, dir, driArg)
+	// driArg is an initiative id only when it matches the registry's id shape
+	// (initiativeIDPattern) — a free-text problem statement carries no
+	// initiative id yet (new-initiative registers one during /dri, not here),
+	// and naturally fails the pattern (any space, or a first word that isn't
+	// "at-something", fails to match). ATEAM_INITIATIVE is omitted rather
+	// than guessed wrong.
+	initiativeID := ""
+	if initiativeIDPattern.MatchString(driArg) {
+		initiativeID = driArg
+	}
+	return launch(ctx, dir, driArg, "dri", initiativeID)
 }
 
 // ---- dispatch (kong) --------------------------------------------------------
@@ -274,11 +296,11 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			// contract decision 5 (agent-teams-wvx2.1) — but that decision was
 			// amended to allow an explicit opt-in via --advisor, so callers
 			// that want advisor mode for a custom-prompt launch can request it.
-			if err := c.launchRaw(ctx, wtPath, prompt, c.Model, c.Advisor); err != nil {
+			if err := c.launchRaw(ctx, wtPath, prompt, c.Model, c.Advisor, "dri", issue.ID); err != nil {
 				return fmt.Errorf("dispatch: launch: %w", err)
 			}
 		} else {
-			if err := c.launch(ctx, wtPath, issue.ID); err != nil {
+			if err := c.launch(ctx, wtPath, issue.ID, "dri", issue.ID); err != nil {
 				return fmt.Errorf("dispatch: launch: %w", err)
 			}
 		}
@@ -406,9 +428,9 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 
 	var launchErr error
 	if c.LaunchPrompt != "" {
-		launchErr = c.launchRaw(ctx, dir, c.LaunchPrompt, c.Model, "")
+		launchErr = c.launchRaw(ctx, dir, c.LaunchPrompt, c.Model, "", "dri", c.ID)
 	} else {
-		launchErr = c.launch(ctx, dir, c.ID)
+		launchErr = c.launch(ctx, dir, c.ID, "dri", c.ID)
 	}
 	if launchErr != nil {
 		return launchErr
@@ -452,14 +474,56 @@ Default to ateam learn. Use bd remember only for repo-shared project facts. Neve
 // Production DRI sessions compact at roughly 180000 tokens, not 200000.
 const autoCompactWindowSettingsJSON = `{"autoCompactWindow":200000}`
 
+// bgSessionEnv is the "env" map merged into a background session's --settings
+// JSON, publishing the role-signal contract (agent-teams-142k.1): ATEAM_ROLE
+// (open enum, v1 values "dri"/"steward") and ATEAM_INITIATIVE (the initiative
+// id, when the launcher knows it). Consumers MUST treat unknown ATEAM_ROLE
+// values and its absence identically — a generic fallback, never an error.
+// Field order (Role before Initiative) matches the contract's documented
+// example JSON exactly.
+type bgSessionEnv struct {
+	Role       string `json:"ATEAM_ROLE,omitempty"`
+	Initiative string `json:"ATEAM_INITIATIVE,omitempty"`
+}
+
+// bgSessionSettings is the --settings JSON payload for a background session
+// launch: the auto-compact window plus an optional env map.
+type bgSessionSettings struct {
+	AutoCompactWindow int           `json:"autoCompactWindow"`
+	Env               *bgSessionEnv `json:"env,omitempty"`
+}
+
+// bgSessionSettingsJSON builds the --settings JSON argument for a background
+// session launch: always the auto-compact window (see
+// autoCompactWindowSettingsJSON's doc comment for the CLI-arg-not-env-var
+// rationale), plus an "env" map carrying ATEAM_ROLE/ATEAM_INITIATIVE when
+// either is non-empty. role and initiativeID are independent: initiativeID is
+// omitted whenever the launcher doesn't know the initiative id (e.g.
+// new-initiative given a bare problem statement, or the steward, which is
+// fleet-scoped and never carries one).
+func bgSessionSettingsJSON(role, initiativeID string) string {
+	settings := bgSessionSettings{AutoCompactWindow: 200000}
+	if role != "" || initiativeID != "" {
+		settings.Env = &bgSessionEnv{Role: role, Initiative: initiativeID}
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		// AutoCompactWindow is an int and Env's fields are plain strings —
+		// Marshal cannot fail here. Fall back to the known-good constant.
+		return autoCompactWindowSettingsJSON
+	}
+	return string(b)
+}
+
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background session launch. prompt is the raw positional argument passed to
 // claude (e.g. "/dri at-abc123" or a custom skill invocation). model overrides
 // the default "opus" model when non-empty. advisor, when non-empty, appends
 // "--advisor <advisor>" to the argv (a hidden claude CLI flag taking a model
-// alias). Pure: does not read env. Extracted so tests can assert the argv
-// without executing the command.
-func bgSessionArgs(name, prompt, model, advisor string) []string {
+// alias). role and initiativeID are merged into --settings via
+// bgSessionSettingsJSON. Pure: does not read env. Extracted so tests can
+// assert the argv without executing the command.
+func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []string {
 	if model == "" {
 		model = "opus"
 	}
@@ -468,7 +532,7 @@ func bgSessionArgs(name, prompt, model, advisor string) []string {
 		"-n", name,
 		"--model", model,
 		"--permission-mode", "bypassPermissions",
-		"--settings", autoCompactWindowSettingsJSON,
+		"--settings", bgSessionSettingsJSON(role, initiativeID),
 		"--append-system-prompt", memoryRoutingRule,
 	}
 	if advisor != "" {
@@ -501,26 +565,31 @@ func driAdvisorSettings() (model, advisor string) {
 
 // launchFunc is the function type for launching a background DRI session.
 // dispatchKong and resumeKong hold an injected field of this type so tests
-// can substitute a fake without touching a package global.
-type launchFunc func(ctx *cli.Context, dir, driArg string) error
+// can substitute a fake without touching a package global. role and
+// initiativeID are merged into the launched session's --settings env map
+// (agent-teams-142k.1); initiativeID may be "" when the launcher doesn't know
+// the initiative id.
+type launchFunc func(ctx *cli.Context, dir, driArg, role, initiativeID string) error
 
 // rawLaunchFunc is the function type for launching a background session with a
 // custom raw prompt (no /dri prefix is added), an optional model override, and
 // an optional advisor model. Used by the --launch-prompt path in dispatchKong;
-// injected by tests to avoid exec-ing a real claude binary.
-type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor string) error
+// injected by tests to avoid exec-ing a real claude binary. role and
+// initiativeID are merged into --settings the same way as launchFunc.
+type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor, role, initiativeID string) error
 
 // rawLaunchBGSession launches a background claude session with an arbitrary
 // prompt (no /dri prefix). model overrides the default "opus" model when
 // non-empty; advisor, when non-empty, adds "--advisor <advisor>" to the argv.
-// Shared by the --launch-prompt production path and tests (via injection into
+// role and initiativeID are merged into --settings via bgSessionArgs. Shared
+// by the --launch-prompt production path and tests (via injection into
 // dispatchKong.launchRaw).
-func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor string) error {
+func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, initiativeID string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt, model, advisor)
+	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout
@@ -537,9 +606,10 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor string) er
 // or the default opus-only. This is the ONLY launch path that reads the
 // advisor env var — dispatch /dri, new-initiative, and resume all flow
 // through here, per the advisor-mode-toggle contract (agent-teams-wvx2.1).
-func launchBGSession(ctx *cli.Context, dir, driArg string) error {
+// role and initiativeID flow straight through to --settings.
+func launchBGSession(ctx *cli.Context, dir, driArg, role, initiativeID string) error {
 	model, advisor := driAdvisorSettings()
-	return rawLaunchBGSession(ctx, dir, "/dri "+driArg, model, advisor)
+	return rawLaunchBGSession(ctx, dir, "/dri "+driArg, model, advisor, role, initiativeID)
 }
 
 // printWatchControl writes the standard "Watch and control" block to w.
