@@ -237,13 +237,15 @@ func TestResume_HappyPath(t *testing.T) {
 		},
 	}
 
-	var launchedDir, launchedArg string
+	var launchedDir, launchedArg, launchedRole, launchedInitiative string
 	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
 	cmd := &resumeKong{
 		ID: "at-happy1",
-		launch: func(_ *cli.Context, d, arg string) error {
+		launch: func(_ *cli.Context, d, arg, role, initiativeID string) error {
 			launchedDir = d
 			launchedArg = arg
+			launchedRole = role
+			launchedInitiative = initiativeID
 			return nil
 		},
 	}
@@ -256,6 +258,12 @@ func TestResume_HappyPath(t *testing.T) {
 	}
 	if launchedArg != "at-happy1" {
 		t.Errorf("launch driArg = %q, want %q", launchedArg, "at-happy1")
+	}
+	if launchedRole != "dri" {
+		t.Errorf("launch role = %q, want %q", launchedRole, "dri")
+	}
+	if launchedInitiative != "at-happy1" {
+		t.Errorf("launch initiativeID = %q, want %q", launchedInitiative, "at-happy1")
 	}
 
 	out := stdout.String()
@@ -286,17 +294,17 @@ func TestResume_CustomLaunchPromptUsesRawLaunch(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	var gotDir, gotPrompt, gotModel string
+	var gotDir, gotPrompt, gotModel, gotRole, gotInitiative string
 	cmd := &resumeKong{
 		ID:           "at-rr1",
 		LaunchPrompt: "/agent-teams:review-pr at-rr1",
 		Model:        "sonnet",
-		launch: func(_ *cli.Context, _, _ string) error {
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
 			t.Fatal("launch called; want launchRaw for --launch-prompt")
 			return nil
 		},
-		launchRaw: func(_ *cli.Context, d, p, m, _ string) error {
-			gotDir, gotPrompt, gotModel = d, p, m
+		launchRaw: func(_ *cli.Context, d, p, m, _, role, initiativeID string) error {
+			gotDir, gotPrompt, gotModel, gotRole, gotInitiative = d, p, m, role, initiativeID
 			return nil
 		},
 	}
@@ -312,6 +320,12 @@ func TestResume_CustomLaunchPromptUsesRawLaunch(t *testing.T) {
 	if gotModel != "sonnet" {
 		t.Errorf("launchRaw model = %q, want sonnet", gotModel)
 	}
+	if gotRole != "dri" {
+		t.Errorf("launchRaw role = %q, want %q", gotRole, "dri")
+	}
+	if gotInitiative != "at-rr1" {
+		t.Errorf("launchRaw initiativeID = %q, want %q", gotInitiative, "at-rr1")
+	}
 }
 
 func TestResume_NoLaunchPromptUsesDriLaunch(t *testing.T) {
@@ -325,14 +339,14 @@ func TestResume_NoLaunchPromptUsesDriLaunch(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	var gotArg string
+	var gotArg, gotRole, gotInitiative string
 	cmd := &resumeKong{
 		ID: "at-rr2",
-		launch: func(_ *cli.Context, _, arg string) error {
-			gotArg = arg
+		launch: func(_ *cli.Context, _, arg, role, initiativeID string) error {
+			gotArg, gotRole, gotInitiative = arg, role, initiativeID
 			return nil
 		},
-		launchRaw: func(_ *cli.Context, _, _, _, _ string) error {
+		launchRaw: func(_ *cli.Context, _, _, _, _, _, _ string) error {
 			t.Fatal("launchRaw called; want launch for default path")
 			return nil
 		},
@@ -342,6 +356,12 @@ func TestResume_NoLaunchPromptUsesDriLaunch(t *testing.T) {
 	}
 	if gotArg != "at-rr2" {
 		t.Errorf("launch driArg = %q, want at-rr2", gotArg)
+	}
+	if gotRole != "dri" {
+		t.Errorf("launch role = %q, want %q", gotRole, "dri")
+	}
+	if gotInitiative != "at-rr2" {
+		t.Errorf("launch initiativeID = %q, want %q", gotInitiative, "at-rr2")
 	}
 }
 
