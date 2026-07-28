@@ -396,45 +396,68 @@ The failure was narrower: the temporary `SubagentStart` command hook produced
 no observed invocation when that child started, so it could not inject the
 role's learnings.
 
-The spike tried two hook match configurations:
+`agent-teams-bhe0.9` reran and expanded the matrix on 2026-07-28. The installed
+version remained Codex 0.145.0. Each start hook wrote its stdin to an observable
+file and returned a unique context token; each stop hook also wrote its stdin.
+The child was instructed to report the hook token or
+`HOOK_CONTEXT_ABSENT`.
 
-1. an exact matcher for the custom agent type
-   `agent-teams-spike-scout`; and
-2. an unfiltered `SubagentStart` hook with no matcher.
+Results:
 
-Neither ran. The second probe rules out a simple regular-expression or
-agent-type spelling error. Other temporary project hooks in the same trusted
-checkout—`SessionStart`, `UserPromptSubmit`, and `Stop`—did run, which makes a
-global hooks-disabled setting, project distrust, or blanket hook-trust failure
-an unlikely explanation. The successful child behavior also rules out failure
-to discover or select the custom agent definition.
+1. Built-in `explorer`, project hook, no matcher: `SubagentStart` and
+   `SubagentStop` both ran. The start payload contained
+   `agent_type: "explorer"`, and the child returned the injected token.
+2. Built-in `explorer`, project hook, exact `^explorer$` matcher: both hooks ran
+   and the child again returned the injected token.
+3. Custom `ateam-hook-spike`, project hook, no matcher: the custom profile ran,
+   but neither hook produced a payload and the child returned
+   `HOOK_CONTEXT_ABSENT`.
+4. Custom `ateam_hook_spike`, project hook, exact
+   `^ateam_hook_spike$` matcher: the custom profile ran, but neither hook
+   produced a payload and the child returned `HOOK_CONTEXT_ABSENT`.
+5. Custom `ateam_hook_spike` with an additional exact user-level hook: neither
+   the project nor user hook produced a payload, and the child returned
+   `HOOK_CONTEXT_ABSENT`. The temporary user hook was checksum-verified and
+   removed immediately after the run.
+6. Custom `ateam_plugin_hook_spike`, installed plugin hook, exact matcher: the
+   validated plugin was installed from a temporary local marketplace and
+   loaded in a fresh `codex exec` thread. The custom profile ran, but neither
+   lifecycle hook produced a payload and the child returned
+   `HOOK_CONTEXT_ABSENT`.
+7. Built-in `explorer`, the same installed plugin hook after a matcher-only
+   change and cachebuster reinstall: both lifecycle hooks ran, their payloads
+   identified `agent_type: "explorer"`, and the child returned the plugin's
+   injected context token.
+
+The controls prove that project trust, hook trust bypass, command execution,
+matcher syntax, hook stdout, and child context injection all worked in the
+same checkout. Using both hyphenated and underscore custom names rules out the
+obvious naming explanation. Capturing both lifecycle events also shows this is
+not limited to the start hook: Codex 0.145.0 emitted neither
+`SubagentStart` nor `SubagentStop` for these custom-agent spawns. The installed
+plugin control proves this is not an artifact of testing loose project hooks:
+plugin packaging changed hook discovery and paths, but did not change the
+custom-agent event boundary.
 
 The [current Codex hooks
 documentation](https://learn.chatgpt.com/docs/hooks#subagentstart) says
 `SubagentStart` matches on `agent_type`, receives `agent_id` and `agent_type`,
 and can add developer context to the child. The observed result on Codex
-0.145.0 therefore disagrees with the documented contract. The spike did not
-isolate a root cause, so the plan must not claim one. The leading explanations
-are a Codex 0.145.0 event-emission bug or an uncovered difference in the custom
-agent spawn path. A hook-source reload issue is also possible, although less
-consistent with the clean, repeated CLI probes.
+0.145.0 therefore disagrees with the documented contract for custom agents.
+The reproducible boundary is **built-in agent emits lifecycle events; custom
+agent does not**, across project, user, and installed-plugin hook sources. The
+internal implementation cause is not established from the public interface,
+so the plan does not invent one.
 
 This is a **hook-delivery caveat, not a custom-agent no-go**. The initial role
 definitions must explicitly run `ateam learnings <role>` at startup rather
 than rely on `SubagentStart` injection. That is deterministic and reconstructs
 the same context from durable role memory.
 
-Before removing that workaround, complete `agent-teams-bhe0.9`, the focused
-compatibility matrix:
-
-- built-in agent type versus a custom `.codex/agents/*.toml` type;
-- project-level versus user-level hook;
-- exact matcher versus no matcher;
-- `SubagentStart` paired with `SubagentStop` for the same child; and
-- an observable command-hook marker plus captured hook stdin.
-
-Only treat the behavior as fixed when the hook receives the custom
-`agent_type` and its returned `additionalContext` is visible inside the child.
+Keep the workaround until a supported Codex version passes a regression probe:
+the start hook must receive the custom `agent_type`, its returned
+`additionalContext` must be visible inside the child, and the paired stop hook
+must receive the same child identity.
 
 ### Concurrent resume — UNSAFE WITHOUT AN ATEAM LOCK
 
