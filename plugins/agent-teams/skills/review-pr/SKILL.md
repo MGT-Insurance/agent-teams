@@ -235,9 +235,14 @@ ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam close <id> --reason "Review posted: <review-html-url>"
 ```
 
-`<review-html-url>` is `$REVIEW_URL` captured in step 9. If it's empty (the
-POST failed and no fallback URL was captured, or this is the step-8 timeout
-path where no review was posted at all), cite `<pr-url>` instead.
+`<review-html-url>` is `$REVIEW_URL` captured in step 9. If it's empty
+because the POST failed and no fallback URL was captured, cite `<pr-url>`
+instead.
+
+**Step-8 timeout path** (no review was posted): swap the wording — the note
+is `review-timeout: PR #<pr-number> — reviewer subagent did not respond` and
+the close is `--reason "Review not posted (reviewer timeout): <pr-url>"`.
+That note IS step 8's "note the timeout"; do not write a second one.
 
 **Re-review rounds end the same way.** route-pr-event reopened this
 initiative to run the round; once the re-review posts, run this merged
