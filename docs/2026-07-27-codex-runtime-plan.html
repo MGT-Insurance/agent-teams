@@ -1,4 +1,278 @@
-# Codex runtime plan
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Codex runtime plan · agent-teams</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f1ea;
+      --paper: #fffdf8;
+      --ink: #17231f;
+      --muted: #65716b;
+      --line: #d9ded7;
+      --accent: #087f73;
+      --accent-soft: #dff3ed;
+      --code: #10231f;
+      --code-ink: #d9f4eb;
+      --shadow: 0 18px 50px rgba(32, 48, 42, .08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% 0%, rgba(8, 127, 115, .12), transparent 28rem),
+        var(--bg);
+      color: var(--ink);
+      font: 17px/1.68 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--accent); text-underline-offset: .18em; }
+    a:hover { text-decoration-thickness: 2px; }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 860px);
+      gap: clamp(1.5rem, 4vw, 4rem);
+      width: min(1240px, calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 2rem 0 5rem;
+    }
+
+    aside {
+      position: sticky;
+      top: 1.25rem;
+      align-self: start;
+      max-height: calc(100vh - 2.5rem);
+      overflow: auto;
+      padding: 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 253, 248, .88);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: .55rem;
+      margin-bottom: .85rem;
+      color: var(--ink);
+      font-size: .82rem;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-decoration: none;
+      text-transform: uppercase;
+    }
+
+    .brand::before {
+      width: .72rem;
+      height: .72rem;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px var(--accent-soft);
+      content: "";
+    }
+
+    .format-link {
+      display: block;
+      margin: 0 0 1.1rem;
+      font-size: .84rem;
+    }
+
+    nav h2 {
+      margin: 1rem 0 .55rem;
+      color: var(--muted);
+      font-size: .72rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    #toc {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    #toc li { margin: .2rem 0; }
+    #toc li.sub { padding-left: .85rem; }
+    #toc a {
+      display: block;
+      padding: .28rem .45rem;
+      border-radius: 7px;
+      color: var(--muted);
+      font-size: .82rem;
+      line-height: 1.35;
+      text-decoration: none;
+    }
+    #toc a:hover { background: var(--accent-soft); color: var(--ink); }
+
+    main {
+      min-width: 0;
+      padding: clamp(1.4rem, 4vw, 4rem);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .55rem;
+      margin-bottom: 1rem;
+    }
+
+    .pill {
+      padding: .28rem .65rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #075e56;
+      font-size: .76rem;
+      font-weight: 750;
+      letter-spacing: .04em;
+    }
+
+    article > h1:first-child {
+      margin: 0 0 .35rem;
+      font-size: clamp(2.25rem, 7vw, 4.75rem);
+      line-height: .98;
+      letter-spacing: -.055em;
+    }
+
+    h2, h3, h4 { scroll-margin-top: 1.5rem; }
+    h2 {
+      margin: 3.5rem 0 1rem;
+      padding-top: .85rem;
+      border-top: 1px solid var(--line);
+      font-size: clamp(1.55rem, 4vw, 2.2rem);
+      line-height: 1.18;
+      letter-spacing: -.025em;
+    }
+    h3 {
+      margin: 2.15rem 0 .75rem;
+      color: #155f57;
+      font-size: 1.28rem;
+      line-height: 1.3;
+    }
+    h4 {
+      margin: 1.8rem 0 .65rem;
+      font-size: 1.05rem;
+      letter-spacing: .01em;
+    }
+
+    p { margin: .8rem 0; }
+    ul, ol { padding-left: 1.35rem; }
+    li { margin: .32rem 0; padding-left: .18rem; }
+    strong { font-weight: 760; }
+    code {
+      padding: .12em .35em;
+      border: 1px solid #d4dfd9;
+      border-radius: 5px;
+      background: #edf3ef;
+      color: #24433b;
+      font: .88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre {
+      overflow: auto;
+      margin: 1.15rem 0;
+      padding: 1rem 1.1rem;
+      border-radius: 13px;
+      background: var(--code);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+      color: var(--code-ink);
+      font: .84rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+    }
+
+    .decision {
+      margin: 1.25rem 0;
+      padding: .9rem 1rem;
+      border-left: 4px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      background: var(--accent-soft);
+    }
+
+    .source-note {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    @media (max-width: 900px) {
+      .shell { display: block; width: min(100% - 1rem, 860px); padding-top: .5rem; }
+      aside { position: static; max-height: none; margin-bottom: .65rem; }
+      nav { display: none; }
+      main { border-radius: 18px; }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #101715;
+        --paper: #17201d;
+        --ink: #edf4f0;
+        --muted: #a7b5ae;
+        --line: #34413b;
+        --accent: #63d6c8;
+        --accent-soft: #173d37;
+        --code: #09110f;
+        --code-ink: #d9f4eb;
+        --shadow: none;
+      }
+      aside { background: rgba(23, 32, 29, .9); }
+      .pill { color: #aaf1e8; }
+      h3 { color: #8de1d5; }
+      code { border-color: #43544c; background: #202e29; color: #d7e9e2; }
+    }
+
+    @media print {
+      body { background: white; color: black; font-size: 11pt; }
+      .shell { display: block; width: auto; padding: 0; }
+      aside { display: none; }
+      main { padding: 0; border: 0; box-shadow: none; }
+      h2 { break-after: avoid; }
+      pre { white-space: pre-wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <a class="brand" href="#codex-runtime-plan">agent-teams</a>
+      <a class="format-link" href="./2026-07-27-codex-runtime-plan.md">View editable Markdown →</a>
+      <nav aria-label="Document sections">
+        <h2>On this page</h2>
+        <ol id="toc"></ol>
+      </nav>
+    </aside>
+    <main>
+      <div class="eyebrow">
+        <span class="pill">Initiative · agent-teams-bhe0</span>
+        <span class="pill">Feasibility · GO</span>
+        <span class="pill">Codex CLI · 0.145.0 spike</span>
+      </div>
+      <article id="document"></article>
+      <p class="source-note">
+        This standalone page embeds a snapshot of the canonical Markdown plan.
+        Use the Markdown link above when editing the document.
+      </p>
+    </main>
+  </div>
+
+  <script id="markdown-source" type="text/plain"># Codex runtime plan
 
 **Initiative:** `agent-teams-bhe0`
 
@@ -474,3 +748,133 @@ implementation:
 
 The app-server path is not required for the first implementation. It remains a
 future option for richer status and turn control.
+</script>
+  <script>
+    (() => {
+      const source = document.getElementById("markdown-source").textContent;
+      const escapeHtml = (value) => value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+
+      const inline = (value) => {
+        const code = [];
+        let text = value.replace(/`([^`]+)`/g, (_, content) => {
+          code.push(`<code>${escapeHtml(content)}</code>`);
+          return `\u0000CODE${code.length - 1}\u0000`;
+        });
+        text = escapeHtml(text)
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/\u0000CODE(\d+)\u0000/g, (_, index) => code[Number(index)]);
+        return text;
+      };
+
+      const slugCounts = new Map();
+      const slug = (value) => {
+        const base = value.toLowerCase()
+          .replace(/<[^>]+>/g, "")
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-|-$/g, "") || "section";
+        const count = slugCounts.get(base) || 0;
+        slugCounts.set(base, count + 1);
+        return count ? `${base}-${count + 1}` : base;
+      };
+
+      const output = [];
+      let paragraph = [];
+      let inCode = false;
+      let codeLines = [];
+      let listType = null;
+      let listItems = [];
+
+      const flushParagraph = () => {
+        if (!paragraph.length) return;
+        const rendered = inline(paragraph.join(" ").trim());
+        const className = /^<strong>GO<\/strong>/.test(rendered) ? ' class="decision"' : "";
+        output.push(`<p${className}>${rendered}</p>`);
+        paragraph = [];
+      };
+
+      const flushList = () => {
+        if (!listType) return;
+        output.push(`<${listType}>${listItems.map(item => `<li>${item}</li>`).join("")}</${listType}>`);
+        listType = null;
+        listItems = [];
+      };
+
+      for (const rawLine of source.replace(/\r\n?/g, "\n").split("\n")) {
+        if (rawLine.startsWith("```")) {
+          flushParagraph();
+          flushList();
+          if (inCode) {
+            output.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+            codeLines = [];
+            inCode = false;
+          } else {
+            inCode = true;
+          }
+          continue;
+        }
+        if (inCode) {
+          codeLines.push(rawLine);
+          continue;
+        }
+
+        const heading = rawLine.match(/^(#{1,4})\s+(.+)$/);
+        if (heading) {
+          flushParagraph();
+          flushList();
+          const level = heading[1].length;
+          const rendered = inline(heading[2]);
+          output.push(`<h${level} id="${slug(heading[2])}">${rendered}</h${level}>`);
+          continue;
+        }
+
+        const list = rawLine.match(/^\s*(?:([-*])|(\d+)\.)\s+(.+)$/);
+        if (list) {
+          flushParagraph();
+          const nextType = list[2] ? "ol" : "ul";
+          if (listType && listType !== nextType) flushList();
+          listType = nextType;
+          listItems.push(inline(list[3]));
+          continue;
+        }
+
+        if (!rawLine.trim()) {
+          flushParagraph();
+          flushList();
+          continue;
+        }
+
+        if (listType && /^\s+/.test(rawLine)) {
+          listItems[listItems.length - 1] += ` ${inline(rawLine.trim())}`;
+          continue;
+        }
+
+        flushList();
+        paragraph.push(rawLine.trim());
+      }
+      flushParagraph();
+      flushList();
+
+      const article = document.getElementById("document");
+      article.innerHTML = output.join("\n");
+
+      const formatLink = article.querySelector('a[href$=".html"]');
+      formatLink?.closest("p")?.remove();
+
+      const toc = document.getElementById("toc");
+      article.querySelectorAll("h2, h3").forEach((heading) => {
+        const item = document.createElement("li");
+        if (heading.tagName === "H3") item.className = "sub";
+        const link = document.createElement("a");
+        link.href = `#${heading.id}`;
+        link.textContent = heading.textContent;
+        item.appendChild(link);
+        toc.appendChild(item);
+      });
+    })();
+  </script>
+</body>
+</html>
