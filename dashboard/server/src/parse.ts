@@ -176,16 +176,40 @@ export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
 // "working"/"ended") now lives in @agent-teams/shared — imported above and
 // re-exported for existing consumers. See shared/types.ts for the doc.
 
+// Eric's DECLARED "I have looked at this PR; it is now on the team" state,
+// written by `ateam handoff` (contract: internal/verbs/external_review.go §2).
+// It is ADDITIVE — "human" and "gate:review" are deliberately RETAINED so that
+// hung_scan.go keeps classifying the initiative AWAITING-HUMAN and the DEAD /
+// work-product-flatline escalation ladders stay disarmed. So the label cannot be
+// read as "the gate labels are gone"; it has to actively suppress them here.
+export const EXTERNAL_REVIEW_LABEL = "external-review";
+
 // Derive the explicit gate kind from an initiative's labels array.
 // Resilient: tolerates undefined/null/empty labels (missing or unset).
-//   "gate:review"   => "review"   (AUTHORITATIVE: initiative is awaiting PR review)
-//   "gate:question" => "question" (agent is parked asking a question)
+//   "gate:review"     => "review"   (AUTHORITATIVE: initiative is awaiting PR review)
+//   "gate:question"   => "question" (agent is parked asking a question)
+//   "external-review" => "external" (Eric declared he is done looking)
 //   "human" (no gate:*) => "question" (legacy/plain gate; treat as question)
 //   else none
+//
+// "external-review" outranks BOTH the review derivation and the legacy human-only
+// one: the whole point of the declaration is that Eric is done looking, so a row
+// he just handed off must not report back as awaiting him. It does NOT outrank
+// "gate:question" — a parked question is a live ask that still needs an answer,
+// and status.go's rule 1 likewise returns NEEDS-DECISION before the
+// external-review label is ever consulted. Precedence among the gate labels
+// themselves is unchanged; without the label nothing here behaves differently.
+//
+// It resolves to its own kind rather than to null because "no gate" is not the
+// same claim: deriveNeedsHuman's delivered-with-no-gate branch would relabel a
+// nulled-out handed-off row "generic" ("needs you"), putting it right back in the
+// inbox it was declared out of.
 export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKind | null {
   if (!labels || labels.length === 0) return null;
-  if (labels.includes("gate:review")) return "review";
+  const handedOff = labels.includes(EXTERNAL_REVIEW_LABEL);
+  if (!handedOff && labels.includes("gate:review")) return "review";
   if (labels.includes("gate:question")) return "question";
+  if (handedOff) return "external";
   // Plain "human" with no gate:* label = legacy gate, treat as question.
   if (labels.includes("human")) return "question";
   return null;
@@ -197,6 +221,7 @@ export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKi
 //   merged                            -> false (done)
 //   explicit gate == "review"         -> "review"  (AUTHORITATIVE; wins over session)
 //   explicit gate == "question"       -> "waiting" (agent asking a question)
+//   explicit gate == "external"       -> false (handed off: Eric declared he's done)
 //   else session WAITING/blocked      -> "check"   (no declared gate; softer tier)
 //   else session WORKING              -> false (refining — not in inbox)
 //   else delivered + session ENDED    -> "generic" (needs input; NOT "review" anymore)
@@ -219,6 +244,13 @@ export function deriveNeedsHuman(
   if (gate === "review") return "review";
   // Explicit gate:question (or legacy human-only) -> agent is waiting on your answer.
   if (gate === "question") return "waiting";
+  // Handed off (external-review) -> Eric declared he is done looking; NOT his queue.
+  // Sits with the other gate checks deliberately: a declaration about Eric's own
+  // attention is authoritative over anything inferred from session or delivery
+  // state. In particular it must pre-empt the "generic" branch below — a handed-off
+  // initiative has an open PR and usually no live session, which is exactly the
+  // shape that branch labels "needs you".
+  if (gate === "external") return false;
   // Session waiting/blocked with NO gate -> soft "check" tier (not a declared ask).
   if (signal === "waiting") return "check";
   // Working session -> refining (not in inbox).
@@ -404,6 +436,9 @@ export function buildInitiativeNodes(
       let gate = deriveExplicitGate(initiative.labels);
       if (gate === null && humanGatedIds.has(initiative.id)) {
         // Legacy: bd list --label human with no labels array -> treat as question gate.
+        // A handed-off initiative resolves to gate "external", never null, so this
+        // fallback cannot resurrect its gate — which matters because it keeps the
+        // "human" label and so is always in humanGatedIds.
         gate = "question";
       }
 
