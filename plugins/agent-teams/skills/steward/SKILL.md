@@ -132,6 +132,8 @@ ateam hung-scan
 claude agents --all --json
 ```
 
+`AWAITING-EXTERNAL-REVIEW` rows are HEALTHY, not idle — handed off; never nudge one or brief it as needing him. `STALE-MERGED` is a real ten-second ask ("PR merged, close it"): briefing-batched, never a wake. Values and `pr_probe`: references/operations.md.
+
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK`, carrying the fields the bullets below key off — ground truth, not an eyeballed nudge. Full field list and how each is computed: references/operations.md. Per entry:
 
 - **STUCK with `hung:true`** — live session, idle past threshold, no gate raised. Escalate: a DIGESTED message per §5's hung-escalation spec, to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`). Judgment call, never autonomous. Reply comes back as an ordinary steward-reply; record under `unblock-action`.
@@ -158,6 +160,8 @@ and answer from the records, not recollection.
 - No matching record means the log shows nothing for that window, not "I didn't send it" — every DRI posts through the same bot into the same topics, so absence from the log never proves non-authorship on its own.
 
 **"What did that review find?"** — Reviews-topic follow-ups (retrieve from GitHub, never beads) and dispatching a deeper look: references/pr-reviews.md.
+
+**"I'm done with that one"** — Eric declares a PR handed off, in ANY thread, unprompted: run `ateam handoff <id>`. Never on your own initiative — his to declare, never yours to infer. Phrasings, which-initiative, reversal: references/handoff.md.
 
 ## 3. Authority rules (v1, absolute)
 
