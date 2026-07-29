@@ -122,6 +122,8 @@ This emits a JSON packet to stdout:
 }
 ```
 
+`hot_budget_tokens` is **the** hot-set budget: one number, one unit (TOKENS), emitted from the Go constant. The value above is illustrative — use the one the packet actually prints. Nothing else in this skill restates the budget, and nothing converts it to bytes. Any byte figure you meet here is a per-ENTRY write-time cap, a different limit on a different scope; never convert between the two.
+
 Read ALL memory bodies from this packet. These are the full cold + hot contents for the role (fresh has already been drained into cold). The keys that step 2a JUST moved out of `<role>:fresh:*` are the **primary promotion candidates** — they were being SERVED to every session (via hot ∪ fresh) right up until the drain, so they are not settled cold: they are un-curated served learnings awaiting a hot/cold verdict. Apply the condense procedure below autonomously for this role.
 
 ### Step 3 — Release the lock
@@ -146,7 +148,7 @@ This procedure is autonomous — NO human-review gate. Safety rests on Dolt hist
 
 IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. `ateam learnings <role>` serves hot ∪ fresh; because `ateam fresh-drain <role>` already ran, the fresh set is empty here — so a partial hot set would under-serve the next session. Design the complete hot set first, then write all hot keys as a batch.
 
-**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key step 2a drained out of fresh was being injected into every session until now. Any drained key you leave in cold is SILENTLY DEMOTED out of that injection. Therefore you MUST explicitly decide, for each drained (previously-served) key, hot vs cold — do not let them settle into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the 6000-token budget is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal drained learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
+**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key step 2a drained out of fresh was being injected into every session until now. Any drained key you leave in cold is SILENTLY DEMOTED out of that injection. Therefore you MUST explicitly decide, for each drained (previously-served) key, hot vs cold — do not let them settle into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the hot budget (`hot_budget_tokens`) is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal drained learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
 
 **Promote vs. archive — a drained key earns a hot slot only if it is a concise, self-contained learning carrying NET-NEW signal (a RULE/gotcha not already covered by an existing hot entry). Do NOT blind-promote a raw, verbose entry that is the pre-distillation SOURCE of an existing hot entry (tell: a longer body under a near-duplicate slug, e.g. cold `go-advisory-lock-pattern` vs hot `advisory-lock`) — promoting it de-distills hot. Such raw archive stays in cold; if it carries a nuance the hot entry lacks, MERGE that nuance into the existing hot entry instead of adding a second entry.**
 
@@ -157,7 +159,7 @@ Design principles:
 - MERGE overlapping learnings into single succinct entries. This is where most token reduction comes from.
 - **Theme-first forced merge:** when more than 2 fresh/cold candidates share a theme, they MUST collapse into ONE umbrella hot (or cold) entry with per-nuance bullets — do not leave them as separate entries. Cite at most ONE anecdote or initiative-id per merged entry; the rest of the theme's occurrences just reinforce the same RULE/TRIGGER, they don't each need their own provenance. This is not optional polish — a shared theme with 3+ standalone entries is a design defect, not a stylistic choice.
 - Write each entry "as succinct as possible while still COMPLETE" — keep every load-bearing detail (file paths, exact commands, the WHY). Store the learning itself, not the story of how it was found — include only enough context to signal WHEN the learning is relevant, not a history lesson. Shape each entry as RULE (one sentence — the transferable learning itself), TRIGGER (when it fires / how to recognize relevance), APPLY (what to do about it), and PROVENANCE as a bare initiative-id parenthetical only, e.g. `(agent-teams-2n1w)` — no narrative retelling of how it was discovered.
-- Target <= 6000 tokens (~24KB) / ~15-25 items total across all hot keys, with each individual entry capped at ~900 bytes (the same hot/fresh write-time cap `ateam learn` enforces) — a merged umbrella entry must still fit this cap, which is exactly why per-nuance bullets over separate entries is the only way to absorb a large shared theme.
+- **Target the packet's `hot_budget_tokens`, in TOKENS**, across all hot keys — roughly 15-25 items. Do not steer to a byte equivalent: there isn't one, and there must not be. The one byte figure that applies here is a different limit at a different scope — each INDIVIDUAL entry is capped at ~900 bytes at write time by `ateam learn` (frozen by contract `agent-teams-b2xr.2`; hot and fresh 900 bytes, cold 1500). A merged umbrella entry must still fit that per-entry cap, which is exactly why per-nuance bullets over separate entries is the only way to absorb a large shared theme.
 - Assign each hot entry a meaningful slug (e.g. `hot:cardinal-rule`, `hot:ship-constraint`).
 
 ### Apply (batch write, then cleanup)
@@ -185,13 +187,25 @@ If you are refreshing an existing hot key, `ateam learn <role> hot:<slug>` is an
 
 If you restructure the hot set (e.g. merge several old hot entries into fewer new ones), you MUST `ateam forget <role> hot:<old-slug>` for every old hot key that is NOT present in the new hot set. Skipping this step leaves stale hot entries that linger and bloat the injected layer.
 
-### Verify
+### Verify — re-measure, then iterate
+
+```bash
+ateam condense-check <role>
+```
+
+Compare the reported `hot_approx_tokens` against `hot_budget_tokens` from the packet. **Both are in TOKENS and both come from Go — one budget, one unit, measured by the tool.** Do not measure bytes, and do not certify the landing against any byte figure.
+
+If the role is still over budget, **iterate — do not accept-and-report**: apply the theme-first forced merge above again, rewrite the batch, re-run the check. Re-measure-and-iterate is the backstop; a run that lands over budget and notes it in the summary has not finished.
+
+**Do NOT buy the budget by evicting curated signal.** If merging genuinely cannot fit the hot set inside the budget, the surplus goes to COLD — still searchable via `ateam recall`, just not injected — never dropped. Shrinking the landing below the budget does not buy meaningful condense frequency either: the frequency lever is the fresh-tier trigger, not the landing target. Over-eviction is the failure this section exists to prevent, and it has happened: a run steering to the wrong number dropped entries carrying real signal.
+
+Then confirm the served set and spot-check cold:
 
 ```bash
 ateam learnings <role>
 ```
 
-Confirm output shows only the hot entries (the fresh tier is empty after drain) and is <= ~24KB. Then spot-check cold:
+Confirm output shows only the hot entries (the fresh tier is empty after drain).
 
 ```bash
 ateam recall <role> <term>
