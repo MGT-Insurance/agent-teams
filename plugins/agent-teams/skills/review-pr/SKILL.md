@@ -54,9 +54,13 @@ If any required field is missing, stop and report which fields are absent. Split
 Compare the PR's author against the current GitHub identity:
 
 ```bash
-gh pr view <pr-number> --repo <owner>/<repo> --json author -q .author.login
+gh pr view <pr-number> --repo <owner>/<repo> --json author,title
 gh api user -q .login
 ```
+
+That call returns both `.author.login` (compared below) and `.title` — hold
+the title, step 10's completion line needs it. If the call fails, treat the
+title as empty; step 10 renders the line without it.
 
 This one comparison drives **two independent decisions** downstream, and they have **opposite safe defaults** — do not collapse them into one boolean:
 
@@ -233,20 +237,50 @@ printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMEN
   > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam close <id> --reason "Review posted: <review-html-url>"
+
+printf 'Review complete · #%s %s%s\n%s' \
+  "<pr-number>" "<repo>" "<title-segment>" "<review-html-url>" \
+  > "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
+ateam notify reviews --file "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
 ```
 
 `<review-html-url>` is `$REVIEW_URL` captured in step 9. If it's empty
 because the POST failed and no fallback URL was captured, cite `<pr-url>`
 instead.
 
+#### The completion line
+
+That last block posts to the shared **Reviews** topic — one topic for all PR
+reviews, not one per review. The text is frozen; reproduce it exactly.
+
+- `<repo>` is the **basename** from step 2 (`midgard`, never `acme/midgard`).
+- `<title-segment>` is `" — "` (space, em dash U+2014, space) followed by step
+  3's PR title, or the **empty string** if that lookup failed. Build it as its
+  own value; never splice the title into a hardcoded `%s — %s`. `ateam
+  dispatch`'s "Review started" line uses the identical rule — the two must not
+  drift on separator or spacing.
+- Two lines is deliberate: text, then the bare URL alone so it renders as a
+  tap target.
+
+**Nothing else goes in it** — no finding count, no severity, no
+`APPROVE`/`COMMENT` verdict. That belongs in the note and on the PR; this
+topic says only that a review happened and hands over the link. Do NOT pass
+`--to` (only the direct handle reads it); `--title` defaults to `Reviews`.
+
+Post it **last, after the close** — `ateam notify` hits a network transport,
+and a failure there must never strand the initiative open.
+
 **Step-8 timeout path** (no review was posted): swap the wording — the note
 is `review-timeout: PR #<pr-number> — reviewer subagent did not respond` and
 the close is `--reason "Review not posted (reviewer timeout): <pr-url>"`.
-That note IS step 8's "note the timeout"; do not write a second one.
+That note IS step 8's "note the timeout"; do not write a second one. Emit
+**no** completion line here — no review happened, and "Review complete" would
+be a false report.
 
 **Re-review rounds end the same way.** route-pr-event reopened this
 initiative to run the round; once the re-review posts, run this merged
-note+close step again, citing the new review's URL.
+note+close+notify step again, citing the new review's URL in both the close
+reason and the completion line.
 
 **The rare same-session-follow-up carve-out.** If this session is
 deliberately waiting on a same-session follow-up (rare), never idle with the
@@ -302,9 +336,10 @@ and do not depend on it: re-derive the work from GitHub directly.
    APPROVE/REQUEST_CHANGES events.
 
 3. **Nothing to answer?** If no qualifying threads exist (already handled, or
-   a stale notification), note that and close.
+   a stale notification), note that and close — and skip the completion line
+   in step 4, since nothing happened to report.
 
-4. **Note and close:**
+4. **Note, close, and post the completion line:**
 
    ```bash
    printf 'comment-replies: PR #<pr-number> — <k> thread(s) answered\n' \
@@ -313,12 +348,13 @@ and do not depend on it: re-derive the work from GitHub directly.
    ateam close <id> --reason "Comment replies posted: <pr-url>"
    ```
 
+   Then run step 10's completion-line block unchanged, under all the same
+   rules. Two differences: this mode posts no review, so the URL is
+   `<pr-url>`; and it skips step 3, so fetch the title here with `gh pr view
+   <pr-number> --repo <owner>/<repo> --json title -q .title`.
+
 ## Key constraints
 
-- This skill does NOT create plans, spawn implementers/testers, open PRs, or manage epics.
-- It is a single-purpose orchestrator — one PR, one outcome: a posted review (review flow) or in-thread responses (comment-reply mode).
-- No critical/high/medium findings on a PR authored by someone else -> approve (`event=APPROVE`). Any finding, or a PR we authored ourselves, -> comment (`event=COMMENT`), never approve.
-- Every flow ends, in the same turn the review/replies post, with the initiative CLOSED (or a raised gate in the rare wait case) — never idle with an open, gateless initiative.
-- Uses `ateam` (not raw `bd -C`) for all global workspace operations.
-- CARDINAL RULE: no work beads in the global workspace — all work beads belong in the project repo via plain `bd`.
+The steps above carry the constraints; this one is stated nowhere else.
+
 - The reviewer subagent runs with `bypassPermissions` — its role guardrails (no push, no merge, no fix) are enforced by the reviewer agent definition, not by permission prompts.
