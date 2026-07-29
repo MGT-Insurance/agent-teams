@@ -94,11 +94,39 @@ func TestHandoff_NilContext(t *testing.T) {
 	}
 }
 
-func TestHandoff_ShowIssueError(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")}})
+func TestHandoff_ShowIssueErrorStillWritesLabel(t *testing.T) {
+	// The lookup feeds only the gate:review warning. Eric's declaration is
+	// derivable from nothing else, so a failing lookup degrades the warning
+	// and the label add still runs (agent-teams-p9dm.42).
+	ctx, calls := newCtx(t, []fakeResp{
+		{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")},
+		{stdout: "ok"},
+	})
+
 	err := (&handoffKong{ID: "at-missing"}).Run(ctx)
-	if err == nil {
-		t.Fatal("expected error when initiative lookup fails")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 bd calls, got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 1, []string{"label", "add", "at-missing", "external-review"})
+
+	stderr := ctx.Stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "at-missing") || !strings.Contains(stderr, "declaring anyway") {
+		t.Errorf("expected stderr warning naming id and declaring anyway, got: %q", stderr)
+	}
+}
+
+func TestHandoff_LabelAddErrorPropagates(t *testing.T) {
+	// Degrading the lookup must not swallow a real write failure.
+	ctx, _ := newCtx(t, []fakeResp{
+		{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")},
+		{errOut: "locked", err: fmt.Errorf("bd label add: exit status 1")},
+	})
+
+	if err := (&handoffKong{ID: "at-missing"}).Run(ctx); err == nil {
+		t.Fatal("expected error when the label write itself fails")
 	}
 }
 
