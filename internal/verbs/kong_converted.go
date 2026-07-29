@@ -803,6 +803,22 @@ func lookupApplied(raw map[string]any, role, slug string) (count int, lastApplie
 // condenseBudgetTokens is the hot-tier token budget the condense agent targets.
 const condenseBudgetTokens = 6000
 
+// condenseFreshThresholdTokens is the SOLE fire/skip trigger for
+// `ateam condense-check` (contract agent-teams-0yd3.1 SEAM 2, round-6
+// amendment, threshold value decided by Eric 2026-07-28): a role fires when
+// its fresh-tier material ALONE exceeds this many approx tokens. The former
+// hot∪fresh 8,000 ceiling is explicitly NOT a trigger — it is retained only
+// as a reported number (condenseCheckRoleResult.ApproxTokens), never
+// branched on. Do not resurrect it as a second leg without a fresh contract
+// amendment; see SEAM 2 item 4 (a trigger must be CLEARABLE by the action it
+// triggers — the ceiling failed that test).
+const condenseFreshThresholdTokens = 4000
+
+// condenseApproxTokensDivisor is the bytes-per-token heuristic from
+// SKILL.md's "one token ≈ 3 bytes of English text" rule of thumb, computed
+// here in Go (SEAM 2) instead of by the model.
+const condenseApproxTokensDivisor = 3
+
 // condenseInstructionContract is the instruction contract emitted to the
 // consuming condense agent. The agent applies the result DIRECTLY and
 // autonomously via ateam learn / ateam forget — no human review gate.
@@ -1077,6 +1093,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
 	p.AddVerb("update-description", "Update an initiative's description from a file.", &updateDescriptionKong{})
 	RegisterCondenseLock(p)
+	RegisterCondenseCheck(p)
 }
 
 // RegisterAllKong is the FROZEN dispatcher called by main.go.
