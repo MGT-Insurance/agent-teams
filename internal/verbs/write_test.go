@@ -2163,21 +2163,91 @@ func TestCondense_PacketContainsAllRoleMemories(t *testing.T) {
 	if len(pkt.Memories) != 3 {
 		t.Fatalf("expected 3 memories (both tiers, dri: prefix only), got %d: %+v", len(pkt.Memories), pkt.Memories)
 	}
-	keys := make(map[string]string, len(pkt.Memories))
+	// Emitted Key is role-relative (the "dri:" prefix is stripped, since
+	// every entry in this packet already shares pkt.Role — see
+	// condenseMemory's doc comment).
+	byKey := make(map[string]condenseMemory, len(pkt.Memories))
 	for _, m := range pkt.Memories {
-		keys[m.Key] = m.Body
+		byKey[m.Key] = m
 	}
-	if keys["dri:alpha"] != "body alpha" {
-		t.Errorf("dri:alpha body = %q, want %q", keys["dri:alpha"], "body alpha")
+	// Bare keys (alpha, beta) are cold: summary-only, body elided.
+	if alpha := byKey["alpha"]; alpha.Tier() != "cold" || alpha.Body != "" || alpha.Summary != "body alpha" {
+		t.Errorf("alpha = %+v, want tier=cold body=\"\" summary=%q", alpha, "body alpha")
 	}
-	if keys["dri:beta"] != "body beta" {
-		t.Errorf("dri:beta body = %q, want %q", keys["dri:beta"], "body beta")
+	if beta := byKey["beta"]; beta.Tier() != "cold" || beta.Body != "" || beta.Summary != "body beta" {
+		t.Errorf("beta = %+v, want tier=cold body=\"\" summary=%q", beta, "body beta")
 	}
-	if keys["dri:hot:gamma"] != "body gamma (hot)" {
-		t.Errorf("dri:hot:gamma body = %q, want %q", keys["dri:hot:gamma"], "body gamma (hot)")
+	// Hot key keeps full body, no summary.
+	if gamma := byKey["hot:gamma"]; gamma.Tier() != "hot" || gamma.Body != "body gamma (hot)" || gamma.Summary != "" {
+		t.Errorf("hot:gamma = %+v, want tier=hot body=%q summary=\"\"", gamma, "body gamma (hot)")
 	}
-	if _, ok := keys["planner:other"]; ok {
-		t.Error("planner:other must not appear in dri condense packet")
+	for _, k := range []string{"planner:other", "dri:alpha", "dri:beta", "dri:hot:gamma"} {
+		if _, ok := byKey[k]; ok {
+			t.Errorf("packet must not emit role-prefixed key %q", k)
+		}
+	}
+}
+
+// TestCondense_ColdSummaryOnlyNoBody proves the acceptance criterion: cold
+// entries carry a summary and no body.
+func TestCondense_ColdSummaryOnlyNoBody(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:settled": "first line of settled cold body\nsecond line, elided",
+	})
+	if len(pkt.Memories) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(pkt.Memories))
+	}
+	m := pkt.Memories[0]
+	if m.Tier() != "cold" {
+		t.Errorf("Tier = %q, want cold", m.Tier())
+	}
+	if m.Body != "" {
+		t.Errorf("Body = %q, want empty (cold body must be elided)", m.Body)
+	}
+	if m.Summary != "first line of settled cold body" {
+		t.Errorf("Summary = %q, want first-line-only", m.Summary)
+	}
+}
+
+// TestCondense_HotAndFreshFullBody proves the acceptance criterion: hot and
+// fresh entries carry full body (and no summary).
+func TestCondense_HotAndFreshFullBody(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:hot:h1":   "full hot body, multi\nline, preserved verbatim",
+		"dri:fresh:f1": "full fresh body, multi\nline, preserved verbatim",
+	})
+	byKey := make(map[string]condenseMemory, len(pkt.Memories))
+	for _, m := range pkt.Memories {
+		byKey[m.Key] = m
+	}
+	hot := byKey["hot:h1"]
+	if hot.Tier() != "hot" || hot.Body != "full hot body, multi\nline, preserved verbatim" || hot.Summary != "" {
+		t.Errorf("hot entry = %+v, want full body, no summary", hot)
+	}
+	fresh := byKey["fresh:f1"]
+	if fresh.Tier() != "fresh" || fresh.Body != "full fresh body, multi\nline, preserved verbatim" || fresh.Summary != "" {
+		t.Errorf("fresh entry = %+v, want full body, no summary", fresh)
+	}
+}
+
+// TestCondense_ColdSummaryTruncatedTo120Chars verifies condenseSummary
+// truncates a long first line to condenseColdSummaryMaxChars runes with an
+// ellipsis marker, rather than shipping an unbounded first line.
+func TestCondense_ColdSummaryTruncatedTo120Chars(t *testing.T) {
+	longLine := strings.Repeat("a", 200)
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:long": longLine,
+	})
+	if len(pkt.Memories) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(pkt.Memories))
+	}
+	summary := pkt.Memories[0].Summary
+	runes := []rune(summary)
+	if len(runes) != condenseColdSummaryMaxChars+1 { // +1 for the ellipsis rune
+		t.Errorf("summary length = %d runes, want %d (%d chars + ellipsis)", len(runes), condenseColdSummaryMaxChars+1, condenseColdSummaryMaxChars)
+	}
+	if !strings.HasSuffix(summary, "…") {
+		t.Errorf("truncated summary must end with ellipsis, got %q", summary)
 	}
 }
 
@@ -2238,7 +2308,7 @@ func TestCondense_MemoriesSorted(t *testing.T) {
 	if len(pkt.Memories) != 3 {
 		t.Fatalf("expected 3 memories, got %d", len(pkt.Memories))
 	}
-	if pkt.Memories[0].Key != "dri:aaa" || pkt.Memories[1].Key != "dri:mmm" || pkt.Memories[2].Key != "dri:zzz" {
+	if pkt.Memories[0].Key != "aaa" || pkt.Memories[1].Key != "mmm" || pkt.Memories[2].Key != "zzz" {
 		t.Errorf("memories not sorted: %v", pkt.Memories)
 	}
 }
@@ -2282,8 +2352,8 @@ func TestCondense_SchemaVersionExcluded(t *testing.T) {
 			t.Error("schema_version must not appear in condense packet")
 		}
 	}
-	if len(pkt.Memories) != 1 || pkt.Memories[0].Key != "dri:real" {
-		t.Errorf("expected only dri:real, got: %+v", pkt.Memories)
+	if len(pkt.Memories) != 1 || pkt.Memories[0].Key != "real" {
+		t.Errorf("expected only real, got: %+v", pkt.Memories)
 	}
 }
 
@@ -2310,18 +2380,18 @@ func TestCondense_JoinsAppliedCount(t *testing.T) {
 		byKey[m.Key] = m
 	}
 
-	if foo := byKey["dri:foo"]; foo.AppliedCount != 5 || foo.LastApplied != "2024-01-01T00:00:00Z" {
-		t.Errorf("dri:foo applied join = %+v, want count=5 last_applied=2024-01-01T00:00:00Z", foo)
+	if foo := byKey["foo"]; foo.AppliedCount != 5 || foo.LastApplied != "2024-01-01T00:00:00Z" {
+		t.Errorf("foo applied join = %+v, want count=5 last_applied=2024-01-01T00:00:00Z", foo)
 	}
 
-	// dri:hot:baz's sibling is keyed on the BARE slug (applied:dri:baz, not
+	// hot:baz's sibling is keyed on the BARE slug (applied:dri:baz, not
 	// applied:dri:hot:baz) — the applied counter is tier-independent.
-	if baz := byKey["dri:hot:baz"]; baz.AppliedCount != 2 || baz.LastApplied != "2024-02-02T00:00:00Z" {
-		t.Errorf("dri:hot:baz applied join = %+v, want count=2 (tier-stripped slug lookup)", baz)
+	if baz := byKey["hot:baz"]; baz.AppliedCount != 2 || baz.LastApplied != "2024-02-02T00:00:00Z" {
+		t.Errorf("hot:baz applied join = %+v, want count=2 (tier-stripped slug lookup)", baz)
 	}
 
-	if bar := byKey["dri:bar"]; bar.AppliedCount != 0 || bar.LastApplied != "" {
-		t.Errorf("dri:bar applied join = %+v, want zero value (no sibling)", bar)
+	if bar := byKey["bar"]; bar.AppliedCount != 0 || bar.LastApplied != "" {
+		t.Errorf("bar applied join = %+v, want zero value (no sibling)", bar)
 	}
 
 	// The applied: keys live under a top-level "applied:" prefix, not
