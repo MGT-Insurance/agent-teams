@@ -221,10 +221,10 @@ ateam learnings <role>
 Confirm output shows only the hot entries (the fresh tier is empty after drain).
 
 ```bash
-ateam recall <role> <term>
+ateam recall <role> <key-of-an-entry-you-just-demoted>
 ```
 
-Confirm cold memories are still reachable for a representative term.
+Pass that entry's own `key` **verbatim** as the term. An invented "representative" phrase proves nothing in either direction: recall is one literal substring match, so a descriptive query returns empty at exit 0 on a perfectly healthy store.
 
 ### Emit summary line
 
