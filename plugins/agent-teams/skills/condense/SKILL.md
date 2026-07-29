@@ -7,7 +7,7 @@ description: Triggered manually or at wind-down to drain fresh memories then con
 
 ## Parse the argument
 
-- **`/agent-teams:condense <role>`** — condense ONLY that named role (e.g. `dri`, `implementer`). Lock-guarded (same try-acquire/skip semantics as the all-roles form); no 8K size gate — an explicit single-role invocation always condenses that role regardless of current size. See **Single-role form** below.
+- **`/agent-teams:condense <role>`** — condense ONLY that named role (e.g. `dri`, `implementer`). Lock-guarded (same try-acquire/skip semantics as the all-roles form); NO gate — an explicit single-role invocation always condenses that role regardless of what `ateam condense-check` would report for it. See **Single-role form** below.
 - **`/agent-teams:condense` (no arg)** — all-roles sweep (see below).
 
 ---
@@ -30,7 +30,7 @@ Then **exit cleanly** — nothing was acquired, so nothing to release. Do NOT bl
 
 ### Step 1 — Drain fresh then condense
 
-On successful lock acquisition, run the drain+condense procedure for the ONE named role (no 8K size gate — an explicit invocation always condenses):
+On successful lock acquisition, run the drain+condense procedure for the ONE named role (no gate — an explicit invocation always condenses):
 
 ```bash
 ateam fresh-drain <role>
@@ -67,39 +67,37 @@ Then **exit cleanly** — nothing was acquired, so nothing to release. Do NOT bl
 
 If acquisition succeeds, proceed and ensure the lock is released in every exit path (success, error). The lock window covers all role processing and any `ateam sync` at the end.
 
-### Step 1 — Enumerate roles
+### Step 1 — Gate every role with ONE call
 
 ```bash
-ateam roles
+ateam condense-check
 ```
 
-Skip the `user` and `applied` namespaces unconditionally. The `user:` namespace is served by `ateam prime` (capped and truncated at read time) and is not part of the hot/cold learnings model. The `applied:` namespace holds per-slug applied-signal counters, not learnings — it must never be condensed. Learning roles to consider: `dri`, `planner`, `implementer`, `tester`, `reviewer`, and any others returned by `ateam roles` that are not `user` or `applied`.
+That single read-only call enumerates every learning role — skipping `user` and `applied` unconditionally — and prints one line per role ending in a verdict, `FIRE` or `SKIP`, with a short `reason` naming what tripped. `--json` emits the same per-role fields machine-readably. Exit code is 0 regardless of verdict: **the verdict is data, not an exit status.** The verb writes nothing.
 
-### Step 2 — Per-role size gate (8K hot∪fresh threshold OR ~1500-token fresh-alone threshold)
+(For why those two namespaces are excluded: `user:` is served by `ateam prime`, capped and truncated at read time, and is not part of the hot/cold learnings model; `applied:` holds per-slug applied-signal counters, not learnings, and must never be condensed.)
 
-For each role:
+**Defer to the printed verdict. Do NOT recompute it.** The trigger and its threshold are defined exactly ONCE, in Go — see contract `agent-teams-0yd3.1`, SEAM 2. This file deliberately does not restate the arithmetic, and neither should you: no `wc -c`, no divisor, no threshold comparison of your own. Hand-recomputation is the defect this verb exists to remove — sweeps in the measured window computed the old prose gate with a looser divisor than the skill mandated, gating ~33% looser than intended and making the fire decision non-deterministic across runs. Every token number in this skill is a CLI-computed approximation (the bytes-per-token divisor is frozen by contract `agent-teams-b2xr.2`); read them off the tool, never re-derive them.
 
-```bash
-ateam learnings <role>
-```
+**What the gate measures: NEW MATERIAL, not total size.** A role fires on accumulation in its **fresh tier** — un-curated learnings written since the last condense. Total `hot ∪ fresh` size is **NOT** a trigger. It survives only as a reported number (see **Emit summary line** in the condense procedure below) and must never be branched on.
 
-Measure the **byte length** of the output. Approximate token count as `bytes / 3` (rough heuristic: one token ≈ 3 bytes of English text; adjust this divisor if you observe systematic over- or under-counting).
+Why total size cannot be a trigger, stated so it is not relitigated: **a trigger has to be CLEARABLE by the action it triggers.** A condense run does drain fresh and re-curate hot, but it lands only about a thousand tokens under the old union ceiling and re-arms within roughly two sweeps — so that ceiling fired at every wind-down, on material that had already been curated, forever. Apply the same clearability test to any future proposal to reinstate a size-based trigger. A role whose reported union sits persistently high is an aggregate-hot-set problem, not a condense-frequency problem: surface it, do not condense at it.
 
-Also check the **fresh tier alone**, since a role can be well under the hot∪fresh threshold while its undrained fresh tier is already large: there is no `--fresh` flag on `ateam learnings`, so measure it via `bd memories --json`, filtering to keys matching the `<role>:fresh:` prefix, summing the byte length of those bodies, and dividing by 3 for an approximate token count.
+> **STATED ASSUMPTION — the fresh-tier trigger is complete only because normal contribution routes to fresh.** `ateam learn <role> <slug>` with a BARE slug falls through to `<role>:fresh:<slug>` (`learnKey`, `internal/verbs/write.go:78`), and that DEFAULT is what makes a fresh-tier trigger see every accumulation. But `ateam learn <role> hot:<slug>` writes straight to hot, bypassing fresh entirely (`internal/verbs/write.go:75-77`), and the tier prefix is ADVERTISED in public help (the `learn` verb's slug flag: "prefix with `hot:`, `fresh:`, or `cold:` to target a tier") — a first-class documented affordance, not an internal path, and nothing in the CLI restricts it to condense. Today the only caller using it is the condense instruction contract in `internal/verbs/kong_converted.go`, i.e. this procedure. **A direct `hot:` write by anything other than condense bypasses the trigger and is invisible to it.** The gate holds by convention, not by construction: add a code path that writes `hot:` directly and you have silently broken it, with no failure to observe.
 
-If **both** `approx_tokens <= 8000` (hot∪fresh) **and** the fresh-alone approximation is `<= ~1500`, **skip this role cheaply** with a one-line note:
+Log one line for each `SKIP` role — the verb's own line is the note — and do no further work for it:
 
 ```
-<role>: under threshold (~<N> tokens) — skipped
+<role>: SKIP (<reason>)
 ```
 
-If **either** check fires — hot∪fresh `approx_tokens > 8000`, OR fresh-alone `> ~1500` tokens — the role proceeds to drain+condense. Most wind-down runs will find neither check tripped and exit after the release with zero LLM work done.
+Most wind-down sweeps skip every role and exit after the lock release with zero LLM work done.
 
-### Step 3 — Drain fresh then condense (per gated role)
+### Step 2 — Drain fresh then condense (per FIRE role)
 
-For each role that exceeded the 8K gate:
+For each role whose verdict was `FIRE`:
 
-#### 3a — Drain fresh tier
+#### 2a — Drain fresh tier
 
 ```bash
 ateam fresh-drain <role>
@@ -107,7 +105,7 @@ ateam fresh-drain <role>
 
 This is deterministic (no LLM call). It moves all `<role>:fresh:*` keys into bare cold keys (`<role>:<slug>`). After this, the condense agent sees only hot and cold — no third tier.
 
-#### 3b — Condense (emit packet, spawn agent)
+#### 2b — Condense (emit packet, spawn agent)
 
 ```bash
 ateam condense <role>
@@ -124,9 +122,9 @@ This emits a JSON packet to stdout:
 }
 ```
 
-Read ALL memory bodies from this packet. These are the full cold + hot contents for the role (fresh has already been drained into cold). The keys that step 3a JUST moved out of `<role>:fresh:*` are the **primary promotion candidates** — they were being SERVED to every session (via hot ∪ fresh) right up until the drain, so they are not settled cold: they are un-curated served learnings awaiting a hot/cold verdict. Apply the condense procedure below autonomously for this role.
+Read ALL memory bodies from this packet. These are the full cold + hot contents for the role (fresh has already been drained into cold). The keys that step 2a JUST moved out of `<role>:fresh:*` are the **primary promotion candidates** — they were being SERVED to every session (via hot ∪ fresh) right up until the drain, so they are not settled cold: they are un-curated served learnings awaiting a hot/cold verdict. Apply the condense procedure below autonomously for this role.
 
-### Step 4 — Release the lock
+### Step 3 — Release the lock
 
 After ALL role processing is complete (whether roles were skipped or condensed), release the lock:
 
@@ -148,7 +146,7 @@ This procedure is autonomous — NO human-review gate. Safety rests on Dolt hist
 
 IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. `ateam learnings <role>` serves hot ∪ fresh; because `ateam fresh-drain <role>` already ran, the fresh set is empty here — so a partial hot set would under-serve the next session. Design the complete hot set first, then write all hot keys as a batch.
 
-**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key step 3a drained out of fresh was being injected into every session until now. Any drained key you leave in cold is SILENTLY DEMOTED out of that injection. Therefore you MUST explicitly decide, for each drained (previously-served) key, hot vs cold — do not let them settle into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the 6000-token budget is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal drained learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
+**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key step 2a drained out of fresh was being injected into every session until now. Any drained key you leave in cold is SILENTLY DEMOTED out of that injection. Therefore you MUST explicitly decide, for each drained (previously-served) key, hot vs cold — do not let them settle into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the 6000-token budget is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal drained learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
 
 **Promote vs. archive — a drained key earns a hot slot only if it is a concise, self-contained learning carrying NET-NEW signal (a RULE/gotcha not already covered by an existing hot entry). Do NOT blind-promote a raw, verbose entry that is the pre-distillation SOURCE of an existing hot entry (tell: a longer body under a near-duplicate slug, e.g. cold `go-advisory-lock-pattern` vs hot `advisory-lock`) — promoting it de-distills hot. Such raw archive stays in cold; if it carries a nuance the hot entry lacks, MERGE that nuance into the existing hot entry instead of adding a second entry.**
 
@@ -206,14 +204,15 @@ Confirm cold memories are still reachable for a representative term.
 Emit one line per role:
 
 ```
-<role>: promoted N / merged M / evicted K / hot now X tokens
+<role>: promoted N / merged M / evicted K / hot now X tokens / hot∪fresh Y tokens
 ```
 
 Where:
 - N = number of net-new hot entries (keys that did not previously have `hot:` form)
 - M = number of cold entries merged into a single hot entry (count source entries collapsed)
 - K = number of cold entries removed via `ateam forget`
-- X = approximate token count of the current hot set (estimate from character count / 3)
+- X = `hot_approx_tokens` from the `ateam condense-check <role>` you ran in Verify — read it off the tool, do not estimate it
+- Y = `approx_tokens` (the `hot ∪ fresh` union) from that same output. **REPORTED ONLY — never branched on.** It is here so that a role whose union sits persistently high is visible instead of silent; that condition routes to the aggregate hot-set problem, not to another condense run.
 
 If a role returned zero memories from `ateam condense <role>`, skip it with: `<role>: no memories — skipped`.
 
