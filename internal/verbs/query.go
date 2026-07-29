@@ -88,6 +88,14 @@ func (c *humanListKong) Run(ctx *cli.Context) error {
 		return nil
 	}
 	for _, issue := range issues {
+		// A handed-off initiative (external_review.go §2) still carries
+		// human + gate:review by design, so `bd human list` still returns
+		// it — but Eric already declared he's done looking, so it is no
+		// longer awaiting him. Skip it here rather than smearing this
+		// condition across hung_scan.go / hung_workproduct.go.
+		if hasLabel(issue.Labels, externalReviewLabel) {
+			continue
+		}
 		kind := gateKind(issue.Labels)
 		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
 		if issue.Notes != "" {
