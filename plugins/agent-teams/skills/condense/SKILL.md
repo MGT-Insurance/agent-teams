@@ -180,6 +180,8 @@ After ALL hot entries are written, handle cold cleanup:
 - LEAVE IN COLD any learning not promoted (the long tail stays searchable, not injected).
 - EVICT ONLY exact duplicates or clearly-superseded items. When in doubt, keep in cold. Conservative: NO eviction floor, but evict little.
 
+**Do not "normalize" the two forms above.** `learn` takes `cold:<slug>` while `forget` takes a bare `<slug>` for the same cold entry — that reads like an inconsistency and is not one (`instruction_contract` carries the mechanism). The two errors are not symmetric: adding `cold:` to `forget` fails loudly with `No memory with key` and exit 1, but dropping `cold:` from `learn` **succeeds silently into the wrong tier**, writing a new fresh duplicate and leaving the stale cold entry in place. Only one of these edits announces itself.
+
 If you are refreshing an existing hot key, `ateam learn <role> hot:<slug>` is an UPSERT — it overwrites in place.
 
 If you restructure the hot set (e.g. merge several old hot entries into fewer new ones), you MUST `ateam forget <role> hot:<old-slug>` for every old hot key that is NOT present in the new hot set. Skipping this step leaves stale hot entries that linger and bloat the injected layer.
