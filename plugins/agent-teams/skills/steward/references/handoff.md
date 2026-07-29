@@ -32,16 +32,30 @@ NOT a declaration. Each of these has a real other meaning, so do nothing rather 
 - an answer to a pending gate ("yes, merge it", "go with the alternative") — that is a steward-reply verdict: route it to the DRI and write the ledger row. If he ALSO says he is done looking, do both; the two are different facts.
 - acknowledging a briefing line, with nothing said about his own attention.
 
-## Which initiative? — resolve it, and ask when you can't
+## Which initiative? — the hard part
+
+**If you are not certain which initiative he means, ASK. Never guess.**
+
+That is the rule. It outranks being helpful, and it outranks acting in one turn. Here is why: the two errors are not symmetric.
+
+- A **missed** handoff costs Eric one repeated sentence. He says it again and it sticks.
+- A **wrong** handoff silently removes a PR from the only queue that tells him it needs him. No error, no notification, nothing to notice — the row simply stops appearing, and he finds out when someone asks weeks later why nobody merged it.
+
+That second failure is the precise failure this entire design exists to prevent (`internal/verbs/external_review.go` §0): a PR hidden from Eric because something concluded he was done with it when he was not. §0 killed the version that concluded it from GitHub review state. A guessed referent arrives at the same place by a different road, and it is no better for having been a guess about *which* PR rather than a guess about *whether*.
+
+So a question is never the expensive option here.
+
+### Resolving it
 
 He says "the midgard one" or a PR number, never a bead id. Resolve against `ateam execution-status`, which carries `id`, `title` and `pr` for every open initiative:
 
 - **Exactly one match, reporting `REVIEWABLE`** — act. That is the only status the declaration changes.
-- **More than one match** — ASK. One short question naming the candidates by title (never bead ids he would have to decode), then wait. Do not guess, do not batch, do not hand off both "to be safe."
+- **More than one match** — ASK: one short question naming the candidates by title (never bead ids he would have to decode), then wait. Do not guess, do not batch, do not hand off both "to be safe."
 - **No match** — say so plainly and ask which he means. Never invent an id.
 - **The match already reports `AWAITING-EXTERNAL-REVIEW`** — it is already handed off. `ateam handoff` is idempotent, so re-running costs nothing, but a declaration aimed at an already-handed-off row usually means he is talking about a different one. Ask before assuming he repeated himself.
+- **Anything else that leaves you unsure** — this list is not exhaustive; the rule above it is. Ask.
 
-Ambiguity is worth a question here because the two errors are not symmetric. A question costs one line. A wrong handoff silently removes a PR from the only queue that tells Eric it needs him — no error, no notification, it simply stops appearing — and he finds out when someone asks why nobody merged it.
+**The only question this page ever licenses is "which one?", and only after he has spoken.** Never "are you done with that one?" — that is the deferred nudge wearing a question mark. The distinction is not the wording, it is who opened the subject: here you are always resolving a sentence he volunteered, never raising the topic yourself.
 
 ## Running it
 
