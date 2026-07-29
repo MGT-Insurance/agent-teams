@@ -397,7 +397,7 @@ func TestStewardRemove_RemovesSessionDirAndDoorbell(t *testing.T) {
 	}
 }
 
-func TestStewardRemove_KeepsLedgerAndBriefingByDefault(t *testing.T) {
+func TestStewardRemove_KeepsLedgerBriefingAndReviewsByDefault(t *testing.T) {
 	home := t.TempDir()
 	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
 
@@ -406,11 +406,15 @@ func TestStewardRemove_KeepsLedgerAndBriefingByDefault(t *testing.T) {
 	}
 	ledgerPath := StewardLedgerPath(ctx)
 	briefingPath := StewardBriefingThreadPath(ctx)
+	reviewsPath := StewardReviewsThreadPath(ctx)
 	if err := os.WriteFile(ledgerPath, []byte(`{}`+"\n"), 0o644); err != nil {
 		t.Fatalf("seed ledger: %v", err)
 	}
 	if err := os.WriteFile(briefingPath, []byte("thread"), 0o644); err != nil {
 		t.Fatalf("seed briefing-thread: %v", err)
+	}
+	if err := os.WriteFile(reviewsPath, []byte("813"), 0o644); err != nil {
+		t.Fatalf("seed reviews-thread: %v", err)
 	}
 
 	if err := (&stewardRemoveKong{}).Run(ctx); err != nil {
@@ -423,9 +427,18 @@ func TestStewardRemove_KeepsLedgerAndBriefingByDefault(t *testing.T) {
 	if _, err := os.Stat(briefingPath); err != nil {
 		t.Errorf("expected briefing-thread kept at %s: %v", briefingPath, err)
 	}
+	if _, err := os.Stat(reviewsPath); err != nil {
+		t.Errorf("expected reviews-thread kept at %s: %v", reviewsPath, err)
+	}
 	out := stdout.String()
 	if !strings.Contains(out, "kept") || !strings.Contains(out, ledgerPath) || !strings.Contains(out, briefingPath) {
 		t.Errorf("expected both kept paths reported, got: %q", out)
+	}
+	// An operator who follows this list must carry the reviews-thread ref too;
+	// omitting it makes the new machine open a second Reviews topic
+	// (agent-teams-p9dm.41).
+	if !strings.Contains(out, reviewsPath) {
+		t.Errorf("expected reviews-thread in the relocation list, got: %q", out)
 	}
 }
 
@@ -441,6 +454,9 @@ func TestStewardRemove_Purge_DeletesLedgerBriefingAndHome(t *testing.T) {
 	}
 	if err := os.WriteFile(StewardBriefingThreadPath(ctx), []byte("thread"), 0o644); err != nil {
 		t.Fatalf("seed briefing-thread: %v", err)
+	}
+	if err := os.WriteFile(StewardReviewsThreadPath(ctx), []byte("813"), 0o644); err != nil {
+		t.Fatalf("seed reviews-thread: %v", err)
 	}
 
 	if err := (&stewardRemoveKong{Purge: true}).Run(ctx); err != nil {

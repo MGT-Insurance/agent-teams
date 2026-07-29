@@ -255,20 +255,21 @@ func installGlobalPrimeMD(ctx *cli.Context, template string) error {
 // start` (agent-teams-5y8a.4, relay_supervise.go) — de-stewarding a machine
 // should leave nothing behind still polling the transport.
 type stewardRemoveKong struct {
-	Purge bool `name:"purge" help:"Also delete the ledger and briefing-thread (default: kept, for relocating the Steward to another machine)."`
+	Purge bool `name:"purge" help:"Also delete the ledger, briefing-thread and reviews-thread (default: kept, for relocating the Steward to another machine)."`
 
 	agentsFunc agentsJSONFunc  `kong:"-"`
 	killFunc   stewardKillFunc `kong:"-"`
 }
 
 // Run removes the Steward's session dir and doorbell (idempotent — nothing
-// to remove is success, not an error), keeps the ledger and briefing-thread
-// by default (printing their paths — that's the state to carry when moving
-// the Steward to another machine), and with --purge deletes those too. It
-// also reports (never modifies) the count of unread messages still assigned
-// to the Steward handle, so mid-flight mail isn't silently lost, and prints a
-// best-effort, non-blocking warning if a live session's cwd matches the
-// session dir.
+// to remove is success, not an error), keeps the ledger, briefing-thread and
+// reviews-thread by default (printing their paths — that's the state to carry
+// when moving the Steward to another machine; leaving the reviews-thread ref
+// behind makes the new machine open a second "Reviews" topic), and with
+// --purge deletes those too. It also reports (never modifies) the count of
+// unread messages still assigned to the Steward handle, so mid-flight mail
+// isn't silently lost, and prints a best-effort, non-blocking warning if a
+// live session's cwd matches the session dir.
 func (c *stewardRemoveKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward remove: nil context")
@@ -329,7 +330,7 @@ func (c *stewardRemoveKong) Run(ctx *cli.Context) error {
 			return fmt.Errorf("ateam steward remove: purge steward home: %w", err)
 		}
 		if purged {
-			fmt.Fprintf(ctx.Stdout, "purged: %s (ledger and briefing-thread deleted)\n", stewardHome)
+			fmt.Fprintf(ctx.Stdout, "purged: %s (ledger, briefing-thread and reviews-thread deleted)\n", stewardHome)
 		} else {
 			fmt.Fprintln(ctx.Stdout, "purge: nothing to purge")
 		}
@@ -341,8 +342,11 @@ func (c *stewardRemoveKong) Run(ctx *cli.Context) error {
 		if _, err := os.Stat(StewardBriefingThreadPath(ctx)); err == nil {
 			kept = append(kept, StewardBriefingThreadPath(ctx))
 		}
+		if _, err := os.Stat(StewardReviewsThreadPath(ctx)); err == nil {
+			kept = append(kept, StewardReviewsThreadPath(ctx))
+		}
 		if len(kept) == 0 {
-			fmt.Fprintln(ctx.Stdout, "kept: nothing (no ledger or briefing-thread found)")
+			fmt.Fprintln(ctx.Stdout, "kept: nothing (no ledger, briefing-thread or reviews-thread found)")
 		} else {
 			fmt.Fprintln(ctx.Stdout, "kept (carry these when relocating the Steward to another machine):")
 			for _, p := range kept {
