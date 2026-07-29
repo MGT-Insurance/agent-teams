@@ -230,6 +230,12 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			return cli.Usagef("dispatch: --body-file %q: %v", c.BodyFile, err)
 		}
 		if len(strings.TrimSpace(string(extra))) > 0 {
+			// body at this point holds exactly the header this call composed
+			// above (the six always-written fields, plus standby/epic when
+			// those branches fired) — parseDescriptionFields it to get the
+			// live set of keys the header just wrote, then warn on any
+			// --body-file line that collides with one of them.
+			warnBodyFileFieldRedefinitions(ctx.Stderr, string(extra), parseDescriptionFields(body))
 			body += "\n" + string(extra)
 		}
 	}
@@ -656,6 +662,46 @@ func modeValue(description string) string {
 		}
 	}
 	return ""
+}
+
+// warnBodyFileFieldRedefinitions scans a --body-file's raw content, line by
+// line, for lines that redefine a routing field the header above already
+// wrote into body. headerFields is parseDescriptionFields(body) captured
+// just before the --body-file content is appended.
+//
+// This exists because parseDescriptionFields (route_match.go) later
+// re-parses the stored initiative description and is last-wins: a
+// --body-file line shaped like one of the header's own keys silently
+// overwrites the real routing value downstream, with nothing to say so. On
+// 2026-07-28 that dropped every Telegram reply for a live initiative and
+// took two hours to find. This makes the collision loud at write time.
+//
+// WARN, DO NOT REFUSE: the dispatch-dri skill is contractually forbidden
+// from declining to dispatch, so a hard failure here would strand the
+// caller with no way forward.
+//
+// Applies the exact same per-line rule parseDescriptionFields uses: split on
+// the first colon, lowercase+trim the key, trim the value, skip when either
+// side is empty. Getting this rule wrong in either direction is the actual
+// hazard — too loose warns on harmless lines (e.g. a briefing line beginning
+// "- Repo: ..." parses to the different key "- repo", not "repo", and must
+// NOT warn); too strict misses real collisions.
+func warnBodyFileFieldRedefinitions(w io.Writer, bodyFileContent string, headerFields map[string]string) {
+	for i, line := range strings.Split(bodyFileContent, "\n") {
+		colon := strings.IndexByte(line, ':')
+		if colon == -1 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(line[:colon]))
+		value := strings.TrimSpace(line[colon+1:])
+		if key == "" || value == "" {
+			continue
+		}
+		if _, redefined := headerFields[key]; redefined {
+			fmt.Fprintf(w, "dispatch: warning: --body-file line %d redefines routing field %q (last-wins — this value replaces the header's): %s\n",
+				i+1, key, line)
+		}
+	}
 }
 
 // extractEpicID scans body for the first "epic: <id>" line and returns the id.
