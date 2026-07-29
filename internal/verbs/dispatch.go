@@ -14,6 +14,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -202,26 +203,40 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		shortTitle = shortTitle[:72]
 	}
 
-	body := "problem: " + c.Problem + "\n" +
-		"repo: " + repoRoot + "\n" +
-		"worktree: " + wtPath + "\n" +
-		"branch: " + resolvedSlug + "\n" +
-		"team: " + team + "\n" +
-		"mode: bg\n"
-	if c.Standby {
-		body += "standby: true\n"
+	fields := initiative.Fields{
+		Problem:  c.Problem,
+		Repo:     repoRoot,
+		Worktree: wtPath,
+		Branch:   resolvedSlug,
+		Team:     team,
+		Mode:     "bg",
+		Standby:  c.Standby,
 	}
 
 	// Try to create a root epic bead in the project repo (fail-soft).
 	// repoRoot is already resolved above so no extraction is needed.
 	// Skipped when --skip-epic is set.
+	var epicID string
 	if !c.SkipEpic && c.createEpic != nil {
-		if epicID, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
+		if id, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
 			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not create root epic (fail-soft): %v\n", epicErr)
-		} else if epicID != "" {
-			body += "epic: " + epicID + "\n"
+		} else {
+			epicID = id
+			fields.Epic = id
 		}
 	}
+
+	// This is a BRAND-NEW initiative, which is the only thing initiative.New
+	// may compose (see internal/initiative/doc.go, frozen item 4). It rejects
+	// a value carrying a line break rather than splicing one in — --problem is
+	// free-form human text, and an injected line would look like a canonical
+	// field and win under first-wins.
+	plan, err := initiative.New(fields)
+	if err != nil {
+		_ = c.git.RemoveWorktree(repoRoot, wtPath)
+		return fmt.Errorf("dispatch: %w", err)
+	}
+	body := plan.Description
 
 	if c.BodyFile != "" {
 		extra, err := os.ReadFile(c.BodyFile)
@@ -230,12 +245,15 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			return cli.Usagef("dispatch: --body-file %q: %v", c.BodyFile, err)
 		}
 		if len(strings.TrimSpace(string(extra))) > 0 {
-			// body at this point holds exactly the header this call composed
-			// above (the six always-written fields, plus standby/epic when
-			// those branches fired) — parseDescriptionFields it to get the
-			// live set of keys the header just wrote, then warn on any
-			// --body-file line that collides with one of them.
-			warnBodyFileFieldRedefinitions(ctx.Stderr, string(extra), parseDescriptionFields(body))
+			// fields is exactly the header composed above, so CollisionsIn
+			// judges the body file against the keys that header actually
+			// wrote — by the same rule the reader uses, not a second one
+			// that happens to agree.
+			for _, col := range fields.CollisionsIn(string(extra)) {
+				fmt.Fprintf(ctx.Stderr,
+					"dispatch: warning: --body-file line %d redefines routing field %q (first-wins — this line is IGNORED; the header's value stands): %s\n",
+					col.Line, col.Key, col.Text)
+			}
 			body += "\n" + string(extra)
 		}
 	}
@@ -273,14 +291,13 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("dispatch: bd create returned no id (does this bd support --json on create?)")
 	}
 
-	// Label the root epic with the initiative ID (fail-soft).
-	// Skipped when --skip-epic is set.
-	if !c.SkipEpic {
-		if epicID := extractEpicID(body); epicID != "" {
-			cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
-			if err := cmd.Run(); err != nil {
-				fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
-			}
+	// Label the root epic with the initiative ID (fail-soft). epicID is the
+	// id createEpic returned above, empty when --skip-epic was set or the
+	// fail-soft branch fired.
+	if epicID != "" {
+		cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
 		}
 	}
 
@@ -421,7 +438,7 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
-	dir := worktreePath(issue.Description)
+	dir := initiative.Of(issue).Worktree
 	if dir == "" {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", c.ID)
 		return cli.Silent(1)
@@ -641,76 +658,8 @@ type gitRunner interface {
 	RemoveWorktree(repoRoot, wtPath string) error
 }
 
-// worktreePath extracts the value of the first "worktree: <path>" line from
-// description. Returns "" if no such line is present.
-func worktreePath(description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "worktree: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
-		}
-	}
-	return ""
-}
-
-// modeValue extracts the value of the first "mode: <value>" line from
-// description (e.g. "bg" or "interactive"). Returns "" if no such line is
-// present — legacy initiatives registered before this field existed.
-func modeValue(description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "mode: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "mode: "), " \t\r")
-		}
-	}
-	return ""
-}
-
-// warnBodyFileFieldRedefinitions scans a --body-file's raw content, line by
-// line, for lines that redefine a routing field the header above already
-// wrote into body. headerFields is parseDescriptionFields(body) captured
-// just before the --body-file content is appended.
-//
-// This exists because parseDescriptionFields (route_match.go) later
-// re-parses the stored initiative description and is last-wins: a
-// --body-file line shaped like one of the header's own keys silently
-// overwrites the real routing value downstream, with nothing to say so. On
-// 2026-07-28 that dropped every Telegram reply for a live initiative and
-// took two hours to find. This makes the collision loud at write time.
-//
-// WARN, DO NOT REFUSE: the dispatch-dri skill is contractually forbidden
-// from declining to dispatch, so a hard failure here would strand the
-// caller with no way forward.
-//
-// Applies the exact same per-line rule parseDescriptionFields uses: split on
-// the first colon, lowercase+trim the key, trim the value, skip when either
-// side is empty. Getting this rule wrong in either direction is the actual
-// hazard — too loose warns on harmless lines (e.g. a briefing line beginning
-// "- Repo: ..." parses to the different key "- repo", not "repo", and must
-// NOT warn); too strict misses real collisions.
-func warnBodyFileFieldRedefinitions(w io.Writer, bodyFileContent string, headerFields map[string]string) {
-	for i, line := range strings.Split(bodyFileContent, "\n") {
-		colon := strings.IndexByte(line, ':')
-		if colon == -1 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(line[:colon]))
-		value := strings.TrimSpace(line[colon+1:])
-		if key == "" || value == "" {
-			continue
-		}
-		if _, redefined := headerFields[key]; redefined {
-			fmt.Fprintf(w, "dispatch: warning: --body-file line %d redefines routing field %q (last-wins — this value replaces the header's): %s\n",
-				i+1, key, line)
-		}
-	}
-}
-
-// extractEpicID scans body for the first "epic: <id>" line and returns the id.
-// Returns "" if no such line is present.
-func extractEpicID(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "epic: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "epic: "), " \t\r")
-		}
-	}
-	return ""
-}
+// The routing-field readers this file used to own (worktreePath, modeValue,
+// extractEpicID) and the --body-file redefinition scanner
+// (warnBodyFileFieldRedefinitions) are gone: reading goes through
+// initiative.Of, and the collision rule is initiative.Fields.CollisionsIn —
+// one rule shared with the reader rather than two that happen to agree.

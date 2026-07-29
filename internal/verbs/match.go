@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // errSessionTiedElsewhere is the sentinel wrapped by appendSessionID's
@@ -39,44 +40,6 @@ func RegisterMatchKong(p *cli.Parser) {
 	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
 }
 
-// hasWorktreeLine reports whether any line in description starts with "worktree:".
-func hasWorktreeLine(description string) bool {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "worktree:") {
-			return true
-		}
-	}
-	return false
-}
-
-// sessionIDs parses all "session: <id>" lines from description, in
-// registration order (first line = first-registered session, per the
-// at-ps11 contract, agent-teams-zalv.1 §1).
-func sessionIDs(description string) []string {
-	var ids []string
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "session: ") {
-			ids = append(ids, strings.TrimRight(strings.TrimPrefix(line, "session: "), " \t\r"))
-		}
-	}
-	return ids
-}
-
-// trackWorktreePaths parses all "track-worktree: <path>" lines from
-// description, in registration order (agent-teams-sgr5.2 / D9): the DRI
-// records one such line per implementer worktree it spawns, extending the
-// at-ps11 session-tie pattern from sessions to worktrees. Mirrors sessionIDs
-// above byte-for-byte in shape.
-func trackWorktreePaths(description string) []string {
-	var paths []string
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "track-worktree: ") {
-			paths = append(paths, strings.TrimRight(strings.TrimPrefix(line, "track-worktree: "), " \t\r"))
-		}
-	}
-	return paths
-}
-
 // hasSessionLine reports whether any line in description starts with
 // "session:" — the migration discriminator (mirrors hasWorktreeLine): an
 // initiative with no session: lines is a legacy entry and matchers must fall
@@ -90,23 +53,39 @@ func hasSessionLine(description string) bool {
 	return false
 }
 
-// appendSessionID ties sessionID to initiativeID by appending a
-// "session: <id>" line to the initiative's description, via the sanctioned
+// appendSessionID ties sessionID to initiativeID by writing back the
+// description initiative.WithSession composes, via the sanctioned
 // global-workspace write path (bd update --body-file, same mechanism as
-// updateDescriptionKong).
+// updateDescriptionKong). WithSession is append-only, so nothing already on
+// the bead — including canonical keys internal/initiative does not model — is
+// re-derived or dropped.
+//
+// This function is a GUARD PLUS an append, and only the append half lives in
+// initiative.WithSession. Do not collapse it into a bare WithSession call:
 //
 // Idempotent: if sessionID is already recorded on initiativeID (e.g. a
-// respawn reusing the same session id), this is a no-op.
+// respawn reusing the same session id), this is a no-op — it returns before
+// listing open initiatives and before any write, which is stronger than
+// WithSession's own idempotency (that returns an unchanged description, which
+// would still cost a list and a redundant bd update here).
 //
 // One-open-initiative guard: before appending, scans every OPEN initiative;
 // if sessionID is already recorded on a DIFFERENT open initiative, returns an
 // error instead of silently tying the session to two initiatives at once
-// (agent-teams-zalv.1 §2).
+// (agent-teams-zalv.1 §2). initiative.WithSession deliberately does NOT
+// implement this — the check needs a live bd client to enumerate open
+// initiatives, which a pure function is not given, so it stays this caller's
+// responsibility. Deleting it compiles cleanly and leaves WithSession's own
+// tests green; internal/verbs/session_test.go is what catches its absence.
 //
 // Validation: sessionID must be non-empty and contain no whitespace (including
 // newlines) — it is spliced verbatim into a "session: <id>" description line,
 // so an unvalidated value could inject extra lines or corrupt the field parse
-// for a future untrusted caller. Rejected before any read/write.
+// for a future untrusted caller. WithSession re-checks both, but the check
+// stays here too so rejection happens before any read/write.
+//
+// The signature is load-bearing: tie_session.go calls this and is the only
+// other caller. Change the body, not the shape.
 func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("appendSessionID: sessionID must not be empty")
@@ -119,7 +98,7 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)
 	}
-	for _, id := range sessionIDs(issue.Description) {
+	for _, id := range initiative.Of(issue).Sessions {
 		if id == sessionID {
 			return nil // already tied to this initiative — respawn reuses the same id
 		}
@@ -133,7 +112,7 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		if other.ID == initiativeID {
 			continue
 		}
-		for _, id := range sessionIDs(other.Description) {
+		for _, id := range initiative.Of(other).Sessions {
 			if id == sessionID {
 				return fmt.Errorf(
 					"appendSessionID: session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
@@ -142,7 +121,12 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		}
 	}
 
-	newDescription := strings.TrimRight(issue.Description, "\n") + "\nsession: " + sessionID + "\n"
+	plan, err := initiative.WithSession(issue, sessionID)
+	if err != nil {
+		return fmt.Errorf("appendSessionID: %w", err)
+	}
+	newDescription := plan.Description
+
 	tmpFile, err := os.CreateTemp("", "ateam-tie-session-*.txt")
 	if err != nil {
 		return fmt.Errorf("appendSessionID: create temp file: %w", err)
@@ -173,9 +157,10 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 // routing/classification is unchanged byte-for-byte (agent-teams-zalv.1 §2,
 // §5).
 func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSession {
-	ids := sessionIDs(iss.Description)
+	f := initiative.Of(iss)
+	ids := f.Sessions
 	if len(ids) == 0 {
-		if s := matchSessionByWorktree(sessions, worktreePath(iss.Description)); s != nil {
+		if s := matchSessionByWorktree(sessions, f.Worktree); s != nil {
 			return []agentSession{*s}
 		}
 		return nil
@@ -196,11 +181,13 @@ func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSe
 	return out
 }
 
-// findOffenders returns issues whose description has no line starting with "worktree:".
+// findOffenders returns issues carrying no worktree routing field — work
+// beads that leaked into the global workspace, which holds only
+// initiative-tracking beads.
 func findOffenders(issues []bd.Issue) []bd.Issue {
 	var out []bd.Issue
 	for _, iss := range issues {
-		if !hasWorktreeLine(iss.Description) {
+		if initiative.Of(iss).Worktree == "" {
 			out = append(out, iss)
 		}
 	}
@@ -212,7 +199,7 @@ func findOffenders(issues []bd.Issue) []bd.Issue {
 func matchByWorktree(issues []bd.Issue, path string) *bd.Issue {
 	want := canonicalPath(path)
 	for i := range issues {
-		if wt := worktreePath(issues[i].Description); wt != "" && canonicalPath(wt) == want {
+		if wt := initiative.Of(issues[i]).Worktree; wt != "" && canonicalPath(wt) == want {
 			return &issues[i]
 		}
 	}
@@ -233,7 +220,7 @@ func matchByWorktreeOrAncestor(issues []bd.Issue, path string) *bd.Issue {
 	var best *bd.Issue
 	var bestLen int
 	for i := range issues {
-		wt := worktreePath(issues[i].Description)
+		wt := initiative.Of(issues[i]).Worktree
 		if wt == "" {
 			continue
 		}
@@ -256,7 +243,7 @@ func matchAllByWorktree(issues []bd.Issue, path string) []bd.Issue {
 	want := canonicalPath(path)
 	var out []bd.Issue
 	for _, iss := range issues {
-		if wt := worktreePath(iss.Description); wt != "" && canonicalPath(wt) == want {
+		if wt := initiative.Of(iss).Worktree; wt != "" && canonicalPath(wt) == want {
 			out = append(out, iss)
 		}
 	}

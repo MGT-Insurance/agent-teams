@@ -1,7 +1,8 @@
 // This file is owned by Track R (route-pr-event verbs).
 // route_match.go — PR→initiative match engine (fkr.19).
-// Ported from dashboard/server/src/parse.ts (extractPrUrl / parseDescriptionFields
-// / matchInitiative logic).  No edits to route_types.go or dispatch.go.
+// Ported from dashboard/server/src/parse.ts (extractPrUrl / matchInitiative
+// logic). Routing fields are read through internal/initiative, not parsed
+// here.  No edits to route_types.go.
 package verbs
 
 import (
@@ -13,6 +14,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // prURLRE matches a full GitHub PR URL:
@@ -21,26 +23,6 @@ import (
 //
 // Capture groups: [1] owner, [2] repo, [3] number.
 var prURLRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
-
-// parseDescriptionFields splits text into key→value pairs by scanning for the
-// first ":" on each line.  Keys are lowercased and trimmed; values are trimmed.
-// Lines with an empty key or empty value are skipped.
-// Mirrors parse.ts parseDescriptionFields.
-func parseDescriptionFields(text string) map[string]string {
-	result := make(map[string]string)
-	for _, line := range strings.Split(text, "\n") {
-		colon := strings.IndexByte(line, ':')
-		if colon == -1 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(line[:colon]))
-		value := strings.TrimSpace(line[colon+1:])
-		if key != "" && value != "" {
-			result[key] = value
-		}
-	}
-	return result
-}
 
 // extractPrURL returns the first GitHub PR URL found in text, or "".
 // Mirrors parse.ts extractPrUrl.
@@ -107,6 +89,8 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 	var branchMatches []MatchResult
 
 	for _, iss := range issues {
+		f := initiative.Of(iss)
+
 		// ── Tier 1: MatchPRField ───────────────────────────────────────────────
 		// Check Notes first, then Description (convention from fkr.20).
 		prURL := extractPrURL(iss.Notes)
@@ -116,10 +100,9 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 		if prURL != "" {
 			ownerRepo, prNumber, ok := parsePrURL(prURL)
 			if ok && ownerRepo == eventOwnerRepo && prNumber == event.PRNumber {
-				wt := worktreePath(iss.Description)
 				prMatches = append(prMatches, MatchResult{
 					InitiativeID: iss.ID,
-					Worktree:     wt,
+					Worktree:     f.Worktree,
 					How:          MatchPRField,
 				})
 				continue // this initiative matched at tier-1; skip tier-2
@@ -130,14 +113,11 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 		if headBranch == "" {
 			continue
 		}
-		fields := parseDescriptionFields(iss.Description)
-		repoField := strings.ToLower(filepath.Base(fields["repo"]))
-		branchField := fields["branch"]
-		if repoField != "" && repoField == eventRepoName && branchField == headBranch {
-			wt := worktreePath(iss.Description)
+		repoField := strings.ToLower(filepath.Base(f.Repo))
+		if f.Repo != "" && repoField == eventRepoName && f.Branch == headBranch {
 			branchMatches = append(branchMatches, MatchResult{
 				InitiativeID: iss.ID,
-				Worktree:     wt,
+				Worktree:     f.Worktree,
 				How:          MatchBranch,
 			})
 		}
@@ -206,5 +186,5 @@ func matchClosedFromIssues(issues []bd.Issue, event PREvent) MatchResult {
 	if best == nil {
 		return MatchResult{How: MatchNone}
 	}
-	return MatchResult{InitiativeID: best.ID, Worktree: worktreePath(best.Description), How: MatchPRField}
+	return MatchResult{InitiativeID: best.ID, Worktree: initiative.Of(*best).Worktree, How: MatchPRField}
 }

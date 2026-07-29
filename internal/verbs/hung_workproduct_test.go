@@ -867,16 +867,8 @@ func TestDoHungTick_ModeInteractive_NoEscalationButStillJournaled(t *testing.T) 
 	}
 }
 
-// ── D9: track-worktree matcher (parsing, mirrors sessionIDs' own tests) ───────
-
-func TestTrackWorktreePaths(t *testing.T) {
-	desc := "worktree: /a/dri\ntrack-worktree: /a/impl-1\ntrack-worktree: /a/impl-2\n"
-	got := trackWorktreePaths(desc)
-	want := []string{"/a/impl-1", "/a/impl-2"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("trackWorktreePaths = %v, want %v", got, want)
-	}
-	if got := trackWorktreePaths("worktree: /a/dri\n"); got != nil {
-		t.Errorf("trackWorktreePaths with no lines = %v, want nil", got)
-	}
-}
+// ── D9: track-worktree matcher ───────────────────────────────────────────────
+//
+// The parsing test that lived here is gone with trackWorktreePaths; track
+// paths now come from initiative.Of(iss).Tracks, which internal/initiative
+// tests. discoverWorktrees' union behaviour is covered above.

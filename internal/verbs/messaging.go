@@ -13,6 +13,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // ── sendKong ──────────────────────────────────────────────────────────────────
@@ -446,7 +447,7 @@ func recipientWorktree(ctx *cli.Context, id string) (bd.Issue, string, error) {
 	if err != nil {
 		return bd.Issue{}, "", fmt.Errorf("bd show %s: %w", id, err)
 	}
-	wt := worktreePath(issue.Description)
+	wt := initiative.Of(issue).Worktree
 	if wt == "" {
 		return bd.Issue{}, "", fmt.Errorf("initiative %s has no worktree: line", id)
 	}

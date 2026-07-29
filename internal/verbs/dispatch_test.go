@@ -761,22 +761,24 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 
 // ---- dispatch: --body-file field-redefinition warning ----------------------
 //
-// warnBodyFileFieldRedefinitions (dispatch.go) warns to stderr when a
-// --body-file line's key (per parseDescriptionFields' exact rule) collides
-// with a routing field the header already wrote — see agent-teams-ully.1.
-// The redefining lines below are built by concatenation rather than as a
-// literal line in a raw string block, per the bead's own hazard note: a
-// source line literally starting "Repo:" would reproduce the bug this
-// change guards against.
+// dispatch warns to stderr when a --body-file line collides with a routing
+// field the header already wrote. The rule is initiative.Fields.CollisionsIn's
+// — the SAME rule initiative.Of reads by, not a second one that happens to
+// agree (agent-teams-ully.7). The redefining lines below are built by
+// concatenation rather than as a literal line in a raw string block, per the
+// bead's own hazard note: a source line literally starting with a routing key
+// would reproduce the bug this change guards against.
 
 // TestDispatch_BodyFileWarnsOnFieldRedefinition covers case 1: a body-file
 // line that redefines the "repo" field the header wrote produces a stderr
-// warning naming the 1-based line number and the field.
+// warning naming the 1-based line number and the field, and says the line is
+// IGNORED — under first-wins the header's value is the one that survives, so
+// the old "last-wins — this value replaces the header's" wording was false.
 func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 	home := t.TempDir()
 	repoDir := t.TempDir()
 
-	redefineLine := "Rep" + "o: /bogus/other/repo"
+	redefineLine := "rep" + "o: /bogus/other/repo"
 	bodyContent := "Some prose framing the task.\n" + redefineLine + "\nMore prose after.\n"
 
 	bfPath := filepath.Join(t.TempDir(), "body.txt")
@@ -817,6 +819,12 @@ func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 	}
 	if !strings.Contains(got, redefineLine) {
 		t.Errorf("stderr missing offending line text:\n%s", got)
+	}
+	if !strings.Contains(got, "IGNORED") {
+		t.Errorf("stderr must say the body-file line is IGNORED under first-wins:\n%s", got)
+	}
+	if strings.Contains(got, "last-wins") {
+		t.Errorf("stderr still claims last-wins, which is false under the frozen rule:\n%s", got)
 	}
 }
 
@@ -908,15 +916,18 @@ func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
 	}
 }
 
-// TestDispatch_BodyFileWarningIsCaseInsensitive covers case 4: the real
-// incident line used a capital first letter, so the key must be lowercased
-// before comparing against the header's field set.
-func TestDispatch_BodyFileWarningIsCaseInsensitive(t *testing.T) {
+// TestDispatch_BodyFileNoWarningOnWrongCaseLine covers case 4, INVERTED by
+// agent-teams-ully.7. It previously asserted the warning folded case, because
+// the warning mirrored a lenient reader that also folded case. The frozen
+// matching rule (internal/initiative/doc.go, frozen item 1) does not fold
+// case: a wrong-case key is not a field line at all, so no reader will ever
+// take this value and warning about it is a false positive. The warning's rule
+// and the reader's rule are now one rule, so this shape must stay silent.
+func TestDispatch_BodyFileNoWarningOnWrongCaseLine(t *testing.T) {
 	home := t.TempDir()
 	repoDir := t.TempDir()
 
-	redefineLine := "BRAN" + "CH: totally-wrong-branch"
-	bodyContent := redefineLine + "\n"
+	bodyContent := "BRAN" + "CH: totally-wrong-branch" + "\n"
 	bfPath := filepath.Join(t.TempDir(), "body.txt")
 	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
 		t.Fatalf("write body file: %v", err)
@@ -946,12 +957,8 @@ func TestDispatch_BodyFileWarningIsCaseInsensitive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got := stderr.String()
-	if !strings.Contains(got, "line 1") {
-		t.Errorf("stderr missing 1-based line number 1:\n%s", got)
-	}
-	if !strings.Contains(got, `"branch"`) {
-		t.Errorf("stderr missing lowercased field name %q:\n%s", "branch", got)
+	if stderr.String() != "" {
+		t.Errorf("wrong-case line must not warn (false positive under the frozen rule), got:\n%s", stderr.String())
 	}
 }
 

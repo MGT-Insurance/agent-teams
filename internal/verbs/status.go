@@ -39,6 +39,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // RegisterStatusKong registers status verbs onto p using native kong structs.
@@ -148,7 +149,7 @@ func (c *executionStatusKong) Run(ctx *cli.Context) error {
 
 	out := make([]initiativeStatus, 0, len(issues))
 	for _, iss := range issues {
-		wt := worktreePath(iss.Description)
+		wt := initiative.Of(iss).Worktree
 
 		var execStatus string
 		if agentsErr != nil {
