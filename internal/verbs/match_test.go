@@ -257,19 +257,36 @@ func TestResolveInitiativeSubdirectory(t *testing.T) {
 	}
 }
 
-// TestResolveInitiativeLongestWins covers nested worktrees: the jq the hooks
-// used took [0] in list order, which could resolve to the outer initiative.
+// TestResolveInitiativeLongestWins pins the second latent bug the hooks had:
+// their jq took [0] — FIRST IN BD'S LIST ORDER — where matchByWorktreeOrAncestor
+// takes the longest (most specific) worktree. Two open initiatives whose
+// worktree paths nest, cwd inside the deeper one: the deeper id must win.
+//
+// Both list orders are asserted deliberately. Checking only the order where the
+// outer initiative happens to come first would make the fix look guaranteed
+// when it is really just agreeing with bd's current ordering — and the whole
+// failure mode here is order dependence, silently reintroduced the day bd's
+// list order changes.
 func TestResolveInitiativeLongestWins(t *testing.T) {
-	issues := []bd.Issue{
-		{ID: "at-outer", Title: "Outer", Description: "worktree: /a/b/wt"},
-		{ID: "at-inner", Title: "Inner", Description: "worktree: /a/b/wt/nested"},
-	}
-	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt/nested/deep"})
-	if code != 0 {
-		t.Errorf("resolve-initiative longest-wins: exit code %d, want 0", code)
-	}
-	if strings.TrimSpace(stdout) != "at-inner" {
-		t.Errorf("resolve-initiative longest-wins: got %q, want at-inner (most specific worktree)", strings.TrimSpace(stdout))
+	outer := bd.Issue{ID: "at-outer", Title: "Outer", Description: "worktree: /a/b/wt"}
+	inner := bd.Issue{ID: "at-inner", Title: "Inner", Description: "worktree: /a/b/wt/nested"}
+
+	for _, tc := range []struct {
+		name   string
+		issues []bd.Issue
+	}{
+		{"outer-first", []bd.Issue{outer, inner}},
+		{"inner-first", []bd.Issue{inner, outer}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _, code := runVerb(t, "resolve-initiative", tc.issues, []string{"/a/b/wt/nested/deep"})
+			if code != 0 {
+				t.Errorf("resolve-initiative longest-wins: exit code %d, want 0", code)
+			}
+			if strings.TrimSpace(stdout) != "at-inner" {
+				t.Errorf("resolve-initiative longest-wins: got %q, want at-inner (most specific worktree, whatever the list order)", strings.TrimSpace(stdout))
+			}
+		})
 	}
 }
 

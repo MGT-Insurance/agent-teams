@@ -36,9 +36,9 @@ func canonicalPath(p string) string {
 // RegisterMatchKong registers match verbs onto p using native kong structs.
 func RegisterMatchKong(p *cli.Parser) {
 	p.AddVerb("audit", "Audit global workspace for leaked work beads.", &auditKong{})
-	p.AddVerb("resume-match", "Find the open initiative for a worktree path.", &resumeMatchKong{})
-	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
-	p.AddVerb("resolve-initiative", "Print the open initiative id owning a path (the worktree root or any subdirectory).", &resolveInitiativeKong{})
+	p.AddVerb("resume-match", "Find the open initiative whose worktree is EXACTLY this path (no ancestor matching).", &resumeMatchKong{})
+	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative whose worktree is EXACTLY this path (no ancestor matching).", &resumeMatchClosedKong{})
+	p.AddVerb("resolve-initiative", "Find the open initiative owning this path, ancestor-or-self (the worktree root or any subdirectory of it).", &resolveInitiativeKong{})
 }
 
 // appendSessionID ties sessionID to initiativeID by writing back the
@@ -314,10 +314,14 @@ func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 // there — hooks fail soft, so initiative resolution would just quietly stop
 // with no error anywhere.
 //
-// Ancestor semantics, via matchByWorktreeOrAncestor: the registered worktree
-// root itself or any subdirectory of it resolves, and the most specific
-// (longest) worktree wins. Distinct from resume-match, whose strict equality
-// is deliberate — see matchByWorktree.
+// ANCESTOR-OR-SELF semantics, via matchByWorktreeOrAncestor: the registered
+// worktree root itself or any subdirectory of it resolves, and the most
+// specific (longest) worktree wins. Deliberately distinct from resume-match and
+// resume-match-closed, which are EXACT (see matchByWorktree) because /dri owns
+// its checkout root and prefix matching there could resume the wrong
+// initiative. Three verbs over two semantics is easy to confuse, so each one's
+// kong help text names its own semantics — keep it that way when adding a
+// fourth.
 //
 // OUTPUT CONTRACT, which all four hooks depend on: the bare initiative id on
 // stdout and nothing else, or NO output at all with exit 0 when no open

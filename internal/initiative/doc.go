@@ -170,7 +170,8 @@
 // PR-URL extractor, and free-form prose stay where they are.
 //
 // This package imports internal/bd only (a leaf package, so importing it
-// here creates no cycle even though internal/verbs imports both). Nothing in
-// internal/verbs calls into this package yet; migrating call sites onto it
-// is separate, later work.
+// here creates no cycle even though internal/verbs imports both). As of the
+// agent-teams-ully.7 migration, internal/verbs reads and writes routing
+// fields exclusively through this package; a routing-field scanner anywhere
+// else in Go is a regression.
 package initiative

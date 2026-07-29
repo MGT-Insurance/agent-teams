@@ -52,6 +52,7 @@ This prints the new issue id on stdout.
 
 - Resume match (open): `ateam resume-match "$PWD"` — prints the id of the OPEN initiative whose description contains an exact `worktree: <path>` line, or nothing on no match. Exact-line matching avoids prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`).
 - Resume match (closed): `ateam resume-match-closed "$PWD"` — same match over CLOSED initiatives (most-recently-created first). The no-parameter /dri flow calls this when there is no open match, so a delivered/closed initiative in the cwd is surfaced to the human (resume vs. start new) instead of silently ignored.
+- Resolve initiative (open, ancestor-or-self): `ateam resolve-initiative "$PWD"` — prints the id of the OPEN initiative whose `worktree:` is the path itself **or any ancestor of it**, so a subdirectory resolves too; the most specific (longest) worktree wins. Prints nothing on no match. This is the ancestor-matching sibling of `resume-match` — the plugin's hooks use it because a session's cwd may be anywhere under the worktree, while /dri keeps `resume-match` because it owns the checkout root and exact matching there avoids resuming the wrong initiative.
 
   Note: `bd search "<text>"` does NOT search description body content — it only matches titles. Do not use it as a fallback.
 
