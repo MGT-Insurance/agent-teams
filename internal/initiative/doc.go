@@ -106,7 +106,8 @@
 //	    Tracks   []string
 //	}
 //
-//	func Of(iss bd.Issue) Fields                        // READ SEAM
+//	func Of(iss bd.Issue) Fields                        // READ SEAM (typed)
+//	func JSONFields(iss bd.Issue) map[string]any         // READ SEAM (wire)
 //	func New(f Fields) (WritePlan, error)                // WRITE SEAM (new initiatives only — see item 4)
 //	func WithSession(iss bd.Issue, id string) (WritePlan, error)
 //	func WithTrack(iss bd.Issue, path string) (WritePlan, error)
@@ -137,6 +138,22 @@
 // "is this initiative currently on standby" test. A correct reader needs
 // both Description (via [Of]) and Notes; do not build one that trusts
 // Fields.Standby in isolation.
+//
+// [JSONFields] is the second read seam, added for consumers outside this
+// process — specifically the TypeScript dashboard, which cannot import this
+// package and until now re-implemented the frozen rule in its own regex
+// (agent-teams-ully.12). `ateam list-json` calls it and attaches the result to
+// every element as a "fields" object; the dashboard reads that object.
+//
+// [JSONFields] is deliberately NOT a projection of the ten [Fields] members.
+// Doing that would drop every unmodeled canonical key at a read seam, which
+// item 3 forbids. Instead it emits the canonical LINE key verbatim for every
+// matched line, so the wire shape does not depend on which keys Go models: the
+// pr-* trio appears today with no Go change, and giving one of them a [Fields]
+// member later moves nothing. A shape that hoisted the modeled keys and nested
+// the rest in an "extra" bag would invert that property and is the design to
+// reject in review. [Of] and [JSONFields] share one scan of the description
+// (the unexported all), so there is still exactly one accumulation of the rule.
 //
 // [Of] takes the whole bd.Issue, not just its Description field. bd.Issue
 // already carries both Description and Labels, and [WritePlan] already has
