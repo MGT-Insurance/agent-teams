@@ -74,7 +74,7 @@ If acquisition succeeds, proceed and ensure the lock is released in every exit p
 ateam condense-check
 ```
 
-That single read-only call enumerates every learning role — skipping `user` and `applied` unconditionally — and prints one line per role ending in a verdict, `FIRE` or `SKIP`, with a short `reason` naming what tripped. `--json` emits the same per-role fields machine-readably. Exit code is 0 regardless of verdict: **the verdict is data, not an exit status.** The verb writes nothing.
+That single read-only call enumerates every learning role — skipping `user` and `applied` unconditionally — and prints an aligned table: a header row, then one row per role. The verdict, `FIRE` or `SKIP`, is in the `VERDICT` column, not at the end of the line; read it there, and read the trailing free-text `REASON` for what tripped. `--json` emits the same per-role fields machine-readably, `verdict` and `reason` among them. Exit code is 0 regardless of verdict: **the verdict is data, not an exit status.** The verb writes nothing.
 
 (For why those two namespaces are excluded: `user:` is served by `ateam prime`, capped and truncated at read time, and is not part of the hot/cold learnings model; `applied:` holds per-slug applied-signal counters, not learnings, and must never be condensed.)
 
