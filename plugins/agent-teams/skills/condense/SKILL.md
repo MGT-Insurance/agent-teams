@@ -115,11 +115,17 @@ This emits a JSON packet to stdout:
 ```json
 {
   "role": "<role>",
-  "memories": [{"key": "<role>:<slug>", "body": "..."}],
+  "memories": [
+    {"key": "hot:<slug>", "body": "...", "applied_count": 3, "last_applied": "2026-07-20"},
+    {"key": "fresh:<slug>", "body": "..."},
+    {"key": "<slug>", "summary": "..."}
+  ],
   "hot_budget_tokens": 6000,
   "instruction_contract": "..."
 }
 ```
+
+The three memories above are illustrative, one per tier, chosen to show which fields each tier does and doesn't carry — do not treat this as an exhaustive schema, `instruction_contract` is the authority for that. `key` is always present and role-relative (`hot:`/`fresh:` prefix, or a bare slug for cold — never the full `<role>:...` form). `body` appears on hot/fresh, never on cold; `summary` appears on cold only. `applied_count`/`last_applied` can appear on ANY tier (shown here on the hot entry only) but are each omitted — not zero-valued — when absent: a missing `applied_count` means 0, a missing `last_applied` means never applied.
 
 `hot_budget_tokens` is **the** hot-set budget: one number, one unit (TOKENS), emitted from the Go constant. The value above is illustrative — use the one the packet actually prints. Nothing else in this skill restates the budget, and nothing converts it to bytes. Any byte figure you meet here is a per-ENTRY write-time cap, a different limit on a different scope; never convert between the two.
 
