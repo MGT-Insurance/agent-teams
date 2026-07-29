@@ -14,6 +14,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // claimsInitiativeLocally is the default claimsLocallyFunc (steward_seams.go):
@@ -21,9 +22,12 @@ import (
 // triple as a live local git checkout — the local, distributed,
 // no-registry-machine-field exactly-once test relay-gating
 // (agent-teams-5y8a.5) consults for a tied reply (thread resolves to an open
-// initiative). Parses "worktree:"/"branch:"/"repo:" from iss.Description via
-// parseDescriptionFields (route_match.go) — the same fields dispatch.go
-// writes at Run (dispatch.go:163-166). Returns true iff ALL hold:
+// initiative). Reads worktree/branch/repo through initiative.Of — the one
+// shared first-wins reader, the same seam dispatch.go writes through at Run.
+// This site used a last-wins scanner until agent-teams-ully: on 2026-07-28 a
+// briefing line redefined the repo path, this predicate went false for a live
+// initiative, and every human reply in its topic was silently dropped.
+// Returns true iff ALL hold:
 //
 //  1. all three fields are present.
 //  2. the worktree path exists locally.
@@ -38,10 +42,10 @@ import (
 // this predicate never errors, matching claimsLocallyFunc's bool-only
 // signature.
 func claimsInitiativeLocally(iss bd.Issue) bool {
-	fields := parseDescriptionFields(iss.Description)
-	wt := fields["worktree"]
-	branch := fields["branch"]
-	repo := fields["repo"]
+	f := initiative.Of(iss)
+	wt := f.Worktree
+	branch := f.Branch
+	repo := f.Repo
 	if wt == "" || branch == "" || repo == "" {
 		return false
 	}

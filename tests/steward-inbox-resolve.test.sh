@@ -28,15 +28,24 @@ fail() { echo "FAIL $*"; FAIL=$((FAIL+1)); }
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
-# ── Fake ateam binary — dependency-guard satisfier only ─────────────────────
+# ── ateam shim: canned mail peek, REAL everything else ──────────────────────
+# Only the `ateam mail inbox --peek` signal path is stubbed (it is covered
+# end-to-end by tests/steward-loop.test.sh). Every other verb execs a binary
+# built from this tree, because the hooks now resolve cwd -> initiative id via
+# `ateam resolve-initiative` (agent-teams-ully.9) — a fully canned shim would
+# make case B below assert nothing about real resolution, and its old fixed
+# "no unread mail" line would come back as the resolved initiative id.
 FAKE_PLUGIN_ROOT="$T/plugin-root"
 mkdir -p "$FAKE_PLUGIN_ROOT/bin"
+go build -C "$ROOT" -o "$FAKE_PLUGIN_ROOT/bin/ateam-real" ./cmd/ateam
 cat > "$FAKE_PLUGIN_ROOT/bin/ateam" <<'SHIM'
 #!/usr/bin/env bash
-echo "no unread mail"
-exit 0
+case "$1" in
+  mail) echo "no unread mail"; exit 0 ;;
+esac
+exec "$(dirname "$0")/ateam-real" "$@"
 SHIM
-chmod +x "$FAKE_PLUGIN_ROOT/bin/ateam"
+chmod +x "$FAKE_PLUGIN_ROOT/bin/ateam" "$FAKE_PLUGIN_ROOT/bin/ateam-real"
 
 # ── Shared workspace: a real bd DB (needed for the non-steward-cwd case, and
 # for the dependency guard's $ATH/.beads check regardless of branch) ─────────
@@ -130,6 +139,31 @@ else
   fail "D: wake-watcher.sh exited immediately (code $ww_exit) instead of blocking; output: $(cat "$ww_log" 2>/dev/null)"
 fi
 rm -f "$MAILBOX/steward.watcher.pid" "$MAILBOX/steward.wake"
+
+# ── Case E: a non-steward cwd that DOES match resolves through the verb ──────
+# The only shell-level coverage that inbox-drain.sh and session-start-inbox.sh
+# resolve a real registered initiative via `ateam resolve-initiative`, from a
+# SUBDIRECTORY of the registered worktree rather than its root.
+mkdir -p "$T/wt/apps/nested"
+printf 'problem: p\nrepo: %s\nworktree: %s\nbranch: feat/x\nteam: t\nmode: interactive\n' "$T/wt" "$T/wt" \
+  > "$T/init-body.md"
+bd -C "$AGENT_TEAMS_HOME" create --title="Resolve target" --type=task --priority=2 \
+  --body-file="$T/init-body.md" >/dev/null
+init_id=$(bd -C "$AGENT_TEAMS_HOME" list --status=open --json | jq -r '.[0].id')
+
+run_hook inbox-drain.sh "$T/wt/apps/nested"
+if log_has inbox-drain.sh "initiative-resolved id=$init_id"; then
+  pass "E1: inbox-drain.sh resolved a worktree subdirectory to $init_id"
+else
+  fail "E1: inbox-drain.sh did not resolve $init_id from a subdirectory; log tail: $(tail -5 "$HOOKS_LOG" 2>/dev/null)"
+fi
+
+run_hook session-start-inbox.sh "$T/wt/apps/nested"
+if log_has session-start-inbox.sh "initiative-resolved id=$init_id"; then
+  pass "E2: session-start-inbox.sh resolved a worktree subdirectory to $init_id"
+else
+  fail "E2: session-start-inbox.sh did not resolve $init_id from a subdirectory; log tail: $(tail -5 "$HOOKS_LOG" 2>/dev/null)"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

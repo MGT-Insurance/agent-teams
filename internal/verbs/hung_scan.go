@@ -26,6 +26,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // RegisterHungScanKong registers the hung-scan verb onto p.
@@ -87,8 +88,8 @@ type hungScanEntry struct {
 	PIDPresent          bool   `json:"pid_present"`
 	CWDPresent          bool   `json:"cwd_present"`
 
-	// Mode is the initiative's "mode: bg|interactive" description line
-	// (modeValue, dispatch.go). Empty for legacy initiatives predating the
+	// Mode is the initiative's "mode: bg|interactive" routing field
+	// (initiative.Fields.Mode). Empty for legacy initiatives predating the
 	// field. D5: mode=="interactive" excludes an initiative from every
 	// mechanical escalation path below, regardless of classification.
 	Mode string `json:"mode,omitempty"`
@@ -275,7 +276,7 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 // the session-set path — may be a PID-nil (tracked-but-dead) session, so
 // pidPresent below is computed from the live subset, not len(matched).
 func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, dirExists dirExistsFunc) (classification string, matched []agentSession, cwdPresent bool) {
-	worktree := worktreePath(iss.Description)
+	worktree := initiative.Of(iss).Worktree
 	cwdPresent = worktree != "" && dirExists(worktree)
 	matched = matchSessionsForInitiative(sessions, iss)
 
@@ -348,8 +349,9 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 	out := make([]hungScanEntry, 0, len(issues))
 
 	for _, iss := range issues {
-		wt := worktreePath(iss.Description)
-		mode := modeValue(iss.Description)
+		f := initiative.Of(iss)
+		wt := f.Worktree
+		mode := f.Mode
 
 		if agentsErr != nil {
 			out = append(out, hungScanEntry{
@@ -463,7 +465,7 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 		// mode:interactive (D5 excludes interactive sessions from every
 		// mechanical path, including this one).
 		if keep && mode != "interactive" {
-			worktrees := discoverWorktrees(wt, trackWorktreePaths(iss.Description), iss.ID, hungDirListFunc)
+			worktrees := discoverWorktrees(wt, f.Tracks, iss.ID, hungDirListFunc)
 			probes := make([]gitProbeResult, 0, len(worktrees))
 			for _, w := range worktrees {
 				probes = append(probes, hungGitProbeFunc(w))

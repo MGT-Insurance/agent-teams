@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // openInitiativesFunc is the function type for loading open initiatives.
@@ -77,7 +78,7 @@ func (c *watchersKong) Run(ctx *cli.Context) error {
 
 	// Per open initiative row.
 	for _, iss := range issues {
-		wt := worktreePath(iss.Description)
+		wt := initiative.Of(iss).Worktree
 		pidFile := filepath.Join(mailboxDir, iss.ID+".watcher.pid")
 
 		state, pid := watcherState(pidFile)

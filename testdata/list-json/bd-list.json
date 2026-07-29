@@ -1,0 +1,102 @@
+[
+  {
+    "close_reason": "merged: https://github.com/MGT-Insurance/midgard/pull/4522 (merge commit 19b8cf658c, 2026-07-29)",
+    "closed_at": "2026-07-29T16:10:30Z",
+    "comment_count": 2,
+    "created_at": "2026-07-28T19:16:41Z",
+    "created_by": "Eric Lloyd",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "description": "problem: Internal quotes API: wire up Farm product creation end-to-end (registry, DTO, appetite-gate interaction)\nrepo: /Users/ericlloyd/Code/midgard\nworktree: /Users/ericlloyd/.agent-teams-worktrees/internal-quotes-api-wire-up-farm-product-creation\nbranch: internal-quotes-api-wire-up-farm-product-creation\nteam: midgard-internal-quotes-api-wire-up-farm-product-creation\nmode: bg\nepic: midgard-5lqj\n\n## Goal\n\nWire up whatever is missing in the NEW internal quotes API (`POST /api/internal/v1/quotes`, apps/shadowfax) so a **Farm** quote can be created via the API, end to end.\n\n## What \"whatever is missing\" likely spans (investigate, don't assume)\n\n- `productRegistry.ts` — Farm needs a `ProductPipelineConfig` entry (discriminant mapping, buildElements, computePriceSummary, `canBePackaged` — presumably false/single-product unless told otherwise).\n- DTO/transform — whatever product-specific input shape Farm needs at the envelope level.\n- The shared machinery should mostly just work (quotes[] envelope, defaults flag + apiCreateDefault, required/refinements walk) — verify Farm flows through each rather than assuming.\n- **Appetite gate interaction — flagged fork, take this to the plan gate**: the hard appetite gate (#4396) now fronts every create. Verify what the appetite engine returns for a Farm product — if the engine doesn't model Farm, the gate may decline or fail every Farm create, making the wiring dead on arrival. Options to weigh: teach appetite about Farm, exempt Farm from the gate pending appetite support, or something else. Recommendation required.\n- Socotra config: check whether Farm's tenant config is already deployed/current on the dev tenant before live verification (config deploys separately from code).\n\n## Constraints / context\n\n- Plan gate through the steward before implementation (this is multi-surface, not small-work).\n- Live verification required: a real Farm create via the API on the dev tenant that reaches a rated (or honestly-explained terminal) state.\n- The at-mzd6 parity initiative has a live dev server on port 3000 in its own worktree (Eric actively testing there) — do NOT kill or reuse it; coordinate ports or use your own environment.\n- Recent relevant history: product-combination validation #4299, quotes[] envelope #4313, defaults #4373/#4377/#4380, appetite gate #4396 + env fix (at-jkqr), subfield fixes in-flight on PR #4503.\nsession: 84441109-d536-48b7-95fe-3de27ce9135f\ntrack-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-dto\ntrack-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-builder\ntrack-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-tester\ntrack-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-registry\ntrack-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-reviewer\n",
+    "id": "at-2mol",
+    "issue_type": "task",
+    "labels": [
+      "thread:653"
+    ],
+    "notes": "session 1, 2026-07-28, bg — DRI booted, Phase 2 investigation starting (planner spawn)\n\n<<<ateam-ask\ndecision: Approve Farm plan (midgard-5lqj.1-.8 loop set) w/ appetite MAPPING fix, not a Farm exemption?\nrecommendation: Approve: map 'farm'->FARMOWNERS_POLICY + industryGroup FARM; loud failure on unmapped discriminants\nalternative: Exempt Farm from the gate pending appetite support — rejected: del",
+    "owner": "erlloyd@gmail.com",
+    "priority": 2,
+    "status": "closed",
+    "title": "Internal quotes API: wire up Farm product creation end-to-end (registry,",
+    "updated_at": "2026-07-29T16:10:30Z"
+  },
+  {
+    "comment_count": 0,
+    "created_at": "2026-07-16T15:09:15Z",
+    "created_by": "Eric Lloyd",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "description": "problem: Dashboard logs show frequent 'bd human list failed' / 'ateam list-json failed' (subprocess timeout/non-zero exit) despite low agent concurrency. Diagnose root cause (suspect: global bd workspace advisory-flock contention from the machine's many concurrent ateam/bd invocations across other initiatives, not the dashboard's own poll load) and fix or harden. Add real debugging instrumentation and/or a reproducible test harness that simulates dashboard load so the failure can be observed and iterated on directly.\nrepo: /Users/ericlloyd/Code/agent-teams\nworktree: /Users/ericlloyd/.agent-teams-worktrees/agent-teams-dashboard-timeout-debug\nbranch: dashboard-timeout-debug\nteam: agent-teams-dashboard-timeout-debug\nmode: interactive\nepic: agent-teams-m81h\n",
+    "id": "at-4xl7",
+    "issue_type": "task",
+    "labels": [
+      "thread:540"
+    ],
+    "owner": "erlloyd@gmail.com",
+    "priority": 2,
+    "status": "open",
+    "title": "Dashboard CLI timeout diagnosis (bd human list / ateam list-json failures)",
+    "updated_at": "2026-07-16T15:09:15Z"
+  },
+  {
+    "comment_count": 0,
+    "created_at": "2026-07-28T21:32:06Z",
+    "created_by": "Eric Lloyd",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "description": "problem: PR reviews: collapse per-review initiative topics into one shared reviews topic, and capture the missing 'waiting on external PR review' state\nrepo: /Users/erlloyd/Code/agent-teams\nworktree: /Users/erlloyd/.agent-teams-worktrees/pr-review-topic-noise-and-external-review-state\nbranch: pr-review-topic-noise-and-external-review-state\nteam: agent-teams-pr-review-topic-noise-and-external-review-state\nmode: bg\nepic: agent-teams-p9dm\n\n## Eric's ask (verbatim, via steward-direct)\n\n> Also, need another DRI to investigate some item's with PR reviews. First, pr\n> reviews are initiatives, so they show up as separate topics, but have no\n> comments. This is just noise. I would love a more condensed version, maybe a\n> single topic where all reviews are posted in a simpler format (starting\n> review, review complete).\n>\n> second, I'm noticing a state that isn't captured by our initiatives, and it's\n> once the work is waiting on external PR reviews. I'd like some thoughts on how\n> to capture this, because it's a little more subjective as to when a PR enters\n> this state.\n\nTwo items. Both are investigation-first. Item 2 he framed as wanting \"thoughts\" —\nthat means a design conversation with him, then a gate, then implementation. A\ndesign doc is not an acceptable final deliverable; land working code.\n\n## ⚠️ Scope collision — read this before touching any file\n\n**at-580q is IN-PROGRESS right now on Eric's MGT laptop and edits the same\nfiles.** Its worktree is `/Users/ericlloyd/.agent-teams-worktrees/review-pr-skill-close-the-initiative-citing`\n(different machine, same repo, both off `main`).\n\nat-580q's scope: make the review-pr skill CLOSE its initiative after posting the\nreview, citing the review URL — and check the `dispatch-review-pr` launch prompt\nfor the same gap. Files: `plugins/agent-teams/skills/review-pr/SKILL.md` and the\ndispatch-review-pr path.\n\nEric's item 1 here lands in the same place. Do not start editing those files\nwithout first checking at-580q's state (`ateam show at-580q`) and raising a gate\nwith Eric on sequencing if the two would conflict. Investigation and design cost\nnothing and can proceed now.\n\nNote also that at-580q is evidence FOR item 1: five review initiatives in one\nweek (at-h4vc, at-kmno, at-0d5g, at-u85y, at-961p) were left open after their\nreview was posted and the steward hand-closed each. That is the same noise Eric\nis complaining about, seen from the other end.\n\n## Pointers (steward recon only — verify everything yourself)\n\nRepo: `/Users/erlloyd/Code/agent-teams`\n\n**Item 1 — review initiatives as topics**\n- Skills: `plugins/agent-teams/skills/review-pr/`, `plugins/agent-teams/skills/dispatch-review-pr/`\n- Topic creation lives in the relay: `internal/verbs/relay.go`. There is already\n  precedent for a shared, non-per-initiative topic — the briefings topic, whose\n  contract is `BriefingHandle` (`internal/verbs/steward_seams.go:57`, handled in\n  `internal/verbs/notify.go` `runBriefing`, referenced at `relay.go:296`). A\n  single shared reviews topic would be the same shape. `DirectHandle`\n  (`steward_seams.go:67`) is a second example of a reserved non-initiative handle.\n- That precedent is the most promising path: a reserved handle, not a new\n  mechanism.\n\n**Item 2 — the missing \"waiting on external review\" state**\n- `internal/verbs/status.go` computes `execution_status` from labels, four rules:\n  1. `NEEDS-DECISION` — labels have `human` + `gate:question`\n  2. `IN-PROGRESS` — the joined session is actively working (this OVERRIDES a review gate)\n  3. `REVIEWABLE` — labels have `human` + `gate:review` and not actively working\n  4. `IN-PROGRESS` — everything else\n- Observation to start from: work parked on an external PR review has no session\n  actively working and no gate on Eric — it is waiting on *third parties*. So it\n  falls through to rule 4 and reports `IN-PROGRESS`. The state Eric noticed is\n  real and is currently being swallowed by the default bucket.\n- Eric flagged the hard part himself: deciding *when* a PR enters this state is\n  subjective. Get his judgment on the boundary before encoding one.\n- Consumers of the value: `dashboard/shared/types.ts`, `ateam execution-status`,\n  hung-scan, and the steward's own briefings.\n\n## Working notes\n\n- Phase 2 clarify with Eric on both items. He prefers plain prose over structured\n  pickers for design discussion, and ONE question per message when live.\n- Do not merge or push to main. Raise gates; Eric decides.\nsession: 1fd39816-23ba-4c91-a0be-2681612d085f\n",
+    "id": "at-jno7",
+    "issue_type": "task",
+    "labels": [
+      "thread:691"
+    ],
+    "notes": "session 1, 2026-07-28, bg. DRI resumed by id. Phase 0 preflight clean (ateam audit clean, epic agent-teams-p9dm exists). No standby field. Beginning Phase 2 investigation on both items in parallel.\n\n## at-jno7 — investigation complete, design ready for your call (session 1, 2026-07-28)\n\nTwo planners investigated both items. I verified every load-bearing claim myself\nagainst the source and against ",
+    "owner": "erlloyd@gmail.com",
+    "priority": 2,
+    "status": "open",
+    "title": "PR reviews: collapse per-review initiative topics into one shared review",
+    "updated_at": "2026-07-29T18:15:40Z"
+  },
+  {
+    "close_reason": "Review posted: https://github.com/MGT-Insurance/midgard/pull/4567#pullrequestreview-4813000430",
+    "closed_at": "2026-07-29T21:19:35Z",
+    "comment_count": 0,
+    "created_at": "2026-07-29T21:10:20Z",
+    "created_by": "Eric Lloyd",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "description": "problem: Review PR #4567 (MGT-Insurance/midgard)\nrepo: /Users/ericlloyd/Code/midgard\nworktree: /Users/ericlloyd/.agent-teams-worktrees/review-pr-4567-mgt-insurance-midgard\nbranch: review-pr-4567-mgt-insurance-midgard\nteam: midgard-review-pr-4567-mgt-insurance-midgard\nmode: bg\n\npr-number: 4567\npr-repo: MGT-Insurance/midgard\npr-url: https://github.com/MGT-Insurance/midgard/pull/4567\nsession: 0dc3cff1-6a74-44dc-ad07-ac3e42f40e26\n",
+    "id": "at-kbd2",
+    "issue_type": "task",
+    "labels": [
+      "thread:848"
+    ],
+    "notes": "review-posted: PR #4567 — 4 finding(s) (1 high, 2 design questions, 1 low test-coverage), event=COMMENT\n",
+    "owner": "erlloyd@gmail.com",
+    "priority": 2,
+    "status": "closed",
+    "title": "Review PR #4567 (MGT-Insurance/midgard)",
+    "updated_at": "2026-07-29T21:19:35Z"
+  },
+  {
+    "comment_count": 0,
+    "created_at": "2026-07-03T15:39:26Z",
+    "created_by": "Eric Lloyd",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "description": "problem: Enhancements to the Marvel Champions cardtable2 plugin (details to follow from Eric)\nrepo: /Users/erlloyd/Code/cardtable-plugin-marvelchampions\nworktree: /Users/erlloyd/.agent-teams-worktrees/enhancements-to-the-marvel-champions-cardtable2\nbranch: enhancements-to-the-marvel-champions-cardtable2\nteam: cardtable-plugin-marvelchampions-enhancements-to-the-marvel-champions-cardtable2\nmode: bg\nstandby: true\nepic: mc-1go\n\nEric's framing (verbatim from dispatch invocation):\n\n\"I want to make some enhancements to the marvel champions cardtable 2 plugin. Just spawn the DRI, I will give it more instructions\"\n\nEric has not yet specified what the enhancements are — he intends to provide further direction directly to this DRI session after it is spawned. Do not invent scope; wait for his follow-up instructions.\n",
+    "id": "at-o0v",
+    "issue_type": "task",
+    "labels": [
+      "gate:question",
+      "human",
+      "thread:7"
+    ],
+    "notes": "<<<ateam-ask\ndecision: Standby — waiting for direction\nrecommendation: Once released, begin Phase 2 clarify: investigate the cardtable2 repo/plugin structure and ask Eric what specific enhancements he wants\nalternative: Hold indefinitely for Eric's follow-up instructions; no other viable path without scope\n>>>",
+    "owner": "erlloyd@gmail.com",
+    "priority": 2,
+    "status": "open",
+    "title": "Enhancements to the Marvel Champions cardtable2 plugin (details to follo",
+    "updated_at": "2026-07-03T15:40:25Z"
+  }
+]

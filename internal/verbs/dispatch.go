@@ -14,6 +14,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -169,7 +170,18 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		base = c.git.DefaultBranch(repoRoot)
 	}
 
-	// 3. Slug.
+	// 3. Validate --problem, then derive the slug from it.
+	//
+	// --problem is documented as a one-line statement and is the ONLY
+	// human-supplied value in the routing header — every other field is
+	// machine-derived and cannot carry a newline. A multi-line value would look
+	// like a canonical field on its second line and win under first-wins, which
+	// is the bug this whole initiative exists to close. Reject it here, as the
+	// usage error it is, rather than ten lines later once the worktree exists.
+	if strings.ContainsAny(c.Problem, "\r\n") {
+		return cli.Usagef("dispatch: --problem must be a single line; put multi-line prose in --body-file, which is appended below the routing header")
+	}
+
 	resolvedSlug := c.Slug
 	if resolvedSlug == "" {
 		resolvedSlug = gitutil.Slugify(c.Problem)
@@ -202,26 +214,41 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		shortTitle = shortTitle[:72]
 	}
 
-	body := "problem: " + c.Problem + "\n" +
-		"repo: " + repoRoot + "\n" +
-		"worktree: " + wtPath + "\n" +
-		"branch: " + resolvedSlug + "\n" +
-		"team: " + team + "\n" +
-		"mode: bg\n"
-	if c.Standby {
-		body += "standby: true\n"
+	fields := initiative.Fields{
+		Problem:  c.Problem,
+		Repo:     repoRoot,
+		Worktree: wtPath,
+		Branch:   resolvedSlug,
+		Team:     team,
+		Mode:     "bg",
+		Standby:  c.Standby,
 	}
 
 	// Try to create a root epic bead in the project repo (fail-soft).
 	// repoRoot is already resolved above so no extraction is needed.
 	// Skipped when --skip-epic is set.
+	var epicID string
 	if !c.SkipEpic && c.createEpic != nil {
-		if epicID, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
+		if id, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
 			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not create root epic (fail-soft): %v\n", epicErr)
-		} else if epicID != "" {
-			body += "epic: " + epicID + "\n"
+		} else {
+			epicID = id
+			fields.Epic = id
 		}
 	}
+
+	// This is a BRAND-NEW initiative, which is the only thing initiative.New
+	// may compose (see internal/initiative/doc.go, frozen item 4). Its
+	// line-break rejection should be unreachable from here — --problem is
+	// guarded above and every other field is machine-derived — but it is the
+	// component's invariant, not ours, so the error is handled rather than
+	// discarded.
+	plan, err := initiative.New(fields)
+	if err != nil {
+		_ = c.git.RemoveWorktree(repoRoot, wtPath)
+		return fmt.Errorf("dispatch: %w", err)
+	}
+	body := plan.Description
 
 	if c.BodyFile != "" {
 		extra, err := os.ReadFile(c.BodyFile)
@@ -230,6 +257,15 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			return cli.Usagef("dispatch: --body-file %q: %v", c.BodyFile, err)
 		}
 		if len(strings.TrimSpace(string(extra))) > 0 {
+			// fields is exactly the header composed above, so CollisionsIn
+			// judges the body file against the keys that header actually
+			// wrote — by the same rule the reader uses, not a second one
+			// that happens to agree.
+			for _, col := range fields.CollisionsIn(string(extra)) {
+				fmt.Fprintf(ctx.Stderr,
+					"dispatch: warning: --body-file line %d redefines routing field %q (first-wins — this line is IGNORED; the header's value stands): %s\n",
+					col.Line, col.Key, col.Text)
+			}
 			body += "\n" + string(extra)
 		}
 	}
@@ -267,14 +303,13 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("dispatch: bd create returned no id (does this bd support --json on create?)")
 	}
 
-	// Label the root epic with the initiative ID (fail-soft).
-	// Skipped when --skip-epic is set.
-	if !c.SkipEpic {
-		if epicID := extractEpicID(body); epicID != "" {
-			cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
-			if err := cmd.Run(); err != nil {
-				fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
-			}
+	// Label the root epic with the initiative ID (fail-soft). epicID is the
+	// id createEpic returned above, empty when --skip-epic was set or the
+	// fail-soft branch fired.
+	if epicID != "" {
+		cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
 		}
 	}
 
@@ -415,7 +450,7 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
-	dir := worktreePath(issue.Description)
+	dir := initiative.Of(issue).Worktree
 	if dir == "" {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", c.ID)
 		return cli.Silent(1)
@@ -635,36 +670,8 @@ type gitRunner interface {
 	RemoveWorktree(repoRoot, wtPath string) error
 }
 
-// worktreePath extracts the value of the first "worktree: <path>" line from
-// description. Returns "" if no such line is present.
-func worktreePath(description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "worktree: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
-		}
-	}
-	return ""
-}
-
-// modeValue extracts the value of the first "mode: <value>" line from
-// description (e.g. "bg" or "interactive"). Returns "" if no such line is
-// present — legacy initiatives registered before this field existed.
-func modeValue(description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "mode: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "mode: "), " \t\r")
-		}
-	}
-	return ""
-}
-
-// extractEpicID scans body for the first "epic: <id>" line and returns the id.
-// Returns "" if no such line is present.
-func extractEpicID(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "epic: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "epic: "), " \t\r")
-		}
-	}
-	return ""
-}
+// The routing-field readers this file used to own (worktreePath, modeValue,
+// extractEpicID) and the --body-file redefinition scanner
+// (warnBodyFileFieldRedefinitions) are gone: reading goes through
+// initiative.Of, and the collision rule is initiative.Fields.CollisionsIn —
+// one rule shared with the reader rather than two that happen to agree.
