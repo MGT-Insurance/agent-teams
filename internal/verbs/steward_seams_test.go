@@ -1,6 +1,7 @@
 package verbs_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,9 @@ func TestStewardPaths(t *testing.T) {
 	}
 	if got, want := verbs.StewardBriefingThreadPath(ctx), filepath.Join("/fake/home", "steward", "briefing-thread"); got != want {
 		t.Errorf("StewardBriefingThreadPath = %q, want %q", got, want)
+	}
+	if got, want := verbs.StewardReviewsThreadPath(ctx), filepath.Join("/fake/home", "steward", "reviews-thread"); got != want {
+		t.Errorf("StewardReviewsThreadPath = %q, want %q", got, want)
 	}
 	if got, want := verbs.StewardDoorbellPath(ctx), filepath.Join("/fake/home", "mailbox", "steward.wake"); got != want {
 		t.Errorf("StewardDoorbellPath = %q, want %q", got, want)
@@ -525,15 +529,17 @@ func TestStewardTopicsKey(t *testing.T) {
 }
 
 // TestStewardTopicsRecord_MarshalParseRoundTrip verifies the frozen value
-// schema round-trips through JSON with the "briefing" field name.
+// schema round-trips through JSON with the "briefing" and "reviews" field
+// names (agent-teams-p9dm.7 added Reviews alongside the pre-existing
+// Briefing field).
 func TestStewardTopicsRecord_MarshalParseRoundTrip(t *testing.T) {
-	rec := verbs.StewardTopicsRecord{Briefing: "topic-1"}
+	rec := verbs.StewardTopicsRecord{Briefing: "topic-1", Reviews: "topic-2"}
 
 	value, err := rec.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if want := `{"briefing":"topic-1"}`; value != want {
+	if want := `{"briefing":"topic-1","reviews":"topic-2"}`; value != want {
 		t.Fatalf("Marshal = %q, want %q", value, want)
 	}
 
@@ -558,7 +564,11 @@ func TestParseStewardTopicsRecord_Malformed(t *testing.T) {
 // stays backward-compatible with records already published by peers on the
 // older schema: a value still carrying a "direct" key must parse cleanly,
 // with Direct simply dropped (Go's json.Unmarshal ignores unknown fields by
-// default).
+// default). The fixture also carries no "reviews" key, so this doubles as
+// coverage for agent-teams-p9dm.7's schema addition: a record from a peer
+// still on the OLDER schema (pre-Reviews) must parse with Reviews == "",
+// not fail — asserted implicitly by the struct equality below, since `want`
+// leaves Reviews at its zero value.
 func TestParseStewardTopicsRecord_ToleratesLegacyDirectField(t *testing.T) {
 	got, err := verbs.ParseStewardTopicsRecord(`{"briefing":"12","direct":"9"}`)
 	if err != nil {
@@ -566,6 +576,28 @@ func TestParseStewardTopicsRecord_ToleratesLegacyDirectField(t *testing.T) {
 	}
 	if want := (verbs.StewardTopicsRecord{Briefing: "12"}); got != want {
 		t.Errorf("ParseStewardTopicsRecord = %+v, want %+v", got, want)
+	}
+}
+
+// ── Shared PR-review topic (agent-teams-p9dm.7) ──────────────────────────────
+
+// TestReviewsStartLineFormat verifies the frozen two-line message the
+// dispatch --topic path posts to the shared Reviews topic renders verbatim
+// byte-for-byte, for both the title-available case and the prTitleFunc
+// fail-soft no-title case (agent-teams-p9dm.7's title-segment convention:
+// one frozen format string, the caller pre-composes the segment — " — " +
+// title when present, "" when absent — rather than a second
+// ...NoTitleFormat constant). No finding counts, no severity, no verdict in
+// either case.
+func TestReviewsStartLineFormat(t *testing.T) {
+	withTitle := fmt.Sprintf(verbs.ReviewsStartLineFormat, "4517", "midgard", " — Fix flaky retry logic", "https://github.com/MGT-Insurance/midgard/pull/4517")
+	if want := "Review started · #4517 midgard — Fix flaky retry logic\nhttps://github.com/MGT-Insurance/midgard/pull/4517"; withTitle != want {
+		t.Errorf("ReviewsStartLineFormat (with title) = %q, want %q", withTitle, want)
+	}
+
+	withoutTitle := fmt.Sprintf(verbs.ReviewsStartLineFormat, "4517", "midgard", "", "https://github.com/MGT-Insurance/midgard/pull/4517")
+	if want := "Review started · #4517 midgard\nhttps://github.com/MGT-Insurance/midgard/pull/4517"; withoutTitle != want {
+		t.Errorf("ReviewsStartLineFormat (no title, fail-soft) = %q, want %q", withoutTitle, want)
 	}
 }
 
