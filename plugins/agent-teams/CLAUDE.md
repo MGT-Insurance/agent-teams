@@ -95,7 +95,7 @@ Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. 
 Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
 
 - **Fresh:** `<role>:fresh:<slug>` — the default write tier. `ateam learn <role> <slug> --file <f>` (bare slug, no prefix) writes here automatically. Fresh memories accumulate between condense runs; `ateam learnings <role>` serves them alongside hot. Fresh is the "just written, not yet curated" tier and is periodically drained into cold by `ateam fresh-drain <role>`.
-- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct; target budget is ~6000 tokens (~15–25 learnings) across all hot keys for a role.
+- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct. The budget for a role's whole hot set (~15–25 learnings) is stated ONCE, in TOKENS, by the `hot_budget_tokens` field of the `ateam condense <role>` packet — read it there rather than restating it here or carrying a number in your head. There is no byte equivalent of that budget; the only byte limits in this model are the per-entry write-time caps (900 bytes hot and fresh, 1500 cold).
 - **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. Write explicitly with `ateam learn <role> cold:<slug> --file <f>` (the `cold:` prefix is stripped to produce the bare `role:<slug>` key). The existing pre-tier `dri:<slug>` memories are already cold with no migration needed.
 
 `ateam learnings <role>` serves the **hot ∪ fresh** union. It falls back to all `role:` keys only when BOTH hot and fresh are empty (preserving pre-tier behavior for roles with no curated set). All three tiers are living; cold is not a frozen archive.
@@ -113,7 +113,9 @@ Role memories use a three-tier key convention — the tier is encoded in the key
 
 ### Condensing (autonomous)
 
-Condensing is **lock-guarded** via `ateam condense-lock`. Use the `/agent-teams:condense` skill (no arg = all roles; `<role>` arg = single role) — do not call `ateam condense <role>` directly. The skill acquires the lock, skips cleanly if another session holds it, drains fresh into cold first (`ateam fresh-drain <role>`, deterministic, no LLM), then emits the condense packet (`ateam condense <role>`) for agent curation, and releases the lock on all exit paths.
+Condensing is **lock-guarded** via `ateam condense-lock`. Use the `/agent-teams:condense` skill (no arg = all roles; `<role>` arg = single role) — do not call `ateam condense <role>` directly. The skill acquires the lock, skips cleanly if another session holds it, emits the condense packet FIRST (`ateam condense <role>`) for agent curation, drains fresh into cold only afterward (`ateam fresh-drain <role>`, deterministic, no LLM, once the curated hot set has been written), and releases the lock on all exit paths.
+
+**That order is load-bearing — do not "tidy" it back.** The packet marks tiers by the prefix a key carries at read time, and `ateam fresh-drain` prints only a count, never the key list. Draining first would leave the just-served, un-curated entries shape-identical to long-settled cold in the packet, and those are precisely the entries the run must judge for promotion. Keeping the drain last also keeps `ateam condense` a pure read: a run that dies before curation has mutated nothing and retries clean.
 
 The condense agent applies changes directly via `ateam learn` and `ateam forget` — cold writes use `ateam learn <role> cold:<slug> --file <f>` (since bare `ateam learn` now writes fresh). There is NO human-review gate and NO staged diff — the agent acts autonomously.
 
