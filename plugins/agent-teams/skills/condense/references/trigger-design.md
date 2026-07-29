@@ -4,7 +4,9 @@ Reference material for `condense/SKILL.md`. The RULES this backs are stated inli
 
 ## Do not recompute the verdict
 
-The reason `ateam condense-check`'s printed verdict must never be recomputed by hand is not that a model computes the arithmetic badly. Commit dc77c80 rewrote this file's own budget line and left a contradictory byte gloss sitting inside the very clause it was editing, while a separate verify threshold went unrevisited entirely. Prose restatements of a constant desynchronise from it; a printed verdict cannot. A hand-sweep of this exact file is the fix that has already been tried and already failed.
+The reason `ateam condense-check`'s printed verdict must never be recomputed by hand is not that a model computes the arithmetic badly. Commit dc77c80 rewrote the budget line in `condense/SKILL.md` and left a contradictory byte gloss sitting inside the very clause it was editing, while a second stale threshold elsewhere in that same file went unrevisited entirely. Prose restatements of a constant desynchronise from it; a printed verdict cannot. A hand-sweep of SKILL.md is the fix that has already been tried and already failed.
+
+(Those particular stale figures are gone now. This is the precedent for the rule, not a live pointer at a bug.)
 
 ## Why total size cannot be a trigger
 
