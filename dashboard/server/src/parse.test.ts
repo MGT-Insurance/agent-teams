@@ -288,6 +288,24 @@ session: 1fd39816-23ba-4c91-a0be-2681612d085f
 const GOAL_HEADING_AT_Y7L9 =
   "GOAL: One user-facing INDUSTRY GROUP the user selects no matter which product they're quoting, keyed on NAICS codes — the first 4 digits of NAICS was suggested as the classification key.";
 
+// Captured from the REAL at-dxm5 initiative description (2026-07-29): three
+// hyphenated canonical keys — pr-number, pr-repo, pr-url — written and read
+// by an agent following a skill file, with no code (Go or TypeScript) that
+// models them by name. The field-set is open: this parser must see these
+// keys even though nothing declares them, per the rule added to
+// agent-teams-ully.8's contract after implementation started.
+const PR_KEYS_AT_DXM5 = `problem: Review PR #4526 (MGT-Insurance/midgard)
+repo: /Users/ericlloyd/Code/midgard
+worktree: /Users/ericlloyd/.agent-teams-worktrees/review-pr-4526-mgt-insurance-midgard
+branch: review-pr-4526-mgt-insurance-midgard
+team: midgard-review-pr-4526-mgt-insurance-midgard
+mode: bg
+
+pr-number: 4526
+pr-repo: MGT-Insurance/midgard
+pr-url: https://github.com/MGT-Insurance/midgard/pull/4526
+`;
+
 describe("parseDescriptionFields — strict field rule (agent-teams-ully.8)", () => {
   it("the real poisoned description (at-jno7): a canonical repo: line, then a later 'Repo: `...`' prose line, resolves to the UNPOISONED value", () => {
     const fields = parseDescriptionFields(POISONED_DESCRIPTION_AT_JNO7);
@@ -323,6 +341,38 @@ describe("parseDescriptionFields — strict field rule (agent-teams-ully.8)", ()
   it("rejects leading whitespace before the key ('  repo: x')", () => {
     const fields = parseDescriptionFields("  repo: x\n");
     expect(fields["repo"]).toBeUndefined();
+  });
+
+  it("a value that is whitespace-only after the single mandatory space ('repo: ' with nothing else) populates nothing — we require at least one non-whitespace character in the value", () => {
+    const fields = parseDescriptionFields("repo: \n");
+    expect(fields["repo"]).toBeUndefined();
+  });
+
+  it("parses hyphenated keys (the real at-dxm5 pr-number/pr-repo/pr-url fields) — the key set is open, not a closed union", () => {
+    const fields = parseDescriptionFields(PR_KEYS_AT_DXM5);
+    expect(fields["pr-number"]).toBe("4526");
+    expect(fields["pr-repo"]).toBe("MGT-Insurance/midgard");
+    expect(fields["pr-url"]).toBe("https://github.com/MGT-Insurance/midgard/pull/4526");
+    // Unmodeled keys are returned too, not dropped or warned on — parseInitiative
+    // simply doesn't pick them out, but parseDescriptionFields itself is indifferent.
+    expect(fields["repo"]).toBe("/Users/ericlloyd/Code/midgard");
+  });
+
+  it("a multi-valued hyphenated key (the real at-2mol track-worktree field, repeated 5x) resolves to the FIRST", () => {
+    const fields = parseDescriptionFields(
+      "track-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-dto\n" +
+        "track-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-builder\n" +
+        "track-worktree: /Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-tester\n",
+    );
+    expect(fields["track-worktree"]).toBe(
+      "/Users/ericlloyd/.agent-teams-worktrees/midgard-2mol-dto",
+    );
+  });
+
+  it("strips a trailing CRLF \\r from the captured value instead of leaving it embedded", () => {
+    const fields = parseDescriptionFields("repo: /first\r\nworktree: /second\r\n");
+    expect(fields["repo"]).toBe("/first");
+    expect(fields["worktree"]).toBe("/second");
   });
 });
 

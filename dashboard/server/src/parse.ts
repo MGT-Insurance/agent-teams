@@ -48,10 +48,12 @@ export function extractEpic(description: string, notes: string): string | null {
 // Parse the `key: value` lines embedded in description text, per the frozen
 // strict field rule (agent-teams-ully.5 — mirrored 1:1 from the Go component
 // this dashboard cannot import, since it's a separate deploy/language): a
-// field line is column 0 (no leading whitespace), an exact-lowercase key, a
-// single colon, a single space, then a non-empty value. No case folding, no
-// tolerance for a missing/doubled space after the colon. FIRST occurrence of
-// a key wins; later occurrences are ignored.
+// field line is column 0 (no leading whitespace), an exact-lowercase key
+// (letters, digits, and hyphens — e.g. "track-worktree", "pr-number"), a
+// single colon, a single space, then a non-empty value that does not start
+// with whitespace. No case folding, no tolerance for a missing/doubled space
+// after the colon. FIRST occurrence of a key wins; later occurrences are
+// ignored.
 //
 // This is deliberately strict, not lenient: a mis-cased echo ("Repo: ..."),
 // a list-item ("- repo: ..."), or an ALL-CAPS prose heading ("GOAL: ...")
@@ -60,11 +62,19 @@ export function extractEpic(description: string, notes: string): string | null {
 // real incident this fixes: a briefing line re-stated the repo path as
 // "Repo: `/path`" (wrong case, backtick-wrapped) further down the same
 // description, and the old last-wins/case-folding parser took it.
-const FIELD_LINE_RE = /^([a-z]+): (\S.*)$/;
+//
+// The set of canonical keys is NOT closed here — new keys (e.g. at-dxm5's
+// pr-number/pr-repo/pr-url, written by an agent following a skill file, no
+// code involved on either end) can appear with no code change anywhere.
+// This function is indifferent to which keys it sees: it returns everything
+// that matches the line shape and lets callers pick out what they need.
+const FIELD_LINE_RE = /^([a-z][a-z0-9-]*): (\S.*)$/;
 
 export function parseDescriptionFields(desc: string): Record<string, string> {
   const result: Record<string, string> = {};
-  for (const line of desc.split("\n")) {
+  // Split on \r?\n so a CRLF-terminated description doesn't leave a
+  // trailing \r inside the captured value.
+  for (const line of desc.split(/\r?\n/)) {
     const m = FIELD_LINE_RE.exec(line);
     if (!m) continue;
     const key = m[1];
