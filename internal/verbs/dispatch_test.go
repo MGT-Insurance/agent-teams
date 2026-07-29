@@ -759,6 +759,202 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 	}
 }
 
+// ---- dispatch: --body-file field-redefinition warning ----------------------
+//
+// warnBodyFileFieldRedefinitions (dispatch.go) warns to stderr when a
+// --body-file line's key (per parseDescriptionFields' exact rule) collides
+// with a routing field the header already wrote — see agent-teams-ully.1.
+// The redefining lines below are built by concatenation rather than as a
+// literal line in a raw string block, per the bead's own hazard note: a
+// source line literally starting "Repo:" would reproduce the bug this
+// change guards against.
+
+// TestDispatch_BodyFileWarnsOnFieldRedefinition covers case 1: a body-file
+// line that redefines the "repo" field the header wrote produces a stderr
+// warning naming the 1-based line number and the field.
+func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	redefineLine := "Rep" + "o: /bogus/other/repo"
+	bodyContent := "Some prose framing the task.\n" + redefineLine + "\nMore prose after.\n"
+
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := stderr.String()
+	if !strings.Contains(got, "line 2") {
+		t.Errorf("stderr missing 1-based line number 2:\n%s", got)
+	}
+	if !strings.Contains(got, `"repo"`) {
+		t.Errorf("stderr missing redefined field name %q:\n%s", "repo", got)
+	}
+	if !strings.Contains(got, redefineLine) {
+		t.Errorf("stderr missing offending line text:\n%s", got)
+	}
+}
+
+// TestDispatch_BodyFileNoWarningWithoutCollision covers case 2: a body file
+// with no field-shaped line produces no stderr output at all.
+func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	bodyContent := "Just some framing prose.\nNo colons here that matter.\nDone.\n"
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn2"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stderr.String() != "" {
+		t.Errorf("expected no stderr output, got:\n%s", stderr.String())
+	}
+}
+
+// TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine covers case 3, the one
+// that matters most: a briefing line beginning with a hyphen and a space
+// before the capitalised word parses to a DIFFERENT key ("- repo", not
+// "repo") and must NOT warn. This is the exact one-character reason sibling
+// initiative at-ig53 escaped the original bug; a warning firing here is a
+// false positive on the most common briefing style.
+func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	// Safe to write literally: this line does not begin with a routing-field
+	// word followed by a colon — it begins with "- ".
+	bodyContent := "- Repo: use the conventional commit style for this one\nOther prose.\n"
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn3"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stderr.String() != "" {
+		t.Errorf("hyphen-prefixed line must not warn (false positive), got:\n%s", stderr.String())
+	}
+}
+
+// TestDispatch_BodyFileWarningIsCaseInsensitive covers case 4: the real
+// incident line used a capital first letter, so the key must be lowercased
+// before comparing against the header's field set.
+func TestDispatch_BodyFileWarningIsCaseInsensitive(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	redefineLine := "BRAN" + "CH: totally-wrong-branch"
+	bodyContent := redefineLine + "\n"
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn4"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := stderr.String()
+	if !strings.Contains(got, "line 1") {
+		t.Errorf("stderr missing 1-based line number 1:\n%s", got)
+	}
+	if !strings.Contains(got, `"branch"`) {
+		t.Errorf("stderr missing lowercased field name %q:\n%s", "branch", got)
+	}
+}
+
 // ---- new-initiative: arg validation ----------------------------------------
 
 func TestNewInitiative_MissingDirectory(t *testing.T) {
