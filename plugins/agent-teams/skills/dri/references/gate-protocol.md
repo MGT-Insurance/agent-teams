@@ -23,12 +23,33 @@ The dashboard joins the initiative to any live Claude session whose `cwd` matche
 
 1. **NEEDS-DECISION** — `human` + `gate:question` labels present. Highest human priority.
 2. **IN-PROGRESS** — the joined session is actively working (`status == "busy"` / `state == "working"`). This **overrides** the review gate. A DRI that keeps working on a PR after opening it (e.g. improving the diff) correctly reads as IN-PROGRESS.
-3. **REVIEWABLE** — `human` + `gate:review` present AND no actively-working session.
+3. `human` + `gate:review` present AND no actively-working session. Three-way, first match wins:
+   - a **merge check** succeeded and GitHub reports the PR MERGED or CLOSED → **STALE-MERGED**. Finished work, not a review; it needs a close-out, not Eric's attention.
+   - the initiative carries the **`external-review` label** → **AWAITING-EXTERNAL-REVIEW**. Eric has declared he is done looking; the PR is with the team.
+   - otherwise → **REVIEWABLE**.
 4. **IN-PROGRESS** — open initiative, no review/question gate.
 
 Conservative rule: while the DRI's session is still running — including wind-down tidying — the initiative reads as IN-PROGRESS. It flips to REVIEWABLE only once the session goes idle or exits. This is intentional: the dashboard never tells the human to review too early, even if the PR is technically stable while the DRI is still cleaning up.
 
 The DRI sets NO phase field and maintains no status field. The run/park state of its session IS the signal.
+
+### REVIEWABLE means awaiting ERIC
+
+REVIEWABLE means **work genuinely awaiting Eric, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a merged PR and a PR Eric has already handled are both rows that need nothing from him, and neither belongs in the queue that says it does.
+
+**Only Eric moves work out of REVIEWABLE.** The merge check can retire a row that GitHub has objectively finished; everything else waits on him.
+
+### 🚨 The DRI must NEVER declare the handoff
+
+`ateam handoff <id>` writes the `external-review` label. **It is Eric's verb. A DRI must never run it** — not at delivery, not at wind-down, not "to be helpful."
+
+The reason is not etiquette, it is arithmetic: the label asserts *"Eric has looked at this PR and is done with it."* At delivery Eric has not looked at it yet — the PR is minutes old — so the answer is always no. A DRI that runs `ateam handoff` at delivery hides the PR from the one person who still needs to see it, and it disappears to the bottom of `/initiatives` with no one waiting on it. This is the single most likely misuse of the verb.
+
+Underneath the arithmetic is the principle: **it is an agent asserting the human's state on the human's behalf.** Whether Eric has finished looking at something is a fact only Eric holds. That is the same failure this initiative exists to correct — the previous design inferred his attention from GitHub's reviewer assignments, and he rejected it flatly, because "as soon as a PR is created, it automatically adds other reviewers. That doesn't mean I have looked at it." Guessing the fact from a label you wrote yourself is the same error with a shorter causal chain.
+
+The same arithmetic is why the declaration cannot ride on the delivery gate: `ateam gate --kind=review` fires at the moment the answer to "are you done looking?" is guaranteed to be no. The two are different facts and stay separate labels.
+
+Nor is there a new gate kind for this. `gate:external` was considered and rejected: `hung_scan.go` tests for `gate:question`/`gate:review` specifically, so a third kind would drop the initiative into the DEAD escalation ladder — the exact noise this exists to remove. The `external-review` label is additive; `human` and `gate:review` stay put.
 
 ## Structured ask form (primary)
 
@@ -100,6 +121,6 @@ Provenance: at-9qfb (2026-07-22) — a planner's mechanism-driven pivot was self
 3. **While parked:** keep every workstream that does not depend on the answer moving. Parking the question never parks the team.
 4. **On answer/merge:** clear the flag — write the response to a temp file if multi-line, then:
    `ateam clear-gate <initiative-id> --file /tmp/gate-response.txt`
-   (Or without `--file` to just remove the labels when no comment is needed.) `clear-gate` removes the `human` label AND any `gate:*` label regardless of kind. Note the resolution on the initiative, then proceed. (`bd human respond/dismiss` are broken in bd 1.0.4 — the label-remove workaround is the verified path; see the framework repo's docs/verifications.md.)
+   (Or without `--file` to just remove the labels when no comment is needed.) `clear-gate` removes the `human` label AND any `gate:*` label regardless of kind — **and the `external-review` label if present.** That last part is what makes the state total: resuming work on a handed-off initiative, or closing it out, wipes the declaration, so the initiative can never be left asserting "Eric is done looking" about a PR that has moved on. This is also the DRI's only sanctioned interaction with that label — clearing it as a side effect of `clear-gate`, never setting it. No wind-down change is needed for the merge path: references/wind-down.md step 9 already runs `ateam clear-gate <id>` before `ateam close` on merge, so the close-out picks this up for free. Note the resolution on the initiative, then proceed. (`bd human respond/dismiss` are broken in bd 1.0.4 — the label-remove workaround is the verified path; see the framework repo's docs/verifications.md.)
 
 Why this must never vary: the flag is the only machine-wide signal that an initiative is waiting on a human. A gate raised any other way is invisible.

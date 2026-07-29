@@ -103,7 +103,9 @@ Absent that confirmation: status note `delivered` with the PR link, leave the in
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This is the DRI's explicit "ready for you" intent bit, making the initiative *eligible* for REVIEWABLE — the dashboard computes the actual status from execution-state (gate + the live session's run/park state), not the gate alone, so it never surfaces IN-PROGRESS work as reviewable and you need not worry about raising the gate slightly early. Full execution-state model: references/gate-protocol.md ("The review gate and execution-state").
+This is the DRI's explicit "ready for you" intent bit, making the initiative *eligible* for REVIEWABLE — the dashboard computes the actual status from execution-state, not the gate alone, so a live session keeps IN-PROGRESS work off the review list and you need not worry about raising the gate slightly early.
+
+**Never run `ateam handoff`.** It declares that *Eric* has finished looking — a fact only he holds, and the only thing that moves a row out of his queue. At delivery he has not looked yet, so a DRI running it asserts the human's state on his behalf and hides the PR from the person who needs to see it. Full model: references/gate-protocol.md ("The review gate and execution-state").
 
 Opening a PR without setting this gate is incomplete — and opening a PR is not completion; the initiative stays open until its PR is merged or a human explicitly closes it, so a future no-parameter /dri must be able to resume it as an open match. (The close itself happens later — on a resume that observes the PR merged, or on explicit human direction.)
 
