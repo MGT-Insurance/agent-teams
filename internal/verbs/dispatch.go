@@ -416,28 +416,42 @@ func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue, body
 // close-closes-it-for-everyone) that make a shared topic addressed by
 // per-initiative labels actively broken.
 //
-// The title is the topic NAME on first creation, so it must be the same
-// "Reviews" that notify's runReviews defaults to — dispatch is in practice
-// the first send, and passing issue.Title here would name the shared topic
-// after whichever PR happened to be reviewed first.
+// ReviewsTopicTitle, not issue.Title: the title is the topic NAME at
+// creation and dispatch is in practice the first send, so passing the
+// initiative's own title would name the shared topic after whichever PR
+// happened to be reviewed first.
 //
 // Fail-soft like its caller: a missing/failed send is warned, never fatal.
 func (c *dispatchKong) sendSharedTopicLine(ctx *cli.Context, t transport.Transport, body string) {
 	prNumber := extractBodyField(body, "pr-number")
 	ownerRepo := extractBodyField(body, "pr-repo")
 	prURL := extractBodyField(body, "pr-url")
-	if prNumber == "" || ownerRepo == "" || prURL == "" {
-		// Unreachable from the two real callers (route.go's
-		// spawnReviewInitiative and the dispatch-review-pr skill both always
-		// write all three). Posting a half-rendered line into a shared feed
-		// is worse than posting nothing, so skip rather than send.
-		fmt.Fprintf(ctx.Stderr, "dispatch: warning: --topic %s but the initiative body has no pr-number/pr-repo/pr-url — nothing posted to the shared topic (fail-soft)\n", c.Topic)
+
+	// Unreachable from the two real callers (route.go's spawnReviewInitiative
+	// and the dispatch-review-pr skill both always write all three). Unlike
+	// the PR title, which is optional by design, these three are the line's
+	// identity and its affordance — so posting a half-rendered line into the
+	// feed this initiative exists to de-noise is worse than posting nothing.
+	// The warning names the absent keys: without them, a caller that forgot
+	// one sees only a dispatch that succeeded with no line in the topic.
+	var missing []string
+	for _, f := range []struct{ key, value string }{
+		{"pr-number", prNumber},
+		{"pr-repo", ownerRepo},
+		{"pr-url", prURL},
+	} {
+		if f.value == "" {
+			missing = append(missing, f.key)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: --topic %s but the initiative body has no %s — nothing posted to the shared topic (fail-soft)\n", c.Topic, strings.Join(missing, ", "))
 		return
 	}
 
 	msg := transport.OutboundMessage{
 		InitiativeID: ReviewsHandle,
-		Title:        "Reviews",
+		Title:        ReviewsTopicTitle,
 		Body:         fmt.Sprintf(ReviewsStartLineFormat, prNumber, filepath.Base(ownerRepo), c.titleSegment(ctx, ownerRepo, prNumber), prURL),
 		Sender:       sentlog.KindDispatch,
 	}

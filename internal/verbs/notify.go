@@ -333,7 +333,7 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 func (c *notifyKong) runReviews(ctx *cli.Context, body string) error {
 	title := c.Title
 	if title == "" {
-		title = "Reviews"
+		title = ReviewsTopicTitle
 	}
 
 	home := workspace.Home()

@@ -2065,8 +2065,8 @@ func TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel(t *testing.T) {
 	if sent.InitiativeID != ReviewsHandle {
 		t.Errorf("InitiativeID = %q, want %q", sent.InitiativeID, ReviewsHandle)
 	}
-	if sent.Title != "Reviews" {
-		t.Errorf("Title = %q, want %q (the shared topic's name, not the initiative's)", sent.Title, "Reviews")
+	if sent.Title != ReviewsTopicTitle {
+		t.Errorf("Title = %q, want %q (the shared topic's name, not the initiative's)", sent.Title, ReviewsTopicTitle)
 	}
 	wantBody := "Review started · #4517 midgard — Fix flaky retry logic\n" + testPRURL
 	if sent.Body != wantBody {
@@ -2225,6 +2225,49 @@ func TestDispatch_NoTopic_LeavesEagerPathAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(StewardReviewsThreadPath(ctx)); !os.IsNotExist(err) {
 		t.Errorf("the shared reviews thread-ref file must not be touched without --topic (stat err = %v)", err)
+	}
+}
+
+// TestDispatch_TopicReviews_MissingPRMetadata_NamesTheKey confirms a body
+// without the PR metadata posts nothing rather than a half-rendered line,
+// and that the warning NAMES the absent keys — otherwise a caller that
+// forgot one sees a dispatch that succeeded with no line in the topic and
+// nothing to chase.
+func TestDispatch_TopicReviews_MissingPRMetadata_NamesTheKey(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-rev5"
+			}
+			return nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "905"}
+	cmd := reviewDispatch(t, repoDir, "review-no-metadata", ft,
+		func(ownerRepo string, prNumber int) (string, error) { return "Fix flaky retry logic", nil },
+		func(b cli.BDRunner, id, label string) error { return nil })
+	// pr-number and pr-url present, pr-repo absent.
+	cmd.BodyFile = makeTempBodyFile(t, "pr-number: 4517\npr-url: "+testPRURL+"\n")
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("a body missing PR metadata must never fail dispatch, got: %v", err)
+	}
+
+	if len(ft.calls) != 0 {
+		t.Fatalf("expected no Send, got %d (a half-rendered line must not reach the shared feed)", len(ft.calls))
+	}
+	if !strings.Contains(stderr.String(), "pr-repo") {
+		t.Errorf("warning must name the missing key, got: %q", stderr.String())
+	}
+	for _, present := range []string{"pr-number", "pr-url"} {
+		if strings.Contains(stderr.String(), present) {
+			t.Errorf("warning names %s, which was present: %q", present, stderr.String())
+		}
 	}
 }
 
