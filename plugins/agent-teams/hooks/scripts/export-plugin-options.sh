@@ -6,7 +6,7 @@
 # dispatch` / `resume` (invoked as Bash calls from /dispatch-dri and friends)
 # read CLAUDE_PLUGIN_OPTION_USE_ADVISORS and CLAUDE_PLUGIN_OPTION_DRI_MODEL to
 # decide whether a DRI session launches sonnet+opus-advisor vs the default
-# opus, and which model fills the "strong model" slot (advisor model when
+# opus[1m], and which model fills the "strong model" slot (advisor model when
 # advisors are on, the DRI session's own model when advisors are off).
 # Without this hook those vars are never present at dispatch time, so advisor
 # mode and dri_model would silently never take effect.
@@ -32,7 +32,12 @@ set -eu
 [ -n "${CLAUDE_ENV_FILE:-}" ] || exit 0
 
 use_advisors="${CLAUDE_PLUGIN_OPTION_USE_ADVISORS:-false}"
-dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-opus}"
+# The [1m] suffix is load-bearing, not cosmetic: plain "opus" resolves to a
+# sub-1M context window, which makes Claude Code cap its auto-compact window at
+# 200k and summarise at ~167k tokens. Long DRI sessions then compact many times
+# over, each round dropping the session to ~28k. With opus[1m] the same
+# threshold lands at ~967k. Do not "simplify" this back to opus.
+dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-opus[1m]}"
 
 printf 'export CLAUDE_PLUGIN_OPTION_USE_ADVISORS=%s\n' "$use_advisors" >> "$CLAUDE_ENV_FILE"
 printf 'export CLAUDE_PLUGIN_OPTION_DRI_MODEL=%s\n' "$dri_model" >> "$CLAUDE_ENV_FILE"
