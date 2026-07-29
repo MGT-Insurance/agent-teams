@@ -107,7 +107,7 @@
 //	}
 //
 //	func Of(iss bd.Issue) Fields                        // READ SEAM
-//	func New(f Fields) WritePlan                         // WRITE SEAM (new initiatives only — see item 4)
+//	func New(f Fields) (WritePlan, error)                // WRITE SEAM (new initiatives only — see item 4)
 //	func WithSession(iss bd.Issue, id string) (WritePlan, error)
 //	func WithTrack(iss bd.Issue, path string) (WritePlan, error)
 //
@@ -118,6 +118,25 @@
 //
 //	type Collision struct { Line int; Key string; Text string }
 //	func (f Fields) CollisionsIn(bodyText string) []Collision
+//
+// [New] returns an error, a deviation from this contract's original listing
+// (which showed "func New(f Fields) WritePlan", no error) discovered during
+// implementation review, not decided here: a value containing a line break
+// would inject a fake field line into the composed description that wins
+// under first-wins (frozen item 1), so New validates and rejects rather than
+// silently composing broken output. There are zero callers of New today, so
+// this signature change has zero blast radius.
+//
+// [Fields.Standby] only ever tells you the WRITE half of the standby
+// lifecycle. [New] writes a "standby: true" header line and [Of] parses it
+// back — but nothing ever appends a change to that line, because the
+// "released" half of the lifecycle is recorded in bd Notes ("standby:
+// released"), a field [Of] never looks at (it only reads Description). So
+// once an initiative is created with standby: true, [Of](iss).Standby stays
+// true forever, even after release — checking it alone is not a reliable
+// "is this initiative currently on standby" test. A correct reader needs
+// both Description (via [Of]) and Notes; do not build one that trusts
+// Fields.Standby in isolation.
 //
 // [Of] takes the whole bd.Issue, not just its Description field. bd.Issue
 // already carries both Description and Labels, and [WritePlan] already has

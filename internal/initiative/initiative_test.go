@@ -18,37 +18,35 @@ import (
 // ---------------------------------------------------------------------------
 
 // at-jno7's real header plus its real "## Pointers" section, which contains
-// (at the real position, line 74 of `ateam show at-jno7`) a standalone,
-// case-folded "Repo: ..." line — no list-dash, no backticks. This is the
-// shape bead agent-teams-ully.1 (Eric's original root-cause bead, TESTS
-// item 4) names directly: "the incident line used a capital first letter."
+// (at the real position, under "## Pointers") the actual poisoned line that
+// caused the incident this package exists to fix. This is a REAL captured
+// incident line from at-jno7 (2026-07-28), not a synthetic case, verified
+// byte-exact by team-lead against raw `bd list --json` output plus `od -c`
+// (not `ateam show`'s rendered output, which strips markdown backticks and
+// would silently produce a lossy copy of this fixture):
 //
-// bead .6's own test-1 spec instead describes the incident line as "wrapped
-// in backticks." That does not survive a mechanical check: parseDescriptionFields
-// (internal/verbs/route_match.go:29-42) computes
-// key = strings.ToLower(strings.TrimSpace(line[:colon])) — TrimSpace strips
-// whitespace only, never backticks — so any backtick touching the key before
-// the colon, in a line like "`repo: ...`" or "`repo`: ...", makes key !=
-// "repo" and the line never collides under parseDescriptionFields either.
-// The only shape
-// that (a) collides under parseDescriptionFields's case-insensitive map write
-// AND (b) is "structurally invisible" under this package's case-sensitive
-// fieldLine (frozen item 1) is a case-folded key — exactly bead .1's
-// description, and exactly what is live in at-jno7 today. Bead .5's own
-// census (comment, 2026-07-29 01:48) independently lists "a backticked
-// mention inside at-j4dy's own briefing" as a SEPARATE, fourth non-canonical
-// line, distinct from "the at-jno7 incident line" — the most likely
-// explanation is bead .6's test-1 spec conflated that unrelated backticked
-// mention with the actual at-jno7 mechanism. Flagged to team-lead
-// (msg_id 76adbdfd-1bf4-4360-8803-131fa937c29e); proceeding on the
-// mechanically-verified capital-letter reading pending a reply.
+//	Repo: `/Users/erlloyd/Code/agent-teams`
 //
-// at-jno7's line 74 value today already matches the canonical header value
-// (line 9) — it reads as hand-patched post-incident, capitalization left as
-// residue. The wrong value below is reconstructed to demonstrate the
-// collision this line caused at the time of the incident; everything else
-// (header, section structure, the line's real position under "## Pointers")
-// is verbatim.
+// Two mechanisms combine to make this line dangerous:
+//
+//  1. Capital "R" — under today's parseDescriptionFields
+//     (internal/verbs/route_match.go:29-42), key :=
+//     strings.ToLower(strings.TrimSpace(line[:colon])) folds "Repo" to
+//     "repo", so this line collides with the canonical "repo:" header line
+//     and, being case-insensitive/last-wins, overwrites it.
+//  2. The value is wrapped in backticks — strings.TrimSpace never strips
+//     backticks, so the value that wins is the literal string
+//     "`/Users/erlloyd/Code/agent-teams`", not a real filesystem path. That
+//     is what made the collision POISON rather than a harmless duplicate:
+//     the backtick-wrapped string fails gitRepoMatches
+//     (internal/verbs/routing_ownership.go), so the initiative resolved to
+//     no local claimant at all.
+//
+// Nothing about at-jno7 has been hand-patched — this line is still live and
+// still poisoned today. Under this package's fieldLine (frozen item 1,
+// exact-lowercase key, no case folding), "Repo: ..." is structurally
+// invisible regardless of the backticks: capital R alone already fails
+// keyPattern, so Of never even reaches the value.
 const jno7Description = `problem: PR reviews: collapse per-review initiative topics into one shared reviews topic, and capture the missing 'waiting on external PR review' state
 repo: /Users/erlloyd/Code/agent-teams
 worktree: /Users/erlloyd/.agent-teams-worktrees/pr-review-topic-noise-and-external-review-state
@@ -63,7 +61,7 @@ epic: agent-teams-p9dm
 
 ## Pointers (steward recon only — verify everything yourself)
 
-Repo: /Users/erlloyd/old-clones/agent-teams
+Repo: ` + "`" + `/Users/erlloyd/Code/agent-teams` + "`" + `
 `
 
 // at-y7l9's real header plus a real all-caps "GOAL:" prose heading. Confirmed
@@ -150,24 +148,30 @@ func parseDescriptionFieldsLenient(text string) map[string]string {
 	return result
 }
 
-// TestOf_JNO7PoisonedRepoResolvesUnpoisoned is bead .6's required test 1: a
-// prose line deep in the description (here, at-jno7's real "Repo: ..." line
-// under its real "## Pointers" heading) redefines the repo key. Under
-// today's parseDescriptionFields this line DOES win (case-insensitive,
-// last-wins) — asserted below via parseDescriptionFieldsLenient, so this
-// fixture genuinely witnesses the incident rather than a shape that was
-// never actually dangerous. Of must resolve to the canonical header value
-// regardless, because "Repo" fails frozen item 1's no-case-folding rule.
+// TestOf_JNO7PoisonedRepoResolvesUnpoisoned is bead .6's required test 1,
+// using the real captured incident line (see the jno7Description doc
+// comment): "Repo: `/Users/erlloyd/Code/agent-teams`" — capital R,
+// backtick-wrapped value. Under today's parseDescriptionFields this line
+// DOES win (case-insensitive, last-wins, and TrimSpace never strips the
+// backticks) — asserted below via parseDescriptionFieldsLenient against the
+// exact poisoned value, so this fixture genuinely witnesses the incident
+// rather than a shape that was never actually dangerous. Of must resolve to
+// the canonical, un-backticked header value regardless, because "Repo"
+// fails frozen item 1's no-case-folding rule and is structurally invisible
+// to fieldLine.
 func TestOf_JNO7PoisonedRepoResolvesUnpoisoned(t *testing.T) {
+	const canonicalRepo = "/Users/erlloyd/Code/agent-teams"
+	const poisonedRepo = "`/Users/erlloyd/Code/agent-teams`"
+
 	lenient := parseDescriptionFieldsLenient(jno7Description)
-	if lenient["repo"] != "/Users/erlloyd/old-clones/agent-teams" {
-		t.Fatalf("fixture does not witness the incident: today's lenient reader resolves repo to %q, want the poisoned value — this test would be a straw man", lenient["repo"])
+	if lenient["repo"] != poisonedRepo {
+		t.Fatalf("fixture does not witness the incident: today's lenient reader resolves repo to %q, want the poisoned value %q — this test would be a straw man", lenient["repo"], poisonedRepo)
 	}
 
 	f := initiative.Of(bd.Issue{ID: "at-jno7", Description: jno7Description})
 
-	if f.Repo != "/Users/erlloyd/Code/agent-teams" {
-		t.Errorf("Repo = %q, want unpoisoned canonical header value %q (poisoned value was %q)", f.Repo, "/Users/erlloyd/Code/agent-teams", "/Users/erlloyd/old-clones/agent-teams")
+	if f.Repo != canonicalRepo {
+		t.Errorf("Repo = %q, want unpoisoned canonical header value %q (poisoned value was %q)", f.Repo, canonicalRepo, poisonedRepo)
 	}
 	if f.Problem == "" || f.Worktree == "" || f.Branch == "" || f.Team == "" || f.Mode == "" || f.Epic != "agent-teams-p9dm" {
 		t.Fatalf("canonical header fields did not parse: %+v", f)
@@ -343,5 +347,152 @@ func TestWithSession_PreservesUnmodeledCanonicalKeysByteIdentical(t *testing.T) 
 	}
 	if len(got.Sessions) != 1 || got.Sessions[0] != "sess-abc123" {
 		t.Errorf("Sessions after append = %v, want [sess-abc123]", got.Sessions)
+	}
+}
+
+// TestOf_TabAsFirstValueCharacterIsRejected is team-lead review 2026-07-29,
+// divergence 3: fieldLine's original guard only checked for a literal second
+// space (rest[1] == ' '), so "repo:\t/tabbed" wrongly passed as a field
+// line with value "/tabbed". The TS mirror requires \S as the first value
+// character — ANY whitespace immediately after the mandatory single space
+// must reject the line, not just another space.
+func TestOf_TabAsFirstValueCharacterIsRejected(t *testing.T) {
+	desc := "problem: p\n" +
+		"repo: \t/tabbed\n" +
+		"worktree: /w\n" +
+		"branch: b\n" +
+		"team: t\n" +
+		"mode: bg\n"
+
+	f := initiative.Of(bd.Issue{ID: "at-tabfirst", Description: desc})
+
+	if f.Repo != "" {
+		t.Errorf(`Repo = %q, want "" (a tab as the first value character is not a field line)`, f.Repo)
+	}
+}
+
+// TestOf_NonKeyCharsetLinesPopulateNothing is team-lead review 2026-07-29,
+// divergence 4: fieldLine's key check must match keyPattern
+// (^[a-z][a-z0-9-]*$, TS parity), not merely "all-lowercase with no
+// internal space." Each of these lines is all-lowercase and colon-shaped
+// but must not read as a field line: a path-like prose key, an underscore
+// (TS parity forbids '_', only hyphen is allowed), and a non-ASCII letter.
+func TestOf_NonKeyCharsetLinesPopulateNothing(t *testing.T) {
+	desc := "problem: p\n" +
+		"repo: /r\n" +
+		"worktree: /w\n" +
+		"branch: b\n" +
+		"team: t\n" +
+		"mode: bg\n" +
+		"./scripts/build.sh: rebuilds the binaries\n" +
+		"a_b: underscore is not in keyPattern\n" +
+		"répo: non-ascii key\n"
+
+	f := initiative.Of(bd.Issue{ID: "at-charset", Description: desc})
+
+	if f.Repo != "/r" {
+		t.Errorf("Repo = %q, want %q (none of the prose lines should have overwritten it)", f.Repo, "/r")
+	}
+}
+
+// TestOf_CRLFLineBreaksAreNormalized is team-lead review 2026-07-29,
+// divergence 2: a description using "\r\n" line breaks must parse
+// identically to one using "\n" — splitLines must split on \r?\n, not just
+// \n, so a field line's value never ends up with a trailing "\r" folded
+// into it by the old plain strings.Split(text, "\n").
+func TestOf_CRLFLineBreaksAreNormalized(t *testing.T) {
+	desc := "problem: p\r\n" +
+		"repo: /crlf/repo\r\n" +
+		"worktree: /w\r\n" +
+		"branch: b\r\n" +
+		"team: t\r\n" +
+		"mode: bg\r\n" +
+		"session: sess-1\r\n"
+
+	f := initiative.Of(bd.Issue{ID: "at-crlf", Description: desc})
+
+	if f.Repo != "/crlf/repo" {
+		t.Errorf("Repo = %q, want %q (no trailing carriage return)", f.Repo, "/crlf/repo")
+	}
+	if len(f.Sessions) != 1 || f.Sessions[0] != "sess-1" {
+		t.Errorf("Sessions = %v, want [sess-1]", f.Sessions)
+	}
+}
+
+// TestWithTrack_RejectsEdgeWhitespace is team-lead review 2026-07-29,
+// finding 6: once Of right-trims a value on read, an appended path with
+// leading or trailing whitespace would never read back equal to what the
+// caller passed in, so WithTrack's own idempotency check would never find
+// it and would re-append it on every call. WithTrack rejects rather than
+// silently trims — team-lead's stated preference: "it surfaces the caller's
+// bug instead of quietly rewriting their argument."
+func TestWithTrack_RejectsEdgeWhitespace(t *testing.T) {
+	iss := bd.Issue{ID: "at-track1", Description: "problem: p\nrepo: /r\n"}
+
+	for _, path := range []string{" /leading", "/trailing ", "\t/tabbed-leading", "/tabbed-trailing\t"} {
+		if _, err := initiative.WithTrack(iss, path); err == nil {
+			t.Errorf("WithTrack(%q): got nil error, want a rejection for edge whitespace", path)
+		}
+	}
+
+	// A path with only INTERIOR whitespace is still allowed.
+	plan, err := initiative.WithTrack(iss, "/has interior space/ok")
+	if err != nil {
+		t.Fatalf("WithTrack with interior space only: %v", err)
+	}
+	if !strings.Contains(plan.Description, "track-worktree: /has interior space/ok") {
+		t.Errorf("track line missing from result:\n%s", plan.Description)
+	}
+}
+
+// TestNew_ComposesHeaderInFixedOrder is New's core-path test: given a
+// populated Fields, the composed description has one "key: value" line per
+// non-empty field, each line individually resolvable via Of.
+func TestNew_ComposesHeaderInFixedOrder(t *testing.T) {
+	plan, err := initiative.New(initiative.Fields{
+		Problem:  "fix the thing",
+		Repo:     "/r",
+		Worktree: "/w",
+		Branch:   "b",
+		Team:     "t",
+		Mode:     "bg",
+		Epic:     "epic-1",
+		Standby:  true,
+		Sessions: []string{"sess-1"},
+		Tracks:   []string{"/track-1"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := initiative.Of(bd.Issue{ID: "at-new1", Description: plan.Description})
+	if got.Problem != "fix the thing" || got.Repo != "/r" || got.Worktree != "/w" || got.Branch != "b" || got.Team != "t" || got.Mode != "bg" || got.Epic != "epic-1" {
+		t.Fatalf("round-trip through Of did not preserve composed fields: %+v", got)
+	}
+	if !got.Standby {
+		t.Error("Standby = false, want true")
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0] != "sess-1" {
+		t.Errorf("Sessions = %v, want [sess-1]", got.Sessions)
+	}
+	if len(got.Tracks) != 1 || got.Tracks[0] != "/track-1" {
+		t.Errorf("Tracks = %v, want [/track-1]", got.Tracks)
+	}
+}
+
+// TestNew_RejectsLineBreakInValue is team-lead review 2026-07-29, finding 7:
+// a newline in any field value would inject a bogus line into the composed
+// description that, being written earlier than a later canonical field
+// (Problem is written first), would win under first-wins when Of reads it
+// back. New must reject this outright rather than compose broken output.
+// Explicitly requested test ("Reject a newline in any value, and add the
+// test").
+func TestNew_RejectsLineBreakInValue(t *testing.T) {
+	_, err := initiative.New(initiative.Fields{
+		Problem: "legit text\nrepo: /evil/injected",
+		Repo:    "/real/repo",
+	})
+	if err == nil {
+		t.Fatal("New: got nil error, want a rejection for a newline embedded in Problem")
 	}
 }
