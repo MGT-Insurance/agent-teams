@@ -188,7 +188,8 @@ func RegisterRouteEventKong(p *cli.Parser) {
 // file containing structured PR metadata and invokes the ateamRunner with:
 //
 //	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile> \
-//	         --launch-prompt "/agent-teams:review-pr {id}" --skip-epic
+//	         --launch-prompt "/agent-teams:review-pr {id}" --skip-epic \
+//	         --model sonnet --topic reviews
 //
 // Registration (one-time, out of band):
 //
@@ -243,8 +244,13 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	// lightweight /agent-teams:review-pr skill runs instead of a full DRI.
 	// --model sonnet keeps automated review sessions cheaper than the opus
 	// default used for full DRI initiatives.
+	//
+	// --topic ReviewsHandle is what actually removes the noise: this webhook
+	// path — not /dispatch-review-pr — spawned every one of the observed
+	// single-line per-PR topics, so the shared Reviews topic only wins here.
 	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath,
-		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic", "--model", "sonnet")
+		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic", "--model", "sonnet",
+		"--topic", ReviewsHandle)
 	// Clean up temp file after the runner returns (dispatch has already read it).
 	os.Remove(tmpPath)
 
