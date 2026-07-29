@@ -6,11 +6,17 @@
 # Allows everything else — including repo files named memory.md or source
 # dirs named memory/ that are outside $HOME/.claude.
 #
+# SCOPE GATE: enforcement is limited to agent-teams contexts — a .beads/
+# workspace at cwd or any parent, BEADS_DIR set, or a DRI worktree under
+# ~/.agent-teams-worktrees. In any other repo the hook allows the write,
+# so Claude's native memory keeps working where ateam/bd don't exist.
+#
 # NOTE: CLAUDE_CONFIG_DIR is not honored here — only $HOME/.claude is matched.
 # If that env var points elsewhere, false negatives are possible. Scoped to
 # $HOME/.claude to avoid over-engineering; revisit if CLAUDE_CONFIG_DIR
 # adoption widens.
 set -euo pipefail
+HOME="${HOME:-}"
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -56,6 +62,30 @@ case "$file_path" in
   *)
     exit 0 ;;
 esac
+
+# ---- Scope gate (2026-07-13): only enforce where agent-teams is actually in
+# play. The plugin is enabled machine-wide, but ateam/bd routing only exists in
+# repos with a beads workspace. Signals (any one = enforce):
+#   - the session cwd is inside ~/.agent-teams-worktrees (DRI worktrees)
+#   - BEADS_DIR is set
+#   - a .beads/ directory exists at cwd or any parent (mirrors bd's own walk)
+# No signal -> allow the write: Claude's native memory is the right store there.
+hook_cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null || true)
+[ -n "$hook_cwd" ] || hook_cwd="$PWD"
+
+in_scope=""
+case "$hook_cwd" in
+  "${HOME}/.agent-teams-worktrees"/*|"${HOME}/.agent-teams-worktrees") in_scope=1 ;;
+esac
+if [ -z "$in_scope" ] && [ -n "${BEADS_DIR:-}" ]; then in_scope=1; fi
+if [ -z "$in_scope" ]; then
+  d="$hook_cwd"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    if [ -d "$d/.beads" ]; then in_scope=1; break; fi
+    d=$(dirname "$d")
+  done
+fi
+[ -n "$in_scope" ] || exit 0
 
 # Matched — emit a deny decision and exit 0.
 # Canonical hook denial message (verbatim from agent-teams-8qm):
