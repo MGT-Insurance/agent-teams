@@ -37,11 +37,15 @@ The DRI sets NO phase field and maintains no status field. The run/park state of
 
 REVIEWABLE means **work genuinely awaiting Eric, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a merged PR and a PR Eric has already handled are both rows that need nothing from him, and neither belongs in the queue that says it does.
 
+**Only Eric moves work out of REVIEWABLE.** The merge check can retire a row that GitHub has objectively finished; everything else waits on him.
+
 ### 🚨 The DRI must NEVER declare the handoff
 
 `ateam handoff <id>` writes the `external-review` label. **It is Eric's verb. A DRI must never run it** — not at delivery, not at wind-down, not "to be helpful."
 
 The reason is not etiquette, it is arithmetic: the label asserts *"Eric has looked at this PR and is done with it."* At delivery Eric has not looked at it yet — the PR is minutes old — so the answer is always no. A DRI that runs `ateam handoff` at delivery hides the PR from the one person who still needs to see it, and it disappears to the bottom of `/initiatives` with no one waiting on it. This is the single most likely misuse of the verb.
+
+Underneath the arithmetic is the principle: **it is an agent asserting the human's state on the human's behalf.** Whether Eric has finished looking at something is a fact only Eric holds. That is the same failure this initiative exists to correct — the previous design inferred his attention from GitHub's reviewer assignments, and he rejected it flatly, because "as soon as a PR is created, it automatically adds other reviewers. That doesn't mean I have looked at it." Guessing the fact from a label you wrote yourself is the same error with a shorter causal chain.
 
 The same arithmetic is why the declaration cannot ride on the delivery gate: `ateam gate --kind=review` fires at the moment the answer to "are you done looking?" is guaranteed to be no. The two are different facts and stay separate labels.
 
