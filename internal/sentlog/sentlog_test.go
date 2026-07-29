@@ -311,10 +311,10 @@ func TestDeriveZeroValueDegradation(t *testing.T) {
 	})
 }
 
-// TestKindKnown verifies the six real kinds report Known() and that neither
+// TestKindKnown verifies the seven real kinds report Known() and that neither
 // the empty string nor KindUndeclared nor an arbitrary value does.
 func TestKindKnown(t *testing.T) {
-	for _, k := range []Kind{KindNotify, KindNotifyBriefing, KindNotifyDirect, KindDispatch, KindClose, KindRelayHung} {
+	for _, k := range []Kind{KindNotify, KindNotifyBriefing, KindNotifyReviews, KindNotifyDirect, KindDispatch, KindClose, KindRelayHung} {
 		if !k.Known() {
 			t.Errorf("Kind(%q).Known() = false, want true", k)
 		}
