@@ -34,6 +34,33 @@ ateam steward init && cd "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}/steward/sessio
 
 **Wake plumbing.** The Steward wakes on mail arriving at the reserved `steward` handle (doorbell + wake-watcher machinery — see the hooks section of the plugin's CLAUDE.md) or on the periodic heartbeat.
 
+## `ateam execution-status` — what the values mean
+
+The startup load (SKILL.md §1), gate enrichment (§2), and every direct question about the landscape read this verb. One entry per open initiative: `id`, `title`, `worktree`, `labels`, `execution_status`, `ask`, `pr`, `pr_probe`. The statuses:
+
+- `NEEDS-DECISION` — a question gate. Eric's, now.
+- `IN-PROGRESS` — actively being worked, or open with no gate. Not his.
+- `REVIEWABLE` — a PR awaiting ERIC that he has not yet looked at. This is the queue that means "you"; it does not mean "a PR exists."
+- `AWAITING-EXTERNAL-REVIEW` — **healthy, not idle.** Eric has declared he is done looking (references/handoff.md); the PR is with third-party reviewers. NOT ours and NOT his.
+- `STALE-MERGED` — the PR merged or closed on GitHub while the initiative stayed open. A real Eric action, but a ten-second one — "PR merged, close it" — not a review.
+- `unknown` — `claude agents --json` failed; every row degrades to this and no status is trustworthy for that run.
+
+**`AWAITING-EXTERNAL-REVIEW` is the trap.** It is the one healthy state that looks exactly like a stall: no live session, no movement, a gate label still on the bead. Chasing things that look idle is your whole job, so absent an explicit rule you will chase this one and generate precisely the noise the state exists to remove. Explicitly, then: do NOT nudge it, do NOT surface it in a briefing as needing attention, do NOT count it as stalled or hung, do NOT ask Eric about it. It leaves the state only when he says so (`ateam handoff <id> --clear`), when the DRI resumes and runs `ateam clear-gate`, or when the PR merges.
+
+`hung-scan` never sees it as a problem either: a handed-off initiative keeps its `human` + `gate:review` pair, so it still classifies AWAITING-HUMAN and SKILL.md §2's scan bullets already say "no action." That pair is retained deliberately — dropping it would arm both the DEAD escalation ladder and the work-product flatline trip (`internal/verbs/external_review.go` §2).
+
+`STALE-MERGED` is the opposite: it IS briefing-worthy, batched with whatever else is going out, and never a wake on its own.
+
+## `pr_probe` — how much GitHub actually answered
+
+One of three values per initiative, alongside `execution_status`:
+
+- `ok` — gh returned a merge state (fresh or cached).
+- `unreachable` — the probe, or the gh preflight for the whole run, failed. Report NOTHING about that PR's state on GitHub: you do not have it, and a GitHub-derived conclusion you did not retrieve is worse than silence. It does NOT invalidate `AWAITING-EXTERNAL-REVIEW`, which is declared rather than probed — but it does mean `STALE-MERGED` cannot be computed that run, so a merged PR may still read `REVIEWABLE`.
+- `none` — the initiative has no parseable PR URL and was never probed. Normal, not a fault.
+
+The probe reads merge state and nothing else. Review state is off-limits by contract: reviewer assignment is automated on the target repos, so it carries zero signal about whether Eric has looked (`internal/verbs/external_review.go` §0).
+
 ## `ateam hung-scan` — the full field list
 
 SKILL.md §2's scan bullets key off a subset of these. One JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK`, plus:
