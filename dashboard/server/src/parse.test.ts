@@ -374,6 +374,21 @@ describe("parseDescriptionFields — strict field rule (agent-teams-ully.8)", ()
     expect(fields["repo"]).toBe("/first");
     expect(fields["worktree"]).toBe("/second");
   });
+
+  it("does not silently drop a 'constructor: ...' field line via the Object prototype chain", () => {
+    const fields = parseDescriptionFields(
+      "repo: /good/path\nconstructor: SHOULD-BE-KEPT\ntostring: also-lowercase\nvalueof: nope\n",
+    );
+    expect(fields["repo"]).toBe("/good/path");
+    expect(fields["constructor"]).toBe("SHOULD-BE-KEPT");
+    expect(fields["tostring"]).toBe("also-lowercase");
+    expect(fields["valueof"]).toBe("nope");
+  });
+
+  it("strips trailing whitespace from the captured value so 'repo: /a/b' and 'repo: /a/b   ' resolve identically", () => {
+    const fields = parseDescriptionFields("repo: /a/b   \n");
+    expect(fields["repo"]).toBe("/a/b");
+  });
 });
 
 // ---- parseAteamListJson -----------------------------------------------------

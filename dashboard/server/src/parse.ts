@@ -51,9 +51,11 @@ export function extractEpic(description: string, notes: string): string | null {
 // field line is column 0 (no leading whitespace), an exact-lowercase key
 // (letters, digits, and hyphens — e.g. "track-worktree", "pr-number"), a
 // single colon, a single space, then a non-empty value that does not start
-// with whitespace. No case folding, no tolerance for a missing/doubled space
-// after the colon. FIRST occurrence of a key wins; later occurrences are
-// ignored.
+// with whitespace (trailing whitespace is stripped, so "repo: /a/b" and
+// "repo: /a/b   " resolve identically — an invisible trailing-space
+// difference must not silently break an exact-value comparison downstream).
+// No case folding, no tolerance for a missing/doubled space after the colon.
+// FIRST occurrence of a key wins; later occurrences are ignored.
 //
 // This is deliberately strict, not lenient: a mis-cased echo ("Repo: ..."),
 // a list-item ("- repo: ..."), or an ALL-CAPS prose heading ("GOAL: ...")
@@ -80,8 +82,13 @@ export function parseDescriptionFields(desc: string): Record<string, string> {
     const key = m[1];
     const value = m[2];
     if (key === undefined || value === undefined) continue;
-    if (!(key in result)) {
-      result[key] = value;
+    // Object.hasOwn, not `key in result`: `in` walks the prototype chain, so
+    // on a {} accumulator "constructor" reads as already-present before any
+    // line is parsed, silently discarding a real "constructor: ..." field
+    // line. The key set is open (see above) — an object accumulator must not
+    // have blind spots baked in by its own prototype.
+    if (!Object.hasOwn(result, key)) {
+      result[key] = value.trimEnd();
     }
   }
   return result;
