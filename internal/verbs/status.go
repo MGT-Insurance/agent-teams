@@ -184,25 +184,30 @@ func (c *executionStatusKong) Run(ctx *cli.Context) error {
 
 	sessions, agentsErr := c.agentsFunc()
 
-	// Merge-state probing (external_review.go §6). Preflight runs ONCE per
-	// invocation; on failure every row degrades to pr_probe=prProbeUnreachable
-	// behind a single stderr line rather than erroring (§8). Probes are also
+	now := time.Now()
+	cache := loadPRStateCache(ctx.Home)
+	cacheDirty := false
+
+	// Merge-state probing (external_review.go §6). Preflight runs AT MOST ONCE
+	// per invocation, and only when some row would actually shell out to gh
+	// (anyNeedsLiveProbe) — `gh auth status` validates the token over the
+	// network, so running it on a zero-PR or all-cache-fresh run costs a third
+	// of a second of latency for a verdict nothing consults. When it does run
+	// and fails, every row degrades to pr_probe=prProbeUnreachable behind a
+	// single stderr line rather than erroring (§8) — including cache-fresh
+	// rows, since mergeProbe tests enabled before the cache. Probes are also
 	// skipped wholesale when the agents join already failed — every row is
 	// "unknown" then, so no probe could change an answer (§8's EXISTING
 	// DEGRADE UNCHANGED). Rows carrying a PR URL still report
 	// prProbeUnreachable in that case: reporting prProbeNone would assert the
 	// initiative has no PR, contradicting the pr field in the same row.
 	probesEnabled := agentsErr == nil
-	if probesEnabled {
+	if probesEnabled && anyNeedsLiveProbe(issues, &cache, now) {
 		if err := c.preflightFunc(); err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam execution-status: PR merge probes disabled for this run: %v\n", err)
 			probesEnabled = false
 		}
 	}
-
-	now := time.Now()
-	cache := loadPRStateCache(ctx.Home)
-	cacheDirty := false
 
 	out := make([]initiativeStatus, 0, len(issues))
 	for _, iss := range issues {
@@ -256,6 +261,31 @@ func (c *executionStatusKong) Run(ctx *cli.Context) error {
 	}
 	fmt.Fprintln(ctx.Stdout, string(raw))
 	return nil
+}
+
+// anyNeedsLiveProbe reports whether any of issues would make mergeProbe reach
+// its c.prMergeFunc call this run: the row needs a parseable PR URL AND no
+// fresh cache entry. It is the exact complement of mergeProbe's two gh-free
+// early exits, which is what lets Run skip the preflight when it answers
+// false — every row then answers from prProbeNone or the cache, and no gh
+// process is started, so the preflight's verdict would have gone unread.
+//
+// Deliberately evaluated for ALL rows up front rather than lazily at the first
+// probe: a run that mixes cache-fresh rows with one needing a probe must still
+// degrade every row to prProbeUnreachable when the preflight fails (§8), which
+// a first-probe trigger would get wrong for whichever rows happened to be
+// processed before it.
+func anyNeedsLiveProbe(issues []bd.Issue, cache *prStateCache, now time.Time) bool {
+	for _, iss := range issues {
+		ownerRepo, prNumber, ok := parsePrURL(extractPrURL(iss.Notes))
+		if !ok {
+			continue
+		}
+		if _, fresh := cache.lookup(prStateKey(ownerRepo, prNumber), now); !fresh {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeProbe resolves one initiative's pr_probe value and merge state,

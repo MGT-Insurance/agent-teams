@@ -456,6 +456,16 @@ func failingPRMerge(t *testing.T) prMergeFunc {
 // okPreflight is the preflight seam for cases where gh is available.
 func okPreflight() error { return nil }
 
+// countingPreflight is okPreflight plus a call counter, for cases that assert
+// WHETHER the preflight ran — `gh auth status` is a network round trip, so a
+// run that needs no live probe must not reach it (agent-teams-p9dm.43).
+func countingPreflight(n *int) func() error {
+	return func() error {
+		*n++
+		return nil
+	}
+}
+
 func TestExecutionStatusCmd_Run_NilCtx(t *testing.T) {
 	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
 	err := cmd.Run(nil)
@@ -1033,5 +1043,91 @@ func TestExecutionStatusCmd_Run_CacheHitSkipsProbe(t *testing.T) {
 	}
 	if got := rows["at-merged"]; got.ExecutionStatus != StatusStaleMerged || got.PRProbe != prProbeOK {
 		t.Errorf("second run: got (%s, %s), want (%s, %s)", got.ExecutionStatus, got.PRProbe, StatusStaleMerged, prProbeOK)
+	}
+}
+
+// TestExecutionStatusCmd_Run_PreflightIsLazy is agent-teams-p9dm.43: the gh
+// preflight is itself a network round trip (`gh auth status`, measured at
+// 0.32s), so it must not run on the two shapes of run where no gh call would
+// follow it — zero PR URLs, and every PR row cache-fresh. execution-status is
+// invoked on every /initiatives render and every hung tick.
+func TestExecutionStatusCmd_Run_PreflightIsLazy(t *testing.T) {
+	t.Run("no PR URLs", func(t *testing.T) {
+		preflights := 0
+		rows, stderr := statusRun(t, t.TempDir(),
+			[]bd.Issue{prIssue("at-nopr", 0, "human", "gate:review")},
+			failingPRMerge(t), countingPreflight(&preflights))
+
+		if preflights != 0 {
+			t.Errorf("preflight ran %d times with zero PR URLs, want 0", preflights)
+		}
+		if got := rows["at-nopr"]; got.ExecutionStatus != "REVIEWABLE" || got.PRProbe != prProbeNone {
+			t.Errorf("got (%s, %s), want (REVIEWABLE, %s)", got.ExecutionStatus, got.PRProbe, prProbeNone)
+		}
+		if stderr != "" {
+			t.Errorf("expected no stderr, got %q", stderr)
+		}
+	})
+
+	t.Run("every row cache-fresh", func(t *testing.T) {
+		home := t.TempDir()
+		issues := []bd.Issue{prIssue("at-merged", 4501, "human", "gate:review")}
+
+		probes, preflights := 0, 0
+		if _, stderr := statusRun(t, home, issues,
+			func(string, int) (string, error) { probes++; return prStateMerged, nil },
+			countingPreflight(&preflights)); stderr != "" {
+			t.Fatalf("seeding run: unexpected stderr %q", stderr)
+		}
+		if probes != 1 || preflights != 1 {
+			t.Fatalf("seeding run: %d probes / %d preflights, want 1 / 1", probes, preflights)
+		}
+
+		rows, stderr := statusRun(t, home, issues, failingPRMerge(t), countingPreflight(&preflights))
+		if preflights != 1 {
+			t.Errorf("preflight ran again on an all-fresh run: %d total, want 1", preflights)
+		}
+		if got := rows["at-merged"]; got.ExecutionStatus != StatusStaleMerged || got.PRProbe != prProbeOK {
+			t.Errorf("got (%s, %s), want (%s, %s)", got.ExecutionStatus, got.PRProbe, StatusStaleMerged, prProbeOK)
+		}
+		if stderr != "" {
+			t.Errorf("expected no stderr, got %q", stderr)
+		}
+	})
+}
+
+// TestExecutionStatusCmd_Run_PreflightStillGatesMixedRun is the other half of
+// agent-teams-p9dm.43: when one row DOES need a live probe the preflight runs,
+// and a failure still disables probing for EVERY row — the cache-fresh row
+// included, which is why the gate is evaluated over all rows up front rather
+// than at the first probe — behind the same single stderr line as before.
+func TestExecutionStatusCmd_Run_PreflightStillGatesMixedRun(t *testing.T) {
+	home := t.TempDir()
+	seeded := prIssue("at-seeded", 4501, "human", "gate:review")
+	unseen := prIssue("at-unseen", 4600, "human", "gate:review")
+
+	preflights := 0
+	if _, stderr := statusRun(t, home, []bd.Issue{seeded},
+		func(string, int) (string, error) { return prStateMerged, nil },
+		countingPreflight(&preflights)); stderr != "" {
+		t.Fatalf("seeding run: unexpected stderr %q", stderr)
+	}
+
+	rows, stderr := statusRun(t, home, []bd.Issue{seeded, unseen}, failingPRMerge(t),
+		func() error { preflights++; return fmt.Errorf("gh not found on PATH") })
+
+	if preflights != 2 {
+		t.Errorf("preflight ran %d times, want 2 (once per run that needs a live probe)", preflights)
+	}
+	// at-seeded holds a fresh MERGED entry, but probing is off for the run, so
+	// it degrades with everything else — mergeProbe tests enabled before the
+	// cache, exactly as before this change.
+	for _, id := range []string{"at-seeded", "at-unseen"} {
+		if got := rows[id]; got.ExecutionStatus != "REVIEWABLE" || got.PRProbe != prProbeUnreachable {
+			t.Errorf("%s: got (%s, %s), want (REVIEWABLE, %s)", id, got.ExecutionStatus, got.PRProbe, prProbeUnreachable)
+		}
+	}
+	if n := strings.Count(strings.TrimSpace(stderr), "\n") + 1; stderr == "" || n != 1 {
+		t.Errorf("want exactly one stderr line, got %d: %q", n, stderr)
 	}
 }
