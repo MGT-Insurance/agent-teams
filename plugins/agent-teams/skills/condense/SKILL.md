@@ -28,16 +28,17 @@ condense in progress elsewhere — skipping, fresh flushes next run
 
 Then **exit cleanly** — nothing was acquired, so nothing to release. Do NOT block or retry.
 
-### Step 1 — Drain fresh then condense
+### Step 1 — Condense
 
-On successful lock acquisition, run the drain+condense procedure for the ONE named role (no gate — an explicit invocation always condenses):
+On successful lock acquisition, emit the packet for the ONE named role (no gate — an explicit invocation always condenses):
 
 ```bash
-ateam fresh-drain <role>
 ateam condense <role>
 ```
 
-Apply the condense procedure (Design hot set → Apply batch → Verify → Emit summary) exactly as described in **Condense procedure** below.
+Then apply the condense procedure (Design hot set → Apply batch → **Drain fresh** → Verify → Emit summary) exactly as described in **Condense procedure** below.
+
+**Do NOT run `ateam fresh-drain <role>` here.** The drain is a stage INSIDE that procedure, after the batch write. Running it before `ateam condense` silently blinds the promotion decision — see **Ordering is load-bearing** in the all-roles Step 2 for the mechanism.
 
 ### Step 2 — Release the lock
 
@@ -93,23 +94,21 @@ Log one line for each `SKIP` role — the verb's own line is the note — and do
 
 Most wind-down sweeps skip every role and exit after the lock release with zero LLM work done.
 
-### Step 2 — Drain fresh then condense (per FIRE role)
+### Step 2 — Condense (per FIRE role)
 
 For each role whose verdict was `FIRE`:
-
-#### 2a — Drain fresh tier
-
-```bash
-ateam fresh-drain <role>
-```
-
-This is deterministic (no LLM call). It moves all `<role>:fresh:*` keys into bare cold keys (`<role>:<slug>`). After this, the condense agent sees only hot and cold — no third tier.
-
-#### 2b — Condense (emit packet, spawn agent)
 
 ```bash
 ateam condense <role>
 ```
+
+> **⚠️ Ordering is load-bearing — `ateam condense` runs FIRST, and `ateam fresh-drain` runs LATER, inside the procedure, after the batch write.**
+>
+> The packet discriminates tiers by the prefix each key carries **at read time**: `<role>:hot:*` and `<role>:fresh:*` entries ship with FULL bodies; bare cold keys ship as key + a one-line summary. `ateam fresh-drain` rewrites every `<role>:fresh:<slug>` to a bare `<role>:<slug>` and prints **only a count — it never emits the key list.**
+>
+> So draining first destroys the one signal that separates just-served, un-curated material from long-settled archive: those entries would arrive as summaries, shape-identical to cold, and you would be making the promote-vs-archive call on the highest-stakes entries in the packet without ever seeing their bodies. That is drain-then-stop — the exact failure the promotion rule below exists to prevent. Do not "tidy" this ordering back.
+>
+> Teaching the drain to print its key list would not rescue the drain-first order, so do not propose it as one: knowing the names does not restore the bodies, which are elided from the packet either way, and you would be back to N round-trips of `ateam recall` to read what a correctly-ordered run hands you for free.
 
 This emits a JSON packet to stdout:
 
@@ -126,7 +125,7 @@ This emits a JSON packet to stdout:
 
 Read the whole packet, and let its `instruction_contract` field tell you what is actually in it: the contract declares which tiers ship with full bodies, whether any tier ships elided (key + summary line only), and the retrieval path for anything elided. **Do not assume every entry carries a body.** If a promotion decision turns on the body of an entry the packet elided, fetch it on demand — `ateam recall <role> <term>`, or `bd memories <keyword>` — rather than deciding blind or promoting a summary as if it were the learning.
 
-The keys that step 2a JUST moved out of `<role>:fresh:*` are the **primary promotion candidates** — they were being SERVED to every session (via hot ∪ fresh) right up until the drain, so they are not settled cold: they are un-curated served learnings awaiting a hot/cold verdict. Apply the condense procedure below autonomously for this role.
+The keys still tagged `<role>:fresh:*` in the packet are the **primary promotion candidates** — they are being SERVED to every session (via hot ∪ fresh) *right now*, so they are not settled cold: they are un-curated served learnings awaiting a hot/cold verdict, and they are the reason the drain has not run yet. Apply the condense procedure below autonomously for this role.
 
 ### Step 3 — Release the lock
 
@@ -148,11 +147,15 @@ This procedure is autonomous — NO human-review gate. Safety rests on Dolt hist
 
 ### Design the hot set (BEFORE writing anything)
 
-IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch. `ateam learnings <role>` serves hot ∪ fresh; because `ateam fresh-drain <role>` already ran, the fresh set is empty here — so a partial hot set would under-serve the next session. Design the complete hot set first, then write all hot keys as a batch.
+IMPORTANT ORDERING: do not create any `<role>:hot:*` key until the full hot set is decided, then create them as a batch.
 
-**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key step 2a drained out of fresh was being injected into every session until now. Any drained key you leave in cold is SILENTLY DEMOTED out of that injection. Therefore you MUST explicitly decide, for each drained (previously-served) key, hot vs cold — do not let them settle into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the hot budget (`hot_budget_tokens`) is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal drained learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
+The rule used to be justified by a gap: the drain ran first, so fresh was empty here and a partial hot set would under-serve the next session. **That gap no longer exists** — the drain now runs after the batch write, so fresh stays populated and `ateam learnings <role>` (hot ∪ fresh) keeps serving the un-curated material throughout design. No session is served less than it was before this run started, at any point.
 
-**Promote vs. archive — a drained key earns a hot slot only if it is a concise, self-contained learning carrying NET-NEW signal (a RULE/gotcha not already covered by an existing hot entry). Do NOT blind-promote a raw, verbose entry that is the pre-distillation SOURCE of an existing hot entry (tell: a longer body under a near-duplicate slug, e.g. cold `go-advisory-lock-pattern` vs hot `advisory-lock`) — promoting it de-distills hot. Such raw archive stays in cold; if it carries a nuance the hot entry lacks, MERGE that nuance into the existing hot entry instead of adding a second entry.**
+Keep the batch discipline anyway, for the two reasons that do still hold. You are merging and de-duplicating against the packet, and writing hot keys mid-design changes the set you are reasoning about while you reason about it. And an interrupted partial batch leaves hot half-restructured — merged umbrella entries sitting alongside the very sources they were meant to replace. Design the complete hot set first, then write all hot keys as a batch.
+
+**PROMOTION IS THE POINT — condensing is not just token-reduction. `ateam learnings <role>` serves hot ∪ fresh, so every key the packet shows still tagged `<role>:fresh:*` is being injected into every session RIGHT NOW — and the drain at the end of this procedure will move it out of that injection unless you promote it. Any such key you leave unpromoted is SILENTLY DEMOTED. Therefore you MUST explicitly decide, for each `fresh:`-tagged (currently-served) key, hot vs cold — do not let them fall into cold by default. Drain-then-stop (draining fresh and promoting nothing) is the failure mode this step exists to prevent: it silently strips the session of learnings it was relying on. Being UNDER the hot budget (`hot_budget_tokens`) is NOT a reason to skip promotion — it means there is ROOM; fill it with the highest-signal currently-served learnings. (Going over budget is handled by the theme-first merge below, never by silently dropping served learnings.)**
+
+**Promote vs. archive — a `fresh:`-tagged key earns a hot slot only if it is a concise, self-contained learning carrying NET-NEW signal (a RULE/gotcha not already covered by an existing hot entry). Do NOT blind-promote a raw, verbose entry that is the pre-distillation SOURCE of an existing hot entry (tell: a longer body under a near-duplicate slug, e.g. cold `go-advisory-lock-pattern` vs hot `advisory-lock`) — promoting it de-distills hot. Such raw archive stays in cold; if it carries a nuance the hot entry lacks, MERGE that nuance into the existing hot entry instead of adding a second entry.**
 
 **Applied-impact ranking — `applied_count` / `last_applied` are an ADDITIONAL ranking signal, not a replacement for the net-new-signal bar above.** The condense packet supplies `applied_count` (int) and `last_applied` (string) per memory, fed by agents self-reporting via `ateam applied <role> <slug>` at the point they act on a learning. Among candidates that already clear the net-new-signal bar, prefer promoting learnings with a high `applied_count` — frequent application is empirical evidence the learning is load-bearing, not merely plausible. Conversely, a cold entry that has never been applied (`applied_count` 0 or absent, `last_applied` empty) and has fallen to cold is an eviction candidate — weigh it against the conservative "evict little" default in Apply below rather than auto-evicting on this signal alone. Accepted forks: undercounting is expected (this is agent self-report, not auto-detected, so treat the count as directional, not precise) and a slug merge/rename during condense resets its counter to zero — that's fine, since condense is exactly when a learning is re-evaluated.
 
@@ -188,6 +191,20 @@ After ALL hot entries are written, handle cold cleanup:
 If you are refreshing an existing hot key, `ateam learn <role> hot:<slug>` is an UPSERT — it overwrites in place.
 
 If you restructure the hot set (e.g. merge several old hot entries into fewer new ones), you MUST `ateam forget <role> hot:<old-slug>` for every old hot key that is NOT present in the new hot set. Skipping this step leaves stale hot entries that linger and bloat the injected layer.
+
+### Drain fresh — AFTER the batch write, never before
+
+```bash
+ateam fresh-drain <role>
+```
+
+Deterministic, no LLM call: it rewrites every `<role>:fresh:<slug>` into a bare cold `<role>:<slug>` and prints a count.
+
+It does NOT discriminate, and it does not need to: it drains the whole fresh tier unconditionally. Promotion wrote a *separate* `<role>:hot:<slug>`, leaving the fresh source untouched, so that source lands in cold either way — which is what "LEAVE IN COLD any learning not promoted" already prescribes, and it also leaves the raw pre-distillation source in cold for anything you did promote. Do not read this step as "sweep up the leftovers" and make it conditional.
+
+Run it HERE, once the hot set has been written. Run it any earlier and you get the failure described in Step 2: the `fresh:` tag is what makes those bodies ship in full, the drain emits no key list, and nothing downstream can reconstruct which entries were the currently-served ones.
+
+**Do not "simplify" this by folding the drain into `ateam condense` itself.** It looks tempting — condense would then know exactly which keys it moved — and it is wrong. `ateam condense` is a PURE READ. Giving it a store mutation means a run that dies after the packet emit but before curation has already demoted the entire fresh tier to cold, un-curated: drain-then-stop promoted from accident to systematic. Keeping the drain here, after the batch write, means a failed run mutates nothing and retries clean. That crash-safety property is the main reason this ordering is what it is.
 
 ### Verify — re-measure, then iterate
 
