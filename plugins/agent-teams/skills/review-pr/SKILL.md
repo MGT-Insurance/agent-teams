@@ -238,8 +238,9 @@ printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMEN
 ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam close <id> --reason "Review posted: <review-html-url>"
 
+TITLE_SEG=" — <pr-title>"   # exactly "" if step 3's title lookup failed
 printf 'Review complete · #%s %s%s\n%s' \
-  "<pr-number>" "<repo>" "<title-segment>" "<review-html-url>" \
+  "<pr-number>" "<repo>" "$TITLE_SEG" "<review-html-url>" \
   > "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
 ateam notify reviews --file "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
 ```
@@ -254,11 +255,12 @@ That last block posts to the shared **Reviews** topic — one topic for all PR
 reviews, not one per review. The text is frozen; reproduce it exactly.
 
 - `<repo>` is the **basename** from step 2 (`midgard`, never `acme/midgard`).
-- `<title-segment>` is `" — "` (space, em dash U+2014, space) followed by step
-  3's PR title, or the **empty string** if that lookup failed. Build it as its
-  own value; never splice the title into a hardcoded `%s — %s`. `ateam
-  dispatch`'s "Review started" line uses the identical rule — the two must not
-  drift on separator or spacing.
+- `TITLE_SEG` is `" — "` (space, em dash **U+2014**, space) then step 3's PR
+  title, or the **empty string** if that lookup failed. Copy the separator out
+  of the block above rather than retyping it — an en dash or a hyphen looks
+  right in a diff and is wrong. Keep it a separate variable; never splice the
+  title into a hardcoded `%s — %s`. `ateam dispatch` builds the "Review
+  started" line by this identical rule, and the two must not drift.
 - Two lines is deliberate: text, then the bare URL alone so it renders as a
   tap target.
 
