@@ -974,31 +974,47 @@ func ParseStewardTopicsRecord(value string) (StewardTopicsRecord, error) {
 // posted to the shared ReviewsHandle topic (dispatch.go, agent-teams-
 // p9dm.10), a Go fmt format string applied to exactly four args in order:
 // pr-number, pr-repo (BASENAME of owner/repo, e.g. "midgard" not
-// "MGT-Insurance/midgard"), pr-title, pr-url:
+// "MGT-Insurance/midgard"), title-segment, pr-url:
 //
-//	Review started · #%s %s — %s
+//	Review started · #%s %s%s
 //	%s
 //
-// This format assumes a non-empty pr-title. It is NOT applied when the
-// title fetch fails — see prTitleFunc's fail-soft contract below: no
-// argument substitution into this format string can drop the literal " — "
-// it contains, so the fail-soft case renders a DIFFERENT literal, without
-// that segment, instead of calling this constant with an empty title arg.
-const ReviewsStartLineFormat = "Review started · #%s %s — %s\n%s"
+// title-segment is a PRE-COMPOSED argument, not the bare title — this is
+// the ONE frozen format string for both the with-title and the fail-soft
+// no-title case (agent-teams-p9dm.7 deliberately rejected a second
+// ...NoTitleFormat constant: it would duplicate the "Review started · #%s
+// %s" prefix, so any later change to that prefix would have to be made in
+// two places and the two renderings could drift). Callers build
+// title-segment exactly as follows and MUST NOT inline " — " (or any other
+// separator/spacing) themselves:
+//
+//   - title non-empty: " — " (one leading space, an em dash U+2014, one
+//     trailing space) immediately followed by the title — e.g.
+//     " — Fix flaky retry logic".
+//   - title empty (the prTitleFunc fail-soft case below): "" — the empty
+//     string, not a placeholder. The rendered line then reads
+//     "Review started · #<n> <repo>" with no dangling separator.
+const ReviewsStartLineFormat = "Review started · #%s %s%s\n%s"
 
 // The completion line — posted by the review-pr skill via `ateam notify
 // reviews` (plugins/agent-teams/skills/review-pr/SKILL.md, agent-teams-
 // p9dm.13) — is frozen here as a doc comment rather than a Go constant
 // because the skill emits it from shell (printf), which cannot import a Go
 // constant. Verbatim, four args in order: pr-number, pr-repo (basename,
-// same convention as the start line), pr-title, review-url:
+// same convention as the start line), title-segment, review-url:
 //
-//	Review complete · #%s %s — %s
+//	Review complete · #%s %s%s
 //	%s
 //
-// Unlike the start line, the review-pr skill always has the PR title in
-// hand (it read the PR to review it), so this line has no fail-soft/no-title
-// case to handle.
+// title-segment follows the exact same construction rule as
+// ReviewsStartLineFormat's title-segment argument above: " — " + title when
+// non-empty, "" when not — see that constant's doc comment for the byte-
+// exact separator. Unlike the start line, the review-pr skill always has
+// the PR title in hand (it read the PR to review it), so in practice this
+// segment is never empty here. Still, the shell snippet emitting this line
+// MUST assemble it via the same rule (never splice the title directly into
+// a hardcoded "%s — %s" format), so the two lines can never drift apart on
+// separator character or spacing.
 
 // prTitleFunc is the DI seam for fetching a PR's title, consumed by
 // dispatchKong (agent-teams-p9dm.10) as a kong:"-" injected field — never a
@@ -1014,12 +1030,13 @@ const ReviewsStartLineFormat = "Review started · #%s %s — %s\n%s"
 // with a 10s timeout.
 //
 // FAIL-SOFT, MANDATORY: gh absent, auth failure, 404, or timeout — any
-// failure — yields "" and the caller renders the start line WITHOUT the
-// " — <title>" segment, using a literal separate from ReviewsStartLineFormat
-// (see that constant's doc comment above). A title-fetch failure may NEVER
-// fail a dispatch: by the time this seam runs, bd create has already
-// succeeded — the same fail-soft precedent dispatch.go:336-340 already
-// establishes for the rest of the topic path.
+// failure — yields "" title, which the caller turns into an empty
+// title-segment ("") when composing ReviewsStartLineFormat's arguments (see
+// that constant's doc comment above for the exact construction rule) — the
+// line then renders WITHOUT the " — <title>" segment. A title-fetch failure
+// may NEVER fail a dispatch: by the time this seam runs, bd create has
+// already succeeded — the same fail-soft precedent dispatch.go:336-340
+// already establishes for the rest of the topic path.
 //
 // Declared here rather than at each caller: one implementation, one seam,
 // one test surface. route.go's spawnReviewInitiative has no gh dependency
