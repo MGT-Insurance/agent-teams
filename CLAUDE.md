@@ -66,6 +66,19 @@ bash tests/<name>.test.sh
 
 Note: `tests/ateam.test.sh` case10 (bd dolt sync against an empty remote) is a known pre-existing failure unrelated to most changes — confirm it also fails at your merge-base before treating it as a regression.
 
+Run a single Go test with `go test ./internal/verbs/... -run TestName`.
+
+### Dashboard (Node/TS, in `dashboard/`)
+
+```bash
+cd dashboard && pnpm install   # first time only
+pnpm dev                       # server (:4823) + web (:5173) together
+pnpm test                      # vitest across all workspaces (115 tests)
+pnpm typecheck                 # strict tsc across packages
+```
+
+`dashboard/README.md` is the authoritative spec for this package (API endpoints, SSE event catalog, `ateam`/`bd`/`claude` CLI JSON shapes it depends on) — read it before touching `dashboard/server` or `dashboard/web`.
+
 ## Eval suite — costs real money
 
 `eval/` (`cmd/eval`, `internal/eval`) is a live-dispatch A/B eval harness:
@@ -88,7 +101,7 @@ Two shipped artifacts in one repo:
 
 - **`internal/initiative`** owns reading and writing an initiative's routing data (repo/worktree/branch/... and the session/track ties) — the `key: value` lines inside an initiative bead's description. One matching rule, one read seam (`Of`), one write seam (`New`/`WithSession`/`WithTrack`), used instead of each call site re-implementing its own line scanner. See the package doc comment (`internal/initiative/doc.go`) for the frozen format contract before touching this data anywhere.
 
-There is also a `dashboard/` (Node/TS) initiative dashboard.
+There is also a `dashboard/` (Node/TS, pnpm workspace: `shared`/`server`/`web`) initiative dashboard — see `dashboard/README.md` for its API surface and CLI-dependency contracts.
 
 **Two beads databases — never confuse them** (see `plugins/agent-teams/CLAUDE.md` for the cardinal rule): the PROJECT repo's `.beads` holds ALL work beads (plain `bd create`); the GLOBAL `~/.agent-teams` holds ONLY initiative-tracking beads + role memories, reached ONLY via `ateam`.
 

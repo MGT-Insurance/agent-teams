@@ -89,6 +89,8 @@ Only after the loop closes does the DRI open enhancement rings — unblock the g
 
 ## Phase 5 — Deliver
 
+**A PR's readers have no bead DB and no initiative registry — write title and body for them.** Describe the WORK, not the ticket: "Fixes silently dropped replies", not "implements agent-teams-ully.7". Keep every initiative/bead id out of prose — not as subject, possessive, or passing mention — out of the title, and out of every heading. Ids go only where a reader can skip them: end-of-line parenthetical, table cell, footnote, trailer. Specimen: references/pr-text.md.
+
 Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — mark it draft only when the human asked for a draft or the work is deliberately incomplete. **Never merge autonomously** — but you MAY merge the PR yourself once the human explicitly confirms that specific merge (recommend `--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing the initiative (`merged: <PR URL>`). After closing, run the local-main update helper against the initiative's own repo (fail-soft — a failure does NOT block completion):
 
 ```bash
