@@ -220,8 +220,8 @@ count_sender_fields() {
 
 lit_count=$(count_literals)
 sender_count=$(count_sender_fields)
-[ "$lit_count" = "7" ] \
-  || { echo "FAIL gate: expected exactly 7 OutboundMessage literals in non-test Go, found $lit_count"; exit 1; }
+[ "$lit_count" = "8" ] \
+  || { echo "FAIL gate: expected exactly 8 OutboundMessage literals in non-test Go, found $lit_count"; exit 1; }
 [ "$lit_count" = "$sender_count" ] \
   || { echo "FAIL gate: OutboundMessage literal count ($lit_count) != Sender field count ($sender_count)"; exit 1; }
 echo "case7 PASS: build gate reads $lit_count==$sender_count — every OutboundMessage literal declares Sender"
@@ -334,7 +334,7 @@ trap 'rm -rf "$T"' EXIT
 # package transport itself (which uses the unqualified "OutboundMessage{")
 # was invisible to case7/8's gate. Prove the fix: a transient file inside
 # package transport containing an unqualified, Sender-less literal must now
-# inflate lit_count without inflating sender_count, tripping the 7==7 check.
+# inflate lit_count without inflating sender_count, tripping the 8==8 check.
 PROBE_GO="$ROOT/internal/transport/zz_case10_probe.go"
 trap 'rm -f "$PROBE_GO"; rm -rf "$T"' EXIT
 cat > "$PROBE_GO" <<'EOF'
@@ -353,8 +353,8 @@ trap 'rm -rf "$T"' EXIT
 
 [ "$probe_lit_count" != "$probe_sender_count" ] \
   || { echo "FAIL case10: an in-package unqualified OutboundMessage{} literal with no Sender field did not trip the gate (still $probe_lit_count==$probe_sender_count)"; exit 1; }
-[ "$probe_lit_count" = "8" ] \
-  || { echo "FAIL case10: expected the probe literal to raise lit_count to 8, got $probe_lit_count"; exit 1; }
+[ "$probe_lit_count" = "9" ] \
+  || { echo "FAIL case10: expected the probe literal to raise lit_count to 9, got $probe_lit_count"; exit 1; }
 echo "case10 PASS: an in-package unqualified literal now counts and trips the gate ($probe_lit_count != $probe_sender_count), as required"
 
 echo ""
