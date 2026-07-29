@@ -28,10 +28,10 @@ argument `comment-reply` selects comment-reply mode. Extract both from the
 invocation. If no initiative id was given, stop and tell the caller to
 re-invoke with one.
 
-- No second argument → normal flow (steps 2–11).
+- No second argument → normal flow (steps 2–10).
 - `comment-reply` → read the initiative fields (step 2), then follow the
   **Comment-reply mode** section at the end of this document and skip steps
-  3–11 entirely.
+  3–10 entirely.
 
 ### 2. Read initiative details
 
@@ -153,7 +153,7 @@ instructions above with:
 
 Wait for the reviewer to complete. The reviewer will SendMessage its findings back to this session when done. Once the message arrives, capture the findings list.
 
-If no SendMessage arrives within a reasonable time, note the timeout in the initiative and proceed to step 10 (update + close) without posting a review.
+If no SendMessage arrives within a reasonable time, note the timeout in the initiative and proceed to step 10 (record the outcome and close) without posting a review — there is no review URL in this path, so close citing `<pr-url>` and note the timeout in the close reason.
 
 ### 9. Post the review to GitHub
 
@@ -166,19 +166,21 @@ If the reviewer reported no substantive findings, the event depends on step 3's 
 - **Not a self-review** (the PR is authored by someone else) — approve it:
 
   ```bash
-  gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+  REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
     --method POST \
     -f event=APPROVE \
-    -f body="Automated review: no substantive findings."
+    -f body="Automated review: no substantive findings." \
+    --jq .html_url)
   ```
 
 - **Self-review** (the PR is our own) — keep the comment-only behavior; never auto-approve our own work:
 
   ```bash
-  gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+  REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
     --method POST \
     -f event=COMMENT \
-    -f body="Automated review: no substantive findings."
+    -f body="Automated review: no substantive findings." \
+    --jq .html_url)
   ```
 
 #### Handle findings
@@ -188,42 +190,71 @@ Inline comments only work on lines present in the PR diff. Two kinds of finding 
 For each inline finding, construct an inline comment. Collect them into a single review POST:
 
 ```bash
-gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --method POST \
   -f event=COMMENT \
   -f body="<one-sentence overall summary>" \
   -F 'comments[][path]=<file-path>' \
   -F 'comments[][line]=<line-number>' \
-  -F 'comments[][body]=<severity>: <finding description>\n\n<suggestion>'
+  -F 'comments[][body]=<severity>: <finding description>\n\n<suggestion>' \
+  --jq .html_url)
 ```
 
 Repeat the `-F 'comments[]…'` flags for each finding. Post as `COMMENT` — not `APPROVE` and not `REQUEST_CHANGES`. This applies regardless of authorship: any critical/high/medium finding keeps the review at `COMMENT`, even on a PR that isn't ours.
 
 The review body is a single sentence summarizing the overall assessment (e.g. "Two high-severity findings related to error handling and one medium concerning missing test coverage.").
 
-If the `gh api` call fails (e.g. a file:line reference does not correspond to a diff hunk), retry without the failing inline comment(s) and add their content to the review body instead, then note the fallback in the initiative.
+Every review POST above — every variant, including the retry and re-review
+cases below — must append `--jq .html_url` and capture the result into
+`REVIEW_URL`; step 10 cites it when closing. If a call fails and `REVIEW_URL`
+ends up empty, the merged close step falls back to `<pr-url>`.
+
+If the `gh api` call fails (e.g. a file:line reference does not correspond to a diff hunk), retry without the failing inline comment(s) and add their content to the review body instead (capturing `REVIEW_URL` from the retry the same way), then note the fallback in the initiative.
 
 **Re-review mode:** findings reported `not addressed` are the substantive
 findings — post them (inline where the line is in the diff, body otherwise)
 with event=`COMMENT` and a body like "Re-review: N of M prior findings
 addressed." If ALL prior findings are addressed, this is the no-findings
 case above (APPROVE unless self-review) with body "Re-review: all M prior
-findings addressed."
+findings addressed." Capture `REVIEW_URL` the same way in both cases.
 
-### 10. Update the initiative
+### 10. Record the outcome and close the initiative
 
-Write a brief note recording the outcome, including which event was posted:
+Closing is part of delivering the review, not optional trailing bookkeeping —
+it happens in the same turn the review posts, as one atomic act with the
+outcome note. Re-reviews and comment replies spawn FRESH sessions via
+route-pr-event, which matches the CLOSED initiative and reopens it (or spawns
+anew) — so nothing requires this initiative to stay open once the review is
+posted. A review-delivered-but-open initiative is a defect: the hung-scan
+flags it and a human has to hand-triage it.
 
 ```bash
 printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMENT>\n' \
   > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+ateam close <id> --reason "Review posted: <review-html-url>"
 ```
 
-### 11. Close the initiative
+`<review-html-url>` is `$REVIEW_URL` captured in step 9. If it's empty
+because the POST failed and no fallback URL was captured, cite `<pr-url>`
+instead.
+
+**Step-8 timeout path** (no review was posted): swap the wording — the note
+is `review-timeout: PR #<pr-number> — reviewer subagent did not respond` and
+the close is `--reason "Review not posted (reviewer timeout): <pr-url>"`.
+That note IS step 8's "note the timeout"; do not write a second one.
+
+**Re-review rounds end the same way.** route-pr-event reopened this
+initiative to run the round; once the re-review posts, run this merged
+note+close step again, citing the new review's URL.
+
+**The rare same-session-follow-up carve-out.** If this session is
+deliberately waiting on a same-session follow-up (rare), never idle with the
+initiative open and gateless — raise a question gate instead, naming what
+it's waiting for:
 
 ```bash
-ateam close <id> --reason "Review posted to PR #<pr-number>"
+ateam gate <id> --file <note> --kind=question
 ```
 
 ## Comment-reply mode
@@ -279,7 +310,7 @@ and do not depend on it: re-derive the work from GitHub directly.
    printf 'comment-replies: PR #<pr-number> — <k> thread(s) answered\n' \
      > "${CLAUDE_JOB_DIR}/tmp/reply-note-<id>.txt"
    ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/reply-note-<id>.txt"
-   ateam close <id> --reason "Comment replies posted to PR #<pr-number>"
+   ateam close <id> --reason "Comment replies posted: <pr-url>"
    ```
 
 ## Key constraints
@@ -287,6 +318,7 @@ and do not depend on it: re-derive the work from GitHub directly.
 - This skill does NOT create plans, spawn implementers/testers, open PRs, or manage epics.
 - It is a single-purpose orchestrator — one PR, one outcome: a posted review (review flow) or in-thread responses (comment-reply mode).
 - No critical/high/medium findings on a PR authored by someone else -> approve (`event=APPROVE`). Any finding, or a PR we authored ourselves, -> comment (`event=COMMENT`), never approve.
+- Every flow ends, in the same turn the review/replies post, with the initiative CLOSED (or a raised gate in the rare wait case) — never idle with an open, gateless initiative.
 - Uses `ateam` (not raw `bd -C`) for all global workspace operations.
 - CARDINAL RULE: no work beads in the global workspace — all work beads belong in the project repo via plain `bd`.
 - The reviewer subagent runs with `bypassPermissions` — its role guardrails (no push, no merge, no fix) are enforced by the reviewer agent definition, not by permission prompts.
