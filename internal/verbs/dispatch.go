@@ -2,6 +2,7 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -31,6 +34,7 @@ func RegisterDispatchKong(p *cli.Parser) {
 		transportFor:     transport.For,
 		transportEnabled: transport.Enabled,
 		labelAdd:         defaultLabelAdd,
+		prTitle:          defaultPRTitle,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
 		launch:    launchBGSession,
@@ -120,6 +124,7 @@ type dispatchKong struct {
 	Model        string `name:"model"         help:"Model override for bg session (default: opus)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
+	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
 
 	git        gitRunner       `kong:"-"`
 	launch     launchFunc      `kong:"-"`
@@ -135,12 +140,33 @@ type dispatchKong struct {
 	transportFor     transportForFunc     `kong:"-"`
 	transportEnabled transportEnabledFunc `kong:"-"`
 	labelAdd         labelAddFunc         `kong:"-"`
+
+	// prTitle backs the --topic path's PR-title lookup (contract seam
+	// prTitleFunc, steward_seams.go). Injected like the three above so tests
+	// never spawn a real `gh`; a nil prTitle simply renders the line without
+	// its title segment, which is the same fail-soft outcome as a failed
+	// fetch.
+	prTitle prTitleFunc `kong:"-"`
 }
 
 // transportEnabledFunc is the function type for checking whether a usable
 // transport is configured (transport.Enabled). Injected so tests can
 // substitute a fake without touching real transport config/env.
 type transportEnabledFunc func(home string) bool
+
+// Validate rejects an unrecognized --topic value. The contract
+// (steward_seams.go) requires this to be a usage error rather than a silent
+// fallback to per-initiative topic creation; running here — kong's Validate
+// hook, before Run — means it costs no worktree and no bead.
+//
+// The message carries no "dispatch:" prefix of its own: unlike Run's errors,
+// kong prefixes what a Validate hook returns with "ateam: dispatch: ".
+func (c *dispatchKong) Validate() error {
+	if c.Topic != "" && c.Topic != ReviewsHandle {
+		return cli.Usagef("unknown --topic %q (supported: %s)", c.Topic, ReviewsHandle)
+	}
+	return nil
+}
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *dispatchKong) Run(ctx *cli.Context) error {
@@ -282,7 +308,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	// effort, mirrors the epic-creation fail-soft above. A machine with no
 	// transport configured, or any error along the way, must not fail dispatch.
 	if c.transportEnabled != nil && c.transportFor != nil && c.labelAdd != nil {
-		c.createInitialTopic(ctx, issue)
+		c.createInitialTopic(ctx, issue, body)
 	}
 
 	// 8. Launch background DRI unless --no-launch.
@@ -333,18 +359,27 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 // it is discoverable in the topic even though the friendly title carries no
 // id.
 //
+// With --topic set this opens no per-initiative topic at all: it posts a
+// single line into that handle's shared topic instead (sendSharedTopicLine),
+// and body carries the PR metadata that line is built from.
+//
 // Best-effort and fail-soft, mirroring the epic-creation fail-soft above:
 // no transport configured is a silent skip (the normal state for installs
 // without Telegram set up); any error resolving or sending through the
 // transport is warned to ctx.Stderr. Nothing here can fail dispatch — the
 // bd create above has already succeeded by the time this runs.
-func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue) {
+func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue, body string) {
 	if !c.transportEnabled(ctx.Home) {
 		return
 	}
 	t, err := c.transportFor(ctx.Home)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not open initiative topic (fail-soft): %v\n", err)
+		return
+	}
+
+	if c.Topic != "" {
+		c.sendSharedTopicLine(ctx, t, body)
 		return
 	}
 
@@ -371,6 +406,100 @@ func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue) {
 		return
 	}
 	fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not open initiative topic (fail-soft): %v\n", err)
+}
+
+// sendSharedTopicLine handles --topic: it posts the frozen
+// ReviewsStartLineFormat line into the shared, bead-less Reviews topic
+// (StewardReviewsThreadPath) rather than opening a topic for this
+// initiative. Deliberately writes NO "thread:" label — see the --topic
+// contract in steward_seams.go for the two mechanisms (relay ambiguity and
+// close-closes-it-for-everyone) that make a shared topic addressed by
+// per-initiative labels actively broken.
+//
+// ReviewsTopicTitle, not issue.Title: the title is the topic NAME at
+// creation and dispatch is in practice the first send, so passing the
+// initiative's own title would name the shared topic after whichever PR
+// happened to be reviewed first.
+//
+// Fail-soft like its caller: a missing/failed send is warned, never fatal.
+func (c *dispatchKong) sendSharedTopicLine(ctx *cli.Context, t transport.Transport, body string) {
+	prNumber := extractBodyField(body, "pr-number")
+	ownerRepo := extractBodyField(body, "pr-repo")
+	prURL := extractBodyField(body, "pr-url")
+
+	// Unreachable from the two real callers (route.go's spawnReviewInitiative
+	// and the dispatch-review-pr skill both always write all three). Unlike
+	// the PR title, which is optional by design, these three are the line's
+	// identity and its affordance — so posting a half-rendered line into the
+	// feed this initiative exists to de-noise is worse than posting nothing.
+	// The warning names the absent keys: without them, a caller that forgot
+	// one sees only a dispatch that succeeded with no line in the topic.
+	var missing []string
+	for _, f := range []struct{ key, value string }{
+		{"pr-number", prNumber},
+		{"pr-repo", ownerRepo},
+		{"pr-url", prURL},
+	} {
+		if f.value == "" {
+			missing = append(missing, f.key)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: --topic %s but the initiative body has no %s — nothing posted to the shared topic (fail-soft)\n", c.Topic, strings.Join(missing, ", "))
+		return
+	}
+
+	msg := transport.OutboundMessage{
+		InitiativeID: ReviewsHandle,
+		Title:        ReviewsTopicTitle,
+		Body:         fmt.Sprintf(ReviewsStartLineFormat, prNumber, filepath.Base(ownerRepo), c.titleSegment(ctx, ownerRepo, prNumber), prURL),
+		Sender:       sentlog.KindDispatch,
+	}
+	if _, err := sendSharedTopic(ctx, StewardReviewsThreadPath(ctx), t, msg, "ateam dispatch"); err != nil {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not post to the shared %s topic (fail-soft): %v\n", c.Topic, err)
+	}
+}
+
+// titleSegment builds ReviewsStartLineFormat's third argument: " — " plus the
+// PR title, or "" when it can't be had. Every failure mode — no seam
+// injected, an unparseable pr-number, a gh error, an empty title — collapses
+// to "", which renders the line without a dangling separator. Mandated by
+// the contract: a title fetch may never fail a dispatch.
+func (c *dispatchKong) titleSegment(ctx *cli.Context, ownerRepo, prNumber string) string {
+	if c.prTitle == nil {
+		return ""
+	}
+	n, err := strconv.Atoi(prNumber)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: pr-number %q is not a number — posting without the PR title (fail-soft)\n", prNumber)
+		return ""
+	}
+	title, err := c.prTitle(ownerRepo, n)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not fetch PR title — posting without it (fail-soft): %v\n", err)
+		return ""
+	}
+	if title == "" {
+		return ""
+	}
+	return " — " + title
+}
+
+// prTitleTimeout bounds defaultPRTitle's gh subprocess (contract: 10s).
+const prTitleTimeout = 10 * time.Second
+
+// defaultPRTitle is the production prTitleFunc: `gh pr view`, bounded at
+// prTitleTimeout so a hung subprocess can never stall a dispatch that has
+// already succeeded.
+func defaultPRTitle(ownerRepo string, prNumber int) (string, error) {
+	cmdCtx, cancel := context.WithTimeout(context.Background(), prTitleTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(cmdCtx, "gh", "pr", "view", strconv.Itoa(prNumber),
+		"--repo", ownerRepo, "--json", "title", "-q", ".title").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ---- resume (kong) ----------------------------------------------------------
@@ -658,13 +787,20 @@ func modeValue(description string) string {
 	return ""
 }
 
-// extractEpicID scans body for the first "epic: <id>" line and returns the id.
-// Returns "" if no such line is present.
-func extractEpicID(body string) string {
+// extractBodyField scans an initiative body for the first "<key>: <value>"
+// line and returns the value. Returns "" if no such line is present.
+func extractBodyField(body, key string) string {
+	prefix := key + ": "
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "epic: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "epic: "), " \t\r")
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimRight(strings.TrimPrefix(line, prefix), " \t\r")
 		}
 	}
 	return ""
+}
+
+// extractEpicID scans body for the first "epic: <id>" line and returns the id.
+// Returns "" if no such line is present.
+func extractEpicID(body string) string {
+	return extractBodyField(body, "epic")
 }

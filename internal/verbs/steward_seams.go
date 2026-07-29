@@ -75,6 +75,15 @@ const DirectHandle = "direct"
 // topic MUST use this constant rather than a literal string.
 const ReviewsHandle = "reviews"
 
+// ReviewsTopicTitle is the forum-topic NAME of the shared Reviews topic.
+// transport.OutboundMessage.Title is what names a topic at creation, and
+// whichever send opens the topic names it permanently — so BOTH senders must
+// use this constant, never a literal: notify's runReviews (its default when
+// --title is absent) and dispatch's --topic create path (agent-teams-p9dm.10),
+// which in practice sends first. Two literals that drift apart would name the
+// topic after whichever PR was reviewed first, or open a second one.
+const ReviewsTopicTitle = "Reviews"
+
 const (
 	stewardDirName                = "steward"
 	stewardSessionDirName         = "session"
