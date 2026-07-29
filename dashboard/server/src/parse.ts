@@ -33,70 +33,29 @@ export function extractPrUrl(text: string): string | null {
   return m ? (m[0] ?? null) : null;
 }
 
-// Extract the root epic bead id from initiative description or notes.
-// Scans for a line matching `epic: <id>` — description is checked first,
-// then notes. Returns null when neither contains the field (legacy initiatives).
-const EPIC_RE = /^epic:\s*(\S+)/m;
+// Legacy fallback for the root epic bead id: some initiatives registered before
+// at-e3m recorded `epic:` in NOTES rather than in the description's routing
+// header. Notes are not routing data — internal/initiative reads Description
+// only, by its own scope boundary — so `fields.epic` cannot cover this case and
+// this scan remains. It runs over notes ONLY; the description half comes from
+// `fields.epic` (see parseInitiative), which is why nothing here ever looks at
+// description text.
+const EPIC_IN_NOTES_RE = /^epic:\s*(\S+)/m;
 
-export function extractEpic(description: string, notes: string): string | null {
-  const dm = EPIC_RE.exec(description);
-  if (dm) return dm[1] ?? null;
-  const nm = EPIC_RE.exec(notes);
-  return nm ? (nm[1] ?? null) : null;
+export function extractEpicFromNotes(notes: string): string | null {
+  const m = EPIC_IN_NOTES_RE.exec(notes);
+  return m ? (m[1] ?? null) : null;
 }
 
-// Parse the `key: value` lines embedded in description text, per the frozen
-// strict field rule (agent-teams-ully.5 — mirrored 1:1 from the Go component
-// this dashboard cannot import, since it's a separate deploy/language): a
-// field line is column 0 (no leading whitespace), an exact-lowercase key
-// (letters, digits, and hyphens — e.g. "track-worktree", "pr-number"), a
-// single colon, a single space, then a non-empty value that does not start
-// with whitespace (trailing whitespace is stripped, so "repo: /a/b" and
-// "repo: /a/b   " resolve identically — an invisible trailing-space
-// difference must not silently break an exact-value comparison downstream).
-// No case folding, no tolerance for a missing/doubled space after the colon.
-// FIRST occurrence of a key wins; later occurrences are ignored.
+// Parse a RawInitiative into a ParsedInitiative.
 //
-// This is deliberately strict, not lenient: a mis-cased echo ("Repo: ..."),
-// a list-item ("- repo: ..."), or an ALL-CAPS prose heading ("GOAL: ...")
-// never matches the rule at all, so it can never poison a real field —
-// first-wins is defence in depth, not the only defence. See at-jno7 for the
-// real incident this fixes: a briefing line re-stated the repo path as
-// "Repo: `/path`" (wrong case, backtick-wrapped) further down the same
-// description, and the old last-wins/case-folding parser took it.
-//
-// The set of canonical keys is NOT closed here — new keys (e.g. at-dxm5's
-// pr-number/pr-repo/pr-url, written by an agent following a skill file, no
-// code involved on either end) can appear with no code change anywhere.
-// This function is indifferent to which keys it sees: it returns everything
-// that matches the line shape and lets callers pick out what they need.
-const FIELD_LINE_RE = /^([a-z][a-z0-9-]*): (\S.*)$/;
-
-export function parseDescriptionFields(desc: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  // Split on \r?\n so a CRLF-terminated description doesn't leave a
-  // trailing \r inside the captured value.
-  for (const line of desc.split(/\r?\n/)) {
-    const m = FIELD_LINE_RE.exec(line);
-    if (!m) continue;
-    const key = m[1];
-    const value = m[2];
-    if (key === undefined || value === undefined) continue;
-    // Object.hasOwn, not `key in result`: `in` walks the prototype chain, so
-    // on a {} accumulator "constructor" reads as already-present before any
-    // line is parsed, silently discarding a real "constructor: ..." field
-    // line. The key set is open (see above) — an object accumulator must not
-    // have blind spots baked in by its own prototype.
-    if (!Object.hasOwn(result, key)) {
-      result[key] = value.trimEnd();
-    }
-  }
-  return result;
-}
-
-// Parse a RawInitiative into a ParsedInitiative by extracting structured
-// fields from the description text and finding the first PR URL in
-// notes + description.
+// The routing fields arrive already parsed, in raw.fields, produced by the Go
+// component internal/initiative and attached by `ateam list-json`
+// (agent-teams-ully.12). This file used to re-implement that matching rule in a
+// regex of its own; two implementations of one rule stayed in parity only
+// because tests said so, and the rule is subtle enough that the drift is what
+// caused the at-jno7 incident. Reading raw.fields makes parity structural: a key
+// rename or a rule change is a Go-only edit for this consumer.
 export function parseInitiative(raw: RawInitiative): ParsedInitiative {
   // notes and description are typed as string but the registry can emit undefined
   // for freshly-created initiatives that have no NOTES section yet.  Coerce to ""
@@ -104,13 +63,15 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
   const notes = raw.notes ?? "";
   const description = raw.description ?? "";
 
-  const fields = parseDescriptionFields(description);
+  // Defensive default: parseAteamListJson rejects a payload whose elements have
+  // no fields object, but parseInitiative is also called directly (tests, ad-hoc
+  // callers), so tolerate an absent object rather than throwing on property
+  // access.
+  const fields = raw.fields ?? {};
 
-  // Extract the problem line — the very first line of description often
-  // starts with "problem: ...".
-  const problem = (fields["problem"] ?? "").trim();
-
-  // PR URL may appear in notes (later entries) or description.
+  // PR URL may appear in notes (later entries) or description. This is a URL
+  // hunt over freeform text, not a routing-field read — internal/initiative's
+  // scope boundary leaves it here deliberately.
   const prUrl = extractPrUrl(notes) ?? extractPrUrl(description);
 
   return {
@@ -118,14 +79,14 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     // Normalise notes/description so downstream code always has real strings.
     notes,
     description,
-    problem,
-    repo: fields["repo"] ?? "",
-    worktree: fields["worktree"] ?? "",
-    branch: fields["branch"] ?? "",
-    team: fields["team"] ?? "",
-    mode: fields["mode"] ?? "",
+    problem: fields.problem ?? "",
+    repo: fields.repo ?? "",
+    worktree: fields.worktree ?? "",
+    branch: fields.branch ?? "",
+    team: fields.team ?? "",
+    mode: fields.mode ?? "",
     prUrl,
-    epic: extractEpic(description, notes),
+    epic: fields.epic ?? extractEpicFromNotes(notes),
   };
 }
 
@@ -145,6 +106,20 @@ export function parseAteamListJson(raw: string): ParsedInitiative[] {
       typeof (first as Record<string, unknown>)["title"] !== "string")
   ) {
     throw new Error("ateam list-json: unexpected element shape (missing id or title)");
+  }
+  // The `fields` object is the ONLY source of routing data here now, so its
+  // absence is checked on every element rather than only on the first: a payload
+  // without it parses fine and yields initiatives whose repo/worktree/branch are
+  // all "" — a silent blanking, which is the exact failure class this initiative
+  // exists to remove. An `ateam` too old to emit it must break loudly instead.
+  for (const [index, item] of items.entries()) {
+    const fields = (item as Record<string, unknown>)["fields"];
+    if (typeof fields !== "object" || fields === null || Array.isArray(fields)) {
+      throw new Error(
+        `ateam list-json: element ${index} has no "fields" object — the installed ateam is ` +
+          `too old to attach parsed routing fields (run \`claude plugin update agent-teams\`)`,
+      );
+    }
   }
   return (items as RawInitiative[]).map(parseInitiative);
 }

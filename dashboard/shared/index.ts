@@ -1,5 +1,6 @@
 export type {
   RawInitiative,
+  InitiativeFields,
   ParsedInitiative,
   SessionState,
   SessionSignal,

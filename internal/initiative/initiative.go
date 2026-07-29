@@ -45,6 +45,21 @@ type Collision struct {
 // ordering claim.
 var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "standby", "epic"}
 
+// multiValuedKeys lists the canonical keys that accumulate rather than
+// first-wins (frozen item 1). Every other key — modeled or not — is
+// single-valued.
+var multiValuedKeys = []string{"session", "track-worktree"}
+
+// multiValued reports whether key accumulates instead of first-wins.
+func multiValued(key string) bool {
+	for _, k := range multiValuedKeys {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
 // keyPattern is the character class a field-line key must match: a lowercase
 // letter, then any number of lowercase letters, digits, or hyphens. This
 // mirrors the merged TS mirror's ^[a-z][a-z0-9-]*$ (dashboard/server, parity
@@ -106,57 +121,105 @@ func fieldLine(line string) (key, value string, ok bool) {
 	return key, value, true
 }
 
-// Of parses iss's routing fields per the frozen rule. Single-valued keys
-// (problem, repo, worktree, branch, team, mode, epic, standby) are
-// first-occurrence-wins; the multi-valued session and track-worktree keys
-// accumulate into Sessions and Tracks in registration order. Of scans the
-// ENTIRE description, not just a leading header block — a field line (most
-// commonly a session tie) can appear arbitrarily far down an arbitrarily
-// long prose body (package doc comment, frozen item 2); Of must never be
-// changed to stop early.
+// all returns every canonical field line in iss, keyed by canonical key, with
+// each key's values in the order they occur. It is the ONE accumulation of the
+// frozen rule in this package: Of projects a typed view out of it and
+// JSONFields projects a wire view out of it, so neither reader carries its own
+// scanner. A third reader must project from all as well rather than add a
+// second loop over splitLines.
 //
-// Of takes the whole bd.Issue, not iss.Description, so that a future labels
-// backend can read iss.Labels instead without changing this signature or any
-// caller (package doc comment, "package surface").
-func Of(iss bd.Issue) Fields {
-	var f Fields
-	seen := make(map[string]bool, len(singleValuedKeys))
+// all scans the ENTIRE description, not just a leading header block — a field
+// line (most commonly a session tie) can appear arbitrarily far down an
+// arbitrarily long prose body (package doc comment, frozen item 2); it must
+// never be changed to stop early.
+//
+// all keeps keys with no Fields member. An unmodeled canonical key is
+// legitimate data, not malformed input (frozen item 3), so the shared scan is
+// the wrong place to decide which keys matter — that is each projection's
+// call.
+func all(iss bd.Issue) map[string][]string {
+	out := make(map[string][]string)
 	for _, line := range splitLines(iss.Description) {
 		key, value, ok := fieldLine(line)
 		if !ok {
 			continue
 		}
-		switch key {
-		case "session":
-			f.Sessions = append(f.Sessions, value)
-		case "track-worktree":
-			f.Tracks = append(f.Tracks, value)
-		case "problem", "repo", "worktree", "branch", "team", "mode", "epic", "standby":
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			switch key {
-			case "problem":
-				f.Problem = value
-			case "repo":
-				f.Repo = value
-			case "worktree":
-				f.Worktree = value
-			case "branch":
-				f.Branch = value
-			case "team":
-				f.Team = value
-			case "mode":
-				f.Mode = value
-			case "epic":
-				f.Epic = value
-			case "standby":
-				f.Standby = value == "true"
-			}
+		if !multiValued(key) && len(out[key]) > 0 {
+			continue // first occurrence wins
+		}
+		out[key] = append(out[key], value)
+	}
+	return out
+}
+
+// first returns the winning value for a single-valued key, or "" when absent.
+func first(lines map[string][]string, key string) string {
+	if v := lines[key]; len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+// Of parses iss's routing fields per the frozen rule. Single-valued keys
+// (problem, repo, worktree, branch, team, mode, epic, standby) are
+// first-occurrence-wins; the multi-valued session and track-worktree keys
+// accumulate into Sessions and Tracks in registration order.
+//
+// Of is the TYPED projection of all, and models ten keys only — an initiative
+// carrying an unmodeled canonical key (e.g. pr-url) has no Fields member to
+// hold it, so a caller that needs every stored key wants JSONFields instead
+// (package doc comment, frozen item 3).
+//
+// Of takes the whole bd.Issue, not iss.Description, so that a future labels
+// backend can read iss.Labels instead without changing this signature or any
+// caller (package doc comment, "package surface").
+func Of(iss bd.Issue) Fields {
+	lines := all(iss)
+	return Fields{
+		Problem:  first(lines, "problem"),
+		Repo:     first(lines, "repo"),
+		Worktree: first(lines, "worktree"),
+		Branch:   first(lines, "branch"),
+		Team:     first(lines, "team"),
+		Mode:     first(lines, "mode"),
+		Epic:     first(lines, "epic"),
+		Standby:  first(lines, "standby") == "true",
+		Sessions: lines["session"],
+		Tracks:   lines["track-worktree"],
+	}
+}
+
+// JSONFields is the WIRE projection of all: iss's routing data as a map ready
+// to marshal into JSON for a consumer outside this process (today, the
+// "fields" object `ateam list-json` adds to every element, which the
+// TypeScript dashboard reads instead of re-implementing the frozen rule).
+//
+// Every key is the canonical LINE key, verbatim and unrenamed — "session" and
+// "track-worktree", not "sessions" and "tracks". That is the whole design:
+// a key's name on the wire never depends on whether Go happens to model it, so
+// giving pr-url a Fields member later, or a skill inventing a new key with no
+// Go change at all (frozen item 3), changes nothing for any consumer. A shape
+// that hoisted the modeled keys and swept the rest into a nested bag would
+// have the opposite property — modeling a key would MOVE it and break readers.
+//
+// Types: the two multi-valued keys are always arrays; standby is a bool
+// (true only for the exact value "true", matching Of); every other key is its
+// value string. An absent key is OMITTED rather than emitted empty, so a
+// consumer can tell "not set" from "set to something empty" — the frozen rule
+// admits no empty value, so an emitted key always has real data behind it.
+func JSONFields(iss bd.Issue) map[string]any {
+	out := make(map[string]any)
+	for key, values := range all(iss) {
+		switch {
+		case multiValued(key):
+			out[key] = values
+		case key == "standby":
+			out[key] = values[0] == "true"
+		default:
+			out[key] = values[0]
 		}
 	}
-	return f
+	return out
 }
 
 // New composes a fresh description from f, for a brand-new initiative ONLY.

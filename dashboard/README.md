@@ -74,29 +74,62 @@ Clients reconnect automatically on drop (standard EventSource behaviour).
 ## CLI Data Shapes (Verified — Do Not Re-derive)
 
 ### `ateam list-json`
-Returns a JSON array. Real JSON keys per element:
+Returns a JSON array of open initiatives (`--status=closed` for the closed half,
+`--status=all` for both). Real JSON keys per element:
 
 ```
 id, title, description, notes, status, priority, issue_type,
 owner, created_at, updated_at, created_by, comment_count,
-dependency_count, dependent_count, labels
+dependency_count, dependent_count, labels, fields
 ```
 
 `labels` **is** available — both `bd list --json` and `ateam list-json` emit an
 optional `labels` array (e.g. `gate:review`, `gate:question`, `human`,
 `thread:722`) when the initiative carries labels. Verified live against a
 real initiative's `thread:722` label round-tripping correctly. Go already
-depends on this (`gateKind`, `threadLabelValue`, `hung_scan`), so a future
-migration of the fields below to labels is not blocked on backend support.
+depends on this (`gateKind`, `threadLabelValue`, `hung_scan`).
 
-Structured fields `repo / worktree / branch / team / mode` are embedded as
-`key: value` TEXT lines inside `description`. The backend **must parse
-description text** to extract them, using the strict field rule (column 0,
-exact-lowercase key, single colon, single space, non-empty value; first
-occurrence wins — see `parseDescriptionFields` in `server/src/parse.ts`).
+Caveat: `priority` is a JSON **number** on the wire even though
+`RawInitiative.priority` in `shared/types.ts` declares `string`. Pre-existing;
+noted here so nobody "corrects" a fixture to match the declaration.
+
+#### `fields` — the parsed routing data
+
+`repo / worktree / branch / team / mode / epic / problem / standby / session /
+track-worktree` and friends are stored as `key: value` TEXT lines inside
+`description`. **The backend does not parse that text.** `ateam list-json`
+attaches a `fields` object to every element, produced by the Go component
+`internal/initiative` (`JSONFields`), and the dashboard reads
+`element.fields.<key>`. One rule, one implementation — the TypeScript
+re-implementation that used to live in `server/src/parse.ts`
+(`parseDescriptionFields`) is deleted (agent-teams-ully.12).
+
+Shape:
+
+- keys are the canonical **line** keys verbatim — `session`, not `sessions`;
+  `track-worktree`, not `tracks`;
+- `session` and `track-worktree` are always arrays, in registration order, even
+  with one value;
+- `standby` is a bool;
+- every other key is its value string;
+- a key is **absent** when the initiative doesn't carry it — never `""`;
+- the key set is **not closed**. `pr-number` / `pr-repo` / `pr-url` are written
+  by a skill file with no code modelling them by name, and they arrive anyway.
+  Read unknown keys off `fields` directly rather than adding a member for them.
+
+An element with no `fields` object means the installed `ateam` predates
+agent-teams-ully.12; `parseAteamListJson` throws rather than render every
+initiative with blank routing data. Fix is `claude plugin update agent-teams`.
+
 All-caps prose section headings — `GOAL:`, `PRIMARY VIEWS:`, etc. — are
-narrative, not structured fields; the parser does not read them, and there is
-no `goal` field on `ParsedInitiative`.
+narrative, not fields; the rule does not match them (wrong case), so they never
+appear in `fields`.
+
+The canonical fixture for this shape is
+`testdata/list-json/ateam-list-json.golden.json` at the repo root: real
+records, output by the verb itself, regenerated with
+`go test ./internal/verbs/ -run TestListJSONGolden -update`, and consumed by
+both `internal/verbs/listjson_golden_test.go` and `server/src/parse.test.ts`.
 
 `notes` is a freeform append log; the latest note is the current phase narrative
 and is the source for parked-question text.
