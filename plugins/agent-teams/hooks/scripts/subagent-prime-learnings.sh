@@ -4,7 +4,7 @@
 # Silent no-op if ateam/jq not installed, or agent_type is absent. Never fails.
 set -euo pipefail
 
-ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 # SubagentStart passes JSON on stdin — capture it first (required to read agent_type).

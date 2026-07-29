@@ -5,7 +5,7 @@
 # never broadcasts machine-wide state (teammate sessions also fire hooks).
 set -euo pipefail
 
-ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 
 # Capture stdin once non-blocking — Claude Code passes {session_id, ...} on stdin;
 # direct invocations have no stdin.
