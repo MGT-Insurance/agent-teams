@@ -819,28 +819,114 @@ const condenseFreshThresholdTokens = 4000
 // here in Go (SEAM 2) instead of by the model.
 const condenseApproxTokensDivisor = 3
 
+// condenseColdSummaryMaxChars is the max length (in runes) of a cold entry's
+// elided-body summary line (SEAM 3): the first line of the body, truncated.
+const condenseColdSummaryMaxChars = 120
+
+// condenseHotFreshCapBytes / condenseColdCapBytes restate, for the packet's
+// own instruction contract text, the write-time per-entry byte caps enforced
+// by learnCap (write.go:85, frozen by contract agent-teams-b2xr.2). Declared
+// here (not imported from learnCap) because write.go is owned by a different
+// track (Track C) and this file must stay file-disjoint from it; keep these
+// in sync with learnCap by hand if the frozen caps ever change.
+const condenseHotFreshCapBytes = 900
+const condenseColdCapBytes = 1500
+
 // condenseInstructionContract is the instruction contract emitted to the
 // consuming condense agent. The agent applies the result DIRECTLY and
 // autonomously via ateam learn / ateam forget — no human review gate.
-const condenseInstructionContract = `Condense the memories above into a hot tier for this role.
+//
+// SEAM 3 requires this text to state (a) that cold bodies are elided from
+// the packet and how to retrieve one on demand, and (b) the per-entry byte
+// cap — so the curation agent learns the cap from the contract, not by
+// getting a write rejected.
+var condenseInstructionContract = fmt.Sprintf(`Condense the memories above into a hot tier for this role.
+
+PACKET SHAPE: each entry's "key" is RELATIVE to this packet's "role" (every
+entry in this packet is already this one role) — it is "hot:<slug>",
+"fresh:<slug>", or a bare "<slug>" for cold, NOT the full "<role>:..." form.
+Tier is encoded in that prefix; there is no separate tier field. Pass "key"
+verbatim as the second argument to the commands below (e.g. ateam learn
+<role> <key> --file <f>) — do not re-prepend the role. Hot AND fresh entries
+carry a full "body". Fresh entries are
+the PRIMARY PROMOTION CANDIDATES: they were being served to every session
+(hot ∪ fresh) until the moment they were drained, so they get full-body
+visibility on purpose, same as hot — do not treat them like cold. Cold
+entries carry ONLY a "summary" (first line of the body, truncated to %d
+chars) — their full body is deliberately NOT included in this packet, to
+keep it small. Before deciding whether to promote, merge, or evict a cold
+entry, read its full body:
+  ateam recall <role> <term>   (substring search over key + body)
+  bd memories <keyword>        (raw search over the whole store)
+applied_count / last_applied are joined on EVERY entry — hot, fresh, AND cold
+alike, never skipped by tier. To keep the packet small, a field is OMITTED
+when it is exactly its zero value: a missing applied_count means 0, a missing
+last_applied means never applied — this is a pure encoding convention, not a
+missing join. They are your ranking signal for what to promote or evict, not
+decorative metadata: prefer promoting candidates with a high applied_count,
+and weigh a never-applied cold entry (no applied_count field at all) as an
+eviction candidate.
 
 Rules:
-- PROMOTE or REFRESH high-signal or repeatedly-learned items into hot (key: <role>:hot:<slug>) via: ateam learn <role> hot:<slug> --file <f>
-- DEMOTE stale hot items down to cold by rewriting them at the cold key (role:<slug>) then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
+- PROMOTE or REFRESH high-signal or repeatedly-learned items into hot via: ateam learn <role> hot:<slug> --file <f>
+- DEMOTE stale hot items down to cold by rewriting them at the cold key then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
 - Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam learn <role> cold:<slug> --file <f> (for rewrites) or ateam forget <role> <slug> (for evictions)
+- Each written entry has a write-time byte cap: hot/fresh %d bytes, cold %d bytes — write succinctly the first time; do not discover the cap by rejection
 - Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
 - Apply ALL changes AUTONOMOUSLY with no human review gate
 - After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"
-- v1 has NO eviction floor — trust Dolt history for recoverability`
+- v1 has NO eviction floor — trust Dolt history for recoverability`,
+	condenseColdSummaryMaxChars, condenseHotFreshCapBytes, condenseColdCapBytes)
 
-// condenseMemory is a single memory record in the condense packet.
+// condenseMemory is a single memory record in the condense packet (SEAM 3).
+// Tier is NOT a separate wire field — it is already encoded in Key
+// (role:hot:<slug>, role:fresh:<slug>, or a bare role:<slug> for cold), so a
+// redundant field would only cost bytes; condenseInstructionContract states
+// this convention for the consuming agent. Hot and fresh entries carry Body
+// in full; cold entries instead carry Summary (first line of the body,
+// truncated to condenseColdSummaryMaxChars) with Body left empty — the full
+// cold body is elided from the packet (see condenseInstructionContract for
+// the on-demand retrieval path).
+//
 // AppliedCount/LastApplied are joined from the memory's sibling
-// applied:<role>:<slug> record (0/"" when no applied-signal exists yet).
+// applied:<role>:<slug> record and computed IDENTICALLY for every tier,
+// including cold — the join itself is never skipped or tier-gated, which is
+// what "retained on every tier" (SEAM 3) means. Both use omitempty: a memory
+// that has never had `ateam applied` called on it joins to the exact zero
+// value (0 / ""), and omitting an exact zero value loses no information —
+// condenseInstructionContract states the convention explicitly (absent means
+// 0 / never-applied) so the curation agent never has to guess whether
+// "missing" means "zero" or "join failed". This is NOT the same move as
+// cold's body elision (which drops real content behind a retrieval path);
+// there is nothing to retrieve here, the zero value is the complete value.
+// Key is RELATIVE to the packet's own Role field (which every memory in the
+// packet shares by construction — condenseKong.Run filters by <role>:
+// prefix) — it is "hot:<slug>", "fresh:<slug>", or a bare "<slug>" for cold,
+// NOT the full store key "<role>:hot:<slug>". This is deliberate, not just a
+// byte-count trim: it is exactly the string the contract's own rules already
+// pass as the second CLI argument (ateam learn <role> hot:<slug>, ateam
+// forget <role> <slug>), so the agent can use Key verbatim instead of first
+// stripping a role prefix it already has at pkt.Role.
 type condenseMemory struct {
 	Key          string `json:"key"`
-	Body         string `json:"body"`
-	AppliedCount int    `json:"applied_count"`
-	LastApplied  string `json:"last_applied"`
+	Body         string `json:"body,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	AppliedCount int    `json:"applied_count,omitempty"`
+	LastApplied  string `json:"last_applied,omitempty"`
+}
+
+// Tier returns "hot", "fresh", or "cold" for m, derived from Key's own
+// (role-relative) prefix — mirrors condenseKong.Run's classification, which
+// is the authoritative source.
+func (m condenseMemory) Tier() string {
+	switch {
+	case strings.HasPrefix(m.Key, "hot:"):
+		return "hot"
+	case strings.HasPrefix(m.Key, "fresh:"):
+		return "fresh"
+	default:
+		return "cold"
+	}
 }
 
 // condensePacket is the full structured packet emitted to stdout.
@@ -851,6 +937,22 @@ type condensePacket struct {
 	Contract  string           `json:"instruction_contract"`
 }
 
+// condenseSummary returns the first line of body, trimmed and truncated to
+// condenseColdSummaryMaxChars runes (an ellipsis marks truncation).
+// Rune-based truncation avoids splitting a multi-byte UTF-8 character.
+func condenseSummary(body string) string {
+	line := body
+	if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+		line = body[:idx]
+	}
+	line = strings.TrimSpace(line)
+	runes := []rune(line)
+	if len(runes) <= condenseColdSummaryMaxChars {
+		return line
+	}
+	return string(runes[:condenseColdSummaryMaxChars]) + "…"
+}
+
 // condenseKong is the kong-converted form of condense.
 // Takes a positional <role>.
 type condenseKong struct {
@@ -858,11 +960,26 @@ type condenseKong struct {
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+//
+// Tier discrimination (SEAM 3) is by the key's CURRENT tier prefix as found
+// in the store: <role>:hot:* and <role>:fresh:* entries carry a full body
+// (fresh material has not yet had a hot/cold verdict made on it, so it needs
+// full-body visibility exactly like hot); bare <role>:<slug> entries (no
+// tier tag — settled cold) carry summary-only. The emitted packet Key is the
+// store key with the <role>: prefix stripped (role-relative — see
+// condenseMemory's doc comment), NOT the raw store key. This assumes
+// condense is invoked while fresh: keys are still tagged as such; see
+// discovery bead filed against agent-teams-0yd3 for the SKILL.md ordering
+// implication (fresh-drain must not strip the fresh: tag before condense
+// reads it, or newly-drained material would be silently indistinguishable
+// from long-settled cold and would wrongly ship as summary-only).
 func (c *condenseKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam condense: no context")
 	}
 	prefix := c.Role + ":"
+	hotPrefix := prefix + "hot:"
+	freshPrefix := prefix + "fresh:"
 
 	var raw map[string]any
 	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
@@ -883,12 +1000,22 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 	for _, k := range keys {
 		slug := condenseBareSlug(prefix, k)
 		appliedCount, lastApplied := lookupApplied(raw, c.Role, slug)
-		memories = append(memories, condenseMemory{
-			Key:          k,
-			Body:         raw[k].(string),
+		body := raw[k].(string)
+
+		mem := condenseMemory{
+			Key:          strings.TrimPrefix(k, prefix),
 			AppliedCount: appliedCount,
 			LastApplied:  lastApplied,
-		})
+		}
+		switch {
+		case strings.HasPrefix(k, hotPrefix):
+			mem.Body = body
+		case strings.HasPrefix(k, freshPrefix):
+			mem.Body = body
+		default:
+			mem.Summary = condenseSummary(body)
+		}
+		memories = append(memories, mem)
 	}
 
 	packet := condensePacket{
@@ -898,9 +1025,13 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 		Contract:  condenseInstructionContract,
 	}
 
-	enc := json.NewEncoder(ctx.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(packet)
+	// Compact (unindented) JSON: pretty-printing costs real bytes at packet
+	// scale (indentation/newlines across ~150+ entries) for zero information
+	// gain — the consumer is an LLM/tool, not a human skimming a terminal.
+	// Kept compact deliberately; do not add SetIndent back without re-running
+	// the acceptance check (SEAM 3: dri/implementer packet under 20,000
+	// approx tokens).
+	return json.NewEncoder(ctx.Stdout).Encode(packet)
 }
 
 // ── fresh-drain ───────────────────────────────────────────────────────────────
