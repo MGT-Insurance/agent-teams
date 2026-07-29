@@ -846,8 +846,24 @@ PACKET SHAPE: each entry's "key" is RELATIVE to this packet's "role" (every
 entry in this packet is already this one role) — it is "hot:<slug>",
 "fresh:<slug>", or a bare "<slug>" for cold, NOT the full "<role>:..." form.
 Tier is encoded in that prefix; there is no separate tier field. Pass "key"
-verbatim as the second argument to the commands below (e.g. ateam learn
-<role> <key> --file <f>) — do not re-prepend the role. Hot AND fresh entries
+verbatim to ateam recall as <term> (see below) — that holds for EVERY tier,
+cold included, because recall matches the full store key and "key" is
+always a substring of it (this is the .18 guarantee; do not break it).
+Passing "key" verbatim to ateam learn is safe ONLY for hot and fresh
+entries, whose "key" already carries the "hot:" or "fresh:" prefix (e.g.
+ateam learn <role> <key> --file <f>) — do not re-prepend the role. A COLD
+entry's "key" is a BARE slug with no prefix: passing it verbatim to ateam
+learn does NOT rewrite the cold entry — it silently WRITES A NEW FRESH
+ENTRY instead (a bare slug defaults to the fresh tier), leaving the stale
+cold original untouched. That duplicate is then injected into every
+session (ateam learnings serves hot ∪ fresh), which re-arms the very
+fresh-tier trigger a curation pass exists to clear. To rewrite, merge, or
+refresh a cold entry, prepend "cold:" yourself: ateam learn <role>
+cold:<key> --file <f>. Name this asymmetry, because it is easy to get
+backwards: for the SAME bare key, ateam learn <role> <key> writes to FRESH
+(its default tier) while ateam forget <role> <key> deletes from COLD
+(forget forms role:<slug> directly, with no fresh fallback) — one bare
+argument, opposite tiers, depending on the verb. Hot AND fresh entries
 carry a full "body". Fresh entries are
 the PRIMARY PROMOTION CANDIDATES: they were being served to every session
 (hot ∪ fresh) until the moment they were drained, so they get full-body
@@ -855,7 +871,8 @@ visibility on purpose, same as hot — do not treat them like cold. Cold
 entries carry ONLY a "summary" (first line of the body, truncated to %d
 chars) — their full body is deliberately NOT included in this packet, to
 keep it small. Before deciding whether to promote, merge, or evict a cold
-entry, read its full body:
+entry, read its full body — ateam recall is the ONLY retrieval path this
+contract offers, and it is guaranteed to match (see PACKET SHAPE above):
   ateam recall <role> <term>   (substring search over key + body)
     -- pass this entry's OWN "key" field verbatim as <term>: it is
     guaranteed to match, because recall's search runs against the full
@@ -865,7 +882,6 @@ entry, read its full body:
     matches nothing even when the entry exists. A miss prints NOTHING and
     exits 0 -- empty output is NEVER evidence the entry lacks a body;
     re-query with the exact "key" before concluding anything.
-  bd memories <keyword>        (raw search over the whole store)
 applied_count / last_applied are joined on EVERY entry — hot, fresh, AND cold
 alike, never skipped by tier. To keep the packet small, a field is OMITTED
 when it is exactly its zero value: a missing applied_count means 0, a missing
@@ -880,7 +896,7 @@ Rules:
 - DEMOTE stale hot items down to cold by rewriting them at the cold key then deleting the hot key via: ateam learn <role> cold:<slug> --file <f>, then ateam forget <role> hot:<slug>
 - Within cold: MERGE duplicates, REWRITE for brevity, and EVICT truly-dead items via: ateam learn <role> cold:<slug> --file <f> (for rewrites) or ateam forget <role> <slug> (for evictions)
 - Each written entry has a write-time byte cap: hot/fresh %d bytes, cold %d bytes — write succinctly the first time; do not discover the cap by rejection
-- Target the hot budget (~6000 tokens, ~15-25 succinct learnings); keep each hot item succinct but complete
+- Target the hot budget — see this packet's "hot_budget_tokens" field, in tokens (~15-25 succinct learnings); keep each hot item succinct but complete
 - Apply ALL changes AUTONOMOUSLY with no human review gate
 - After applying, emit one line: "promoted N / merged M / evicted K / hot now X tokens"
 - v1 has NO eviction floor — trust Dolt history for recoverability`,

@@ -2297,6 +2297,71 @@ func TestCondense_ContractWarnsRecallSubstringMiss(t *testing.T) {
 	}
 }
 
+// TestCondense_ContractColdWriteUsesColdPrefix proves the contract
+// (agent-teams-y1yr item 1) never instructs a verbatim `ateam learn` write
+// for a bare cold key: a bare slug defaults to the fresh tier (learnKey,
+// write.go), so writing it verbatim would leave the stale cold entry in
+// place and duplicate it into fresh — re-arming the fresh-tier condense
+// trigger the curation pass exists to clear. The contract must instead say
+// to prepend "cold:" for a cold rewrite, and must name the learn/forget
+// asymmetry (same bare key: learn defaults to FRESH, forget targets COLD).
+func TestCondense_ContractColdWriteUsesColdPrefix(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	for _, want := range []string{
+		"cold:<key>",
+		"safe ONLY for hot and fresh",
+		"FRESH",
+		"COLD",
+	} {
+		if !strings.Contains(pkt.Contract, want) {
+			t.Errorf("contract missing %q", want)
+		}
+	}
+}
+
+// TestCondense_ContractDropsBdMemories proves the contract (agent-teams-y1yr
+// item 2) no longer offers `bd memories <keyword>` as a second body-read
+// path. Measured against a real entry, bd memories truncates BELOW the
+// packet's own summary while returning a plausible, correctly-matched,
+// non-empty result — a worse failure mode than recall's silent-empty miss,
+// because there is no signal the agent is deciding on a truncated body.
+// ateam recall (guaranteed to match on the entry's own key) is the sole
+// retrieval path this contract offers.
+func TestCondense_ContractDropsBdMemories(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if strings.Contains(pkt.Contract, "bd memories") {
+		t.Errorf("contract must not offer bd memories as a retrieval path — it truncates below the packet summary")
+	}
+	if !strings.Contains(pkt.Contract, "ONLY retrieval path") {
+		t.Errorf("contract must state ateam recall is the only retrieval path")
+	}
+}
+
+// TestCondense_ContractBudgetPointsAtPacketField proves the contract
+// (agent-teams-y1yr item 3) points the agent at the packet's own
+// "hot_budget_tokens" field for the hot-tier budget instead of restating
+// the number as literal prose — the Sprintf backing this string does not
+// interpolate condenseBudgetTokens, so a hardcoded number goes stale
+// silently the moment the constant changes.
+func TestCondense_ContractBudgetPointsAtPacketField(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if !strings.Contains(pkt.Contract, "hot_budget_tokens") {
+		t.Errorf("contract must reference the packet's hot_budget_tokens field")
+	}
+	if strings.Contains(pkt.Contract, "6000") {
+		t.Errorf("contract must not hardcode the budget value")
+	}
+	if !strings.Contains(pkt.Contract, "15-25 succinct learnings") {
+		t.Errorf("contract must keep the shape guidance, which is not a duplicated constant")
+	}
+}
+
 func TestCondense_ZeroWritesOccur(t *testing.T) {
 	var calls []string
 	fbd := &fakeBD{
