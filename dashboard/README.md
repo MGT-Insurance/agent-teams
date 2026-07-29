@@ -79,14 +79,24 @@ Returns a JSON array. Real JSON keys per element:
 ```
 id, title, description, notes, status, priority, issue_type,
 owner, created_at, updated_at, created_by, comment_count,
-dependency_count, dependent_count
+dependency_count, dependent_count, labels
 ```
 
-**CRITICAL: there is NO `labels` field** (verified: `jq has("labels") == false`).
+`labels` **is** available — both `bd list --json` and `ateam list-json` emit an
+optional `labels` array (e.g. `gate:review`, `gate:question`, `human`,
+`thread:722`) when the initiative carries labels. Verified live against a
+real initiative's `thread:722` label round-tripping correctly. Go already
+depends on this (`gateKind`, `threadLabelValue`, `hung_scan`), so a future
+migration of the fields below to labels is not blocked on backend support.
 
-Structured fields `repo / worktree / branch / team / mode` and narrative sections
-`GOAL / PRIMARY VIEWS / etc.` are embedded as `key: value` TEXT lines inside
-`description`. The backend **must parse description text** to extract them.
+Structured fields `repo / worktree / branch / team / mode` are embedded as
+`key: value` TEXT lines inside `description`. The backend **must parse
+description text** to extract them, using the strict field rule (column 0,
+exact-lowercase key, single colon, single space, non-empty value; first
+occurrence wins — see `parseDescriptionFields` in `server/src/parse.ts`).
+All-caps prose section headings — `GOAL:`, `PRIMARY VIEWS:`, etc. — are
+narrative, not structured fields; the parser does not read them, and there is
+no `goal` field on `ParsedInitiative`.
 
 `notes` is a freeform append log; the latest note is the current phase narrative
 and is the source for parked-question text.
@@ -100,9 +110,8 @@ bd -C <ateam-ws> list --label human --json
 ```
 
 The `--label human` filter works server-side and returns human-gated initiatives
-(returns `[]` cleanly when none). Note: `bd list --json` **also omits** the
-`labels` field from output — the filter itself is the signal, not the field.
-The parked question text lives in the latest `notes` entry of the initiative.
+(returns `[]` cleanly when none). The parked question text lives in the latest
+`notes` entry of the initiative.
 
 Use `ateam ws` to get the workspace path.
 

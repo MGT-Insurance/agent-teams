@@ -65,7 +65,6 @@ function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative 
     branch: "init-1",
     team: "",
     mode: "",
-    goal: "",
     prUrl: null,
     epic: null,
     ...over,

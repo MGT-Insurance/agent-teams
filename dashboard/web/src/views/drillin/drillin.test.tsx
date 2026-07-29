@@ -89,7 +89,7 @@ const sampleDetail: DrillInDetail = {
   // RawInitiative fields
   id: "init-abc",
   title: "My Test Initiative",
-  description: "repo: testrepo\nworktree: /wt/abc\nbranch: feat/thing\nteam: default\nmode: auto\ngoal: Do the thing",
+  description: "repo: testrepo\nworktree: /wt/abc\nbranch: feat/thing\nteam: default\nmode: auto",
   notes: "Latest note text",
   status: "open",
   priority: "P1",
@@ -104,7 +104,6 @@ const sampleDetail: DrillInDetail = {
   branch: "feat/thing",
   team: "default",
   mode: "auto",
-  goal: "Do the thing",
   prUrl: "https://github.com/org/repo/pull/42",
   epic: null,
   // DrillInDetail extras
@@ -145,7 +144,6 @@ describe("DrillInView", () => {
     // Header meta fields
     expect(screen.getByText("feat/thing")).toBeTruthy();
     expect(screen.getByText("testrepo")).toBeTruthy();
-    expect(screen.getByText("Do the thing")).toBeTruthy();
 
     // PR link
     const prLink = screen.getByText("https://github.com/org/repo/pull/42");

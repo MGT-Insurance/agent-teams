@@ -9,6 +9,7 @@ import {
   extractEpic,
   extractLatestAsk,
   parseInitiative,
+  parseDescriptionFields,
   parseAteamListJson,
   parseClaudeAgents,
   buildInitiativeNodes,
@@ -231,6 +232,97 @@ describe("parseInitiative", () => {
     const raw: RawInitiative = { ...RAW_AT_V4E, description: "repo: /r\n", notes: "no epic here" };
     const parsed = parseInitiative(raw);
     expect(parsed.epic).toBeNull();
+  });
+});
+
+// ---- parseDescriptionFields: strict field rule (agent-teams-ully.8) --------
+//
+// Mirrors the frozen rule from agent-teams-ully.5, which this dashboard
+// cannot import directly (separate deploy, separate language): a field line
+// is column 0, an exact-lowercase key, a single colon, a single space, then
+// a non-empty value. First occurrence of a key wins. These four witness
+// tests are the same ones the Go component ports, over the same real
+// registry incidents.
+
+// Captured from the REAL at-jno7 initiative description (2026-07-28): a
+// canonical `repo:` line in the header, followed by a long prose body, then
+// the actual briefing line that poisoned the OLD last-wins/case-folding
+// parser further down: "Repo: `/path`" — wrong case AND backtick-wrapped.
+// Trimmed for readability; both the canonical line and the real poison line
+// are verbatim.
+const POISONED_DESCRIPTION_AT_JNO7 = `problem: PR reviews: collapse per-review initiative topics into one shared reviews topic, and capture the missing 'waiting on external PR review' state
+repo: /Users/erlloyd/Code/agent-teams
+worktree: /Users/erlloyd/.agent-teams-worktrees/pr-review-topic-noise-and-external-review-state
+branch: pr-review-topic-noise-and-external-review-state
+team: agent-teams-pr-review-topic-noise-and-external-review-state
+mode: bg
+epic: agent-teams-p9dm
+
+## Eric's ask (verbatim, via steward-direct)
+
+> Also, need another DRI to investigate some item's with PR reviews. First, pr
+> reviews are initiatives, so they show up as separate topics, but have no
+> comments. This is just noise.
+
+Two items. Both are investigation-first.
+
+## ⚠️ Scope collision — read this before touching any file
+
+**at-580q is IN-PROGRESS right now on Eric's MGT laptop and edits the same
+files.** Its worktree is \`/Users/ericlloyd/.agent-teams-worktrees/review-pr-skill-close-the-initiative-citing\`
+(different machine, same repo, both off \`main\`).
+
+## Pointers (steward recon only — verify everything yourself)
+
+Repo: \`/Users/erlloyd/Code/agent-teams\`
+
+**Item 1 — review initiatives as topics**
+- Skills: \`plugins/agent-teams/skills/review-pr/\`, \`plugins/agent-teams/skills/dispatch-review-pr/\`
+session: 1fd39816-23ba-4c91-a0be-2681612d085f
+`;
+
+// Captured from the REAL at-y7l9 initiative description (2026-07-27): the
+// real all-caps prose section heading that used to populate the (now
+// deleted) phantom \`goal\` field, since \`GOAL\` lowercases to the exact key
+// \`goal\` under the old case-folding parser.
+const GOAL_HEADING_AT_Y7L9 =
+  "GOAL: One user-facing INDUSTRY GROUP the user selects no matter which product they're quoting, keyed on NAICS codes — the first 4 digits of NAICS was suggested as the classification key.";
+
+describe("parseDescriptionFields — strict field rule (agent-teams-ully.8)", () => {
+  it("the real poisoned description (at-jno7): a canonical repo: line, then a later 'Repo: `...`' prose line, resolves to the UNPOISONED value", () => {
+    const fields = parseDescriptionFields(POISONED_DESCRIPTION_AT_JNO7);
+    expect(fields["repo"]).toBe("/Users/erlloyd/Code/agent-teams");
+  });
+
+  it("an all-caps GOAL: prose heading (the real at-y7l9 line) populates nothing", () => {
+    const fields = parseDescriptionFields(GOAL_HEADING_AT_Y7L9);
+    expect(fields["goal"]).toBeUndefined();
+    expect(Object.keys(fields)).toHaveLength(0);
+  });
+
+  it("a '- repo: x' list-item line (not at column 0) populates nothing", () => {
+    const fields = parseDescriptionFields("- repo: /should-not-match\n");
+    expect(fields["repo"]).toBeUndefined();
+  });
+
+  it("two canonical repo: lines resolve to the FIRST", () => {
+    const fields = parseDescriptionFields("repo: /first\nrepo: /second\n");
+    expect(fields["repo"]).toBe("/first");
+  });
+
+  it("rejects a missing space after the colon ('repo:x')", () => {
+    const fields = parseDescriptionFields("repo:x\n");
+    expect(fields["repo"]).toBeUndefined();
+  });
+
+  it("rejects a doubled space after the colon ('repo:  x')", () => {
+    const fields = parseDescriptionFields("repo:  x\n");
+    expect(fields["repo"]).toBeUndefined();
+  });
+
+  it("rejects leading whitespace before the key ('  repo: x')", () => {
+    const fields = parseDescriptionFields("  repo: x\n");
+    expect(fields["repo"]).toBeUndefined();
   });
 });
 
@@ -695,7 +787,6 @@ describe("buildInbox — sessionId for detached/alive sessions (agent-teams-u9f2
       branch: "at-detached",
       team: "t-x",
       mode: "bg",
-      goal: "",
       prUrl: "https://github.com/org/repo/pull/99",
       labels: ["gate:review"],
       epic: null,
@@ -1095,7 +1186,6 @@ describe("attention state: spec-required scenarios", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: haspr ? `https://github.com/org/repo/pull/1` : null,
       epic: null,
     };
@@ -1227,7 +1317,6 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       labels,
       prUrl: haspr ? "https://github.com/org/repo/pull/1" : null,
       epic: null,
@@ -1402,7 +1491,6 @@ describe("buildInbox — updatedAt and nextAction", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: kind === "generic" || kind === "review" ? "https://github.com/org/repo/pull/1" : null,
       labels,
       epic: null,
@@ -1498,7 +1586,6 @@ describe("buildInbox — lastActivityAt (session-transition-aware recency)", () 
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: "https://github.com/org/repo/pull/1",
       labels: ["gate:review"],
       epic: null,
@@ -1574,7 +1661,6 @@ describe("buildInbox — notes fallback skips ask-sentinel blocks", () => {
       branch: "chk",
       team: "t-chk",
       mode: "bg",
-      goal: "",
       prUrl: null,
       epic: null,
     };
@@ -1638,7 +1724,6 @@ describe("buildInbox — recommendation and alternative", () => {
       branch: "w-rec",
       team: "t-w-rec",
       mode: "bg",
-      goal: "",
       prUrl: null,
       labels: ["human"],
       epic: null,
@@ -1687,7 +1772,6 @@ describe("buildInbox — recommendation and alternative", () => {
       branch: "rv",
       team: "t-rv",
       mode: "bg",
-      goal: "",
       prUrl: "https://github.com/org/repo/pull/1",
       labels: ["gate:review"],
       epic: null,
@@ -1721,7 +1805,6 @@ describe("buildInbox — onThisMachine", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: null,
       labels: ["human"],
       epic: null,
@@ -1858,7 +1941,6 @@ describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: null,
       epic: null,
     };
@@ -1929,7 +2011,6 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: null,
       epic: null,
     };
@@ -2020,7 +2101,6 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: null,
       epic: null,
     };
@@ -2189,7 +2269,6 @@ describe("buildInbox — merge semantics: gate row also carrying an alert (agent
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: null,
       labels,
       epic: null,
@@ -2373,7 +2452,6 @@ describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => 
       branch: "cap-test",
       team: "t-cap-test",
       mode: "bg",
-      goal: "",
       prUrl: null,
       labels: ["human"],
       epic: null,
@@ -2447,7 +2525,6 @@ describe("buildInbox — raw status/state/waitingFor pass-through", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: null,
       labels,
       epic: null,
@@ -2503,7 +2580,6 @@ describe("buildInbox — waiting item context from ask block", () => {
       branch: "ctx-test",
       team: "t-ctx-test",
       mode: "bg",
-      goal: "",
       prUrl: null,
       labels: ["human"],
       epic: null,
@@ -2558,7 +2634,6 @@ describe("buildInbox — notes-block nextAction fallback for check/generic/revie
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
       prUrl: "https://github.com/org/repo/pull/1",
       labels,
       epic: null,

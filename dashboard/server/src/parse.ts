@@ -45,18 +45,32 @@ export function extractEpic(description: string, notes: string): string | null {
   return nm ? (nm[1] ?? null) : null;
 }
 
-// Parse the `key: value` lines embedded in description text.
-// Returns a partial record; missing keys are empty string.
-function parseDescriptionFields(
-  desc: string,
-): Record<string, string> {
+// Parse the `key: value` lines embedded in description text, per the frozen
+// strict field rule (agent-teams-ully.5 — mirrored 1:1 from the Go component
+// this dashboard cannot import, since it's a separate deploy/language): a
+// field line is column 0 (no leading whitespace), an exact-lowercase key, a
+// single colon, a single space, then a non-empty value. No case folding, no
+// tolerance for a missing/doubled space after the colon. FIRST occurrence of
+// a key wins; later occurrences are ignored.
+//
+// This is deliberately strict, not lenient: a mis-cased echo ("Repo: ..."),
+// a list-item ("- repo: ..."), or an ALL-CAPS prose heading ("GOAL: ...")
+// never matches the rule at all, so it can never poison a real field —
+// first-wins is defence in depth, not the only defence. See at-jno7 for the
+// real incident this fixes: a briefing line re-stated the repo path as
+// "Repo: `/path`" (wrong case, backtick-wrapped) further down the same
+// description, and the old last-wins/case-folding parser took it.
+const FIELD_LINE_RE = /^([a-z]+): (\S.*)$/;
+
+export function parseDescriptionFields(desc: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const line of desc.split("\n")) {
-    const colon = line.indexOf(":");
-    if (colon === -1) continue;
-    const key = line.slice(0, colon).trim().toLowerCase();
-    const value = line.slice(colon + 1).trim();
-    if (key && value) {
+    const m = FIELD_LINE_RE.exec(line);
+    if (!m) continue;
+    const key = m[1];
+    const value = m[2];
+    if (key === undefined || value === undefined) continue;
+    if (!(key in result)) {
       result[key] = value;
     }
   }
@@ -93,7 +107,6 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     branch: fields["branch"] ?? "",
     team: fields["team"] ?? "",
     mode: fields["mode"] ?? "",
-    goal: fields["goal"] ?? "",
     prUrl,
     epic: extractEpic(description, notes),
   };

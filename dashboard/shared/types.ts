@@ -1,6 +1,6 @@
 // Raw JSON shape returned by `ateam list-json`.
 // `labels` is an optional array of label strings (e.g. "gate:review", "gate:question", "human").
-// Structured fields (repo, worktree, branch, team, mode, goal) are embedded
+// Structured fields (repo, worktree, branch, team, mode) are embedded
 // as `key: value` TEXT lines inside `description` — backend must parse them.
 export interface RawInitiative {
   id: string;
@@ -32,7 +32,6 @@ export interface ParsedInitiative extends RawInitiative {
   branch: string;
   team: string;
   mode: string;
-  goal: string;
   prUrl: string | null;
   // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
   // Absent for legacy initiatives registered before at-e3m. Dashboard uses
