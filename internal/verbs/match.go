@@ -40,19 +40,6 @@ func RegisterMatchKong(p *cli.Parser) {
 	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
 }
 
-// hasSessionLine reports whether any line in description starts with
-// "session:" — the migration discriminator (mirrors hasWorktreeLine): an
-// initiative with no session: lines is a legacy entry and matchers must fall
-// back to the worktree/Name match for it (agent-teams-zalv.1 §5).
-func hasSessionLine(description string) bool {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "session:") {
-			return true
-		}
-	}
-	return false
-}
-
 // appendSessionID ties sessionID to initiativeID by writing back the
 // description initiative.WithSession composes, via the sanctioned
 // global-workspace write path (bd update --body-file, same mechanism as
@@ -151,7 +138,7 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 //
 // When iss has "session:" lines, only LIVE sessions (PID present) whose
 // SessionID is in that set are returned, in registration order. When iss has
-// no session: lines (legacy, pre-migration entry — hasSessionLine is the
+// no session: lines (legacy, pre-migration entry — an empty f.Sessions is the
 // discriminator), this falls back to the existing worktree/Name match
 // (matchSessionByWorktree) wrapped to a 0-or-1-element slice, so legacy
 // routing/classification is unchanged byte-for-byte (agent-teams-zalv.1 §2,

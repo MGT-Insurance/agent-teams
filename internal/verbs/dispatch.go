@@ -170,7 +170,18 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		base = c.git.DefaultBranch(repoRoot)
 	}
 
-	// 3. Slug.
+	// 3. Validate --problem, then derive the slug from it.
+	//
+	// --problem is documented as a one-line statement and is the ONLY
+	// human-supplied value in the routing header — every other field is
+	// machine-derived and cannot carry a newline. A multi-line value would look
+	// like a canonical field on its second line and win under first-wins, which
+	// is the bug this whole initiative exists to close. Reject it here, as the
+	// usage error it is, rather than ten lines later once the worktree exists.
+	if strings.ContainsAny(c.Problem, "\r\n") {
+		return cli.Usagef("dispatch: --problem must be a single line; put multi-line prose in --body-file, which is appended below the routing header")
+	}
+
 	resolvedSlug := c.Slug
 	if resolvedSlug == "" {
 		resolvedSlug = gitutil.Slugify(c.Problem)
@@ -227,10 +238,11 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	}
 
 	// This is a BRAND-NEW initiative, which is the only thing initiative.New
-	// may compose (see internal/initiative/doc.go, frozen item 4). It rejects
-	// a value carrying a line break rather than splicing one in — --problem is
-	// free-form human text, and an injected line would look like a canonical
-	// field and win under first-wins.
+	// may compose (see internal/initiative/doc.go, frozen item 4). Its
+	// line-break rejection should be unreachable from here — --problem is
+	// guarded above and every other field is machine-derived — but it is the
+	// component's invariant, not ours, so the error is handled rather than
+	// discarded.
 	plan, err := initiative.New(fields)
 	if err != nil {
 		_ = c.git.RemoveWorktree(repoRoot, wtPath)

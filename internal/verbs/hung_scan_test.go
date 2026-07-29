@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // ── classifyInitiative (unit-level) ──────────────────────────────────────────
@@ -276,7 +277,7 @@ func TestClassifyInitiative_LegacyNoSessionLines_UnchangedByteForByte(t *testing
 	dirExists := func(string) bool { return true }
 	pid := 7
 	iss := bd.Issue{Description: "worktree: " + wt + "\n"} // no session: lines
-	if hasSessionLine(iss.Description) {
+	if len(initiative.Of(iss).Sessions) != 0 {
 		t.Fatal("test setup: description must have no session: lines")
 	}
 	sessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}

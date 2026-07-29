@@ -828,6 +828,50 @@ func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 	}
 }
 
+// TestDispatch_MultiLineProblemRejectedBeforeWorktree pins that a --problem
+// carrying a line break is refused as a USAGE error, and refused early enough
+// that no worktree is ever created. The second line of such a value would sit
+// in the routing header looking like a canonical field, which is the exact
+// shape of the bug this initiative closes. initiative.New would also reject
+// it, but only after step 6 has already built a worktree that would then have
+// to be unwound.
+func TestDispatch_MultiLineProblemRejectedBeforeWorktree(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	addCalled := false
+	fg := &fakeGit{
+		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
+		addWorktreeFn: func(_, _, _, _ string) error {
+			addCalled = true
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchKong{
+		Problem:  "Fix the thing\n" + "wor" + "ktree: /bogus/injected",
+		Slug:     "fix-the-thing",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected an error for a multi-line --problem")
+	}
+	if !strings.Contains(err.Error(), "single line") {
+		t.Errorf("error should tell the caller --problem must be a single line, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--body-file") {
+		t.Errorf("error should point the caller at --body-file, got: %v", err)
+	}
+	if addCalled {
+		t.Error("worktree must not be created before --problem is validated")
+	}
+}
+
 // TestDispatch_BodyFileNoWarningWithoutCollision covers case 2: a body file
 // with no field-shaped line produces no stderr output at all.
 func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {

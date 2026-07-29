@@ -1,5 +1,5 @@
-// session_test.go: core-path tests for the session-line helpers
-// (agent-teams-zalv.2 / at-ps11): sessionIDs, hasSessionLine, appendSessionID,
+// session_test.go: core-path tests for the session-tie helpers
+// (agent-teams-zalv.2 / at-ps11): appendSessionID and
 // matchSessionsForInitiative. Not exhaustive — see the contract bead
 // (agent-teams-zalv.1) for the full schema/API this implements.
 package verbs
@@ -43,20 +43,14 @@ func readFileT(t *testing.T, path string) (string, error) {
 	return string(data), nil
 }
 
-// ── hasSessionLine ───────────────────────────────────────────────────────────
-//
-// The sessionIDs parsing tests that lived here are gone with the helper;
-// session ties now come from initiative.Of(iss).Sessions, and
+// The sessionIDs and hasSessionLine tests that lived here are gone with those
+// helpers; session ties now come from initiative.Of(iss).Sessions, and
 // internal/initiative owns the registration-order guarantee they asserted.
-
-func TestHasSessionLine(t *testing.T) {
-	if hasSessionLine("problem: x\nworktree: /a/b\n") {
-		t.Error("hasSessionLine: expected false for legacy description with no session: lines")
-	}
-	if !hasSessionLine("problem: x\nsession: sess-1\n") {
-		t.Error("hasSessionLine: expected true when a session: line is present")
-	}
-}
+//
+// hasSessionLine was not merely redundant. It matched a bare "session:" with
+// no value, which the frozen rule does not, so it reported "has sessions" for
+// a description yielding zero extractable ids. Do not reintroduce that
+// semantics as a convenience wrapper.
 
 // ── appendSessionID ──────────────────────────────────────────────────────────
 
