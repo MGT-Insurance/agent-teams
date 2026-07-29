@@ -43,12 +43,15 @@ func (c *handoffKong) Run(ctx *cli.Context) error {
 
 	// Read labels first so a missing gate:review can be warned about
 	// (external_review.go §3, §9's U/Q -> H row) without blocking the
-	// declaration — Eric's fact is recorded either way.
+	// declaration — Eric's fact is recorded either way. The lookup feeds only
+	// the warning, and nothing else in the system can reconstruct the
+	// declaration, so a bd failure degrades the warning rather than dropping
+	// the fact (agent-teams-p9dm.42).
 	issue, err := bd.ShowIssue(ctx.BD, c.ID)
-	if err != nil {
-		return fmt.Errorf("ateam handoff: look up initiative %s: %w", c.ID, err)
-	}
-	if !hasLabel(issue.Labels, "gate:review") {
+	switch {
+	case err != nil:
+		fmt.Fprintf(ctx.Stderr, "ateam handoff: warning: could not read labels for %s (%v) — declaring anyway\n", c.ID, err)
+	case !hasLabel(issue.Labels, "gate:review"):
 		fmt.Fprintf(ctx.Stderr, "ateam handoff: warning: %s has no gate:review label — the reported status will not change until a review gate exists\n", c.ID)
 	}
 
