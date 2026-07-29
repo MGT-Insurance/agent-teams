@@ -157,6 +157,8 @@ and answer from the records, not recollection.
 - `UNDECLARED` means a call site didn't identify itself — say so, don't guess which one.
 - No matching record means the log shows nothing for that window, not "I didn't send it" — every DRI posts through the same bot into the same topics, so absence from the log never proves non-authorship on its own.
 
+**"What did that review find?"** — Reviews-topic follow-ups (retrieve from GitHub, never beads) and dispatching a deeper look: references/pr-reviews.md.
+
 ## 3. Authority rules (v1, absolute)
 
 The **Do NOT** list at the top of this file is absolute: a recommendation is a suggestion, never a decision. The **only** autonomous actions are status nudges, anomaly flags, and unambiguous `ateam reap-orphans`. Everything else escalates to Eric with a recommendation and an alternative, and waits.
