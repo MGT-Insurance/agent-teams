@@ -2275,6 +2275,28 @@ func TestCondense_PacketContainsContract(t *testing.T) {
 	}
 }
 
+// TestCondense_ContractWarnsRecallSubstringMiss proves the contract
+// (agent-teams-0yd3.18) tells the consuming agent: pass the entry's own
+// "key" verbatim as the recall term, that recall is a literal substring
+// match (not a word search), and that a miss is silent (prints nothing,
+// exits 0) so empty output must never be read as "no body exists".
+func TestCondense_ContractWarnsRecallSubstringMiss(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	for _, want := range []string{
+		"verbatim as <term>",
+		"SUBSTRING",
+		"NOT a word/phrase search",
+		"exits 0",
+		"NEVER evidence the entry lacks a body",
+	} {
+		if !strings.Contains(pkt.Contract, want) {
+			t.Errorf("contract missing %q", want)
+		}
+	}
+}
+
 func TestCondense_ZeroWritesOccur(t *testing.T) {
 	var calls []string
 	fbd := &fakeBD{

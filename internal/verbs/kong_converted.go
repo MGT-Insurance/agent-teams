@@ -857,6 +857,14 @@ chars) — their full body is deliberately NOT included in this packet, to
 keep it small. Before deciding whether to promote, merge, or evict a cold
 entry, read its full body:
   ateam recall <role> <term>   (substring search over key + body)
+    -- pass this entry's OWN "key" field verbatim as <term>: it is
+    guaranteed to match, because recall's search runs against the full
+    store key, and this entry's "key" is always a substring of it. recall
+    is a SINGLE LITERAL SUBSTRING match, NOT a word/phrase search: a
+    descriptive multi-word query (e.g. "self hosting bootstrap") usually
+    matches nothing even when the entry exists. A miss prints NOTHING and
+    exits 0 -- empty output is NEVER evidence the entry lacks a body;
+    re-query with the exact "key" before concluding anything.
   bd memories <keyword>        (raw search over the whole store)
 applied_count / last_applied are joined on EVERY entry — hot, fresh, AND cold
 alike, never skipped by tier. To keep the packet small, a field is OMITTED
