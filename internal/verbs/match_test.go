@@ -218,6 +218,146 @@ func TestResumeMatchMissingArg(t *testing.T) {
 	}
 }
 
+// ── resolve-initiative tests ──────────────────────────────────────────────────
+//
+// This verb is what the plugin's four shell hooks call instead of re-deriving
+// the worktree rule in jq, so its output contract is load-bearing: bare id or
+// nothing, always exit 0.
+
+func TestResolveInitiativeExact(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "problem: x\nworktree: " + path + "\nbranch: feat"},
+		{ID: "at-222", Title: "Other", Description: "worktree: /other/path"},
+	}
+	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{path})
+	if code != 0 {
+		t.Errorf("resolve-initiative exact: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-111" {
+		t.Errorf("resolve-initiative exact: got %q, want at-111", strings.TrimSpace(stdout))
+	}
+	if stderr != "" {
+		t.Errorf("resolve-initiative exact: unexpected stderr %q", stderr)
+	}
+}
+
+// TestResolveInitiativeSubdirectory is the whole reason this verb is not
+// resume-match: cwd is a subdirectory of the registered worktree.
+func TestResolveInitiativeSubdirectory(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "worktree: /a/b/wt"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt/apps/mithril"})
+	if code != 0 {
+		t.Errorf("resolve-initiative subdir: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-111" {
+		t.Errorf("resolve-initiative subdir: got %q, want at-111", strings.TrimSpace(stdout))
+	}
+}
+
+// TestResolveInitiativeLongestWins covers nested worktrees: the jq the hooks
+// used took [0] in list order, which could resolve to the outer initiative.
+func TestResolveInitiativeLongestWins(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-outer", Title: "Outer", Description: "worktree: /a/b/wt"},
+		{ID: "at-inner", Title: "Inner", Description: "worktree: /a/b/wt/nested"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt/nested/deep"})
+	if code != 0 {
+		t.Errorf("resolve-initiative longest-wins: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-inner" {
+		t.Errorf("resolve-initiative longest-wins: got %q, want at-inner (most specific worktree)", strings.TrimSpace(stdout))
+	}
+}
+
+// TestResolveInitiativeParentIsNotSubdir guards the direction of the ancestor
+// test: the worktree's PARENT must not match. tests/hook-compact-recovery.test.sh
+// case 2 depends on exactly this.
+func TestResolveInitiativeParentIsNotSubdir(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-abc", Title: "Registered", Description: "worktree: /a/b/wt"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b"})
+	if code != 0 {
+		t.Errorf("resolve-initiative parent: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("resolve-initiative parent: got %q, want empty", stdout)
+	}
+}
+
+// TestResolveInitiativeSiblingPrefix ensures a directory that merely shares a
+// string prefix with a registered worktree never matches.
+func TestResolveInitiativeSiblingPrefix(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-abc", Title: "Registered", Description: "worktree: /a/b/wt"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt-foo"})
+	if code != 0 {
+		t.Errorf("resolve-initiative sibling-prefix: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("resolve-initiative sibling-prefix: got %q, want empty", stdout)
+	}
+}
+
+// TestResolveInitiativeNoMatch is the hooks' normal path — an unregistered cwd
+// must be silence plus exit 0, never an error.
+func TestResolveInitiativeNoMatch(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "One", Description: "worktree: /a/b/wt"},
+	}
+	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{"/no/such/path"})
+	if code != 0 {
+		t.Errorf("resolve-initiative no-match: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("resolve-initiative no-match: got %q, want empty", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("resolve-initiative no-match: unexpected stderr %q — hooks must stay silent", stderr)
+	}
+}
+
+// TestResolveInitiativeNonCanonicalFieldLineIgnored pins the frozen matching
+// rule (internal/initiative/doc.go item 1): a wrong-case or list-prefixed line
+// is structurally invisible, so it must not resolve.
+func TestResolveInitiativeNonCanonicalFieldLineIgnored(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-bad", Title: "Prose", Description: "Worktree: /a/b/wt\n- worktree: /a/b/wt"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt"})
+	if code != 0 {
+		t.Errorf("resolve-initiative non-canonical: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("resolve-initiative non-canonical: got %q, want empty", stdout)
+	}
+}
+
+func TestResolveInitiativeBDError(t *testing.T) {
+	stdout, stderr, code := runVerbErr(t, "resolve-initiative", []string{"/any/path"})
+	if code != 0 {
+		t.Errorf("resolve-initiative bd-error: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("resolve-initiative bd-error: got %q, want empty", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("resolve-initiative bd-error: unexpected stderr %q — hooks must fail soft", stderr)
+	}
+}
+
+func TestResolveInitiativeMissingArg(t *testing.T) {
+	_, _, code := runVerb(t, "resolve-initiative", nil, []string{})
+	if code != 2 {
+		t.Errorf("resolve-initiative missing-arg: exit code %d, want 2", code)
+	}
+}
+
 // ── resume-match-closed tests ─────────────────────────────────────────────────
 
 func TestResumeMatchClosedExact(t *testing.T) {

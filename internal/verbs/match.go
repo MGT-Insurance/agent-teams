@@ -38,6 +38,7 @@ func RegisterMatchKong(p *cli.Parser) {
 	p.AddVerb("audit", "Audit global workspace for leaked work beads.", &auditKong{})
 	p.AddVerb("resume-match", "Find the open initiative for a worktree path.", &resumeMatchKong{})
 	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
+	p.AddVerb("resolve-initiative", "Print the open initiative id owning a path (the worktree root or any subdirectory).", &resolveInitiativeKong{})
 }
 
 // appendSessionID ties sessionID to initiativeID by writing back the
@@ -199,9 +200,10 @@ func matchByWorktree(issues []bd.Issue, path string) *bd.Issue {
 // any subdirectory of the registered worktree, e.g. apps/mithril nested under
 // the worktree root). The trailing separator guard means a sibling directory
 // that merely shares a string prefix (worktree /a/b vs cwd /a/b-foo) never
-// matches. Used ONLY by resolveMyInitiative (the `ateam mail inbox` path) —
-// matchByWorktree remains strict-equality for resume-match, where prefix
-// matching would risk resuming the wrong initiative.
+// matches. Used by resolveMyInitiative (the `ateam mail inbox` path) and by
+// resolveInitiativeKong (the `ateam resolve-initiative` verb the plugin's
+// hooks call) — matchByWorktree remains strict-equality for resume-match,
+// where prefix matching would risk resuming the wrong initiative.
 func matchByWorktreeOrAncestor(issues []bd.Issue, path string) *bd.Issue {
 	want := canonicalPath(path)
 	var best *bd.Issue
@@ -297,6 +299,49 @@ func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 	}
 
 	if match := matchByWorktree(issues, c.WorktreePath); match != nil {
+		fmt.Fprintln(ctx.Stdout, match.ID)
+	}
+	return nil
+}
+
+// resolveInitiativeKong resolves a filesystem path to the OPEN initiative that
+// owns it. It exists so the plugin's shell hooks stop re-deriving the routing
+// field rule in jq: before this verb, wake-watcher.sh, inbox-drain.sh,
+// session-start-inbox.sh and compact-recovery.sh each shelled `bd -C $ATH list
+// --status=open --json` and picked the worktree line apart themselves, which
+// both violated the cardinal rule (raw bd against the global workspace) and
+// meant a change to the rule in internal/initiative silently stopped matching
+// there — hooks fail soft, so initiative resolution would just quietly stop
+// with no error anywhere.
+//
+// Ancestor semantics, via matchByWorktreeOrAncestor: the registered worktree
+// root itself or any subdirectory of it resolves, and the most specific
+// (longest) worktree wins. Distinct from resume-match, whose strict equality
+// is deliberate — see matchByWorktree.
+//
+// OUTPUT CONTRACT, which all four hooks depend on: the bare initiative id on
+// stdout and nothing else, or NO output at all with exit 0 when no open
+// initiative owns the path. "No match" is a normal, expected condition for a
+// hook (any plain claude session in an unregistered directory hits it), so it
+// must never become an error or the hooks would start reporting failures on
+// every ordinary session. A bd failure is treated the same way, matching
+// resumeMatchKong.
+type resolveInitiativeKong struct {
+	Path string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam resolve-initiative: nil context")
+	}
+
+	var issues []bd.Issue
+	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+		return nil
+	}
+
+	if match := matchByWorktreeOrAncestor(issues, c.Path); match != nil {
 		fmt.Fprintln(ctx.Stdout, match.ID)
 	}
 	return nil
