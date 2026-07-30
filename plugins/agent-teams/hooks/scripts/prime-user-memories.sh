@@ -4,7 +4,7 @@
 # Silent no-op if ateam is not installed. Never fails the session.
 set -euo pipefail
 
-ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 # Capture stdin once non-blocking — Claude Code passes {session_id, ...} on stdin;
