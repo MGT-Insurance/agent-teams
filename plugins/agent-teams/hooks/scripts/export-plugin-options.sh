@@ -32,11 +32,18 @@ set -eu
 [ -n "${CLAUDE_ENV_FILE:-}" ] || exit 0
 
 use_advisors="${CLAUDE_PLUGIN_OPTION_USE_ADVISORS:-false}"
-# The [1m] suffix is load-bearing, not cosmetic: plain "opus" resolves to a
-# sub-1M context window, which makes Claude Code cap its auto-compact window at
-# 200k and summarise at ~167k tokens. Long DRI sessions then compact many times
-# over, each round dropping the session to ~28k. With opus[1m] the same
-# threshold lands at ~967k. Do not "simplify" this back to opus.
+# The [1m] suffix is load-bearing, not cosmetic, but it does NOT set the
+# compaction threshold on its own. The CLI clamps its auto-compact window to
+# min(the model's real context window, the requested window), and dispatch.go
+# requests 500000 via --settings. On a sub-1M model that clamp drops the
+# window straight back to 200000 and the session compacts at ~167000 tokens,
+# whatever was requested. So this default and autoCompactWindowTokens in
+# internal/verbs/dispatch.go are ONE setting in two layers: reverting either
+# one alone silently un-does both. Keep them in step, and see that constant's
+# doc comment for the full resolution formula.
+# Kept unquoted in the printf below on purpose: a POSIX assignment RHS does
+# not undergo pathname expansion, so the brackets survive verbatim, and
+# quoting would break a naive KEY=VALUE reader of $CLAUDE_ENV_FILE.
 dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-opus[1m]}"
 
 printf 'export CLAUDE_PLUGIN_OPTION_USE_ADVISORS=%s\n' "$use_advisors" >> "$CLAUDE_ENV_FILE"

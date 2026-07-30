@@ -1,6 +1,6 @@
 {
   "name": "agent-teams",
-  "version": "0.47.1",
+  "version": "0.47.2",
   "description": "DRI-led agent teams: the /dri playbook, four role agents, a global learning workspace and initiative registry. Hard-requires beads (bd).",
   "author": { "name": "Eric Lloyd" },
   "userConfig": {
@@ -13,7 +13,7 @@
     "dri_model": {
       "type": "string",
       "title": "DRI model",
-      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Defaults to \"opus[1m]\" — the 1M-context variant, so long DRI sessions auto-compact at ~967k tokens instead of the ~167k that plain \"opus\" forces.",
+      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Defaults to \"opus[1m]\": DRI sessions request a 500k auto-compact window, and the CLI clamps that to the model's real context window, so a sub-1M model here pins compaction back to ~167k tokens no matter what is requested. Setting a non-1M model is supported but re-introduces that clamp.",
       "default": "opus[1m]"
     }
   }
