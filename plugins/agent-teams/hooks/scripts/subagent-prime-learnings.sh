@@ -40,7 +40,9 @@ role="${agent_type##*:}"
 # Pull must go through ateam/bd: bd's flock on .beads/embeddeddolt/.lock serializes
 # parallel subagent pulls; shelling 'dolt' directly would bypass it and hit the manifest race.
 "$ATEAM" pull || true
+printf '<<<agent-teams-learnings-hook-start role:%s>>>\n' "$role" || true
 "$ATEAM" learnings "$role" || true
+printf '<<<agent-teams-learnings-hook-end role:%s>>>\n' "$role" || true
 
 HOOK_EXIT_REASON="ok"
 exit 0
