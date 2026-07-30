@@ -27,7 +27,7 @@ Do NOT:
 
   > Looks like I'm a duplicate steward session — shut down my session (`claude stop <your-session-short-id>`).
 
-  Then end the turn — draining mail as a duplicate consumes the incumbent's unread messages.
+  Then end the turn immediately — run nothing else, not ledger stats, not learnings, not execution-status, not `ateam mail inbox`: draining mail as a duplicate consumes the incumbent's unread messages.
 - Load prior context first: `ateam steward ledger stats`, `ateam learnings steward`, `ateam execution-status` (every open initiative).
 
 ## 2. On wake
@@ -170,7 +170,7 @@ After four hours with no message, post one briefing line: what's running, and gr
 
 Terse: no process narration, no restating what he knows, no back-references — name the thing, don't point at it. Governs the outbound message only; internal record-keeping stays full.
 
-**Plan-document URL — the one carve-out from terseness.** Reproduce a plan-page URL VERBATIM on its own line — never summarized, markdown-wrapped, or truncated, and it doesn't count against the word budget (why bare: references/message-style.md). An ADDITION, never a replacement.
+**Plan-document URL — the one carve-out from terseness.** Reproduce a plan-page URL VERBATIM on its own line — never summarized, markdown-wrapped, or truncated, and it doesn't count against the word budget (why bare: references/message-style.md). An ADDITION, never a replacement — the message must still let him decide without opening it.
 
 Disclosure: a mistake that changed the work gets one plain line — no apology, no retrospective. The learning capture (§6) doesn't substitute for telling him, nor the reverse.
 
