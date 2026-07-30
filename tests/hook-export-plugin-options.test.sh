@@ -17,7 +17,7 @@ trap 'rm -rf "$WORK"' EXIT
 # through. The extra args go BEFORE the CLAUDE_ENV_FILE assignment because BSD
 # env stops parsing options at the first non-option argument, so a trailing
 # `-u VAR` would be handed to the command instead. Runs with cwd inside $WORK
-# so the glob case below is meaningful.
+# so nothing in the repo can influence the result.
 run_hook() {
   local envfile="$1"; shift
   ( cd "$WORK" && env "$@" CLAUDE_ENV_FILE="$envfile" sh "$SCRIPT" )
@@ -41,27 +41,13 @@ fail() { echo "FAIL $1"; exit 1; }
 EF="$WORK/unset.env"
 run_hook "$EF" -u CLAUDE_PLUGIN_OPTION_DRI_MODEL -u CLAUDE_PLUGIN_OPTION_USE_ADVISORS
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL)"
-[ "$got" = "opus[1m]" ] \
-  || fail "unset-default: sourced dri_model = '$got', want 'opus[1m]'"
+[ "$got" = "opus" ] \
+  || fail "unset-default: sourced dri_model = '$got', want 'opus'"
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_USE_ADVISORS)"
 [ "$got" = "false" ] \
   || fail "unset-default: sourced use_advisors = '$got', want 'false'"
 
-# --- Case 3: the [1m] brackets survive even when they would glob ------------
-# The value is written unquoted on purpose (a naive KEY=VALUE reader of the
-# env file would choke on quotes). That is only safe because a POSIX
-# assignment RHS does not undergo pathname expansion. Prove it by planting a
-# file the glob `opus[1m]` WOULD match: a regression to a quoting scheme that
-# re-exposes the value to expansion turns this case red.
-: > "$WORK/opus1"
-EF="$WORK/glob.env"
-run_hook "$EF" -u CLAUDE_PLUGIN_OPTION_DRI_MODEL
-got="$(cd "$WORK" && sourced_value "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL)"
-[ "$got" = "opus[1m]" ] \
-  || fail "glob-safety: sourced dri_model = '$got', want literal 'opus[1m]'"
-rm -f "$WORK/opus1"
-
-# --- Case 4: an explicitly set option wins over the default -----------------
+# --- Case 3: an explicitly set option wins over the default -----------------
 EF="$WORK/override.env"
 run_hook "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL=sonnet CLAUDE_PLUGIN_OPTION_USE_ADVISORS=true
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL)"
@@ -71,7 +57,7 @@ got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_USE_ADVISORS)"
 [ "$got" = "true" ] \
   || fail "override: sourced use_advisors = '$got', want 'true'"
 
-# --- Case 5: the hook default and the Go default must not drift -------------
+# --- Case 4: the hook default and the Go default must not drift -------------
 # Two layers hold this same default: this hook (the value `ateam dispatch`
 # actually reads on the /dispatch-dri path) and driDefaultModel in
 # dispatch.go (the fallback used from cron, direct CLI, and

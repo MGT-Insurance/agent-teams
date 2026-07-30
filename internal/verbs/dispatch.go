@@ -488,57 +488,15 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
-// autoCompactWindowTokens is the auto-compact trigger window requested for
-// every background DRI session, and the single source of truth for that
-// number — autoCompactWindowSettingsJSON derives from it rather than
-// repeating the literal.
-//
-// This value and bgSessionArgs/driAdvisorSettings' default model are ONE
-// change, not two. The CLI resolves the window as
-//
-//	W  = first match of: CLAUDE_CODE_AUTO_COMPACT_WINDOW env >
-//	     autoCompactWindow setting > server clientdata > experiment gate >
-//	     model-default (200000) > auto (the model's full window)
-//	W  = min(realModelWindow, W)          <-- the model clamp
-//	effective = W - min(maxOutputTokens, 20000)
-//	compact  at effective - 13000
-//
-// The --settings value below matches at the second term, so the
-// model-default term is never reached. But the min() clamp means the model
-// still bounds the result: requesting 500000 on a 200k-window model yields
-// W=200000 and a ~167000 trigger. Raising this number without a 1M-context
-// model, or moving to a 1M model without raising this number, each achieve
-// exactly nothing. Formula read out of the CLI 2.1.220 binary; 500000
-// requested was separately confirmed live to give effectiveWindow=480000.
-//
-// 500000 therefore trips auto-compact near 467000 tokens instead of the
-// ~167000 a 200000 request produces. Tokens above 200000 bill at the
-// long-context premium, which is the deliberate trade: a long initiative
-// re-summarises its own history a handful of times rather than dozens.
-//
-// CLI arg, not env var: the daemon's spare-session pool claims pre-warmed
-// processes via IPC rather than exec'ing fresh ones from this call's argv,
-// so cmd.Env set here never reaches the claimed session (verified live) —
-// but the claim payload does carry --settings, so it is honored. Caveat:
-// env outranks --settings, so a stray CLAUDE_CODE_AUTO_COMPACT_WINDOW in
-// the daemon's own environment would silently win over this value with no
-// error surfaced. Not observed on this machine as of 2026-07-16 (checked
-// env, shell profiles, daemon env, settings files); see agent-teams-g8xc
-// for that investigation and at-0gno for this re-verification.
-const autoCompactWindowTokens = 500000
-
-// autoCompactWindowSettingsJSON is the --settings JSON argument requesting
-// autoCompactWindowTokens, used as bgSessionSettingsJSON's fallback.
-var autoCompactWindowSettingsJSON = fmt.Sprintf(`{"autoCompactWindow":%d}`, autoCompactWindowTokens)
-
-// driDefaultModel is the model background DRI sessions launch on when no
-// explicit override is supplied. The [1m] suffix is load-bearing, not
-// cosmetic: it selects the 1M-context variant, without which the min()
-// clamp documented on autoCompactWindowTokens pins the auto-compact trigger
-// back down to ~167000 no matter what window is requested. Do not
-// "simplify" this to plain "opus". Recognised alias in the CLI's own model
-// table alongside sonnet[1m] / fable[1m] / opusplan[1m].
-const driDefaultModel = "opus[1m]"
+// driDefaultModel is the model background sessions launch on when no explicit
+// override is supplied. No [1m] suffix: the CLI's model catalogue marks
+// claude-opus-5 (the "opus" alias) native_1m, so the alias already resolves to
+// a 1M-context window on a first-party endpoint. The suffix is a second route
+// to the same window, and it does not survive the one case that really does
+// clamp to 200000 (long-context credits exhausted), so it buys nothing here.
+// Kept as a constant so this default and the export-plugin-options.sh hook
+// default cannot drift apart (tests/hook-export-plugin-options.test.sh).
+const driDefaultModel = "opus"
 
 // bgSessionEnv is the "env" map merged into a background session's --settings
 // JSON, publishing the role-signal contract (agent-teams-142k.1): ATEAM_ROLE
@@ -553,30 +511,60 @@ type bgSessionEnv struct {
 }
 
 // bgSessionSettings is the --settings JSON payload for a background session
-// launch: the auto-compact window plus an optional env map.
+// launch: an optional env map, and nothing else.
+//
+// Notably absent: autoCompactWindow. Background sessions deliberately do not
+// configure Claude Code's auto-compact trigger, and re-adding one here is a
+// regression — TestBGSessionArgs_SettingsOmitsAutoCompactWindow guards it. The
+// CLI resolves that window as
+//
+//	W  = first match of: CLAUDE_CODE_AUTO_COMPACT_WINDOW env >
+//	     autoCompactWindow setting > server clientdata > experiment gate >
+//	     model-default (200000, reached ONLY when the model's real window is
+//	     under 1M) > auto (the model's full window)
+//	W  = min(realModelWindow, W)
+//	effective = W - min(maxOutputTokens, 20000)
+//	compact  at effective - 13000
+//
+// Sending nothing falls through to "auto" on a 1M-context model — the
+// model-default tier is gated on the real window being under 1M, so a 1M model
+// skips it — giving a ~967000 trigger that tracks whatever model the session
+// actually runs on. Any value pinned here can only lower that: this call site
+// used to request 200000, which produced a 167000 trigger
+// (200000 - 20000 - 13000, matching compactions observed at 167,030 / 167,041
+// / 167,052) — a self-inflicted ~6x reduction of the trigger the same session
+// reaches with nothing set.
+//
+// The window is not where the waste is, either. Measured over 51 compactions
+// in one three-day DRI session, the first API request after a compaction
+// already carried a median 101k tokens (max 169,710): the fixed prefix plus
+// the re-injected tool/skill/agent/hook listings are re-established every
+// time. Shrinking that beats widening the window.
 type bgSessionSettings struct {
-	AutoCompactWindow int           `json:"autoCompactWindow"`
-	Env               *bgSessionEnv `json:"env,omitempty"`
+	Env *bgSessionEnv `json:"env,omitempty"`
 }
 
 // bgSessionSettingsJSON builds the --settings JSON argument for a background
-// session launch: always the auto-compact window (see
-// autoCompactWindowTokens' doc comment for the resolution formula, the model
-// coupling, and the CLI-arg-not-env-var rationale), plus an "env" map
-// carrying ATEAM_ROLE/ATEAM_INITIATIVE when either is non-empty. role and
-// initiativeID are independent: initiativeID is omitted whenever the launcher
-// doesn't know the initiative id (e.g. new-initiative given a bare problem
-// statement, or the steward, which is fleet-scoped and never carries one).
+// session launch: an "env" map carrying ATEAM_ROLE/ATEAM_INITIATIVE when
+// either is non-empty, and "" when neither is (the caller then omits the flag
+// rather than passing an empty object). role and initiativeID are independent:
+// initiativeID is omitted whenever the launcher doesn't know the initiative id
+// (e.g. new-initiative given a bare problem statement, or the steward, which
+// is fleet-scoped and never carries one).
+//
+// CLI arg, not env var: the daemon's spare-session pool claims pre-warmed
+// processes via IPC rather than exec'ing fresh ones from this call's argv, so
+// cmd.Env set here never reaches the claimed session (verified live) — but the
+// claim payload does carry --settings, so it is honored.
 func bgSessionSettingsJSON(role, initiativeID string) string {
-	settings := bgSessionSettings{AutoCompactWindow: autoCompactWindowTokens}
-	if role != "" || initiativeID != "" {
-		settings.Env = &bgSessionEnv{Role: role, Initiative: initiativeID}
+	if role == "" && initiativeID == "" {
+		return ""
 	}
+	settings := bgSessionSettings{Env: &bgSessionEnv{Role: role, Initiative: initiativeID}}
 	b, err := json.Marshal(settings)
 	if err != nil {
-		// AutoCompactWindow is an int and Env's fields are plain strings —
-		// Marshal cannot fail here. Fall back to the known-good constant.
-		return autoCompactWindowSettingsJSON
+		// Env's fields are plain strings — Marshal cannot fail here.
+		return ""
 	}
 	return string(b)
 }
@@ -598,9 +586,11 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []st
 		"-n", name,
 		"--model", model,
 		"--permission-mode", "bypassPermissions",
-		"--settings", bgSessionSettingsJSON(role, initiativeID),
-		"--append-system-prompt", memoryRoutingRule,
 	}
+	if settings := bgSessionSettingsJSON(role, initiativeID); settings != "" {
+		args = append(args, "--settings", settings)
+	}
+	args = append(args, "--append-system-prompt", memoryRoutingRule)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
@@ -612,11 +602,11 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []st
 // session launches. CLAUDE_PLUGIN_OPTION_DRI_MODEL (default driDefaultModel
 // when unset or empty — the hook that publishes this var defaults it to the
 // same value, so the two layers agree) is the "strong model" slot: when
-// advisors are enabled (the env
-// var is exactly "true"), it becomes the advisor model and the DRI session
-// worker stays "sonnet"; when advisors are disabled — any other value
-// (unset, "", "false", or anything not exactly "true") — it becomes the DRI
-// session's own model and there is no advisor. Unit testable via t.Setenv.
+// advisors are enabled (the env var is exactly "true"), it becomes the advisor
+// model and the DRI session worker stays "sonnet"; when advisors are disabled —
+// any other value (unset, "", "false", or anything not exactly "true") — it
+// becomes the DRI session's own model and there is no advisor. Unit testable
+// via t.Setenv.
 // Only launchBGSession (the /dri path) calls this; the raw --launch-prompt
 // path does not read these env vars — it defaults to advisor "" unless the
 // caller explicitly passes --advisor (dispatchKong.Advisor).
