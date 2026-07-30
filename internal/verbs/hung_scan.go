@@ -47,10 +47,12 @@ const (
 )
 
 // hungStuckThreshold is how long an initiative must stay STUCK (live
-// session, idle, no gate) before hung-scan flags it HUNG. Eric-approved
-// default: 15 minutes. Named constant per the bead so the value is tunable
-// in one place rather than a scattered magic number.
-const hungStuckThreshold = 15 * time.Minute
+// session, idle, no gate) before hung-scan flags it HUNG.
+//
+// A var, not a const, and set by loadHungConfig (hung_config.go) at process
+// start — see that file for the env/file/default resolution and the
+// operator-facing key name.
+var hungStuckThreshold = defaultHungStuckThreshold
 
 // hungStateFileName is the JSON file (under StewardHome) hung-scan persists
 // its per-initiative stuck-since anchors to.
@@ -578,6 +580,11 @@ func (c *hungScanKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam hung-scan: nil context")
 	}
+
+	// Must resolve identically to the relay's own load (relay.go), or this
+	// verb reports against different thresholds than the relay acts on.
+	// Warnings go to Stderr so the JSON on Stdout stays machine-readable.
+	loadHungConfig(ctx.Stderr, ctx.Home)
 
 	out, err := scanHung(ctx, c.agentsFunc, c.now, false)
 	if err != nil {

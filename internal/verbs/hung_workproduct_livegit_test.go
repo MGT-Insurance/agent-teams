@@ -138,94 +138,100 @@ func TestLiveGit_WorkProductFlatline_RealArtifactsBoundaryAndLadder(t *testing.T
 		return []agentSession{{CWD: primary, Status: "busy", PID: &pid, SessionID: "no-such-session"}}, nil
 	}
 
-	// ── 29 minutes flat: below D2's 30m threshold -- must NOT be trip-eligible.
-	out, err := scanHung(ctx, agentsFunc, fixedNow(t0.Add(29*time.Minute)), false)
+	// Offsets are expressed against the threshold vars rather than literals,
+	// so retuning the defaults (hung_config.go) can't move a step of this
+	// ladder to the wrong side of the boundary it is meant to pin.
+	flat, alert := hungWorkProductFlatThreshold, hungWorkProductAlertThreshold
+
+	// ── Just under the flat threshold: must NOT be trip-eligible.
+	out, err := scanHung(ctx, agentsFunc, fixedNow(t0.Add(flat-time.Minute)), false)
 	if err != nil {
-		t.Fatalf("scan @29m: %v", err)
+		t.Fatalf("scan @flat-1m: %v", err)
 	}
 	if out[0].Classification != hungClassWorking {
-		t.Fatalf("@29m: classification = %q, want WORKING", out[0].Classification)
+		t.Fatalf("@flat-1m: classification = %q, want WORKING", out[0].Classification)
 	}
 	if out[0].WorkProductTripEligible {
-		t.Error("@29m: expected NOT trip-eligible (below 30m threshold)")
+		t.Errorf("@flat-1m: expected NOT trip-eligible (below the %s threshold)", flat)
 	}
 	// Generous tolerance: real git/bd subprocess setup overhead (a few
 	// seconds) sits between t0's capture and the artifacts' true creation.
-	if got, want := out[0].WorkProductFlatSeconds, int64(29*60); got < want-30 || got > want+5 {
-		t.Errorf("@29m: wp_flat_seconds = %d, want ~%d (+/- setup overhead)", got, want)
+	if got, want := out[0].WorkProductFlatSeconds, int64((flat-time.Minute)/time.Second); got < want-30 || got > want+5 {
+		t.Errorf("@flat-1m: wp_flat_seconds = %d, want ~%d (+/- setup overhead)", got, want)
 	}
 
-	// ── 31 minutes flat: past the threshold, real claimed bead present, no
-	// gate, no real transcript file (defaultTranscriptTail's missing-file
-	// path) -- must be trip-eligible and not downgraded.
-	out, err = scanHung(ctx, agentsFunc, fixedNow(t0.Add(31*time.Minute)), false)
+	// ── Just past the flat threshold: real claimed bead present, no gate, no
+	// real transcript file (defaultTranscriptTail's missing-file path) --
+	// must be trip-eligible and not downgraded.
+	out, err = scanHung(ctx, agentsFunc, fixedNow(t0.Add(flat+time.Minute)), false)
 	if err != nil {
-		t.Fatalf("scan @31m: %v", err)
+		t.Fatalf("scan @flat+1m: %v", err)
 	}
 	if !out[0].WorkProductTripEligible {
-		t.Fatal("@31m: expected trip-eligible against a real repo + real claimed bead")
+		t.Fatal("@flat+1m: expected trip-eligible against a real repo + real claimed bead")
 	}
 	if out[0].WorkProductDowngraded {
-		t.Error("@31m: expected no downgrade (no real transcript file exists to corroborate recent work)")
+		t.Error("@flat+1m: expected no downgrade (no real transcript file exists to corroborate recent work)")
 	}
 	if out[0].FailureTokensFound {
-		t.Error("@31m: expected no failure tokens (no transcript file at all)")
+		t.Error("@flat+1m: expected no failure tokens (no transcript file at all)")
 	}
 
-	// ── Ladder: wake @31m, wake @40m, none @46m (2 wakes already spent, still
-	// under 1h), alert @61m -- driven through the REAL doHungTick, persisting
-	// real anchor state across calls in ctx.Home, stubbing only wakeSend/topicPost.
+	// ── Ladder: wake @flat+1m, wake @flat+10m, none @flat+16m (2 wakes
+	// already spent, still under the alert threshold), alert @alert+1m --
+	// driven through the REAL doHungTick, persisting real anchor state
+	// across calls in ctx.Home, stubbing only wakeSend/topicPost.
 	wake := &fakeHungWakeSend{}
 	ft := &fakeTransport{returnRef: "999"}
 	deps := hungTickDeps{agentsFunc: agentsFunc, wakeSend: wake.send, topicPost: defaultHungTopicPost, transport: ft}
 
-	deps.now = fixedNow(t0.Add(31 * time.Minute))
+	deps.now = fixedNow(t0.Add(flat + time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
-		t.Fatalf("tick @31m: %v", err)
+		t.Fatalf("tick @flat+1m: %v", err)
 	}
 	if len(wake.bodies) != 1 {
-		t.Fatalf("@31m tick: got %d wake sends, want 1 (first wake)", len(wake.bodies))
+		t.Fatalf("@flat+1m tick: got %d wake sends, want 1 (first wake)", len(wake.bodies))
 	}
 	if !strings.Contains(wake.bodies[0], "at-live1") || !strings.Contains(wake.bodies[0], "flat work product") {
-		t.Errorf("@31m wake body missing expected content: %q", wake.bodies[0])
+		t.Errorf("@flat+1m wake body missing expected content: %q", wake.bodies[0])
 	}
 
-	deps.now = fixedNow(t0.Add(40 * time.Minute))
+	deps.now = fixedNow(t0.Add(flat + 10*time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
-		t.Fatalf("tick @40m: %v", err)
+		t.Fatalf("tick @flat+10m: %v", err)
 	}
 	if len(wake.bodies) != 2 {
-		t.Fatalf("@40m tick: got %d cumulative wake sends, want 2 (second wake)", len(wake.bodies))
+		t.Fatalf("@flat+10m tick: got %d cumulative wake sends, want 2 (second wake)", len(wake.bodies))
 	}
 
-	deps.now = fixedNow(t0.Add(46 * time.Minute))
+	deps.now = fixedNow(t0.Add(flat + 16*time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
-		t.Fatalf("tick @46m: %v", err)
+		t.Fatalf("tick @flat+16m: %v", err)
 	}
 	// Regression guard for agent-teams-sgr5.7: the spec/ladder contract says
-	// the 3rd tick past 30m (WakeAttempts already at the cap) sends NO
-	// further wake. Before the fix, WorkProductLastProgressAt's
+	// the 3rd tick past the flat threshold (WakeAttempts already at the cap)
+	// sends NO further wake. Before the fix, WorkProductLastProgressAt's
 	// whole-second-precision persistence compared against a
 	// freshly-recomputed sub-second-precision `lastProgress` made every
 	// unchanged tick look like "real progress happened," wiping
 	// WorkProductWakeAttempts/AlertedAt back to zero each time and firing a
 	// 3rd wake here. Now asserted as a hard failure.
 	if len(wake.bodies) != 2 {
-		t.Fatalf("@46m tick: got %d cumulative wake sends, want 2 (ladder should be exhausted, not yet past 1h)", len(wake.bodies))
+		t.Fatalf("@flat+16m tick: got %d cumulative wake sends, want 2 (ladder should be exhausted, not yet past the alert threshold)", len(wake.bodies))
 	}
 	if len(ft.calls) != 0 {
-		t.Fatalf("@46m tick: got %d direct alerts, want 0 (not yet past 1h)", len(ft.calls))
+		t.Fatalf("@flat+16m tick: got %d direct alerts, want 0 (not yet past the alert threshold)", len(ft.calls))
 	}
 
-	deps.now = fixedNow(t0.Add(61 * time.Minute))
+	deps.now = fixedNow(t0.Add(alert + time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
-		t.Fatalf("tick @61m: %v", err)
+		t.Fatalf("tick @alert+1m: %v", err)
 	}
 	if len(ft.calls) != 1 {
-		t.Fatalf("@61m tick: got %d direct alerts, want 1 (past 1h direct-alert threshold)", len(ft.calls))
+		t.Fatalf("@alert+1m tick: got %d direct alerts, want 1 (past the %s direct-alert threshold)", len(ft.calls), alert)
 	}
 	if !strings.Contains(ft.calls[0].Body, "at-live1") {
-		t.Errorf("@61m alert body missing initiative id: %q", ft.calls[0].Body)
+		t.Errorf("@alert+1m alert body missing initiative id: %q", ft.calls[0].Body)
 	}
 
 	// ── D8: the journal must have a real, append-only record of this episode.
@@ -259,8 +265,13 @@ func TestLiveGit_WorkProductFlatline_TrackWorktreeUnionKeepsClockFresh(t *testin
 	mustClaimedBeadRepo(t, primary)
 	mustGitRepo(t, track) // real, fresh commit -- this IS "now"
 
+	flat := hungWorkProductFlatThreshold
 	trackRealNow := time.Now().UTC()
-	staleAnchor := trackRealNow.Add(-2 * time.Hour) // arbitrarily old; primary never had a real commit to backdate
+	// Arbitrarily old -- comfortably past the flat threshold on its own, so
+	// that if the union wrongly picked the primary the clock would trip
+	// immediately. Expressed against the threshold var, not a literal, so
+	// retuning the default (hung_config.go) keeps that property.
+	staleAnchor := trackRealNow.Add(-2 * flat)
 
 	origProbe := hungGitProbeFunc
 	defer func() { hungGitProbeFunc = origProbe }()
@@ -285,31 +296,32 @@ func TestLiveGit_WorkProductFlatline_TrackWorktreeUnionKeepsClockFresh(t *testin
 		return []agentSession{{CWD: primary, Status: "busy", PID: &pid}}, nil
 	}
 
-	// At trackRealNow+9m: the primary's FAKE anchor is already ~2h+9m stale
-	// (would be enormously over any threshold alone), but the union must
-	// pick up the track-worktree's REAL, recent commit as the freshest
-	// signal -- flat should be ~9 minutes, not ~2 hours, and NOT trip-eligible.
+	// At trackRealNow+9m: the primary's FAKE anchor is already far past the
+	// flat threshold on its own, but the union must pick up the
+	// track-worktree's REAL, recent commit as the freshest signal -- flat
+	// should be ~9 minutes, and NOT trip-eligible.
 	out, err := scanHung(ctx, agentsFunc, fixedNow(trackRealNow.Add(9*time.Minute)), false)
 	if err != nil {
 		t.Fatalf("scan @+9m: %v", err)
 	}
 	if got, want := out[0].WorkProductFlatSeconds, int64(9*60); got < want-30 || got > want+5 {
-		t.Errorf("wp_flat_seconds = %d, want ~%d -- union should reflect the fresh track-worktree, not the ~2h-stale primary", got, want)
+		t.Errorf("wp_flat_seconds = %d, want ~%d -- union should reflect the fresh track-worktree, not the far-staler primary", got, want)
 	}
 	if out[0].WorkProductTripEligible {
 		t.Error("expected NOT trip-eligible: the union clock is only ~9m flat thanks to the fresh track-worktree")
 	}
 
-	// Push past 30 minutes relative to the track-worktree's REAL commit --
-	// the union clock must now trip, proving the threshold is evaluated
-	// against the union's freshest member, not a stale primary alone (which
-	// would have tripped ages ago) nor frozen at the primary's fake time.
-	out, err = scanHung(ctx, agentsFunc, fixedNow(trackRealNow.Add(31*time.Minute)), false)
+	// Push past the flat threshold relative to the track-worktree's REAL
+	// commit -- the union clock must now trip, proving the threshold is
+	// evaluated against the union's freshest member, not a stale primary
+	// alone (which would have tripped ages ago) nor frozen at the primary's
+	// fake time.
+	out, err = scanHung(ctx, agentsFunc, fixedNow(trackRealNow.Add(flat+time.Minute)), false)
 	if err != nil {
-		t.Fatalf("scan @+31m: %v", err)
+		t.Fatalf("scan @+flat+1m: %v", err)
 	}
 	if !out[0].WorkProductTripEligible {
-		t.Error("@+31m (31m past the track-worktree's real commit): expected trip-eligible")
+		t.Errorf("@+flat+1m (%s past the track-worktree's real commit): expected trip-eligible", flat+time.Minute)
 	}
 }
 
@@ -347,15 +359,16 @@ func TestLiveGit_WorkProductLadder_KnownBug_AlertRepeatsPastOneHour(t *testing.T
 	ft := &fakeTransport{returnRef: "1"}
 	deps := hungTickDeps{agentsFunc: agentsFunc, wakeSend: wake.send, topicPost: defaultHungTopicPost, transport: ft}
 
-	deps.now = fixedNow(t0.Add(61 * time.Minute))
+	alert := hungWorkProductAlertThreshold
+	deps.now = fixedNow(t0.Add(alert + time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
-		t.Fatalf("tick @61m: %v", err)
+		t.Fatalf("tick @alert+1m: %v", err)
 	}
-	deps.now = fixedNow(t0.Add(66 * time.Minute))
+	deps.now = fixedNow(t0.Add(alert + 6*time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
-		t.Fatalf("tick @66m: %v", err)
+		t.Fatalf("tick @alert+6m: %v", err)
 	}
 	if len(ft.calls) != 1 {
-		t.Errorf("got %d direct alerts across two ticks past 1h, want exactly 1 (alert must fire once per episode, not repeat every tick)", len(ft.calls))
+		t.Errorf("got %d direct alerts across two ticks past the %s alert threshold, want exactly 1 (alert must fire once per episode, not repeat every tick)", len(ft.calls), alert)
 	}
 }

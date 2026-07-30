@@ -26,18 +26,22 @@ import (
 )
 
 // hungTickInterval is how often the relay's ticker goroutine re-runs
-// scanHung looking for HUNG initiatives. Eric-approved default: 5 minutes —
-// frequent enough that the wake ladder below plays out over a bounded
-// number of minutes, infrequent enough not to spam `bd list` or the
-// Steward's mailbox.
-const hungTickInterval = 5 * time.Minute
+// scanHung looking for HUNG initiatives: infrequent enough not to spam `bd
+// list` or the Steward's mailbox, frequent enough that the wake ladder below
+// plays out over a bounded time.
+//
+// A var, not a const, and set by loadHungConfig (hung_config.go) at process
+// start — see that file for the env/file/default resolution and the
+// operator-facing key name.
+var hungTickInterval = defaultHungTickInterval
 
 // hungWakeAttemptsBeforeDirectAlert caps how many consecutive ticks nudge
 // the Steward (mail-send, sender "hung-scan") for one HUNG episode before
 // concluding the Steward itself isn't responding and escalating directly: a
 // deterministic, LLM-free canned alert posted straight into the
-// initiative's own Telegram topic, exactly once per episode.
-const hungWakeAttemptsBeforeDirectAlert = 2
+// initiative's own Telegram topic, exactly once per episode. Set by
+// loadHungConfig; see hung_config.go.
+var hungWakeAttemptsBeforeDirectAlert = defaultHungWakeAttemptsBeforeAlert
 
 // hungLadderAction is what nextHungLadderAction decided to do for one HUNG
 // initiative on this tick.

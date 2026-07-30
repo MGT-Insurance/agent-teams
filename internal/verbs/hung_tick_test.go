@@ -89,11 +89,14 @@ func TestDoHungTick_WakeThenAlertLadder(t *testing.T) {
 	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
 	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
 
-	// Seed an anchor whose StuckSince is already past the 15m threshold so
+	// Seed an anchor whose StuckSince is already past hungStuckThreshold so
 	// the very first tick observes Hung=true (scanHung only sets a fresh
-	// StuckSince when no anchor exists yet).
+	// StuckSince when no anchor exists yet). Offsets throughout this file
+	// are expressed against the threshold var rather than literals, so
+	// retuning the default (hung_config.go) can't silently move a seed to
+	// the wrong side of it.
 	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
-	seedStuckSince := t0.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	seedStuckSince := t0.Add(-(hungStuckThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
 	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
 		"at-1": {StuckSince: seedStuckSince},
 	}); err != nil {
@@ -203,7 +206,7 @@ func TestDoHungTick_PersistOnChangeGuard(t *testing.T) {
 	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
 
 	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
-	seedStuckSince := t0.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	seedStuckSince := t0.Add(-(hungStuckThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
 	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
 		"at-8": {StuckSince: seedStuckSince},
 	}); err != nil {
@@ -277,7 +280,7 @@ func TestDoHungTick_WakeSendFailure_LadderStillReachesAlert(t *testing.T) {
 	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
 
 	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
-	seedStuckSince := t0.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	seedStuckSince := t0.Add(-(hungStuckThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
 	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
 		"at-2": {StuckSince: seedStuckSince},
 	}); err != nil {
@@ -339,7 +342,7 @@ func TestDoHungTick_EpisodeEnds_LadderResetsOnReentry(t *testing.T) {
 	busySessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
 
 	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
-	seedStuckSince := t0.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	seedStuckSince := t0.Add(-(hungStuckThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
 	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
 		"at-3": {StuckSince: seedStuckSince},
 	}); err != nil {
@@ -384,8 +387,8 @@ func TestDoHungTick_EpisodeEnds_LadderResetsOnReentry(t *testing.T) {
 		t.Errorf("no alert once WORKING, got %d", len(ft.calls))
 	}
 
-	// Re-entry: idle/STUCK again, but freshly stuck (elapsed well under the
-	// 15m threshold) -> not yet Hung, ladder must not fire at all.
+	// Re-entry: idle/STUCK again, but freshly stuck (elapsed well under
+	// hungStuckThreshold) -> not yet Hung, ladder must not fire at all.
 	deps.agentsFunc = func() ([]agentSession, error) { return idleSessions, nil }
 	deps.now = fixedNow(t0.Add(2 * time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
@@ -405,7 +408,7 @@ func TestDoHungTick_EpisodeEnds_LadderResetsOnReentry(t *testing.T) {
 
 	// Advance past the threshold on the NEW episode -> ladder restarts at
 	// attempt 1, proving the previous episode's count was not reused.
-	deps.now = fixedNow(t0.Add(2*time.Minute + 16*time.Minute))
+	deps.now = fixedNow(t0.Add(2*time.Minute + hungStuckThreshold + time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
 		t.Fatalf("tick 4 (new episode crosses threshold): %v", err)
 	}

@@ -80,6 +80,36 @@ Auto-rotates to `hooks.log.1` at ~5 MB. Tail it: `tail -f ~/.agent-teams/debug/h
 
 Respawn failure (e.g. `claude` not in PATH) only prints a warning — the mail is already a written bead, so a broken respawn never loses it.
 
+## Tuning stall detection (`hung-config.json`)
+
+The relay's stall-detection tick is tunable without a rebuild, via **one JSON object at `~/.agent-teams/hung-config.json`** (`$AGENT_TEAMS_HOME/hung-config.json`). Every key is optional; omit one and it keeps its default. Durations are Go duration strings (`"45m"`, `"2h"`, `"90s"`); `wake_attempts_before_alert` is a bare integer. All values must be positive.
+
+```json
+{
+  "tick_interval":                  "20m",
+  "stuck_threshold":                "2h",
+  "wake_attempts_before_alert":     2,
+  "workproduct_flat_threshold":     "2h",
+  "workproduct_alert_threshold":    "4h",
+  "dead_worktree_threshold":        "2h",
+  "transcript_corroborator_window": "2h"
+}
+```
+
+Those are also the defaults. What each one gates: `tick_interval` — how often the relay re-runs the scan. `stuck_threshold` — how long a live-but-idle session must sit before it counts as HUNG. `wake_attempts_before_alert` — Steward nudges tried before escalating to a direct Telegram alert. `workproduct_flat_threshold` / `workproduct_alert_threshold` — flatline durations that make the work-product path eligible to trip, and that fire the direct alert. `dead_worktree_threshold` — how long a DEAD-with-worktree initiative waits before joining the ladder. `transcript_corroborator_window` — how far back the transcript tail is read for real work turns; defaults to match the flat threshold so both are judged over the same window.
+
+**🚨 The relay reads this ONCE, at process start.** Editing the file does nothing to a running relay — you must restart it. Confirm what a relay actually picked up from its startup stderr, which reports every resolved value:
+
+```
+hung config: tick_interval=20m0s stuck_threshold=2h0m0s wake_attempts_before_alert=2 …
+```
+
+**Per-run override:** each key also has an env var (`AGENT_TEAMS_HUNG_TICK_INTERVAL`, `AGENT_TEAMS_HUNG_STUCK_THRESHOLD`, `AGENT_TEAMS_HUNG_WAKE_ATTEMPTS_BEFORE_ALERT`, `AGENT_TEAMS_HUNG_WORKPRODUCT_FLAT_THRESHOLD`, `AGENT_TEAMS_HUNG_WORKPRODUCT_ALERT_THRESHOLD`, `AGENT_TEAMS_HUNG_DEAD_WORKTREE_THRESHOLD`, `AGENT_TEAMS_HUNG_TRANSCRIPT_CORROBORATOR_WINDOW`) which beats the file. Reach for the file for real config; the env vars are for one-off runs.
+
+**Bad config degrades, it never crashes the relay** — which matters, because the same process routes all your messages. Malformed JSON → warning naming the file, all defaults. One bad value in otherwise-valid JSON → warning naming the key, that value defaults, the rest still apply. A missing file is normal and silent.
+
+`ateam hung-scan` resolves the same config the same way, so it reports against the thresholds the relay is acting on.
+
 ## Memory routing
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:

@@ -205,7 +205,14 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 		}
 	}
 
+	// Read once, here, before the tick goroutine starts — the resolved
+	// values are process-lifetime, so an operator editing hung-config.json
+	// must restart the relay. The summary line is the only way to confirm
+	// from outside that this process picked their edit up.
+	loadHungConfig(ctx.Stderr, home)
+
 	transport.Logf(ctx.Stderr, 0, "starting on transport %q", t.Name())
+	transport.Logf(ctx.Stderr, 0, "hung config: %s", hungConfigSummary())
 
 	go runHungTick(ctx, t)
 
