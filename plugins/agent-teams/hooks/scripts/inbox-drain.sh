@@ -10,7 +10,7 @@
 # ad-hoc claude sessions must not be affected.
 set -euo pipefail
 
-ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 MAILBOX="$ATH/mailbox"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 

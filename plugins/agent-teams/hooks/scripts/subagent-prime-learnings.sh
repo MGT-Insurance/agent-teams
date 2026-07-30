@@ -11,7 +11,7 @@ set -euo pipefail
 # already-ignored SIGPIPE ignored), which is why those keep their guards.
 trap '' PIPE
 
-ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 # SubagentStart passes JSON on stdin — capture it first (required to read agent_type).

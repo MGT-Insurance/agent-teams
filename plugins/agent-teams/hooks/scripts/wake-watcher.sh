@@ -20,7 +20,7 @@
 #     async:true, asyncRewake:true, timeout:86400 }
 set -euo pipefail
 
-ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
+ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 MAILBOX="$ATH/mailbox"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
