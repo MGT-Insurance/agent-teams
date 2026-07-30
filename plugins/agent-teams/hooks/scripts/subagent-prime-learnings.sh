@@ -3,6 +3,13 @@
 # Injects role learnings into spawned role agents via `ateam learnings <role>`.
 # Silent no-op if ateam/jq not installed, or agent_type is absent. Never fails.
 set -euo pipefail
+# This hook writes its payload to stdout. If the reader closes early, a bare
+# write dies on SIGPIPE (rc=141) BEFORE any `|| true` can run — `||` tests an
+# exit status, and a signal death never produces one. Ignoring SIGPIPE turns
+# that into an EPIPE write error the `|| true` guards below can absorb, so the
+# script still reaches its `exit 0`. Inherited by `ateam` too (Go leaves an
+# already-ignored SIGPIPE ignored), which is why those keep their guards.
+trap '' PIPE
 
 ATH="${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
