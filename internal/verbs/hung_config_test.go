@@ -216,6 +216,151 @@ func TestLoadHungConfig_OneBadValue_DegradesAlone(t *testing.T) {
 	}
 }
 
+// TestLoadHungConfig_TopLevelJSONWrongShape covers a config file that is
+// syntactically valid JSON but not a JSON object — an array or a bare
+// string. json.Unmarshal rejects both into hungConfigFile with a type error,
+// which readHungConfigFile must treat the same as malformed JSON: warn,
+// name the file, and fall through to every default (not partially decoded
+// garbage).
+func TestLoadHungConfig_TopLevelJSONWrongShape(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"JSON array", `["tick_interval","45m"]`},
+		{"bare JSON string", `"45m"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreHungConfig(t)
+			home := t.TempDir()
+			writeHungConfig(t, home, tc.body)
+
+			var out strings.Builder
+			loadHungConfig(&out, home)
+
+			if hungTickInterval != 20*time.Minute || hungStuckThreshold != 2*time.Hour {
+				t.Errorf("wrong-shape JSON must yield all defaults, got tick=%s stuck=%s", hungTickInterval, hungStuckThreshold)
+			}
+			if !strings.Contains(out.String(), hungConfigFileName) {
+				t.Errorf("warning must name the config file, got %q", out.String())
+			}
+		})
+	}
+}
+
+// TestLoadHungConfig_NoUnitDuration_WarnsAndDefaults covers the bare-number
+// case an operator might reasonably try ("20" meaning "20 minutes"):
+// time.ParseDuration requires a unit, so this must warn and default rather
+// than silently guessing a unit that's wrong at one end of the 20m..4h
+// range or the other.
+func TestLoadHungConfig_NoUnitDuration_WarnsAndDefaults(t *testing.T) {
+	restoreHungConfig(t)
+	home := t.TempDir()
+	writeHungConfig(t, home, `{"tick_interval":"20"}`)
+
+	var out strings.Builder
+	loadHungConfig(&out, home)
+
+	if hungTickInterval != 20*time.Minute {
+		t.Errorf("tick_interval = %s, want the 20m default (a bare number has no unit)", hungTickInterval)
+	}
+	warning := out.String()
+	if !strings.Contains(warning, "tick_interval") || !strings.Contains(warning, `"20"`) {
+		t.Errorf("warning must name the key and quote the offending value, got %q", warning)
+	}
+}
+
+// TestLoadHungConfig_EmptyStringValue_SilentlyDefaults covers an explicit
+// "" value, distinct from an unparseable one: hungConfigSource treats an
+// empty (post-trim) string as "no value supplied" at that tier, same as the
+// key being absent — so this must default SILENTLY, not warn. Getting this
+// wrong (warning here) would cry wolf on a template config file that lists
+// every key with blank placeholder values.
+func TestLoadHungConfig_EmptyStringValue_SilentlyDefaults(t *testing.T) {
+	restoreHungConfig(t)
+	home := t.TempDir()
+	writeHungConfig(t, home, `{"stuck_threshold":""}`)
+
+	var out strings.Builder
+	loadHungConfig(&out, home)
+
+	if hungStuckThreshold != 2*time.Hour {
+		t.Errorf("stuck_threshold = %s, want the 2h default", hungStuckThreshold)
+	}
+	if out.String() != "" {
+		t.Errorf("an empty string value must default silently, got warning %q", out.String())
+	}
+}
+
+// TestLoadHungConfig_WhitespaceIsTrimmed covers surrounding whitespace on
+// both tiers: hungConfigSource trims the file value and resolveHungDuration
+// receives an already-trimmed env value via os.Getenv+TrimSpace. Padding a
+// value (a stray newline or trailing space from a hand-edited file) must
+// resolve like the clean value, not warn or fall back to default.
+func TestLoadHungConfig_WhitespaceIsTrimmed(t *testing.T) {
+	t.Run("file value", func(t *testing.T) {
+		restoreHungConfig(t)
+		home := t.TempDir()
+		writeHungConfig(t, home, `{"tick_interval":"  45m  "}`)
+
+		var out strings.Builder
+		loadHungConfig(&out, home)
+
+		if hungTickInterval != 45*time.Minute {
+			t.Errorf("tick_interval = %s, want 45m (padding must be trimmed)", hungTickInterval)
+		}
+		if out.String() != "" {
+			t.Errorf("a padded-but-valid value must not warn, got %q", out.String())
+		}
+	})
+
+	t.Run("env value", func(t *testing.T) {
+		restoreHungConfig(t)
+		t.Setenv(envHungTickInterval, "  45m  ")
+
+		var out strings.Builder
+		loadHungConfig(&out, t.TempDir())
+
+		if hungTickInterval != 45*time.Minute {
+			t.Errorf("tick_interval = %s, want 45m (padding must be trimmed)", hungTickInterval)
+		}
+		if out.String() != "" {
+			t.Errorf("a padded-but-valid value must not warn, got %q", out.String())
+		}
+	})
+}
+
+// TestLoadHungConfig_UnreadableConfigFile_DegradesAndWarns covers a config
+// file that exists but can't be opened (e.g. AGENT_TEAMS_HOME landed on a
+// permissions-restricted mount) — a real os.ReadFile error distinct from
+// os.ErrNotExist, which readHungConfigFile must warn on and degrade from,
+// same as malformed JSON, rather than propagating the error and taking the
+// relay down.
+func TestLoadHungConfig_UnreadableConfigFile_DegradesAndWarns(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root ignores file permissions")
+	}
+	restoreHungConfig(t)
+	home := t.TempDir()
+	writeHungConfig(t, home, `{"tick_interval":"45m"}`)
+	path := filepath.Join(home, hungConfigFileName)
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	var out strings.Builder
+	loadHungConfig(&out, home)
+
+	if hungTickInterval != 20*time.Minute {
+		t.Errorf("tick_interval = %s, want the 20m default (file was unreadable)", hungTickInterval)
+	}
+	if !strings.Contains(out.String(), hungConfigFileName) {
+		t.Errorf("warning must name the config file, got %q", out.String())
+	}
+}
+
 // TestLoadHungConfig_RejectsNonPositive covers the values that parse but are
 // nonsense. A zero tick interval would panic time.NewTicker; a negative
 // threshold would make everything instantly hung.
