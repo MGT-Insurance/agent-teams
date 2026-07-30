@@ -314,30 +314,30 @@ character target. **Over-cutting a description until it stops routing the
 skill/agent correctly is a net loss, worse than the tokens saved; if a cut
 below feels too aggressive on read-through, prefer the longer form.**
 
-**implementer** (214 chars, was 309):
+**implementer** (256 chars, was 309):
 > Ephemeral implementation agent for agent teams. Claims a beads work item,
 > implements it with a few core-path verification tests, runs quality gates,
 > and commits — strictly within its assigned worktree. Stops on any design
 > ambiguity. Never pushes or merges.
 
-**planner** (261 chars, was 309):
+**planner** (292 chars, was 309):
 > Expert software planner for agent teams. Investigates a codebase, surfaces
 > clarifying questions, and decomposes work into a beads plan with parallel,
 > file-disjoint tracks implementers can execute cleanly. Never writes feature
 > code. Persistent — stays available for follow-up design questions.
 
-**reviewer** (244 chars, was 259):
+**reviewer** (256 chars, was 259):
 > Independent review agent for agent teams. Reviews the full diff against the
 > beads spec, hunts duplication, edge cases, security issues, and silent
 > failures, and runs the CI-equivalent gate including a real build. Reports
 > findings — never fixes code itself.
 
-**tester** (168 chars, was 252):
+**tester** (198 chars, was 252):
 > Verification agent for agent teams. Runs test suites, authors edge-case and
 > E2E tests (implementers write only core-path tests), and owns live
 > verification of the running app. Never exposes secrets.
 
-**dri** (404 chars, was 406):
+**dri** (406 chars, was 406):
 > Act as DRI (directly responsible individual) to deliver a feature or
 > initiative end-to-end with a background agent team. Use when asked to "act
 > as DRI", "deliver <feature>", "own this initiative", when invoked as /dri
@@ -349,7 +349,7 @@ below feels too aggressive on read-through, prefer the longer form.**
 to minimal for what it must route on; not worth cutting further at the risk
 of losing a trigger phrase.)
 
-**steward** (339 chars, was 611 — placeholder RESOLVED per ruling 2, cut the
+**steward** (399 chars, was 609 — placeholder RESOLVED per ruling 2, cut the
 zero-authority sentence):
 > Act as the Steward — a persistent, machine-scoped background persona that
 > watches DRI sessions across every initiative, gates plan/scope/merge/
@@ -358,9 +358,19 @@ zero-authority sentence):
 > session (cwd carries the steward marker), or when woken by mail addressed
 > to the reserved "steward" handle.
 
-All six measured via `node measure.js <file>` (§5) after installing frontmatter
-in place — treat the numbers above as the frontmatter `description:` field's
-own rendered length, not the whole-file rendered length.
+All six numbers are the `description:` field's own length, in characters of
+the field's VALUE — after YAML quoting is resolved (a double-quoted scalar's
+surrounding quotes and `\"` escapes are not part of the value) and after the
+contract's own line-wrapping above is unwrapped. Not the whole-file rendered
+length.
+
+CORRECTED 2026-07-30 (at-zrjt, DRI): the six after-counts originally recorded
+here (214/261/244/168/404/339) were miscounted at authoring time — every one
+undercounted the very text quoted beneath it. The QUOTED TEXT was and remains
+authoritative, and it is what shipped: each of the six was verified
+byte-identical to the block above it after unwrapping. Only the parenthesised
+numbers were wrong, and they are now measured. Steward's "was" is likewise
+609, not 611. No shipped content changed as a result of this correction.
 
 ---
 
