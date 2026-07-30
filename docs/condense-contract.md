@@ -437,6 +437,22 @@ prose (which is RULE/TRIGGER/APPLY shaped, never bracket-delimited) or
 ordinary agent output effectively impossible; and the literal greps cleanly
 in a transcript.
 
+**THE MATCHING RULE (agent side, `agent-teams-s610.2`).** The frozen string
+above contains `$role`, which the hook expands. An agent therefore must NOT
+look for that string as written. It matches on the role-independent prefix:
+
+```
+<<<agent-teams-learnings-hook-start
+```
+
+Presence of that prefix anywhere in the agent's own priming context = the hook
+ran; skip the manual `ateam learnings <role>` call. Absence = run it and print
+the miss-report line. The end marker exists to bound the learnings block for a
+human or a transcript grep; the agent's skip/run decision keys on the START
+marker alone, so a truncated context that drops the tail cannot flip the
+decision. Both tracks depend on this rule: the hook must emit the prefix
+byte-identically, and no agent may hard-code its own role into the test.
+
 **Both markers MUST print unconditionally, including the zero-learnings
 case** — a role with nothing stored still gets both `hook-start` and
 `hook-end` printed (with empty or minimal content between them). Absence of
