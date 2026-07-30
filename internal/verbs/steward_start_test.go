@@ -359,8 +359,8 @@ func TestStewardStart_NilContext(t *testing.T) {
 // Steward launch argv carries "--settings" immediately followed by the exact
 // stewardSettingsJSON string — the mechanism that publishes ATEAM_ROLE=steward
 // per the role-signal contract (agent-teams-142k.1). No ATEAM_INITIATIVE (the
-// steward is fleet-scoped) and no autoCompactWindow (unchanged from before
-// this bead — see stewardSettingsJSON's doc comment).
+// steward is fleet-scoped) and no autoCompactWindow (no background session
+// pins one — see stewardSettingsJSON's doc comment).
 func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
 	args := stewardLaunchArgs()
 

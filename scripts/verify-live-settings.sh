@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # verify-live-settings.sh — on-demand LIVE check that the real `claude` CLI
-# actually honors the --settings autoCompactWindow value and the --advisor
-# flag the way internal/verbs/dispatch.go's bgSessionArgs() sends them to
-# background DRI sessions.
+# honors an explicit --settings autoCompactWindow value, and honors the
+# --advisor flag the way internal/verbs/dispatch.go's bgSessionArgs() sends it
+# to background DRI sessions.
+#
+# Note on the auto-compact probes: ateam no longer sends autoCompactWindow at
+# all (see bgSessionSettings in dispatch.go — unset resolves to the model's
+# full context window, and any pinned value can only lower that). Probes A/B
+# below therefore test CLI behavior rather than the argv ateam builds. They
+# remain the tool for the question "is the setting still honored, and does
+# effectiveWindow still track it 1:1", which is what would have to change
+# before pinning a window could ever be worth revisiting.
 #
 # ============================================================================
 # WARNING: this launches FOUR real `claude --bg` sessions. Each is a live,
@@ -19,11 +27,11 @@
 # motivated this script.
 #
 # What this does NOT test: internal/verbs/dispatch_test.go's
-# TestBGSessionArgs_ContainsSettingsFlag already locks the ateam-SIDE
-# contract — that bgSessionArgs() always builds the correct --settings JSON
-# string. That test is free and runs in CI. This script is the complementary
-# CLI-side check: does the real `claude` binary actually honor what we send
-# it. Don't duplicate one with the other.
+# TestBGSessionArgs_* tests already lock the ateam-SIDE contract — that
+# bgSessionArgs() builds the correct --settings JSON string and never pins an
+# auto-compact window. Those tests are free and run in CI. This script is the
+# complementary CLI-side check: does the real `claude` binary behave as we
+# believe. Don't duplicate one with the other.
 #
 # Usage:
 #   scripts/verify-live-settings.sh [A] [B]

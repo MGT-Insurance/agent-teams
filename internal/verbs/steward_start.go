@@ -196,10 +196,9 @@ type stewardLaunchFunc func(ctx *cli.Context, dir string) error
 // stewardSettingsJSON is the --settings JSON argument for the Steward launch,
 // publishing ATEAM_ROLE=steward per the role-signal contract
 // (agent-teams-142k.1). No ATEAM_INITIATIVE and no autoCompactWindow request:
-// the steward is fleet-scoped (no single initiative id) and, unlike bg DRI
-// sessions (see bgSessionSettingsJSON in dispatch.go), has never requested an
-// auto-compact window override — this change only adds the env map, it does
-// not change that.
+// the steward is fleet-scoped (no single initiative id), and no background
+// session pins an auto-compact window — see bgSessionSettings in dispatch.go
+// for why. Same payload shape bgSessionSettingsJSON("steward", "") produces.
 const stewardSettingsJSON = `{"env":{"ATEAM_ROLE":"steward"}}`
 
 // stewardLaunchArgs returns the argv slice (everything after "claude") for

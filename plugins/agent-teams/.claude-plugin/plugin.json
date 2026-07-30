@@ -1,6 +1,6 @@
 {
   "name": "agent-teams",
-  "version": "0.47.1",
+  "version": "0.47.2",
   "description": "DRI-led agent teams: the /dri playbook, four role agents, a global learning workspace and initiative registry. Hard-requires beads (bd).",
   "author": { "name": "Eric Lloyd" },
   "userConfig": {
@@ -13,7 +13,7 @@
     "dri_model": {
       "type": "string",
       "title": "DRI model",
-      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Default \"opus\" reproduces today's hardcoded behavior in both cases.",
+      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Defaults to \"opus\", which resolves to a native 1M-context model — no [1m] suffix needed. Background sessions do not pin an auto-compact window, so whatever model is set here also decides the compaction threshold: a 200k-context model here means compaction near 167k tokens.",
       "default": "opus"
     }
   }

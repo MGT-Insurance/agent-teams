@@ -1623,36 +1623,27 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 	}
 }
 
-// ── bgSessionArgs: --settings auto-compact-window argument ──────────────────
+// ── bgSessionArgs: --settings argument ─────────────────────────────────────
 
-// TestBGSessionArgs_ContainsSettingsFlag verifies that bgSessionArgs() argv
-// contains "--settings" immediately followed by the exact
-// autoCompactWindowSettingsJSON string. This is the CLI-arg mechanism that
-// replaced the old CLAUDE_CODE_AUTO_COMPACT_WINDOW env var (which never
-// reached bg sessions launched via the daemon's spare-session pool — see
-// agent-teams-g8xc).
-func TestBGSessionArgs_ContainsSettingsFlag(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
-
-	found := false
-	for i, a := range args {
-		if a == "--settings" {
-			if i+1 >= len(args) {
-				t.Fatal("--settings has no following value in argv")
-			}
-			val := args[i+1]
-			if val != autoCompactWindowSettingsJSON {
-				t.Errorf("value after --settings = %q, want %q", val, autoCompactWindowSettingsJSON)
-			}
-			found = true
-			break
+// TestBGSessionArgs_SettingsOmitsAutoCompactWindow pins the decision NOT to
+// configure Claude Code's auto-compact trigger from here. Any value ateam pins
+// can only lower the threshold: unset falls through to the CLI's "auto" term,
+// which is the running model's full context window, while a pinned number is
+// clamped by min(realModelWindow, requested). This call site once requested
+// 200000 and cost every background session 5x its usable context. If a future
+// change reintroduces the key, this test is the thing that should stop it.
+func TestBGSessionArgs_SettingsOmitsAutoCompactWindow(t *testing.T) {
+	// Every production launch path supplies a role, so --settings is present.
+	for _, tc := range []struct{ role, initiativeID string }{
+		{"dri", "at-abc123"},
+		{"dri", ""},
+		{"steward", ""},
+	} {
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID)
+		got := settingsValue(t, args)
+		if strings.Contains(got, "autoCompactWindow") {
+			t.Errorf("--settings for role=%q must not pin autoCompactWindow; got %q", tc.role, got)
 		}
-	}
-	if !found {
-		t.Errorf("argv missing --settings; got: %v", args)
-	}
-	if autoCompactWindowSettingsJSON != `{"autoCompactWindow":200000}` {
-		t.Errorf("autoCompactWindowSettingsJSON = %q, want %q", autoCompactWindowSettingsJSON, `{"autoCompactWindow":200000}`)
 	}
 }
 
@@ -1678,7 +1669,7 @@ func settingsValue(t *testing.T, args []string) string {
 func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
 	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123")
 	got := settingsValue(t, args)
-	want := `{"autoCompactWindow":200000,"env":{"ATEAM_ROLE":"dri","ATEAM_INITIATIVE":"at-abc123"}}`
+	want := `{"env":{"ATEAM_ROLE":"dri","ATEAM_INITIATIVE":"at-abc123"}}`
 	if got != want {
 		t.Errorf("--settings = %q, want %q", got, want)
 	}
@@ -1690,7 +1681,7 @@ func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
 func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
 	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "")
 	got := settingsValue(t, args)
-	want := `{"autoCompactWindow":200000,"env":{"ATEAM_ROLE":"dri"}}`
+	want := `{"env":{"ATEAM_ROLE":"dri"}}`
 	if got != want {
 		t.Errorf("--settings = %q, want %q", got, want)
 	}
@@ -1700,16 +1691,26 @@ func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
 }
 
 // TestBGSessionArgs_SettingsEnv_Absent verifies that when both role and
-// initiative id are empty (e.g. a hypothetical bare launch), no "env" key
-// appears at all — byte-identical to the pre-142k autoCompactWindowSettingsJSON.
+// initiative id are empty (a hypothetical bare launch), the "--settings" flag
+// is left off the argv entirely rather than carrying an empty object. The env
+// map is the only thing ateam configures, so with nothing to say it says
+// nothing — an empty "{}" would read like an intent that went missing.
 func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
 	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
-	got := settingsValue(t, args)
-	if got != autoCompactWindowSettingsJSON {
-		t.Errorf("--settings = %q, want %q (no env key)", got, autoCompactWindowSettingsJSON)
+	for _, a := range args {
+		if a == "--settings" {
+			t.Fatalf("argv must omit --settings when role and initiative id are both empty; got: %v", args)
+		}
 	}
-	if strings.Contains(got, "env") {
-		t.Errorf("--settings must omit \"env\" entirely when role and initiative id are both empty: %q", got)
+	// The flag it precedes must still be intact.
+	found := false
+	for i, a := range args {
+		if a == "--append-system-prompt" && i+1 < len(args) && args[i+1] == memoryRoutingRule {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --append-system-prompt pair; got: %v", args)
 	}
 }
 
