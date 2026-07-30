@@ -1,5 +1,5 @@
-// session_test.go: core-path tests for the session-line helpers
-// (agent-teams-zalv.2 / at-ps11): sessionIDs, hasSessionLine, appendSessionID,
+// session_test.go: core-path tests for the session-tie helpers
+// (agent-teams-zalv.2 / at-ps11): appendSessionID and
 // matchSessionsForInitiative. Not exhaustive — see the contract bead
 // (agent-teams-zalv.1) for the full schema/API this implements.
 package verbs
@@ -43,36 +43,14 @@ func readFileT(t *testing.T, path string) (string, error) {
 	return string(data), nil
 }
 
-// ── sessionIDs / hasSessionLine ──────────────────────────────────────────────
-
-func TestSessionIDs_PreservesRegistrationOrder(t *testing.T) {
-	desc := "problem: x\nsession: sess-1\nworktree: /a/b\nsession: sess-2\nsession: sess-3\n"
-	got := sessionIDs(desc)
-	want := []string{"sess-1", "sess-2", "sess-3"}
-	if len(got) != len(want) {
-		t.Fatalf("sessionIDs = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("sessionIDs[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestSessionIDs_NoLines(t *testing.T) {
-	if got := sessionIDs("problem: x\nworktree: /a/b\n"); got != nil {
-		t.Errorf("sessionIDs = %v, want nil", got)
-	}
-}
-
-func TestHasSessionLine(t *testing.T) {
-	if hasSessionLine("problem: x\nworktree: /a/b\n") {
-		t.Error("hasSessionLine: expected false for legacy description with no session: lines")
-	}
-	if !hasSessionLine("problem: x\nsession: sess-1\n") {
-		t.Error("hasSessionLine: expected true when a session: line is present")
-	}
-}
+// The sessionIDs and hasSessionLine tests that lived here are gone with those
+// helpers; session ties now come from initiative.Of(iss).Sessions, and
+// internal/initiative owns the registration-order guarantee they asserted.
+//
+// hasSessionLine was not merely redundant. It matched a bare "session:" with
+// no value, which the frozen rule does not, so it reported "has sessions" for
+// a description yielding zero extractable ids. Do not reintroduce that
+// semantics as a convenience wrapper.
 
 // ── appendSessionID ──────────────────────────────────────────────────────────
 
@@ -233,6 +211,60 @@ func TestAppendSessionID_NewSessionAppendsLine(t *testing.T) {
 	}
 	if !strings.Contains(capturedBody, "problem: x") {
 		t.Errorf("appendSessionID: written description %q dropped existing content", capturedBody)
+	}
+}
+
+// TestAppendSessionID_PreservesUnmodeledKeys is the frozen-item-3 guard at the
+// verbs layer: the live registry carries canonical keys initiative.Fields has
+// no member for (the pr-* trio, written and read by an LLM following
+// skills/review-pr/SKILL.md, not by Go). appendSessionID must stay strictly
+// append-only, so a rewrite of it as "parse into Fields, mutate, write Fields
+// back out" — which compiles, and which every other test here still passes —
+// is caught by this one.
+func TestAppendSessionID_PreservesUnmodeledKeys(t *testing.T) {
+	existing := "problem: x\npr-number: 3551\npr-repo: MGT-Insurance/midgard\n" +
+		"pr-url: https://github.com/MGT-Insurance/midgard/pull/3551\n"
+
+	var capturedBody string
+	f := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			switch args[0] {
+			case "show":
+				return issueJSON(bd.Issue{ID: "at-init", Description: existing}), nil
+			case "update":
+				for _, a := range args {
+					if strings.HasPrefix(a, "--body-file=") {
+						data, err := readFileT(t, strings.TrimPrefix(a, "--body-file="))
+						if err != nil {
+							t.Fatalf("read body file: %v", err)
+						}
+						capturedBody = data
+					}
+				}
+				return "", nil
+			}
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			return json.Unmarshal([]byte(issuesJSON(bd.Issue{ID: "at-init", Status: "open", Description: existing})), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(f, t.TempDir())
+
+	if err := appendSessionID(ctx, "at-init", "sess-new"); err != nil {
+		t.Fatalf("appendSessionID: unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"pr-number: 3551",
+		"pr-repo: MGT-Insurance/midgard",
+		"pr-url: https://github.com/MGT-Insurance/midgard/pull/3551",
+	} {
+		if !strings.Contains(capturedBody, want) {
+			t.Errorf("appendSessionID dropped unmodeled canonical key %q; wrote:\n%s", want, capturedBody)
+		}
+	}
+	if !strings.Contains(capturedBody, "session: sess-new") {
+		t.Errorf("appendSessionID: written description %q missing new session line", capturedBody)
 	}
 }
 

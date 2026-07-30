@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // errSessionTiedElsewhere is the sentinel wrapped by appendSessionID's
@@ -35,78 +36,44 @@ func canonicalPath(p string) string {
 // RegisterMatchKong registers match verbs onto p using native kong structs.
 func RegisterMatchKong(p *cli.Parser) {
 	p.AddVerb("audit", "Audit global workspace for leaked work beads.", &auditKong{})
-	p.AddVerb("resume-match", "Find the open initiative for a worktree path.", &resumeMatchKong{})
-	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative for a worktree path.", &resumeMatchClosedKong{})
+	p.AddVerb("resume-match", "Find the open initiative whose worktree is EXACTLY this path (no ancestor matching).", &resumeMatchKong{})
+	p.AddVerb("resume-match-closed", "Find the most-recently-closed initiative whose worktree is EXACTLY this path (no ancestor matching).", &resumeMatchClosedKong{})
+	p.AddVerb("resolve-initiative", "Find the open initiative owning this path, ancestor-or-self (the worktree root or any subdirectory of it).", &resolveInitiativeKong{})
 }
 
-// hasWorktreeLine reports whether any line in description starts with "worktree:".
-func hasWorktreeLine(description string) bool {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "worktree:") {
-			return true
-		}
-	}
-	return false
-}
-
-// sessionIDs parses all "session: <id>" lines from description, in
-// registration order (first line = first-registered session, per the
-// at-ps11 contract, agent-teams-zalv.1 §1).
-func sessionIDs(description string) []string {
-	var ids []string
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "session: ") {
-			ids = append(ids, strings.TrimRight(strings.TrimPrefix(line, "session: "), " \t\r"))
-		}
-	}
-	return ids
-}
-
-// trackWorktreePaths parses all "track-worktree: <path>" lines from
-// description, in registration order (agent-teams-sgr5.2 / D9): the DRI
-// records one such line per implementer worktree it spawns, extending the
-// at-ps11 session-tie pattern from sessions to worktrees. Mirrors sessionIDs
-// above byte-for-byte in shape.
-func trackWorktreePaths(description string) []string {
-	var paths []string
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "track-worktree: ") {
-			paths = append(paths, strings.TrimRight(strings.TrimPrefix(line, "track-worktree: "), " \t\r"))
-		}
-	}
-	return paths
-}
-
-// hasSessionLine reports whether any line in description starts with
-// "session:" — the migration discriminator (mirrors hasWorktreeLine): an
-// initiative with no session: lines is a legacy entry and matchers must fall
-// back to the worktree/Name match for it (agent-teams-zalv.1 §5).
-func hasSessionLine(description string) bool {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "session:") {
-			return true
-		}
-	}
-	return false
-}
-
-// appendSessionID ties sessionID to initiativeID by appending a
-// "session: <id>" line to the initiative's description, via the sanctioned
+// appendSessionID ties sessionID to initiativeID by writing back the
+// description initiative.WithSession composes, via the sanctioned
 // global-workspace write path (bd update --body-file, same mechanism as
-// updateDescriptionKong).
+// updateDescriptionKong). WithSession is append-only, so nothing already on
+// the bead — including canonical keys internal/initiative does not model — is
+// re-derived or dropped.
+//
+// This function is a GUARD PLUS an append, and only the append half lives in
+// initiative.WithSession. Do not collapse it into a bare WithSession call:
 //
 // Idempotent: if sessionID is already recorded on initiativeID (e.g. a
-// respawn reusing the same session id), this is a no-op.
+// respawn reusing the same session id), this is a no-op — it returns before
+// listing open initiatives and before any write, which is stronger than
+// WithSession's own idempotency (that returns an unchanged description, which
+// would still cost a list and a redundant bd update here).
 //
 // One-open-initiative guard: before appending, scans every OPEN initiative;
 // if sessionID is already recorded on a DIFFERENT open initiative, returns an
 // error instead of silently tying the session to two initiatives at once
-// (agent-teams-zalv.1 §2).
+// (agent-teams-zalv.1 §2). initiative.WithSession deliberately does NOT
+// implement this — the check needs a live bd client to enumerate open
+// initiatives, which a pure function is not given, so it stays this caller's
+// responsibility. Deleting it compiles cleanly and leaves WithSession's own
+// tests green; internal/verbs/session_test.go is what catches its absence.
 //
 // Validation: sessionID must be non-empty and contain no whitespace (including
 // newlines) — it is spliced verbatim into a "session: <id>" description line,
 // so an unvalidated value could inject extra lines or corrupt the field parse
-// for a future untrusted caller. Rejected before any read/write.
+// for a future untrusted caller. WithSession re-checks both, but the check
+// stays here too so rejection happens before any read/write.
+//
+// The signature is load-bearing: tie_session.go calls this and is the only
+// other caller. Change the body, not the shape.
 func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("appendSessionID: sessionID must not be empty")
@@ -119,7 +86,7 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)
 	}
-	for _, id := range sessionIDs(issue.Description) {
+	for _, id := range initiative.Of(issue).Sessions {
 		if id == sessionID {
 			return nil // already tied to this initiative — respawn reuses the same id
 		}
@@ -133,7 +100,7 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		if other.ID == initiativeID {
 			continue
 		}
-		for _, id := range sessionIDs(other.Description) {
+		for _, id := range initiative.Of(other).Sessions {
 			if id == sessionID {
 				return fmt.Errorf(
 					"appendSessionID: session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
@@ -142,7 +109,12 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		}
 	}
 
-	newDescription := strings.TrimRight(issue.Description, "\n") + "\nsession: " + sessionID + "\n"
+	plan, err := initiative.WithSession(issue, sessionID)
+	if err != nil {
+		return fmt.Errorf("appendSessionID: %w", err)
+	}
+	newDescription := plan.Description
+
 	tmpFile, err := os.CreateTemp("", "ateam-tie-session-*.txt")
 	if err != nil {
 		return fmt.Errorf("appendSessionID: create temp file: %w", err)
@@ -167,15 +139,16 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 //
 // When iss has "session:" lines, only LIVE sessions (PID present) whose
 // SessionID is in that set are returned, in registration order. When iss has
-// no session: lines (legacy, pre-migration entry — hasSessionLine is the
+// no session: lines (legacy, pre-migration entry — an empty f.Sessions is the
 // discriminator), this falls back to the existing worktree/Name match
 // (matchSessionByWorktree) wrapped to a 0-or-1-element slice, so legacy
 // routing/classification is unchanged byte-for-byte (agent-teams-zalv.1 §2,
 // §5).
 func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSession {
-	ids := sessionIDs(iss.Description)
+	f := initiative.Of(iss)
+	ids := f.Sessions
 	if len(ids) == 0 {
-		if s := matchSessionByWorktree(sessions, worktreePath(iss.Description)); s != nil {
+		if s := matchSessionByWorktree(sessions, f.Worktree); s != nil {
 			return []agentSession{*s}
 		}
 		return nil
@@ -196,11 +169,13 @@ func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSe
 	return out
 }
 
-// findOffenders returns issues whose description has no line starting with "worktree:".
+// findOffenders returns issues carrying no worktree routing field — work
+// beads that leaked into the global workspace, which holds only
+// initiative-tracking beads.
 func findOffenders(issues []bd.Issue) []bd.Issue {
 	var out []bd.Issue
 	for _, iss := range issues {
-		if !hasWorktreeLine(iss.Description) {
+		if initiative.Of(iss).Worktree == "" {
 			out = append(out, iss)
 		}
 	}
@@ -212,7 +187,7 @@ func findOffenders(issues []bd.Issue) []bd.Issue {
 func matchByWorktree(issues []bd.Issue, path string) *bd.Issue {
 	want := canonicalPath(path)
 	for i := range issues {
-		if wt := worktreePath(issues[i].Description); wt != "" && canonicalPath(wt) == want {
+		if wt := initiative.Of(issues[i]).Worktree; wt != "" && canonicalPath(wt) == want {
 			return &issues[i]
 		}
 	}
@@ -225,15 +200,16 @@ func matchByWorktree(issues []bd.Issue, path string) *bd.Issue {
 // any subdirectory of the registered worktree, e.g. apps/mithril nested under
 // the worktree root). The trailing separator guard means a sibling directory
 // that merely shares a string prefix (worktree /a/b vs cwd /a/b-foo) never
-// matches. Used ONLY by resolveMyInitiative (the `ateam mail inbox` path) —
-// matchByWorktree remains strict-equality for resume-match, where prefix
-// matching would risk resuming the wrong initiative.
+// matches. Used by resolveMyInitiative (the `ateam mail inbox` path) and by
+// resolveInitiativeKong (the `ateam resolve-initiative` verb the plugin's
+// hooks call) — matchByWorktree remains strict-equality for resume-match,
+// where prefix matching would risk resuming the wrong initiative.
 func matchByWorktreeOrAncestor(issues []bd.Issue, path string) *bd.Issue {
 	want := canonicalPath(path)
 	var best *bd.Issue
 	var bestLen int
 	for i := range issues {
-		wt := worktreePath(issues[i].Description)
+		wt := initiative.Of(issues[i]).Worktree
 		if wt == "" {
 			continue
 		}
@@ -256,7 +232,7 @@ func matchAllByWorktree(issues []bd.Issue, path string) []bd.Issue {
 	want := canonicalPath(path)
 	var out []bd.Issue
 	for _, iss := range issues {
-		if wt := worktreePath(iss.Description); wt != "" && canonicalPath(wt) == want {
+		if wt := initiative.Of(iss).Worktree; wt != "" && canonicalPath(wt) == want {
 			out = append(out, iss)
 		}
 	}
@@ -323,6 +299,53 @@ func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 	}
 
 	if match := matchByWorktree(issues, c.WorktreePath); match != nil {
+		fmt.Fprintln(ctx.Stdout, match.ID)
+	}
+	return nil
+}
+
+// resolveInitiativeKong resolves a filesystem path to the OPEN initiative that
+// owns it. It exists so the plugin's shell hooks stop re-deriving the routing
+// field rule in jq: before this verb, wake-watcher.sh, inbox-drain.sh,
+// session-start-inbox.sh and compact-recovery.sh each shelled `bd -C $ATH list
+// --status=open --json` and picked the worktree line apart themselves, which
+// both violated the cardinal rule (raw bd against the global workspace) and
+// meant a change to the rule in internal/initiative silently stopped matching
+// there — hooks fail soft, so initiative resolution would just quietly stop
+// with no error anywhere.
+//
+// ANCESTOR-OR-SELF semantics, via matchByWorktreeOrAncestor: the registered
+// worktree root itself or any subdirectory of it resolves, and the most
+// specific (longest) worktree wins. Deliberately distinct from resume-match and
+// resume-match-closed, which are EXACT (see matchByWorktree) because /dri owns
+// its checkout root and prefix matching there could resume the wrong
+// initiative. Three verbs over two semantics is easy to confuse, so each one's
+// kong help text names its own semantics — keep it that way when adding a
+// fourth.
+//
+// OUTPUT CONTRACT, which all four hooks depend on: the bare initiative id on
+// stdout and nothing else, or NO output at all with exit 0 when no open
+// initiative owns the path. "No match" is a normal, expected condition for a
+// hook (any plain claude session in an unregistered directory hits it), so it
+// must never become an error or the hooks would start reporting failures on
+// every ordinary session. A bd failure is treated the same way, matching
+// resumeMatchKong.
+type resolveInitiativeKong struct {
+	Path string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
+}
+
+// Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam resolve-initiative: nil context")
+	}
+
+	var issues []bd.Issue
+	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+		return nil
+	}
+
+	if match := matchByWorktreeOrAncestor(issues, c.Path); match != nil {
 		fmt.Fprintln(ctx.Stdout, match.ID)
 	}
 	return nil

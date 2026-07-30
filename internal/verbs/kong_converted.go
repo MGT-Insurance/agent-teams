@@ -23,6 +23,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/cost"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 	"github.com/mgt-insurance/agent-teams/internal/workspace"
@@ -100,7 +101,11 @@ func (c *registerKong) Run(ctx *cli.Context) error {
 	// Label the root epic with the initiative ID (fail-soft).
 	if epicID != "" {
 		bodyBytes, _ := os.ReadFile(bodyFile)
-		repoPath := extractRepoPath(string(bodyBytes))
+		registered := initiative.Of(bd.Issue{Description: string(bodyBytes)})
+		repoPath := registered.Repo
+		if repoPath == "" {
+			repoPath = registered.Worktree
+		}
 		if repoPath != "" {
 			cmd := exec.Command("bd", "-C", repoPath, "label", "add", epicID, issue.ID)
 			if err := cmd.Run(); err != nil {
@@ -567,7 +572,11 @@ func (c *closeKong) runLocalMainUpdate(ctx *cli.Context) {
 	if err != nil {
 		return
 	}
-	repo := extractRepoPath(issue.Description)
+	f := initiative.Of(issue)
+	repo := f.Repo
+	if repo == "" {
+		repo = f.Worktree
+	}
 	if repo == "" {
 		return
 	}
@@ -973,25 +982,6 @@ func createEpicInRepo(repoPath, title string) (string, error) {
 	return issue.ID, nil
 }
 
-// extractRepoPath scans body for the first "repo: <path>" line and returns the
-// path. Falls back to the first "worktree: <path>" line when no repo: line is
-// present. Returns "" if neither is found.
-func extractRepoPath(body string) string {
-	var worktree string
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "repo: ") {
-			v := strings.TrimRight(strings.TrimPrefix(line, "repo: "), " \t\r")
-			if v != "" {
-				return v
-			}
-		}
-		if worktree == "" && strings.HasPrefix(line, "worktree: ") {
-			worktree = strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
-		}
-	}
-	return worktree
-}
-
 // appendEpicToBody reads the file at originalPath, extracts the project repo
 // path from the body, creates a root epic via creator, and returns a new temp
 // file path with "epic: <id>" appended, the epicID, and a cleanup function to
@@ -1003,7 +993,14 @@ func appendEpicToBody(ctx *cli.Context, originalPath, title string, creator epic
 		return "", "", nil
 	}
 	bodyStr := string(bodyBytes)
-	repoPath := extractRepoPath(bodyStr)
+	// The file is a prospective description, so it reads through the same
+	// seam a stored one does; worktree is the fallback when no repo line is
+	// present.
+	prospective := initiative.Of(bd.Issue{Description: bodyStr})
+	repoPath := prospective.Repo
+	if repoPath == "" {
+		repoPath = prospective.Worktree
+	}
 	if repoPath == "" {
 		return "", "", nil
 	}

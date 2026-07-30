@@ -8,13 +8,24 @@ SCRIPT="$ROOT/plugins/agent-teams/hooks/scripts/block-claude-memory-writes.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HOME="$T"
 
+# An in-scope stub workspace: a dir with a .beads/ child, used as the DEFAULT
+# cwd for every case. Without this the payload carries no cwd, the script falls
+# back to $PWD, and the deny cases only pass when the suite happens to be run
+# from inside a repo that has .beads — i.e. green here, red from /tmp.
+IN_SCOPE_CWD="$T/inscope"
+mkdir -p "$IN_SCOPE_CWD/.beads"
+
+# Optional 3rd arg overrides the payload's cwd; defaults to the in-scope stub.
 make_payload() {
-  local tool="$1" path="$2"
-  printf '{"tool_name":"%s","tool_input":{"file_path":"%s"}}' "$tool" "$path"
+  local tool="$1" path="$2" cwd="${3:-$IN_SCOPE_CWD}"
+  printf '{"tool_name":"%s","tool_input":{"file_path":"%s"},"cwd":"%s"}' \
+    "$tool" "$path" "$cwd"
 }
 
-# Helper: run script and return its stdout.
-run() { printf '%s' "$1" | "$SCRIPT"; }
+# Helper: run script and return its stdout. BEADS_DIR is scrubbed so the scope
+# gate is exercised via cwd alone — an ambient BEADS_DIR would force every case
+# in scope and mask the allow cases below.
+run() { printf '%s' "$1" | env -u BEADS_DIR "$SCRIPT"; }
 
 # Helper: assert deny — output must contain "deny" and the canonical message prefix.
 assert_deny() {
@@ -81,5 +92,26 @@ assert_deny "case11-tilde-memory-path" \
 # Case 12: Write to ~/.claude/projects/ itself (no memory segment) -> allow
 assert_allow "case12-allow-projects-root" \
   "$(make_payload Write "$T/.claude/projects/my-proj/some-other-file.md")"
+
+# ---- Scope gate ------------------------------------------------------------
+# Enforcement is limited to agent-teams contexts. Outside one, Claude's native
+# memory is the right store, so the hook must allow the write.
+
+# Case 13: memory path, but cwd has no .beads at it or any parent -> allow.
+# $T/outside walks $T/outside -> $T -> /, none of which has a .beads dir.
+mkdir -p "$T/outside"
+assert_allow "case13-allow-no-beads-workspace" \
+  "$(make_payload Write "$T/.claude/projects/p/memory/note.md" "$T/outside")"
+
+# Case 14: cwd is a DRI worktree -> deny, even though the worktree has NO
+# literal .beads dir (worktrees reach beads via git-common-dir, and the parent
+# walk $T/.agent-teams-worktrees/demo -> $T/.agent-teams-worktrees -> $T finds
+# nothing). Regression guard: the three scope signals must stay OR'd, so
+# collapsing them into a single AND on the .beads walk would break every
+# background DRI's memory routing.
+mkdir -p "$T/.agent-teams-worktrees/demo"
+assert_deny "case14-deny-dri-worktree-without-literal-beads" \
+  "$(make_payload Write "$T/.claude/projects/p/memory/note.md" \
+     "$T/.agent-teams-worktrees/demo")"
 
 echo "PASS"

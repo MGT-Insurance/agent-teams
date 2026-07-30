@@ -1,7 +1,34 @@
+// An initiative's routing data, already parsed. `ateam list-json` attaches this
+// to every element (agent-teams-ully.12); the Go component internal/initiative
+// is the ONE implementation of the rule that produces it, so nothing on this
+// side re-derives these values from `description` text.
+//
+// Keys are the canonical LINE keys verbatim — `session` and `track-worktree`,
+// not `sessions` and `tracks`. A key is present only when the initiative
+// actually carries it, so absent and empty stay distinguishable.
+//
+// The key set is NOT closed: a skill file can introduce a canonical key with no
+// code change on either side (`pr-number`, `pr-repo`, `pr-url`, `review-focus`,
+// `goal` and others exist in the live registry today, written by no Go and no
+// TypeScript). The index signature is `unknown` on purpose — an undeclared key
+// is real data that reaches this object, and a reader that wants one has to
+// narrow it deliberately rather than assume a type.
+export interface InitiativeFields {
+  problem?: string;
+  repo?: string;
+  worktree?: string;
+  branch?: string;
+  team?: string;
+  mode?: string;
+  epic?: string;
+  standby?: boolean;
+  session?: string[];
+  "track-worktree"?: string[];
+  [key: string]: unknown;
+}
+
 // Raw JSON shape returned by `ateam list-json`.
 // `labels` is an optional array of label strings (e.g. "gate:review", "gate:question", "human").
-// Structured fields (repo, worktree, branch, team, mode, goal) are embedded
-// as `key: value` TEXT lines inside `description` — backend must parse them.
 export interface RawInitiative {
   id: string;
   title: string;
@@ -16,6 +43,12 @@ export interface RawInitiative {
   // Optional: present when the ateam framework has set a gate (PR #14+).
   // Tolerate missing or empty — older registries do not emit this field.
   labels?: string[];
+  // Required, not optional. This is the ONLY source of repo/worktree/branch/…
+  // now, so an element without it is not a tolerable older shape — it means the
+  // installed `ateam` binary predates the enrichment, and every initiative
+  // would silently render with blank routing data. parseAteamListJson rejects
+  // that payload loudly instead.
+  fields: InitiativeFields;
 }
 
 // Explicit gate kind derived from labels:
@@ -32,7 +65,6 @@ export interface ParsedInitiative extends RawInitiative {
   branch: string;
   team: string;
   mode: string;
-  goal: string;
   prUrl: string | null;
   // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
   // Absent for legacy initiatives registered before at-e3m. Dashboard uses

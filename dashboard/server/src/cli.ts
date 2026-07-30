@@ -83,9 +83,21 @@ function runCli(cmd: string, args: string[], timeoutMs: number = CHILD_TIMEOUT_M
   });
 }
 
-// Returns raw JSON string from `ateam list-json`.
+// Returns raw JSON string from `ateam list-json` (open initiatives).
 export function ateamListJson(): Promise<string> {
   return runCli("ateam", ["list-json"]);
+}
+
+// Returns raw JSON string from `ateam list-json --status=closed`.
+//
+// This used to shell `bd -C <workspace> list --status=closed --json` directly.
+// It can't any more: `list-json` is now what attaches each element's parsed
+// `fields` object (agent-teams-ully.12), and raw bd output has none — the closed
+// half would arrive with no routing data at all. Going through the verb also
+// removes the dashboard's last raw `bd -C` read of the global workspace, which
+// `ateam` is supposed to be the only interface to.
+export function ateamClosedInitiatives(): Promise<string> {
+  return runCli("ateam", ["list-json", "--status=closed"]);
 }
 
 // Cap on messages fetched via `ateam mail list --json`.
@@ -175,13 +187,6 @@ export function claudeAgentsJson(): Promise<string> {
 // Returns raw JSON string from `bd -C <workspace> list --label human --json`.
 export function bdHumanList(workspace: string): Promise<string> {
   return runCli("bd", ["-C", workspace, "list", "--label", "human", "--json"]);
-}
-
-// Returns raw JSON string from `bd -C <workspace> list --status=closed --json`.
-// Mirrors `ateam list-json` (which is `bd list --status=open --json`) but for the
-// closed half — same RawInitiative shape, parsed via parseAteamListJson.
-export function bdClosedInitiatives(workspace: string): Promise<string> {
-  return runCli("bd", ["-C", workspace, "list", "--status=closed", "--json"]);
 }
 
 // Returns raw JSON string from `bd -C <repo> list --label <label> --json`.

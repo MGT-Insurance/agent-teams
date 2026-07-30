@@ -24,63 +24,12 @@ func descLines(repo, worktree, branch string) string {
 	return "repo: " + repo + "\nworktree: " + worktree + "\nbranch: " + branch + "\n"
 }
 
-// ── parseDescriptionFields ────────────────────────────────────────────────────
-
-func TestParseDescriptionFields_Basic(t *testing.T) {
-	desc := "repo: /Users/eric/Code/myapp\nworktree: /tmp/wt\nbranch: feat-x\nmode: bg\n"
-	fields := parseDescriptionFields(desc)
-	if fields["repo"] != "/Users/eric/Code/myapp" {
-		t.Errorf("repo: got %q", fields["repo"])
-	}
-	if fields["worktree"] != "/tmp/wt" {
-		t.Errorf("worktree: got %q", fields["worktree"])
-	}
-	if fields["branch"] != "feat-x" {
-		t.Errorf("branch: got %q", fields["branch"])
-	}
-	if fields["mode"] != "bg" {
-		t.Errorf("mode: got %q", fields["mode"])
-	}
-}
-
-func TestParseDescriptionFields_SkipsEmptyKeyOrValue(t *testing.T) {
-	desc := ": value-no-key\nkey-no-value:\nnormal: ok\n"
-	fields := parseDescriptionFields(desc)
-	// Only "normal" should survive.
-	if fields["normal"] != "ok" {
-		t.Errorf("normal: got %q", fields["normal"])
-	}
-	if len(fields) != 1 {
-		t.Errorf("expected 1 field, got %d: %v", len(fields), fields)
-	}
-}
-
-func TestParseDescriptionFields_ColonInValue(t *testing.T) {
-	// Colons in the VALUE must not split further (only first colon is the key separator).
-	desc := "url: https://github.com/owner/repo/pull/42\n"
-	fields := parseDescriptionFields(desc)
-	if fields["url"] != "https://github.com/owner/repo/pull/42" {
-		t.Errorf("url: got %q", fields["url"])
-	}
-}
-
-func TestParseDescriptionFields_KeyLowercased(t *testing.T) {
-	desc := "REPO: /some/path\nBranch: main\n"
-	fields := parseDescriptionFields(desc)
-	if fields["repo"] != "/some/path" {
-		t.Errorf("REPO not lowercased: got %q", fields["repo"])
-	}
-	if fields["branch"] != "main" {
-		t.Errorf("Branch not lowercased: got %q", fields["branch"])
-	}
-}
-
-func TestParseDescriptionFields_EmptyInput(t *testing.T) {
-	fields := parseDescriptionFields("")
-	if len(fields) != 0 {
-		t.Errorf("expected empty map, got %v", fields)
-	}
-}
+// The parseDescriptionFields tests that lived here are gone with the helper.
+// Two of them asserted behaviour the frozen contract now forbids — key case
+// folding and a bare first-colon split — so they could not be carried over
+// even in spirit; the rule they are replaced by is initiative.Of's, tested in
+// internal/initiative. The tier-2 branch matching that consumed those fields
+// is still tested below.
 
 // ── extractPrURL ──────────────────────────────────────────────────────────────
 

@@ -38,6 +38,14 @@ if [ "$1" = "tie-session" ]; then
   fi
   exit 0
 fi
+if [ "$1" = "resolve-initiative" ]; then
+  # The hook resolves cwd -> initiative id here before reaching the mail peek
+  # (agent-teams-ully.9). A stub id keeps this test's stated scope — shell
+  # wiring only, no dependence on real resolution, which is covered by
+  # tests/hook-compact-recovery.test.sh and internal/verbs/match_test.go.
+  echo "at-stub01"
+  exit 0
+fi
 if [ "$1" = "mail" ] && [ "${2:-}" = "inbox" ]; then
   echo "no unread mail"
   exit 0

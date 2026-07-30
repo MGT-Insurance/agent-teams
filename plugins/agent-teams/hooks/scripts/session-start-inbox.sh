@@ -22,7 +22,6 @@ export HOOK_SESSION_ID
 # Log start BEFORE any guard check.
 hook_log_start "session-start-inbox.sh"
 
-command -v bd    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ]; } || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 [ -d "$ATH/.beads" ] || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
@@ -49,11 +48,10 @@ fi
 if is_steward_cwd; then
   match_id="steward"
 else
-  # ── Resolve initiative id by worktree:$PWD (match the worktree root OR any subdir) ──
-  match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
-    | jq -r --arg pwd "$PWD" \
-        '[.[] | select((.description // "") | split("\n") | map(select(startswith("worktree: ")) | ltrimstr("worktree: ")) | any(. as $w | $pwd == $w or ($pwd | startswith($w + "/"))))][0].id // empty' \
-    2>/dev/null || true)
+  # ── Resolve initiative id for $PWD (the worktree root OR any subdir) ────────
+  # `ateam resolve-initiative` owns the matching rule (internal/verbs/match.go);
+  # this script must not re-derive it.
+  match_id=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
   if [ -z "$match_id" ]; then
     HOOK_EXIT_REASON="no-open-match"
     exit 0

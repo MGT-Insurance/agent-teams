@@ -14,7 +14,7 @@ vi.mock("./cli.js", async (importOriginal) => {
     ...actual,
     ateamWs: vi.fn(),
     ateamListJson: vi.fn(),
-    bdClosedInitiatives: vi.fn(),
+    ateamClosedInitiatives: vi.fn(),
     claudeAgentsJson: vi.fn(),
     bdHumanList: vi.fn(),
   };
@@ -89,7 +89,7 @@ describe("SnapshotManager overlap guard (agent-teams-assa.1)", () => {
 
     vi.mocked(cli.ateamWs).mockReturnValue(wsPending);
     vi.mocked(cli.ateamListJson).mockResolvedValue("[]");
-    vi.mocked(cli.bdClosedInitiatives).mockResolvedValue("[]");
+    vi.mocked(cli.ateamClosedInitiatives).mockResolvedValue("[]");
     vi.mocked(cli.claudeAgentsJson).mockResolvedValue("[]");
     vi.mocked(cli.bdHumanList).mockResolvedValue("[]");
 
@@ -115,7 +115,7 @@ describe("buildSnapshot partial-snapshot tolerance (agent-teams-assa.1)", () => 
   it("a rejected slice falls back to last-known-good instead of blanking that slice", async () => {
     vi.mocked(cli.ateamWs).mockResolvedValue("/ws");
     vi.mocked(cli.ateamListJson).mockResolvedValue("[]");
-    vi.mocked(cli.bdClosedInitiatives).mockResolvedValue("[]");
+    vi.mocked(cli.ateamClosedInitiatives).mockResolvedValue("[]");
     vi.mocked(cli.claudeAgentsJson).mockRejectedValue(new Error("killed"));
     vi.mocked(cli.bdHumanList).mockResolvedValue("[]");
 

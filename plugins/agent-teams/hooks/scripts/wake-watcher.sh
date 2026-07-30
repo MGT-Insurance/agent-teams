@@ -22,6 +22,7 @@ set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 MAILBOX="$ATH/mailbox"
+ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 
 # Capture stdin once non-blocking — Claude Code passes {session_id, ...} on stdin;
 # direct invocations have no stdin.  Must not break set -euo pipefail when empty.
@@ -35,7 +36,9 @@ export HOOK_SESSION_ID
 # Log start BEFORE any guard check so we always know the hook fired.
 hook_log_start "wake-watcher.sh"
 
-# Dependency guard — need bd + jq in PATH.
+# Dependency guard — need bd + jq in PATH for the stdin parse above and the
+# stop-on-closed status check below. `ateam` is needed only on the initiative
+# branch, so it is guarded there instead (see below).
 if ! command -v bd  >/dev/null 2>&1 \
    || ! command -v jq  >/dev/null 2>&1 \
    || [ ! -d "$ATH/.beads" ]; then
@@ -60,11 +63,16 @@ fi
 if [ "$is_steward_session" = 1 ]; then
   match_id="steward"
 else
-  # ── Resolve initiative id by worktree:$PWD (match the worktree root OR any subdir) ──
-  match_id=$(bd -C "$ATH" list --status=open --json 2>/dev/null \
-    | jq -r --arg pwd "$PWD" \
-        '[.[] | select((.description // "") | split("\n") | map(select(startswith("worktree: ")) | ltrimstr("worktree: ")) | any(. as $w | $pwd == $w or ($pwd | startswith($w + "/"))))][0].id // empty' \
-    2>/dev/null || true)
+  # ── Resolve initiative id for $PWD (the worktree root OR any subdir) ────────
+  # `ateam resolve-initiative` owns the matching rule (internal/verbs/match.go);
+  # this script must not re-derive it. The ateam guard lives here rather than
+  # with bd/jq above because the Steward branch resolves no initiative and has
+  # to keep arming its watcher regardless.
+  if ! { [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "$ATEAM" ]; }; then
+    HOOK_EXIT_REASON="missing-deps"
+    exit 0
+  fi
+  match_id=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
   if [ -z "$match_id" ]; then
     HOOK_EXIT_REASON="no-open-match"
     exit 0

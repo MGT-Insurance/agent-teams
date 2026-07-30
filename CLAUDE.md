@@ -57,6 +57,7 @@ bd close <id>         # Complete work
 go build ./...                     # compile everything
 go vet ./...                       # static checks
 go test ./...                      # Go unit tests
+go test -race ./...                # Go unit tests, race-detected
 gofmt -l <files>                   # must be empty (formatting gate)
 sh scripts/build-binaries.sh       # rebuild the 4 committed ateam binaries (see Release protocol)
 
@@ -64,7 +65,22 @@ sh scripts/build-binaries.sh       # rebuild the 4 committed ateam binaries (see
 bash tests/<name>.test.sh
 ```
 
+`internal/verbs` runs a goroutine (the relay's tick loop) alongside shared mutable package state (the hung-config tunables) — run `go test -race` on any change there, since a plain `go test` pass does not rule out a data race.
+
 Note: `tests/ateam.test.sh` case10 (bd dolt sync against an empty remote) is a known pre-existing failure unrelated to most changes — confirm it also fails at your merge-base before treating it as a regression.
+
+Run a single Go test with `go test ./internal/verbs/... -run TestName`.
+
+### Dashboard (Node/TS, in `dashboard/`)
+
+```bash
+cd dashboard && pnpm install   # first time only
+pnpm dev                       # server (:4823) + web (:5173) together
+pnpm test                      # vitest across all workspaces (115 tests)
+pnpm typecheck                 # strict tsc across packages
+```
+
+`dashboard/README.md` is the authoritative spec for this package (API endpoints, SSE event catalog, `ateam`/`bd`/`claude` CLI JSON shapes it depends on) — read it before touching `dashboard/server` or `dashboard/web`.
 
 ## Eval suite — costs real money
 
@@ -86,7 +102,9 @@ Two shipped artifacts in one repo:
 - **`ateam` CLI** (Go). Entry point `cmd/ateam/`; verbs in `internal/verbs/` (each as a kong struct with `Run(*cli.Context) error`, wired via `RegisterAllKong` in `internal/verbs/kong_converted.go`); shared CLI plumbing in `internal/cli/`; beads access in `internal/bd/`; the global workspace in `internal/workspace/`. `ateam` is the ONLY sanctioned interface to the global `~/.agent-teams` workspace. Uses [kong](https://github.com/alecthomas/kong) for flag/arg parsing and help generation.
 - **The `agent-teams` Claude Code plugin** under `plugins/agent-teams/` — the `/dri` playbook, role agents, hooks, and skills. It ships the CLI as **prebuilt per-platform binaries** committed in `plugins/agent-teams/bin/` (`ateam-{darwin,linux}-{amd64,arm64}`); `bin/ateam` is a POSIX wrapper that execs the right one. **These committed binaries — not your local `go build` — are what run when the plugin is installed.**
 
-There is also a `dashboard/` (Node/TS) initiative dashboard.
+- **`internal/initiative`** owns reading and writing an initiative's routing data (repo/worktree/branch/... and the session/track ties) — the `key: value` lines inside an initiative bead's description. One matching rule, one read seam (`Of`), one write seam (`New`/`WithSession`/`WithTrack`), used instead of each call site re-implementing its own line scanner. See the package doc comment (`internal/initiative/doc.go`) for the frozen format contract before touching this data anywhere.
+
+There is also a `dashboard/` (Node/TS, pnpm workspace: `shared`/`server`/`web`) initiative dashboard — see `dashboard/README.md` for its API surface and CLI-dependency contracts.
 
 **Two beads databases — never confuse them** (see `plugins/agent-teams/CLAUDE.md` for the cardinal rule): the PROJECT repo's `.beads` holds ALL work beads (plain `bd create`); the GLOBAL `~/.agent-teams` holds ONLY initiative-tracking beads + role memories, reached ONLY via `ateam`.
 
