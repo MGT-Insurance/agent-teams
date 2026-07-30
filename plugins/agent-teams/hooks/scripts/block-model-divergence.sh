@@ -7,8 +7,10 @@
 # role is resolved to its definition file (plugins/agent-teams/agents/<role>.md)
 # rather than a hardcoded role->model table, so a new role can't silently
 # escape the check. The agents dir is derived from this script's own
-# location (<plugin-root>/hooks/scripts/) rather than CLAUDE_PLUGIN_ROOT,
-# which is unverified to be exported into hook subprocesses.
+# location (<plugin-root>/hooks/scripts/) rather than $CLAUDE_PLUGIN_ROOT:
+# that resolution works both when hooks.json invokes the script (absolute
+# path, in the repo or the installed plugin cache — the layouts mirror) and
+# when a test invokes it directly, where CLAUDE_PLUGIN_ROOT is unset.
 #
 # Allow (silent pass-through): no model in tool_input; the definition has no
 # model: line, or model: inherit; the definition file is missing/unreadable;
@@ -59,8 +61,9 @@ model_trimmed=$(trim "$model")
 [ "$model_trimmed" = "$def_model" ] && exit 0
 
 # Diverges — emit a deny decision naming the role, what its definition sets,
-# and what the caller must do (verbatim shape from block-claude-memory-writes.sh).
-DENIAL_MSG="BLOCKED: role $role's definition (plugins/agent-teams/agents/$role.md) sets model: $def_model. Re-issue the identical Agent call with the model argument removed."
+# what the caller asked for, and what the caller must do (deny shape verbatim
+# from block-claude-memory-writes.sh).
+DENIAL_MSG="BLOCKED: role $role's definition (plugins/agent-teams/agents/$role.md) sets model: $def_model, and this call asked for $model_trimmed. Re-issue the identical Agent call with the model argument removed."
 
 printf '%s' "$payload" | jq -n \
   --arg msg "$DENIAL_MSG" \
