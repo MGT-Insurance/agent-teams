@@ -278,9 +278,6 @@ export default function DrillInView() {
             </span>
           )}
         </div>
-        {detail.goal && (
-          <p className="drillin-goal">{detail.goal}</p>
-        )}
       </section>
 
       {/* Notes / history — most recent first */}

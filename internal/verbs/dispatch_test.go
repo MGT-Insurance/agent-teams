@@ -759,6 +759,253 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 	}
 }
 
+// ---- dispatch: --body-file field-redefinition warning ----------------------
+//
+// dispatch warns to stderr when a --body-file line collides with a routing
+// field the header already wrote. The rule is initiative.Fields.CollisionsIn's
+// — the SAME rule initiative.Of reads by, not a second one that happens to
+// agree (agent-teams-ully.7). The redefining lines below are built by
+// concatenation rather than as a literal line in a raw string block, per the
+// bead's own hazard note: a source line literally starting with a routing key
+// would reproduce the bug this change guards against.
+
+// TestDispatch_BodyFileWarnsOnFieldRedefinition covers case 1: a body-file
+// line that redefines the "repo" field the header wrote produces a stderr
+// warning naming the 1-based line number and the field, and says the line is
+// IGNORED — under first-wins the header's value is the one that survives, so
+// the old "last-wins — this value replaces the header's" wording was false.
+func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	redefineLine := "rep" + "o: /bogus/other/repo"
+	bodyContent := "Some prose framing the task.\n" + redefineLine + "\nMore prose after.\n"
+
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn1"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := stderr.String()
+	if !strings.Contains(got, "line 2") {
+		t.Errorf("stderr missing 1-based line number 2:\n%s", got)
+	}
+	if !strings.Contains(got, `"repo"`) {
+		t.Errorf("stderr missing redefined field name %q:\n%s", "repo", got)
+	}
+	if !strings.Contains(got, redefineLine) {
+		t.Errorf("stderr missing offending line text:\n%s", got)
+	}
+	if !strings.Contains(got, "IGNORED") {
+		t.Errorf("stderr must say the body-file line is IGNORED under first-wins:\n%s", got)
+	}
+	if strings.Contains(got, "last-wins") {
+		t.Errorf("stderr still claims last-wins, which is false under the frozen rule:\n%s", got)
+	}
+}
+
+// TestDispatch_MultiLineProblemRejectedBeforeWorktree pins that a --problem
+// carrying a line break is refused as a USAGE error, and refused early enough
+// that no worktree is ever created. The second line of such a value would sit
+// in the routing header looking like a canonical field, which is the exact
+// shape of the bug this initiative closes. initiative.New would also reject
+// it, but only after step 6 has already built a worktree that would then have
+// to be unwound.
+func TestDispatch_MultiLineProblemRejectedBeforeWorktree(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	addCalled := false
+	fg := &fakeGit{
+		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
+		addWorktreeFn: func(_, _, _, _ string) error {
+			addCalled = true
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchKong{
+		Problem:  "Fix the thing\n" + "wor" + "ktree: /bogus/injected",
+		Slug:     "fix-the-thing",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected an error for a multi-line --problem")
+	}
+	if !strings.Contains(err.Error(), "single line") {
+		t.Errorf("error should tell the caller --problem must be a single line, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--body-file") {
+		t.Errorf("error should point the caller at --body-file, got: %v", err)
+	}
+	if addCalled {
+		t.Error("worktree must not be created before --problem is validated")
+	}
+}
+
+// TestDispatch_BodyFileNoWarningWithoutCollision covers case 2: a body file
+// with no field-shaped line produces no stderr output at all.
+func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	bodyContent := "Just some framing prose.\nNo colons here that matter.\nDone.\n"
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn2"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stderr.String() != "" {
+		t.Errorf("expected no stderr output, got:\n%s", stderr.String())
+	}
+}
+
+// TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine covers case 3, the one
+// that matters most: a briefing line beginning with a hyphen and a space
+// before the capitalised word parses to a DIFFERENT key ("- repo", not
+// "repo") and must NOT warn. This is the exact one-character reason sibling
+// initiative at-ig53 escaped the original bug; a warning firing here is a
+// false positive on the most common briefing style.
+func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	// Safe to write literally: this line does not begin with a routing-field
+	// word followed by a colon — it begins with "- ".
+	bodyContent := "- Repo: use the conventional commit style for this one\nOther prose.\n"
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn3"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stderr.String() != "" {
+		t.Errorf("hyphen-prefixed line must not warn (false positive), got:\n%s", stderr.String())
+	}
+}
+
+// TestDispatch_BodyFileNoWarningOnWrongCaseLine covers case 4, INVERTED by
+// agent-teams-ully.7. It previously asserted the warning folded case, because
+// the warning mirrored a lenient reader that also folded case. The frozen
+// matching rule (internal/initiative/doc.go, frozen item 1) does not fold
+// case: a wrong-case key is not a field line at all, so no reader will ever
+// take this value and warning about it is a false positive. The warning's rule
+// and the reader's rule are now one rule, so this shape must stay silent.
+func TestDispatch_BodyFileNoWarningOnWrongCaseLine(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	bodyContent := "BRAN" + "CH: totally-wrong-branch" + "\n"
+	bfPath := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(bfPath, []byte(bodyContent), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-warn4"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Slug:     "some-work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		BodyFile: bfPath,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if stderr.String() != "" {
+		t.Errorf("wrong-case line must not warn (false positive under the frozen rule), got:\n%s", stderr.String())
+	}
+}
+
 // ---- new-initiative: arg validation ----------------------------------------
 
 func TestNewInitiative_MissingDirectory(t *testing.T) {

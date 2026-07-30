@@ -12,46 +12,10 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// ---- worktreePath helper ---------------------------------------------------
-
-func TestWorktreePath_PresentFirstLine(t *testing.T) {
-	desc := "worktree: /some/path\nbranch: main\n"
-	got := worktreePath(desc)
-	if got != "/some/path" {
-		t.Errorf("got %q, want %q", got, "/some/path")
-	}
-}
-
-func TestWorktreePath_PresentMidDescription(t *testing.T) {
-	desc := "problem: do stuff\nrepo: /r\nworktree: /wt/path\nbranch: feat\n"
-	got := worktreePath(desc)
-	if got != "/wt/path" {
-		t.Errorf("got %q, want %q", got, "/wt/path")
-	}
-}
-
-func TestWorktreePath_Absent(t *testing.T) {
-	desc := "problem: do stuff\nbranch: feat\n"
-	got := worktreePath(desc)
-	if got != "" {
-		t.Errorf("got %q, want empty string", got)
-	}
-}
-
-func TestWorktreePath_EmptyDescription(t *testing.T) {
-	got := worktreePath("")
-	if got != "" {
-		t.Errorf("got %q, want empty string", got)
-	}
-}
-
-func TestWorktreePath_TrailingCR(t *testing.T) {
-	desc := "worktree: /wt/path\r\nbranch: x\n"
-	got := worktreePath(desc)
-	if got != "/wt/path" {
-		t.Errorf("got %q, want %q", got, "/wt/path")
-	}
-}
+// The worktreePath unit tests that lived here are gone with the helper —
+// worktree resolution is initiative.Of's, and internal/initiative owns its
+// tests. What is still verbs' own is that resume READS the field; that is
+// TestResume_NoWorktreeLine below.
 
 // ---- resumeKong: nil context -----------------------------------------------
 

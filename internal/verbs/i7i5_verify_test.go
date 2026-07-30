@@ -10,31 +10,10 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// ── extractEpicID ─────────────────────────────────────────────────────────────
-
-func TestExtractEpicID_Found(t *testing.T) {
-	body := "problem: foo\nrepo: /some/path\nepic: at-epic99\nmode: bg\n"
-	got := extractEpicID(body)
-	if got != "at-epic99" {
-		t.Errorf("extractEpicID = %q, want %q", got, "at-epic99")
-	}
-}
-
-func TestExtractEpicID_Missing(t *testing.T) {
-	body := "problem: foo\nrepo: /some/path\nmode: bg\n"
-	got := extractEpicID(body)
-	if got != "" {
-		t.Errorf("extractEpicID = %q, want empty", got)
-	}
-}
-
-func TestExtractEpicID_TrimsTrailingWhitespace(t *testing.T) {
-	body := "epic: at-epic1  \r\n"
-	got := extractEpicID(body)
-	if got != "at-epic1" {
-		t.Errorf("extractEpicID = %q, want %q", got, "at-epic1")
-	}
-}
+// The extractEpicID unit tests that lived here are gone with the helper.
+// dispatch no longer re-reads the epic id back out of the body it just
+// composed — it carries the id createEpic returned — and epic parsing itself
+// belongs to internal/initiative.
 
 // ── appendEpicToBody (new signature) ─────────────────────────────────────────
 

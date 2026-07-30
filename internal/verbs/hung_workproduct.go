@@ -27,30 +27,39 @@ import (
 
 // ── named thresholds (D2/D6) ──────────────────────────────────────────────────
 
+// The four thresholds below are vars, not consts, and are set by
+// loadHungConfig (hung_config.go) at process start — see that file for the
+// env/file/default resolution and the operator-facing key names.
+
 // hungWorkProductFlatThreshold is how long an initiative's unioned worktrees
 // must show zero work-product change before the work-product path is
-// eligible to trip (D2). Same order of magnitude as hungStuckThreshold, per
-// signal-survey.md §4's 15-30 minute range recommendation; 30 minutes is
-// Eric-approved at plan approval (D6).
-const hungWorkProductFlatThreshold = 30 * time.Minute
+// eligible to trip (D2).
+var hungWorkProductFlatThreshold = defaultHungWorkProductFlatThreshold
 
 // hungWorkProductAlertThreshold is the flatline duration past which a direct,
 // LLM-free Telegram alert fires regardless of steward-wake attempt count
-// (D6). Eric set this explicitly at plan approval (the draft proposed 2h).
-const hungWorkProductAlertThreshold = 1 * time.Hour
+// (D6).
+var hungWorkProductAlertThreshold = defaultHungWorkProductAlertThreshold
 
 // hungDeadWorktreeThreshold is how long a DEAD-with-worktree-present
 // initiative must stay DEAD before it joins the escalation ladder (D4).
-// Reuses the existing STUCK threshold value/pacing per the bead's "existing
-// wake pacing" instruction — a distinct named constant so the two thresholds
-// can diverge independently later without a shared-meaning trap.
-const hungDeadWorktreeThreshold = hungStuckThreshold
+//
+// It defaults to the same value as hungStuckThreshold but is NOT written as
+// an alias of it. As a const, `= hungStuckThreshold` was a live reference;
+// as a var it would be a copy taken at package-init time — i.e. before
+// loadHungConfig runs — so it would silently keep the compiled default while
+// a configured stuck threshold moved out from under it. Its own key and its
+// own literal default (hung_config.go) is the fix, and it also lets an
+// operator move the two apart on purpose.
+var hungDeadWorktreeThreshold = defaultHungDeadWorktreeThreshold
 
 // hungTranscriptCorroboratorWindow is how far back the transcript-tail
 // corroborator looks for real assistant/user work turns (D2) and failure
-// tokens (D7). Matches hungWorkProductFlatThreshold so "no recent real work"
-// and "flat 30 min" are evaluated over the same window.
-const hungTranscriptCorroboratorWindow = 30 * time.Minute
+// tokens (D7). It defaults to the same value as
+// hungWorkProductFlatThreshold, so that by default "no recent real work" and
+// "flat for the threshold" are evaluated over the same window — but it is
+// its own key and may be tuned apart from it.
+var hungTranscriptCorroboratorWindow = defaultHungTranscriptCorroboratorWindow
 
 // hungFailureTokens are the substrings D7's corroborator greps the
 // transcript tail for. Evidence-only (n=1 per signal-survey.md): they
@@ -187,8 +196,8 @@ const gitProbeTimeout = 5 * time.Second
 // gitIndexPathCache memoizes the resolved absolute index-file path per
 // worktree (review fix, agent-teams-sgr5.6): `git rev-parse --git-path
 // index` only changes if the worktree is reconfigured (rare), so re-running
-// it every hungTickInterval (5 min) for the lifetime of an initiative is
-// wasted subprocess cost. Guarded by gitIndexPathCacheMu since the relay's
+// it every hungTickInterval for the lifetime of an initiative is wasted
+// subprocess cost. Guarded by gitIndexPathCacheMu since the relay's
 // tick goroutine and any concurrent `ateam hung-scan` CLI invocation could
 // in principle call the probe from more than one goroutine in the same
 // process.

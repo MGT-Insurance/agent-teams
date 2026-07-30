@@ -205,9 +205,31 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 		}
 	}
 
-	transport.Logf(ctx.Stderr, 0, "starting on transport %q", t.Name())
+	// Read once, here, before the tick goroutine starts — the resolved
+	// values are process-lifetime, so an operator editing hung-config.json
+	// must restart the relay. The summary line is the only way to confirm
+	// from outside that this process picked their edit up.
+	loadHungConfig(ctx.Stderr, home)
 
-	go runHungTick(ctx, t)
+	transport.Logf(ctx.Stderr, 0, "starting on transport %q", t.Name())
+	transport.Logf(ctx.Stderr, 0, "hung config: %s", hungConfigSummary())
+
+	// Join the tick goroutine before Run returns rather than merely
+	// signalling it: close(stop) alone doesn't wait, so a goroutine that
+	// has only just started (e.g. under test, where Receive returns almost
+	// immediately) can still be inside time.NewTicker(hungTickInterval)
+	// when the next Run() call's loadHungConfig writes that var — a data
+	// race under -race. In production Receive blocks forever, so this
+	// defer never runs until process exit and costs nothing.
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		runHungTickUntil(ctx, t, stop)
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
 
 	return t.Receive(func(reply transport.Reply) error {
 		return c.handleReply(ctx, reply)
