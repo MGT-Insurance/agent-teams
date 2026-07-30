@@ -466,11 +466,35 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	return nil
 }
 
+// hungTickFunc is the body runHungTick invokes once per tick — a
+// package-level seam (mirroring hung_workproduct.go's seams) swappable by
+// tests via reassignment + defer restore.
+//
+// It exists because the ticker is otherwise unobservable: time.NewTicker's
+// argument cannot be read back, so asserting hungTickInterval holds a value
+// proves only that a variable holds a value, not that the ticker was handed
+// it. With this seam a test can configure a small interval through the real
+// resolution path and count the ticks that actually arrive.
+var hungTickFunc = doHungTick
+
 // runHungTick is started as a goroutine from relayKong.Run (relay.go) and
-// never returns: it ticks every hungTickInterval and runs doHungTick,
+// never returns: it ticks every hungTickInterval and runs the tick body,
 // logging (never panicking) on failure so a transient scan/send error can't
 // take down the relay's Receive loop running alongside it.
 func runHungTick(ctx *cli.Context, t transport.Transport) {
+	runHungTickUntil(ctx, t, nil)
+}
+
+// runHungTickUntil is runHungTick's body, parameterised by a stop channel so
+// a test can join the goroutine instead of leaking it. A leaked ticker
+// goroutine is not harmless here: it resolves hungTickFunc at call time, so
+// once a test restored the seam it would resume driving the REAL doHungTick
+// — shelling out to bd and git — every few milliseconds for the remainder of
+// the test binary.
+//
+// Production passes nil, which selects on the ticker alone and never
+// returns; runHungTick's contract is unchanged.
+func runHungTickUntil(ctx *cli.Context, t transport.Transport, stop <-chan struct{}) {
 	deps := hungTickDeps{
 		agentsFunc: defaultAgentsJSONAll,
 		now:        time.Now,
@@ -480,9 +504,14 @@ func runHungTick(ctx *cli.Context, t transport.Transport) {
 	}
 	ticker := time.NewTicker(hungTickInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		if err := doHungTick(ctx, deps); err != nil {
-			transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: %v", err)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := hungTickFunc(ctx, deps); err != nil {
+				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: %v", err)
+			}
 		}
 	}
 }
