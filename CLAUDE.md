@@ -57,12 +57,15 @@ bd close <id>         # Complete work
 go build ./...                     # compile everything
 go vet ./...                       # static checks
 go test ./...                      # Go unit tests
+go test -race ./...                # Go unit tests, race-detected
 gofmt -l <files>                   # must be empty (formatting gate)
 sh scripts/build-binaries.sh       # rebuild the 4 committed ateam binaries (see Release protocol)
 
 # Shell-level hook/CLI tests live in tests/ — run individually:
 bash tests/<name>.test.sh
 ```
+
+`internal/verbs` runs a goroutine (the relay's tick loop) alongside shared mutable package state (the hung-config tunables) — run `go test -race` on any change there, since a plain `go test` pass does not rule out a data race.
 
 Note: `tests/ateam.test.sh` case10 (bd dolt sync against an empty remote) is a known pre-existing failure unrelated to most changes — confirm it also fails at your merge-base before treating it as a regression.
 
