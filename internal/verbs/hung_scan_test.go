@@ -533,11 +533,13 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 		t.Errorf("stuck_elapsed_seconds = %d, want 300", out[0].StuckElapsedSeconds)
 	}
 	if out[0].Hung {
-		t.Error("should not be hung yet at 5 minutes (threshold is 15m)")
+		t.Errorf("should not be hung yet at 5 minutes (threshold is %s)", hungStuckThreshold)
 	}
 
-	// Third scan, 20 minutes past t0 (past the 15m threshold): HUNG, anchor still unchanged.
-	t2 := t0.Add(20 * time.Minute)
+	// Third scan, past the stuck threshold: HUNG, anchor still unchanged.
+	// Expressed against the threshold var rather than a literal so retuning
+	// the default (hung_config.go) can't silently invert this assertion.
+	t2 := t0.Add(hungStuckThreshold + 5*time.Minute)
 	out, err = scanHung(ctx, agentsFunc, fixedNow(t2), true)
 	if err != nil {
 		t.Fatalf("scanHung returned error: %v", err)
