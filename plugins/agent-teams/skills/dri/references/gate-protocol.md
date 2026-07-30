@@ -32,35 +32,20 @@ The DRI sets NO phase field and maintains no status field. The run/park state of
 
 ## Structured ask form (primary)
 
-For question gates, default to the structured form. It surfaces the genuinely load-bearing decision as the ask — decision + recommendation + the single key alternative — rather than burying the real fork in prose.
+Default to the structured form for question gates — it surfaces the load-bearing decision (decision + recommendation + the one key alternative) instead of burying the fork in prose:
 
 ```bash
-ateam gate <id> --decision "<one line ≤120 chars>" \
-               --recommendation "<short>" \
-               --alternative "<the one key alternative>" \
-               [--context-file <file>] \
-               [--kind=question]
+ateam gate <id> --decision "<one line ≤120 chars>" --recommendation "<short>" \
+               --alternative "<the one key alternative>" [--context-file <file>] [--kind=question]
 ```
 
-Field constraints:
+`--decision` required, ≤120 chars, one line, the actual decision needed. `--recommendation`/`--alternative` one short line each. `--context-file` optional prose, ≤280 chars.
 
-- `--decision` — the actual decision needed. ≤120 chars. Required. One line.
-- `--recommendation` — the DRI's recommended answer. One short line.
-- `--alternative` — the single key alternative to the recommendation. One short line.
-- `--context-file` — optional prose context, ≤280 chars in the file.
-
-The `--file` prose form remains supported as a fallback — use it when the ask genuinely does not fit the structured schema (e.g. a plan-approval gate with a long decomposition attached). When no structured block is present, `/initiatives` and `ateam human-list` render the raw notes.
-
-Guidance: name the fork. The structured form works because it forces you to state _what decision_ the human is actually making, not just what you need to explain. If you can't fill in `--decision` with one concrete line, the question is not crisp yet — refine it before gating.
+`--file` prose is a fallback for asks that don't fit the schema (e.g. a plan-approval gate with a long decomposition) — `/initiatives`/`ateam human-list` render raw notes when no structured block is present. Guidance: name the fork — if `--decision` won't fit one concrete line, the question isn't crisp yet; refine before gating.
 
 ## The plan-approval gate
 
-A plan-approval gate carries a plan-document URL. So does a design-pivot gate (below), when the planner has republished the page for the pivot. Standby gates, merge/review gates, and routine question gates never carry one — this is the one gate flavor with a document behind it.
-
-- **Authorship.** The planner authors the plan page and publishes it with the Artifact tool — it holds the content and has the tool. The DRI does not write the page; it only links it at the gate.
-- **URL-carry rule.** The artifact URL goes as the FIRST line of `--context-file`. Budget for it: `--context-file` caps at 280 chars; a claude.ai artifact URL runs ~68 chars, leaving ~210 chars of prose — plan for that budget up front rather than discovering the cap by rejection.
-- **The ask must stand alone.** `--decision` / `--recommendation` / `--alternative` stay authoritative regardless of the link — Eric must be able to decide from the ask text alone. The plan-doc URL is enrichment, never a dependency; this is also the graceful-degradation guarantee if claude.ai doesn't open cleanly on his phone.
-- **Interaction with the design-pivot gate's `--file` fallback.** When mechanism evidence pushes a design-pivot gate past the structured form into the `--file` prose fallback described below, the plan-doc URL still goes near the top of the note file, on its own line, ahead of the labeled Mechanism evidence / Recommendation / Literal-reading alternative lines.
+A plan-approval gate carries a plan-document URL, as does a design-pivot gate (below) when the planner republishes the page for a pivot — the one gate flavor with a document behind it. The planner authors and publishes the page (Artifact tool); the DRI never writes it, only links it. The URL goes as the FIRST line of `--context-file` (280-char cap; a claude.ai URL runs ~68 chars, leaving ~210 for prose — budget for it up front). `--decision`/`--recommendation`/`--alternative` stay authoritative regardless of the link — Eric must be able to decide from the ask text alone; the URL is enrichment, never a dependency (graceful degradation if claude.ai doesn't open on his phone). When a design-pivot gate falls to the `--file` fallback, the plan-doc URL still goes on its own line near the top, ahead of the Mechanism evidence / Recommendation / Literal-reading alternative lines.
 
 ## The design-pivot gate
 
@@ -80,26 +65,18 @@ Provenance: at-9qfb (2026-07-22) — a planner's mechanism-driven pivot was self
 
 ## Raising a gate
 
-1. **Record the question/note AND flag needs-human** in one call:
+1. **Record the question/note AND flag needs-human**, in one call (notes the message and adds the `human` + `gate:<kind>` labels atomically):
 
-   Structured form (preferred for question gates):
    ```
-   ateam gate <initiative-id> --decision "..." --recommendation "..." --alternative "..."
-   ```
-
-   Prose form (review gates and fallback):
-   ```
-   ateam gate <initiative-id> --file /tmp/gate-note.txt              # question gate (default)
-   ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review # review gate — PR ready
+   ateam gate <initiative-id> --decision "..." --recommendation "..." --alternative "..."   # structured, preferred
+   ateam gate <initiative-id> --file /tmp/gate-note.txt                                     # prose, question gate (default)
+   ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review                        # prose, review gate — PR ready
    ```
 
-   (This notes the message and adds the `human` + `gate:<kind>` labels atomically.)
-   (Note: `bd human respond` and `bd human dismiss` are broken in bd 1.0.4 — the label-based approach is the verified path. `bd human list` / `ateam human-list` still works to enumerate flagged issues; see the framework repo's docs/verifications.md.)
+   `bd human respond` and `bd human dismiss` do not work — they fail with "storage is nil" (confirmed on 1.0.4 and 1.1.0). Use the label-remove path below; it is the verified one. Re-test before assuming a newer bd has fixed it. `bd human list` / `ateam human-list` still works to enumerate flagged issues; see the framework repo's docs/verifications.md.
 
-2. **Ask and park.** Interactive: ask directly (AskUserQuestion or plain text) and continue when answered. Backgrounded (`--bg`): end the turn with the question as plain text — the session parks; the human sees it on attach, or via /initiatives.
-3. **While parked:** keep every workstream that does not depend on the answer moving. Parking the question never parks the team.
-4. **On answer/merge:** clear the flag — write the response to a temp file if multi-line, then:
-   `ateam clear-gate <initiative-id> --file /tmp/gate-response.txt`
-   (Or without `--file` to just remove the labels when no comment is needed.) `clear-gate` removes the `human` label AND any `gate:*` label regardless of kind. Note the resolution on the initiative, then proceed. (`bd human respond/dismiss` are broken in bd 1.0.4 — the label-remove workaround is the verified path; see the framework repo's docs/verifications.md.)
+2. **Ask and park.** Interactive: ask directly (AskUserQuestion or plain text), continue when answered. Backgrounded (`--bg`): end the turn with the question as plain text — session parks, human sees it on attach or via /initiatives.
+3. **While parked:** keep every workstream that doesn't depend on the answer moving — parking the question never parks the team.
+4. **On answer/merge:** clear the flag — `ateam clear-gate <initiative-id> --file /tmp/gate-response.txt` (or without `--file` when no comment is needed). Removes the `human` label AND any `gate:*` label regardless of kind. Note the resolution, then proceed. (`bd human respond/dismiss` still broken — see step 1; label-remove is the verified path.)
 
 Why this must never vary: the flag is the only machine-wide signal that an initiative is waiting on a human. A gate raised any other way is invisible.
