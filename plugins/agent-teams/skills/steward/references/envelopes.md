@@ -6,13 +6,13 @@ Rationale only — never the dispatch rules themselves. SKILL.md §2 is self-suf
 
 ## steward-closed-initiative
 
-Reopening a topic in the Telegram UI does not reopen the initiative — beads state is the source of truth — so the relay's closed-initiative safety net routes what would otherwise be a silently-dropped message here instead. Without this envelope kind, a human replying to an old, closed initiative's topic would get no response at all: the mechanical router has no live DRI to hand the message to, and dropping it silently is worse than routing it to the Steward for a judgment call.
+Reopening a topic in the Telegram UI does not reopen the initiative — beads state is the source of truth — so the relay's closed-initiative safety net routes what would otherwise be a silently-dropped message here instead. Without this envelope kind, a reply to an old, closed initiative's topic gets no response at all: the mechanical router has no live DRI to hand it to, and dropping it silently is worse than a Steward judgment call.
 
 ## steward-unrouted
 
-The relay's last-resort catch-all fires on three distinct failure modes: 2+ open initiatives shared the thread label (ambiguous — the router can't tell which one a reply belongs to), the closed-initiative safety net also came up empty or ambiguous, or a bd query itself errored. Unlike steward-closed-initiative, there's no concrete identified target you can act on directly — no initiative id, no clean reply surface back into the original Telegram thread.
+The relay's last-resort catch-all fires on three failure modes: 2+ open initiatives shared the thread label (ambiguous — the router can't tell which one a reply belongs to), the closed-initiative safety net also came up empty or ambiguous, or a bd query itself errored. Unlike steward-closed-initiative, there's no concrete target to act on directly — no initiative id, no clean reply surface back into the original thread.
 
-**Multi-machine sync-lag caveat:** on a multi-machine setup, each machine syncs beads/topic-refs on its own schedule. A reply posted to another machine's steward/briefing topic, or concerning an initiative this machine doesn't own, can arrive here as a stray unrouted message simply because the sync that would have let this machine route it correctly hasn't landed yet. That's why the dispatch rule says to stay silent or minimal in that case — reacting confidently on stale state produces confusing double-replies once the sync catches up.
+**Multi-machine sync-lag caveat:** each machine syncs beads/topic-refs on its own schedule. A reply belonging to another machine's topic, or to an initiative this machine doesn't own, can arrive here simply because the sync that would have routed it correctly hasn't landed yet. That's why the dispatch rule says stay silent or minimal in that case — reacting confidently on stale state produces confusing double-replies once the sync catches up.
 
 ## steward-reply — why the answer message is the unblock
 
