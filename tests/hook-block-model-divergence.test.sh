@@ -19,13 +19,27 @@ make_payload() {
 
 run() { printf '%s' "$1" | "$SCRIPT"; }
 
-# Helper: assert deny — output must contain "deny", a def_pattern substring
-# (grep basic-regex) naming the role + the definition's model, and an
-# asked_literal substring (fixed string — model values like opus[1m] contain
-# BRE metacharacters) naming what the caller actually passed.
+# Capture both stdout and exit status from `run` without tripping this
+# script's own `set -e` (the `&&`/`||` form is the exempt context). Every
+# assertion below checks status explicitly — a hook exiting non-zero and
+# non-2 is a non-blocking error to the harness, so a stray 141 must fail the
+# test even when the JSON on stdout looks correct (see jnh5.5: printf | jq -n
+# deadlocked the pipe on payloads over the 64 KiB pipe buffer and died of
+# SIGPIPE under pipefail, discarding an otherwise-correct deny).
+call() {
+  local payload="$1"
+  out=$(run "$payload") && status=0 || status=$?
+}
+
+# Helper: assert deny — exit 0, output contains "deny", a def_pattern
+# substring (grep basic-regex) naming the role + the definition's model, and
+# an asked_literal substring (fixed string — model values like opus[1m]
+# contain BRE metacharacters) naming what the caller actually passed.
 assert_deny() {
   local label="$1" payload="$2" def_pattern="$3" asked_literal="$4"
-  out=$(run "$payload")
+  call "$payload"
+  [ "$status" -eq 0 ] \
+    || { echo "FAIL $label: expected exit 0, got $status (output: $out)"; exit 1; }
   echo "$out" | grep -q '"deny"' \
     || { echo "FAIL $label: expected deny, got: $out"; exit 1; }
   echo "$out" | grep -q "$def_pattern" \
@@ -34,10 +48,12 @@ assert_deny() {
     || { echo "FAIL $label: denial message missing '$asked_literal', got: $out"; exit 1; }
 }
 
-# Helper: assert allow — output must be empty (silent pass-through).
+# Helper: assert allow — exit 0, output must be empty (silent pass-through).
 assert_allow() {
   local label="$1" payload="$2"
-  out=$(run "$payload")
+  call "$payload"
+  [ "$status" -eq 0 ] \
+    || { echo "FAIL $label: expected exit 0, got $status (output: $out)"; exit 1; }
   [ -z "$out" ] \
     || { echo "FAIL $label: expected silent allow, got: $out"; exit 1; }
 }
@@ -66,12 +82,10 @@ assert_allow "case4-unknown-role" \
   "$(make_payload "agent-teams:nosuchrole" '"opus"')"
 
 # Case 5: malformed JSON -> silent no-op, allow.
-out=$(printf 'not json' | "$SCRIPT")
-[ -z "$out" ] || { echo "FAIL case5-malformed-json: expected silent allow, got: $out"; exit 1; }
+assert_allow "case5-malformed-json" "not json"
 
 # Case 6: tool_input missing entirely -> allow.
-out=$(printf '{"tool_name":"Agent"}' | "$SCRIPT")
-[ -z "$out" ] || { echo "FAIL case6-missing-tool-input: expected silent allow, got: $out"; exit 1; }
+assert_allow "case6-missing-tool-input" '{"tool_name":"Agent"}'
 
 # Case 7: non-Agent tool -> out of scope, allow (even with a divergent model shape).
 assert_allow "case7-non-agent-tool" \
@@ -96,6 +110,22 @@ assert_deny "case10-reviewer-opus-1m" \
   "$(make_payload "agent-teams:reviewer" '"opus[1m]"')" \
   "reviewer.*model: sonnet" \
   "asked for opus[1m]"
+
+# Case 13: payload over the 64 KiB pipe buffer -> deny AND exit 0. Regression
+# test for jnh5.5: `printf '%s' "$payload" | jq -n ...` never had jq read
+# stdin (-n ignores it), so the pipe was dead weight — worse than dead once
+# the payload exceeded the pipe buffer, because printf then blocked on write
+# past jq's exit, took SIGPIPE (141), and pipefail turned that into the
+# script's own exit status, discarding an otherwise-correct deny. The spawn
+# prompt is the natural way a real payload gets this large.
+big_prompt=$(head -c 70000 /dev/zero | tr '\0' 'x')
+big_payload=$(printf '{"tool_name":"Agent","tool_input":{"subagent_type":"agent-teams:implementer","model":"opus","prompt":"%s"}}' "$big_prompt")
+payload_bytes=$(printf '%s' "$big_payload" | wc -c | tr -d ' ')
+[ "$payload_bytes" -gt 65536 ] \
+  || { echo "FAIL case13-large-payload-deny: fixture payload only $payload_bytes bytes, not over the 64 KiB pipe buffer"; exit 1; }
+assert_deny "case13-large-payload-deny" "$big_payload" \
+  "implementer.*model: sonnet" \
+  "asked for opus"
 
 # ---- Synthetic fixture: model: inherit and "no model: line" branches ------
 # No real agent definition has either shape, so these two allow branches are

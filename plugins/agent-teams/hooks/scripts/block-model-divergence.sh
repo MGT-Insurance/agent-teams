@@ -65,7 +65,7 @@ model_trimmed=$(trim "$model")
 # from block-claude-memory-writes.sh).
 DENIAL_MSG="BLOCKED: role $role's definition (plugins/agent-teams/agents/$role.md) sets model: $def_model, and this call asked for $model_trimmed. Re-issue the identical Agent call with the model argument removed."
 
-printf '%s' "$payload" | jq -n \
+jq -n \
   --arg msg "$DENIAL_MSG" \
   '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$msg}}'
 
