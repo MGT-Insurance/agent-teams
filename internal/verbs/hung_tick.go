@@ -477,23 +477,20 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 // resolution path and count the ticks that actually arrive.
 var hungTickFunc = doHungTick
 
-// runHungTick is started as a goroutine from relayKong.Run (relay.go) and
-// never returns: it ticks every hungTickInterval and runs the tick body,
-// logging (never panicking) on failure so a transient scan/send error can't
-// take down the relay's Receive loop running alongside it.
-func runHungTick(ctx *cli.Context, t transport.Transport) {
-	runHungTickUntil(ctx, t, nil)
-}
-
-// runHungTickUntil is runHungTick's body, parameterised by a stop channel so
-// a test can join the goroutine instead of leaking it. A leaked ticker
-// goroutine is not harmless here: it resolves hungTickFunc at call time, so
-// once a test restored the seam it would resume driving the REAL doHungTick
-// — shelling out to bd and git — every few milliseconds for the remainder of
-// the test binary.
+// runHungTickUntil is started as a goroutine from relayKong.Run (relay.go):
+// it ticks every hungTickInterval and runs the tick body, logging (never
+// panicking) on failure so a transient scan/send error can't take down the
+// relay's Receive loop running alongside it. The stop channel lets the
+// caller join the goroutine instead of leaking it — relayKong.Run closes
+// stop and waits on a done channel before returning, and tests get the same
+// join for free. A leaked ticker goroutine is not harmless here: it
+// resolves hungTickFunc at call time, so once a test restored the seam it
+// would resume driving the REAL doHungTick — shelling out to bd and git —
+// every few milliseconds for the remainder of the test binary.
 //
-// Production passes nil, which selects on the ticker alone and never
-// returns; runHungTick's contract is unchanged.
+// Production's stop channel is closed only at process shutdown (Receive
+// blocks forever until then), so the select below effectively never takes
+// that branch in practice.
 func runHungTickUntil(ctx *cli.Context, t transport.Transport, stop <-chan struct{}) {
 	deps := hungTickDeps{
 		agentsFunc: defaultAgentsJSONAll,
