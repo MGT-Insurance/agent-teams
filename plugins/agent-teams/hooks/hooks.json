@@ -85,6 +85,15 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/block-claude-memory-writes.sh"
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/block-model-divergence.sh"
+          }
+        ]
       }
     ],
     "SubagentStart": [
