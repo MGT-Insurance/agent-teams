@@ -1,23 +1,11 @@
 # Consulting your advisor — when to escalate
 
-Read this only when the advisor is enabled (`user_config.use_advisors == true`). When enabled, this session runs on sonnet with an advisor attached via `--advisor` — a more capable second model available for consultation on hard calls. The advisor's model comes from the per-machine `dri_model` plugin-config option (default `opus`) — check `/config` if you need to know which model is actually attached. The advisor informs; it does not decide and does not own any part of the initiative. You remain the DRI — every decision, and its consequences, are still yours.
+Read this only when the advisor is enabled (`user_config.use_advisors == true`). When enabled, this session runs on sonnet with an advisor attached via `--advisor` — a more capable second model for consultation on hard calls (model from the per-machine `dri_model` config, default `opus`; check `/config` to confirm which). The advisor informs; it does not decide and does not own any part of the initiative — every decision, and its consequences, are still yours.
 
-**Consult the advisor for:**
-- **Architectural decisions** — a structural choice later work will build on and would be costly to reverse.
-- **Cross-system changes** — a change spans multiple services/repos/tracks and their interaction isn't obvious.
-- **Ambiguous requirements** — the problem statement or contract underspecifies the "what" and your best reading is genuinely a guess.
-- **Unfamiliar domains** — the initiative touches ground (crypto, auth, consensus, etc.) you don't have deep priors on.
-- **Risky refactors** — a change to widely-depended-on code where a mistake is expensive to detect and to fix.
-- **Design tradeoffs with multiple viable approaches** — you can defend two or more designs and the choice materially affects the outcome.
-- **Performance-critical paths** — a change on a hot path where a wrong call degrades the product, not just the code.
-- **Security-sensitive changes** — anything touching auth, secrets, permissions, or trust boundaries.
+**Consult for:** architectural decisions (costly to reverse); cross-system changes with non-obvious interaction; ambiguous requirements where your best reading is a genuine guess; unfamiliar domains (crypto, auth, consensus...); risky refactors on widely-depended-on code; design tradeoffs where two-plus approaches are defensible and the choice matters; performance-critical paths; security-sensitive changes (auth, secrets, permissions, trust boundaries).
 
-**Do NOT consult for:**
-- Trivial or mechanical edits — renames, formatting, boilerplate glue.
-- Well-specified single-file changes where the contract or plan already dictates the approach.
-- Decisions the contract, the plan, or a frozen design already settled.
-- Anything you can resolve yourself by reading the code or spawning an investigator — investigate before escalating, same discipline as with the human.
+**Do NOT consult for:** trivial/mechanical edits; well-specified single-file changes the contract/plan already dictates; decisions already settled by the contract, plan, or a frozen design; anything resolvable yourself by reading code or spawning an investigator — investigate before escalating, same discipline as with the human.
 
-The advisor exists for genuine judgment forks, not a rubber stamp on routine work. Over-consulting wastes the advisor's value and your context budget; under-consulting risks a wrong call on something that mattered. When in doubt, ask: would a wrong guess here be expensive and hard to detect? If not, decide it yourself.
+Genuine judgment forks only, not a rubber stamp — over-consulting wastes the advisor's value and your context budget; under-consulting risks a wrong call on something that mattered. When in doubt: would a wrong guess here be expensive and hard to detect? If not, decide it yourself.
 
-Mid-session: `/advisor` sends it a specific question and returns its answer inline. Use it for a pointed ask on one decision, not as a running collaborator.
+Mid-session: `/advisor` sends it a specific question and returns its answer inline — a pointed ask on one decision, not a running collaborator.
