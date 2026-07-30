@@ -38,7 +38,7 @@ model=$(printf '%s' "$payload" | jq -r '.tool_input.model // empty' 2>/dev/null 
 
 role="${subagent_type#agent-teams:}"
 
-script_dir="$(cd "$(dirname "$0")" && pwd)"
+script_dir="$(cd "$(dirname "$0")" && pwd)" || exit 0
 agents_dir=$(cd "$script_dir/../../agents" 2>/dev/null && pwd) || exit 0
 def_file="$agents_dir/$role.md"
 [ -r "$def_file" ] || exit 0
