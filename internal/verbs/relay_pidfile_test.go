@@ -125,6 +125,64 @@ func TestAcquireRelayLock_StalePidfile_TakenOverWithoutManualCleanup(t *testing.
 	}
 }
 
+// TestRelayLock_Release_DoesNotUnlinkAnAcquirerThatWonDuringRelease pins the
+// unlink-before-close ordering in Release (agent-teams-25c5.1 delta): a real
+// goroutine racing real OS scheduling can't be forced to land inside a
+// microsecond window reliably, so this uses releaseAfterUnlinkHook — fired
+// by Release exactly between its unlink and its close — as a deterministic
+// stand-in for "another acquireRelayLock call happens in that window."
+//
+// From the hook, a second acquire is attempted at exactly that instant. With
+// the pidfile already unlinked (the fixed order), that acquire opens a
+// brand-new inode and wins cleanly; the outer Release's subsequent Close
+// only drops the first lock's now-orphaned fd, which cannot affect the new
+// inode. The assertion is on the FINAL on-disk state once Release fully
+// returns: the second acquirer's pidfile must still be there.
+//
+// Mutation-tested: reverting Release to close-then-unlink makes this test
+// fail, because the hook then fires with the first lock's flock already
+// dropped but its pidfile still linked, so the second acquire opens and
+// re-locks that SAME inode in place — and Release's next line (now
+// os.Remove, unchanged path) deletes the directory entry the second
+// acquirer just became the legitimate holder of.
+func TestRelayLock_Release_DoesNotUnlinkAnAcquirerThatWonDuringRelease(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	lockA, _, err := acquireRelayLock(ctx)
+	if err != nil {
+		t.Fatalf("first acquire: unexpected error: %v", err)
+	}
+
+	var lockB *relayLock
+	var pidB int
+	var errB error
+	t.Cleanup(func() { releaseAfterUnlinkHook = nil })
+	releaseAfterUnlinkHook = func() {
+		lockB, pidB, errB = acquireRelayLock(ctx)
+	}
+
+	lockA.Release()
+	if lockB != nil {
+		defer lockB.Release()
+	}
+
+	if errB != nil {
+		t.Fatalf("acquire during the unlink/close window: unexpected error: %v", errB)
+	}
+	if pidB != os.Getpid() {
+		t.Errorf("acquire during the unlink/close window: pid = %d, want %d", pidB, os.Getpid())
+	}
+
+	got, err := os.ReadFile(relayPidfilePath(ctx))
+	if err != nil {
+		t.Fatalf("expected the winning acquirer's pidfile to survive lockA.Release(), stat/read err: %v", err)
+	}
+	if pidfileEntryPid(strings.TrimSpace(string(got))) != strconv.Itoa(os.Getpid()) {
+		t.Errorf("pidfile content after Release = %q, want the second acquirer's pid %d", got, os.Getpid())
+	}
+}
+
 func TestRelayLock_Release_NilReceiver_NoPanic(t *testing.T) {
 	var lock *relayLock
 	lock.Release() // must not panic

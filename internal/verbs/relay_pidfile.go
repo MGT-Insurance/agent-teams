@@ -97,16 +97,39 @@ func acquireRelayLock(ctx *cli.Context) (*relayLock, int, error) {
 	return &relayLock{file: f, path: path}, pid, nil
 }
 
-// Release drops the flock (by closing the underlying fd, which the kernel
-// releases the lock on) and removes the pidfile. Safe to call on a nil
-// receiver and idempotent — a losing acquireRelayLock returns a nil
-// *relayLock, and a second Release on an already-released lock is a no-op,
-// so neither ever touches a pidfile this process doesn't own.
+// releaseAfterUnlinkHook, when non-nil, is invoked by Release immediately
+// after the pidfile has been unlinked but before the flock-holding fd is
+// closed. Test-only synchronization point for pinning the unlink-before-
+// close ordering below deterministically — the window it guards is a few
+// syscalls wide and not reliably reproducible by racing real goroutines
+// against real OS scheduling. Always nil outside relay_pidfile_test.go.
+var releaseAfterUnlinkHook func()
+
+// Release drops this lock's claim on the pidfile: unlinks the path FIRST,
+// while the flock is still held, and only THEN closes the fd (which drops
+// the flock). This order is load-bearing, not incidental. Closing before
+// unlinking opens a window where another process's acquireRelayLock can
+// open the still-linked pidfile, win the now-free flock on that SAME
+// inode, and become the legitimate new holder — and then this Release's
+// later os.Remove unlinks the entry out from under it, leaving that live
+// holder with no pidfile on disk at all (invisible to ensureRelayRunning,
+// which spawns a duplicate relay, and to teardownRelay, which then can't
+// find it to stop). Unlinking first closes that window: any acquirer that
+// opens the path after this point necessarily gets a brand-new inode
+// (O_CREATE against a missing path), entirely independent of the one this
+// Close() drops — so this process's cleanup can never invalidate a claim
+// it doesn't hold. Safe to call on a nil receiver and idempotent — a
+// losing acquireRelayLock returns a nil *relayLock, and a second Release
+// on an already-released lock is a no-op, so neither ever touches a
+// pidfile this process doesn't own.
 func (l *relayLock) Release() {
 	if l == nil || l.file == nil {
 		return
 	}
-	_ = l.file.Close()
 	_ = os.Remove(l.path)
+	if releaseAfterUnlinkHook != nil {
+		releaseAfterUnlinkHook()
+	}
+	_ = l.file.Close()
 	l.file = nil
 }
