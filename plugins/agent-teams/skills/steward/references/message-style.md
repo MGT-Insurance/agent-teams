@@ -159,6 +159,10 @@ carry that — it's recoverable by asking, which is the point of rule 2.
 
 ## Calibrated
 
+*The bare PR numbers in the specimens below predate the rule requiring a name and a
+full URL for every PR. They are Eric's own approved text, left verbatim — not evidence
+that a bare number is acceptable.*
+
 ### gate-escalation
 
 The rule this specimen illustrates:
@@ -188,8 +192,6 @@ anything. The decision he was being asked to make is not in the opening at all.
 > The cheaper version sends them only after a compaction. It's filed and the hook it needs already ships in this PR.
 >
 > My rec: cheaper first, then merge.
-
-*Note: the full-URL-per-PR requirement postdates this round-1 ruling, so the bare `PR #123` above is not evidence it's acceptable — it is Eric's approved text, left verbatim.*
 
 **What changed:** the decision moved to the first line, phrased as the question
 he answers; status, provenance and green-test reporting were cut entirely; what
