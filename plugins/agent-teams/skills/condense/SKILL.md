@@ -193,7 +193,7 @@ If you restructure the hot set (e.g. merge several old hot entries into fewer ne
 ateam learnings <role>
 ```
 
-Confirm output shows only the hot entries (the fresh tier is empty after drain) and is <= ~24KB. Then spot-check cold:
+Confirm output shows only the hot entries (the fresh tier is empty after drain) plus the final `[learnings <role>: ...]` trailer line, and is <= ~24KB. Then spot-check cold:
 
 ```bash
 ateam recall <role> <term>
