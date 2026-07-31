@@ -32,6 +32,10 @@ set -eu
 [ -n "${CLAUDE_ENV_FILE:-}" ] || exit 0
 
 use_advisors="${CLAUDE_PLUGIN_OPTION_USE_ADVISORS:-false}"
+# Keep this default byte-identical to driDefaultModel in
+# internal/verbs/dispatch.go — the two are one setting in two layers, and
+# tests/hook-export-plugin-options.test.sh fails if they drift. No [1m] suffix:
+# the "opus" alias already resolves to a native 1M-context model.
 dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-opus}"
 
 printf 'export CLAUDE_PLUGIN_OPTION_USE_ADVISORS=%s\n' "$use_advisors" >> "$CLAUDE_ENV_FILE"

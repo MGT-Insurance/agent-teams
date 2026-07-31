@@ -38,11 +38,6 @@ its words on status, on provenance ("exactly the constraint you set"), on a
 scope disclaimer, and on a green test report — and it has not yet asked Eric
 anything. The decision he was being asked to make is not in the opening at all.
 
-That message also arrived in the topic with the initiative title mechanically
-prepended by `telegram.go:167`, deleted in this same initiative. So the real
-delta is larger than 310 → 88 words suggests: a line of machine restatement
-disappears on top of the cut.
-
 **AFTER** — specimen B, the one Eric picked:
 
 > Merge PR #123 now, or make it cheaper first?
@@ -114,55 +109,17 @@ longer one he does not.
 ## Not yet calibrated
 
 Round 2 (`agent-teams-ubbz.9`) takes real sent messages back to Eric, one kind at
-a time; his answers land in these slots. Until then they stay empty.
-
-### hung-escalation
-
-A session has stalled or gone quiet and Eric has to choose: unblock, restart, or
-kill it.
-
-_(No calibrated specimen yet — awaiting Eric.)_
-
-### reply-ack
-
-Confirms back to Eric that the answer he just gave was received and routed, and
-names what it was routed to.
-
-_(No calibrated specimen yet — awaiting Eric.)_
-
-### direct-answer
-
-Answers a question Eric asked the Steward directly — he already holds the
-context, because he raised it.
-
-_(No calibrated specimen yet — awaiting Eric.)_
-
-### briefing-post
-
-The cross-initiative sweep of what is running, posted into the briefing topic
-rather than into any one initiative's topic.
-
-_(No calibrated specimen yet — awaiting Eric.)_
-
-### briefing-ack
-
-A short reply on the briefing thread, acknowledging something Eric said there.
-
-_(No calibrated specimen yet — awaiting Eric.)_
-
-### anomaly-flag
-
-Something looks wrong and Eric should know, but nothing is being asked of him —
-no decision is gated on the flag.
-
-_(No calibrated specimen yet — awaiting Eric.)_
+a time; his answers land here. Until then, empty: `hung-escalation`,
+`reply-ack`, `direct-answer`, `briefing-post`, `briefing-ack`, `anomaly-flag` —
+see SKILL.md §5's table for what triggers each and what Eric must do.
 
 ### topic-open
 
 The first message in a new initiative topic. Machine-authored at
-`dispatch.go:331`, not Steward-authored, and not shortened this pass by Eric's
-decision (§F) — it is the one kind absent from SKILL.md §5's table, listed here
-only so the nine-kind vocabulary stays complete and so machine prose is never
-mistaken for Steward prose. Nothing about it is the Steward's to compose.
+`dispatch.go:376` (`createInitialTopic`), not Steward-authored, and not
+shortened this pass by Eric's decision (§F) — it is the one kind absent from
+SKILL.md §5's table, listed here only so the nine-kind vocabulary stays
+complete and so machine prose is never mistaken for Steward prose. Nothing
+about it is the Steward's to compose.
 
 _(No calibrated specimen yet — awaiting Eric.)_
