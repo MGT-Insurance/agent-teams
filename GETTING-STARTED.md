@@ -105,15 +105,23 @@ This lists every task you have running, grouped by how much attention each one n
 
 Sometimes the agent hits a decision only you can make, and it pauses and waits. You'll see it under the "needs a decision" group in `/initiatives`.
 
-To answer it:
+To answer it, first list what's running in your terminal:
 
 ```
-claude attach <name>
+claude agents
 ```
 
-`<name>` is the same name you saw when you handed off the task (it's the folder/branch name). This opens the session in your terminal — type your answer and press enter, then press **Ctrl+Z** to detach and leave it running in the background. Don't close the window; just detach.
+Find your task in the list by its name (the same name you saw when you handed it off) and note its **id** — a short string of letters and numbers next to it. Then:
 
-(`attach` doesn't show up if you run `claude --help` — it's a real, working command, just not listed there.)
+```
+claude attach <id>
+```
+
+It has to be the id. The name won't work here — passing the name gives you `No job matching '...'`.
+
+This opens the session in your terminal. Type your answer and press enter, then press **Ctrl+Z** to drop back to your shell. The task keeps running either way — don't close the window, just detach.
+
+(Neither `agents` nor `attach` shows up if you run `claude --help` — they're real, working commands, just not listed there.)
 
 ## When it's done
 
