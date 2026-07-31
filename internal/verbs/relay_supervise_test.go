@@ -280,6 +280,7 @@ func TestStewardStart_EnsuresRelayRunning(t *testing.T) {
 
 	var relaySpawned bool
 	cmd := &stewardStartKong{
+		Relay:      true,
 		agentsFunc: func() ([]agentSession, error) { return nil, nil },
 		launchFunc: func(ctx *cli.Context, dir string) error { return nil },
 		killFunc:   func(pid int) {},
@@ -306,6 +307,7 @@ func TestStewardStart_RelaySpawnFailure_DoesNotFailCommand(t *testing.T) {
 
 	var launchCalled bool
 	cmd := &stewardStartKong{
+		Relay:      true,
 		agentsFunc: func() ([]agentSession, error) { return nil, nil },
 		launchFunc: func(ctx *cli.Context, dir string) error {
 			launchCalled = true
@@ -335,6 +337,7 @@ func TestStewardStart_SecondStart_DoesNotSpawnDuplicateRelay(t *testing.T) {
 	spawnCount := 0
 	newCmd := func() *stewardStartKong {
 		return &stewardStartKong{
+			Relay:      true,
 			agentsFunc: func() ([]agentSession, error) { return nil, nil },
 			launchFunc: func(ctx *cli.Context, dir string) error { return nil },
 			killFunc:   func(pid int) {},

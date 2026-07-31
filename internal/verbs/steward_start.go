@@ -26,6 +26,8 @@ import (
 // can substitute fakes without querying/exec-ing real claude/ateam processes
 // or sending real signals; kong:"-" keeps kong from treating them as flags.
 type stewardStartKong struct {
+	Relay bool `name:"relay" help:"Also start the singleton relay (default: leave the relay to whoever owns it)."`
+
 	agentsFunc     agentsJSONFunc    `kong:"-"`
 	launchFunc     stewardLaunchFunc `kong:"-"`
 	killFunc       stewardKillFunc   `kong:"-"`
@@ -99,14 +101,18 @@ func (c *stewardStartKong) Run(ctx *cli.Context) error {
 	}
 
 	// 5. Ensure the singleton relay is running (agent-teams-5y8a.4,
-	// supersedes agent-teams-17xs.6): the Steward's own session is up as of
-	// step 4 above, so a relay failure here is reported and NOT propagated —
-	// failing the whole command over relay supervision would make a
-	// successfully-launched Steward session look like a failed `steward
-	// start`. Fail-soft, loud on stderr, same posture as the agentsFunc
-	// query failure in step 2 above.
-	if err := ensureRelayRunning(ctx, spawnRelay); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam steward start: warning: relay: %v — steward is running but relay was not started; run `ateam relay` manually\n", err)
+	// supersedes agent-teams-17xs.6), but only when --relay opts in: Eric
+	// wants to own the relay himself by default (agent-teams-25c5.3), so
+	// this step is now gated behind the flag rather than unconditional. The
+	// Steward's own session is up as of step 4 above, so a relay failure
+	// here is reported and NOT propagated — failing the whole command over
+	// relay supervision would make a successfully-launched Steward session
+	// look like a failed `steward start`. Fail-soft, loud on stderr, same
+	// posture as the agentsFunc query failure in step 2 above.
+	if c.Relay {
+		if err := ensureRelayRunning(ctx, spawnRelay); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam steward start: warning: relay: %v — steward is running but relay was not started; run `ateam relay` manually\n", err)
+		}
 	}
 
 	return nil
