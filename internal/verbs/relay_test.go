@@ -2292,3 +2292,53 @@ func TestRelay_Ack_DoesNotFireOnDirect_SendFailure(t *testing.T) {
 		t.Errorf("expected no ack calls on send failure, got %v", fa.refs)
 	}
 }
+
+// ── tick goroutine lifetime (agent-teams-rhnc.8) ─────────────────────────────
+
+// TestRelay_Run_JoinsTickGoroutineBeforeReturning is the regression witness
+// for agent-teams-rhnc.8: relayKong.Run must not return until its own tick
+// goroutine (runHungTickUntil, hung_tick.go) has actually stopped, not merely
+// been signalled to stop.
+//
+// This reproduces the exact mechanism the bead diagnosed, at the same
+// scale: relay_test.go has 52 call sites that each construct a relayKong
+// and call Run against a stub transport whose Receive drains and returns
+// immediately (ft here), so each Run leaks a tick goroutine unless it joins
+// one. That goroutine's first action is time.NewTicker(hungTickInterval)
+// (hung_tick.go) — a read of the package-level var — and the next Run call
+// writes that same var via loadHungConfig. A single Run-then-reconfigure
+// pair only wins that race occasionally (the window is a few scheduler
+// ticks), which is why the bead reported 51 races across 52 sequential
+// calls rather than a guaranteed 1: run enough iterations here and an
+// unjoined goroutine will lose the race at least once, just as it did in
+// the full suite. A real join makes every iteration race-free regardless of
+// count, since the goroutine's one read of hungTickInterval is guaranteed
+// to have already happened before Run returns.
+func TestRelay_Run_JoinsTickGoroutineBeforeReturning(t *testing.T) {
+	restoreHungConfig(t)
+
+	for i := 0; i < 200; i++ {
+		ft := &relayFakeTransport{}
+		ctx := newRelayCtx(t)
+		cmd := &relayKong{
+			enabled:             func(string) bool { return true },
+			transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+			bdQuery:             newFakeBDQuery().query,
+			send:                (&fakeSend{}).send,
+			claimsLocally:       alwaysClaimsLocally,
+			isFallbackResponder: alwaysFallbackResponder,
+			knownStewardTopic:   neverKnownStewardTopic,
+		}
+
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+
+		// Stand-in for the next call site's Run(): the same loadHungConfig
+		// write relay.go:212 makes on every call, with home="" so the call
+		// stays in-process (no file I/O) and the race window stays tight.
+		// Under `go test -race` this is the write half of the race; a
+		// leaked goroutine from the Run just above is the read half.
+		loadHungConfig(&strings.Builder{}, "")
+	}
+}

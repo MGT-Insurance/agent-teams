@@ -438,7 +438,9 @@ func slugifyForTest(cwd string) string {
 // ── workProductTripEligible (D2 gating, each exemption) ───────────────────────
 
 func TestWorkProductTripEligible(t *testing.T) {
-	const flat30 = 30 * time.Minute
+	// Expressed against the threshold var rather than a literal so retuning
+	// the default (hung_config.go) can't silently invert these cases.
+	flat := hungWorkProductFlatThreshold
 
 	tests := []struct {
 		name            string
@@ -449,16 +451,16 @@ func TestWorkProductTripEligible(t *testing.T) {
 		recentWorkTurns bool
 		want            bool
 	}{
-		{"all conditions met => eligible", "bg", nil, true, flat30, false, true},
-		{"mode interactive => excluded", "interactive", nil, true, flat30, false, false},
-		{"mode empty (legacy, unset) => excluded", "", nil, true, flat30, false, false},
-		{"human+gate label => exempt", "bg", []string{"human", "gate:review"}, true, flat30, false, false},
-		{"human+gate:question (general gate:*) => exempt", "bg", []string{"human", "gate:question"}, true, flat30, false, false},
-		{"human label alone (no gate) => still eligible", "bg", []string{"human"}, true, flat30, false, true},
-		{"no claimed in-progress bead => exempt", "bg", nil, false, flat30, false, false},
-		{"flatline under threshold => exempt", "bg", nil, true, 29 * time.Minute, false, false},
-		{"flatline exactly at threshold => eligible", "bg", nil, true, flat30, false, true},
-		{"recent work turns corroborated => downgraded/held", "bg", nil, true, flat30, true, false},
+		{"all conditions met => eligible", "bg", nil, true, flat, false, true},
+		{"mode interactive => excluded", "interactive", nil, true, flat, false, false},
+		{"mode empty (legacy, unset) => excluded", "", nil, true, flat, false, false},
+		{"human+gate label => exempt", "bg", []string{"human", "gate:review"}, true, flat, false, false},
+		{"human+gate:question (general gate:*) => exempt", "bg", []string{"human", "gate:question"}, true, flat, false, false},
+		{"human label alone (no gate) => still eligible", "bg", []string{"human"}, true, flat, false, true},
+		{"no claimed in-progress bead => exempt", "bg", nil, false, flat, false, false},
+		{"flatline under threshold => exempt", "bg", nil, true, flat - time.Minute, false, false},
+		{"flatline exactly at threshold => eligible", "bg", nil, true, flat, false, true},
+		{"recent work turns corroborated => downgraded/held", "bg", nil, true, flat, true, false},
 	}
 
 	for _, tc := range tests {
@@ -476,55 +478,61 @@ func TestWorkProductTripEligible(t *testing.T) {
 func TestNextWorkProductLadderAction_Boundaries(t *testing.T) {
 	const now = "2026-07-24T12:00:00Z"
 
-	// Just under 30 min: no action.
-	anchor, action := nextWorkProductLadderAction(hungAnchor{}, 29*time.Minute, now)
+	// Boundaries are expressed against the threshold vars, not literals, so
+	// retuning the defaults (hung_config.go) can't silently move a case to
+	// the wrong side of the boundary it is meant to pin.
+	flat, alert := hungWorkProductFlatThreshold, hungWorkProductAlertThreshold
+
+	// Just under the flat threshold: no action.
+	anchor, action := nextWorkProductLadderAction(hungAnchor{}, flat-time.Minute, now)
 	if action != hungActionNone {
-		t.Fatalf("at 29m: action = %v, want none", action)
+		t.Fatalf("just under flat: action = %v, want none", action)
 	}
 	if anchor.WorkProductWakeAttempts != 0 {
-		t.Fatalf("at 29m: WakeAttempts = %d, want 0", anchor.WorkProductWakeAttempts)
+		t.Fatalf("just under flat: WakeAttempts = %d, want 0", anchor.WorkProductWakeAttempts)
 	}
 
-	// Exactly 30 min: first wake.
-	anchor, action = nextWorkProductLadderAction(anchor, 30*time.Minute, now)
+	// Exactly at the flat threshold: first wake.
+	anchor, action = nextWorkProductLadderAction(anchor, flat, now)
 	if action != hungActionWake || anchor.WorkProductWakeAttempts != 1 {
-		t.Fatalf("at 30m: action=%v attempts=%d, want wake/1", action, anchor.WorkProductWakeAttempts)
+		t.Fatalf("at flat: action=%v attempts=%d, want wake/1", action, anchor.WorkProductWakeAttempts)
 	}
 
-	// 35 min (next tick, still under 1h, attempts<2): second wake.
-	anchor, action = nextWorkProductLadderAction(anchor, 35*time.Minute, now)
+	// Next tick, still under the alert threshold, attempts<2: second wake.
+	anchor, action = nextWorkProductLadderAction(anchor, flat+5*time.Minute, now)
 	if action != hungActionWake || anchor.WorkProductWakeAttempts != 2 {
-		t.Fatalf("at 35m: action=%v attempts=%d, want wake/2", action, anchor.WorkProductWakeAttempts)
+		t.Fatalf("flat+5m: action=%v attempts=%d, want wake/2", action, anchor.WorkProductWakeAttempts)
 	}
 
-	// 40 min: wakes exhausted (2), still under 1h -> no action, no third wake.
-	anchor, action = nextWorkProductLadderAction(anchor, 40*time.Minute, now)
+	// Wakes exhausted (2), still under the alert threshold -> no third wake.
+	anchor, action = nextWorkProductLadderAction(anchor, flat+10*time.Minute, now)
 	if action != hungActionNone {
-		t.Fatalf("at 40m: action = %v, want none (wakes exhausted, not yet at 1h)", action)
+		t.Fatalf("flat+10m: action = %v, want none (wakes exhausted, not yet at alert)", action)
 	}
 	if anchor.WorkProductWakeAttempts != 2 {
-		t.Fatalf("at 40m: attempts = %d, want unchanged 2", anchor.WorkProductWakeAttempts)
+		t.Fatalf("flat+10m: attempts = %d, want unchanged 2", anchor.WorkProductWakeAttempts)
 	}
 
-	// Exactly 1h: direct alert fires regardless of wake count.
-	anchor, action = nextWorkProductLadderAction(anchor, time.Hour, now)
+	// Exactly at the alert threshold: direct alert fires regardless of wake count.
+	anchor, action = nextWorkProductLadderAction(anchor, alert, now)
 	if action != hungActionAlert || anchor.WorkProductAlertedAt != now {
-		t.Fatalf("at 1h: action=%v alertedAt=%q, want alert/%q", action, anchor.WorkProductAlertedAt, now)
+		t.Fatalf("at alert: action=%v alertedAt=%q, want alert/%q", action, anchor.WorkProductAlertedAt, now)
 	}
 
-	// Already alerted -> none, unchanged, even further past 1h.
+	// Already alerted -> none, unchanged, even further past the threshold.
 	before := anchor
-	anchor, action = nextWorkProductLadderAction(anchor, 2*time.Hour, "2026-07-24T13:00:00Z")
+	anchor, action = nextWorkProductLadderAction(anchor, 2*alert, "2026-07-24T13:00:00Z")
 	if action != hungActionNone || anchor != before {
 		t.Fatalf("post-alert: action=%v anchor changed (got %+v want %+v)", action, anchor, before)
 	}
 }
 
 func TestNextWorkProductLadderAction_AlertFiresEvenIfWakesNeverSent(t *testing.T) {
-	// The 1h alert is a hard backstop per D6 -- it must not depend on the
-	// wake-attempt counter having reached hungWakeAttemptsBeforeDirectAlert
-	// (e.g. every wake send failed, or the ladder was only just seeded).
-	_, action := nextWorkProductLadderAction(hungAnchor{}, time.Hour, "2026-07-24T12:00:00Z")
+	// The alert-threshold alert is a hard backstop per D6 -- it must not
+	// depend on the wake-attempt counter having reached
+	// hungWakeAttemptsBeforeDirectAlert (e.g. every wake send failed, or the
+	// ladder was only just seeded).
+	_, action := nextWorkProductLadderAction(hungAnchor{}, hungWorkProductAlertThreshold, "2026-07-24T12:00:00Z")
 	if action != hungActionAlert {
 		t.Fatalf("action = %v, want alert even with zero prior wake attempts", action)
 	}
@@ -669,11 +677,14 @@ func TestScanHung_WorkProduct_DurableAcrossBusyBlip(t *testing.T) {
 		t.Fatalf("tick2: classification = %q, want STUCK (the blip)", out[0].Classification)
 	}
 
-	// Tick 3, back to WORKING, 35 minutes after t0 total -> the work-product
-	// clock must show the SAME last-progress as tick 1 (durable across the
-	// blip) and a flatline duration reflecting the FULL elapsed time since
-	// t0, not reset by the STUCK blip at t1.
-	t2 := t0.Add(35 * time.Minute)
+	// Tick 3, back to WORKING, past the flat threshold measured from t0 ->
+	// the work-product clock must show the SAME last-progress as tick 1
+	// (durable across the blip) and a flatline duration reflecting the FULL
+	// elapsed time since t0, not reset by the STUCK blip at t1. Expressed
+	// against the threshold var so retuning the default (hung_config.go)
+	// can't drop this tick back under the eligibility boundary.
+	elapsed := hungWorkProductFlatThreshold + 5*time.Minute
+	t2 := t0.Add(elapsed)
 	out, err = scanHung(ctx, func() ([]agentSession, error) { return workingSessions, nil }, fixedNow(t2), true)
 	if err != nil {
 		t.Fatalf("tick3: %v", err)
@@ -684,11 +695,11 @@ func TestScanHung_WorkProduct_DurableAcrossBusyBlip(t *testing.T) {
 	if out[0].WorkProductLastProgress != firstProgress {
 		t.Errorf("tick3: work-product last-progress = %q, want unchanged %q (blip must not reset it)", out[0].WorkProductLastProgress, firstProgress)
 	}
-	if out[0].WorkProductFlatSeconds < int64(35*time.Minute/time.Second) {
-		t.Errorf("tick3: wp_flat_seconds = %d, want >= %d (accumulated across the blip, not reset)", out[0].WorkProductFlatSeconds, int64(35*time.Minute/time.Second))
+	if out[0].WorkProductFlatSeconds < int64(elapsed/time.Second) {
+		t.Errorf("tick3: wp_flat_seconds = %d, want >= %d (accumulated across the blip, not reset)", out[0].WorkProductFlatSeconds, int64(elapsed/time.Second))
 	}
 	if !out[0].WorkProductTripEligible {
-		t.Error("tick3: expected work-product trip eligibility at 35 minutes flat, mode:bg, claimed bead, no gate")
+		t.Errorf("tick3: expected work-product trip eligibility at %s flat, mode:bg, claimed bead, no gate", elapsed)
 	}
 }
 
@@ -767,13 +778,13 @@ func TestScanHung_DeadWithWorktree_AnchorsAndHungAtThreshold(t *testing.T) {
 		t.Fatal("tick1: expected dead_since to be anchored")
 	}
 
-	t1 := t0.Add(16 * time.Minute) // past hungDeadWorktreeThreshold (15m)
+	t1 := t0.Add(hungDeadWorktreeThreshold + time.Minute)
 	out, err = scanHung(ctx, agentsFunc, fixedNow(t1), true)
 	if err != nil {
 		t.Fatalf("tick2: %v", err)
 	}
 	if !out[0].DeadHung {
-		t.Error("tick2: expected dead_hung=true after crossing the 15m threshold")
+		t.Errorf("tick2: expected dead_hung=true after crossing the %s threshold", hungDeadWorktreeThreshold)
 	}
 }
 
@@ -787,7 +798,7 @@ func TestDoHungTick_DeadLadder_WakeThenAlert(t *testing.T) {
 
 	agentsFunc := func() ([]agentSession, error) { return nil, nil } // no live session -> DEAD
 	t0 := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
-	seedDeadSince := t0.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
 	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{"at-1": {DeadSince: seedDeadSince}}); err != nil {
 		t.Fatalf("seed anchor: %v", err)
 	}
@@ -867,16 +878,8 @@ func TestDoHungTick_ModeInteractive_NoEscalationButStillJournaled(t *testing.T) 
 	}
 }
 
-// ── D9: track-worktree matcher (parsing, mirrors sessionIDs' own tests) ───────
-
-func TestTrackWorktreePaths(t *testing.T) {
-	desc := "worktree: /a/dri\ntrack-worktree: /a/impl-1\ntrack-worktree: /a/impl-2\n"
-	got := trackWorktreePaths(desc)
-	want := []string{"/a/impl-1", "/a/impl-2"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("trackWorktreePaths = %v, want %v", got, want)
-	}
-	if got := trackWorktreePaths("worktree: /a/dri\n"); got != nil {
-		t.Errorf("trackWorktreePaths with no lines = %v, want nil", got)
-	}
-}
+// ── D9: track-worktree matcher ───────────────────────────────────────────────
+//
+// The parsing test that lived here is gone with trackWorktreePaths; track
+// paths now come from initiative.Of(iss).Tracks, which internal/initiative
+// tests. discoverWorktrees' union behaviour is covered above.

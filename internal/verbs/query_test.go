@@ -11,6 +11,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
 )
 
@@ -189,6 +190,297 @@ func TestListJSONEmitsValidJSON(t *testing.T) {
 	}
 	if len(parsed) != 2 {
 		t.Errorf("parsed %d issues, want 2", len(parsed))
+	}
+}
+
+// ── list-json: the "fields" object (agent-teams-ully.12) ─────────────────────
+
+// listJSON runs the verb over a canned bd payload and returns the emitted
+// elements, each still keyed by raw JSON so a test can compare bytes.
+func listJSON(t *testing.T, bdOutput string, tokens ...string) []map[string]json.RawMessage {
+	t.Helper()
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return []byte(bdOutput), nil, nil
+	}
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     bd.NewClientWithExec("/ws", execFn),
+		Stdout: out,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runQ(t, "list-json", ctx, tokens...); err != nil {
+		t.Fatalf("list-json.Run: %v", err)
+	}
+	var elements []map[string]json.RawMessage
+	if err := json.Unmarshal(out.Bytes(), &elements); err != nil {
+		t.Fatalf("output is not a JSON array: %v\nraw: %s", err, out.String())
+	}
+	return elements
+}
+
+// compactJSON strips insignificant whitespace so two encodings of the same
+// value compare equal. Needed because the verb re-indents the whole document:
+// a nested value bd printed on one line comes back across several. It does NOT
+// reorder keys, so comparing compacted forms still catches real corruption.
+func compactJSON(t *testing.T, raw []byte) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("json.Compact(%s): %v", raw, err)
+	}
+	return buf.String()
+}
+
+// listJSONErr runs the verb over a canned bd payload expecting failure.
+func listJSONErr(t *testing.T, bdOutput string) error {
+	t.Helper()
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return []byte(bdOutput), nil, nil
+	}
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     bd.NewClientWithExec("/ws", execFn),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	err := runQ(t, "list-json", ctx)
+	if err == nil {
+		t.Fatalf("list-json.Run succeeded on %q; want an error", bdOutput)
+	}
+	return err
+}
+
+// A real bd element, verbatim key set as captured from `bd list --status=open
+// --json` (14 keys), plus one invented key standing in for a field a future bd
+// release adds. The invented key is the point: the enrichment must not be a
+// struct round-trip that quietly drops what this CLI does not model.
+const realBdElement = `[
+  {
+    "id": "at-tvvr",
+    "title": "PR titles should read for outside reviewers",
+    "description": "problem: PR titles should read for outside reviewers\nrepo: /Users/erlloyd/Code/agent-teams\nworktree: /Users/erlloyd/.agent-teams-worktrees/pr-text\nbranch: pr-text\nteam: agent-teams-pr-text\nmode: bg\nepic: agent-teams-96bu\n\n## Prose\n\nRepo: ` + "`" + `/wrong/path` + "`" + `\n\nsession: fc4a12ba-05c7-406a-b003-2fee9771bdb5\n",
+    "notes": "2026-07-29 executing\n",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "owner": "Eric Lloyd",
+    "created_at": "2026-07-29T10:00:00Z",
+    "created_by": "Eric Lloyd",
+    "updated_at": "2026-07-29T18:00:00Z",
+    "labels": ["gate:review", "thread:722"],
+    "dependency_count": 0,
+    "dependent_count": 3,
+    "comment_count": 1,
+    "some_future_bd_field": {"nested": [1, 2, 3]}
+  }
+]`
+
+// The enrichment is purely additive: every key bd emitted survives with its
+// value intact, including one this CLI does not model at all. "Intact" means
+// identical modulo JSON whitespace — the document is re-indented as a whole, so
+// a nested value's line breaks move; nothing else about it can.
+func TestListJSONPreservesEveryBdKey(t *testing.T) {
+	var original []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(realBdElement), &original); err != nil {
+		t.Fatalf("fixture is not valid JSON: %v", err)
+	}
+	got := listJSON(t, realBdElement)
+	if len(got) != 1 {
+		t.Fatalf("emitted %d elements, want 1", len(got))
+	}
+	for key, want := range original[0] {
+		value, present := got[0][key]
+		if !present {
+			t.Errorf("key %q was dropped", key)
+			continue
+		}
+		if got, expected := compactJSON(t, value), compactJSON(t, want); got != expected {
+			t.Errorf("key %q = %s, want %s", key, got, expected)
+		}
+	}
+	// Exactly one key added.
+	if len(got[0]) != len(original[0])+1 {
+		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\")", len(got[0]), len(original[0])+1)
+	}
+	if _, present := got[0]["fields"]; !present {
+		t.Error(`no "fields" key was added`)
+	}
+}
+
+// The added object is exactly what internal/initiative produces for that
+// issue — the verb adds no rule of its own. Includes the real poison shape:
+// the "Repo: `/wrong/path`" prose line must not win.
+func TestListJSONFieldsMatchTheComponent(t *testing.T) {
+	got := listJSON(t, realBdElement)
+	var issue bd.Issue
+	var original []bd.Issue
+	if err := json.Unmarshal([]byte(realBdElement), &original); err != nil {
+		t.Fatalf("fixture is not valid JSON: %v", err)
+	}
+	issue = original[0]
+	want, err := json.Marshal(initiative.JSONFields(issue))
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if gotFields, wantFields := compactJSON(t, got[0]["fields"]), string(want); gotFields != wantFields {
+		t.Errorf("fields = %s\nwant     %s", gotFields, wantFields)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(got[0]["fields"], &fields); err != nil {
+		t.Fatalf("fields is not a JSON object: %v", err)
+	}
+	if fields["repo"] != "/Users/erlloyd/Code/agent-teams" {
+		t.Errorf("fields.repo = %#v, want the canonical header value, not the prose echo", fields["repo"])
+	}
+	// A session tie below the prose body is still picked up (frozen item 2).
+	sessions, ok := fields["session"].([]any)
+	if !ok || len(sessions) != 1 || sessions[0] != "fc4a12ba-05c7-406a-b003-2fee9771bdb5" {
+		t.Errorf("fields.session = %#v, want the one tie appended below the prose", fields["session"])
+	}
+}
+
+// An initiative with no field lines at all still gets an object, so a consumer
+// can index into fields unconditionally.
+func TestListJSONEmitsAnObjectWhenThereAreNoFieldLines(t *testing.T) {
+	got := listJSON(t, `[{"id":"at-x","title":"T","description":"just prose, no fields\n"}]`)
+	if string(got[0]["fields"]) != "{}" {
+		t.Errorf("fields = %s, want {}", got[0]["fields"])
+	}
+}
+
+// A missing description is not an error — bd omits the key on a bead with none.
+func TestListJSONToleratesAMissingDescription(t *testing.T) {
+	got := listJSON(t, `[{"id":"at-x","title":"T"}]`)
+	if string(got[0]["fields"]) != "{}" {
+		t.Errorf("fields = %s, want {}", got[0]["fields"])
+	}
+}
+
+func TestListJSONEmptyArrayStaysAnEmptyArray(t *testing.T) {
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return []byte("[]\n"), nil, nil
+	}
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     bd.NewClientWithExec("/ws", execFn),
+		Stdout: out,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runQ(t, "list-json", ctx); err != nil {
+		t.Fatalf("list-json.Run: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Errorf("output = %q, want %q", got, "[]")
+	}
+}
+
+// bd returning "null" must still print an array — a consumer that maps over
+// the result would break on null.
+func TestListJSONNullBecomesAnEmptyArray(t *testing.T) {
+	execFn := func(_ string, _ ...string) ([]byte, []byte, error) {
+		return []byte("null\n"), nil, nil
+	}
+	out := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     bd.NewClientWithExec("/ws", execFn),
+		Stdout: out,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runQ(t, "list-json", ctx); err != nil {
+		t.Fatalf("list-json.Run: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Errorf("output = %q, want %q", got, "[]")
+	}
+}
+
+// Not-an-array fails loudly instead of passing through unenriched: a consumer
+// that asked for fields must never silently get output without them.
+func TestListJSONFailsLoudlyOnANonArrayPayload(t *testing.T) {
+	for _, payload := range []string{
+		`{"id":"at-x"}`,
+		`"a string"`,
+		`this is not json at all`,
+		``,
+	} {
+		err := listJSONErr(t, payload)
+		if !strings.Contains(err.Error(), "did not return a JSON array") {
+			t.Errorf("payload %q: error = %v, want a \"did not return a JSON array\" error", payload, err)
+		}
+	}
+}
+
+func TestListJSONFailsLoudlyOnANonObjectElement(t *testing.T) {
+	err := listJSONErr(t, `["not an object"]`)
+	if !strings.Contains(err.Error(), "not a JSON object") {
+		t.Errorf("error = %v, want a \"not a JSON object\" error", err)
+	}
+}
+
+// If bd ever emits its own "fields" key, adding ours would silently destroy
+// real data. Refuse instead.
+func TestListJSONRefusesToOverwriteAnExistingFieldsKey(t *testing.T) {
+	err := listJSONErr(t, `[{"id":"at-x","title":"T","fields":{"bd":"owns this"}}]`)
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Errorf("error = %v, want a \"refusing to overwrite\" error", err)
+	}
+}
+
+// --status is what lets the dashboard's closed-initiative slice come through
+// this verb instead of shelling bd against the global workspace directly.
+func TestListJSONStatusFlagReachesBD(t *testing.T) {
+	for _, tc := range []struct {
+		tokens []string
+		want   string
+	}{
+		{nil, "--status=open"},
+		{[]string{"--status=closed"}, "--status=closed"},
+		{[]string{"--status=all"}, "--status=all"},
+	} {
+		var calls [][]string
+		execFn := func(name string, args ...string) ([]byte, []byte, error) {
+			cp := make([]string, len(args))
+			copy(cp, args)
+			calls = append(calls, cp)
+			return []byte("[]\n"), nil, nil
+		}
+		ctx := &cli.Context{
+			Home:   "/ws",
+			BD:     bd.NewClientWithExec("/ws", execFn),
+			Stdout: &bytes.Buffer{},
+			Stderr: &bytes.Buffer{},
+		}
+		if err := runQ(t, "list-json", ctx, tc.tokens...); err != nil {
+			t.Fatalf("list-json.Run %v: %v", tc.tokens, err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("tokens %v: expected 1 bd call, got %d", tc.tokens, len(calls))
+		}
+		want := []string{"-C", "/ws", "list", tc.want, "--json"}
+		if len(calls[0]) != len(want) {
+			t.Fatalf("tokens %v: bd args = %v, want %v", tc.tokens, calls[0], want)
+		}
+		for i, w := range want {
+			if calls[0][i] != w {
+				t.Errorf("tokens %v: bd args[%d] = %q, want %q (full: %v)", tc.tokens, i, calls[0][i], w, calls[0])
+			}
+		}
+	}
+}
+
+func TestListJSONRejectsAnEmptyStatus(t *testing.T) {
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     bd.NewClientWithExec("/ws", func(string, ...string) ([]byte, []byte, error) { return []byte("[]\n"), nil, nil }),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+	if err := runQ(t, "list-json", ctx, "--status="); err == nil {
+		t.Error("list-json --status= succeeded; want a usage error")
 	}
 }
 

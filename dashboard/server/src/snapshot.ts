@@ -6,10 +6,10 @@ import type { SessionState, SnapshotEvent } from "@agent-teams/shared";
 import {
   CliError,
   ateamListJson,
+  ateamClosedInitiatives,
   ateamWs,
   claudeAgentsJson,
   bdHumanList,
-  bdClosedInitiatives,
 } from "./cli.js";
 import {
   parseAteamListJson,
@@ -190,13 +190,13 @@ export async function buildSnapshot(
   // discard the snapshot slices that did succeed (agent-teams-assa.1).
   const [listResult, closedResult, agentsResult, humanResult] = await Promise.allSettled([
     ateamListJson(),
-    bdClosedInitiatives(ws),
+    ateamClosedInitiatives(),
     claudeAgentsJson(),
     bdHumanList(ws),
   ]);
 
   const listJsonRaw = resolveSlice(listResult, "ateam list-json", lastGood, "listJsonRaw");
-  const closedJsonRaw = resolveSlice(closedResult, "bd closed initiatives", lastGood, "closedJsonRaw");
+  const closedJsonRaw = resolveSlice(closedResult, "ateam list-json --status=closed", lastGood, "closedJsonRaw");
   const agentsRaw = resolveSlice(agentsResult, "claude agents", lastGood, "agentsRaw");
   const humanRaw = resolveSlice(humanResult, "bd human list", lastGood, "humanRaw");
 

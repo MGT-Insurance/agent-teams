@@ -17,6 +17,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -195,7 +196,18 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		base = c.git.DefaultBranch(repoRoot)
 	}
 
-	// 3. Slug.
+	// 3. Validate --problem, then derive the slug from it.
+	//
+	// --problem is documented as a one-line statement and is the ONLY
+	// human-supplied value in the routing header — every other field is
+	// machine-derived and cannot carry a newline. A multi-line value would look
+	// like a canonical field on its second line and win under first-wins, which
+	// is the bug this whole initiative exists to close. Reject it here, as the
+	// usage error it is, rather than ten lines later once the worktree exists.
+	if strings.ContainsAny(c.Problem, "\r\n") {
+		return cli.Usagef("dispatch: --problem must be a single line; put multi-line prose in --body-file, which is appended below the routing header")
+	}
+
 	resolvedSlug := c.Slug
 	if resolvedSlug == "" {
 		resolvedSlug = gitutil.Slugify(c.Problem)
@@ -228,26 +240,41 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		shortTitle = shortTitle[:72]
 	}
 
-	body := "problem: " + c.Problem + "\n" +
-		"repo: " + repoRoot + "\n" +
-		"worktree: " + wtPath + "\n" +
-		"branch: " + resolvedSlug + "\n" +
-		"team: " + team + "\n" +
-		"mode: bg\n"
-	if c.Standby {
-		body += "standby: true\n"
+	fields := initiative.Fields{
+		Problem:  c.Problem,
+		Repo:     repoRoot,
+		Worktree: wtPath,
+		Branch:   resolvedSlug,
+		Team:     team,
+		Mode:     "bg",
+		Standby:  c.Standby,
 	}
 
 	// Try to create a root epic bead in the project repo (fail-soft).
 	// repoRoot is already resolved above so no extraction is needed.
 	// Skipped when --skip-epic is set.
+	var epicID string
 	if !c.SkipEpic && c.createEpic != nil {
-		if epicID, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
+		if id, epicErr := c.createEpic(repoRoot, shortTitle); epicErr != nil {
 			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not create root epic (fail-soft): %v\n", epicErr)
-		} else if epicID != "" {
-			body += "epic: " + epicID + "\n"
+		} else {
+			epicID = id
+			fields.Epic = id
 		}
 	}
+
+	// This is a BRAND-NEW initiative, which is the only thing initiative.New
+	// may compose (see internal/initiative/doc.go, frozen item 4). Its
+	// line-break rejection should be unreachable from here — --problem is
+	// guarded above and every other field is machine-derived — but it is the
+	// component's invariant, not ours, so the error is handled rather than
+	// discarded.
+	plan, err := initiative.New(fields)
+	if err != nil {
+		_ = c.git.RemoveWorktree(repoRoot, wtPath)
+		return fmt.Errorf("dispatch: %w", err)
+	}
+	body := plan.Description
 
 	if c.BodyFile != "" {
 		extra, err := os.ReadFile(c.BodyFile)
@@ -256,6 +283,15 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 			return cli.Usagef("dispatch: --body-file %q: %v", c.BodyFile, err)
 		}
 		if len(strings.TrimSpace(string(extra))) > 0 {
+			// fields is exactly the header composed above, so CollisionsIn
+			// judges the body file against the keys that header actually
+			// wrote — by the same rule the reader uses, not a second one
+			// that happens to agree.
+			for _, col := range fields.CollisionsIn(string(extra)) {
+				fmt.Fprintf(ctx.Stderr,
+					"dispatch: warning: --body-file line %d redefines routing field %q (first-wins — this line is IGNORED; the header's value stands): %s\n",
+					col.Line, col.Key, col.Text)
+			}
 			body += "\n" + string(extra)
 		}
 	}
@@ -293,14 +329,13 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("dispatch: bd create returned no id (does this bd support --json on create?)")
 	}
 
-	// Label the root epic with the initiative ID (fail-soft).
-	// Skipped when --skip-epic is set.
-	if !c.SkipEpic {
-		if epicID := extractEpicID(body); epicID != "" {
-			cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
-			if err := cmd.Run(); err != nil {
-				fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
-			}
+	// Label the root epic with the initiative ID (fail-soft). epicID is the
+	// id createEpic returned above, empty when --skip-epic was set or the
+	// fail-soft branch fired.
+	if epicID != "" {
+		cmd := exec.Command("bd", "-C", repoRoot, "label", "add", epicID, issue.ID)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not label epic %s with %s (fail-soft): %v\n", epicID, issue.ID, err)
 		}
 	}
 
@@ -423,9 +458,10 @@ func (c *dispatchKong) createInitialTopic(ctx *cli.Context, issue bd.Issue, body
 //
 // Fail-soft like its caller: a missing/failed send is warned, never fatal.
 func (c *dispatchKong) sendSharedTopicLine(ctx *cli.Context, t transport.Transport, body string) {
-	prNumber := extractBodyField(body, "pr-number")
-	ownerRepo := extractBodyField(body, "pr-repo")
-	prURL := extractBodyField(body, "pr-url")
+	fields := initiative.JSONFields(bd.Issue{Description: body})
+	prNumber, _ := fields["pr-number"].(string)
+	ownerRepo, _ := fields["pr-repo"].(string)
+	prURL, _ := fields["pr-url"].(string)
 
 	// Unreachable from the two real callers (route.go's spawnReviewInitiative
 	// and the dispatch-review-pr skill both always write all three). Unlike
@@ -544,7 +580,7 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
-	dir := worktreePath(issue.Description)
+	dir := initiative.Of(issue).Worktree
 	if dir == "" {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", c.ID)
 		return cli.Silent(1)
@@ -582,26 +618,15 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
-// autoCompactWindowSettingsJSON is the --settings JSON argument requesting
-// Claude Code's auto-compact trigger window for background DRI sessions.
-//
-// CLI arg, not env var: the daemon's spare-session pool claims pre-warmed
-// processes via IPC rather than exec'ing fresh ones from this call's argv,
-// so cmd.Env set here never reaches the claimed session (verified live) —
-// but the claim payload does carry --settings, so it is honored. Caveat:
-// the CLI resolves autoCompactWindow with priority env > --settings >
-// client-default, so a stray CLAUDE_CODE_AUTO_COMPACT_WINDOW in the
-// daemon's own environment would silently win over this value with no
-// error surfaced. Not observed on this machine as of 2026-07-16 (checked
-// env, shell profiles, daemon env, settings files); see agent-teams-g8xc
-// for that investigation and at-0gno for this re-verification.
-//
-// 200000 here is a request, not the effective trigger: the CLI engine
-// reserves a further fixed margin below the configured value, confirmed
-// live via --debug-file on CLI 2.1.211 at ~20000 tokens (200000 requested
-// -> effectiveWindow=180000; 500000 requested -> effectiveWindow=480000).
-// Production DRI sessions compact at roughly 180000 tokens, not 200000.
-const autoCompactWindowSettingsJSON = `{"autoCompactWindow":200000}`
+// driDefaultModel is the model background sessions launch on when no explicit
+// override is supplied. No [1m] suffix: the CLI's model catalogue marks
+// claude-opus-5 (the "opus" alias) native_1m, so the alias already resolves to
+// a 1M-context window on a first-party endpoint. The suffix is a second route
+// to the same window, and it does not survive the one case that really does
+// clamp to 200000 (long-context credits exhausted), so it buys nothing here.
+// Kept as a constant so this default and the export-plugin-options.sh hook
+// default cannot drift apart (tests/hook-export-plugin-options.test.sh).
+const driDefaultModel = "opus"
 
 // bgSessionEnv is the "env" map merged into a background session's --settings
 // JSON, publishing the role-signal contract (agent-teams-142k.1): ATEAM_ROLE
@@ -616,30 +641,60 @@ type bgSessionEnv struct {
 }
 
 // bgSessionSettings is the --settings JSON payload for a background session
-// launch: the auto-compact window plus an optional env map.
+// launch: an optional env map, and nothing else.
+//
+// Notably absent: autoCompactWindow. Background sessions deliberately do not
+// configure Claude Code's auto-compact trigger, and re-adding one here is a
+// regression — TestBGSessionArgs_SettingsOmitsAutoCompactWindow guards it. The
+// CLI resolves that window as
+//
+//	W  = first match of: CLAUDE_CODE_AUTO_COMPACT_WINDOW env >
+//	     autoCompactWindow setting > server clientdata > experiment gate >
+//	     model-default (200000, reached ONLY when the model's real window is
+//	     under 1M) > auto (the model's full window)
+//	W  = min(realModelWindow, W)
+//	effective = W - min(maxOutputTokens, 20000)
+//	compact  at effective - 13000
+//
+// Sending nothing falls through to "auto" on a 1M-context model — the
+// model-default tier is gated on the real window being under 1M, so a 1M model
+// skips it — giving a ~967000 trigger that tracks whatever model the session
+// actually runs on. Any value pinned here can only lower that: this call site
+// used to request 200000, which produced a 167000 trigger
+// (200000 - 20000 - 13000, matching compactions observed at 167,030 / 167,041
+// / 167,052) — a self-inflicted ~6x reduction of the trigger the same session
+// reaches with nothing set.
+//
+// The window is not where the waste is, either. Measured over 51 compactions
+// in one three-day DRI session, the first API request after a compaction
+// already carried a median 101k tokens (max 169,710): the fixed prefix plus
+// the re-injected tool/skill/agent/hook listings are re-established every
+// time. Shrinking that beats widening the window.
 type bgSessionSettings struct {
-	AutoCompactWindow int           `json:"autoCompactWindow"`
-	Env               *bgSessionEnv `json:"env,omitempty"`
+	Env *bgSessionEnv `json:"env,omitempty"`
 }
 
 // bgSessionSettingsJSON builds the --settings JSON argument for a background
-// session launch: always the auto-compact window (see
-// autoCompactWindowSettingsJSON's doc comment for the CLI-arg-not-env-var
-// rationale), plus an "env" map carrying ATEAM_ROLE/ATEAM_INITIATIVE when
-// either is non-empty. role and initiativeID are independent: initiativeID is
-// omitted whenever the launcher doesn't know the initiative id (e.g.
-// new-initiative given a bare problem statement, or the steward, which is
-// fleet-scoped and never carries one).
+// session launch: an "env" map carrying ATEAM_ROLE/ATEAM_INITIATIVE when
+// either is non-empty, and "" when neither is (the caller then omits the flag
+// rather than passing an empty object). role and initiativeID are independent:
+// initiativeID is omitted whenever the launcher doesn't know the initiative id
+// (e.g. new-initiative given a bare problem statement, or the steward, which
+// is fleet-scoped and never carries one).
+//
+// CLI arg, not env var: the daemon's spare-session pool claims pre-warmed
+// processes via IPC rather than exec'ing fresh ones from this call's argv, so
+// cmd.Env set here never reaches the claimed session (verified live) — but the
+// claim payload does carry --settings, so it is honored.
 func bgSessionSettingsJSON(role, initiativeID string) string {
-	settings := bgSessionSettings{AutoCompactWindow: 200000}
-	if role != "" || initiativeID != "" {
-		settings.Env = &bgSessionEnv{Role: role, Initiative: initiativeID}
+	if role == "" && initiativeID == "" {
+		return ""
 	}
+	settings := bgSessionSettings{Env: &bgSessionEnv{Role: role, Initiative: initiativeID}}
 	b, err := json.Marshal(settings)
 	if err != nil {
-		// AutoCompactWindow is an int and Env's fields are plain strings —
-		// Marshal cannot fail here. Fall back to the known-good constant.
-		return autoCompactWindowSettingsJSON
+		// Env's fields are plain strings — Marshal cannot fail here.
+		return ""
 	}
 	return string(b)
 }
@@ -647,23 +702,25 @@ func bgSessionSettingsJSON(role, initiativeID string) string {
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background session launch. prompt is the raw positional argument passed to
 // claude (e.g. "/dri at-abc123" or a custom skill invocation). model overrides
-// the default "opus" model when non-empty. advisor, when non-empty, appends
+// driDefaultModel when non-empty. advisor, when non-empty, appends
 // "--advisor <advisor>" to the argv (a hidden claude CLI flag taking a model
 // alias). role and initiativeID are merged into --settings via
 // bgSessionSettingsJSON. Pure: does not read env. Extracted so tests can
 // assert the argv without executing the command.
 func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []string {
 	if model == "" {
-		model = "opus"
+		model = driDefaultModel
 	}
 	args := []string{
 		"--bg",
 		"-n", name,
 		"--model", model,
 		"--permission-mode", "bypassPermissions",
-		"--settings", bgSessionSettingsJSON(role, initiativeID),
-		"--append-system-prompt", memoryRoutingRule,
 	}
+	if settings := bgSessionSettingsJSON(role, initiativeID); settings != "" {
+		args = append(args, "--settings", settings)
+	}
+	args = append(args, "--append-system-prompt", memoryRoutingRule)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
@@ -672,19 +729,21 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []st
 
 // driAdvisorSettings reads CLAUDE_PLUGIN_OPTION_USE_ADVISORS and
 // CLAUDE_PLUGIN_OPTION_DRI_MODEL and returns the (model, advisor) pair for DRI
-// session launches. CLAUDE_PLUGIN_OPTION_DRI_MODEL (default "opus" when unset
-// or empty) is the "strong model" slot: when advisors are enabled (the env
-// var is exactly "true"), it becomes the advisor model and the DRI session
-// worker stays "sonnet"; when advisors are disabled — any other value
-// (unset, "", "false", or anything not exactly "true") — it becomes the DRI
-// session's own model and there is no advisor. Unit testable via t.Setenv.
+// session launches. CLAUDE_PLUGIN_OPTION_DRI_MODEL (default driDefaultModel
+// when unset or empty — the hook that publishes this var defaults it to the
+// same value, so the two layers agree) is the "strong model" slot: when
+// advisors are enabled (the env var is exactly "true"), it becomes the advisor
+// model and the DRI session worker stays "sonnet"; when advisors are disabled —
+// any other value (unset, "", "false", or anything not exactly "true") — it
+// becomes the DRI session's own model and there is no advisor. Unit testable
+// via t.Setenv.
 // Only launchBGSession (the /dri path) calls this; the raw --launch-prompt
 // path does not read these env vars — it defaults to advisor "" unless the
 // caller explicitly passes --advisor (dispatchKong.Advisor).
 func driAdvisorSettings() (model, advisor string) {
 	driModel := os.Getenv("CLAUDE_PLUGIN_OPTION_DRI_MODEL")
 	if driModel == "" {
-		driModel = "opus"
+		driModel = driDefaultModel
 	}
 	if os.Getenv("CLAUDE_PLUGIN_OPTION_USE_ADVISORS") == "true" {
 		return "sonnet", driModel
@@ -764,43 +823,13 @@ type gitRunner interface {
 	RemoveWorktree(repoRoot, wtPath string) error
 }
 
-// worktreePath extracts the value of the first "worktree: <path>" line from
-// description. Returns "" if no such line is present.
-func worktreePath(description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "worktree: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "worktree: "), " \t\r")
-		}
-	}
-	return ""
-}
-
-// modeValue extracts the value of the first "mode: <value>" line from
-// description (e.g. "bg" or "interactive"). Returns "" if no such line is
-// present — legacy initiatives registered before this field existed.
-func modeValue(description string) string {
-	for _, line := range strings.Split(description, "\n") {
-		if strings.HasPrefix(line, "mode: ") {
-			return strings.TrimRight(strings.TrimPrefix(line, "mode: "), " \t\r")
-		}
-	}
-	return ""
-}
-
-// extractBodyField scans an initiative body for the first "<key>: <value>"
-// line and returns the value. Returns "" if no such line is present.
-func extractBodyField(body, key string) string {
-	prefix := key + ": "
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimRight(strings.TrimPrefix(line, prefix), " \t\r")
-		}
-	}
-	return ""
-}
-
-// extractEpicID scans body for the first "epic: <id>" line and returns the id.
-// Returns "" if no such line is present.
-func extractEpicID(body string) string {
-	return extractBodyField(body, "epic")
-}
+// The routing-field readers this file used to own (worktreePath, modeValue,
+// extractEpicID, extractBodyField) and the --body-file redefinition scanner
+// (warnBodyFileFieldRedefinitions) are gone: reading goes through
+// initiative.Of, and the collision rule is initiative.Fields.CollisionsIn —
+// one rule shared with the reader rather than two that happen to agree.
+//
+// The pr-* trio sendSharedTopicLine needs has no Fields member (initiative
+// package doc, frozen item 3: the field set is not closed), so that reader
+// projects from initiative.JSONFields — still the one shared scan, not a
+// fourth hand-rolled prefix match.

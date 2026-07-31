@@ -11,13 +11,14 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // RegisterQueryKong registers all query verbs onto p as native kong structs.
 func RegisterQueryKong(p *cli.Parser) {
 	p.AddVerb("ws", "Print the workspace home path.", &wsKong{})
 	p.AddVerb("list", "List open initiatives.", &listKong{})
-	p.AddVerb("list-json", "List open initiatives as JSON.", &listJSONKong{})
+	p.AddVerb("list-json", "List initiatives as JSON, each with its parsed routing fields.", &listJSONKong{})
 	p.AddVerb("human-list", "List gated beads awaiting human input.", &humanListKong{})
 	p.AddVerb("show", "Show details for an initiative.", &showKong{})
 	p.AddVerb("learnings", "Print role memories (hot+fresh, or all).", &learningsKong{})
@@ -57,19 +58,97 @@ func (c *listKong) Run(ctx *cli.Context) error {
 	return nil
 }
 
-// listJSONKong passes through: bd list --status=open --json
-type listJSONKong struct{}
+// listJSONKong emits bd list --json with each element's routing fields parsed
+// out into a "fields" object, so a consumer never has to re-implement the field
+// rule against the raw description text.
+//
+// Status has no kong enum:"" tag: bd owns the set of valid statuses (open,
+// in_progress, blocked, deferred, closed, pinned, hooked, all) and grows it,
+// and a copy of that list here would reject a status bd accepts. bd rejects an
+// invalid one loudly, which surfaces as this verb's error.
+type listJSONKong struct {
+	Status string `name:"status" default:"open" help:"Bead status to list, passed through to bd (open, closed, all, ...)."`
+}
+
+func (c *listJSONKong) Validate() error {
+	if c.Status == "" {
+		return cli.Usagef("ateam list-json: --status must not be empty")
+	}
+	return nil
+}
 
 func (c *listJSONKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam list-json: no context")
 	}
-	out, err := ctx.BD.Run("list", "--status=open", "--json")
+	// Direct Run calls in tests bypass kong's default:"open" tag.
+	status := c.Status
+	if status == "" {
+		status = "open"
+	}
+	out, err := ctx.BD.Run("list", "--status="+status, "--json")
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(ctx.Stdout, out)
+	enriched, err := withRoutingFields([]byte(out))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(ctx.Stdout, string(enriched))
 	return nil
+}
+
+// withRoutingFields returns raw — bd's JSON array of issues — with a "fields"
+// object added to every element, holding that issue's routing data as parsed by
+// internal/initiative. Nothing else about any element changes: each existing
+// key is re-emitted as the exact bytes bd produced for its value. The only
+// difference is insignificant whitespace — the document is re-indented as a
+// whole, so a nested value bd printed on one line comes out across several.
+//
+// Elements are held as map[string]json.RawMessage rather than decoded into a
+// struct. bd's element carries keys this CLI does not model (dependency_count,
+// comment_count, ...) and will gain more; a struct decode would drop every
+// unmodeled key on re-marshal — the same silent-loss failure mode
+// internal/initiative exists to prevent, one layer out. Each element is
+// decoded TWICE from its original bytes for the same reason: once losslessly
+// for re-emission, once into a bd.Issue for initiative.JSONFields, so the
+// component keeps receiving a whole issue and this function never hand-picks
+// which issue fields the component is allowed to see.
+//
+// A payload that is not a JSON array is an error, not something to pass
+// through: a caller that asked for enriched JSON must never silently receive
+// un-enriched output.
+func withRoutingFields(raw []byte) ([]byte, error) {
+	var elements []json.RawMessage
+	if err := json.Unmarshal(raw, &elements); err != nil {
+		return nil, fmt.Errorf("ateam list-json: bd did not return a JSON array: %w", err)
+	}
+	enriched := make([]map[string]json.RawMessage, 0, len(elements))
+	for i, element := range elements {
+		var keyed map[string]json.RawMessage
+		if err := json.Unmarshal(element, &keyed); err != nil {
+			return nil, fmt.Errorf("ateam list-json: element %d is not a JSON object: %w", i, err)
+		}
+		// bd emitting its own "fields" key would make the line below a silent
+		// overwrite of real data. Refuse instead of guessing which one wins.
+		if _, exists := keyed["fields"]; exists {
+			return nil, fmt.Errorf("ateam list-json: element %d already carries a \"fields\" key; refusing to overwrite it", i)
+		}
+		var issue bd.Issue
+		if err := json.Unmarshal(element, &issue); err != nil {
+			return nil, fmt.Errorf("ateam list-json: element %d does not decode as an issue: %w", i, err)
+		}
+		fields, err := json.Marshal(initiative.JSONFields(issue))
+		if err != nil {
+			return nil, fmt.Errorf("ateam list-json: element %d: encoding routing fields: %w", i, err)
+		}
+		keyed["fields"] = fields
+		enriched = append(enriched, keyed)
+	}
+	// Indented to match what bd itself prints — this output is read by humans
+	// and agents (`ateam list-json` in the resume-dri skill), not only by the
+	// dashboard's JSON.parse.
+	return json.MarshalIndent(enriched, "", "  ")
 }
 
 // humanListKong renders gated beads with their gate kind and note.

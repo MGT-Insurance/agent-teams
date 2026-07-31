@@ -26,18 +26,22 @@ import (
 )
 
 // hungTickInterval is how often the relay's ticker goroutine re-runs
-// scanHung looking for HUNG initiatives. Eric-approved default: 5 minutes —
-// frequent enough that the wake ladder below plays out over a bounded
-// number of minutes, infrequent enough not to spam `bd list` or the
-// Steward's mailbox.
-const hungTickInterval = 5 * time.Minute
+// scanHung looking for HUNG initiatives: infrequent enough not to spam `bd
+// list` or the Steward's mailbox, frequent enough that the wake ladder below
+// plays out over a bounded time.
+//
+// A var, not a const, and set by loadHungConfig (hung_config.go) at process
+// start — see that file for the env/file/default resolution and the
+// operator-facing key name.
+var hungTickInterval = defaultHungTickInterval
 
 // hungWakeAttemptsBeforeDirectAlert caps how many consecutive ticks nudge
 // the Steward (mail-send, sender "hung-scan") for one HUNG episode before
 // concluding the Steward itself isn't responding and escalating directly: a
 // deterministic, LLM-free canned alert posted straight into the
-// initiative's own Telegram topic, exactly once per episode.
-const hungWakeAttemptsBeforeDirectAlert = 2
+// initiative's own Telegram topic, exactly once per episode. Set by
+// loadHungConfig; see hung_config.go.
+var hungWakeAttemptsBeforeDirectAlert = defaultHungWakeAttemptsBeforeAlert
 
 // hungLadderAction is what nextHungLadderAction decided to do for one HUNG
 // initiative on this tick.
@@ -462,11 +466,32 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	return nil
 }
 
-// runHungTick is started as a goroutine from relayKong.Run (relay.go) and
-// never returns: it ticks every hungTickInterval and runs doHungTick,
-// logging (never panicking) on failure so a transient scan/send error can't
-// take down the relay's Receive loop running alongside it.
-func runHungTick(ctx *cli.Context, t transport.Transport) {
+// hungTickFunc is the body runHungTick invokes once per tick — a
+// package-level seam (mirroring hung_workproduct.go's seams) swappable by
+// tests via reassignment + defer restore.
+//
+// It exists because the ticker is otherwise unobservable: time.NewTicker's
+// argument cannot be read back, so asserting hungTickInterval holds a value
+// proves only that a variable holds a value, not that the ticker was handed
+// it. With this seam a test can configure a small interval through the real
+// resolution path and count the ticks that actually arrive.
+var hungTickFunc = doHungTick
+
+// runHungTickUntil is started as a goroutine from relayKong.Run (relay.go):
+// it ticks every hungTickInterval and runs the tick body, logging (never
+// panicking) on failure so a transient scan/send error can't take down the
+// relay's Receive loop running alongside it. The stop channel lets the
+// caller join the goroutine instead of leaking it — relayKong.Run closes
+// stop and waits on a done channel before returning, and tests get the same
+// join for free. A leaked ticker goroutine is not harmless here: it
+// resolves hungTickFunc at call time, so once a test restored the seam it
+// would resume driving the REAL doHungTick — shelling out to bd and git —
+// every few milliseconds for the remainder of the test binary.
+//
+// Production's stop channel is closed only at process shutdown (Receive
+// blocks forever until then), so the select below effectively never takes
+// that branch in practice.
+func runHungTickUntil(ctx *cli.Context, t transport.Transport, stop <-chan struct{}) {
 	deps := hungTickDeps{
 		agentsFunc: defaultAgentsJSONAll,
 		now:        time.Now,
@@ -476,9 +501,14 @@ func runHungTick(ctx *cli.Context, t transport.Transport) {
 	}
 	ticker := time.NewTicker(hungTickInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		if err := doHungTick(ctx, deps); err != nil {
-			transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: %v", err)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := hungTickFunc(ctx, deps); err != nil {
+				transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: %v", err)
+			}
 		}
 	}
 }

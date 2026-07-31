@@ -2,7 +2,9 @@
 
 The registry lives in the global workspace: one bd ISSUE per initiative (not per session).
 
-**Invariant:** the global workspace contains ONLY initiative-tracking beads (every one carries a `worktree:` line, per the schema below) and role memories (`bd remember`, a separate store). It NEVER holds work beads — feature/plan/task/discovery beads all live in the PROJECT repo's `.beads`. `ateam audit` enforces this: it lists any global-workspace issue lacking the tracking schema and exits non-zero. Run it in Phase 0 and at wind-down; it must always be clean.
+## Audit enforcement
+
+`ateam audit` enforces the CARDINAL two-databases rule (SKILL.md): it lists any global-workspace issue lacking the tracking schema below and exits non-zero. Run it in Phase 0 and at wind-down; it must always be clean.
 
 ## Description schema (line-oriented; the compaction hook greps `worktree:`)
 
@@ -17,11 +19,11 @@ The registry lives in the global workspace: one bd ISSUE per initiative (not per
 
 There is NO `phase:` or `status:` field. The DRI maintains no phase; execution-state (IN-PROGRESS / REVIEWABLE / NEEDS-DECISION) is computed by the dashboard from gate labels and the live session's run/park state.
 
-**`track-worktree:` (repeatable, D9 — agent-teams-sgr5).** Zero or more additional lines, one per implementer worktree the DRI spawns beyond its own `worktree:` checkout:
+**`track-worktree:` (repeatable, D9 — agent-teams-sgr5).** Zero or more additional lines, one per implementer worktree beyond the DRI's own `worktree:` checkout:
 
     track-worktree: <abs path of an implementer's own worktree>
 
-Unlike every other field above (written once at `ateam register` time), this one accumulates over the initiative's life — append a new line each time you spawn an implementer into a fresh track worktree; never remove an old one. See execution.md's "Worktrees (parallel tracks)" section for the exact append recipe. hung-scan's work-product stall detector unions this set with the primary `worktree:` line when it probes for git activity, so a track worktree's real progress is what keeps the initiative from reading as flatlined — omitting this line doesn't break anything outright (a path-substring fallback covers legacy/missed cases) but does leave detection weaker for that worktree.
+Unlike the fields above (written once at `ateam register` time), this one accumulates — append a line each time you spawn an implementer into a fresh track worktree, never remove an old one (append recipe: execution.md, "Worktrees (parallel tracks)"). hung-scan's stall detector unions this set with the primary `worktree:` line, so a track worktree's real progress keeps the initiative from reading as flatlined — a path-substring fallback covers legacy/missed cases, but it's weaker; record the line every time.
 
 ## Standby field (frozen contract — `--standby`)
 
@@ -38,9 +40,9 @@ Rules (both the writer and every reader copy these verbatim):
 - **Reader rule (`/dri` startup):** standby is *active* iff the description contains `standby: true` **AND** neither the description nor its notes contain `standby: released`. (The release marker is recorded via `ateam note`, so it lands in the initiative's **notes**, not its description — a reader that only inspects the description would never see the release and would re-park forever. Read both, e.g. via `ateam show <id>`.) When active, `/dri` parks with a QUESTION gate worded **"Standby — waiting for direction"** (see the gate protocol) instead of entering Phase 2. When the human provides direction, the DRI appends the `standby: released` note, clears the gate, and proceeds normally through clarify/plan/execute.
 - Rationale for the explicit release marker: a standby DRI parks *before* creating any work beads, so "are there beads yet" cannot distinguish a still-waiting initiative from one that has received direction. The append-only `standby: released` note disambiguates unambiguously across any number of resumes.
 
-**Epic invariant (at-e3m):** every new initiative has a root epic bead in the project repo. `ateam register` auto-creates this epic (via `bd -C <repo> create --type=epic`) and writes its id as the `epic:` line in the description. All work beads filed by the DRI, planner, and role agents must use `--parent <epicId>` so they live under the initiative's subtree. Multiple ring/phase epics are permitted — they are children of the root epic. Bare (unparented) work beads are acceptable only in trivial one-off cases. The `epic:` field is also written to initiative notes by the DRI ensure-epic step when absent (legacy initiatives). The dashboard reads `epic:` to filter the drill-in work-bead list to just this initiative's subtree.
+**Epic invariant (at-e3m):** every new initiative has a root epic bead in the project repo. `ateam register` auto-creates it (`bd -C <repo> create --type=epic`) and writes its id as the `epic:` line. All work beads filed by the DRI, planner, and role agents must use `--parent <epicId>` so they live under the initiative's subtree — ring/phase epics are permitted as children of the root. Bare (unparented) work beads are acceptable only in trivial one-off cases. The dashboard reads `epic:` to filter the drill-in work-bead list to this initiative's subtree.
 
-**DRI ensure-epic step, legacy branch (initiative registered before at-e3m, `epic:` field absent from `ateam show <id>`):** (1) in the project repo, create the root epic — `bd create --type=epic --title="<initiative title>" --priority=2 --json` — and capture the epic id from the JSON output; (2) record it in the initiative registry — `printf 'epic: <epicId>\n' > /tmp/epic-note.txt && ateam note <initiativeId> --file /tmp/epic-note.txt`; (3) use that epic id as `EPIC_ID` for all subsequent spawn prompts in this session.
+**DRI ensure-epic step, legacy branch** (initiative registered before at-e3m, `epic:` absent from `ateam show <id>`): (1) create the root epic in the project repo — `bd create --type=epic --title="<initiative title>" --priority=2 --json`, capture the id; (2) record it — `printf 'epic: <epicId>\n' > /tmp/epic-note.txt && ateam note <initiativeId> --file /tmp/epic-note.txt`; (3) use it as `EPIC_ID` for all subsequent spawn prompts this session.
 
 ## Commands
 
@@ -50,13 +52,14 @@ Write the body to a temp file first (avoids the newline-# safety prompt), then:
 
 This prints the new issue id on stdout.
 
-- Resume match (open): `ateam resume-match "$PWD"` — prints the id of the OPEN initiative whose description contains an exact `worktree: <path>` line, or nothing on no match. Exact-line matching avoids prefix collisions (e.g. `/a/b` matching `worktree: /a/b/c`).
-- Resume match (closed): `ateam resume-match-closed "$PWD"` — same match over CLOSED initiatives (most-recently-created first). The no-parameter /dri flow calls this when there is no open match, so a delivered/closed initiative in the cwd is surfaced to the human (resume vs. start new) instead of silently ignored.
+- Resume match (open): `ateam resume-match "$PWD"` — id of the OPEN initiative whose description contains an exact `worktree: <path>` line, or nothing (exact-line matching avoids prefix collisions like `/a/b` matching `worktree: /a/b/c`).
+- Resume match (closed): `ateam resume-match-closed "$PWD"` — same over CLOSED initiatives (most-recent first); the no-parameter /dri flow calls this when there's no open match, so a delivered/closed initiative in the cwd is surfaced (resume vs. start new) instead of silently ignored.
+- Resolve initiative (open, ancestor-or-self): `ateam resolve-initiative "$PWD"` — id of the OPEN initiative whose `worktree:` is the path itself **or any ancestor**, longest match wins; nothing on no match. The plugin's hooks use this ancestor-matching sibling because a session's cwd may be anywhere under the worktree; /dri keeps exact `resume-match` because it owns the checkout root.
 
-  Note: `bd search "<text>"` does NOT search description body content — it only matches titles. Do not use it as a fallback.
+  Note: `bd search "<text>"` does NOT search description bodies, only titles — never use it as a fallback.
 
 - Phase changes and session starts: `ateam note <id> --file <file>`.
-- On delivery (PR opened): status note `delivered` with the PR URL, leave the initiative **OPEN**, AND record the structured `pr:` field (see SKILL.md Phase 5 — required for pr-shepherd routing). A PR that is merely opened is not done — the initiative stays open in an `awaiting-merge` state so a future no-parameter /dri can resume it.
+- On delivery (PR opened): status note `delivered` with the PR URL, leave the initiative **OPEN** in `awaiting-merge`, AND record the structured `pr:` field (SKILL.md Phase 5 — required for pr-shepherd routing). Opened is not done — the initiative stays resumable until merged.
 - Close: ONLY when the PR is merged or a human explicitly closes the initiative — `ateam close <id> --reason "merged: <PR URL>"` (or the human's reason). Never close on PR-open alone.
 - Reopen: `ateam reopen <id>` — when the human chooses to resume a closed (delivered) initiative surfaced by `resume-match-closed`.
 
