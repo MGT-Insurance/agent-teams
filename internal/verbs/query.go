@@ -22,7 +22,7 @@ func RegisterQueryKong(p *cli.Parser) {
 	p.AddVerb("human-list", "List gated beads awaiting human input.", &humanListKong{})
 	p.AddVerb("show", "Show details for an initiative.", &showKong{})
 	p.AddVerb("learnings", "Print role memories (hot+fresh, or all).", &learningsKong{})
-	p.AddVerb("recall", "Search role memories by substring query.", &recallKong{})
+	p.AddVerb("recall", "Search role memories by tokenized query, ranked by matched terms.", &recallKong{})
 	p.AddVerb("prime", "Print cross-project user preferences.", &primeKong{})
 	p.AddVerb("roles", "List role namespaces present in workspace memories.", &rolesKong{})
 	p.AddVerb("memories-json", "List all role memories as JSON with tier + applied signal.", &memoriesJsonKong{})
@@ -234,7 +234,7 @@ func (c *learningsKong) Run(ctx *cli.Context) error {
 // recallKong performs a substring search over a role's memories.
 type recallKong struct {
 	Role  string `arg:"" name:"role"  required:"" help:"Role namespace to search."`
-	Query string `arg:"" name:"query" required:"" help:"Substring to search for."`
+	Query string `arg:"" name:"query" required:"" help:"Search terms; split on whitespace, matched case-insensitively, ranked by terms matched."`
 }
 
 func (c *recallKong) Run(ctx *cli.Context) error {
@@ -482,10 +482,17 @@ func runLearnings(ctx *cli.Context, role string) error {
 		}
 	}
 
-	// Served set = union(hotKeys, freshKeys). Fall back to allRoleKeys when both
-	// are empty, preserving zero-tier backward-compat behavior.
+	// Served set = hot block (sorted) followed by fresh block (sorted) — hot
+	// leads because it carries the highest-value curated entries
+	// (agent-teams-bbsz.23). A flat sort.Strings across the union would
+	// alphabetize "fresh:" ahead of "hot:" and undo that ordering, so each
+	// tier is sorted independently instead of the merged set as a whole.
+	// Falls back to allRoleKeys (sorted) when both tiers are empty,
+	// preserving zero-tier backward-compat behavior.
 	var keys []string
 	if len(hotKeys) > 0 || len(freshKeys) > 0 {
+		sort.Strings(hotKeys)
+		sort.Strings(freshKeys)
 		seen := make(map[string]struct{}, len(hotKeys)+len(freshKeys))
 		for _, k := range hotKeys {
 			if _, dup := seen[k]; !dup {
@@ -501,59 +508,142 @@ func runLearnings(ctx *cli.Context, role string) error {
 		}
 	} else {
 		keys = allRoleKeys
+		sort.Strings(keys)
 	}
 	if len(keys) == 0 {
+		fmt.Fprintf(ctx.Stdout, "[learnings %s: EMPTY]\n", role)
 		return nil
 	}
 
-	sort.Strings(keys)
+	// Build the payload in a buffer first so the trailer can report its exact
+	// size (chars = len of this string, i.e. bytes — documented in
+	// TestLearnings_TrailerCharsCountsBytesNotRunes) without a second pass over raw.
+	var payload strings.Builder
 	for i, k := range keys {
-		fmt.Fprintln(ctx.Stdout, k)
-		fmt.Fprintln(ctx.Stdout, raw[k].(string))
+		fmt.Fprintln(&payload, k)
+		fmt.Fprintln(&payload, raw[k].(string))
 		if i < len(keys)-1 {
-			fmt.Fprintln(ctx.Stdout)
+			fmt.Fprintln(&payload)
 		}
 	}
+	fmt.Fprint(ctx.Stdout, payload.String())
+
+	fmt.Fprintf(ctx.Stdout, "[learnings %s: %d entries, %d chars, hot %d fresh %d]\n",
+		role, len(keys), payload.Len(), len(hotKeys), len(freshKeys))
 	return nil
 }
 
-// runRecall performs a substring search over a role's memories (both hot and
-// cold), printing key + body for each match.
+// recallNearestCount caps how many near-miss keys are listed when a recall
+// query matches nothing (agent-teams-bbsz.22).
+const recallNearestCount = 5
+
+// runRecall performs a tokenized, ranked search over a role's memories (both
+// hot and cold). The query is split on whitespace into lowercase tokens; a
+// key is a match when at least one token appears (case-insensitively) as a
+// substring of its key or body. Matches are ranked by the number of DISTINCT
+// tokens matched, most first, tie-broken by key ascending — so a
+// multi-word query surfaces its best-covered memories first instead of an
+// arbitrary substring order.
+//
+// A header line is always printed first (agent-teams-bbsz.22, fixing
+// bbsz.13's silent zero-byte miss at exit 0): on zero matches it is followed
+// by up to recallNearestCount keys "nearest" to the query. This branch only
+// runs when every candidate scored 0, so the shared score-then-key sort
+// degenerates to a plain alphabetical ordering — "nearest" is really just
+// the role's first N keys by key ascending, not a token-overlap ranking. It
+// still shows the searcher what content actually exists for the role.
 func runRecall(ctx *cli.Context, role, query string) error {
-	query = strings.ToLower(query)
 	rolePrefix := role + ":"
+	tokens := recallTokenize(query)
 
 	var raw map[string]any
 	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
 		return err
 	}
 
-	var keys []string
+	type scoredKey struct {
+		key   string
+		score int
+	}
+	var candidates []scoredKey
 	for k, v := range raw {
-		if _, ok := v.(string); !ok {
+		body, ok := v.(string)
+		if !ok {
 			continue
 		}
 		if !strings.HasPrefix(k, rolePrefix) {
 			continue
 		}
-		body := v.(string)
-		if strings.Contains(strings.ToLower(k), query) || strings.Contains(strings.ToLower(body), query) {
-			keys = append(keys, k)
+		candidates = append(candidates, scoredKey{key: k, score: recallMatchedTokens(tokens, k, body)})
+	}
+
+	byScoreThenKey := func(s []scoredKey) {
+		sort.Slice(s, func(i, j int) bool {
+			if s[i].score != s[j].score {
+				return s[i].score > s[j].score
+			}
+			return s[i].key < s[j].key
+		})
+	}
+
+	var matches []scoredKey
+	for _, c := range candidates {
+		if c.score > 0 {
+			matches = append(matches, c)
 		}
 	}
-	if len(keys) == 0 {
+	byScoreThenKey(matches)
+
+	fmt.Fprintf(ctx.Stdout, "[recall %s %q: %d matches]\n", role, query, len(matches))
+
+	if len(matches) == 0 {
+		nearest := append([]scoredKey(nil), candidates...)
+		byScoreThenKey(nearest)
+		if len(nearest) > recallNearestCount {
+			nearest = nearest[:recallNearestCount]
+		}
+		if len(nearest) > 0 {
+			nearestKeys := make([]string, len(nearest))
+			for i, c := range nearest {
+				nearestKeys[i] = c.key
+			}
+			fmt.Fprintf(ctx.Stdout, "nearest: %s\n", strings.Join(nearestKeys, " "))
+		}
 		return nil
 	}
 
-	sort.Strings(keys)
-	for i, k := range keys {
-		fmt.Fprintln(ctx.Stdout, k)
-		fmt.Fprintln(ctx.Stdout, raw[k].(string))
-		if i < len(keys)-1 {
+	for i, m := range matches {
+		fmt.Fprintln(ctx.Stdout, m.key)
+		fmt.Fprintln(ctx.Stdout, raw[m.key].(string))
+		if i < len(matches)-1 {
 			fmt.Fprintln(ctx.Stdout)
 		}
 	}
 	return nil
+}
+
+// recallTokenize splits query on whitespace into lowercase tokens.
+func recallTokenize(query string) []string {
+	fields := strings.Fields(query)
+	tokens := make([]string, len(fields))
+	for i, f := range fields {
+		tokens[i] = strings.ToLower(f)
+	}
+	return tokens
+}
+
+// recallMatchedTokens returns the count of distinct tokens that appear
+// case-insensitively as a substring of key or body.
+func recallMatchedTokens(tokens []string, key, body string) int {
+	lowerKey := strings.ToLower(key)
+	lowerBody := strings.ToLower(body)
+	count := 0
+	for _, t := range tokens {
+		if strings.Contains(lowerKey, t) || strings.Contains(lowerBody, t) {
+			count++
+		}
+	}
+	return count
 }
 
 // runPrime prints cross-project user preferences from bd memories.
