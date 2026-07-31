@@ -18,6 +18,14 @@ ateam steward init && cd "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}/steward/sessio
 
 `--permission-mode bypassPermissions` is required — a background steward launched without it hangs invisibly on its first permission prompt, with no one watching to approve it. Running `ateam steward init` BEFORE the session starts ensures the session marker exists before any SessionStart hook can fire for it.
 
+`steward start` does NOT start a relay. Pass `--relay` if you want it to. Without one, outbound `ateam notify` still works but nothing receives inbound replies, and the command says so on stdout — start a relay yourself with `ateam relay` when you want the steward to listen.
+
+## The relay singleton
+
+`ateam relay` claims `<home>/mailbox/relay.pid` under an advisory kernel lock for as long as it runs, and refuses to start — naming the incumbent's pid — while another relay holds it. One bot token permits exactly one poller, so a second relay against the same workspace is always wrong; the lock makes it impossible rather than merely discouraged, no matter who launched the incumbent (you, `steward start --relay`, or a future launcher).
+
+The lock is released by the kernel whenever the holder's process ends, including a SIGKILL or a reboot, so a crashed relay never wedges the next one shut and the pidfile never needs deleting by hand.
+
 `ateam steward init` is idempotent — safe to run again if you're ever unsure it's been done for this machine. Pure backstop: `steward start` already runs it.
 
 ## Why SKILL.md §1's startup order is what it is

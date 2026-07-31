@@ -185,6 +185,107 @@ func TestRelay_EnabledFalse_NoStderrNoise(t *testing.T) {
 	}
 }
 
+// ── singleton lock (agent-teams-25c5.2) ─────────────────────────────────────
+
+// TestRelay_LockHeld_Refuses verifies that Run refuses to start when another
+// relay already holds the singleton lock: it returns a non-nil error naming
+// the incumbent pid, and — critically — never touches the transport
+// (relayFakeTransport.received stays false), since the guard sits before
+// transportFor.
+func TestRelay_LockHeld_Refuses(t *testing.T) {
+	ctx := newRelayCtx(t)
+
+	incumbent, incumbentPid, err := acquireRelayLock(ctx)
+	if err != nil {
+		t.Fatalf("seed incumbent lock: unexpected error: %v", err)
+	}
+	defer incumbent.Release()
+
+	ft := &relayFakeTransport{}
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSend{}).send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+
+	err = cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a refusal error, got nil")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("pid %d", incumbentPid)) {
+		t.Errorf("expected error to name incumbent pid %d, got: %v", incumbentPid, err)
+	}
+	if !strings.Contains(err.Error(), relayPidfilePath(ctx)) {
+		t.Errorf("expected error to name pidfile path %q, got: %v", relayPidfilePath(ctx), err)
+	}
+	if ft.received {
+		t.Error("Receive must NOT be called when the lock is already held")
+	}
+}
+
+// TestRelay_NormalReturn_ReleasesLock verifies that a relay run that
+// completes normally (Receive returns nil against a fake transport with no
+// replies) leaves NO pidfile behind — the deferred lock.Release() ran. This
+// is load-bearing beyond unit coverage: tests/steward-loop.test.sh and
+// several other shell tests invoke the real `ateam relay` binary multiple
+// times sequentially against the same $AGENT_TEAMS_HOME, and every
+// invocation after the first would wrongly refuse if this leaked.
+func TestRelay_NormalReturn_ReleasesLock(t *testing.T) {
+	ctx := newRelayCtx(t)
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return &relayFakeTransport{}, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSend{}).send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if _, err := os.Stat(relayPidfilePath(ctx)); !os.IsNotExist(err) {
+		t.Errorf("expected no pidfile after normal return, stat err = %v", err)
+	}
+
+	// A second sequential run against the SAME ctx.Home must succeed too —
+	// exactly the steward-loop.test.sh shape (relay invoked three times
+	// against one $AGENT_TEAMS_HOME).
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("second sequential run: expected nil error, got %v", err)
+	}
+}
+
+// TestRelay_EnabledFalse_ClaimsNoLock verifies that a messaging-not-configured
+// relay never claims the singleton lock: the enabled check must short-circuit
+// BEFORE acquireRelayLock, so tests/e2e-loop.test.sh's transport-unset case
+// stays inert (no pidfile written at all).
+func TestRelay_EnabledFalse_ClaimsNoLock(t *testing.T) {
+	ctx := newRelayCtx(t)
+	cmd := &relayKong{
+		enabled:             func(string) bool { return false },
+		transportFor:        func(string) (transport.Transport, error) { return &relayFakeTransport{}, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSend{}).send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if _, err := os.Stat(relayPidfilePath(ctx)); !os.IsNotExist(err) {
+		t.Errorf("expected no pidfile when disabled, stat err = %v", err)
+	}
+}
+
 // ── handler: mapped thread → ateam send ───────────────────────────────────────
 
 // TestRelay_MappedThread_SendCalled verifies that a reply with a known
