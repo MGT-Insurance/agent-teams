@@ -44,7 +44,7 @@ ateam resume <id>                                 # relaunch an existing initiat
 
 Both launch the background session with `--permission-mode bypassPermissions` for hands-off operation: the DRI runs without permission prompts and spawns teammates with `mode: bypassPermissions`. **Safety note:** bypass means agents run commands unprompted — the guardrails are worktree isolation (each teammate is confined to its own worktree) and role boundaries (teammates only commit to their own track; the DRI owns branch integration and opens the PR; merging stays a human decision). The DRI skill enforces these.
 
-The session shows up in `claude agents`; attach to answer gates (`claude attach <session-name>`), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
+The session shows up in `claude agents`; attach to answer gates (`claude attach <id>` — the short id from that listing, not the session name, which does not resolve), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 
 ## Eval suite
 
