@@ -47,8 +47,9 @@ built only from facts already present in its BEFORE.
 > visibility into those sessions from here, so I'm not tracking their state —
 > flagging only that the queue is longer than what this machine is running.
 
-**AFTER** (117 words, rule 1 did the cutting — a length fix alone never touches
-this message, since it was already under budget):
+**AFTER** (117 words, rule 1 did the cutting — this message was already under
+budget, so a budget alone never reaches it; rule 2's ban on restating and
+pointing-back binds at any length, which is the half that does):
 
 > Quiet window — nothing new from me, nothing wrong. Nothing is executing: the
 > PR #140 merge decision (at-jno7) is waiting on you, the spawn role-drop plan
@@ -113,9 +114,9 @@ too — nothing here is a plan Eric needs to open to decide.
 
 ### Mechanism before effect
 
-**BEFORE** — a message to at-zrjt's topic, 641 words, reaching the actual ask
-400 words in, under bold headers naming a hook filename, a `SubagentStart`
-event, and four `file:line` citations before ever stating what breaks:
+**BEFORE** — a message to at-zrjt's topic, 641 words, reaching the actual ask at
+word 341, under bold headers naming a hook filename, a `SubagentStart` event,
+and four `file:line` citations before ever stating what breaks:
 
 > **4 — what the "something else" is**
 >
@@ -136,7 +137,7 @@ event, and four `file:line` citations before ever stating what breaks:
 > memory — or file it separately?
 >
 > It buys: a subagent currently looks the same whether it loaded role memory
-> or not. A two-line marker in that hook fixes that.
+> or not. One line of shell in that hook fixes that.
 >
 > It costs: touching one file outside the scope you gave this initiative
 > (agents/ + dri/ + steward/ only).
