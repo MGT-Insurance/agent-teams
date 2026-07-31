@@ -82,10 +82,13 @@ ateam dispatch \
   --body-file "$TMPFILE" \
   --launch-prompt "/agent-teams:review-pr {id}" \
   --skip-epic \
+  --topic reviews \
   --model sonnet
 ```
 
 `--skip-epic` prevents the review initiative from being grouped under an epic. `--launch-prompt` causes the background session to run the `review-pr` skill instead of the full `/dri` playbook. `--model sonnet` overrides the default Opus model — PR reviews don't need the top-tier model.
+
+`--topic reviews` posts the registration line into the single shared **Reviews** topic instead of opening a forum topic per review, and writes no `thread:` label on the initiative bead. Pass it so a human-dispatched review behaves exactly like the webhook path. Do NOT add a `pr-title` line to `$TMPFILE` — `ateam dispatch` fetches the title itself, deliberately in one place rather than in each caller.
 
 ### 5. Report and hand off
 

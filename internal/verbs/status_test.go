@@ -30,6 +30,8 @@ func TestComputeExecutionStatus(t *testing.T) {
 	noSession := []agentSession{}
 	otherSession := []agentSession{session("/other/path", "busy", "working")} // no cwd match
 
+	// Rule 3's declared-label sub-cascade has its own table in
+	// TestComputeExecutionStatus_Rule3.
 	tests := []struct {
 		name     string
 		labels   []string
@@ -152,6 +154,55 @@ func TestComputeExecutionStatus(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("computeExecutionStatus(%v, ..., %q) = %q, want %q",
 					tc.labels, tc.wt, got, tc.want)
+			}
+		})
+	}
+}
+
+// ── rule 3's sub-cascade (external_review.go §7) ──────────────────────────────
+
+// TestComputeExecutionStatus_Rule3 pins the order inside rule 3 — the
+// declared label, then REVIEWABLE.
+func TestComputeExecutionStatus_Rule3(t *testing.T) {
+	const wt = "/home/agent/worktrees/rule3"
+
+	reviewGated := []string{"human", "gate:review"}
+	handedOff := []string{"human", "gate:review", externalReviewLabel}
+	noSession := []agentSession{}
+	busySession := []agentSession{session(wt, "busy", "")}
+
+	tests := []struct {
+		name     string
+		labels   []string
+		sessions []agentSession
+		want     string
+	}{
+		// (a) the declared label.
+		{"handed off", handedOff, noSession, StatusAwaitingExternalReview},
+
+		// (b) REVIEWABLE — today's answer, unchanged.
+		{"review-gated, not handed off", reviewGated, noSession, "REVIEWABLE"},
+
+		// Rules 1, 2 and 4 still win over everything rule 3 can say.
+		{
+			"rule 1 beats a handed-off row",
+			[]string{"human", "gate:question", "gate:review", externalReviewLabel},
+			noSession, "NEEDS-DECISION",
+		},
+		{"rule 2 beats a handed-off row", handedOff, busySession, "IN-PROGRESS"},
+		{
+			"un-gated: the label is inert",
+			[]string{externalReviewLabel},
+			noSession, "IN-PROGRESS",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeExecutionStatus(tc.labels, tc.sessions, wt)
+			if got != tc.want {
+				t.Errorf("computeExecutionStatus(%v, ...) = %q, want %q",
+					tc.labels, got, tc.want)
 			}
 		})
 	}
@@ -404,9 +455,9 @@ func TestExecutionStatusCmd_Run_GracefulDegrade(t *testing.T) {
 	}
 
 	agentsErr := fmt.Errorf("claude not in PATH")
-	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) {
-		return nil, agentsErr
-	}}
+	cmd := &executionStatusKong{
+		agentsFunc: func() ([]agentSession, error) { return nil, agentsErr },
+	}
 
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -421,6 +472,9 @@ func TestExecutionStatusCmd_Run_GracefulDegrade(t *testing.T) {
 	}
 	if result[0].ExecutionStatus != "unknown" {
 		t.Errorf("expected unknown on agents failure, got %q", result[0].ExecutionStatus)
+	}
+	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
+		t.Errorf("expected no stderr, got %q", s)
 	}
 }
 
@@ -479,9 +533,9 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 		Stderr: &bytes.Buffer{},
 	}
 
-	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) {
-		return fakeSessions, nil
-	}}
+	cmd := &executionStatusKong{
+		agentsFunc: func() ([]agentSession, error) { return fakeSessions, nil },
+	}
 
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -529,6 +583,9 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 			t.Errorf("%s: expected empty pr, got %q", id, byID[id].PR)
 		}
 	}
+	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
+		t.Errorf("expected no stderr, got %q", s)
+	}
 }
 
 // TestExecutionStatusCmd_Run_AskAndPRFields verifies that the ask and pr fields
@@ -555,15 +612,18 @@ func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
 		},
 	}
 
-	bdClient := bd.NewClientWithExec("/fake/home", fakeListExec(issues))
+	home := t.TempDir()
+	bdClient := bd.NewClientWithExec(home, fakeListExec(issues))
 	buf := &bytes.Buffer{}
 	ctx := &cli.Context{
-		Home:   "/fake/home",
+		Home:   home,
 		BD:     bdClient,
 		Stdout: buf,
 		Stderr: &bytes.Buffer{},
 	}
-	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+	cmd := &executionStatusKong{
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+	}
 
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -619,15 +679,18 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 		},
 	}
 
-	bdClient := bd.NewClientWithExec("/fake/home", fakeListExec(issues))
+	home := t.TempDir()
+	bdClient := bd.NewClientWithExec(home, fakeListExec(issues))
 	buf := &bytes.Buffer{}
 	ctx := &cli.Context{
-		Home:   "/fake/home",
+		Home:   home,
 		BD:     bdClient,
 		Stdout: buf,
 		Stderr: &bytes.Buffer{},
 	}
-	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
+	cmd := &executionStatusKong{
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+	}
 
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -647,6 +710,9 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 	}
 	if r.PR != prURL {
 		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	}
+	if r.ExecutionStatus != "REVIEWABLE" {
+		t.Errorf("execution_status = %q, want REVIEWABLE", r.ExecutionStatus)
 	}
 }
 
@@ -728,5 +794,84 @@ func TestExtractLatestAsk_UnclosedThenValid(t *testing.T) {
 	}
 	if got.context != "valid-ctx" {
 		t.Errorf("context = %q, want valid-ctx", got.context)
+	}
+}
+
+// ── p9dm.17: the declared external-review state wired into rule 3 ───────────
+
+// statusRun runs execution-status over issues and returns the decoded rows
+// (by id) plus whatever went to stderr. It fails the test if stdout is not a
+// single parseable JSON array — stdout purity is contractual, since
+// consumers parse it.
+func statusRun(t *testing.T, home string, issues []bd.Issue) (map[string]initiativeStatus, string) {
+	t.Helper()
+
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   home,
+		BD:     bd.NewClientWithExec(home, fakeListExec(issues)),
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+	cmd := &executionStatusKong{
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	var rows []initiativeStatus
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout.String())), &rows); err != nil {
+		t.Fatalf("stdout is not pure JSON (%v): %q", err, stdout.String())
+	}
+	byID := make(map[string]initiativeStatus, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	return byID, stderr.String()
+}
+
+// prIssue builds an open initiative carrying a PR URL in its notes.
+func prIssue(id string, prNumber int, labels ...string) bd.Issue {
+	notes := ""
+	if prNumber > 0 {
+		notes = fmt.Sprintf("pr: https://github.com/MGT-Insurance/midgard/pull/%d\n", prNumber)
+	}
+	return bd.Issue{
+		ID:          id,
+		Title:       id,
+		Description: "worktree: /tmp/wt-" + id,
+		Labels:      labels,
+		Notes:       notes,
+		Status:      "open",
+	}
+}
+
+// TestExecutionStatusCmd_Run_HandoffAndReviewable is the loop-closing check:
+// a real run reports AWAITING-EXTERNAL-REVIEW for a handed-off initiative,
+// with the declared answer holding whether or not the initiative even has a
+// PR in its notes.
+func TestExecutionStatusCmd_Run_HandoffAndReviewable(t *testing.T) {
+	issues := []bd.Issue{
+		prIssue("at-handed", 4515, "human", "gate:review", externalReviewLabel),
+		prIssue("at-nopr", 0, "human", "gate:review", externalReviewLabel),
+		prIssue("at-plain", 4600, "human", "gate:review"),
+	}
+
+	rows, stderr := statusRun(t, t.TempDir(), issues)
+
+	want := []struct{ id, status string }{
+		{"at-handed", StatusAwaitingExternalReview},
+		{"at-nopr", StatusAwaitingExternalReview},
+		{"at-plain", "REVIEWABLE"},
+	}
+	for _, w := range want {
+		got := rows[w.id]
+		if got.ExecutionStatus != w.status {
+			t.Errorf("%s: got %s, want %s", w.id, got.ExecutionStatus, w.status)
+		}
+	}
+	if stderr != "" {
+		t.Errorf("expected no stderr on a clean run, got %q", stderr)
 	}
 }

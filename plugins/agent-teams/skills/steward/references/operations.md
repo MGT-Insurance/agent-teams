@@ -30,6 +30,20 @@ ateam steward init && cd "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}/steward/sessio
 
 **Wake plumbing.** The Steward wakes on mail arriving at the reserved `steward` handle (doorbell + wake-watcher machinery — see the hooks section of the plugin's CLAUDE.md) or on the periodic heartbeat.
 
+## `ateam execution-status` — what the values mean
+
+The startup load (SKILL.md §1), gate enrichment (§2), and every direct question about the landscape read this verb. One entry per open initiative: `id`, `title`, `worktree`, `labels`, `execution_status`, `ask`, `pr`. The statuses:
+
+- `NEEDS-DECISION` — a question gate. Eric's, now.
+- `IN-PROGRESS` — actively being worked, or open with no gate. Not his.
+- `REVIEWABLE` — a PR awaiting ERIC that he has not yet looked at. This is the queue that means "you"; it does not mean "a PR exists."
+- `AWAITING-EXTERNAL-REVIEW` — **healthy, not idle.** Eric has declared he is done looking (references/handoff.md); the PR is with third-party reviewers. NOT ours and NOT his.
+- `unknown` — `claude agents --json` failed; every row degrades to this and no status is trustworthy for that run.
+
+**`AWAITING-EXTERNAL-REVIEW` is the trap.** It is the one healthy state that looks exactly like a stall: no live session, no movement, a gate label still on the bead. Chasing things that look idle is your whole job, so absent an explicit rule you will chase this one and generate precisely the noise the state exists to remove. Explicitly, then: do NOT nudge it, do NOT surface it in a briefing as needing attention, do NOT count it as stalled or hung, do NOT ask Eric about it. It leaves the state only when he says so (`ateam handoff <id> --clear`), or when the DRI resumes and runs `ateam clear-gate`.
+
+`hung-scan` never sees it as a problem either: a handed-off initiative keeps its `human` + `gate:review` pair, so it still classifies AWAITING-HUMAN and SKILL.md §2's scan bullets already say "no action." That pair is retained deliberately — dropping it would arm both the DEAD escalation ladder and the work-product flatline trip (`internal/verbs/external_review.go` §2).
+
 ## `ateam hung-scan` — the full field list
 
 SKILL.md §2's scan bullets key off a subset of these. One JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK`, plus:
@@ -53,4 +67,4 @@ Gate->Steward routing (`notifyToSteward`) is guarded on `StewardSessionMarkerPat
 Two ways to disable it (paths below are under the workspace root — `$AGENT_TEAMS_HOME`, default `~/.agent-teams`):
 
 - **Manual**: delete `<workspace>/steward/session` (the marker lives inside it). Routing stops immediately; `ateam steward init` re-creates it idempotently if you want it back.
-- **`ateam steward remove`**: the supported way to de-steward a machine. Removes the session dir (marker included) and the doorbell (`<workspace>/mailbox/steward.wake`); idempotent (nothing to remove is still a success). Keeps `<workspace>/steward/ledger.jsonl` and `<workspace>/steward/briefing-thread` by default and prints their paths — that's the state to copy over when relocating the Steward to another machine. Pass `--purge` to delete those too. It also reports (never modifies) how many unread messages are still assigned to the `steward` handle, so mid-flight mail is visible before you walk away.
+- **`ateam steward remove`**: the supported way to de-steward a machine. Removes the session dir (marker included) and the doorbell (`<workspace>/mailbox/steward.wake`); idempotent (nothing to remove is still a success). Keeps THREE files by default — `<workspace>/steward/ledger.jsonl`, `<workspace>/steward/briefing-thread` and `<workspace>/steward/reviews-thread` — and prints them under `kept (carry these when relocating the Steward to another machine):`. Copy over all three, not just the ledger: each thread-ref file is per-machine storage, and `reviews-thread` is what binds this machine to the shared Reviews topic, so leaving it behind makes the new machine's first review open a SECOND "Reviews" topic with no error anywhere. Pass `--purge` to delete all three instead. It also reports (never modifies) how many unread messages are still assigned to the `steward` handle, so mid-flight mail is visible before you walk away.

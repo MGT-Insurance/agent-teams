@@ -411,6 +411,17 @@ func (c *clearGateKong) Run(ctx *cli.Context) error {
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
+	if err != nil {
+		return err
+	}
+	// H -> U (external_review.go §9): a handed-off initiative resuming work
+	// must not leave externalReviewLabel stranded, or it silently re-parks
+	// the initiative the next time a review gate is raised. Removal of an
+	// absent label is a no-op, same as the three removals above.
+	out, err = ctx.BD.Run("label", "remove", c.ID, externalReviewLabel)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
 	return err
 }
 
@@ -1061,6 +1072,7 @@ func RegisterWriteKong(p *cli.Parser) {
 		notify: notifyToSteward,
 	})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
+	p.AddVerb("handoff", "Declare (or clear) that Eric is done looking at an initiative; it's on the team for external review.", &handoffKong{})
 	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})
 	p.AddVerb("close", "Close an initiative.", &closeKong{
 		runUpdateLocalMain: runUpdateLocalMainScript,

@@ -46,6 +46,16 @@ type knownStewardTopicFunc func(ctx *cli.Context, threadRef string) bool
 // ref, and a General-topic/DM message has no real thread to report.
 const nonTopicThreadRefPlaceholder = "(general)"
 
+// reviewsReplyReason is the fixed reason spliced into the steward-unrouted
+// envelope built for a reply posted in the shared Reviews topic (see
+// handleReviewsReply below). A Reviews reply can never be tied back to a
+// single owning initiative (agent-teams-p9dm.14 design note: review
+// interaction flows through GitHub instead, handled by route-pr-event's
+// comment_reply transition), so it is routed via the same steward-unrouted
+// envelope shape used for other genuinely-unroutable traffic, distinguished
+// only by this reason string.
+const reviewsReplyReason = "reply in shared Reviews topic"
+
 // replyPreviewLen caps how much of a reply's text appears in the "received
 // message" log line (transport.PreviewText). N=70 per "N ≈ 60-80" guidance —
 // not configurable, no new flags.
@@ -245,9 +255,9 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 // (privacy OFF, #114/#115), so EVERY machine's relay receives EVERY human
 // message. Exactly-once routing means each relay must SUPPRESS the
 // branches it does not own, not rescue a drop. This machine's own steward
-// topics (briefing short-circuit below) is never suppressed — it only ever
-// matches THIS machine's own persisted thread ref. Everything else is
-// gated: a TIED reply (thread resolves to exactly one open initiative)
+// topics (briefing and reviews short-circuits below) are never suppressed —
+// they only ever match THIS machine's own persisted thread ref. Everything
+// else is gated: a TIED reply (thread resolves to exactly one open initiative)
 // routes only when claimsLocally reports this machine holds that
 // initiative's checkout; UNTIED traffic (no thread ref, a bd query error,
 // or zero/2+ open matches) routes only when isFallbackResponder reports
@@ -329,6 +339,27 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 		transport.Logf(ctx.Stderr, 2, "read steward briefing thread ref: %v", err)
 	} else if briefingRef != "" && reply.ThreadRef == briefingRef {
 		return c.handleBriefingReply(ctx, reply)
+	}
+
+	// Reviews-channel short-circuit (agent-teams-p9dm.14, agent-teams-p9dm.50):
+	// a message posted in the shared Reviews topic (contract: ReviewsHandle,
+	// StewardReviewsThreadPath in steward_seams.go) has no initiative bead
+	// behind it by design, exactly like the Briefings topic above — `ateam
+	// dispatch --topic reviews` deliberately writes no "thread:" label (that
+	// omission is load-bearing: it is what stops the first `ateam close` from
+	// closing the shared topic for everyone), so the bd label lookup below
+	// would always miss and the message would die silently, the same failure
+	// class as agent-teams-8beo.1. If this reply's thread ref matches the
+	// persisted reviews-channel thread ref, route it to the Steward directly,
+	// bypassing the initiative lookup entirely, before the peer-steward-topic
+	// skip below can mistake it for another machine's topic. An absent/empty
+	// thread-ref file (no review ever posted, or a read failure) falls
+	// through to the existing initiative-reply path below.
+	reviewsRef, err := readThreadRefFile(StewardReviewsThreadPath(ctx))
+	if err != nil {
+		transport.Logf(ctx.Stderr, 2, "read steward reviews thread ref: %v", err)
+	} else if reviewsRef != "" && reply.ThreadRef == reviewsRef {
+		return c.handleReviewsReply(ctx, reply)
 	}
 
 	// Peer steward-topic skip (agent-teams-5y8a.5): a reply whose thread ref
@@ -599,6 +630,22 @@ func (c *relayKong) handleBriefingReply(ctx *cli.Context, reply transport.Reply)
 	}
 
 	c.sendEnvelopeToSteward(ctx, reply.MessageRef, envelope, "briefing reply")
+	return nil
+}
+
+// handleReviewsReply routes a reply whose thread ref matches the Steward's
+// persisted Reviews-topic thread ref (see the short-circuit in handleReply
+// above). Unlike handleBriefingReply, it does not build a dedicated envelope
+// type: a Reviews reply carries no initiative id and cannot be tied to one
+// (see the design note on agent-teams-p9dm.14), so it is sent to the Steward
+// as a steward-unrouted envelope carrying reviewsReplyReason — the same
+// envelope shape genuinely-unroutable traffic uses elsewhere in this file.
+// Deliberately NOT gated on isFallbackResponder, unlike the untied/ambiguous
+// branches below: every machine that owns this reviews-thread ref must
+// forward a matching reply every time, not just the designated fallback
+// responder.
+func (c *relayKong) handleReviewsReply(ctx *cli.Context, reply transport.Reply) error {
+	c.sendUnroutedToSteward(ctx, reply.MessageRef, reply.ThreadRef, reviewsReplyReason, reply.Text)
 	return nil
 }
 

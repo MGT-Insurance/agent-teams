@@ -125,6 +125,8 @@ ateam hung-scan
 claude agents --all --json
 ```
 
+`AWAITING-EXTERNAL-REVIEW` rows are HEALTHY, not idle — handed off; never nudge one or brief it as needing him. Values: references/operations.md.
+
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry:
 
 - **STUCK, `hung:true`** — idle past threshold, no gate raised. Escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`) — judgment call, never autonomous. Reply returns as an ordinary steward-reply; record under `unblock-action`.
@@ -149,6 +151,10 @@ and answer from the records.
 - `sender`: one of six constants — `notify`, `notify-briefing`, `notify-direct`, `dispatch`, `close`, `relay-hung` — the verb, not a session. `relay-hung` is the hung-tick's automatic alert; its `session_id` may match yours (the relay inherits whoever started it) but that's not proof. `session_id`/`steward_cwd`/`pid` corroborate; `sender` is authoritative.
 - `UNDECLARED` — a call site didn't identify itself; say so, don't guess.
 - No matching record means the log shows nothing for that window, not "I didn't send it" — absence never proves non-authorship.
+
+**"What did that review find?"** — Reviews-topic follow-ups (retrieve from GitHub, never beads) and dispatching a deeper look: references/pr-reviews.md.
+
+**"I'm done with that one"** — Eric declares a PR handed off, in ANY thread, unprompted: run `ateam handoff <id>`. Never on your own initiative — his to declare, never yours to infer. Phrasings, which-initiative, reversal: references/handoff.md.
 
 ## 3. Authority rules (v1, absolute)
 

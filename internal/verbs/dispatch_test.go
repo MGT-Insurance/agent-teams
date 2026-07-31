@@ -3,6 +3,7 @@ package verbs
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -2221,5 +2222,321 @@ func TestDispatch_EagerTopic_SendError_FailSoft(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "fail-soft") {
 		t.Errorf("stderr missing 'fail-soft' warning: %q", stderr.String())
+	}
+}
+
+// ── dispatch --topic: the shared Reviews topic (agent-teams-p9dm.10) ─────────
+
+const (
+	testPROwnerRepo = "MGT-Insurance/midgard"
+	testPRURL       = "https://github.com/MGT-Insurance/midgard/pull/4517"
+)
+
+// reviewBodyFile writes the pr-number/pr-repo/pr-url metadata block that
+// route.go's spawnReviewInitiative and the dispatch-review-pr skill both
+// hand dispatch via --body-file.
+func reviewBodyFile(t *testing.T) string {
+	t.Helper()
+	return makeTempBodyFile(t, "pr-number: 4517\npr-repo: "+testPROwnerRepo+"\npr-url: "+testPRURL+"\n")
+}
+
+// reviewDispatch builds a --topic reviews dispatchKong wired to ft, with the
+// PR metadata body and a stubbed prTitle.
+func reviewDispatch(t *testing.T, repoDir, slug string, ft *fakeTransport, prTitle prTitleFunc, labelAdd labelAddFunc) *dispatchKong {
+	t.Helper()
+	return &dispatchKong{
+		Problem:          "Review PR #4517",
+		Slug:             slug,
+		Repo:             repoDir,
+		BodyFile:         reviewBodyFile(t),
+		NoLaunch:         true,
+		SkipEpic:         true,
+		Topic:            ReviewsHandle,
+		git:              &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }},
+		launch:           func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		transportEnabled: func(home string) bool { return true },
+		transportFor:     fakeTransportFor(ft, nil),
+		labelAdd:         labelAdd,
+		prTitle:          prTitle,
+	}
+}
+
+// TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel is the core of
+// agent-teams-p9dm.10: with --topic reviews, dispatch posts the frozen
+// ReviewsStartLineFormat line into the shared, file-backed Reviews topic
+// (persisting the returned ref to StewardReviewsThreadPath) and writes NO
+// "thread:" label on the initiative bead — the no-label part is load-bearing
+// per the contract, not an omission.
+func TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-rev1"
+				issue.Title = "Review PR #4517 (MGT-Insurance/midgard)"
+			}
+			return nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "901"}
+	labelAddCalled := false
+	cmd := reviewDispatch(t, repoDir, "review-pr-4517", ft,
+		func(ownerRepo string, prNumber int) (string, error) {
+			if ownerRepo != testPROwnerRepo || prNumber != 4517 {
+				t.Errorf("prTitle(%q, %d), want (%q, 4517)", ownerRepo, prNumber, testPROwnerRepo)
+			}
+			return "Fix flaky retry logic", nil
+		},
+		func(b cli.BDRunner, id, label string) error {
+			labelAddCalled = true
+			return nil
+		})
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if labelAddCalled {
+		t.Error("labelAdd must NEVER be called on the --topic path (a shared thread label breaks relay routing and close)")
+	}
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	sent := ft.calls[0]
+	if sent.ThreadRef != "" {
+		t.Errorf("ThreadRef = %q, want empty on first send (topic not yet open)", sent.ThreadRef)
+	}
+	if sent.InitiativeID != ReviewsHandle {
+		t.Errorf("InitiativeID = %q, want %q", sent.InitiativeID, ReviewsHandle)
+	}
+	if sent.Title != ReviewsTopicTitle {
+		t.Errorf("Title = %q, want %q (the shared topic's name, not the initiative's)", sent.Title, ReviewsTopicTitle)
+	}
+	wantBody := "Review started · #4517 midgard — Fix flaky retry logic\n" + testPRURL
+	if sent.Body != wantBody {
+		t.Errorf("Body = %q, want %q", sent.Body, wantBody)
+	}
+
+	// The returned ref persists to the shared thread-ref file, not a label.
+	ref, err := os.ReadFile(StewardReviewsThreadPath(ctx))
+	if err != nil {
+		t.Fatalf("read %s: %v", StewardReviewsThreadPath(ctx), err)
+	}
+	if string(ref) != "901" {
+		t.Errorf("persisted thread ref = %q, want %q", string(ref), "901")
+	}
+	if stderr.String() != "" {
+		t.Errorf("expected no stderr on the happy path, got: %q", stderr.String())
+	}
+}
+
+// TestDispatch_TopicReviews_TitleFetchFails_StillDispatches pins the
+// contract's mandatory fail-soft: a prTitleFunc error yields no title
+// segment (and no dangling " — " separator), and never fails the dispatch.
+func TestDispatch_TopicReviews_TitleFetchFails_StillDispatches(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-rev2"
+			}
+			return nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "902"}
+	cmd := reviewDispatch(t, repoDir, "review-pr-4517-no-title", ft,
+		func(ownerRepo string, prNumber int) (string, error) {
+			return "", fmt.Errorf("gh: not authenticated")
+		},
+		func(b cli.BDRunner, id, label string) error { return nil })
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("a title-fetch failure must never fail dispatch, got: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	wantBody := "Review started · #4517 midgard\n" + testPRURL
+	if ft.calls[0].Body != wantBody {
+		t.Errorf("Body = %q, want %q", ft.calls[0].Body, wantBody)
+	}
+	if !strings.Contains(stderr.String(), "fail-soft") {
+		t.Errorf("stderr missing 'fail-soft' warning: %q", stderr.String())
+	}
+}
+
+// TestDispatch_TopicReviews_SecondDispatch_ReusesRef confirms the second
+// review dispatch sends into the topic the first one opened instead of
+// creating another — the whole point of the initiative.
+func TestDispatch_TopicReviews_SecondDispatch_ReusesRef(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-rev3"
+			}
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "903"}
+	prTitle := func(ownerRepo string, prNumber int) (string, error) { return "Fix flaky retry logic", nil }
+	noLabel := func(b cli.BDRunner, id, label string) error {
+		t.Error("labelAdd must never be called on the --topic path")
+		return nil
+	}
+
+	if err := reviewDispatch(t, repoDir, "review-one", ft, prTitle, noLabel).Run(ctx); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	if err := reviewDispatch(t, repoDir, "review-two", ft, prTitle, noLabel).Run(ctx); err != nil {
+		t.Fatalf("second dispatch: %v", err)
+	}
+
+	if len(ft.calls) != 2 {
+		t.Fatalf("expected 2 Send calls, got %d", len(ft.calls))
+	}
+	if ft.calls[1].ThreadRef != "903" {
+		t.Errorf("second Send ThreadRef = %q, want 903 (reused, no second topic)", ft.calls[1].ThreadRef)
+	}
+}
+
+// TestDispatch_NoTopic_LeavesEagerPathAlone confirms the flag is inert when
+// absent: the per-initiative topic and its thread label are unchanged, and
+// prTitle is never called (so a plain dispatch never spawns gh).
+func TestDispatch_NoTopic_LeavesEagerPathAlone(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-rev4"
+				issue.Title = "Plain dispatch"
+			}
+			return nil
+		},
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, _ := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "904"}
+	var recordedLabel string
+	cmd := &dispatchKong{
+		Problem:          "Plain dispatch",
+		Slug:             "plain-dispatch",
+		Repo:             repoDir,
+		BodyFile:         reviewBodyFile(t),
+		NoLaunch:         true,
+		SkipEpic:         true,
+		git:              fg,
+		launch:           func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		transportEnabled: func(home string) bool { return true },
+		transportFor:     fakeTransportFor(ft, nil),
+		labelAdd: func(b cli.BDRunner, id, label string) error {
+			recordedLabel = label
+			return nil
+		},
+		prTitle: func(ownerRepo string, prNumber int) (string, error) {
+			t.Error("prTitle must not be called without --topic")
+			return "", nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].Title != "Plain dispatch" {
+		t.Errorf("Title = %q, want the initiative's own title", ft.calls[0].Title)
+	}
+	if ft.calls[0].Body != "Initiative registered: Plain dispatch" {
+		t.Errorf("Body = %q, want the unchanged eager-topic body", ft.calls[0].Body)
+	}
+	if recordedLabel != "thread:904" {
+		t.Errorf("labelAdd label = %q, want thread:904", recordedLabel)
+	}
+	if _, err := os.Stat(StewardReviewsThreadPath(ctx)); !os.IsNotExist(err) {
+		t.Errorf("the shared reviews thread-ref file must not be touched without --topic (stat err = %v)", err)
+	}
+}
+
+// TestDispatch_TopicReviews_MissingPRMetadata_NamesTheKey confirms a body
+// without the PR metadata posts nothing rather than a half-rendered line,
+// and that the warning NAMES the absent keys — otherwise a caller that
+// forgot one sees a dispatch that succeeded with no line in the topic and
+// nothing to chase.
+func TestDispatch_TopicReviews_MissingPRMetadata_NamesTheKey(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = "at-rev5"
+			}
+			return nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, home)
+
+	ft := &fakeTransport{returnRef: "905"}
+	cmd := reviewDispatch(t, repoDir, "review-no-metadata", ft,
+		func(ownerRepo string, prNumber int) (string, error) { return "Fix flaky retry logic", nil },
+		func(b cli.BDRunner, id, label string) error { return nil })
+	// pr-number and pr-url present, pr-repo absent.
+	cmd.BodyFile = makeTempBodyFile(t, "pr-number: 4517\npr-url: "+testPRURL+"\n")
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("a body missing PR metadata must never fail dispatch, got: %v", err)
+	}
+
+	if len(ft.calls) != 0 {
+		t.Fatalf("expected no Send, got %d (a half-rendered line must not reach the shared feed)", len(ft.calls))
+	}
+	if !strings.Contains(stderr.String(), "pr-repo") {
+		t.Errorf("warning must name the missing key, got: %q", stderr.String())
+	}
+	for _, present := range []string{"pr-number", "pr-url"} {
+		if strings.Contains(stderr.String(), present) {
+			t.Errorf("warning names %s, which was present: %q", present, stderr.String())
+		}
+	}
+}
+
+// TestDispatch_UnknownTopic_UsageError pins the contract's "unrecognized
+// --topic is a usage error, never a silent fallback to per-initiative topic
+// creation". Validate runs before Run, so it costs no worktree and no bead.
+func TestDispatch_UnknownTopic_UsageError(t *testing.T) {
+	cmd := &dispatchKong{Problem: "Review PR #4517", Topic: "briefing"}
+	err := cmd.Validate()
+	if err == nil {
+		t.Fatal("expected a usage error for an unknown --topic value")
+	}
+	var usage *cli.UsageError
+	if !errors.As(err, &usage) {
+		t.Fatalf("error = %T (%v), want *cli.UsageError", err, err)
+	}
+
+	if err := (&dispatchKong{Problem: "p", Topic: ReviewsHandle}).Validate(); err != nil {
+		t.Errorf("--topic %s must validate, got: %v", ReviewsHandle, err)
+	}
+	if err := (&dispatchKong{Problem: "p"}).Validate(); err != nil {
+		t.Errorf("no --topic must validate, got: %v", err)
 	}
 }

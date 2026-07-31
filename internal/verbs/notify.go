@@ -77,9 +77,9 @@ const generalDest = "general"
 // what makes a stray --to on an adjacent `ateam notify <initiative-id>` line
 // likely, so this is the muscle-memory slip that must not cost a message.
 type notifyKong struct {
-	ID    string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
+	ID    string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, the reserved ReviewsHandle for the shared PR-review topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
 	File  string `name:"file" help:"Path to the message body file (required)." required:""`
-	Title string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, or \"Steward\" for the direct handle)."`
+	Title string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, \"Reviews\" for the reviews handle, or \"Steward\" for the direct handle)."`
 	To    string `name:"to" help:"Conversation to reply in: the opaque ref from a steward-direct envelope, or the literal \"general\" for the shared General channel. Required for the direct handle."`
 
 	transportFor transportForFunc `kong:"-"`
@@ -88,9 +88,9 @@ type notifyKong struct {
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
-// For the reserved BriefingHandle, see runBriefing: no initiative bead, no
-// thread label — the threadRef persists in the file at
-// StewardBriefingThreadPath instead.
+// For the reserved BriefingHandle and ReviewsHandle, see runBriefing and
+// runReviews: no initiative bead, no thread label — the threadRef persists in
+// the file at StewardBriefingThreadPath / StewardReviewsThreadPath instead.
 //
 // For a normal initiative id:
 //  1. Reads body from --file; title from --title or derived from the initiative.
@@ -125,6 +125,9 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 
 	if c.ID == BriefingHandle {
 		return c.runBriefing(ctx, string(body))
+	}
+	if c.ID == ReviewsHandle {
+		return c.runReviews(ctx, string(body))
 	}
 	if c.ID == DirectHandle {
 		return c.runDirect(ctx, string(body))
@@ -230,27 +233,73 @@ func sendAndLabelThread(ctx *cli.Context, id string, t transport.Transport, msg 
 	return returnedRef, nil
 }
 
+// sendSharedTopic sends msg into a shared, bead-less topic whose thread ref
+// lives in the file at path: it reads any existing ref from path, overwrites
+// msg.ThreadRef with it (so callers never set that field themselves), sends,
+// and on first creation persists the returned ref back to path. The
+// file-backed mirror of sendAndLabelThread above, and for the same reason its
+// doc comment gives — notify's briefing and reviews handles, plus dispatch's
+// --topic path (agent-teams-p9dm.10), all route through here, so a shared
+// topic has exactly one create+persist code path.
+//
+// errPrefix labels the stderr diagnostics with the calling verb, as
+// sendAndLabelThread's does. Send errors are returned wrapped in "send: " and
+// otherwise unprefixed, for the caller to wrap.
+//
+// publishStewardTopics fires on EVERY send that leaves path holding a ref —
+// not only on first creation (agent-teams-p9dm.8, folding agent-teams-p9dm.6).
+// Publishing only on creation meant an install whose topic predates that code
+// had no steward:topics record and no way to ever get one, which left
+// isKnownStewardTopic permanently false and the relay's peer-topic skip
+// unreachable. It is an upsert via `bd remember`, so repeat calls are
+// harmless and the next send backfills the record. Fail-soft: a publish
+// failure warns and never fails the send.
+func sendSharedTopic(ctx *cli.Context, path string, t transport.Transport, msg transport.OutboundMessage, errPrefix string) (string, error) {
+	threadRef, err := readThreadRefFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read shared-topic thread ref %s: %w", path, err)
+	}
+	msg.ThreadRef = threadRef
+
+	returnedRef, err := t.Send(msg)
+	if err != nil {
+		return "", fmt.Errorf("send: %w", err)
+	}
+
+	// publishStewardTopics reads the refs it publishes back out of the
+	// thread-ref files, so it only runs once path is known to hold one:
+	// publishing when the topic never opened, or when persisting it failed,
+	// would overwrite a good synced record with an empty ref.
+	persisted := threadRef != ""
+	if !persisted && returnedRef != "" {
+		if writeErr := writeThreadRefFile(path, returnedRef); writeErr != nil {
+			fmt.Fprintf(ctx.Stderr, "%s: warning: could not persist shared-topic thread ref to %s: %v\n", errPrefix, path, writeErr)
+		} else {
+			persisted = true
+		}
+	}
+	if persisted {
+		if pubErr := publishStewardTopics(ctx); pubErr != nil {
+			fmt.Fprintf(ctx.Stderr, "%s: warning: could not publish steward topics: %v\n", errPrefix, pubErr)
+		}
+	}
+
+	return returnedRef, nil
+}
+
 // runBriefing handles the reserved BriefingHandle: no initiative bead behind
 // it, so the thread ref persists in the file at StewardBriefingThreadPath
 // (contract: steward_seams.go) instead of a bead's "thread:<n>" label.
 //
 //  1. Title from --title, or "Briefings" if not given.
-//  2. Reads any existing threadRef from StewardBriefingThreadPath ("" if the
-//     file doesn't exist yet — this is the first briefing notify).
-//  3. Resolves the active transport via transport.For(workspace.Home()).
-//  4. Calls transport.Send with ThreadRef="" (new topic) or the existing ref.
-//  5. On a new topic: persists the returned ref to StewardBriefingThreadPath.
-//  6. Prints the thread ref and a confirmation line.
+//  2. Resolves the active transport via transport.For(workspace.Home()).
+//  3. Hands off to sendSharedTopic against StewardBriefingThreadPath, which
+//     reuses or opens the topic and persists a newly returned ref.
+//  4. Prints the thread ref and a confirmation line.
 func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 	title := c.Title
 	if title == "" {
 		title = "Briefings"
-	}
-
-	path := StewardBriefingThreadPath(ctx)
-	threadRef, err := readThreadRefFile(path)
-	if err != nil {
-		return fmt.Errorf("ateam notify: read briefing thread ref: %w", err)
 	}
 
 	home := workspace.Home()
@@ -261,25 +310,48 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 
 	msg := transport.OutboundMessage{
 		InitiativeID: c.ID,
-		ThreadRef:    threadRef,
 		Title:        title,
 		Body:         body,
 		Sender:       sentlog.KindNotifyBriefing,
 	}
 
-	returnedRef, err := t.Send(msg)
+	returnedRef, err := sendSharedTopic(ctx, StewardBriefingThreadPath(ctx), t, msg, "ateam notify")
 	if err != nil {
-		return fmt.Errorf("ateam notify: send: %w", err)
+		return fmt.Errorf("ateam notify: %w", err)
 	}
 
-	// If this was a new topic, persist the ref so subsequent briefing
-	// notifies reuse it. No bead, no label — file only.
-	if threadRef == "" && returnedRef != "" {
-		if writeErr := writeThreadRefFile(path, returnedRef); writeErr != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not persist briefing thread ref: %v\n", writeErr)
-		} else if pubErr := publishStewardTopics(ctx); pubErr != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam notify: warning: could not publish steward topics: %v\n", pubErr)
-		}
+	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)
+	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", c.ID)
+	return nil
+}
+
+// runReviews handles the reserved ReviewsHandle: the single shared,
+// cross-initiative PR-review topic that replaces a forum topic opened per PR
+// review (agent-teams-p9dm). Structurally identical to runBriefing — same
+// bead-less, file-backed shared topic — differing only in the default title,
+// the thread-ref file, and the declared sender kind.
+func (c *notifyKong) runReviews(ctx *cli.Context, body string) error {
+	title := c.Title
+	if title == "" {
+		title = ReviewsTopicTitle
+	}
+
+	home := workspace.Home()
+	t, err := c.transportFor(home)
+	if err != nil {
+		return fmt.Errorf("ateam notify: no transport configured: %w", err)
+	}
+
+	msg := transport.OutboundMessage{
+		InitiativeID: c.ID,
+		Title:        title,
+		Body:         body,
+		Sender:       sentlog.KindNotifyReviews,
+	}
+
+	returnedRef, err := sendSharedTopic(ctx, StewardReviewsThreadPath(ctx), t, msg, "ateam notify")
+	if err != nil {
+		return fmt.Errorf("ateam notify: %w", err)
 	}
 
 	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)

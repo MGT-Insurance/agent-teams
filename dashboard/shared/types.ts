@@ -54,8 +54,12 @@ export interface RawInitiative {
 // Explicit gate kind derived from labels:
 //   "review"   -> "gate:review" label present  (AUTHORITATIVE review signal)
 //   "question" -> "gate:question" or "human"-only label (agent asking a question)
+//   "external" -> "external-review" label present: Eric has DECLARED he is done
+//                 looking and the PR is with other humans. The one gate kind that
+//                 is NOT an ask — it is authoritatively NOT in his queue. See
+//                 deriveExplicitGate in server/src/parse.ts.
 //   none       -> no gate label present
-export type ExplicitGateKind = "review" | "question";
+export type ExplicitGateKind = "review" | "question" | "external";
 
 // RawInitiative plus fields parsed out of description text, and a derived PR URL.
 export interface ParsedInitiative extends RawInitiative {

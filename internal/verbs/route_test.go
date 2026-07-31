@@ -298,8 +298,8 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	// Verify argv structure:
 	// dispatch --repo <clone> --problem <title> --body-file <path>
 	//          --launch-prompt "/agent-teams:review-pr {id}" --skip-epic
-	//          --model sonnet
-	if len(call) < 12 {
+	//          --model sonnet --topic reviews
+	if len(call) < 14 {
 		t.Fatalf("runner call too short (%d args): %v", len(call), call)
 	}
 	if call[0] != "dispatch" {
@@ -336,6 +336,15 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	}
 	if call[11] != "sonnet" {
 		t.Errorf("call[11] (model value): got %q, want \"sonnet\"", call[11])
+	}
+	// The whole point of agent-teams-p9dm: this webhook path spawned every
+	// observed single-line per-PR topic, so without --topic the shared
+	// Reviews topic never wins where the noise actually comes from.
+	if call[12] != "--topic" {
+		t.Errorf("call[12]: got %q, want \"--topic\"", call[12])
+	}
+	if call[13] != ReviewsHandle {
+		t.Errorf("call[13] (topic value): got %q, want %q", call[13], ReviewsHandle)
 	}
 
 	// Confirmation line must appear in stdout.

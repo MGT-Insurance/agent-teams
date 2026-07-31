@@ -18,12 +18,15 @@ package verbs
 //	  ...
 //	]
 //
-// STATUS COMPUTATION (first-match wins, per contract agent-teams-j9s §1):
+// STATUS COMPUTATION (first-match wins, per contract agent-teams-j9s §1 as
+// amended by the at-jno7 contract, external_review.go §7):
 //  1. NEEDS-DECISION  — labels contain "human" AND "gate:question"
 //  2. IN-PROGRESS     — the joined session is ACTIVELY WORKING
 //                       (overrides any review gate)
-//  3. REVIEWABLE      — labels contain "human" AND "gate:review"
-//                       AND NOT actively working
+//  3. labels contain "human" AND "gate:review" AND NOT actively working;
+//     within rule 3, first match wins:
+//     a. AWAITING-EXTERNAL-REVIEW — "external-review" label present
+//     b. REVIEWABLE               — otherwise
 //  4. IN-PROGRESS     — everything else (open, no gate, or between gates)
 //
 // "ACTIVELY WORKING" = a live session whose cwd matches the initiative's
@@ -90,8 +93,13 @@ type askBlockJSON struct {
 // Evaluation order (first match wins):
 //  1. NEEDS-DECISION  — "human" + "gate:question" present in labels
 //  2. IN-PROGRESS     — session actively working (overrides gate:review)
-//  3. REVIEWABLE      — "human" + "gate:review" + NOT actively working
+//  3. "human" + "gate:review" + NOT actively working; see the sub-cascade below
 //  4. IN-PROGRESS     — everything else
+//
+// Only rule 3's body knows about the declared label, so an un-gated
+// initiative sees zero behaviour change from it — including one carrying
+// externalReviewLabel with no review gate, which stays inert (external_
+// review.go §9's U/Q -> H row).
 func computeExecutionStatus(labels []string, sessions []agentSession, worktree string) string {
 	hasHuman := hasLabel(labels, "human")
 	hasQuestion := hasLabel(labels, "gate:question")
@@ -107,8 +115,12 @@ func computeExecutionStatus(labels []string, sessions []agentSession, worktree s
 		return "IN-PROGRESS"
 	}
 
-	// Rule 3: REVIEWABLE
+	// Rule 3: review-gated (external_review.go §7), first match wins.
 	if hasHuman && hasReview {
+		// Declared by Eric via `ateam handoff`, never derived (§0).
+		if hasLabel(labels, externalReviewLabel) {
+			return StatusAwaitingExternalReview
+		}
 		return "REVIEWABLE"
 	}
 

@@ -141,7 +141,7 @@ func TestSentFiltersCombineWithAND(t *testing.T) {
 }
 
 // TestSentSenderUndeclaredIsQueryableNotSettable pins contract §7
-// AMENDMENT 2's asymmetry: seven values are queryable, six are settable.
+// AMENDMENT 2's asymmetry: eight values are queryable, seven are settable.
 // UNDECLARED is the row a bug report is most likely to be about, so it must
 // be reachable from the CLI — while staying out of knownKinds so no call
 // site can ever declare it.

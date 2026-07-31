@@ -162,11 +162,26 @@ func (c *humanListKong) Run(ctx *cli.Context) error {
 	if err := ctx.BD.RunJSON(&issues, "human", "list", "--json"); err != nil {
 		return err
 	}
-	if len(issues) == 0 {
+	// A handed-off initiative (external_review.go §2) still carries human +
+	// gate:review by design, so `bd human list` still returns it — but Eric
+	// already declared he's done looking, so it is no longer awaiting him.
+	// Filter here rather than smearing this condition across hung_scan.go /
+	// hung_workproduct.go.
+	//
+	// The filter runs BEFORE the empty check, not inside the render loop:
+	// every row being handed off is this feature's SUCCESS case, and it must
+	// answer "nothing needs you" rather than print nothing at all.
+	waiting := make([]bd.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if !hasLabel(issue.Labels, externalReviewLabel) {
+			waiting = append(waiting, issue)
+		}
+	}
+	if len(waiting) == 0 {
 		fmt.Fprintln(ctx.Stdout, "No human-needed beads found.")
 		return nil
 	}
-	for _, issue := range issues {
+	for _, issue := range waiting {
 		kind := gateKind(issue.Labels)
 		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
 		if issue.Notes != "" {

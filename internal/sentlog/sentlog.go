@@ -30,20 +30,28 @@ import (
 	"strings"
 )
 
-// Kind identifies who/what sent one outbound message. Exactly six real
+// Kind identifies who/what sent one outbound message. Exactly seven real
 // values plus the UNDECLARED guard value below — this is the complete,
-// frozen set (contract §3), verified by grepping every OutboundMessage
-// struct literal in non-test Go (transport.OutboundMessage, brace opened
-// on the following line — not written as one string here so this doc
-// comment itself doesn't false-positive that grep): six literals, six
-// senders, no others.
+// frozen set (contract §3).
+//
+// Literal count and Kind count are two different numbers; read them
+// separately. Grepping every OutboundMessage struct literal in non-test Go
+// (transport.OutboundMessage, brace opened on the following line — not
+// written as one string here so this doc comment itself doesn't
+// false-positive that grep) finds EIGHT literals declaring SEVEN Kinds:
+// `ateam dispatch` sends from two sites (eager topic creation and the
+// shared-topic line) that both declare KindDispatch. So a new literal needs
+// a new Kind only when it is a genuinely new sender — reusing an existing
+// Kind is legitimate. tests/sent-log.test.sh case7 gates the literal count;
+// bump it there when you add a send site.
 type Kind string
 
 const (
 	KindNotify         Kind = "notify"          // `ateam notify <initiative-id>`
 	KindNotifyBriefing Kind = "notify-briefing" // `ateam notify briefing`
+	KindNotifyReviews  Kind = "notify-reviews"  // `ateam notify reviews`
 	KindNotifyDirect   Kind = "notify-direct"   // `ateam notify direct`
-	KindDispatch       Kind = "dispatch"        // eager topic creation
+	KindDispatch       Kind = "dispatch"        // eager topic creation + shared-topic line (2 sites)
 	KindClose          Kind = "close"           // farewell on close
 	KindRelayHung      Kind = "relay-hung"      // automatic hung/stall alert
 
@@ -54,19 +62,20 @@ const (
 	KindUndeclared Kind = "UNDECLARED"
 )
 
-// knownKinds is the complete set of six real sender kinds a call site may
+// knownKinds is the complete set of seven real sender kinds a call site may
 // declare. KindUndeclared is deliberately excluded: no call site may set it
 // directly, so it must never report as "known".
 var knownKinds = map[Kind]bool{
 	KindNotify:         true,
 	KindNotifyBriefing: true,
+	KindNotifyReviews:  true,
 	KindNotifyDirect:   true,
 	KindDispatch:       true,
 	KindClose:          true,
 	KindRelayHung:      true,
 }
 
-// Known reports whether k is one of the six declared sender kinds (contract
+// Known reports whether k is one of the seven declared sender kinds (contract
 // §3). False for "", KindUndeclared, and any unrecognised value.
 func (k Kind) Known() bool { return knownKinds[k] }
 
@@ -134,8 +143,8 @@ func (r Record) MarshalLine() ([]byte, error) {
 
 // Path returns the sent-message log path: <home>/sent.jsonl (contract §5).
 //
-// Not under steward/: the log is machine-scoped, not steward-scoped — four
-// of the six senders are not the Steward. Not synced: deliberately
+// Not under steward/: the log is machine-scoped, not steward-scoped — five
+// of the seven senders are not the Steward. Not synced: deliberately
 // per-machine local state, like StewardFallbackMarkerPath — "who sent what
 // from this machine" is per-machine forensics that buys nothing from
 // dolt-backed sync while costing merge and lock traffic.

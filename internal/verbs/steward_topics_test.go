@@ -7,9 +7,9 @@ import (
 )
 
 // TestPublishStewardTopics_WritesRecord verifies publishStewardTopics reads
-// this machine's local briefing thread-ref file and upserts it as a
-// StewardTopicsRecord under StewardTopicsKey(os.Hostname()) via the raw
-// "remember" storage path (not learnKey).
+// this machine's local briefing AND reviews thread-ref files and upserts
+// both as one StewardTopicsRecord under StewardTopicsKey(os.Hostname()) via
+// the raw "remember" storage path (not learnKey).
 func TestPublishStewardTopics_WritesRecord(t *testing.T) {
 	var calls [][]string
 	fbd := &fakeBD{
@@ -24,6 +24,9 @@ func TestPublishStewardTopics_WritesRecord(t *testing.T) {
 
 	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-ref-1"); err != nil {
 		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), "reviews-ref-1"); err != nil {
+		t.Fatalf("seed reviews thread ref: %v", err)
 	}
 
 	if err := publishStewardTopics(ctx); err != nil {
@@ -45,8 +48,44 @@ func TestPublishStewardTopics_WritesRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseStewardTopicsRecord: %v", err)
 	}
-	want := StewardTopicsRecord{Briefing: "briefing-ref-1"}
+	want := StewardTopicsRecord{Briefing: "briefing-ref-1", Reviews: "reviews-ref-1"}
 	if got != want {
+		t.Errorf("published record = %+v, want %+v", got, want)
+	}
+}
+
+// TestPublishStewardTopics_AbsentReviewsRefIsNotAnError verifies a machine
+// that has opened a briefing topic but no reviews topic yet publishes
+// {"briefing":"...","reviews":""} rather than failing — the absent
+// thread-ref file is the not-yet-opened case, not an error.
+func TestPublishStewardTopics_AbsentReviewsRefIsNotAnError(t *testing.T) {
+	var calls [][]string
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			cp := make([]string, len(args))
+			copy(cp, args)
+			calls = append(calls, cp)
+			return "", nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "briefing-ref-1"); err != nil {
+		t.Fatalf("seed briefing thread ref: %v", err)
+	}
+
+	if err := publishStewardTopics(ctx); err != nil {
+		t.Fatalf("publishStewardTopics: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 bd call, got %d: %v", len(calls), calls)
+	}
+
+	got, err := ParseStewardTopicsRecord(calls[0][2])
+	if err != nil {
+		t.Fatalf("ParseStewardTopicsRecord: %v", err)
+	}
+	if want := (StewardTopicsRecord{Briefing: "briefing-ref-1"}); got != want {
 		t.Errorf("published record = %+v, want %+v", got, want)
 	}
 }
@@ -83,11 +122,11 @@ func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 		t.Fatalf("os.Hostname: %v", err)
 	}
 
-	ownRecordJSON, err := StewardTopicsRecord{Briefing: "own-briefing"}.Marshal()
+	ownRecordJSON, err := StewardTopicsRecord{Briefing: "own-briefing", Reviews: "own-reviews"}.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal own record: %v", err)
 	}
-	peerRecordJSON, err := StewardTopicsRecord{Briefing: "peer-briefing"}.Marshal()
+	peerRecordJSON, err := StewardTopicsRecord{Briefing: "peer-briefing", Reviews: "peer-reviews"}.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal peer record: %v", err)
 	}
@@ -105,9 +144,12 @@ func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	// This machine's own local ref, as it'd be persisted by notify.go.
+	// This machine's own local refs, as they'd be persisted by notify.go.
 	if err := writeThreadRefFile(StewardBriefingThreadPath(ctx), "own-briefing"); err != nil {
 		t.Fatalf("seed own briefing thread ref: %v", err)
+	}
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), "own-reviews"); err != nil {
+		t.Fatalf("seed own reviews thread ref: %v", err)
 	}
 
 	cases := []struct {
@@ -116,7 +158,9 @@ func TestIsKnownStewardTopic_RoundTrip(t *testing.T) {
 		want      bool
 	}{
 		{"own briefing ref", "own-briefing", false},
+		{"own reviews ref", "own-reviews", false},
 		{"peer briefing ref", "peer-briefing", true},
+		{"peer reviews ref", "peer-reviews", true},
 		{"unknown ref", "some-other-thread-ref", false},
 	}
 	for _, tc := range cases {
