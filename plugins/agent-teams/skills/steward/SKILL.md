@@ -193,7 +193,7 @@ Disclosure: a mistake that changed the work gets one plain line — no apology, 
 | direct-answer | steward-direct envelope | usually JUST KNOW | matches the question, never over T-DECIDE | the answer, as the first word | — |
 | briefing-post | cross-initiative material, or the heartbeat above | KNOW | T-BRIEF, 176w | the headline — what changed, or the one thing needing him | per-initiative status with nothing to report; anything already sent to that initiative's topic |
 | briefing-ack | steward-briefing-reply | DO NOTHING | T-ACK, 25w | routing confirmation | re-answering in Briefings what was already routed to a topic |
-| anomaly-flag | zombie session, missing watcher | KNOW, or ACT | T-ACK if nothing needed, T-DECIDE if it needs a call | — | batching unrelated anomalies together |
+| anomaly-flag | zombie session, missing watcher | KNOW, or ACT | T-ACK if nothing needed, T-DECIDE if it needs a call | what's broken, in his terms | batching unrelated anomalies together |
 | status-change | steward-initiated — a thing of his changed state, nothing asked of him now | KNOW | 35w | what changed, named — never "your request" or "the thing you asked about" | progress on initiatives he never touched; any decision that needs an answer now — that is gate-escalation |
 
 A ninth kind, `topic-open`, is machine-authored, not Steward prose: references/message-style.md. Worked before/after specimens per kind, same file.
