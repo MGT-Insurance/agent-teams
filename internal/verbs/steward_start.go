@@ -113,6 +113,14 @@ func (c *stewardStartKong) Run(ctx *cli.Context) error {
 		if err := ensureRelayRunning(ctx, spawnRelay); err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam steward start: warning: relay: %v — steward is running but relay was not started; run `ateam relay` manually\n", err)
 		}
+	} else {
+		// Medium-agnostic by design (Eric, agent-teams-25c5.7): outbound
+		// notify opens its own transport and keeps working with no relay
+		// (notify.go:210), but inbound replies only exist inside `ateam
+		// relay` (relay.go:244, t.Receive) — so a steward started without
+		// --relay can talk but not listen. This is expected, not an error:
+		// same "relay: " Stdout prefix as ensureRelayRunning's notes.
+		fmt.Fprintf(ctx.Stdout, "relay: not started (--relay to start one) - inbound replies need a running relay\n")
 	}
 
 	return nil

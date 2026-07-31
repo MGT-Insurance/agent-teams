@@ -385,6 +385,78 @@ func TestStewardStart_NoRelayFlag_DoesNotSpawnRelay(t *testing.T) {
 	}
 }
 
+// TestStewardStart_NoRelayFlag_WritesNoRelayNote confirms the else-branch
+// this bead adds: without --relay, stdout carries a "relay: " prefixed note
+// that inbound replies need a running relay.
+func TestStewardStart_NoRelayFlag_WritesNoRelayNote(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardStartKong{
+		agentsFunc:     func() ([]agentSession, error) { return nil, nil },
+		launchFunc:     func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "relay: not started") {
+		t.Errorf("expected a \"relay: not started\" note in stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "inbound replies need a running relay") {
+		t.Errorf("expected stdout to explain inbound replies need a running relay, got: %q", stdout.String())
+	}
+}
+
+// TestStewardStart_NoRelayNote_IsMediumAgnostic pins Eric's stated reason for
+// the no-relay note's wording (agent-teams-25c5.7): "don't mention telegram
+// because we might change the delivery medium in the future." The delivery
+// medium is Telegram today, but the string must not name it so the line
+// stays true if that changes.
+func TestStewardStart_NoRelayNote_IsMediumAgnostic(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardStartKong{
+		agentsFunc:     func() ([]agentSession, error) { return nil, nil },
+		launchFunc:     func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(strings.ToLower(stdout.String()), "telegram") {
+		t.Errorf("expected no-relay stdout to be medium-agnostic (no \"telegram\" in any casing), got: %q", stdout.String())
+	}
+}
+
+// TestStewardStart_RelayFlag_OmitsNoRelayNote confirms --relay suppresses
+// the no-relay note added by this bead: a relay was started, so the "needs
+// a running relay" warning would be false.
+func TestStewardStart_RelayFlag_OmitsNoRelayNote(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardStartKong{
+		Relay:          true,
+		agentsFunc:     func() ([]agentSession, error) { return nil, nil },
+		launchFunc:     func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(stdout.String(), "not started") {
+		t.Errorf("expected no \"not started\" note in stdout with --relay, got: %q", stdout.String())
+	}
+}
+
 // TestStewardStart_RelayFlag_SpawnsRelayAndWritesPidfile confirms --relay
 // fully preserves today's behaviour: relaySpawnFunc is invoked exactly once
 // and the "started (pid N)" note appears in stdout.
