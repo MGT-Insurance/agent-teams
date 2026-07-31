@@ -38,7 +38,7 @@ const sentBodyTruncRunes = 200
 
 // queryableSenderKinds enumerates the sender values --sender accepts.
 //
-// SEVEN QUERYABLE, SIX SETTABLE — the asymmetry is deliberate (contract §7
+// EIGHT QUERYABLE, SEVEN SETTABLE — the asymmetry is deliberate (contract §7
 // AMENDMENT 2). KindUndeclared stays out of sentlog.knownKinds so no call
 // site can ever SET it, but it is exactly the row a bug report is most
 // likely to be about — a send site that failed to identify itself — so it
@@ -47,6 +47,7 @@ const sentBodyTruncRunes = 200
 var queryableSenderKinds = []sentlog.Kind{
 	sentlog.KindNotify,
 	sentlog.KindNotifyBriefing,
+	sentlog.KindNotifyReviews,
 	sentlog.KindNotifyDirect,
 	sentlog.KindDispatch,
 	sentlog.KindClose,
@@ -56,7 +57,7 @@ var queryableSenderKinds = []sentlog.Kind{
 
 // queryableSender reports whether s is an accepted --sender value. Not
 // sentlog.Kind.Known(): that answers "may a call site declare this?", which
-// is the stricter six-value question. See queryableSenderKinds.
+// is the stricter seven-value question. See queryableSenderKinds.
 func queryableSender(s string) bool {
 	for _, k := range queryableSenderKinds {
 		if string(k) == s {

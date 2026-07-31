@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# SubagentStart hook for agent-teams.
-# Injects role learnings into spawned role agents via `ateam learnings <role>`.
+# SubagentStart hook for agent-teams. SYNC-ONLY: SubagentStart hook stdout is
+# never rendered into a spawned agent's context at any size (verified,
+# bbsz.15) — a role-learnings payload written here would reach nobody. Actual
+# delivery is the spawned agent's own on-spawn step 1, which unconditionally
+# self-fetches via `ateam learnings <role>` (agents/{implementer,planner,
+# tester,reviewer}.md). This hook's only job is to freshen the local memory
+# store (`ateam pull`) before that self-fetch runs, so it reads current data.
 # Silent no-op if ateam/jq not installed, or agent_type is absent. Never fails.
 set -euo pipefail
-# This hook writes its payload to stdout. If the reader closes early, a bare
-# write dies on SIGPIPE (rc=141) BEFORE any `|| true` can run — `||` tests an
-# exit status, and a signal death never produces one. Ignoring SIGPIPE turns
-# that into an EPIPE write error the `|| true` guards below can absorb, so the
-# script still reaches its `exit 0`. Inherited by `ateam` too (Go leaves an
-# already-ignored SIGPIPE ignored), which is why those keep their guards.
-trap '' PIPE
 
 ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
@@ -38,18 +36,16 @@ if [ -z "$agent_type" ]; then
   exit 0
 fi
 
-hook_log_note "note" "agent_type=${agent_type}"
-
 # agent_type may be namespace-qualified on cold spawn (e.g. "agent-teams:reviewer");
 # strip any "namespace:" prefix since bd-memory keys are stored bare-role-keyed.
 role="${agent_type##*:}"
+hook_log_note "note" "agent_type=${agent_type} role=${role}"
 
 # Pull must go through ateam/bd: bd's flock on .beads/embeddeddolt/.lock serializes
 # parallel subagent pulls; shelling 'dolt' directly would bypass it and hit the manifest race.
-"$ATEAM" pull || true
-printf '<<<agent-teams-learnings-hook-start role:%s>>>\n' "$role" || true
-"$ATEAM" learnings "$role" || true
-printf '<<<agent-teams-learnings-hook-end role:%s>>>\n' "$role" || true
+# Stdout is dropped by the harness regardless (see header) — redirected here so
+# the hook stays silent by design rather than by accident of the render bug.
+"$ATEAM" pull >/dev/null || true
 
 HOOK_EXIT_REASON="ok"
 exit 0

@@ -1204,6 +1204,246 @@ func TestRelay_NoBriefingThreadFile_FallsThroughToInitiativePath(t *testing.T) {
 	}
 }
 
+// ── handler: reviews-topic short-circuit (agent-teams-p9dm.50) ───────────────
+
+// TestRelay_ReviewsThread_NotFallbackResponder_RoutesToSteward is the
+// load-bearing guard for agent-teams-p9dm.50. isFallbackResponder returns
+// FALSE — the real state of a machine with no hand-installed
+// <StewardHome>/fallback-responder marker, which nothing in the tree ever
+// creates. Before the reviews short-circuit, a reply in the shared Reviews
+// topic fell past the (never-matching) bd thread-label lookup into the untied
+// branch and was dropped at that gate. It must reach the Steward as a
+// steward-unrouted envelope instead, without any bd query.
+func TestRelay_ReviewsThread_NotFallbackResponder_RoutesToSteward(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), "813"); err != nil {
+		t.Fatalf("seed reviews thread ref: %v", err)
+	}
+
+	bdQueryCalled := false
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "813", Text: "what did that review find on #4408?"}},
+	}
+
+	cmd := &relayKong{
+		enabled:      func(string) bool { return true },
+		transportFor: func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery: func(home, label string) ([]bd.Issue, error) {
+			bdQueryCalled = true
+			return nil, nil
+		},
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false }, // NOT fallback — this machine's real state
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bdQueryCalled {
+		t.Error("bd query must not be called for a reviews-topic message")
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	env, ok := ParseStewardUnroutedEnvelope(fs.bodies[0])
+	if !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if env.ThreadRef != "813" {
+		t.Errorf("envelope ThreadRef = %q, want %q", env.ThreadRef, "813")
+	}
+	if env.Reason != reviewsReplyReason {
+		t.Errorf("envelope Reason = %q, want %q", env.Reason, reviewsReplyReason)
+	}
+	if env.Body != "what did that review find on #4408?" {
+		t.Errorf("envelope Body = %q, want %q", env.Body, "what did that review find on #4408?")
+	}
+}
+
+// TestRelay_ReviewsThread_TakesPrecedenceOverPeerTopicSkip verifies the
+// ordering that closes the multi-machine drop (agent-teams-p9dm.50): the
+// reviews short-circuit sits ABOVE the peer steward-topic skip, so on the
+// machine that OWNS the reviews thread the reply routes even when
+// knownStewardTopic would match it and this machine is not the fallback
+// responder. Ordered the other way, machine B skips as a peer and machine A
+// skips as a non-fallback — dropped twice.
+func TestRelay_ReviewsThread_TakesPrecedenceOverPeerTopicSkip(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), "813"); err != nil {
+		t.Fatalf("seed reviews thread ref: %v", err)
+	}
+
+	fs := &fakeSendCapture{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "813", Text: "dispatch a deeper review"}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   func(*cli.Context, string) bool { return true }, // would skip if it ran first
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if _, ok := ParseStewardUnroutedEnvelope(fs.bodies[0]); !ok {
+		t.Fatalf("send file contents not a well-formed steward-unrouted envelope: %q", fs.bodies[0])
+	}
+	if strings.Contains(relayStderr(ctx), "skipping peer steward topic") {
+		t.Errorf("reviews short-circuit must fire before the peer steward-topic skip, got stderr: %q", relayStderr(ctx))
+	}
+}
+
+// TestRelay_ReviewsThread_NonMatchingThreadRef_TakesInitiativePath verifies
+// that when a reviews thread ref IS persisted, a reply whose ThreadRef does
+// not match it still takes the existing initiative-reply path, not the
+// reviews short-circuit.
+func TestRelay_ReviewsThread_NonMatchingThreadRef_TakesInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), "813"); err != nil {
+		t.Fatalf("seed reviews thread ref: %v", err)
+	}
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// TestRelay_NoReviewsThreadFile_FallsThroughToInitiativePath verifies that
+// when the reviews thread-ref file does not exist at all (no review ever
+// posted), a reply falls through to the existing initiative-reply path — the
+// reviews short-circuit never fires, exactly as for an absent briefing file.
+func TestRelay_NoReviewsThreadFile_FallsThroughToInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t) // t.TempDir() is empty — no reviews-thread file present
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// TestRelay_ReviewsThread_EmptyThreadRefFile_FallsThroughToInitiativePath
+// verifies the empty-file case distinctly from the absent-file case above: a
+// reviews-thread file that exists but is blank (readThreadRefFile returns "")
+// must not short-circuit every reply by matching a non-empty ThreadRef
+// against "".
+func TestRelay_ReviewsThread_EmptyThreadRefFile_FallsThroughToInitiativePath(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), ""); err != nil {
+		t.Fatalf("seed empty reviews thread ref: %v", err)
+	}
+
+	bdq := newFakeBDQuery()
+	bdq.results["thread:42"] = []bd.Issue{{ID: "at-001", Status: "open"}}
+
+	fs := &fakeSend{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "42", Text: "looks good"}},
+	}
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             bdq.query,
+		send:                fs.send,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: alwaysFallbackResponder,
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(fs.calls))
+	}
+	if env := fs.envelopes[0]; env.InitiativeID != "at-001" {
+		t.Errorf("envelope InitiativeID = %q, want at-001", env.InitiativeID)
+	}
+}
+
+// TestRelay_Ack_FiresOnReviewsReply verifies the reviews-topic short-circuit
+// forward (handleReviewsReply) also acks the originating message, like every
+// other genuine forward.
+func TestRelay_Ack_FiresOnReviewsReply(t *testing.T) {
+	ctx := newRelayCtx(t)
+	if err := writeThreadRefFile(StewardReviewsThreadPath(ctx), "813"); err != nil {
+		t.Fatalf("seed reviews thread ref: %v", err)
+	}
+
+	fa := &fakeAck{}
+	ft := &relayFakeTransport{
+		replies: []transport.Reply{{ThreadRef: "813", Text: "more detail please", MessageRef: "555"}},
+	}
+
+	cmd := &relayKong{
+		enabled:             func(string) bool { return true },
+		transportFor:        func(string) (transport.Transport, error) { return ft, nil },
+		bdQuery:             newFakeBDQuery().query,
+		send:                (&fakeSendCapture{}).send,
+		ack:                 fa.ack,
+		claimsLocally:       alwaysClaimsLocally,
+		isFallbackResponder: func(*cli.Context) bool { return false },
+		knownStewardTopic:   neverKnownStewardTopic,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fa.refs; len(got) != 1 || got[0] != "555" {
+		t.Errorf("ack refs = %v, want [%q]", got, "555")
+	}
+}
+
 // ── handler: multi-machine ownership gating (agent-teams-5y8a.5) ────────────
 
 // TestRelay_TiedReply_NotClaimedLocally_Skipped verifies the tied-reply gate:

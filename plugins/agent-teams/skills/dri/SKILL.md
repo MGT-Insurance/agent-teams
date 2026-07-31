@@ -103,6 +103,8 @@ ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 
 This is the DRI's explicit "ready for you" bit — it makes the initiative *eligible* for REVIEWABLE; the dashboard derives actual status from execution-state (gate + session run/park state), so raising it early is safe. Model: references/gate-protocol.md ("The review gate and execution-state").
 
+**Never run `ateam handoff`.** It declares that *the human* has finished looking — a fact only they hold, and the only thing that moves a row out of their queue. At delivery they have not looked yet, so a DRI running it asserts the human's state on their behalf and hides the PR from the person who needs to see it.
+
 Opening a PR without this gate is incomplete; the initiative stays open until merged or a human explicitly closes it, so a later no-parameter /dri can resume it as an open match (close happens on a resume finding the PR merged, or explicit human direction).
 
 **MANDATORY — record the structured `pr:` field** right after opening the PR, before wind-down. The pr-shepherd match engine greps this exact line: one line, key `pr:`, full https GitHub PR URL, literal (not in a code block, not prefixed). Combine with the delivery note in one `ateam note` call:

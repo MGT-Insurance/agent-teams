@@ -244,6 +244,18 @@ describe("MemoriesView — injected context panel", () => {
     ).toBeTruthy();
   });
 
+  it("shows the empty-injection message for the CLI's EMPTY sentinel text", async () => {
+    mockFetchLearnings.mockResolvedValue({ role: "tester", text: "[learnings tester: EMPTY]" });
+
+    renderMemories();
+    await screen.findByTestId(`memories-card-${implementerCold.key}`);
+    fireEvent.click(screen.getByTestId("memories-injected-toggle"));
+
+    expect(
+      await screen.findByText(/nothing injected — no hot\/fresh memories for this role/i),
+    ).toBeTruthy();
+  });
+
   it("shows an error banner when fetchLearnings fails", async () => {
     mockFetchLearnings.mockRejectedValue(new Error("ateam learnings exited with code 1"));
 

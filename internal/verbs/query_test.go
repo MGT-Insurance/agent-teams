@@ -579,6 +579,65 @@ func TestHumanListQuestionGate(t *testing.T) {
 	}
 }
 
+// TestHumanListOmitsExternalReview confirms a handed-off initiative
+// (external-review label present, agent-teams-p9dm.23) is skipped by
+// human-list even though it still carries human + gate:review — it is no
+// longer awaiting Eric. A plain review-gated initiative alongside it is
+// still listed.
+func TestHumanListOmitsExternalReview(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-handed", Title: "Handed off PR", Labels: []string{"human", "gate:review", "external-review"}, Notes: "PR ready"},
+		{ID: "at-r1", Title: "Still awaiting Eric", Labels: []string{"human", "gate:review"}, Notes: "PR ready"},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, "at-handed") {
+		t.Errorf("expected handed-off initiative to be omitted, got: %q", got)
+	}
+	if !strings.Contains(got, "at-r1") {
+		t.Errorf("expected non-handed-off initiative to still be listed, got: %q", got)
+	}
+}
+
+// TestHumanListAllHandedOffStillReportsEmpty guards the regression found when
+// agent-teams-p9dm.23 landed: the empty check ran before the external-review
+// filter, so when EVERY returned row was handed off, human-list printed no
+// rows and no message — completely blank stdout.
+//
+// That is this feature's success case (Eric hands off every PR, then asks what
+// needs him), and blank output there is indistinguishable from a crashed
+// command or a broken bd. "Nothing needs you" must be stated, never inferred
+// from absence.
+func TestHumanListAllHandedOffStillReportsEmpty(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-h1", Title: "Handed off one", Labels: []string{"human", "gate:review", "external-review"}, Notes: "PR ready"},
+		{ID: "at-h2", Title: "Handed off two", Labels: []string{"human", "gate:review", "external-review"}, Notes: "PR ready"},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("human-list printed nothing when every row was handed off; expected the no-beads message")
+	}
+	if !strings.Contains(got, "No human-needed beads found.") {
+		t.Errorf("expected the no-beads message, got: %q", got)
+	}
+	for _, id := range []string{"at-h1", "at-h2"} {
+		if strings.Contains(got, id) {
+			t.Errorf("expected handed-off %s to be omitted, got: %q", id, got)
+		}
+	}
+}
+
 func TestHumanListBackwardCompatHumanOnly(t *testing.T) {
 	// Pre-existing gated bead: only "human" label, no gate:* — must render as QUESTION.
 	issues := []bd.Issue{

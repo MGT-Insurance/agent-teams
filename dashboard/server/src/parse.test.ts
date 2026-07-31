@@ -1220,6 +1220,65 @@ describe("deriveExplicitGate", () => {
   });
 });
 
+// ---- deriveExplicitGate: external-review (agent-teams-p9dm.29) --------------
+// "external-review" is Eric's declared "I've looked; it's on the team" state and
+// is ADDITIVE on top of human + gate:review (contract p9dm.22 §2). It must
+// suppress the review derivation, but never a live gate:question.
+
+describe("deriveExplicitGate — external-review label", () => {
+  it("external-review + human + gate:review -> 'external' (handed off, not awaiting Eric)", () => {
+    expect(deriveExplicitGate(["human", "gate:review", "external-review"])).toBe("external");
+  });
+
+  it("external-review + gate:review with no human -> 'external'", () => {
+    expect(deriveExplicitGate(["gate:review", "external-review"])).toBe("external");
+  });
+
+  it("external-review + human only -> 'external' (outranks the legacy human fallback)", () => {
+    expect(deriveExplicitGate(["human", "external-review"])).toBe("external");
+  });
+
+  it("external-review alone -> 'external'", () => {
+    expect(deriveExplicitGate(["external-review"])).toBe("external");
+  });
+
+  it("external-review + gate:question -> 'question' (a pending question still reaches Eric)", () => {
+    expect(deriveExplicitGate(["human", "gate:question", "external-review"])).toBe("question");
+  });
+
+  it("external-review + gate:review + gate:question -> 'question' (question outlives the handoff)", () => {
+    expect(deriveExplicitGate(["human", "gate:review", "gate:question", "external-review"])).toBe(
+      "question",
+    );
+  });
+
+  it("gate:review + human with NO external-review -> 'review' (no over-suppression)", () => {
+    expect(deriveExplicitGate(["human", "gate:review"])).toBe("review");
+  });
+
+  it("a similarly-named label does not suppress the gate", () => {
+    expect(deriveExplicitGate(["human", "gate:review", "external-reviewer"])).toBe("review");
+  });
+});
+
+describe("deriveNeedsHuman — gate 'external' (agent-teams-p9dm.29)", () => {
+  it("handed off + PR open + no session -> false (NOT the 'generic' needs-you degrade)", () => {
+    expect(deriveNeedsHuman("pr-open", "none", "external")).toBe(false);
+  });
+
+  it("handed off + PR open + ended session -> false", () => {
+    expect(deriveNeedsHuman("pr-open", "ended", "external")).toBe(false);
+  });
+
+  it("handed off + merged + worktree gone + alive session -> 'reap' (merged still wins)", () => {
+    expect(deriveNeedsHuman("merged", "working", "external", false)).toBe("reap");
+  });
+
+  it("PR open + no session + NO gate -> 'generic' (the degrade is intact for other rows)", () => {
+    expect(deriveNeedsHuman("pr-open", "none", null)).toBe("generic");
+  });
+});
+
 // ---- deriveNeedsHuman (agent-teams-0rl) truth table -------------------------
 
 describe("deriveNeedsHuman", () => {
@@ -1609,6 +1668,88 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
     const init = makeGateInit("e2", undefined, false);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe(false);
+  });
+});
+
+// ---- external-review end-to-end: node + inbox (agent-teams-p9dm.29) ---------
+// Eric ran `ateam handoff`: he has reviewed the PR and it is now waiting on other
+// humans. The row must leave the needs-human inbox. The gate labels are still
+// present by design (contract p9dm.22 §2) — including "human", which is why the
+// legacy humanGatedIds fallback has to be suppressed too.
+
+describe("buildInitiativeNodes/buildInbox — external-review (agent-teams-p9dm.29)", () => {
+  function makeInit(
+    id: string,
+    labels: string[] | undefined,
+    status: string = "open",
+  ): ParsedInitiative {
+    return {
+      id,
+      title: `Initiative ${id}`,
+      description: `worktree: /wt/${id}`,
+      notes: "session 1 — delivered, awaiting review",
+      status,
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-07-29",
+      updated_at: "2026-07-29",
+      problem: "",
+      repo: "/repo",
+      worktree: `/wt/${id}`,
+      branch: id,
+      team: `t-${id}`,
+      mode: "bg",
+      fields: {},
+      labels,
+      prUrl: "https://github.com/org/repo/pull/1",
+      epic: null,
+    };
+  }
+
+  it("handed off (human + gate:review + external-review) -> NOT in the needs-review inbox", () => {
+    const init = makeInit("x1", ["human", "gate:review", "external-review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe(false);
+    expect(nodes[0]?.activity).not.toBe("needs-human");
+    expect(buildInbox(nodes)).toEqual([]);
+  });
+
+  it("handed off AND present in humanGatedIds -> still NOT in the inbox (legacy fallback suppressed)", () => {
+    // Handed-off initiatives keep the "human" label, so `bd list --label human`
+    // returns them; the fallback must not resurrect the gate.
+    const init = makeInit("x2", ["human", "gate:review", "external-review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set(["x2"]));
+    expect(nodes[0]?.needsHuman).toBe(false);
+    expect(buildInbox(nodes)).toEqual([]);
+  });
+
+  it("handed off + gate:question -> in the inbox as 'waiting' (the question still needs Eric)", () => {
+    const init = makeInit("x3", ["human", "gate:review", "gate:question", "external-review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set());
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+    expect(buildInbox(nodes)[0]?.kind).toBe("waiting");
+  });
+
+  it("gate:review with NO external-review -> unchanged, still in the inbox as 'review'", () => {
+    const init = makeInit("x4", ["human", "gate:review"]);
+    const nodes = buildInitiativeNodes([init], [], new Set(["x4"]));
+    expect(nodes[0]?.needsHuman).toBe("review");
+    expect(buildInbox(nodes)[0]?.kind).toBe("review");
+  });
+
+  it("handed off + merged + worktree gone + alive session -> still 'reap' (merged wins)", () => {
+    const init = makeInit("x5", ["human", "gate:review", "external-review"], "closed");
+    const sess = {
+      sessionId: "sess-x5",
+      kind: "background" as const,
+      cwd: "/wt/x5",
+      startedAt: 0,
+      status: "busy" as const,
+      state: "working" as const,
+    };
+    const nodes = buildInitiativeNodes([init], [sess], new Set(), () => false);
+    expect(nodes[0]?.needsHuman).toBe("reap");
   });
 });
 

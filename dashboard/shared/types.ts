@@ -54,8 +54,12 @@ export interface RawInitiative {
 // Explicit gate kind derived from labels:
 //   "review"   -> "gate:review" label present  (AUTHORITATIVE review signal)
 //   "question" -> "gate:question" or "human"-only label (agent asking a question)
+//   "external" -> "external-review" label present: Eric has DECLARED he is done
+//                 looking and the PR is with other humans. The one gate kind that
+//                 is NOT an ask — it is authoritatively NOT in his queue. See
+//                 deriveExplicitGate in server/src/parse.ts.
 //   none       -> no gate label present
-export type ExplicitGateKind = "review" | "question";
+export type ExplicitGateKind = "review" | "question" | "external";
 
 // RawInitiative plus fields parsed out of description text, and a derived PR URL.
 export interface ParsedInitiative extends RawInitiative {
@@ -518,8 +522,10 @@ export interface MemoryListResponse {
 // raw stdout of `ateam prime` instead — the "user" role's context injection
 // mechanism is `ateam prime`'s filtered/capped/truncated `user:`-key output,
 // NOT the untruncated/uncapped `ateam learnings user` dump, so mirroring the
-// real injected context requires the prime special-case. `text` may be empty
-// (no hot/fresh memories for that role — or, for "user", no `user:` keys).
+// real injected context requires the prime special-case. From CLI >= 0.49.0,
+// `text` is never empty: the no-hot/fresh-memories case is marked instead by
+// a "[learnings <role>: EMPTY]" sentinel line (older binaries still emit
+// ""); the web client treats both as empty-state.
 export interface LearningsResponse {
   role: string;
   text: string;

@@ -115,7 +115,7 @@ This emits a JSON packet to stdout:
 }
 ```
 
-Field semantics (`instruction_contract` is the schema authority; the sample above is illustrative, one per tier, not exhaustive): `key` is always present and role-relative (`hot:`/`fresh:` prefix, or a bare slug for cold — never the full `<role>:...` form). `body` appears on hot/fresh, never on cold; `summary` appears on cold only — **do not assume every entry carries a body**, and if a promotion decision turns on an elided body, fetch it on demand — `ateam recall <role> <term>`, passing that entry's own `key` verbatim as `<term>` (recall is ONE literal substring match, so a descriptive multi-word query silently returns nothing at exit 0; empty output is never evidence the body is missing) — rather than deciding blind or promoting a summary as if it were the learning. `applied_count`/`last_applied` can appear on ANY tier but are each omitted — not zero-valued — when absent: a missing `applied_count` means 0, a missing `last_applied` means never applied.
+Field semantics (`instruction_contract` is the schema authority; the sample above is illustrative, one per tier, not exhaustive): `key` is always present and role-relative (`hot:`/`fresh:` prefix, or a bare slug for cold — never the full `<role>:...` form). `body` appears on hot/fresh, never on cold; `summary` appears on cold only — **do not assume every entry carries a body**, and if a promotion decision turns on an elided body, fetch it on demand — `ateam recall <role> <term>`, passing that entry's own `key` verbatim as `<term>` (pass the key, never a description — see “spot-check cold” below for why a descriptive query proves nothing) — rather than deciding blind or promoting a summary as if it were the learning. `applied_count`/`last_applied` can appear on ANY tier but are each omitted — not zero-valued — when absent: a missing `applied_count` means 0, a missing `last_applied` means never applied.
 
 `hot_budget_tokens` is **the** hot-set budget: one number, one unit (TOKENS), from the Go constant — use the value the packet actually prints, not the illustrative one above. Nothing else in this skill restates the budget or converts it to bytes; any byte figure you meet here is a per-ENTRY write-time cap, a different limit at a different scope — never convert between the two.
 
@@ -218,13 +218,17 @@ Then confirm the served set and spot-check cold:
 ateam learnings <role>
 ```
 
-Confirm output shows only the hot entries (the fresh tier is empty after drain).
+Confirm output shows only the hot entries (the fresh tier is empty after drain), plus the final `[learnings <role>: ...]` trailer line.
 
 ```bash
 ateam recall <role> <key-of-an-entry-you-just-demoted>
 ```
 
-Pass that entry's own `key` **verbatim** as the term. An invented "representative" phrase proves nothing in either direction: recall is one literal substring match, so a descriptive query returns empty at exit 0 on a perfectly healthy store.
+Pass that entry's own `key` **verbatim** (the full `<role>:<slug>`, or just the slug). A healthy store answers `1 matches` with the key you asked for — that exact outcome is the proof, and nothing else is.
+
+Do **not** invent a descriptive phrase. `recall` splits the query on whitespace and counts an entry as a match if *any* single token appears anywhere in its key or body, so a plausible-sounding phrase matches most of the store: measured on the live store, `"worktree cwd discipline for agents"` returned **218 of 243** entries, led by an unrelated one. That reads as a pass and proves nothing — check the count, not whether output appeared.
+
+On a real miss you get a `nearest:` line. It is not a "did you mean": every candidate scored zero, so the ranking falls back to alphabetical and it prints the same first keys of the role whatever you searched for.
 
 ### Emit summary line
 

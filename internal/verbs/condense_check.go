@@ -158,9 +158,13 @@ func condenseCheckForRole(raw map[string]any, role string) condenseCheckRoleResu
 	}
 	sort.Strings(servedKeys)
 
-	// learnings_bytes mirrors the exact byte shape `ateam learnings <role>`
-	// prints: "<key>\n<body>\n" per entry, with a blank-line separator
-	// between entries (query.go:runLearnings).
+	// learnings_bytes mirrors the PAYLOAD `ateam learnings <role>` prints:
+	// "<key>\n<body>\n" per entry, with a blank-line separator between
+	// entries (query.go:runLearnings). Deliberately excludes the trailing
+	// "[learnings <role>: ...]" line that runLearnings appends — that is
+	// metadata reporting the payload's size, not served memory, and it is a
+	// fixed per-call cost that would distort a per-role comparison. Keep
+	// this in sync with runLearnings' payload builder, not its full stdout.
 	learningsBytes := 0
 	for i, k := range servedKeys {
 		body, _ := raw[k].(string)
