@@ -1700,7 +1700,7 @@ describe("buildInitiativeNodes/buildInbox — external-review (agent-teams-p9dm.
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      goal: "",
+      fields: {},
       labels,
       prUrl: "https://github.com/org/repo/pull/1",
       epic: null,
