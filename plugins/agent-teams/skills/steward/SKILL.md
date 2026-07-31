@@ -177,7 +177,7 @@ After four hours with no message, post one briefing line: what's running, and gr
 **Outbound message rules — bind every kind below.** Governs the outbound message only; internal record-keeping stays full.
 
 1. **Name, not id.** Lead with what the work IS, in Eric's terms; id is an optional parenthetical. PR numbers aren't bead ids — keep using them.
-2. **Budget is a ceiling, not a target.** Never narrate, restate what he knows, or point back instead of naming — at any length. Over budget, cut detail, never the ask. What you verified sets confidence, not length: give the conclusion, offer the rest. Exempt: text he asked you to draft, and the plan URL below.
+2. **Budget is a ceiling, not a target.** Never narrate, restate what he knows, or point back instead of naming — at any length. Over budget, cut detail, never the ask. What you verified sets confidence, not length: give the conclusion; the rest is his to ask for. Exempt: text he asked you to draft, and the plan URL below.
 3. **No sectioning devices.** No bold headers, numbered lists, or bulleted findings — needing sections means it's too long; cut, don't format.
 4. **Effect, not mechanism.** What breaks, for whom, in what order — never file, hook, flag, state-label or session-id internals unless he must type one.
 
