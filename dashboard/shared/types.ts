@@ -522,8 +522,10 @@ export interface MemoryListResponse {
 // raw stdout of `ateam prime` instead — the "user" role's context injection
 // mechanism is `ateam prime`'s filtered/capped/truncated `user:`-key output,
 // NOT the untruncated/uncapped `ateam learnings user` dump, so mirroring the
-// real injected context requires the prime special-case. `text` may be empty
-// (no hot/fresh memories for that role — or, for "user", no `user:` keys).
+// real injected context requires the prime special-case. From CLI >= 0.49.0,
+// `text` is never empty: the no-hot/fresh-memories case is marked instead by
+// a "[learnings <role>: EMPTY]" sentinel line (older binaries still emit
+// ""); the web client treats both as empty-state.
 export interface LearningsResponse {
   role: string;
   text: string;

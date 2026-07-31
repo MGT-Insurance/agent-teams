@@ -38,6 +38,16 @@ export function sortMemories(entries: MemoryEntry[]): MemoryEntry[] {
 // mirrors mail's POLL_MS pattern.
 const POLL_MS = 20_000;
 
+// CLI >= 0.49.0 prints a "[learnings <role>: EMPTY]" sentinel line instead of
+// empty stdout; older binaries still emit "". Treat both as empty-state.
+const EMPTY_LEARNINGS_SENTINEL = /^\[learnings \S+: EMPTY\]\s*$/;
+
+function isEmptyLearningsText(text: string | null): boolean {
+  if (text === null) return false;
+  const trimmed = text.trim();
+  return trimmed === "" || EMPTY_LEARNINGS_SENTINEL.test(trimmed);
+}
+
 // Shows the raw text actually injected into a role's context (agent-teams-orb7):
 // `ateam learnings <role>` for every role except "user", where the mechanism is
 // `ateam prime`'s filtered/capped/truncated output instead (see fetchLearnings).
@@ -111,7 +121,7 @@ function InjectedContextPanel({ role, onClose }: { role: string; onClose: () => 
 
         {loading ? (
           <p className="memories-status-text">Loading injected context…</p>
-        ) : error ? null : text !== null && text.trim() !== "" ? (
+        ) : error ? null : text !== null && !isEmptyLearningsText(text) ? (
           <pre className="memories-injected-panel__body">{text}</pre>
         ) : (
           <p className="memories-status-text">Nothing injected — no hot/fresh memories for this role.</p>

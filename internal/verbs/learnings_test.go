@@ -2,8 +2,10 @@ package verbs
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
@@ -139,8 +141,8 @@ func TestLearnings_MultiLineBody(t *testing.T) {
 	}
 }
 
-// TestLearnings_EmptyRoleSet verifies empty stdout and nil error when no
-// matching role: keys exist.
+// TestLearnings_EmptyRoleSet verifies the loud EMPTY marker (not silence) when
+// no matching role: keys exist (agent-teams-bbsz.21).
 func TestLearnings_EmptyRoleSet(t *testing.T) {
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -159,8 +161,8 @@ func TestLearnings_EmptyRoleSet(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("expected nil error for empty role set; got: %v", err)
 	}
-	if stdout.Len() > 0 {
-		t.Errorf("expected empty stdout for zero implementer: memories; got:\n%s", stdout.String())
+	if got := stdout.String(); got != "[learnings implementer: EMPTY]\n" {
+		t.Errorf("expected loud EMPTY marker for zero implementer: memories; got:\n%q", got)
 	}
 }
 
@@ -425,7 +427,9 @@ func TestRecall_MatchByBody(t *testing.T) {
 	}
 }
 
-// TestRecall_NoMatch verifies empty stdout and nil error when nothing matches.
+// TestRecall_NoMatch verifies the loud zero-match header (not silence) plus a
+// nearest-keys line when nothing matches (agent-teams-bbsz.22, fixing
+// bbsz.13's silent zero-byte miss).
 func TestRecall_NoMatch(t *testing.T) {
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -442,8 +446,9 @@ func TestRecall_NoMatch(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if stdout.Len() > 0 {
-		t.Errorf("expected empty output for no-match; got:\n%s", stdout.String())
+	want := "[recall dri \"xyzzy-not-present\": 0 matches]\nnearest: dri:foo\n"
+	if got := stdout.String(); got != want {
+		t.Errorf("expected loud zero-match header + nearest line; got:\n%q\nwant:\n%q", got, want)
 	}
 }
 
@@ -569,6 +574,201 @@ func TestRecall_CaseInsensitiveMatch(t *testing.T) {
 	}
 }
 
+// ── recall widening (agent-teams-bbsz.22) ──────────────────────────────────────
+
+// TestRecall_HeaderAlwaysPrintedOnMatch verifies the header line is printed
+// (exact shape) even when there ARE matches, not just on a miss.
+func TestRecall_HeaderAlwaysPrintedOnMatch(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{"dri:foo": "body about deploy"}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallKong{Role: "dri", Query: "deploy"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantHeader := `[recall dri "deploy": 1 matches]` + "\n"
+	if got := stdout.String(); !strings.HasPrefix(got, wantHeader) {
+		t.Errorf("expected output to start with header %q; got:\n%q", wantHeader, got)
+	}
+}
+
+// TestRecall_MultiTermRanksByDistinctMatchCount verifies tokenized
+// multi-term ranking: the query is split on whitespace, and a key matching
+// MORE distinct query tokens ranks ahead of a key matching fewer — even when
+// the fewer-match key would otherwise sort first alphabetically.
+func TestRecall_MultiTermRanksByDistinctMatchCount(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				// "aaa" sorts first alphabetically but matches only 1 of 2
+				// query tokens ("worktree"); "zzz" matches both.
+				"dri:aaa": "worktree notes only",
+				"dri:zzz": "worktree and race notes",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallKong{Role: "dri", Query: "worktree race"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "2 matches") {
+		t.Errorf("expected 2 matches in header; got:\n%s", out)
+	}
+	posZZZ := strings.Index(out, "dri:zzz")
+	posAAA := strings.Index(out, "dri:aaa")
+	if posZZZ < 0 || posAAA < 0 {
+		t.Fatalf("expected both keys in output; got:\n%s", out)
+	}
+	if !(posZZZ < posAAA) {
+		t.Errorf("expected 2-distinct-token match (dri:zzz) ranked ahead of 1-token match (dri:aaa); got:\n%s", out)
+	}
+}
+
+// TestRecall_TieBreaksByKeyAscending verifies that keys matching the same
+// number of distinct tokens are ordered by key ascending.
+func TestRecall_TieBreaksByKeyAscending(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:zzz": "mentions worktree",
+				"dri:aaa": "mentions worktree",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallKong{Role: "dri", Query: "worktree"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	posAAA := strings.Index(out, "dri:aaa")
+	posZZZ := strings.Index(out, "dri:zzz")
+	if posAAA < 0 || posZZZ < 0 {
+		t.Fatalf("expected both keys in output; got:\n%s", out)
+	}
+	if !(posAAA < posZZZ) {
+		t.Errorf("expected tie broken by key ascending (aaa before zzz); got:\n%s", out)
+	}
+}
+
+// TestRecall_ZeroMatchesListsNearestKeysCappedAtFive verifies that on a
+// zero-match query, the header is followed by a "nearest:" line listing at
+// most recallNearestCount keys, and that the command still exits 0 (fixing
+// bbsz.13's silent zero-byte miss without becoming a hard failure).
+func TestRecall_ZeroMatchesListsNearestKeysCappedAtFive(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:a": "alpha", "dri:b": "bravo", "dri:c": "charlie",
+				"dri:d": "delta", "dri:e": "echo", "dri:f": "foxtrot",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallKong{Role: "dri", Query: "nonexistent-term-xyz"}
+
+	err := cmd.Run(ctx)
+	if err != nil {
+		t.Fatalf("expected exit-0 (nil error) on zero matches; got: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, `[recall dri "nonexistent-term-xyz": 0 matches]`) {
+		t.Errorf("expected zero-match header; got:\n%s", out)
+	}
+	nearestLine := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "nearest:") {
+			nearestLine = line
+			break
+		}
+	}
+	if nearestLine == "" {
+		t.Fatalf("expected a nearest: line; got:\n%s", out)
+	}
+	gotKeys := strings.Fields(strings.TrimPrefix(nearestLine, "nearest: "))
+	if len(gotKeys) > recallNearestCount {
+		t.Errorf("expected at most %d nearest keys, got %d: %v", recallNearestCount, len(gotKeys), gotKeys)
+	}
+	if len(gotKeys) != recallNearestCount {
+		t.Errorf("expected exactly %d nearest keys (6 role candidates available), got %d: %v", recallNearestCount, len(gotKeys), gotKeys)
+	}
+}
+
+// TestRecall_ZeroMatchesNoRoleKeysOmitsNearestLine verifies that when the
+// role has no keys at all, the zero-match header prints with no trailing
+// "nearest:" line (nothing to list).
+func TestRecall_ZeroMatchesNoRoleKeysOmitsNearestLine(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{"planner:other": "unrelated role"}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallKong{Role: "dri", Query: "anything"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := `[recall dri "anything": 0 matches]` + "\n"
+	if got := stdout.String(); got != want {
+		t.Errorf("expected header only, no nearest line; got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestRecall_EmptyQueryTokenizesToZeroTokens pins current behavior for
+// `ateam recall <role> ""`: an empty query tokenizes to zero tokens, so
+// every candidate scores 0 and nothing matches — the header reports 0
+// matches and the nearest fallback (alphabetical-first role keys) still
+// prints.
+func TestRecall_EmptyQueryTokenizesToZeroTokens(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:a": "alpha", "dri:b": "bravo", "dri:c": "charlie",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &recallKong{Role: "dri", Query: ""}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, `[recall dri "": 0 matches]`) {
+		t.Errorf("expected zero-match header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "nearest: dri:a dri:b dri:c") {
+		t.Errorf("expected nearest line listing all role keys; got:\n%s", out)
+	}
+}
+
 // ── learnings fresh-tier tests (B2: hot UNION fresh, zero-tier fallback) ──────
 
 // TestLearnings_FreshOnlyServed verifies that a role with only fresh: keys (no
@@ -639,6 +839,85 @@ func TestLearnings_HotAndFreshUnion(t *testing.T) {
 	}
 }
 
+// TestLearnings_HotBlockPrecedesFreshBlock verifies the agent-teams-bbsz.23
+// serve order: the whole hot block leads, followed by the whole fresh block —
+// even when a fresh key would sort alphabetically ahead of a hot key under a
+// flat sort.Strings across the union (here "fresh:aaa" < "hot:zzz"
+// alphabetically, but hot must still print first).
+func TestLearnings_HotBlockPrecedesFreshBlock(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:hot:zzz":   "hot body z",
+				"dri:fresh:aaa": "fresh body a",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "dri"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	posHot := strings.Index(out, "dri:hot:zzz")
+	posFresh := strings.Index(out, "dri:fresh:aaa")
+	if posHot < 0 || posFresh < 0 {
+		t.Fatalf("expected both keys in output; got:\n%s", out)
+	}
+	if !(posHot < posFresh) {
+		t.Errorf("expected hot block before fresh block despite alphabetical order (hot=%d, fresh=%d):\n%s", posHot, posFresh, out)
+	}
+}
+
+// TestLearnings_HotAndFreshEachSortedWithinTheirBlock verifies that within
+// the hot-first serve order, keys inside each tier are still sorted
+// alphabetically among themselves.
+func TestLearnings_HotAndFreshEachSortedWithinTheirBlock(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"dri:hot:zzz":   "hot z",
+				"dri:hot:aaa":   "hot a",
+				"dri:fresh:zzz": "fresh z",
+				"dri:fresh:aaa": "fresh a",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "dri"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	pos := func(s string) int {
+		p := strings.Index(out, s)
+		if p < 0 {
+			t.Fatalf("expected %q in output; got:\n%s", s, out)
+		}
+		return p
+	}
+	hotA, hotZ := pos("dri:hot:aaa"), pos("dri:hot:zzz")
+	freshA, freshZ := pos("dri:fresh:aaa"), pos("dri:fresh:zzz")
+
+	if !(hotA < hotZ) {
+		t.Errorf("expected hot:aaa before hot:zzz within the hot block; got:\n%s", out)
+	}
+	if !(freshA < freshZ) {
+		t.Errorf("expected fresh:aaa before fresh:zzz within the fresh block; got:\n%s", out)
+	}
+	if !(hotZ < freshA) {
+		t.Errorf("expected the entire hot block before the entire fresh block; got:\n%s", out)
+	}
+}
+
 // TestLearnings_BothEmptyFallsBackToAllRoleKeys verifies that when a role has
 // neither hot: nor fresh: keys, all role: keys are served (zero-tier fallback).
 func TestLearnings_BothEmptyFallsBackToAllRoleKeys(t *testing.T) {
@@ -670,5 +949,147 @@ func TestLearnings_BothEmptyFallsBackToAllRoleKeys(t *testing.T) {
 	}
 	if strings.Contains(out, "dri:") {
 		t.Errorf("dri: keys must not appear in planner output; got:\n%s", out)
+	}
+}
+
+// ── learnings delivery trailer (agent-teams-bbsz.21) ───────────────────────────
+
+// trailerRe parses a "[learnings <role>: N entries, M chars, hot X fresh Y]"
+// line into its numeric fields for assertions below.
+var trailerRe = regexp.MustCompile(`^\[learnings (\S+): (\d+) entries, (\d+) chars, hot (\d+) fresh (\d+)\]\n$`)
+
+// TestLearnings_TrailerReportsCountsAndPayloadByteLength verifies the trailer
+// line's shape and that its "N entries"/"hot X fresh Y" figures match the
+// served set, and — most importantly — that "M chars" equals the exact byte
+// length of whatever was printed above the trailer (not a value recomputed by
+// re-implementing the same formatting logic the production code used, so this
+// is a real check of the printed bytes rather than a tautology).
+func TestLearnings_TrailerReportsCountsAndPayloadByteLength(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"implementer:hot:a":   "AAA",
+				"implementer:fresh:b": "BBB",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "implementer"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	idx := strings.LastIndex(out, "[learnings ")
+	if idx < 0 {
+		t.Fatalf("no trailer line found in output:\n%q", out)
+	}
+	payload, trailer := out[:idx], out[idx:]
+
+	m := trailerRe.FindStringSubmatch(trailer)
+	if m == nil {
+		t.Fatalf("trailer line did not match expected shape; got:\n%q", trailer)
+	}
+	role, nEntries, mChars, hotX, freshY := m[1], m[2], m[3], m[4], m[5]
+
+	if role != "implementer" {
+		t.Errorf("role = %q, want %q", role, "implementer")
+	}
+	if nEntries != "2" {
+		t.Errorf("entries = %q, want %q (1 hot + 1 fresh)", nEntries, "2")
+	}
+	if hotX != "1" {
+		t.Errorf("hot count = %q, want %q", hotX, "1")
+	}
+	if freshY != "1" {
+		t.Errorf("fresh count = %q, want %q", freshY, "1")
+	}
+	// "chars" is defined as len() of the payload string — bytes, not runes —
+	// verified directly against the printed prefix so the check does not
+	// depend on the exact per-entry formatting.
+	if wantChars := fmt.Sprintf("%d", len(payload)); mChars != wantChars {
+		t.Errorf("chars = %q, want %q (len of printed payload %q)", mChars, wantChars, payload)
+	}
+}
+
+// TestLearnings_TrailerCharsCountsBytesNotRunes documents and pins the "M
+// chars" choice: it is len(payload) — a byte count — not a rune count. A body
+// containing a multi-byte UTF-8 rune makes the two diverge, so this proves
+// which one the trailer actually reports.
+func TestLearnings_TrailerCharsCountsBytesNotRunes(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			// "é" is 2 bytes but 1 rune, so byte length and rune length of the
+			// payload provably differ.
+			*m = map[string]any{"implementer:hot:x": "café"}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "implementer"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	idx := strings.LastIndex(out, "[learnings ")
+	if idx < 0 {
+		t.Fatalf("no trailer line found in output:\n%q", out)
+	}
+	payload, trailer := out[:idx], out[idx:]
+
+	byteLen := len(payload)
+	runeLen := utf8.RuneCountInString(payload)
+	if byteLen == runeLen {
+		t.Fatalf("fixture does not exercise a byte/rune divergence (both = %d); fixture is broken", byteLen)
+	}
+
+	m := trailerRe.FindStringSubmatch(trailer)
+	if m == nil {
+		t.Fatalf("trailer line did not match expected shape; got:\n%q", trailer)
+	}
+	if gotChars := m[3]; gotChars != fmt.Sprintf("%d", byteLen) {
+		t.Errorf("chars = %s, want byte length %d (rune length would have been %d)", gotChars, byteLen, runeLen)
+	}
+}
+
+// TestLearnings_TrailerZeroTierFallbackReportsZeroHotFresh verifies that in
+// the zero-tier fallback path (no hot/fresh keys, all role: keys served) the
+// trailer still fires with the served count, and hot/fresh both read 0 since
+// none of the served keys carry either prefix.
+func TestLearnings_TrailerZeroTierFallbackReportsZeroHotFresh(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"planner:alpha": "body alpha",
+				"planner:beta":  "body beta",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "planner"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	trailer := stdout.String()
+	trailer = trailer[strings.LastIndex(trailer, "[learnings "):]
+	m := trailerRe.FindStringSubmatch(trailer)
+	if m == nil {
+		t.Fatalf("trailer line did not match expected shape; got:\n%q", trailer)
+	}
+	if m[2] != "2" {
+		t.Errorf("entries = %s, want 2 (zero-tier fallback serves both keys)", m[2])
+	}
+	if m[4] != "0" || m[5] != "0" {
+		t.Errorf("hot/fresh = %s/%s, want 0/0 in zero-tier fallback", m[4], m[5])
 	}
 }
