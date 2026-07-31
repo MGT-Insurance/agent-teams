@@ -18,6 +18,138 @@ fabricated specimen that later contradicts his taste is worse than a blank slot.
 
 **Why a plan-document URL goes in bare, not as markdown.** Telegram's `sendMessage` is called with no `parse_mode`, so a markdown link renders as literal text and a bare URL is what Telegram auto-links into something tappable on a phone. That is also why the URL is reproduced verbatim, never truncated, and never counted against the word budget.
 
+## Cross-kind rule demonstrations
+
+These three pairs demonstrate the four cross-kind rules (SKILL.md §5) against real
+sent messages. They are NOT calibrated per-kind specimens awaiting Eric's ruling —
+do not read them as filling any empty slot below. Every BEFORE is quoted verbatim
+from a real sent message; every AFTER is new prose written to obey the rules,
+built only from facts already present in its BEFORE.
+
+### Bare ids, under budget
+
+**BEFORE** — a `briefing-post`, 134 words, well under its 176-word budget:
+
+> Quiet window — nothing new from me, and nothing is wrong. No initiative is
+> executing: at-jno7 is waiting, at-xm7q and at-ig53 idle. Everything is parked
+> on you.
+>
+> Two PRs open: **#140** (at-jno7, ready — merge then restart the relay) and
+> **#134** (at-ig53, still below main at 0.48.0).
+>
+> Machine-local decisions waiting: at-jno7's merge, at-xm7q's plan — that one
+> carries the finding that passing `name:` to a spawn silently drops the role
+> definition, including the never-push rule, across ~66% of July's role spawns
+> — and at-ig53's condense plan.
+>
+> Twelve initiatives now show on `human-list`, several synced in from your MGT
+> laptop (at-nk90, at-7q4j, at-6nj, at-3ed, at-y7l9, at-o0v). I don't have
+> visibility into those sessions from here, so I'm not tracking their state —
+> flagging only that the queue is longer than what this machine is running.
+
+**AFTER** (117 words, rule 1 did the cutting — a length fix alone never touches
+this message, since it was already under budget):
+
+> Quiet window — nothing new from me, nothing wrong. Nothing is executing: the
+> PR #140 merge decision (at-jno7) is waiting on you, the spawn role-drop plan
+> (at-xm7q) and the condense plan (at-ig53) are idle.
+>
+> Two PRs open: #140 is ready — merge, then restart the relay; #134 is still
+> below main at 0.48.0.
+>
+> Also waiting on you: the spawn role-drop finding — passing name: to a spawn
+> silently drops the role definition, including the never-push rule, on about
+> two-thirds of July's role spawns.
+>
+> Twelve initiatives now show on human-list, six synced in from your MGT
+> laptop. I have no visibility into those from here — flagging only that the
+> queue is longer than what this machine runs.
+
+Every bare id now leads with the work it names; where no name exists (the six
+synced-in initiatives), the id is dropped rather than dumped bare. The inline
+bold on `#140`/`#134` is also gone (rule 3) — plain prose, not decoration.
+
+### Verification receipts
+
+**BEFORE** — a `gate-escalation`, 385 words against an 88-word budget. It opened:
+
+> **PR #140 reworked and ready — recommend merge.**
+> https://github.com/MGT-Insurance/agent-teams/pull/140
+>
+> It cleared its gate on your answer; the record confirms it, so no concern
+> from me there.
+>
+> **The thing I was most worried about is clean.** I flagged that resolving
+> the three prose conflicts carelessly would silently revert #144 and put both
+> SKILL.md files back over the truncation cliff. I checked it directly rather
+> than take its word: of the substantive lines #144 deleted — 54 in
+> dri/SKILL.md, 66 in steward/SKILL.md, 26 in gate-protocol.md — **zero
+> reappear on this branch.** …
+
+The remaining ~300 words are not reproduced here; they are a five-item green
+checklist (**Everything else I checked holds:** MERGEABLE/CLEAN, version
+bump, binaries rebuilt, merge-detection removal, diff size) followed by an
+operational caveat and the recommendation.
+
+**AFTER** (74 words, rules 2 and 3 did the cutting):
+
+> Merge PR #140 and restart the relay now, or later?
+>
+> What it buys: the condensation stays fully intact, and the Reviews-topic
+> reply bug is fixed.
+>
+> What it costs: you have to restart the relay by hand for the fix to take
+> effect — skip it and replies stay broken exactly as now, the same trap as
+> #143.
+>
+> My rec: merge, then restart. Alternative: merge now, restart later if you'd
+> rather batch it with at-xm7q.
+
+The five-item green checklist is gone entirely — it set the Steward's own
+confidence to recommend merging, never Eric's message. What survives is the
+one thing that isn't assumable: the relay needs a manual restart, and skipping
+it reproduces the exact bug #143 already burned him on. The plan URL is cut
+too — nothing here is a plan Eric needs to open to decide.
+
+### Mechanism before effect
+
+**BEFORE** — a message to at-zrjt's topic, 641 words, reaching the actual ask
+400 words in, under bold headers naming a hook filename, a `SubagentStart`
+event, and four `file:line` citations before ever stating what breaks:
+
+> **4 — what the "something else" is**
+>
+> Two things run the identical command.
+>
+> First, the hook: `hooks.json` registers `SubagentStart` →
+> `subagent-prime-learnings.sh`, which runs `ateam pull` then `ateam learnings
+> <role>`.
+>
+> Second — and this is the "something else" — the agent's own .md body. Step 1
+> of each agent's numbered workflow literally says "Read role learnings: `ateam
+> learnings <role>`". It's at implementer.md:12, planner.md:14, reviewer.md:12,
+> tester.md:12. …
+
+**AFTER** (84 words, rule 4 did the cutting):
+
+> Widen this initiative's scope by one file — the hook that primes subagent
+> memory — or file it separately?
+>
+> It buys: a subagent currently looks the same whether it loaded role memory
+> or not. A two-line marker in that hook fixes that.
+>
+> It costs: touching one file outside the scope you gave this initiative
+> (agents/ + dri/ + steward/ only).
+>
+> My rec: widen it here — cheaper than a bead that waits. Alternative: keep
+> scope clean, file separately, leave the duplicate call as backstop.
+
+The hook registration, the agent-file line numbers, and the four-way failure
+enumeration are all mechanism — none of it is what Eric needs to answer the
+actual question, which is a scope call. What would be lost: if Eric later
+wants to know exactly *why* the hook can fail silently, this AFTER doesn't
+carry that — it's recoverable by asking, which is the point of rule 2.
+
 ## Calibrated
 
 ### gate-escalation
