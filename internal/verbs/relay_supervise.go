@@ -9,8 +9,15 @@
 // mirroring the wake-watcher pidfile pattern
 // (mailbox/<id>.watcher.pid, cleanOrphanStewardWatcher in steward_start.go)
 // but simpler: relay is not tied to any Claude session, so there's no
-// `claude agents` cross-check needed — presence of the pidfile plus
-// pidAlive is the whole liveness test.
+// `claude agents` cross-check needed. As of agent-teams-25c5.1, `ateam
+// relay` itself also self-registers on relayPidfilePath via a flock-backed
+// lock (relay_pidfile.go), so presence of the pidfile plus pidAlive is no
+// longer the whole liveness test here — a hand-started relay now holds the
+// same lock a Steward-spawned one would contend on. ensureRelayRunning and
+// teardownRelay still key off the bare pid recorded at the front of that
+// file (via pidfileEntryPid), unaware of the flock; that's fine, since they
+// only ever race a *dead* relay's pidfile against a fresh spawn, not a live
+// one.
 package verbs
 
 import (
@@ -31,12 +38,6 @@ import (
 // defaultRelaySpawn.
 type relaySpawnFunc func(ctx *cli.Context) (int, error)
 
-// relayPidfilePath returns the path to the relay singleton's pidfile:
-// <ctx.Home>/mailbox/relay.pid.
-func relayPidfilePath(ctx *cli.Context) string {
-	return filepath.Join(ctx.Home, "mailbox", "relay.pid")
-}
-
 // ensureRelayRunning makes sure exactly one background `ateam relay` process
 // is running for this machine, singleton-guarded by relayPidfilePath:
 //
@@ -52,7 +53,7 @@ func ensureRelayRunning(ctx *cli.Context, spawn relaySpawnFunc) error {
 	path := relayPidfilePath(ctx)
 
 	if data, err := os.ReadFile(path); err == nil {
-		pid, perr := strconv.Atoi(strings.TrimSpace(string(data)))
+		pid, perr := strconv.Atoi(pidfileEntryPid(strings.TrimSpace(string(data))))
 		if perr == nil && pid > 0 && pidAlive(pid) {
 			fmt.Fprintf(ctx.Stdout, "relay: already running (pid %d)\n", pid)
 			return nil
@@ -134,7 +135,7 @@ func teardownRelay(ctx *cli.Context, kill stewardKillFunc) int {
 	}
 	defer os.Remove(path)
 
-	pid, perr := strconv.Atoi(strings.TrimSpace(string(data)))
+	pid, perr := strconv.Atoi(pidfileEntryPid(strings.TrimSpace(string(data))))
 	if perr != nil || pid <= 0 || !pidAlive(pid) {
 		return 0
 	}
