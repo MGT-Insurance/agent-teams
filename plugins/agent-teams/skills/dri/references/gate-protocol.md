@@ -23,8 +23,7 @@ The dashboard joins the initiative to any live Claude session whose `cwd` matche
 
 1. **NEEDS-DECISION** — `human` + `gate:question` labels present. Highest human priority.
 2. **IN-PROGRESS** — the joined session is actively working (`status == "busy"` / `state == "working"`). This **overrides** the review gate. A DRI that keeps working on a PR after opening it (e.g. improving the diff) correctly reads as IN-PROGRESS.
-3. `human` + `gate:review` present AND no actively-working session. Three-way, first match wins:
-   - a **merge check** succeeded and GitHub reports the PR MERGED or CLOSED → **STALE-MERGED**. Finished work, not a review; it needs a close-out, not Eric's attention.
+3. `human` + `gate:review` present AND no actively-working session. First match wins:
    - the initiative carries the **`external-review` label** → **AWAITING-EXTERNAL-REVIEW**. Eric has declared he is done looking; the PR is with the team.
    - otherwise → **REVIEWABLE**.
 4. **IN-PROGRESS** — open initiative, no review/question gate.
@@ -35,9 +34,9 @@ The DRI sets NO phase field and maintains no status field. The run/park state of
 
 ### REVIEWABLE means awaiting ERIC
 
-REVIEWABLE means **work genuinely awaiting Eric, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a merged PR and a PR Eric has already handled are both rows that need nothing from him, and neither belongs in the queue that says it does.
+REVIEWABLE means **work genuinely awaiting Eric, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a PR Eric has already declared he's done looking at (`external-review`) is a row that needs nothing from him, and it does not belong in the queue that says it does.
 
-**Only Eric moves work out of REVIEWABLE.** The merge check can retire a row that GitHub has objectively finished; everything else waits on him.
+**Only Eric moves work out of REVIEWABLE** — by declaring he's done looking (`ateam handoff`), or by the DRI resuming/closing the initiative on his behalf once he's answered elsewhere.
 
 ### 🚨 The DRI must NEVER declare the handoff
 
