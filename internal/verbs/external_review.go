@@ -1,21 +1,21 @@
 // This file is owned by the at-jno7 CONTRACT track (agent-teams-p9dm.22),
 // re-decomposed 2026-07-29 after Eric rejected the GitHub-derived design
 // (agent-teams-p9dm.12, closed void). It freezes every surface shared by
-// more than one downstream track — the declared label, the two new
-// execution_status values, the pr_probe enum, the exact gh --json field
-// list, and the merge-state cache's path/key/schema/TTLs. Nothing else may
-// redefine these. Constants and frozen doc comments ONLY: no verb, no gh
-// invocation, no cache I/O, no status wiring — those belong to the tracks
-// below.
+// more than one downstream track — the declared label and the new
+// execution_status value. Nothing else may redefine these. Constants and
+// frozen doc comments ONLY: no verb, no status wiring — those belong to the
+// tracks below.
+//
+// (This file previously also froze a gh merge-state probe and its pr_probe
+// enum/cache — see the §5/§6/§8 removal note below.)
 //
 // Downstream tracks reading this file:
 //
-//	agent-teams-p9dm.17  execution-status: wire rule 3 + emit pr_probe (status.go)
-//	agent-teams-p9dm.18  /initiatives skill: render the two new statuses
+//	agent-teams-p9dm.17  execution-status: wire rule 3 (status.go)
+//	agent-teams-p9dm.18  /initiatives skill: render the new status
 //	agent-teams-p9dm.19  steward skill: recognize a spoken handoff
 //	agent-teams-p9dm.20  dri gate-protocol: DRI must NOT run handoff
 //	agent-teams-p9dm.23  ateam handoff (handoff.go) + clear-gate + human-list
-//	agent-teams-p9dm.24  prmerge.go: the gh merge-state probe + TTL cache
 //
 // ── §0: why the previous design is dead — do not reintroduce it ────────────
 //
@@ -30,9 +30,7 @@
 //
 // 🚫 PROHIBITION, BINDING ON EVERY TRACK: reviewRequests, reviewDecision,
 // and latestReviews MUST NOT be read by any code in this initiative, and
-// MUST NOT be used by any rule as evidence about Eric's attention. The
-// probe this contract defines (§6) requests --json state and nothing else,
-// so the fields are not even fetched — see ghProbeJSONFields below. If a
+// MUST NOT be used by any rule as evidence about Eric's attention. If a
 // future change reintroduces them, these two live counterexamples
 // (verified 2026-07-28) constrain any rule ordering:
 //
@@ -43,15 +41,6 @@
 // "someone is still requested" BEFORE testing merged/closed is wrong, and
 // reproduces agent-teams-p9dm.2's bug wearing a new status string.
 package verbs
-
-import (
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/mgt-insurance/agent-teams/internal/cli"
-)
 
 // ── §1–2: the state is declared, not derived — the label ────────────────────
 //
@@ -133,7 +122,7 @@ const externalReviewLabel = "external-review"
 // rename the verb. The label string (externalReviewLabel) and the verb
 // name are independent; do not couple them in prose elsewhere.
 
-// ── §4 / §7: the two new execution_status values + where rule 3 places them ─
+// ── §4 / §7: the new execution_status value + where rule 3 places it ────────
 //
 // Existing execution_status strings ("NEEDS-DECISION", "IN-PROGRESS",
 // "REVIEWABLE", "unknown" — status.go rules 1, 2, and 4, status.go:99-115)
@@ -141,198 +130,30 @@ const externalReviewLabel = "external-review"
 // REVIEWABLE now means what it always claimed to mean: work genuinely
 // awaiting ERIC.
 
-const (
-	// StatusAwaitingExternalReview means Eric has declared he is done
-	// looking (externalReviewLabel present); the PR is with third-party
-	// reviewers. NOT in Eric's action queue. Independent of the merge
-	// probe — reported even when pr_probe is prProbeUnreachable or
-	// prProbeNone, because it is a declared fact, not a derived one.
-	StatusAwaitingExternalReview = "AWAITING-EXTERNAL-REVIEW"
-
-	// StatusStaleMerged means the PR is MERGED or CLOSED on GitHub but the
-	// initiative is still open with a review gate — a 10-second cleanup,
-	// not a review. Emitted ONLY when pr_probe == prProbeOK; see the
-	// invariant on the pr_probe constants below. A probe failure can NEVER
-	// produce this status.
-	StatusStaleMerged = "STALE-MERGED"
-)
+// StatusAwaitingExternalReview means Eric has declared he is done looking
+// (externalReviewLabel present); the PR is with third-party reviewers. NOT
+// in Eric's action queue.
+const StatusAwaitingExternalReview = "AWAITING-EXTERNAL-REVIEW"
 
 // Rule 3 placement, frozen for agent-teams-p9dm.17's status.go (rules 1, 2,
 // and 4 are untouched — status.go:99-115). Rule 3's body becomes,
 // first-match-wins:
 //
-//	pr_probe == prProbeOK && state ∈ {prStateMerged, prStateClosed}  -> StatusStaleMerged
-//	hasLabel(labels, externalReviewLabel)                            -> StatusAwaitingExternalReview
-//	otherwise                                                        -> "REVIEWABLE" (today's answer)
-//
-// StatusStaleMerged is checked BEFORE the declared label deliberately: a
-// merged PR is finished work, and reporting it as awaiting external review
-// would park completed work out of Eric's sight forever — the same
-// ordering failure §0 exists to prevent, just one step later in the chain.
+//	hasLabel(labels, externalReviewLabel)  -> StatusAwaitingExternalReview
+//	otherwise                              -> "REVIEWABLE" (today's answer)
 //
 // Consequence: un-gated initiatives (no "gate:review") see ZERO behavior
-// change — rule 3 (and both new statuses) are only reachable through the
+// change — rule 3 (and the new status) is only reachable through the
 // existing "human" + "gate:review" precondition rules 1/2/4 already gate
 // on.
 //
-// Justification for keeping the merge probe at all (agent-teams-p9dm.2,
-// verified 2026-07-28): at-nbvt/#4501 and at-mzd6/#4483 are both MERGED and
-// APPROVED yet still sat in Eric's REVIEWABLE list, because nothing in this
-// repo ever asked GitHub anything and the gate cleared only if a DRI
-// happened to be resumed and noticed.
-
-// ── §5: the pr_probe field ───────────────────────────────────────────────────
+// This section also carried StatusStaleMerged and the merge-half of rule 3;
+// both were cut 2026-07-30 (Eric: "I don't think that's useful"). Recoverable
+// from agent-teams-p9dm.52's branch history; the capability is tracked by
+// agent-teams-p9dm.2.
 //
-// New JSON field on initiativeStatus (status.go), frozen for
-// agent-teams-p9dm.17:
-//
-//	"pr_probe": "ok" | "unreachable" | "none"
-
-const (
-	// prProbeOK means gh returned a parseable merge state for this PR
-	// (fresh or cache-hit).
-	prProbeOK = "ok"
-
-	// prProbeUnreachable means a probe was attempted and failed, OR the gh
-	// preflight failed for the whole run (§8's DEGRADE contract).
-	prProbeUnreachable = "unreachable"
-
-	// prProbeNone means the initiative has no parseable GitHub PR URL; it
-	// was never probed. Normal, not a fault — no stderr line accompanies
-	// this value.
-	prProbeNone = "none"
-)
-
-// INVARIANT, binding on agent-teams-p9dm.17 and .24: StatusStaleMerged is
-// emitted ONLY when pr_probe == prProbeOK. A probe failure can NEVER
-// produce it. StatusAwaitingExternalReview is independent of the probe —
-// see its doc comment above.
-
-// ── §6: the surviving probe — merge detection ONLY ──────────────────────────
-//
-// This is the ONE derived piece Eric kept, narrowed accordingly: merge
-// state is a plain fact requiring no judgment, unlike review status (§0).
-//
-//	gh pr view <n> --repo <owner/repo> --json state
-//
-// ghProbeJSONFields is the exact --json argument agent-teams-p9dm.24's
-// prmerge.go MUST pass — state and nothing else. This constant is itself
-// the enforcement mechanism for §0's prohibition: any future change that
-// widens the probe to read reviewDecision/reviewRequests/latestReviews has
-// to touch this frozen line, which is the point.
-const ghProbeJSONFields = "state"
-
-// Merge-state values consumed from the gh probe's "state" field. Any other
-// value (gh emits none today) is treated as an unrecognized/non-terminal
-// state, i.e. NOT prStateMerged/prStateClosed.
-const (
-	prStateMerged = "MERGED"
-	prStateClosed = "CLOSED"
-	prStateOpen   = "OPEN"
-)
-
-// ── §8: cache schema, path, key, TTL, timeout ────────────────────────────────
-
-// prStateFileName is the merge-state cache's filename, joined against
-// ctx.Home (== ~/.agent-teams) by prStatePath below — never a hardcoded
-// path, mirroring hungStatePath's use of ctx.Home-derived paths
-// (hung_scan.go) so tests can redirect it.
-const prStateFileName = "pr-state.json"
-
-// prStateSchemaVersion is the current value of prStateFile.SchemaVersion.
-const prStateSchemaVersion = 1
-
-// prStatePath returns the path to the merge-state cache file:
-// <ctx.Home>/pr-state.json.
-func prStatePath(ctx *cli.Context) string {
-	return filepath.Join(ctx.Home, prStateFileName)
-}
-
-// prStateKey returns the cache key for one PR: "<owner/repo>#<number>",
-// owner/repo lower-cased. Lower-cases defensively so a caller that forgets
-// to normalize its ownerRepo (e.g. one not routed through route_match.go's
-// parsePrURL, which already lower-cases) still produces the canonical key —
-// two tracks (the writer, .24, and any future reader) computing this key
-// independently MUST agree on it bit-for-bit or cache lookups silently miss
-// forever.
-func prStateKey(ownerRepo string, prNumber int) string {
-	return strings.ToLower(ownerRepo) + "#" + strconv.Itoa(prNumber)
-}
-
-// prStateFile is the schema of the file at prStatePath.
-//
-// Example:
-//
-//	{
-//	  "schema_version": 1,
-//	  "entries": {
-//	    "mgt-insurance/midgard#4501": {"probed_at": "2026-07-29T12:00:00Z", "ok": true, "state": "MERGED"},
-//	    "someorg/gone#12":            {"probed_at": "2026-07-29T12:00:00Z", "ok": false, "error": "gh: HTTP 404"}
-//	  }
-//	}
-type prStateFile struct {
-	SchemaVersion int                     `json:"schema_version"`
-	Entries       map[string]prStateEntry `json:"entries"`
-}
-
-// prStateEntry is one cached probe result, keyed by prStateKey in
-// prStateFile.Entries. State is set only when OK is true; Error is set only
-// when OK is false — the two are mutually exclusive, both `omitempty`.
-type prStateEntry struct {
-	// ProbedAt is an RFC3339 UTC timestamp, e.g. "2026-07-29T12:00:00Z".
-	ProbedAt string `json:"probed_at"`
-	OK       bool   `json:"ok"`
-	State    string `json:"state,omitempty"` // prStateMerged | prStateClosed | prStateOpen
-	Error    string `json:"error,omitempty"`
-}
-
-// TTLs are FLAT — no backoff ladder. prProbeSuccessTTL intentionally
-// numerically matches hungTickInterval (hung_tick.go:33, 5 minutes): that
-// is the cadence execution-status is actually invoked on (steward wake +
-// hung tick + /initiatives), so a shorter TTL would just re-probe on every
-// tick for no benefit. prProbeFailureTTL is longer so a permanently dead PR
-// doesn't get re-probed every 5 minutes forever.
-const (
-	prProbeSuccessTTL = 5 * time.Minute
-	prProbeFailureTTL = 60 * time.Minute
-)
-
-// prProbeTimeout bounds a single `gh pr view` invocation so a hanging gh
-// process cannot wedge the verb.
-const prProbeTimeout = 10 * time.Second
-
-// DEGRADE CONTRACT — frozen for agent-teams-p9dm.24's prmerge.go. This is
-// the whole safety story for a verb that shells out to gh on every
-// execution-status call:
-//
-//   - PREFLIGHT, once per invocation: if gh is absent from PATH, or
-//     `gh auth status` exits non-zero, skip ALL probes for the run, emit
-//     exactly ONE stderr line, set pr_probe=prProbeUnreachable on every
-//     initiative, and fall back to the declared-label answer (§4), which
-//     still works — it needs no probe.
-//   - PER-PR FAILURE (non-zero exit, HTTP 404, unparseable JSON, timeout):
-//     flat taxonomy, no branching. StatusStaleMerged is not computed;
-//     pr_probe=prProbeUnreachable makes the degrade visible; a negative
-//     cache entry (OK: false, Error set) is written and not re-probed for
-//     prProbeFailureTTL; exactly ONE stderr line is emitted, ONLY when the
-//     negative entry is NEWLY written (never on a cache hit) — so a
-//     permanently dead PR costs one line per prProbeFailureTTL, not one
-//     per invocation (execution-status runs roughly every hungTickInterval
-//     under the hung tick).
-//   - stdout stays pure JSON. Diagnostics NEVER go to stdout — consumers
-//     parse it.
-//   - NO PR URL: pr_probe=prProbeNone, never probed, no stderr line.
-//     Normal, not a fault.
-//   - EXISTING DEGRADE UNCHANGED: if `claude agents --json` fails, every
-//     initiative is still "unknown" (status.go:154-155) and no probe runs
-//     at all — this contract adds a new degrade path, it does not touch
-//     the existing one.
-//
-// CONCURRENCY: execution-status can run concurrently (steward wake +
-// /initiatives render). Write via temp-file-then-rename, mirroring
-// saveHungState (hung_scan.go) — that makes a torn read impossible; a lost
-// update costs at most one redundant probe. No lock. Stated, accepted, not
-// a bug.
+// ── §5, §6, §8: [cut 2026-07-30 — pr_probe field, gh merge-state probe, and
+// its TTL cache. See agent-teams-p9dm.2 / .52.] ─────────────────────────────
 
 // ── §9: the full state machine — no undefined transitions ───────────────────
 //
@@ -345,7 +166,6 @@ const prProbeTimeout = 10 * time.Second
 //
 // Overlays, applied at read time, mutating nothing:
 //   - a live session working in the worktree  -> IN-PROGRESS (rule 2, beats R and H)
-//   - probe says MERGED/CLOSED, in R or H     -> STALE-MERGED
 //
 // Transitions:
 //
@@ -361,13 +181,6 @@ const prProbeTimeout = 10 * time.Second
 //	             initiative still writes the label and WARNS (§3). The label
 //	             is inert until a review gate exists; no status is
 //	             misreported.
-//
-// Deliberately NOT a transition: the probe (§6) never mutates a label.
-// execution-status is a read verb invoked every ~5 minutes from the hung
-// tick and from /initiatives; giving it write authority over the gate would
-// make a display refresh mutate state. Merge only changes what is REPORTED
-// (StatusStaleMerged); cleanup remains Eric's `ateam close`, or the DRI's
-// close-out.
 //
 // ── §10: explicitly out of scope for this contract ──────────────────────────
 //

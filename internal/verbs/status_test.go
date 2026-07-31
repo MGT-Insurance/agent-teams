@@ -30,9 +30,8 @@ func TestComputeExecutionStatus(t *testing.T) {
 	noSession := []agentSession{}
 	otherSession := []agentSession{session("/other/path", "busy", "working")} // no cwd match
 
-	// probe/mergeState are left zero throughout this table: these cases predate
-	// the merge probe and must be unaffected by it. Rule 3's probe-aware
-	// sub-cascade has its own table in TestComputeExecutionStatus_Rule3.
+	// Rule 3's declared-label sub-cascade has its own table in
+	// TestComputeExecutionStatus_Rule3.
 	tests := []struct {
 		name     string
 		labels   []string
@@ -151,7 +150,7 @@ func TestComputeExecutionStatus(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeExecutionStatus(tc.labels, tc.sessions, tc.wt, "", "")
+			got := computeExecutionStatus(tc.labels, tc.sessions, tc.wt)
 			if got != tc.want {
 				t.Errorf("computeExecutionStatus(%v, ..., %q) = %q, want %q",
 					tc.labels, tc.wt, got, tc.want)
@@ -162,10 +161,8 @@ func TestComputeExecutionStatus(t *testing.T) {
 
 // ── rule 3's sub-cascade (external_review.go §7) ──────────────────────────────
 
-// TestComputeExecutionStatus_Rule3 pins the order inside rule 3 —
-// STALE-MERGED, then the declared label, then REVIEWABLE — plus the two
-// invariants that order exists to protect: STALE-MERGED requires
-// pr_probe=="ok", and AWAITING-EXTERNAL-REVIEW does not.
+// TestComputeExecutionStatus_Rule3 pins the order inside rule 3 — the
+// declared label, then REVIEWABLE.
 func TestComputeExecutionStatus_Rule3(t *testing.T) {
 	const wt = "/home/agent/worktrees/rule3"
 
@@ -175,52 +172,37 @@ func TestComputeExecutionStatus_Rule3(t *testing.T) {
 	busySession := []agentSession{session(wt, "busy", "")}
 
 	tests := []struct {
-		name       string
-		labels     []string
-		sessions   []agentSession
-		probe      string
-		mergeState string
-		want       string
+		name     string
+		labels   []string
+		sessions []agentSession
+		want     string
 	}{
-		// (a) STALE-MERGED wins, including over the declared label.
-		{"merged, not handed off", reviewGated, noSession, prProbeOK, prStateMerged, StatusStaleMerged},
-		{"merged, handed off => merged wins", handedOff, noSession, prProbeOK, prStateMerged, StatusStaleMerged},
-		{"closed, handed off => merged wins", handedOff, noSession, prProbeOK, prStateClosed, StatusStaleMerged},
+		// (a) the declared label.
+		{"handed off", handedOff, noSession, StatusAwaitingExternalReview},
 
-		// (b) the declared label, independent of the probe.
-		{"handed off, PR open", handedOff, noSession, prProbeOK, prStateOpen, StatusAwaitingExternalReview},
-		{"handed off, probe unreachable", handedOff, noSession, prProbeUnreachable, "", StatusAwaitingExternalReview},
-		{"handed off, no PR URL", handedOff, noSession, prProbeNone, "", StatusAwaitingExternalReview},
-
-		// (c) REVIEWABLE — today's answer, unchanged.
-		{"review-gated, PR open", reviewGated, noSession, prProbeOK, prStateOpen, "REVIEWABLE"},
-		{"review-gated, probe unreachable", reviewGated, noSession, prProbeUnreachable, "", "REVIEWABLE"},
-		{"review-gated, no PR URL", reviewGated, noSession, prProbeNone, "", "REVIEWABLE"},
-
-		// A merge state the probe could not vouch for must NEVER produce
-		// StatusStaleMerged (external_review.go §5's INVARIANT).
-		{"unreachable probe carrying MERGED is ignored", reviewGated, noSession, prProbeUnreachable, prStateMerged, "REVIEWABLE"},
+		// (b) REVIEWABLE — today's answer, unchanged.
+		{"review-gated, not handed off", reviewGated, noSession, "REVIEWABLE"},
 
 		// Rules 1, 2 and 4 still win over everything rule 3 can say.
 		{
-			"rule 1 beats a merged, handed-off row",
+			"rule 1 beats a handed-off row",
 			[]string{"human", "gate:question", "gate:review", externalReviewLabel},
-			noSession, prProbeOK, prStateMerged, "NEEDS-DECISION",
+			noSession, "NEEDS-DECISION",
 		},
-		{"rule 2 beats a merged, handed-off row", handedOff, busySession, prProbeOK, prStateMerged, "IN-PROGRESS"},
+		{"rule 2 beats a handed-off row", handedOff, busySession, "IN-PROGRESS"},
 		{
-			"un-gated: the label is inert and the probe is ignored",
+			"un-gated: the label is inert",
 			[]string{externalReviewLabel},
-			noSession, prProbeOK, prStateMerged, "IN-PROGRESS",
+			noSession, "IN-PROGRESS",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeExecutionStatus(tc.labels, tc.sessions, wt, tc.probe, tc.mergeState)
+			got := computeExecutionStatus(tc.labels, tc.sessions, wt)
 			if got != tc.want {
-				t.Errorf("computeExecutionStatus(%v, ..., probe=%q, state=%q) = %q, want %q",
-					tc.labels, tc.probe, tc.mergeState, got, tc.want)
+				t.Errorf("computeExecutionStatus(%v, ...) = %q, want %q",
+					tc.labels, got, tc.want)
 			}
 		})
 	}
@@ -359,7 +341,7 @@ func TestComputeExecutionStatus_TrailingSlashOverridesReviewGate(t *testing.T) {
 	sess := []agentSession{session(wt+"/", "busy", "")}
 	labels := []string{"human", "gate:review"}
 
-	got := computeExecutionStatus(labels, sess, wt, prProbeNone, "")
+	got := computeExecutionStatus(labels, sess, wt)
 	if got != "IN-PROGRESS" {
 		t.Errorf("computeExecutionStatus with trailing-slash session: got %q, want IN-PROGRESS", got)
 	}
@@ -443,29 +425,6 @@ func fakeListExec(issues []bd.Issue) func(name string, args ...string) ([]byte, 
 	}
 }
 
-// failingPRMerge is a prMergeFunc that fails the test if it is ever called —
-// for cases whose initiatives must not be probed at all.
-func failingPRMerge(t *testing.T) prMergeFunc {
-	t.Helper()
-	return func(ownerRepo string, prNumber int) (string, error) {
-		t.Errorf("unexpected gh probe for %s#%d", ownerRepo, prNumber)
-		return "", fmt.Errorf("unexpected probe")
-	}
-}
-
-// okPreflight is the preflight seam for cases where gh is available.
-func okPreflight() error { return nil }
-
-// countingPreflight is okPreflight plus a call counter, for cases that assert
-// WHETHER the preflight ran — `gh auth status` is a network round trip, so a
-// run that needs no live probe must not reach it (agent-teams-p9dm.43).
-func countingPreflight(n *int) func() error {
-	return func() error {
-		*n++
-		return nil
-	}
-}
-
 func TestExecutionStatusCmd_Run_NilCtx(t *testing.T) {
 	cmd := &executionStatusKong{agentsFunc: func() ([]agentSession, error) { return nil, nil }}
 	err := cmd.Run(nil)
@@ -497,9 +456,7 @@ func TestExecutionStatusCmd_Run_GracefulDegrade(t *testing.T) {
 
 	agentsErr := fmt.Errorf("claude not in PATH")
 	cmd := &executionStatusKong{
-		agentsFunc:    func() ([]agentSession, error) { return nil, agentsErr },
-		prMergeFunc:   failingPRMerge(t),
-		preflightFunc: func() error { t.Error("preflight ran despite the agents join failing"); return nil },
+		agentsFunc: func() ([]agentSession, error) { return nil, agentsErr },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -515,11 +472,6 @@ func TestExecutionStatusCmd_Run_GracefulDegrade(t *testing.T) {
 	}
 	if result[0].ExecutionStatus != "unknown" {
 		t.Errorf("expected unknown on agents failure, got %q", result[0].ExecutionStatus)
-	}
-	// No PR URL in this initiative's notes: never probed, and no stderr noise
-	// (external_review.go §8's NO PR URL clause).
-	if result[0].PRProbe != prProbeNone {
-		t.Errorf("pr_probe = %q, want %q", result[0].PRProbe, prProbeNone)
 	}
 	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
 		t.Errorf("expected no stderr, got %q", s)
@@ -582,9 +534,7 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 	}
 
 	cmd := &executionStatusKong{
-		agentsFunc:    func() ([]agentSession, error) { return fakeSessions, nil },
-		prMergeFunc:   failingPRMerge(t), // no initiative here has a PR URL
-		preflightFunc: okPreflight,
+		agentsFunc: func() ([]agentSession, error) { return fakeSessions, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -627,14 +577,10 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 		t.Errorf("at-001: expected nil ask for bare notes (no sentinel block), got %+v", byID["at-001"].Ask)
 	}
 
-	// Verify pr field is empty when notes contain no PR URL, and that such a
-	// row reports pr_probe="none" without stderr noise.
+	// Verify pr field is empty when notes contain no PR URL.
 	for _, id := range []string{"at-001", "at-002", "at-003", "at-004"} {
 		if byID[id].PR != "" {
 			t.Errorf("%s: expected empty pr, got %q", id, byID[id].PR)
-		}
-		if byID[id].PRProbe != prProbeNone {
-			t.Errorf("%s: pr_probe = %q, want %q", id, byID[id].PRProbe, prProbeNone)
 		}
 	}
 	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
@@ -676,9 +622,7 @@ func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
 		Stderr: &bytes.Buffer{},
 	}
 	cmd := &executionStatusKong{
-		agentsFunc:    func() ([]agentSession, error) { return nil, nil },
-		prMergeFunc:   func(string, int) (string, error) { return prStateOpen, nil },
-		preflightFunc: okPreflight,
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -694,9 +638,6 @@ func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
 	}
 	r := result[0]
 
-	if r.PRProbe != prProbeOK {
-		t.Errorf("pr_probe = %q, want %q", r.PRProbe, prProbeOK)
-	}
 	if r.ExecutionStatus != "NEEDS-DECISION" {
 		t.Errorf("execution_status = %q, want NEEDS-DECISION", r.ExecutionStatus)
 	}
@@ -748,9 +689,7 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 		Stderr: &bytes.Buffer{},
 	}
 	cmd := &executionStatusKong{
-		agentsFunc:    func() ([]agentSession, error) { return nil, nil },
-		prMergeFunc:   func(string, int) (string, error) { return prStateOpen, nil },
-		preflightFunc: okPreflight,
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
 	}
 
 	if err := cmd.Run(ctx); err != nil {
@@ -772,12 +711,8 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 	if r.PR != prURL {
 		t.Errorf("pr = %q, want %q", r.PR, prURL)
 	}
-	// An OPEN PR leaves rule 3 exactly where it was.
 	if r.ExecutionStatus != "REVIEWABLE" {
 		t.Errorf("execution_status = %q, want REVIEWABLE", r.ExecutionStatus)
-	}
-	if r.PRProbe != prProbeOK {
-		t.Errorf("pr_probe = %q, want %q", r.PRProbe, prProbeOK)
 	}
 }
 
@@ -862,13 +797,13 @@ func TestExtractLatestAsk_UnclosedThenValid(t *testing.T) {
 	}
 }
 
-// ── p9dm.17: the merge probe wired into rule 3 ───────────────────────────────
+// ── p9dm.17: the declared external-review state wired into rule 3 ───────────
 
-// statusRun runs execution-status over issues with the given seams and returns
-// the decoded rows (by id) plus whatever went to stderr. It fails the test if
-// stdout is not a single parseable JSON array — stdout purity is contractual
-// (external_review.go §8), since consumers parse it.
-func statusRun(t *testing.T, home string, issues []bd.Issue, merge prMergeFunc, preflight func() error) (map[string]initiativeStatus, string) {
+// statusRun runs execution-status over issues and returns the decoded rows
+// (by id) plus whatever went to stderr. It fails the test if stdout is not a
+// single parseable JSON array — stdout purity is contractual, since
+// consumers parse it.
+func statusRun(t *testing.T, home string, issues []bd.Issue) (map[string]initiativeStatus, string) {
 	t.Helper()
 
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
@@ -879,9 +814,7 @@ func statusRun(t *testing.T, home string, issues []bd.Issue, merge prMergeFunc, 
 		Stderr: stderr,
 	}
 	cmd := &executionStatusKong{
-		agentsFunc:    func() ([]agentSession, error) { return nil, nil },
-		prMergeFunc:   merge,
-		preflightFunc: preflight,
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -914,220 +847,31 @@ func prIssue(id string, prNumber int, labels ...string) bd.Issue {
 	}
 }
 
-// TestExecutionStatusCmd_Run_StaleMergedAndHandoff is the loop-closing check:
-// a real run reports STALE-MERGED for a merged PR and AWAITING-EXTERNAL-REVIEW
-// for a handed-off one, with the declared answer holding whether or not the
-// initiative even has a PR to probe.
-func TestExecutionStatusCmd_Run_StaleMergedAndHandoff(t *testing.T) {
+// TestExecutionStatusCmd_Run_HandoffAndReviewable is the loop-closing check:
+// a real run reports AWAITING-EXTERNAL-REVIEW for a handed-off initiative,
+// with the declared answer holding whether or not the initiative even has a
+// PR in its notes.
+func TestExecutionStatusCmd_Run_HandoffAndReviewable(t *testing.T) {
 	issues := []bd.Issue{
-		prIssue("at-merged", 4501, "human", "gate:review"),
 		prIssue("at-handed", 4515, "human", "gate:review", externalReviewLabel),
 		prIssue("at-nopr", 0, "human", "gate:review", externalReviewLabel),
 		prIssue("at-plain", 4600, "human", "gate:review"),
 	}
-	states := map[int]string{4501: prStateMerged, 4515: prStateOpen, 4600: prStateOpen}
 
-	rows, stderr := statusRun(t, t.TempDir(), issues,
-		func(ownerRepo string, n int) (string, error) {
-			if ownerRepo != "mgt-insurance/midgard" {
-				t.Errorf("probe owner/repo = %q, want lower-cased mgt-insurance/midgard", ownerRepo)
-			}
-			return states[n], nil
-		}, okPreflight)
+	rows, stderr := statusRun(t, t.TempDir(), issues)
 
-	want := []struct{ id, status, probe string }{
-		{"at-merged", StatusStaleMerged, prProbeOK},
-		{"at-handed", StatusAwaitingExternalReview, prProbeOK},
-		{"at-nopr", StatusAwaitingExternalReview, prProbeNone},
-		{"at-plain", "REVIEWABLE", prProbeOK},
+	want := []struct{ id, status string }{
+		{"at-handed", StatusAwaitingExternalReview},
+		{"at-nopr", StatusAwaitingExternalReview},
+		{"at-plain", "REVIEWABLE"},
 	}
 	for _, w := range want {
 		got := rows[w.id]
-		if got.ExecutionStatus != w.status || got.PRProbe != w.probe {
-			t.Errorf("%s: got (%s, %s), want (%s, %s)", w.id, got.ExecutionStatus, got.PRProbe, w.status, w.probe)
+		if got.ExecutionStatus != w.status {
+			t.Errorf("%s: got %s, want %s", w.id, got.ExecutionStatus, w.status)
 		}
 	}
 	if stderr != "" {
 		t.Errorf("expected no stderr on a clean run, got %q", stderr)
-	}
-}
-
-// TestExecutionStatusCmd_Run_PreflightFailureDegrades covers §8's PREFLIGHT
-// path: no probe runs, one stderr line total, and the DECLARED state still
-// reports — an unauthenticated machine must not hide a handoff.
-func TestExecutionStatusCmd_Run_PreflightFailureDegrades(t *testing.T) {
-	home := t.TempDir()
-	issues := []bd.Issue{
-		prIssue("at-merged", 4501, "human", "gate:review"),
-		prIssue("at-handed", 4515, "human", "gate:review", externalReviewLabel),
-		prIssue("at-nopr", 0, "human", "gate:review", externalReviewLabel),
-	}
-
-	rows, stderr := statusRun(t, home, issues, failingPRMerge(t),
-		func() error { return fmt.Errorf("gh not found on PATH") })
-
-	want := []struct{ id, status, probe string }{
-		// The merge verdict is gone, so this falls back to today's answer —
-		// never STALE-MERGED (§5's INVARIANT).
-		{"at-merged", "REVIEWABLE", prProbeUnreachable},
-		{"at-handed", StatusAwaitingExternalReview, prProbeUnreachable},
-		{"at-nopr", StatusAwaitingExternalReview, prProbeNone},
-	}
-	for _, w := range want {
-		got := rows[w.id]
-		if got.ExecutionStatus != w.status || got.PRProbe != w.probe {
-			t.Errorf("%s: got (%s, %s), want (%s, %s)", w.id, got.ExecutionStatus, got.PRProbe, w.status, w.probe)
-		}
-	}
-	if n := strings.Count(strings.TrimSpace(stderr), "\n") + 1; stderr == "" || n != 1 {
-		t.Errorf("want exactly one stderr line, got %d: %q", n, stderr)
-	}
-	if _, err := os.Stat(filepath.Join(home, prStateFileName)); !os.IsNotExist(err) {
-		t.Errorf("cache file written despite no probe running (stat err = %v)", err)
-	}
-}
-
-// TestExecutionStatusCmd_Run_ProbeFailureIsCached covers §8's PER-PR FAILURE
-// path: one stderr line when the negative entry is newly written, and none on
-// the next run inside prProbeFailureTTL — the cache is what keeps a dead PR
-// from costing a line per hung tick.
-func TestExecutionStatusCmd_Run_ProbeFailureIsCached(t *testing.T) {
-	home := t.TempDir()
-	issues := []bd.Issue{prIssue("at-dead", 999, "human", "gate:review")}
-
-	probes := 0
-	merge := func(string, int) (string, error) {
-		probes++
-		return "", fmt.Errorf("gh: HTTP 404")
-	}
-
-	rows, stderr := statusRun(t, home, issues, merge, okPreflight)
-	if got := rows["at-dead"]; got.ExecutionStatus != "REVIEWABLE" || got.PRProbe != prProbeUnreachable {
-		t.Errorf("first run: got (%s, %s), want (REVIEWABLE, %s)", got.ExecutionStatus, got.PRProbe, prProbeUnreachable)
-	}
-	if !strings.Contains(stderr, "mgt-insurance/midgard#999") {
-		t.Errorf("first run: want one stderr line naming the PR, got %q", stderr)
-	}
-
-	rows, stderr = statusRun(t, home, issues, merge, okPreflight)
-	if probes != 1 {
-		t.Errorf("second run re-probed: %d gh calls, want 1 (negative entry is cached for %v)", probes, prProbeFailureTTL)
-	}
-	if got := rows["at-dead"]; got.PRProbe != prProbeUnreachable {
-		t.Errorf("second run: pr_probe = %q, want %q", got.PRProbe, prProbeUnreachable)
-	}
-	if stderr != "" {
-		t.Errorf("second run: cache hit must not repeat the stderr line, got %q", stderr)
-	}
-}
-
-// TestExecutionStatusCmd_Run_CacheHitSkipsProbe verifies the success TTL: a
-// second run inside prProbeSuccessTTL answers STALE-MERGED from the cache
-// without shelling out again.
-func TestExecutionStatusCmd_Run_CacheHitSkipsProbe(t *testing.T) {
-	home := t.TempDir()
-	issues := []bd.Issue{prIssue("at-merged", 4501, "human", "gate:review")}
-
-	probes := 0
-	merge := func(string, int) (string, error) {
-		probes++
-		return prStateMerged, nil
-	}
-
-	if rows, _ := statusRun(t, home, issues, merge, okPreflight); rows["at-merged"].ExecutionStatus != StatusStaleMerged {
-		t.Fatalf("first run: execution_status = %q, want %s", rows["at-merged"].ExecutionStatus, StatusStaleMerged)
-	}
-	rows, _ := statusRun(t, home, issues, merge, okPreflight)
-	if probes != 1 {
-		t.Errorf("%d gh calls across two runs, want 1", probes)
-	}
-	if got := rows["at-merged"]; got.ExecutionStatus != StatusStaleMerged || got.PRProbe != prProbeOK {
-		t.Errorf("second run: got (%s, %s), want (%s, %s)", got.ExecutionStatus, got.PRProbe, StatusStaleMerged, prProbeOK)
-	}
-}
-
-// TestExecutionStatusCmd_Run_PreflightIsLazy is agent-teams-p9dm.43: the gh
-// preflight is itself a network round trip (`gh auth status`, measured at
-// 0.32s), so it must not run on the two shapes of run where no gh call would
-// follow it — zero PR URLs, and every PR row cache-fresh. execution-status is
-// invoked on every /initiatives render and every hung tick.
-func TestExecutionStatusCmd_Run_PreflightIsLazy(t *testing.T) {
-	t.Run("no PR URLs", func(t *testing.T) {
-		preflights := 0
-		rows, stderr := statusRun(t, t.TempDir(),
-			[]bd.Issue{prIssue("at-nopr", 0, "human", "gate:review")},
-			failingPRMerge(t), countingPreflight(&preflights))
-
-		if preflights != 0 {
-			t.Errorf("preflight ran %d times with zero PR URLs, want 0", preflights)
-		}
-		if got := rows["at-nopr"]; got.ExecutionStatus != "REVIEWABLE" || got.PRProbe != prProbeNone {
-			t.Errorf("got (%s, %s), want (REVIEWABLE, %s)", got.ExecutionStatus, got.PRProbe, prProbeNone)
-		}
-		if stderr != "" {
-			t.Errorf("expected no stderr, got %q", stderr)
-		}
-	})
-
-	t.Run("every row cache-fresh", func(t *testing.T) {
-		home := t.TempDir()
-		issues := []bd.Issue{prIssue("at-merged", 4501, "human", "gate:review")}
-
-		probes, preflights := 0, 0
-		if _, stderr := statusRun(t, home, issues,
-			func(string, int) (string, error) { probes++; return prStateMerged, nil },
-			countingPreflight(&preflights)); stderr != "" {
-			t.Fatalf("seeding run: unexpected stderr %q", stderr)
-		}
-		if probes != 1 || preflights != 1 {
-			t.Fatalf("seeding run: %d probes / %d preflights, want 1 / 1", probes, preflights)
-		}
-
-		rows, stderr := statusRun(t, home, issues, failingPRMerge(t), countingPreflight(&preflights))
-		if preflights != 1 {
-			t.Errorf("preflight ran again on an all-fresh run: %d total, want 1", preflights)
-		}
-		if got := rows["at-merged"]; got.ExecutionStatus != StatusStaleMerged || got.PRProbe != prProbeOK {
-			t.Errorf("got (%s, %s), want (%s, %s)", got.ExecutionStatus, got.PRProbe, StatusStaleMerged, prProbeOK)
-		}
-		if stderr != "" {
-			t.Errorf("expected no stderr, got %q", stderr)
-		}
-	})
-}
-
-// TestExecutionStatusCmd_Run_PreflightStillGatesMixedRun is the other half of
-// agent-teams-p9dm.43: when one row DOES need a live probe the preflight runs,
-// and a failure still disables probing for EVERY row — the cache-fresh row
-// included, which is why the gate is evaluated over all rows up front rather
-// than at the first probe — behind the same single stderr line as before.
-func TestExecutionStatusCmd_Run_PreflightStillGatesMixedRun(t *testing.T) {
-	home := t.TempDir()
-	seeded := prIssue("at-seeded", 4501, "human", "gate:review")
-	unseen := prIssue("at-unseen", 4600, "human", "gate:review")
-
-	preflights := 0
-	if _, stderr := statusRun(t, home, []bd.Issue{seeded},
-		func(string, int) (string, error) { return prStateMerged, nil },
-		countingPreflight(&preflights)); stderr != "" {
-		t.Fatalf("seeding run: unexpected stderr %q", stderr)
-	}
-
-	rows, stderr := statusRun(t, home, []bd.Issue{seeded, unseen}, failingPRMerge(t),
-		func() error { preflights++; return fmt.Errorf("gh not found on PATH") })
-
-	if preflights != 2 {
-		t.Errorf("preflight ran %d times, want 2 (once per run that needs a live probe)", preflights)
-	}
-	// at-seeded holds a fresh MERGED entry, but probing is off for the run, so
-	// it degrades with everything else — mergeProbe tests enabled before the
-	// cache, exactly as before this change.
-	for _, id := range []string{"at-seeded", "at-unseen"} {
-		if got := rows[id]; got.ExecutionStatus != "REVIEWABLE" || got.PRProbe != prProbeUnreachable {
-			t.Errorf("%s: got (%s, %s), want (REVIEWABLE, %s)", id, got.ExecutionStatus, got.PRProbe, prProbeUnreachable)
-		}
-	}
-	if n := strings.Count(strings.TrimSpace(stderr), "\n") + 1; stderr == "" || n != 1 {
-		t.Errorf("want exactly one stderr line, got %d: %q", n, stderr)
 	}
 }
