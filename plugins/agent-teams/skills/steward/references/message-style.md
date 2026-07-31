@@ -47,16 +47,19 @@ built only from facts already present in its BEFORE.
 > visibility into those sessions from here, so I'm not tracking their state —
 > flagging only that the queue is longer than what this machine is running.
 
-**AFTER** (117 words, rule 1 did the cutting — this message was already under
-budget, so a budget alone never reaches it; rule 2's ban on restating and
-pointing-back binds at any length, which is the half that does):
+**AFTER** (121 words excluding URLs, rule 1 did the cutting — this message was
+already under budget, so a budget alone never reaches it; rule 2's ban on
+restating and pointing-back binds at any length, which is the half that does):
 
 > Quiet window — nothing new from me, nothing wrong. Nothing is executing: the
-> PR #140 merge decision (at-jno7) is waiting on you, the spawn role-drop plan
+> Reviews-topic reply fix (at-jno7) is waiting on you, the spawn role-drop plan
 > (at-xm7q) and the condense plan (at-ig53) are idle.
 >
-> Two PRs open: #140 is ready — merge, then restart the relay; #134 is still
-> below main at 0.48.0.
+> Two PRs open: the Reviews-topic reply fix is ready — merge, then restart the
+> relay.
+> https://github.com/MGT-Insurance/agent-teams/pull/140
+> The condense-plan PR is still below main at 0.48.0.
+> https://github.com/MGT-Insurance/agent-teams/pull/134
 >
 > Also waiting on you: the spawn role-drop finding — passing name: to a spawn
 > silently drops the role definition, including the never-push rule, on about
@@ -66,9 +69,11 @@ pointing-back binds at any length, which is the half that does):
 > laptop. I have no visibility into those from here — flagging only that the
 > queue is longer than what this machine runs.
 
-Every bare id now leads with the work it names; where no name exists (the six
-synced-in initiatives), the id is dropped rather than dumped bare. The inline
-bold on `#140`/`#134` is also gone (rule 3) — plain prose, not decoration.
+Every bare id now leads with the work it names, and each PR carries its full
+URL rather than a bare number (the widened id rule); where no name exists (the
+six synced-in initiatives), the id is dropped rather than dumped bare. The
+inline bold on `#140`/`#134` is also gone (rule 3) — plain prose, not
+decoration.
 
 ### Verification receipts
 
@@ -92,16 +97,17 @@ checklist (**Everything else I checked holds:** MERGEABLE/CLEAN, version
 bump, binaries rebuilt, merge-detection removal, diff size) followed by an
 operational caveat and the recommendation.
 
-**AFTER** (74 words, rules 2 and 3 did the cutting):
+**AFTER** (78 words excluding the URL, rules 2 and 3 did the cutting):
 
-> Merge PR #140 and restart the relay now, or later?
+> Merge the Reviews-topic reply fix and restart the relay now, or later?
+> https://github.com/MGT-Insurance/agent-teams/pull/140
 >
 > What it buys: the condensation stays fully intact, and the Reviews-topic
 > reply bug is fixed.
 >
 > What it costs: you have to restart the relay by hand for the fix to take
-> effect — skip it and replies stay broken exactly as now, the same trap as
-> #143.
+> effect — skip it and replies stay broken exactly as now, the same trap that
+> broke it before.
 >
 > My rec: merge, then restart. Alternative: merge now, restart later if you'd
 > rather batch it with at-xm7q.
@@ -109,7 +115,7 @@ operational caveat and the recommendation.
 The five-item green checklist is gone entirely — it set the Steward's own
 confidence to recommend merging, never Eric's message. What survives is the
 one thing that isn't assumable: the relay needs a manual restart, and skipping
-it reproduces the exact bug #143 already burned him on. The plan URL is cut
+it reproduces the exact bug that already burned him on. The plan URL is cut
 too — nothing here is a plan Eric needs to open to decide.
 
 ### Mechanism before effect
@@ -182,6 +188,8 @@ anything. The decision he was being asked to make is not in the opening at all.
 > The cheaper version sends them only after a compaction. It's filed and the hook it needs already ships in this PR.
 >
 > My rec: cheaper first, then merge.
+
+*Note: the full-URL-per-PR requirement postdates this round-1 ruling, so the bare `PR #123` above is not evidence it's acceptable — it is Eric's approved text, left verbatim.*
 
 **What changed:** the decision moved to the first line, phrased as the question
 he answers; status, provenance and green-test reporting were cut entirely; what
