@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -201,6 +202,21 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 		fmt.Fprintln(ctx.Stdout, "messaging not configured; relay is a no-op")
 		return nil
 	}
+
+	// Singleton guard (agent-teams-25c5.2): one bot token permits exactly one
+	// getUpdates poller, so claim the flock-backed pidfile lock (keyed on
+	// ctx.Home, matching ensureRelayRunning/teardownRelay — see
+	// relay_pidfile.go) before anything touches the transport. A losing
+	// acquire returns a nil lock, so `defer lock.Release()` below is a
+	// harmless no-op and can never remove the incumbent's pidfile.
+	lock, incumbent, err := acquireRelayLock(ctx)
+	if err != nil {
+		if errors.Is(err, errRelayLockHeld) {
+			return fmt.Errorf("ateam relay: refusing to start: another relay is already running (pid %d, pidfile %s) — one bot token permits exactly one poller", incumbent, relayPidfilePath(ctx))
+		}
+		return fmt.Errorf("ateam relay: acquire singleton lock: %w", err)
+	}
+	defer lock.Release()
 
 	t, err := c.transportFor(home)
 	if err != nil {

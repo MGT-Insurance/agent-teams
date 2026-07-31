@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -350,6 +351,180 @@ func TestStewardStart_LaunchInvokedWithSessionDir(t *testing.T) {
 func TestStewardStart_NilContext(t *testing.T) {
 	if err := (&stewardStartKong{}).Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── --relay flag (agent-teams-25c5.3) ───────────────────────────────────────
+
+// TestStewardStart_NoRelayFlag_DoesNotSpawnRelay confirms the flipped default:
+// without --relay, ensureRelayRunning is never reached — relaySpawnFunc is not
+// invoked and no relay pidfile is written.
+func TestStewardStart_NoRelayFlag_DoesNotSpawnRelay(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+
+	var spawnCalled bool
+	cmd := &stewardStartKong{
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+		launchFunc: func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:   func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) {
+			spawnCalled = true
+			return 4242, nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if spawnCalled {
+		t.Error("expected relaySpawnFunc NOT to be invoked without --relay")
+	}
+	if _, err := os.Stat(relayPidfilePath(ctx)); !os.IsNotExist(err) {
+		t.Errorf("expected no relay pidfile written without --relay, stat err: %v", err)
+	}
+}
+
+// TestStewardStart_NoRelayFlag_WritesNoRelayNote confirms the else-branch
+// this bead adds: without --relay, stdout carries a "relay: " prefixed note
+// that inbound replies need a running relay.
+func TestStewardStart_NoRelayFlag_WritesNoRelayNote(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardStartKong{
+		agentsFunc:     func() ([]agentSession, error) { return nil, nil },
+		launchFunc:     func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "relay: not started") {
+		t.Errorf("expected a \"relay: not started\" note in stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "inbound replies need a running relay") {
+		t.Errorf("expected stdout to explain inbound replies need a running relay, got: %q", stdout.String())
+	}
+}
+
+// TestStewardStart_NoRelayNote_IsMediumAgnostic pins Eric's stated reason for
+// the no-relay note's wording (agent-teams-25c5.7): "don't mention telegram
+// because we might change the delivery medium in the future." The delivery
+// medium is Telegram today, but the string must not name it so the line
+// stays true if that changes.
+func TestStewardStart_NoRelayNote_IsMediumAgnostic(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardStartKong{
+		agentsFunc:     func() ([]agentSession, error) { return nil, nil },
+		launchFunc:     func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(strings.ToLower(stdout.String()), "telegram") {
+		t.Errorf("expected no-relay stdout to be medium-agnostic (no \"telegram\" in any casing), got: %q", stdout.String())
+	}
+}
+
+// TestStewardStart_RelayFlag_OmitsNoRelayNote confirms --relay suppresses
+// the no-relay note added by this bead: a relay was started, so the "needs
+// a running relay" warning would be false.
+func TestStewardStart_RelayFlag_OmitsNoRelayNote(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	cmd := &stewardStartKong{
+		Relay:          true,
+		agentsFunc:     func() ([]agentSession, error) { return nil, nil },
+		launchFunc:     func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:       func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) { return 4242, nil },
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(stdout.String(), "not started") {
+		t.Errorf("expected no \"not started\" note in stdout with --relay, got: %q", stdout.String())
+	}
+}
+
+// TestStewardStart_RelayFlag_SpawnsRelayAndWritesPidfile confirms --relay
+// fully preserves today's behaviour: relaySpawnFunc is invoked exactly once
+// and the "started (pid N)" note appears in stdout.
+func TestStewardStart_RelayFlag_SpawnsRelayAndWritesPidfile(t *testing.T) {
+	home := t.TempDir()
+	ctx, stdout, _ := makeCtx(&fakeBD{}, home)
+
+	spawnCount := 0
+	cmd := &stewardStartKong{
+		Relay:      true,
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+		launchFunc: func(ctx *cli.Context, dir string) error { return nil },
+		killFunc:   func(pid int) {},
+		relaySpawnFunc: func(ctx *cli.Context) (int, error) {
+			spawnCount++
+			return 4242, nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if spawnCount != 1 {
+		t.Errorf("expected relaySpawnFunc invoked exactly once with --relay, got %d", spawnCount)
+	}
+	if !strings.Contains(stdout.String(), "started (pid 4242)") {
+		t.Errorf("expected relay start note in stdout, got: %q", stdout.String())
+	}
+}
+
+// TestStewardStartKong_RelayFlag_BindsViaParser is a parser-level assertion
+// that kong actually wires --relay to stewardStartKong.Relay. No existing
+// in-package precedent parses through cli.Parser and inspects the resulting
+// struct field directly (TestAllVerbsRegistered in verbs_test.go is an
+// external-package smoke test that only checks a verb is recognized, not that
+// a specific flag binds) — this test builds its own stewardCmd, registers it,
+// and reads the field back after Parse.
+func TestStewardStartKong_RelayFlag_BindsViaParser(t *testing.T) {
+	p, err := cli.NewParser(kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	cmd := &stewardCmd{}
+	p.AddVerb("steward", "Steward persona.", cmd)
+
+	if _, err := p.Parse([]string{"steward", "start", "--relay"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !cmd.Start.Relay {
+		t.Error("expected --relay to bind stewardStartKong.Relay = true")
+	}
+}
+
+// TestStewardStartKong_RelayFlag_DefaultsFalse confirms the flag defaults to
+// false when omitted — the flipped default this bead exists to ship.
+func TestStewardStartKong_RelayFlag_DefaultsFalse(t *testing.T) {
+	p, err := cli.NewParser(kong.Exit(func(int) {}))
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	cmd := &stewardCmd{}
+	p.AddVerb("steward", "Steward persona.", cmd)
+
+	if _, err := p.Parse([]string{"steward", "start"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cmd.Start.Relay {
+		t.Error("expected --relay to default to false")
 	}
 }
 
