@@ -1,6 +1,6 @@
 # Getting Started
 
-This is a Claude Code plugin that lets you hand off a coding task and have it done for you in the background, while you keep working on other things. You describe what you want built in one line; a team of Claude agents plans it, writes the code, tests it, and opens a GitHub pull request. You check in whenever you like — it only interrupts you when it genuinely needs a decision only you can make. You review and merge the pull request yourself when it's ready.
+This is a Claude Code plugin that lets you hand off a coding task and have it done for you in the background, while you keep working on other things. You describe what you want built in one line; one agent takes charge of it and pulls in others as it needs them — to plan, write the code, test it — and opens a GitHub pull request at the end. Below, "the agent" means the one in charge of your task. You check in whenever you like — it only interrupts you when it genuinely needs a decision only you can make. You review and merge the pull request yourself when it's ready.
 
 This guide covers the one path most people take first: install, one-time setup, hand off a task, follow along, and finish up.
 
@@ -99,7 +99,7 @@ Nothing notifies you by default. Check in whenever you want by running:
 /initiatives
 ```
 
-This lists every task you have running, grouped by how much attention each one needs — anything waiting on a decision from you appears first, then anything ready for you to review, then everything still in progress.
+("Initiative" is this system's word for one task you've handed off.) This lists every task you have running, grouped by how much attention each one needs — anything waiting on a decision from you appears first, then anything ready for you to review, then everything still in progress.
 
 ## When it asks you something
 
@@ -117,11 +117,11 @@ Find your task in the list by its name (the same name you saw when you handed it
 claude attach <id>
 ```
 
-It has to be the id. The name won't work here — passing the name gives you `No job matching '...'`.
+It has to be the id. The name won't work here — passing the name gives you `No job matching '...'`. Worth knowing because the message printed right after you hand off a task suggests the name; use the id instead. The same goes for `claude logs <id>`, which shows recent output without opening the session.
 
 This opens the session in your terminal. Type your answer and press enter, then press **Ctrl+Z** to drop back to your shell. The task keeps running either way — don't close the window, just detach.
 
-(Neither `agents` nor `attach` shows up if you run `claude --help` — they're real, working commands, just not listed there.)
+(`attach` doesn't show up if you run `claude --help` — it's a real, working command, just not listed there.)
 
 ## When it's done
 
