@@ -50,10 +50,10 @@ If `/setup-agent-teams` isn't recognized right after installing, restart Claude 
      "Bash(ateam:*)"
      ```
      This just stops this system's own command-line tool from prompting you every time it runs.
-4. Install that command-line tool (called `ateam`) so it's available in your terminal.
+4. Make that command-line tool (called `ateam`) available in your terminal. Nothing gets downloaded or built — `ateam` already came with the plugin. Setup just links it into `~/.local/bin`, which is a folder your terminal normally looks in for commands. Safe to re-run.
 5. Run a quick self-check and report back that everything is ready.
 
-When it finishes, it will confirm your setup is ready.
+When it finishes, it will confirm your setup is ready. If step 4's self-check says `ateam: command not found`, see "When things go wrong" below — setup will stop there rather than continue.
 
 ## Get your own project ready
 
@@ -149,5 +149,10 @@ one more time, so the system can mark the task closed.
 
 - **A task seems stuck from the very start, or teammates never join.** You likely skipped the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` setting from one-time setup, or set it without starting a new Claude Code session. Check `~/.claude/settings.json`, add it if missing, and start a fresh session.
 - **A task hands off fine but nothing ever seems to happen in it.** You probably forgot `bd init` in your project — see "Get your own project ready" above. Look for the "could not create root epic" warning right after you dispatched.
+- **Setup stops with `ateam: command not found`.** The `~/.local/bin` folder it linked the tool into isn't on your terminal's search path. Add this line to your `~/.zshrc` (or `~/.bashrc`):
+  ```
+  export PATH="$HOME/.local/bin:$PATH"
+  ```
+  Then open a new terminal and run `/setup-agent-teams` again — it's safe to re-run. (If the error says "unsupported platform" instead, the link worked but your machine's build of the tool is missing; that's a bug worth reporting.)
 - **`/setup-agent-teams` isn't recognized right after installing the plugin.** Restart Claude Code and try again.
 - **Your project's `git status` shows nothing while a task is supposedly running.** Expected — the work happens in a separate folder, not your own checkout. Use `/initiatives` to check on it instead.
