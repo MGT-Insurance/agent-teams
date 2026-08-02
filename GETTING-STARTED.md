@@ -152,13 +152,19 @@ Two things that catch people out:
 - **The agent does not stop itself when it's done.** This is by design — it stays running (idle) until you tell it to stop.
 - **A pull request can already exist while `/initiatives` still shows the task as "in progress."** That's normal — it flips to "ready to review" once the agent has fully finished tidying up, which can take a bit longer than the pull request itself.
 
-Review and merge the pull request the normal way, on GitHub or with `gh`. Once it's merged, run:
+Review and merge the pull request the normal way, on GitHub or with `gh`.
+
+Merging doesn't automatically tidy up on this side — the task stays on your list until someone says it's done. Two things are left, and neither is urgent:
 
 ```
-/resume-dri <name or id>
+ateam close <id> --reason "merged"
 ```
 
-one more time, so the system can mark the task closed.
+takes it off your list. The `<id>` is the one `/initiatives` shows next to the task.
+
+And the background agent is still sitting there idle — it never stops itself. Stop it with `claude stop <id>`, using the short id from `claude agents` (the same one you'd use to attach).
+
+If you skip both, nothing breaks; you'll just have a finished task still showing as open and an idle session still running.
 
 ## When things go wrong
 
