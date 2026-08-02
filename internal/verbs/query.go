@@ -515,8 +515,8 @@ func runLearnings(ctx *cli.Context, role string) error {
 		return nil
 	}
 
-	// Build the payload in a buffer first so the trailer can report its exact
-	// size (chars = len of this string, i.e. bytes — documented in
+	// Build the payload in a buffer first so the header/trailer can report its
+	// exact size (chars = len of this string, i.e. bytes — documented in
 	// TestLearnings_TrailerCharsCountsBytesNotRunes) without a second pass over raw.
 	var payload strings.Builder
 	for i, k := range keys {
@@ -526,10 +526,18 @@ func runLearnings(ctx *cli.Context, role string) error {
 			fmt.Fprintln(&payload)
 		}
 	}
-	fmt.Fprint(ctx.Stdout, payload.String())
 
-	fmt.Fprintf(ctx.Stdout, "[learnings %s: %d entries, %d chars, hot %d fresh %d]\n",
+	// stats is shared verbatim between the leading header and the trailing
+	// trailer (agent-teams-bbsz.33) — a reading session that sees matching
+	// stats on both ends can trust it received the whole payload; a mismatch
+	// (or a missing trailer entirely, e.g. from piping through `head`) means
+	// it was truncated. The trailer's own format is UNCHANGED from before
+	// this bead (it is the end-marker other tooling/tests key off of).
+	stats := fmt.Sprintf("%s: %d entries, %d chars, hot %d fresh %d",
 		role, len(keys), payload.Len(), len(hotKeys), len(freshKeys))
+	fmt.Fprintf(ctx.Stdout, "[learnings %s — read in full; do NOT pipe through head/tail or truncate; output ends at the matching trailer line]\n", stats)
+	fmt.Fprint(ctx.Stdout, payload.String())
+	fmt.Fprintf(ctx.Stdout, "[learnings %s]\n", stats)
 	return nil
 }
 

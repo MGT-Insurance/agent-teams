@@ -134,10 +134,13 @@ func condenseCheckForRole(raw map[string]any, role string) condenseCheckRoleResu
 		}
 	}
 
-	// servedKeys mirrors what `ateam learnings <role>` prints: union(hot,
+	// servedKeys is the SET `ateam learnings <role>` serves: union(hot,
 	// fresh), falling back to all role: keys when both are empty (pre-tier
 	// backward compat — see query.go:runLearnings, which this deliberately
 	// re-derives rather than calls, to stay file-disjoint from query.go).
+	// Only the set matters here, not its order: runLearnings sorts each tier
+	// independently so hot leads (agent-teams-bbsz.23), this flat-sorts, and
+	// the byte total below is order-independent either way.
 	var servedKeys []string
 	if len(hotKeys) > 0 || len(freshKeys) > 0 {
 		seen := make(map[string]struct{}, len(hotKeys)+len(freshKeys))
@@ -160,11 +163,14 @@ func condenseCheckForRole(raw map[string]any, role string) condenseCheckRoleResu
 
 	// learnings_bytes mirrors the PAYLOAD `ateam learnings <role>` prints:
 	// "<key>\n<body>\n" per entry, with a blank-line separator between
-	// entries (query.go:runLearnings). Deliberately excludes the trailing
-	// "[learnings <role>: ...]" line that runLearnings appends — that is
-	// metadata reporting the payload's size, not served memory, and it is a
-	// fixed per-call cost that would distort a per-role comparison. Keep
-	// this in sync with runLearnings' payload builder, not its full stdout.
+	// entries (query.go:runLearnings). Deliberately excludes BOTH
+	// "[learnings <role>: ...]" lines runLearnings wraps the payload in — the
+	// leading header and the matching trailer (agent-teams-bbsz.33). Those are
+	// metadata reporting the payload's size, not served memory, and they are a
+	// fixed per-call cost that would distort a per-role comparison. Keep this
+	// in sync with runLearnings' payload builder, not its full stdout — the
+	// builder's own `payload.Len()` is what the header and trailer report as
+	// "chars", so the two figures are directly comparable.
 	learningsBytes := 0
 	for i, k := range servedKeys {
 		body, _ := raw[k].(string)

@@ -3,6 +3,8 @@ package verbs
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -208,4 +210,92 @@ func decodeCondenseCheckResults(t *testing.T, stdout *bytes.Buffer) []condenseCh
 		t.Fatalf("decode condense-check JSON: %v (raw: %q)", err, stdout.String())
 	}
 	return results
+}
+
+// TestCondenseCheck_LearningsBytesEqualsRealLearningsPayload pins
+// condense_check.go's re-derived learningsBytes to the payload
+// `ateam learnings <role>` actually prints.
+//
+// The two live in file-disjoint tracks and must stay in sync by hand — the
+// comment above learningsBytes says so, and until now nothing enforced it.
+// This compares against the REAL printed bytes (len of what runLearnings put
+// on stdout between its header and trailer), not against the "N chars" figure
+// runLearnings self-reports, so a formula that drifted in BOTH places would
+// still be caught here.
+//
+// The fixture deliberately spans both tiers with more than one entry each, so
+// the blank-line separators and the per-key line overhead are exercised rather
+// than cancelling out, and includes a multi-byte rune so a byte/rune mix-up
+// cannot pass.
+func TestCondenseCheck_LearningsBytesEqualsRealLearningsPayload(t *testing.T) {
+	fixture := map[string]any{
+		"dri:hot:alpha":              "first hot body",
+		"dri:hot:beta-longer-slug":   "second hot body with café — multi-byte",
+		"dri:hot:gamma":              strings.Repeat("g", 300),
+		"dri:fresh:delta":            "a fresh body",
+		"dri:fresh:epsilon-long-key": strings.Repeat("e", 200),
+		// Noise that must NOT be counted: another role, and a non-string value.
+		"tester:hot:ignored": "other role",
+		"schema_version":     1,
+	}
+	newFakeBD := func() *fakeBD {
+		return &fakeBD{
+			runJSONFn: func(dst any, args ...string) error {
+				m := dst.(*map[string]any)
+				*m = fixture
+				return nil
+			},
+		}
+	}
+
+	// What `ateam learnings dri` really prints.
+	lctx, lstdout, _ := makeCtx(newFakeBD(), t.TempDir())
+	if err := (&learningsKong{Role: "dri"}).Run(lctx); err != nil {
+		t.Fatalf("learnings.Run: %v", err)
+	}
+	out := lstdout.String()
+	body := stripHeaderLine(out)
+	idx := strings.LastIndex(body, "[learnings ")
+	if idx < 0 {
+		t.Fatalf("no trailer line found in learnings output:\n%q", out)
+	}
+	payload := body[:idx]
+	wantBytes := len(payload)
+	if wantBytes == 0 {
+		t.Fatal("fixture produced an empty payload; fixture is broken")
+	}
+
+	// What condense-check computes for the same store.
+	cctx, cstdout, _ := makeCtx(newFakeBD(), t.TempDir())
+	if err := (&condenseCheckKong{Role: "dri", JSON: true}).Run(cctx); err != nil {
+		t.Fatalf("condense-check.Run: %v", err)
+	}
+	results := decodeCondenseCheckResults(t, cstdout)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if got := results[0].LearningsBytes; got != wantBytes {
+		t.Errorf("condense-check learnings_bytes = %d, but `learnings dri` printed a %d-byte payload; "+
+			"the two byte models have diverged (condense_check.go learningsBytes vs query.go runLearnings payload builder)",
+			got, wantBytes)
+	}
+
+	// The header and trailer both self-report the same size; a mismatch with
+	// the real payload would mean runLearnings' own reporting drifted too.
+	for _, m := range []struct {
+		what string
+		re   *regexp.Regexp
+		line string
+	}{
+		{"header", headerRe, out[:strings.Index(out, "\n")+1]},
+		{"trailer", trailerRe, body[idx:]},
+	} {
+		sub := m.re.FindStringSubmatch(m.line)
+		if sub == nil {
+			t.Fatalf("%s line did not match expected shape; got:\n%q", m.what, m.line)
+		}
+		if sub[3] != strconv.Itoa(wantBytes) {
+			t.Errorf("%s reports %s chars, want %d", m.what, sub[3], wantBytes)
+		}
+	}
 }

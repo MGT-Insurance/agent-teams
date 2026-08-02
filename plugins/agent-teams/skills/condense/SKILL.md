@@ -1,6 +1,6 @@
 ---
 name: condense
-description: Triggered manually or at wind-down to drain fresh memories then condense hot/cold learnings for each over-threshold role. Lock-guarded; skips cleanly if another condense is already running.
+description: Triggered manually or at wind-down to curate each role's learnings — condense FIRST, drain the fresh tier afterward (that order is load-bearing). A role is gated on how much NEW fresh material it has accumulated, not on the total size of its served set. Lock-guarded; skips cleanly if another condense is already running.
 ---
 
 **The `ateam` tool.** On PATH via the plugin's `bin/` (installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere.
@@ -218,7 +218,7 @@ Then confirm the served set and spot-check cold:
 ateam learnings <role>
 ```
 
-Confirm output shows only the hot entries (the fresh tier is empty after drain), plus the final `[learnings <role>: ...]` trailer line.
+Confirm output shows only the hot entries (the fresh tier is empty after drain), framed by matching `[learnings <role>: ...]` header and trailer lines. If the two disagree, or the trailer is missing, you read a TRUNCATED payload — not a smaller one.
 
 ```bash
 ateam recall <role> <key-of-an-entry-you-just-demoted>
@@ -226,9 +226,7 @@ ateam recall <role> <key-of-an-entry-you-just-demoted>
 
 Pass that entry's own `key` **verbatim** (the full `<role>:<slug>`, or just the slug). A healthy store answers `1 matches` with the key you asked for — that exact outcome is the proof, and nothing else is.
 
-Do **not** invent a descriptive phrase. `recall` splits the query on whitespace and counts an entry as a match if *any* single token appears anywhere in its key or body, so a plausible-sounding phrase matches most of the store: measured on the live store, `"worktree cwd discipline for agents"` returned **218 of 243** entries, led by an unrelated one. That reads as a pass and proves nothing — check the count, not whether output appeared.
-
-On a real miss you get a `nearest:` line. It is not a "did you mean": every candidate scored zero, so the ranking falls back to alphabetical and it prints the same first keys of the role whatever you searched for.
+Do **not** invent a descriptive phrase. `recall` matches on any *single* token, so a plausible-sounding phrase matches most of the store and reads as a pass while proving nothing — check the **count**, not whether output appeared. Mechanism, the measured 218-of-243 case, and why a `nearest:` line is not a "did you mean": `references/recall-verification.md`.
 
 ### Emit summary line
 
