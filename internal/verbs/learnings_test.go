@@ -958,6 +958,23 @@ func TestLearnings_BothEmptyFallsBackToAllRoleKeys(t *testing.T) {
 // line into its numeric fields for assertions below.
 var trailerRe = regexp.MustCompile(`^\[learnings (\S+): (\d+) entries, (\d+) chars, hot (\d+) fresh (\d+)\]\n$`)
 
+// headerRe parses the leading "[learnings <role>: N entries, M chars, hot X
+// fresh Y — read in full; ...]" advisory line (agent-teams-bbsz.33) into the
+// same numeric fields as trailerRe, so a test can assert the two carry
+// identical stats.
+var headerRe = regexp.MustCompile(`^\[learnings (\S+): (\d+) entries, (\d+) chars, hot (\d+) fresh (\d+) — read in full; do NOT pipe through head/tail or truncate; output ends at the matching trailer line\]\n$`)
+
+// stripHeaderLine removes the leading advisory header line (through its
+// trailing newline) from out, returning the remainder. Used by tests that
+// need to isolate the entries payload from the header that now precedes it.
+func stripHeaderLine(out string) string {
+	nl := strings.Index(out, "\n")
+	if nl < 0 {
+		return out
+	}
+	return out[nl+1:]
+}
+
 // TestLearnings_TrailerReportsCountsAndPayloadByteLength verifies the trailer
 // line's shape and that its "N entries"/"hot X fresh Y" figures match the
 // served set, and — most importantly — that "M chars" equals the exact byte
@@ -983,11 +1000,12 @@ func TestLearnings_TrailerReportsCountsAndPayloadByteLength(t *testing.T) {
 	}
 
 	out := stdout.String()
-	idx := strings.LastIndex(out, "[learnings ")
+	body := stripHeaderLine(out)
+	idx := strings.LastIndex(body, "[learnings ")
 	if idx < 0 {
 		t.Fatalf("no trailer line found in output:\n%q", out)
 	}
-	payload, trailer := out[:idx], out[idx:]
+	payload, trailer := body[:idx], body[idx:]
 
 	m := trailerRe.FindStringSubmatch(trailer)
 	if m == nil {
@@ -1037,11 +1055,12 @@ func TestLearnings_TrailerCharsCountsBytesNotRunes(t *testing.T) {
 	}
 
 	out := stdout.String()
-	idx := strings.LastIndex(out, "[learnings ")
+	body := stripHeaderLine(out)
+	idx := strings.LastIndex(body, "[learnings ")
 	if idx < 0 {
 		t.Fatalf("no trailer line found in output:\n%q", out)
 	}
-	payload, trailer := out[:idx], out[idx:]
+	payload, trailer := body[:idx], body[idx:]
 
 	byteLen := len(payload)
 	runeLen := utf8.RuneCountInString(payload)
@@ -1091,5 +1110,90 @@ func TestLearnings_TrailerZeroTierFallbackReportsZeroHotFresh(t *testing.T) {
 	}
 	if m[4] != "0" || m[5] != "0" {
 		t.Errorf("hot/fresh = %s/%s, want 0/0 in zero-tier fallback", m[4], m[5])
+	}
+}
+
+// ── learnings leading advisory header (agent-teams-bbsz.33) ───────────────────
+
+// TestLearnings_HeaderIsFirstLineTrailerIsLastLine verifies the non-empty
+// output shape: the advisory header line comes first, the unchanged trailer
+// line comes last, and the two carry identical stats — so a reading session
+// can detect truncation (e.g. from piping through `head`) by checking the
+// trailer is present and matches the header.
+func TestLearnings_HeaderIsFirstLineTrailerIsLastLine(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{
+				"implementer:hot:a":   "AAA",
+				"implementer:fresh:b": "BBB",
+			}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "implementer"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := stdout.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least a header and trailer line; got:\n%q", out)
+	}
+	firstLine := lines[0] + "\n"
+	lastLine := lines[len(lines)-1] + "\n"
+
+	headerMatch := headerRe.FindStringSubmatch(firstLine)
+	if headerMatch == nil {
+		t.Fatalf("first line is not the advisory header; got:\n%q", firstLine)
+	}
+	trailerMatch := trailerRe.FindStringSubmatch(lastLine)
+	if trailerMatch == nil {
+		t.Fatalf("last line is not the trailer; got:\n%q", lastLine)
+	}
+
+	// Same stats (role, entries, chars, hot, fresh) on both ends.
+	for i, label := range []string{"role", "entries", "chars", "hot", "fresh"} {
+		if headerMatch[i+1] != trailerMatch[i+1] {
+			t.Errorf("%s mismatch: header=%q trailer=%q", label, headerMatch[i+1], trailerMatch[i+1])
+		}
+	}
+
+	// The header must not itself be mistaken for the trailer (they must be
+	// distinct lines, not the same line printed twice).
+	if firstLine == lastLine {
+		t.Fatalf("header and trailer must be distinct lines; got the same line twice:\n%q", firstLine)
+	}
+
+	// Advisory wording present.
+	for _, phrase := range []string{"read in full", "do NOT pipe through head/tail or truncate", "output ends at the matching trailer line"} {
+		if !strings.Contains(firstLine, phrase) {
+			t.Errorf("expected header to contain %q; got:\n%q", phrase, firstLine)
+		}
+	}
+}
+
+// TestLearnings_EmptyCaseHasNoHeader verifies the EMPTY case is unchanged: a
+// single "[learnings <role>: EMPTY]" line with no leading advisory header
+// (the dashboard sentinel contract depends on this exact shape).
+func TestLearnings_EmptyCaseHasNoHeader(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = map[string]any{"planner:other": "unrelated role"}
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &learningsKong{Role: "implementer"}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := stdout.String(); got != "[learnings implementer: EMPTY]\n" {
+		t.Errorf("expected unchanged single-line EMPTY marker; got:\n%q", got)
 	}
 }
