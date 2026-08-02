@@ -152,19 +152,23 @@ Two things that catch people out:
 - **The agent does not stop itself when it's done.** This is by design — it stays running (idle) until you tell it to stop.
 - **A pull request can already exist while `/initiatives` still shows the task as "in progress."** That's normal — it flips to "ready to review" once the agent has fully finished tidying up, which can take a bit longer than the pull request itself.
 
-Review and merge the pull request the normal way, on GitHub or with `gh`.
+You have two ways to finish, and the second one is less work.
 
-Merging doesn't automatically tidy up on this side — the task stays on your list until someone says it's done. Two things are left, and neither is urgent:
+**Option 1 — do it yourself.** Review and merge the pull request the normal way, on GitHub or with `gh`. Then tidy up on this side:
 
 ```
 ateam close <id> --reason "merged"
 ```
 
-takes it off your list. The `<id>` is the one `/initiatives` shows next to the task.
+The `<id>` is the one `/initiatives` shows next to the task. The background agent is also still sitting there idle — it never stops itself — so stop it with `claude stop <id>`, using the short id from `claude agents`.
 
-And the background agent is still sitting there idle — it never stops itself. Stop it with `claude stop <id>`, using the short id from `claude agents` (the same one you'd use to attach).
+**Option 2 — let the agent finish it.** Attach to the task (see the previous section) and tell it to **close out**. That phrase is the one it's listening for. Once you've told it the pull request is merged — or asked it to merge for you, which it will do, but only after you say so, never on its own — it will:
 
-If you skip both, nothing breaks; you'll just have a finished task still showing as open and an idle session still running.
+- mark the task closed, with the pull request link recorded against it,
+- fast-forward your local `main` so your own checkout isn't left behind, and
+- clean up the folder and branch it was working in.
+
+Either way, nothing breaks if you don't bother. You'll just have a finished task still showing as open, an idle session still running, and a local `main` that's a few commits behind.
 
 ## When things go wrong
 
