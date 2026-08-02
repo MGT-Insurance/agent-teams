@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2296,24 +2298,125 @@ func TestCondense_PacketContainsContract(t *testing.T) {
 	}
 }
 
-// TestCondense_ContractWarnsRecallSubstringMiss proves the contract
-// (agent-teams-0yd3.18) tells the consuming agent: pass the entry's own
-// "key" verbatim as the recall term, that recall is a literal substring
-// match (not a word search), and that a miss is silent (prints nothing,
-// exits 0) so empty output must never be read as "no body exists".
-func TestCondense_ContractWarnsRecallSubstringMiss(t *testing.T) {
-	pkt := condensePacketFor(t, "dri", map[string]any{
-		"dri:one": "body",
-	})
+// recallHeaderRe extracts the match count from recall's always-printed
+// header line: `[recall <role> "<query>": N matches]`.
+var recallHeaderRe = regexp.MustCompile(`^\[recall \S+ ".*": (\d+) matches\]$`)
+
+// runRecallForContract runs the real recall verb over memories and returns
+// its full stdout plus the count its header reports.
+func runRecallForContract(t *testing.T, memories map[string]any, role, query string) (string, int) {
+	t.Helper()
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = memories
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	if err := (&recallKong{Role: role, Query: query}).Run(ctx); err != nil {
+		t.Fatalf("recall %q: unexpected error: %v", query, err)
+	}
+	out := stdout.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	m := recallHeaderRe.FindStringSubmatch(lines[0])
+	if m == nil {
+		t.Fatalf("recall %q: no header line; got:\n%s", query, out)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("recall %q: bad count %q", query, m[1])
+	}
+	return out, n
+}
+
+// TestCondense_ContractMatchesRealRecallSemantics proves the contract's
+// recall paragraph (agent-teams-0yd3.18, corrected by .32) describes what
+// runRecall ACTUALLY does. The earlier version of this test asserted only
+// that the hardcoded contract string contained certain words, so it stayed
+// green while the prose it guarded was false: it claimed recall was a
+// single literal substring match whose miss "prints NOTHING and exits 0",
+// which stopped being true when recall became tokenized and ranked
+// (agent-teams-bbsz / #146). Every claim below is witnessed against real
+// recall output over the same fixture, so a future change to either the
+// verb or the prose breaks this test instead of silently diverging.
+func TestCondense_ContractMatchesRealRecallSemantics(t *testing.T) {
+	memories := map[string]any{
+		"dri:self-hosting-bootstrap":  "the bootstrap path for self hosting",
+		"dri:hot:worktree-discipline": "always address git with -C for every path",
+		"dri:hot:review-routing":      "route findings to a fresh implementer for review",
+		"dri:merge-conflicts":         "resolve manifest conflicts for the branch",
+		"planner:other":               "different role, never searched",
+		"schema_version":              1,
+	}
+	pkt := condensePacketFor(t, "dri", memories)
+
+	// CLAIM 1: the entry's own packet "key", passed verbatim, matches
+	// exactly once — the .18 guarantee, end to end from packet to verb.
+	var coldKey string
+	for _, m := range pkt.Memories {
+		if m.Key == "self-hosting-bootstrap" {
+			coldKey = m.Key
+		}
+	}
+	if coldKey == "" {
+		t.Fatalf("fixture cold entry missing from packet: %+v", pkt.Memories)
+	}
+	if out, n := runRecallForContract(t, memories, "dri", coldKey); n != 1 {
+		t.Errorf("contract promises the entry's own key matches exactly once; got %d:\n%s", n, out)
+	}
+
+	// CLAIM 2: a plausible descriptive phrase OVER-matches. This is the
+	// claim the old prose had backwards ("usually matches nothing").
+	out, n := runRecallForContract(t, memories, "dri", "path for review")
+	if n < 4 {
+		t.Errorf("contract warns a descriptive phrase matches most of the store; got only %d:\n%s", n, out)
+	}
+
+	// CLAIM 3: a miss is never silent — header always prints, exit 0, and a
+	// nearest: line follows. The old prose said a miss "prints NOTHING".
+	missOut, missN := runRecallForContract(t, memories, "dri", "zzqq-absent-term")
+	if missN != 0 {
+		t.Fatalf("expected 0 matches for an absent term, got %d", missN)
+	}
+	if !strings.Contains(missOut, "nearest:") {
+		t.Errorf("contract says a zero-match run prints a nearest: list; got:\n%s", missOut)
+	}
+
+	// CLAIM 4: nearest: is not a "did you mean" — every candidate scored
+	// zero, so two unrelated failing queries produce an identical list.
+	otherOut, _ := runRecallForContract(t, memories, "dri", "wholly-unrelated-xyz")
+	nearestOf := func(s string) string {
+		for _, line := range strings.Split(s, "\n") {
+			if strings.HasPrefix(line, "nearest:") {
+				return line
+			}
+		}
+		return ""
+	}
+	if a, b := nearestOf(missOut), nearestOf(otherOut); a != b {
+		t.Errorf("contract says nearest: is query-independent on a total miss;\n got %q\nand %q", a, b)
+	}
+
+	// The prose must actually carry those claims to the curating agent.
 	for _, want := range []string{
 		"verbatim as <term>",
-		"SUBSTRING",
-		"NOT a word/phrase search",
-		"exits 0",
-		"NEVER evidence the entry lacks a body",
+		"ANY single token",
+		`"[recall <role> ...: N matches]" COUNT`,
+		`"nearest:" list -- it is NOT`,
 	} {
 		if !strings.Contains(pkt.Contract, want) {
 			t.Errorf("contract missing %q", want)
+		}
+	}
+	// ...and must not carry the pre-#146 claims this test disproved above.
+	for _, gone := range []string{
+		"SINGLE LITERAL SUBSTRING",
+		"prints NOTHING",
+		"usually\n    matches nothing",
+	} {
+		if strings.Contains(pkt.Contract, gone) {
+			t.Errorf("contract still carries falsified claim %q", gone)
 		}
 	}
 }

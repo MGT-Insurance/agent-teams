@@ -893,15 +893,19 @@ chars) — their full body is deliberately NOT included in this packet, to
 keep it small. Before deciding whether to promote, merge, or evict a cold
 entry, read its full body — ateam recall is the ONLY retrieval path this
 contract offers, and it is guaranteed to match (see PACKET SHAPE above):
-  ateam recall <role> <term>   (substring search over key + body)
+  ateam recall <role> <term>   (tokenized, ranked search over key + body)
     -- pass this entry's OWN "key" field verbatim as <term>: it is
     guaranteed to match, because recall's search runs against the full
-    store key, and this entry's "key" is always a substring of it. recall
-    is a SINGLE LITERAL SUBSTRING match, NOT a word/phrase search: a
-    descriptive multi-word query (e.g. "self hosting bootstrap") usually
-    matches nothing even when the entry exists. A miss prints NOTHING and
-    exits 0 -- empty output is NEVER evidence the entry lacks a body;
-    re-query with the exact "key" before concluding anything.
+    store key, and this entry's "key" is always a substring of it. Expect
+    the header to read exactly "1 matches". Do NOT substitute a
+    descriptive phrase: recall splits <term> on whitespace and counts an
+    entry as a match if ANY single token appears anywhere in its key or
+    body, so a plausible phrase (e.g. "self hosting bootstrap") matches
+    most of the store and reads as a pass while proving nothing. Read the
+    "[recall <role> ...: N matches]" COUNT, never merely whether output
+    appeared. On zero matches recall prints a "nearest:" list -- it is NOT
+    a "did you mean": every candidate scored zero, so it is just that
+    role's alphabetically first keys, identical for every failing query.
 applied_count / last_applied are joined on EVERY entry — hot, fresh, AND cold
 alike, never skipped by tier. To keep the packet small, a field is OMITTED
 when it is exactly its zero value: a missing applied_count means 0, a missing
