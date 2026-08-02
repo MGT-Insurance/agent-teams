@@ -59,14 +59,29 @@ When it finishes, it will confirm your setup is ready. If step 4's self-check sa
 
 This step is easy to skip, and skipping it fails silently — so do it now, before your first task.
 
-Go into the project you actually want work done in (not this repo — *your* project) and run:
+Go into the project you actually want work done in (not this repo — *your* project) and set up its task database. The background agents need one in order to track and coordinate their work inside your project.
+
+There are two ways to do it, and which one you want depends on whose repo it is.
+
+**If it's your repo** (a personal project, or one where you can decide this for everyone):
 
 ```
 cd /path/to/your-project
 bd init
 ```
 
-This gives your project its own local task database, which the background agents need in order to track and coordinate their own work inside it.
+This adds a `.beads/` folder to the project. You commit it like any other file, and it becomes shared: the task history travels with the repo, and beads syncs its data through your normal git remote. That's usually what you want on your own project.
+
+**If it's a shared repo** — work, open source, anything where adding a folder and pushing data to the shared remote isn't purely your call:
+
+```
+cd /path/to/your-project
+bd init --stealth
+```
+
+Stealth mode sets things up so beads stays invisible to everyone else. It adds the beads files to your clone's private ignore list (`.git/info/exclude`), which itself never gets committed — so nothing beads-related can end up in a commit or a pull request by accident. Everything works the same for you; it's just local.
+
+Two things worth agreeing with your team before using the non-stealth version on a repo you share: it puts a new folder in the project, and beads pushes its data to the same git remote everyone else uses. Neither is destructive, but neither is invisible either. When in doubt, use stealth — you can always switch later.
 
 **If you skip this:** handing off a task will still *appear* to succeed — you'll get back an id and a folder path — but the agent working on it will fail later, somewhere you can't see. The only hint you'll get is a warning line that scrolls by right after you hand off the task, something like:
 
@@ -148,7 +163,7 @@ one more time, so the system can mark the task closed.
 ## When things go wrong
 
 - **A task seems stuck from the very start, or teammates never join.** You likely skipped the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` setting from one-time setup, or set it without starting a new Claude Code session. Check `~/.claude/settings.json`, add it if missing, and start a fresh session.
-- **A task hands off fine but nothing ever seems to happen in it.** You probably forgot `bd init` in your project — see "Get your own project ready" above. Look for the "could not create root epic" warning right after you dispatched.
+- **A task hands off fine but nothing ever seems to happen in it.** You probably never set up the task database in your project — see "Get your own project ready" above for `bd init` and the stealth variant. Look for the "could not create root epic" warning right after you dispatched.
 - **Setup stops with `ateam: command not found`.** The `~/.local/bin` folder it linked the tool into isn't on your terminal's search path. Add this line to your `~/.zshrc` (or `~/.bashrc`):
   ```
   export PATH="$HOME/.local/bin:$PATH"
