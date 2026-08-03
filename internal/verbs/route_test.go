@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -70,6 +71,18 @@ func makeRouteCtxWithHome(t *testing.T, issues []bd.Issue) (*cli.Context, *bytes
 		Stderr: stderr,
 	}
 	return ctx, stdout, stderr, tmpHome
+}
+
+// newEnabledClonePath returns a fresh temp dir seeded with a .agent-teams
+// marker file, so review-repos fixtures reach past spawnReviewInitiative's
+// repo-enabled gate without re-deriving that setup individually.
+func newEnabledClonePath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("newEnabledClonePath: write %s: %v", repoconfig.FileName, err)
+	}
+	return dir
 }
 
 // writeTempFile creates a temp file with the given content and returns its path.
@@ -258,6 +271,47 @@ func TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips(t *testing.T) {
 	}
 }
 
+// TestDecisionMatrix_UnownedReviewRequestedDisabledCloneSkips verifies the
+// SPAWN seam when the repo IS registered in review-repos but the clone has no
+// (or a disabled) .agent-teams file: skip quietly, one log line, no dispatch
+// subprocess — the fix for a repeatedly-polled review_requested PR on a
+// disabled repo otherwise spamming a refused `dispatch` call every pr-shepherd
+// poll cycle.
+func TestDecisionMatrix_UnownedReviewRequestedDisabledCloneSkips(t *testing.T) {
+	bodyFile := writeTempFile(t, "reviewer added")
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil) // no issues → MatchNone
+
+	clonePath := t.TempDir() // deliberately no .agent-teams marker
+	configDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "repo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   7,
+		HeadBranch: "some-branch",
+		Transition: TransitionReviewRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("expected 0 runner calls for a disabled clone, got %d: %v", len(fr.calls), fr.calls)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "agent-teams not enabled") {
+		t.Errorf("stdout should say 'agent-teams not enabled' for a disabled clone; got: %q", out)
+	}
+}
+
 // TestSpawnReviewInitiative_Configured verifies the happy path: a review-repos
 // config file is present → runner called with dispatch + correct args including
 // --launch-prompt and --skip-epic for the lightweight review-pr skill.
@@ -265,7 +319,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
 	// Register a fake clone path in the config.
-	clonePath := t.TempDir()
+	clonePath := newEnabledClonePath(t)
 	repoKey := "midgard" // Slugify(basename("MGT-Insurance/midgard"))
 	configDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -359,7 +413,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
-	clonePath := t.TempDir()
+	clonePath := newEnabledClonePath(t)
 	repoKey := "midgard"
 	configDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -426,7 +480,7 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 func TestSpawnReviewInitiative_PRURLConstructed(t *testing.T) {
 	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
-	clonePath := t.TempDir()
+	clonePath := newEnabledClonePath(t)
 	repoKey := "myrepo"
 	configDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -860,7 +914,8 @@ func TestReReview_NoInitiative_FallsBackToSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -891,7 +946,8 @@ func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -923,7 +979,8 @@ func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1042,7 +1099,8 @@ func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

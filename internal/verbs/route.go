@@ -12,6 +12,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // routePREventKong is the kong-native form of route-pr-event.
@@ -183,9 +184,14 @@ func RegisterRouteEventKong(p *cli.Parser) {
 // spawnReviewInitiative handles the SPAWN path (fkr.23): an unowned PR with
 // transition=review_requested. It resolves the event repo to a local clone
 // path via a config file at <ctx.Home>/review-repos/<repo-key>, where
-// repo-key = Slugify(basename(event.Repo)). If the config file is absent,
-// it logs a skip message and returns nil. If configured, it writes a temp
-// file containing structured PR metadata and invokes the ateamRunner with:
+// repo-key = Slugify(basename(event.Repo)). If the config file is absent, or
+// if it's present but the clone has no (or a disabled) .agent-teams file
+// (internal/repoconfig), it logs a skip message and returns nil — the latter
+// check exists so a disabled repo with an open review_requested PR degrades
+// to one quiet log line per pr-shepherd poll instead of a dispatch subprocess
+// spawned (and refused, loudly) every cycle. If configured and enabled, it
+// writes a temp file containing structured PR metadata and invokes the
+// ateamRunner with:
 //
 //	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile> \
 //	         --launch-prompt "/agent-teams:review-pr {id}" --skip-epic \
@@ -213,6 +219,19 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 		return nil
 	}
 	clonePath := strings.TrimSpace(string(data))
+
+	// A disabled/not-yet-opted-in clone is skipped here, quietly and without
+	// a subprocess — same shape as the "not configured" branch above. Without
+	// this, a repeatedly-polled review_requested PR on a disabled repo would
+	// spawn a real `dispatch` subprocess every poll (pr-shepherd's 180s cycle,
+	// shepherd.config.json) just to have it print its (louder, multi-clause)
+	// own refusal — chatty in pr-shepherd's logs for as long as the PR sits
+	// open.
+	if !repoconfig.Enabled(clonePath) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: review-spawn: agent-teams not enabled for %s (%s); skipping\n",
+			clonePath, repoconfig.FileName)
+		return nil
+	}
 
 	// Build the review title.
 	title := fmt.Sprintf("Review PR #%d (%s)", event.PRNumber, event.Repo)
