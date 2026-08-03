@@ -21,7 +21,7 @@ Do NOT:
 - **Step 0 — before ledger/learnings/execution-status, and before ANY inbox drain, confirm you aren't a duplicate** (agent-teams-e3mq.31):
   ```bash
   claude agents --all --json | jq --arg dir "$(pwd)" --arg me "$CLAUDE_CODE_SESSION_ID" \
-    '[.[] | select(.cwd == $dir and .sessionId != $me and .state != "done")]'
+    '[.[] | select(.cwd == $dir and .sessionId != $me and .pid != null)]'
   ```
   Non-empty = another session owns this dir; you're the duplicate. Output ONLY:
 
