@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2184,21 +2186,91 @@ func TestCondense_PacketContainsAllRoleMemories(t *testing.T) {
 	if len(pkt.Memories) != 3 {
 		t.Fatalf("expected 3 memories (both tiers, dri: prefix only), got %d: %+v", len(pkt.Memories), pkt.Memories)
 	}
-	keys := make(map[string]string, len(pkt.Memories))
+	// Emitted Key is role-relative (the "dri:" prefix is stripped, since
+	// every entry in this packet already shares pkt.Role — see
+	// condenseMemory's doc comment).
+	byKey := make(map[string]condenseMemory, len(pkt.Memories))
 	for _, m := range pkt.Memories {
-		keys[m.Key] = m.Body
+		byKey[m.Key] = m
 	}
-	if keys["dri:alpha"] != "body alpha" {
-		t.Errorf("dri:alpha body = %q, want %q", keys["dri:alpha"], "body alpha")
+	// Bare keys (alpha, beta) are cold: summary-only, body elided.
+	if alpha := byKey["alpha"]; alpha.Tier() != "cold" || alpha.Body != "" || alpha.Summary != "body alpha" {
+		t.Errorf("alpha = %+v, want tier=cold body=\"\" summary=%q", alpha, "body alpha")
 	}
-	if keys["dri:beta"] != "body beta" {
-		t.Errorf("dri:beta body = %q, want %q", keys["dri:beta"], "body beta")
+	if beta := byKey["beta"]; beta.Tier() != "cold" || beta.Body != "" || beta.Summary != "body beta" {
+		t.Errorf("beta = %+v, want tier=cold body=\"\" summary=%q", beta, "body beta")
 	}
-	if keys["dri:hot:gamma"] != "body gamma (hot)" {
-		t.Errorf("dri:hot:gamma body = %q, want %q", keys["dri:hot:gamma"], "body gamma (hot)")
+	// Hot key keeps full body, no summary.
+	if gamma := byKey["hot:gamma"]; gamma.Tier() != "hot" || gamma.Body != "body gamma (hot)" || gamma.Summary != "" {
+		t.Errorf("hot:gamma = %+v, want tier=hot body=%q summary=\"\"", gamma, "body gamma (hot)")
 	}
-	if _, ok := keys["planner:other"]; ok {
-		t.Error("planner:other must not appear in dri condense packet")
+	for _, k := range []string{"planner:other", "dri:alpha", "dri:beta", "dri:hot:gamma"} {
+		if _, ok := byKey[k]; ok {
+			t.Errorf("packet must not emit role-prefixed key %q", k)
+		}
+	}
+}
+
+// TestCondense_ColdSummaryOnlyNoBody proves the acceptance criterion: cold
+// entries carry a summary and no body.
+func TestCondense_ColdSummaryOnlyNoBody(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:settled": "first line of settled cold body\nsecond line, elided",
+	})
+	if len(pkt.Memories) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(pkt.Memories))
+	}
+	m := pkt.Memories[0]
+	if m.Tier() != "cold" {
+		t.Errorf("Tier = %q, want cold", m.Tier())
+	}
+	if m.Body != "" {
+		t.Errorf("Body = %q, want empty (cold body must be elided)", m.Body)
+	}
+	if m.Summary != "first line of settled cold body" {
+		t.Errorf("Summary = %q, want first-line-only", m.Summary)
+	}
+}
+
+// TestCondense_HotAndFreshFullBody proves the acceptance criterion: hot and
+// fresh entries carry full body (and no summary).
+func TestCondense_HotAndFreshFullBody(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:hot:h1":   "full hot body, multi\nline, preserved verbatim",
+		"dri:fresh:f1": "full fresh body, multi\nline, preserved verbatim",
+	})
+	byKey := make(map[string]condenseMemory, len(pkt.Memories))
+	for _, m := range pkt.Memories {
+		byKey[m.Key] = m
+	}
+	hot := byKey["hot:h1"]
+	if hot.Tier() != "hot" || hot.Body != "full hot body, multi\nline, preserved verbatim" || hot.Summary != "" {
+		t.Errorf("hot entry = %+v, want full body, no summary", hot)
+	}
+	fresh := byKey["fresh:f1"]
+	if fresh.Tier() != "fresh" || fresh.Body != "full fresh body, multi\nline, preserved verbatim" || fresh.Summary != "" {
+		t.Errorf("fresh entry = %+v, want full body, no summary", fresh)
+	}
+}
+
+// TestCondense_ColdSummaryTruncatedTo120Chars verifies condenseSummary
+// truncates a long first line to condenseColdSummaryMaxChars runes with an
+// ellipsis marker, rather than shipping an unbounded first line.
+func TestCondense_ColdSummaryTruncatedTo120Chars(t *testing.T) {
+	longLine := strings.Repeat("a", 200)
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:long": longLine,
+	})
+	if len(pkt.Memories) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(pkt.Memories))
+	}
+	summary := pkt.Memories[0].Summary
+	runes := []rune(summary)
+	if len(runes) != condenseColdSummaryMaxChars+1 { // +1 for the ellipsis rune
+		t.Errorf("summary length = %d runes, want %d (%d chars + ellipsis)", len(runes), condenseColdSummaryMaxChars+1, condenseColdSummaryMaxChars)
+	}
+	if !strings.HasSuffix(summary, "…") {
+		t.Errorf("truncated summary must end with ellipsis, got %q", summary)
 	}
 }
 
@@ -2223,6 +2295,194 @@ func TestCondense_PacketContainsContract(t *testing.T) {
 		if !strings.Contains(pkt.Contract, want) {
 			t.Errorf("contract missing %q", want)
 		}
+	}
+}
+
+// recallHeaderRe extracts the match count from recall's always-printed
+// header line: `[recall <role> "<query>": N matches]`.
+var recallHeaderRe = regexp.MustCompile(`^\[recall \S+ ".*": (\d+) matches\]$`)
+
+// runRecallForContract runs the real recall verb over memories and returns
+// its full stdout plus the count its header reports.
+func runRecallForContract(t *testing.T, memories map[string]any, role, query string) (string, int) {
+	t.Helper()
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			m := dst.(*map[string]any)
+			*m = memories
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	if err := (&recallKong{Role: role, Query: query}).Run(ctx); err != nil {
+		t.Fatalf("recall %q: unexpected error: %v", query, err)
+	}
+	out := stdout.String()
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	m := recallHeaderRe.FindStringSubmatch(lines[0])
+	if m == nil {
+		t.Fatalf("recall %q: no header line; got:\n%s", query, out)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("recall %q: bad count %q", query, m[1])
+	}
+	return out, n
+}
+
+// TestCondense_ContractMatchesRealRecallSemantics proves the contract's
+// recall paragraph (agent-teams-0yd3.18, corrected by .32) describes what
+// runRecall ACTUALLY does. The earlier version of this test asserted only
+// that the hardcoded contract string contained certain words, so it stayed
+// green while the prose it guarded was false: it claimed recall was a
+// single literal substring match whose miss "prints NOTHING and exits 0",
+// which stopped being true when recall became tokenized and ranked
+// (agent-teams-bbsz / #146). Every claim below is witnessed against real
+// recall output over the same fixture, so a future change to either the
+// verb or the prose breaks this test instead of silently diverging.
+func TestCondense_ContractMatchesRealRecallSemantics(t *testing.T) {
+	memories := map[string]any{
+		"dri:self-hosting-bootstrap":  "the bootstrap path for self hosting",
+		"dri:hot:worktree-discipline": "always address git with -C for every path",
+		"dri:hot:review-routing":      "route findings to a fresh implementer for review",
+		"dri:merge-conflicts":         "resolve manifest conflicts for the branch",
+		"planner:other":               "different role, never searched",
+		"schema_version":              1,
+	}
+	pkt := condensePacketFor(t, "dri", memories)
+
+	// CLAIM 1: the entry's own packet "key", passed verbatim, matches
+	// exactly once — the .18 guarantee, end to end from packet to verb.
+	var coldKey string
+	for _, m := range pkt.Memories {
+		if m.Key == "self-hosting-bootstrap" {
+			coldKey = m.Key
+		}
+	}
+	if coldKey == "" {
+		t.Fatalf("fixture cold entry missing from packet: %+v", pkt.Memories)
+	}
+	if out, n := runRecallForContract(t, memories, "dri", coldKey); n != 1 {
+		t.Errorf("contract promises the entry's own key matches exactly once; got %d:\n%s", n, out)
+	}
+
+	// CLAIM 2: a plausible descriptive phrase OVER-matches. This is the
+	// claim the old prose had backwards ("usually matches nothing").
+	out, n := runRecallForContract(t, memories, "dri", "path for review")
+	if n < 4 {
+		t.Errorf("contract warns a descriptive phrase matches most of the store; got only %d:\n%s", n, out)
+	}
+
+	// CLAIM 3: a miss is never silent — header always prints, exit 0, and a
+	// nearest: line follows. The old prose said a miss "prints NOTHING".
+	missOut, missN := runRecallForContract(t, memories, "dri", "zzqq-absent-term")
+	if missN != 0 {
+		t.Fatalf("expected 0 matches for an absent term, got %d", missN)
+	}
+	if !strings.Contains(missOut, "nearest:") {
+		t.Errorf("contract says a zero-match run prints a nearest: list; got:\n%s", missOut)
+	}
+
+	// CLAIM 4: nearest: is not a "did you mean" — every candidate scored
+	// zero, so two unrelated failing queries produce an identical list.
+	otherOut, _ := runRecallForContract(t, memories, "dri", "wholly-unrelated-xyz")
+	nearestOf := func(s string) string {
+		for _, line := range strings.Split(s, "\n") {
+			if strings.HasPrefix(line, "nearest:") {
+				return line
+			}
+		}
+		return ""
+	}
+	if a, b := nearestOf(missOut), nearestOf(otherOut); a != b {
+		t.Errorf("contract says nearest: is query-independent on a total miss;\n got %q\nand %q", a, b)
+	}
+
+	// The prose must actually carry those claims to the curating agent.
+	for _, want := range []string{
+		"verbatim as <term>",
+		"ANY single token",
+		`"[recall <role> ...: N matches]" COUNT`,
+		`"nearest:" list -- it is NOT`,
+	} {
+		if !strings.Contains(pkt.Contract, want) {
+			t.Errorf("contract missing %q", want)
+		}
+	}
+	// ...and must not carry the pre-#146 claims this test disproved above.
+	for _, gone := range []string{
+		"SINGLE LITERAL SUBSTRING",
+		"prints NOTHING",
+		"usually\n    matches nothing",
+	} {
+		if strings.Contains(pkt.Contract, gone) {
+			t.Errorf("contract still carries falsified claim %q", gone)
+		}
+	}
+}
+
+// TestCondense_ContractColdWriteUsesColdPrefix proves the contract
+// (agent-teams-y1yr item 1) never instructs a verbatim `ateam learn` write
+// for a bare cold key: a bare slug defaults to the fresh tier (learnKey,
+// write.go), so writing it verbatim would leave the stale cold entry in
+// place and duplicate it into fresh — re-arming the fresh-tier condense
+// trigger the curation pass exists to clear. The contract must instead say
+// to prepend "cold:" for a cold rewrite, and must name the learn/forget
+// asymmetry (same bare key: learn defaults to FRESH, forget targets COLD).
+func TestCondense_ContractColdWriteUsesColdPrefix(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	for _, want := range []string{
+		"cold:<key>",
+		"safe ONLY for hot and fresh",
+		"FRESH",
+		"COLD",
+	} {
+		if !strings.Contains(pkt.Contract, want) {
+			t.Errorf("contract missing %q", want)
+		}
+	}
+}
+
+// TestCondense_ContractDropsBdMemories proves the contract (agent-teams-y1yr
+// item 2) no longer offers `bd memories <keyword>` as a second body-read
+// path. Measured against a real entry, bd memories truncates BELOW the
+// packet's own summary while returning a plausible, correctly-matched,
+// non-empty result — a worse failure mode than recall's silent-empty miss,
+// because there is no signal the agent is deciding on a truncated body.
+// ateam recall (guaranteed to match on the entry's own key) is the sole
+// retrieval path this contract offers.
+func TestCondense_ContractDropsBdMemories(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if strings.Contains(pkt.Contract, "bd memories") {
+		t.Errorf("contract must not offer bd memories as a retrieval path — it truncates below the packet summary")
+	}
+	if !strings.Contains(pkt.Contract, "ONLY retrieval path") {
+		t.Errorf("contract must state ateam recall is the only retrieval path")
+	}
+}
+
+// TestCondense_ContractBudgetPointsAtPacketField proves the contract
+// (agent-teams-y1yr item 3) points the agent at the packet's own
+// "hot_budget_tokens" field for the hot-tier budget instead of restating
+// the number as literal prose — the Sprintf backing this string does not
+// interpolate condenseBudgetTokens, so a hardcoded number goes stale
+// silently the moment the constant changes.
+func TestCondense_ContractBudgetPointsAtPacketField(t *testing.T) {
+	pkt := condensePacketFor(t, "dri", map[string]any{
+		"dri:one": "body",
+	})
+	if !strings.Contains(pkt.Contract, "hot_budget_tokens") {
+		t.Errorf("contract must reference the packet's hot_budget_tokens field")
+	}
+	if strings.Contains(pkt.Contract, "6000") {
+		t.Errorf("contract must not hardcode the budget value")
+	}
+	if !strings.Contains(pkt.Contract, "15-25 succinct learnings") {
+		t.Errorf("contract must keep the shape guidance, which is not a duplicated constant")
 	}
 }
 
@@ -2259,7 +2519,7 @@ func TestCondense_MemoriesSorted(t *testing.T) {
 	if len(pkt.Memories) != 3 {
 		t.Fatalf("expected 3 memories, got %d", len(pkt.Memories))
 	}
-	if pkt.Memories[0].Key != "dri:aaa" || pkt.Memories[1].Key != "dri:mmm" || pkt.Memories[2].Key != "dri:zzz" {
+	if pkt.Memories[0].Key != "aaa" || pkt.Memories[1].Key != "mmm" || pkt.Memories[2].Key != "zzz" {
 		t.Errorf("memories not sorted: %v", pkt.Memories)
 	}
 }
@@ -2303,8 +2563,8 @@ func TestCondense_SchemaVersionExcluded(t *testing.T) {
 			t.Error("schema_version must not appear in condense packet")
 		}
 	}
-	if len(pkt.Memories) != 1 || pkt.Memories[0].Key != "dri:real" {
-		t.Errorf("expected only dri:real, got: %+v", pkt.Memories)
+	if len(pkt.Memories) != 1 || pkt.Memories[0].Key != "real" {
+		t.Errorf("expected only real, got: %+v", pkt.Memories)
 	}
 }
 
@@ -2331,18 +2591,18 @@ func TestCondense_JoinsAppliedCount(t *testing.T) {
 		byKey[m.Key] = m
 	}
 
-	if foo := byKey["dri:foo"]; foo.AppliedCount != 5 || foo.LastApplied != "2024-01-01T00:00:00Z" {
-		t.Errorf("dri:foo applied join = %+v, want count=5 last_applied=2024-01-01T00:00:00Z", foo)
+	if foo := byKey["foo"]; foo.AppliedCount != 5 || foo.LastApplied != "2024-01-01T00:00:00Z" {
+		t.Errorf("foo applied join = %+v, want count=5 last_applied=2024-01-01T00:00:00Z", foo)
 	}
 
-	// dri:hot:baz's sibling is keyed on the BARE slug (applied:dri:baz, not
+	// hot:baz's sibling is keyed on the BARE slug (applied:dri:baz, not
 	// applied:dri:hot:baz) — the applied counter is tier-independent.
-	if baz := byKey["dri:hot:baz"]; baz.AppliedCount != 2 || baz.LastApplied != "2024-02-02T00:00:00Z" {
-		t.Errorf("dri:hot:baz applied join = %+v, want count=2 (tier-stripped slug lookup)", baz)
+	if baz := byKey["hot:baz"]; baz.AppliedCount != 2 || baz.LastApplied != "2024-02-02T00:00:00Z" {
+		t.Errorf("hot:baz applied join = %+v, want count=2 (tier-stripped slug lookup)", baz)
 	}
 
-	if bar := byKey["dri:bar"]; bar.AppliedCount != 0 || bar.LastApplied != "" {
-		t.Errorf("dri:bar applied join = %+v, want zero value (no sibling)", bar)
+	if bar := byKey["bar"]; bar.AppliedCount != 0 || bar.LastApplied != "" {
+		t.Errorf("bar applied join = %+v, want zero value (no sibling)", bar)
 	}
 
 	// The applied: keys live under a top-level "applied:" prefix, not
