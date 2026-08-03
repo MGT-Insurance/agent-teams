@@ -49,10 +49,14 @@ const (
 )
 
 // MatchResult is the output of the match engine (fkr.19).
-// InitiativeID and Worktree are empty when How == MatchNone.
+// InitiativeID, Worktree, and Repo are empty when How == MatchNone.
+// Repo is the matched initiative's "repo:" field (empty for legacy data with
+// no such field) — callers use it to check repoconfig.Enabled before
+// routing/reopening/sending against a disabled repo.
 type MatchResult struct {
 	InitiativeID string
 	Worktree     string
+	Repo         string
 	How          MatchHow
 }
 

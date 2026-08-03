@@ -58,6 +58,17 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 
 	switch {
 	case result.How == MatchPRField || result.How == MatchBranch:
+		// Checked BEFORE the send: this is the direct "already-open, matched
+		// by field/branch" path — the one route Codex flagged as reviving a
+		// disabled repo, since it never touched spawnReviewInitiative's gate
+		// (that only guards the SPAWN path, an unowned PR with no match at
+		// all). result.Repo empty (legacy data with no "repo:" field) skips
+		// the check rather than judging a marker file against "".
+		if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+			fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d but its repo is disabled (%s); skipping\n",
+				result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber, repoconfig.FileName)
+			return nil
+		}
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via mail send\n",
 			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
 		if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
@@ -114,6 +125,17 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 			event.Repo, event.PRNumber)
 		return c.spawnReviewInitiative(ctx, event)
 	}
+	// Disabled repos get NO fallback here, unlike a reopen/send failure below:
+	// this is deliberate operator policy, not a transient error, so degrading
+	// to spawnReviewInitiative (which would independently re-check the SAME
+	// repo via review-repos config and refuse too) would just be a confusing
+	// second path to the same "no" — a direct, explicit skip is clearer and
+	// does not depend on that second check agreeing.
+	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
+			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
+		return nil
+	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
 		result.InitiativeID, event.Repo, event.PRNumber)
 	if err := c.runner("reopen", result.InitiativeID); err != nil {
@@ -147,6 +169,11 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 	if result.How == MatchNone {
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply for %s#%d has no initiative — skipping\n",
 			event.Repo, event.PRNumber)
+		return nil
+	}
+	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
+			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
 		return nil
 	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
