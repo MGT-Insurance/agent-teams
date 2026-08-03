@@ -1260,6 +1260,7 @@ func RegisterWriteKong(p *cli.Parser) {
 	p.AddVerb("condense", "Emit a structured memory packet for a role.", &condenseKong{})
 	p.AddVerb("fresh-drain", "Drain fresh: memories to cold for a role.", &freshDrainKong{})
 	p.AddVerb("update-description", "Update an initiative's description from a file.", &updateDescriptionKong{})
+	p.AddVerb("enable-repo", "Create or un-disable a repo's .agent-teams opt-in marker.", &enableRepoKong{})
 	RegisterCondenseLock(p)
 	RegisterCondenseCheck(p)
 }
