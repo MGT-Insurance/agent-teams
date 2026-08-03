@@ -18,6 +18,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -187,6 +188,12 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	repoRoot, err := c.git.RepoRoot(repoDir)
 	if err != nil {
 		fmt.Fprintln(ctx.Stderr, "dispatch: not inside a git repo: "+repoDir)
+		return cli.Silent(1)
+	}
+
+	if !repoconfig.Enabled(repoRoot) {
+		fmt.Fprintf(ctx.Stderr, "dispatch: agent-teams is not enabled for %s — add a %s file there (see internal/repoconfig) or remove its \"disabled: true\" line\n",
+			repoRoot, repoconfig.FileName)
 		return cli.Silent(1)
 	}
 
@@ -580,9 +587,16 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
-	dir := initiative.Of(issue).Worktree
+	f := initiative.Of(issue)
+	dir := f.Worktree
 	if dir == "" {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", c.ID)
+		return cli.Silent(1)
+	}
+
+	if f.Repo != "" && !repoconfig.Enabled(f.Repo) {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: agent-teams is not enabled for %s — add a %s file there (see internal/repoconfig) or remove its \"disabled: true\" line\n",
+			f.Repo, repoconfig.FileName)
 		return cli.Silent(1)
 	}
 

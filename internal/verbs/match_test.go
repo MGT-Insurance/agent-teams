@@ -3,11 +3,14 @@ package verbs_test
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/verbs"
 )
 
@@ -352,6 +355,49 @@ func TestResolveInitiativeNonCanonicalFieldLineIgnored(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("resolve-initiative non-canonical: got %q, want empty", stdout)
+	}
+}
+
+// TestResolveInitiativeRepoEnabled verifies a "repo:" field pointing at an
+// enabled repo (an .agent-teams file present, no disabled: true) does not
+// block an otherwise-matching worktree.
+func TestResolveInitiativeRepoEnabled(t *testing.T) {
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("write .agent-teams: %v", err)
+	}
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "worktree: /a/b/wt\nrepo: " + repoDir + "\n"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt"})
+	if code != 0 {
+		t.Errorf("resolve-initiative repo-enabled: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-111" {
+		t.Errorf("resolve-initiative repo-enabled: got %q, want at-111", strings.TrimSpace(stdout))
+	}
+}
+
+// TestResolveInitiativeRepoDisabled is the wake-watcher half of the
+// .agent-teams kill switch: an otherwise-matching worktree is silenced (same
+// as no match) once its initiative's "repo:" field points at a disabled repo.
+func TestResolveInitiativeRepoDisabled(t *testing.T) {
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), []byte("disabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write .agent-teams: %v", err)
+	}
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "worktree: /a/b/wt\nrepo: " + repoDir + "\n"},
+	}
+	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt"})
+	if code != 0 {
+		t.Errorf("resolve-initiative repo-disabled: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("resolve-initiative repo-disabled: got %q, want empty", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("resolve-initiative repo-disabled: unexpected stderr %q — hooks must stay silent", stderr)
 	}
 }
 

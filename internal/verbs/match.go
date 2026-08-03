@@ -12,6 +12,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // errSessionTiedElsewhere is the sentinel wrapped by appendSessionID's
@@ -330,6 +331,14 @@ func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 // must never become an error or the hooks would start reporting failures on
 // every ordinary session. A bd failure is treated the same way, matching
 // resumeMatchKong.
+//
+// A path match whose initiative has a "repo:" field is additionally silenced
+// (treated as no match) when repoconfig.Enabled reports that repo disabled —
+// this is the wake-watcher/inbox-drain/etc. half of the .agent-teams kill
+// switch: a repo that goes disabled after its initiative was dispatched stops
+// re-arming hooks for it, the same as if the initiative had never resolved. A
+// missing "repo:" field (legacy data) skips this check rather than resolving
+// a marker file against an empty/relative path.
 type resolveInitiativeKong struct {
 	Path string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
 }
@@ -345,9 +354,14 @@ func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
 		return nil
 	}
 
-	if match := matchByWorktreeOrAncestor(issues, c.Path); match != nil {
-		fmt.Fprintln(ctx.Stdout, match.ID)
+	match := matchByWorktreeOrAncestor(issues, c.Path)
+	if match == nil {
+		return nil
 	}
+	if repo := initiative.Of(*match).Repo; repo != "" && !repoconfig.Enabled(repo) {
+		return nil
+	}
+	fmt.Fprintln(ctx.Stdout, match.ID)
 	return nil
 }
 

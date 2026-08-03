@@ -1,0 +1,4 @@
+# agent-teams opt-in marker for this repo (internal/repoconfig).
+# Set `disabled: true` on its own line below to temporarily pause
+# agent-teams here: no new `ateam dispatch`/`ateam resume`, and hooks
+# (wake-watcher, etc.) go quiet for any already-open initiative.
