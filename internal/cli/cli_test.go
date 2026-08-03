@@ -23,6 +23,7 @@ func TestExitCode(t *testing.T) {
 		{"WorkspaceError", cli.Workspacef("not initialized"), 4},
 		{"SilentError code 1", cli.Silent(1), 1},
 		{"SilentError code 5", cli.Silent(5), 5},
+		{"SilentError ExitNotOptedIn", cli.Silent(cli.ExitNotOptedIn), 6},
 		{"generic error", errors.New("something broke"), 1},
 		// kong's kctx.Run wraps the verb's returned error with %w; ExitCode must
 		// errors.As-unwrap to recover the typed code (regression at-41k/7ct2).
@@ -30,6 +31,7 @@ func TestExitCode(t *testing.T) {
 		{"wrapped DepError", fmt.Errorf("run: %w", cli.Depf("bd not found")), 3},
 		{"wrapped WorkspaceError", fmt.Errorf("run: %w", cli.Workspacef("not initialized")), 4},
 		{"wrapped SilentError code 5", fmt.Errorf("run: %w", cli.Silent(5)), 5},
+		{"wrapped SilentError ExitNotOptedIn", fmt.Errorf("run: %w", cli.Silent(cli.ExitNotOptedIn)), 6},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

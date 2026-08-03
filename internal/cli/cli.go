@@ -86,12 +86,32 @@ func (p *Parser) Parse(args []string) (*kong.Context, error) {
 // ExitCode maps an error returned by a verb's Run (or a kong parse error) to a
 // process exit code.
 //
+// This doc comment is the single registry for every ateam exit code in use —
+// including codes minted via *SilentError in other packages, which otherwise
+// have no central listing. Add a row here whenever you mint a new one; a
+// split registry (a code known only to the file that returns it) is exactly
+// how *SilentError(5) and a would-be *SilentError(5) nearly collided once
+// already (see the 5 vs 6 note below).
+//
+//	0  ok
+//	1  generic error (anything not covered below)
+//	2  usage error        — *UsageError, *kong.ParseError
+//	3  dependency error   — *DepError (bd or claude not in PATH)
+//	4  workspace error    — *WorkspaceError (.beads missing)
+//	5  condense lock held — *SilentError(condenseLockHeldCode); defined in
+//	                        internal/verbs/lock.go, returned by
+//	                        `ateam condense-lock acquire` against a held lock
+//	6  repo not opted in  — *SilentError(ExitNotOptedIn); returned by
+//	                        `ateam dispatch`/`ateam resume` (internal/verbs/dispatch.go)
+//
+// Mapping:
+//
 //	nil               -> 0
 //	*kong.ParseError  -> 2 (parse/validation failure, always usage-level)
 //	*UsageError       -> 2
 //	*DepError         -> 3
 //	*WorkspaceError   -> 4
-//	*SilentError      -> e.Code (caller already wrote output)
+//	*SilentError      -> e.Code (caller already wrote output; see table above)
 //	anything else     -> 1
 func ExitCode(err error) int {
 	if err == nil {
@@ -164,6 +184,16 @@ func (e *WorkspaceError) Error() string { return e.msg }
 func Workspacef(format string, a ...any) *WorkspaceError {
 	return &WorkspaceError{msg: fmt.Sprintf(format, a...)}
 }
+
+// ExitNotOptedIn is the exit code for *SilentError when the target repo has
+// no .agent-teams opt-in marker, or its marker carries disabled: true.
+//
+// 6, not 5: 5 is already taken by condenseLockHeldCode (internal/verbs/lock.go),
+// returned by `ateam condense-lock acquire` against a held lock. Reusing it
+// would make a not-opted-in refusal indistinguishable from a held condense
+// lock to anything branching on exit code. See the ExitCode doc comment for
+// the full registry.
+const ExitNotOptedIn = 6
 
 // SilentError carries an explicit exit code. main does NOT print the error
 // message — the verb has already written its own output to Stderr.
