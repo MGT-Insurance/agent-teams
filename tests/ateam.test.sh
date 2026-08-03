@@ -10,6 +10,13 @@ mkdir -p "$AGENT_TEAMS_HOME"
 git -C "$AGENT_TEAMS_HOME" init -q
 (cd "$AGENT_TEAMS_HOME" && bd init --prefix at --non-interactive >/dev/null)
 
+# Several cases below register initiatives with "repo: $T" (a plain scratch
+# dir, not a git repo). resume's repoconfig.Enabled(f.Repo) check runs before
+# the worktree-exists check, so without a marker here those repo-not-enabled
+# refusals (exit 6) would mask the worktree-related exit-1 cases they intend
+# to test. Mark $T enabled once, up front, for all of them.
+touch "$T/.agent-teams"
+
 # Determine the current platform the way the wrapper does.
 PLATFORM_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 raw_arch="$(uname -m)"
@@ -157,6 +164,9 @@ mkdir -p "$dispatch_repo"
 git -C "$dispatch_repo" init -q
 git -C "$dispatch_repo" commit -q --allow-empty -m "initial"
 git -C "$dispatch_repo" checkout -q -b main 2>/dev/null || true
+# Opt this scratch repo in — since e8bf328, dispatch refuses an un-opted-in
+# repo (exit 6), which this "happy path" case is not testing.
+touch "$dispatch_repo/.agent-teams"
 
 dispatch_out=$(ateam dispatch --problem "add an undo stack" --repo "$dispatch_repo" --no-launch 2>&1)
 echo "$dispatch_out" | grep -q "initiative_id: at-" \
@@ -199,8 +209,14 @@ mkdir -p "$dispatch_repo2"
 git -C "$dispatch_repo2" init -q
 git -C "$dispatch_repo2" commit -q --allow-empty -m "initial"
 git -C "$dispatch_repo2" checkout -q -b main 2>/dev/null || true
+touch "$dispatch_repo2/.agent-teams"
 
-id_only_out=$(ateam dispatch --problem "add a redo stack" --repo "$dispatch_repo2" --no-launch --id-only 2>&1)
+# --id-only's contract is exactly one line on STDOUT (see dispatch.go's
+# `fmt.Fprintln(ctx.Stdout, issue.ID)`); a fail-soft "could not create root
+# epic" diagnostic (expected here — this scratch repo has no .beads) goes to
+# STDERR on a separate stream, so it must not be captured alongside stdout or
+# it breaks the line-count assertion below.
+id_only_out=$(ateam dispatch --problem "add a redo stack" --repo "$dispatch_repo2" --no-launch --id-only 2>/dev/null)
 line_count=$(echo "$id_only_out" | wc -l | tr -d ' ')
 [ "$line_count" -eq 1 ] \
   || { echo "FAIL case17: --id-only printed $line_count lines, want 1 (got: '$id_only_out')"; exit 1; }
@@ -257,5 +273,135 @@ echo "$unsup_out" | grep -qi "unsupported platform" \
   || { echo "FAIL case18: wrapper error missing 'unsupported platform' (got: '$unsup_out')"; exit 1; }
 echo "$unsup_out" | grep -qi "fakeos-fakearch" \
   || { echo "FAIL case18: wrapper error did not list available binaries (got: '$unsup_out')"; exit 1; }
+
+# ── Case 20: enable-repo creates the marker on a fresh repo with no marker ───
+enable_repo1="$T/enable-repo-fresh"
+mkdir -p "$enable_repo1"
+git -C "$enable_repo1" init -q
+git -C "$enable_repo1" commit -q --allow-empty -m "initial"
+enable_repo1_root=$(git -C "$enable_repo1" rev-parse --show-toplevel)
+
+ec20=0; enable_out1=$(ateam enable-repo "$enable_repo1") || ec20=$?
+[ "$ec20" -eq 0 ] \
+  || { echo "FAIL case20: enable-repo exited $ec20, want 0 (output: '$enable_out1')"; exit 1; }
+[ "$enable_out1" = "enabled: $enable_repo1_root/.agent-teams (created)" ] \
+  || { echo "FAIL case20: enable-repo stdout '$enable_out1', want 'enabled: $enable_repo1_root/.agent-teams (created)'"; exit 1; }
+[ -f "$enable_repo1_root/.agent-teams" ] \
+  || { echo "FAIL case20: marker file was not created at repo root"; exit 1; }
+grep -q "agent-teams opt-in marker" "$enable_repo1_root/.agent-teams" \
+  || { echo "FAIL case20: created marker missing the canonical comment header"; exit 1; }
+
+# ── Case 21: enable-repo resolves a subdirectory to the repo root ───────────
+enable_repo2="$T/enable-repo-subdir"
+mkdir -p "$enable_repo2/nested/deep"
+git -C "$enable_repo2" init -q
+git -C "$enable_repo2" commit -q --allow-empty -m "initial"
+enable_repo2_root=$(git -C "$enable_repo2" rev-parse --show-toplevel)
+
+ec21=0; enable_out2=$(ateam enable-repo "$enable_repo2/nested/deep") || ec21=$?
+[ "$ec21" -eq 0 ] \
+  || { echo "FAIL case21: enable-repo from a subdirectory exited $ec21, want 0 (output: '$enable_out2')"; exit 1; }
+[ "$enable_out2" = "enabled: $enable_repo2_root/.agent-teams (created)" ] \
+  || { echo "FAIL case21: enable-repo from a subdirectory printed '$enable_out2', want the repo-root path"; exit 1; }
+[ -f "$enable_repo2_root/.agent-teams" ] \
+  || { echo "FAIL case21: marker was not created at the resolved repo root"; exit 1; }
+[ ! -f "$enable_repo2_root/nested/deep/.agent-teams" ] \
+  || { echo "FAIL case21: marker was incorrectly created in the subdirectory instead of the repo root"; exit 1; }
+
+# ── Case 22: enable-repo removes "disabled: true", preserving other lines ───
+enable_repo3="$T/enable-repo-disabled"
+mkdir -p "$enable_repo3"
+git -C "$enable_repo3" init -q
+git -C "$enable_repo3" commit -q --allow-empty -m "initial"
+enable_repo3_root=$(git -C "$enable_repo3" rev-parse --show-toplevel)
+printf 'disabled: true\nsome custom note\n' > "$enable_repo3_root/.agent-teams"
+
+ec22=0; enable_out3=$(ateam enable-repo "$enable_repo3_root") || ec22=$?
+[ "$ec22" -eq 0 ] \
+  || { echo "FAIL case22: enable-repo exited $ec22, want 0 (output: '$enable_out3')"; exit 1; }
+[ "$enable_out3" = "enabled: ${enable_repo3_root}/.agent-teams (removed \"disabled: true\")" ] \
+  || { echo "FAIL case22: enable-repo stdout '$enable_out3', want the removed-disabled message"; exit 1; }
+grep -q '^disabled: true$' "$enable_repo3_root/.agent-teams" \
+  && { echo "FAIL case22: 'disabled: true' line still present after enable-repo"; exit 1; }
+grep -q "some custom note" "$enable_repo3_root/.agent-teams" \
+  || { echo "FAIL case22: unrelated line 'some custom note' was not preserved"; exit 1; }
+
+# ── Case 23: enable-repo on an already-enabled repo does not write ──────────
+before23=$(cat "$enable_repo1_root/.agent-teams")
+ec23=0; enable_out4=$(ateam enable-repo "$enable_repo1_root") || ec23=$?
+[ "$ec23" -eq 0 ] \
+  || { echo "FAIL case23: enable-repo exited $ec23, want 0 (output: '$enable_out4')"; exit 1; }
+[ "$enable_out4" = "enabled: $enable_repo1_root/.agent-teams (already enabled)" ] \
+  || { echo "FAIL case23: enable-repo stdout '$enable_out4', want the already-enabled message"; exit 1; }
+after23=$(cat "$enable_repo1_root/.agent-teams")
+[ "$before23" = "$after23" ] \
+  || { echo "FAIL case23: marker content changed despite already being enabled"; exit 1; }
+
+# ── Case 24: enable-repo on a non-git directory → exit 1 ─────────────────────
+not_a_repo="$T/enable-repo-not-a-repo"
+mkdir -p "$not_a_repo"
+ec24=0; ateam enable-repo "$not_a_repo" 2>/dev/null || ec24=$?
+[ "$ec24" -eq 1 ] \
+  || { echo "FAIL case24: enable-repo on a non-git directory exited $ec24, want 1"; exit 1; }
+
+# ── Case 25: dispatch exits 6 before enable-repo, succeeds after ────────────
+enable_dispatch_repo="$T/enable-dispatch-repo"
+mkdir -p "$enable_dispatch_repo"
+git -C "$enable_dispatch_repo" init -q
+git -C "$enable_dispatch_repo" commit -q --allow-empty -m "initial"
+git -C "$enable_dispatch_repo" checkout -q -b main 2>/dev/null || true
+
+ec25a=0; out25a=$(ateam dispatch --problem "enable then dispatch" --repo "$enable_dispatch_repo" --no-launch 2>&1) || ec25a=$?
+[ "$ec25a" -eq 6 ] \
+  || { echo "FAIL case25a: dispatch into a not-opted-in repo exited $ec25a, want 6 (output: '$out25a')"; exit 1; }
+echo "$out25a" | grep -q "agent-teams is not enabled for" \
+  || { echo "FAIL case25a: refusal message missing required substring (got: '$out25a')"; exit 1; }
+
+ateam enable-repo "$enable_dispatch_repo" >/dev/null
+
+ec25b=0; out25b=$(ateam dispatch --problem "enable then dispatch" --repo "$enable_dispatch_repo" --no-launch 2>&1) || ec25b=$?
+[ "$ec25b" -eq 0 ] \
+  || { echo "FAIL case25b: dispatch after enable-repo exited $ec25b, want 0 (output: '$out25b')"; exit 1; }
+echo "$out25b" | grep -q "initiative_id: at-" \
+  || { echo "FAIL case25b: dispatch after enable-repo missing 'initiative_id: at-...' (got: '$out25b')"; exit 1; }
+
+dispatch_wt25=$(echo "$out25b" | grep "^worktree: " | sed 's/^worktree: //')
+[ -d "$dispatch_wt25" ] && git -C "$enable_dispatch_repo" worktree remove --force "$dispatch_wt25"
+
+# ── Case 26: resume exits 6 for an initiative whose repo is not opted in ────
+resume_norepo="$T/resume-not-enabled-repo"
+mkdir -p "$resume_norepo"
+git -C "$resume_norepo" init -q
+git -C "$resume_norepo" commit -q --allow-empty -m "initial"
+resume_norepo_root=$(git -C "$resume_norepo" rev-parse --show-toplevel)
+
+printf 'problem: resume-exit6-test\nrepo: %s\nworktree: %s/resume-wt\nbranch: feat/r6\nteam: alpha\nmode: interactive\n' \
+  "$resume_norepo_root" "$T" > "$T/resume-exit6-body.md"
+resume6_id=$(ateam register --title "Resume Exit6 Test" --file "$T/resume-exit6-body.md")
+[ -n "$resume6_id" ] || { echo "FAIL case26: register for resume-exit6 returned empty id"; exit 1; }
+
+ec26=0; out26=$(ateam resume "$resume6_id" 2>&1) || ec26=$?
+[ "$ec26" -eq 6 ] \
+  || { echo "FAIL case26: resume into a not-opted-in repo exited $ec26, want 6 (output: '$out26')"; exit 1; }
+echo "$out26" | grep -q "agent-teams is not enabled for" \
+  || { echo "FAIL case26: resume refusal message missing required substring (got: '$out26')"; exit 1; }
+
+# ── Case 27: exit-code taxonomy guard — dispatch on a non-git dir stays 1 ───
+# Mirrors cases 11b/12 (exit 4, exit 2): assert the number, not the prose.
+# Must stay 1, not drift to 6 (opt-in) or 5 (condense-lock, a different verb).
+notgit_dispatch="$T/notgit-dispatch-dir"
+mkdir -p "$notgit_dispatch"
+ec27=0; ateam dispatch --problem "x" --repo "$notgit_dispatch" --no-launch 2>/dev/null || ec27=$?
+[ "$ec27" -eq 1 ] \
+  || { echo "FAIL case27: dispatch on a non-git directory exited $ec27, want 1"; exit 1; }
+
+# ── Case 28: condense-lock regression guard — held lock still exits 5 ───────
+# Exit 5 belongs to condense-lock (internal/verbs/lock.go) and /condense
+# branches on it; this initiative's exit 6 must never collide with it.
+ateam condense-lock acquire >/dev/null
+ec28=0; ateam condense-lock acquire 2>/dev/null || ec28=$?
+[ "$ec28" -eq 5 ] \
+  || { echo "FAIL case28: condense-lock acquire against a held lock exited $ec28, want 5"; exit 1; }
+ateam condense-lock release >/dev/null
 
 echo "PASS"
