@@ -12,6 +12,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // routePREventKong is the kong-native form of route-pr-event.
@@ -57,6 +58,17 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 
 	switch {
 	case result.How == MatchPRField || result.How == MatchBranch:
+		// Checked BEFORE the send: this is the direct "already-open, matched
+		// by field/branch" path — the one route Codex flagged as reviving a
+		// disabled repo, since it never touched spawnReviewInitiative's gate
+		// (that only guards the SPAWN path, an unowned PR with no match at
+		// all). result.Repo empty (legacy data with no "repo:" field) skips
+		// the check rather than judging a marker file against "".
+		if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+			fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d but its repo is disabled (%s); skipping\n",
+				result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber, repoconfig.FileName)
+			return nil
+		}
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via mail send\n",
 			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
 		if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
@@ -113,6 +125,17 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 			event.Repo, event.PRNumber)
 		return c.spawnReviewInitiative(ctx, event)
 	}
+	// Disabled repos get NO fallback here, unlike a reopen/send failure below:
+	// this is deliberate operator policy, not a transient error, so degrading
+	// to spawnReviewInitiative (which would independently re-check the SAME
+	// repo via review-repos config and refuse too) would just be a confusing
+	// second path to the same "no" — a direct, explicit skip is clearer and
+	// does not depend on that second check agreeing.
+	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
+			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
+		return nil
+	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
 		result.InitiativeID, event.Repo, event.PRNumber)
 	if err := c.runner("reopen", result.InitiativeID); err != nil {
@@ -146,6 +169,11 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 	if result.How == MatchNone {
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply for %s#%d has no initiative — skipping\n",
 			event.Repo, event.PRNumber)
+		return nil
+	}
+	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
+			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
 		return nil
 	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
@@ -183,9 +211,14 @@ func RegisterRouteEventKong(p *cli.Parser) {
 // spawnReviewInitiative handles the SPAWN path (fkr.23): an unowned PR with
 // transition=review_requested. It resolves the event repo to a local clone
 // path via a config file at <ctx.Home>/review-repos/<repo-key>, where
-// repo-key = Slugify(basename(event.Repo)). If the config file is absent,
-// it logs a skip message and returns nil. If configured, it writes a temp
-// file containing structured PR metadata and invokes the ateamRunner with:
+// repo-key = Slugify(basename(event.Repo)). If the config file is absent, or
+// if it's present but the clone has no (or a disabled) .agent-teams file
+// (internal/repoconfig), it logs a skip message and returns nil — the latter
+// check exists so a disabled repo with an open review_requested PR degrades
+// to one quiet log line per pr-shepherd poll instead of a dispatch subprocess
+// spawned (and refused, loudly) every cycle. If configured and enabled, it
+// writes a temp file containing structured PR metadata and invokes the
+// ateamRunner with:
 //
 //	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile> \
 //	         --launch-prompt "/agent-teams:review-pr {id}" --skip-epic \
@@ -213,6 +246,19 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 		return nil
 	}
 	clonePath := strings.TrimSpace(string(data))
+
+	// A disabled/not-yet-opted-in clone is skipped here, quietly and without
+	// a subprocess — same shape as the "not configured" branch above. Without
+	// this, a repeatedly-polled review_requested PR on a disabled repo would
+	// spawn a real `dispatch` subprocess every poll (pr-shepherd's 180s cycle,
+	// shepherd.config.json) just to have it print its (louder, multi-clause)
+	// own refusal — chatty in pr-shepherd's logs for as long as the PR sits
+	// open.
+	if !repoconfig.Enabled(clonePath) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: review-spawn: agent-teams not enabled for %s (%s); skipping\n",
+			clonePath, repoconfig.FileName)
+		return nil
+	}
 
 	// Build the review title.
 	title := fmt.Sprintf("Review PR #%d (%s)", event.PRNumber, event.Repo)

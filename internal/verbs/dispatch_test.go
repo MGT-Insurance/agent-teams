@@ -13,6 +13,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -88,12 +89,24 @@ func makeCtx(bd cli.BDRunner, home string) (*cli.Context, *bytes.Buffer, *bytes.
 	}, &stdout, &stderr
 }
 
+// newEnabledRepoDir returns a fresh temp dir seeded with a .agent-teams
+// marker file, so fixtures that expect dispatch/resume to reach past the
+// repo-enabled gate don't need to re-derive that setup individually.
+func newEnabledRepoDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("newEnabledRepoDir: write %s: %v", repoconfig.FileName, err)
+	}
+	return dir
+}
+
 // ---- dispatch happy path (--no-launch) -------------------------------------
 
 func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 	// Create a real temp dir to act as the "repo root" so WorktreeExists can
 	// stat it, and a sub-dir for the worktree target that does NOT exist yet.
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
 
 	// The worktree path is <home>-worktrees/<slug>; it must not exist yet.
@@ -189,11 +202,70 @@ func TestDispatch_NotARepo(t *testing.T) {
 	}
 }
 
+// ---- dispatch: repo not enabled ---------------------------------------------
+
+// TestDispatch_RepoNotEnabled: a real git repo with no .agent-teams file is
+// refused — the opt-in gate, not the "not a repo" gate above.
+func TestDispatch_RepoNotEnabled(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir() // deliberately NOT newEnabledRepoDir — no .agent-teams file
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for a repo with no .agent-teams file, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
+		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	}
+}
+
+// TestDispatch_RepoDisabled: a .agent-teams file carrying "disabled: true"
+// refuses dispatch exactly like a missing file.
+func TestDispatch_RepoDisabled(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), []byte("disabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write .agent-teams: %v", err)
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for a repo with disabled: true, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
+		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	}
+}
+
 // ---- dispatch: empty slug --------------------------------------------------
 
 func TestDispatch_EmptySlug(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	// A problem that slugifies to empty (pure punctuation).
@@ -218,7 +290,7 @@ func TestDispatch_EmptySlug(t *testing.T) {
 
 func TestDispatch_WorktreeCollision(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	fg := &fakeGit{
 		repoRootFn:       func(dir string) (string, error) { return repoDir, nil },
 		worktreeExistsFn: func(repoRoot, wtPath string) bool { return true }, // collision
@@ -255,7 +327,7 @@ func TestDispatch_WorktreeCollision(t *testing.T) {
 // command is cleanly retryable.
 func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var removedRepo, removedWt string
 	fg := &fakeGit{
@@ -305,12 +377,14 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 
 func TestDispatch_MissingProblem(t *testing.T) {
 	home := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	// Problem: "" slugifies to "" → UsageError (exit 2).
 	cmd := &dispatchKong{
 		Problem:  "",
+		Repo:     repoDir,
 		NoLaunch: true,
-		git:      &fakeGit{},
+		git:      &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }},
 		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
@@ -327,7 +401,7 @@ func TestDispatch_MissingProblem(t *testing.T) {
 
 func TestDispatch_IDOnly(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -368,7 +442,7 @@ func TestDispatch_IDOnly(t *testing.T) {
 
 func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "my-work"
 	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
@@ -423,7 +497,7 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 // "mode: bg" (contract: agent-teams-yl6t.1).
 func TestDispatch_Standby_WritesMarker(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var gotBody string
 	fbd := &fakeBD{
@@ -477,7 +551,7 @@ func TestDispatch_Standby_WritesMarker(t *testing.T) {
 // contains no "standby" line at all (never "standby: false").
 func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var gotBody string
 	fbd := &fakeBD{
@@ -522,7 +596,7 @@ func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
 
 func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "add-feature"
 	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
@@ -588,7 +662,7 @@ func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
 // TestDispatch_BodyFile_Missing errors when the file does not exist.
 func TestDispatch_BodyFile_Missing(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	cmd := &dispatchKong{
@@ -614,7 +688,7 @@ func TestDispatch_BodyFile_Missing(t *testing.T) {
 // returning the usage error.
 func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var removedWt string
 	fg := &fakeGit{
@@ -654,7 +728,7 @@ func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
 // an error — no launch is attempted, no initiative_id line is printed.
 func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var removedWt string
 	fg := &fakeGit{
@@ -708,7 +782,7 @@ func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
 // schema-only body unchanged (backward-compat).
 func TestDispatch_BodyFile_Omitted(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "schema-only"
 	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
@@ -777,7 +851,7 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 // the old "last-wins — this value replaces the header's" wording was false.
 func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	redefineLine := "rep" + "o: /bogus/other/repo"
 	bodyContent := "Some prose framing the task.\n" + redefineLine + "\nMore prose after.\n"
@@ -838,7 +912,7 @@ func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 // to be unwound.
 func TestDispatch_MultiLineProblemRejectedBeforeWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	addCalled := false
 	fg := &fakeGit{
@@ -877,7 +951,7 @@ func TestDispatch_MultiLineProblemRejectedBeforeWorktree(t *testing.T) {
 // with no field-shaped line produces no stderr output at all.
 func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	bodyContent := "Just some framing prose.\nNo colons here that matter.\nDone.\n"
 	bfPath := filepath.Join(t.TempDir(), "body.txt")
@@ -922,7 +996,7 @@ func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {
 // false positive on the most common briefing style.
 func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	// Safe to write literally: this line does not begin with a routing-field
 	// word followed by a colon — it begins with "- ".
@@ -970,7 +1044,7 @@ func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
 // and the reader's rule are now one rule, so this shape must stay silent.
 func TestDispatch_BodyFileNoWarningOnWrongCaseLine(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	bodyContent := "BRAN" + "CH: totally-wrong-branch" + "\n"
 	bfPath := filepath.Join(t.TempDir(), "body.txt")
@@ -1332,7 +1406,7 @@ func TestNewInitiative_RegularFileNotDirectory(t *testing.T) {
 // TestDispatchKong_FlagsRoundtrip verifies that dispatchKong.Run passes all
 // seven flags through to the underlying dispatchCommand correctly.
 func TestDispatchKong_FlagsRoundtrip(t *testing.T) {
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
 
 	var capturedSlug string
@@ -1382,7 +1456,7 @@ func TestDispatchKong_FlagsRoundtrip(t *testing.T) {
 
 // TestDispatchKong_IDOnly verifies --id-only routes through dispatchKong correctly.
 func TestDispatchKong_IDOnly(t *testing.T) {
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
 
 	fbd := &fakeBD{
@@ -1557,13 +1631,93 @@ func TestResumeKong_DelegatesLaunch(t *testing.T) {
 	}
 }
 
+// TestResumeKong_RepoEnabled_DelegatesLaunch verifies a "repo:" field pointing
+// at an enabled repo does not block resume — the positive counterpart to
+// TestResumeKong_RepoDisabled_Refuses below.
+func TestResumeKong_RepoEnabled_DelegatesLaunch(t *testing.T) {
+	dir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-rk2",
+				Status:      "open",
+				Description: "worktree: " + dir + "\nrepo: " + repoDir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var launchedID string
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-rk2",
+		launch: func(_ *cli.Context, _, arg, _, _ string) error {
+			launchedID = arg
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if launchedID != "at-rk2" {
+		t.Errorf("launch driArg = %q, want %q", launchedID, "at-rk2")
+	}
+}
+
+// TestResumeKong_RepoDisabled_Refuses verifies resume refuses to relaunch a
+// session whose initiative's "repo:" field points at a repo with no (or a
+// disabled) .agent-teams file — the same gate as dispatch, applied to an
+// already-registered initiative.
+func TestResumeKong_RepoDisabled_Refuses(t *testing.T) {
+	dir := t.TempDir()
+	repoDir := t.TempDir() // no .agent-teams file
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-rk3",
+				Status:      "open",
+				Description: "worktree: " + dir + "\nrepo: " + repoDir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	launched := false
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-rk3",
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for a disabled repo, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if launched {
+		t.Error("launch was called despite the repo being disabled")
+	}
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
+		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	}
+}
+
 // ── dispatch: epic creation ───────────────────────────────────────────────────
 
 // TestDispatch_EpicCreatedAndAppendedToBody verifies that when createEpic
 // succeeds, "epic: <id>" is written into the initiative body before bd create.
 func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "epic-work"
 
@@ -1721,7 +1875,7 @@ func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
 // never called (even when it is injected).
 func TestDispatch_SkipEpic(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1763,7 +1917,7 @@ func TestDispatch_SkipEpic(t *testing.T) {
 // session receives the custom prompt verbatim (not /dri <id>).
 func TestDispatch_LaunchPrompt(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1807,7 +1961,7 @@ func TestDispatch_LaunchPrompt(t *testing.T) {
 // is replaced with the actual initiative id returned by bd create.
 func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1856,7 +2010,7 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 // advisor defaults to "" when --advisor is not set.
 func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1902,7 +2056,7 @@ func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 // --launch-prompt path into advisor mode.
 func TestDispatch_LaunchPrompt_AdvisorOverride(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1946,7 +2100,7 @@ func TestDispatch_LaunchPrompt_AdvisorOverride(t *testing.T) {
 // error, dispatch still succeeds and registers the initiative without epic:.
 func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var gotBody string
 	fbd := &fakeBD{
@@ -2001,7 +2155,7 @@ func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
 // and records the returned ref as "thread:<ref>" on that bead.
 func TestDispatch_EagerTopic_CreatesAndLabelsThread(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2068,7 +2222,7 @@ func TestDispatch_EagerTopic_CreatesAndLabelsThread(t *testing.T) {
 // rather than opening a second topic.
 func TestDispatch_EagerTopic_ThenNotify_ReusesThread(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2140,7 +2294,7 @@ func TestDispatch_EagerTopic_ThenNotify_ReusesThread(t *testing.T) {
 // stderr warning — the normal state for installs without Telegram set up).
 func TestDispatch_EagerTopic_TransportDisabled_NoSend(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2183,7 +2337,7 @@ func TestDispatch_EagerTopic_TransportDisabled_NoSend(t *testing.T) {
 // not record a thread label (nothing to label — the topic never opened).
 func TestDispatch_EagerTopic_SendError_FailSoft(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2269,7 +2423,7 @@ func reviewDispatch(t *testing.T, repoDir, slug string, ft *fakeTransport, prTit
 // per the contract, not an omission.
 func TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2339,7 +2493,7 @@ func TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel(t *testing.T) {
 // segment (and no dangling " — " separator), and never fails the dispatch.
 func TestDispatch_TopicReviews_TitleFetchFails_StillDispatches(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2379,7 +2533,7 @@ func TestDispatch_TopicReviews_TitleFetchFails_StillDispatches(t *testing.T) {
 // creating another — the whole point of the initiative.
 func TestDispatch_TopicReviews_SecondDispatch_ReusesRef(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2418,7 +2572,7 @@ func TestDispatch_TopicReviews_SecondDispatch_ReusesRef(t *testing.T) {
 // prTitle is never called (so a plain dispatch never spawns gh).
 func TestDispatch_NoTopic_LeavesEagerPathAlone(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2483,7 +2637,7 @@ func TestDispatch_NoTopic_LeavesEagerPathAlone(t *testing.T) {
 // nothing to chase.
 func TestDispatch_TopicReviews_MissingPRMetadata_NamesTheKey(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
