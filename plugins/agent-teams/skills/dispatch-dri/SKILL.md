@@ -20,7 +20,7 @@ For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
 The dispatcher MUST NOT do any investigation whatsoever. No codebase exploration, no grepping, no file reading, no architecture analysis, no mechanism opinions, no solution design, no clarifying-question answering on the human's behalf. If you find yourself reading files, running searches, or reasoning about the codebase, STOP immediately — that is the background DRI's job, not yours. This applies even when the problem statement is vague: pass the vague statement through; do not investigate to refine it. Violating this constraint injects the dispatcher's assumptions into the context block and degrades the DRI's ability to plan independently.
 
 **ABSOLUTE CONSTRAINT — ALWAYS launch a DRI. This is not optional.**
-Every invocation of this skill MUST end by launching a background DRI session via `ateam dispatch`. Refusing, declining, deciding "this doesn't need a DRI", deciding the scope is unclear, or returning to the human with "let me know if you want to proceed" is NEVER a valid outcome. The only two stopping points before dispatch are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no problem statement has been provided — ask the human for one, then dispatch immediately once received. Once those conditions are resolved, dispatch unconditionally. There is no circumstance under which the dispatcher evaluates the work and decides not to launch.
+Every invocation of this skill MUST end by launching a background DRI session via `ateam dispatch`. Refusing, declining, deciding "this doesn't need a DRI", deciding the scope is unclear, or returning to the human with "let me know if you want to proceed" is NEVER a valid outcome. The only stopping points before a DRI is launched are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no problem statement has been provided — ask the human for one, then dispatch immediately once received; (3) `ateam dispatch` exits 6 (the target repo is not opted in) and the recovery in step 3 does not end in a successful dispatch — because no human is attached to ask, the human declines, or the retried dispatch fails again. Once those conditions are resolved, dispatch unconditionally. There is no circumstance under which the dispatcher evaluates the work and decides not to launch.
 
 Your job is: preflight → capture the human's framing → dispatch. Nothing more.
 
@@ -68,7 +68,7 @@ ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [-
 
 `--standby` is a mechanical passthrough, not a judgment call. Pass it when the invocation contains an explicit `--standby` token, or a clear standby / "park it" / "wait for direction" keyword — nothing more. Otherwise omit it. Detecting the keyword is not investigation; deciding whether standby is *warranted* would be, so don't do that. Standby changes nothing else here: still capture the human's framing verbatim, still launch unconditionally.
 
-`dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, or a `--body-file` path that cannot be read. It never prompts. On success it prints:
+`dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, a `--body-file` path that cannot be read, or the target repo not being opted in (exit 6 — see "Recovery: repo not opted in" below). `dispatch` itself never prompts. On success it prints:
 
 ```
 initiative_id: <id>
@@ -76,6 +76,12 @@ worktree: <abs-path>
 slug: <slug>
 base_branch: <branch>
 ```
+
+**Recovery: repo not opted in (exit 6).** If `dispatch` exits 6 (stderr contains `agent-teams is not enabled for <repo>`), the target repo has no `.agent-teams` opt-in marker, or its marker carries `disabled: true`. Opting a repo in is consent to run unattended bypass-permissions agents there — that decision belongs to the human, never to this skill.
+
+- **Human attached:** ask whether to opt the repo in — say plainly that this lets agent-teams create worktrees and run background sessions with bypassed permissions there. On yes, run `ateam enable-repo <repo>` using the absolute path the refusal printed (don't re-derive it — dispatch gates on the cwd-derived repo root, which can differ from the target path in a worktree). Relay the `enabled: ...` line verbatim so the human knows whether it created the marker or removed an existing `disabled: true`. If `enable-repo` itself fails (e.g. a permissions error), report that and stop — don't retry the original command against an unchanged repo. Otherwise, retry the original `ateam dispatch` call ONCE. A second refusal is a real failure — report it and stop, do not loop. On no: stop and tell the human nothing was created.
+- **No human attached** — notably when a background DRI invokes this skill to spin off separable work (`dri/SKILL.md:141`): do NOT create the marker and do NOT prompt. Report the refusal verbatim to the caller and stop; a blocking prompt would hang a headless session forever.
+- Either way, `.agent-teams` is a real file in the target repo — it will show up in `git status`. Whether to commit it is the human's call, not this skill's.
 
 **🚨 CARDINAL RULE.** `ateam dispatch` performs the ONE write to the global workspace (initiative registration via the same `register` path). All work beads (planner's decomposition, feature/task/discovery beads) live in the PROJECT repo and are created by the background DRI and its team, not here.
 
