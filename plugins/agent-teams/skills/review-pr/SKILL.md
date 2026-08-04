@@ -118,7 +118,7 @@ Capture the full output. If the diff is empty or the command fails, stop and not
 
 ### 7. Spawn the reviewer subagent
 
-Spawn one `agent-teams:reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The SubagentStart hook fires automatically for `agent-teams:reviewer` agents, injecting prior-review learnings via `ateam learnings reviewer`.
+Spawn one `agent-teams:reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The reviewer pulls its own prior-review learnings on spawn — `ateam learnings reviewer`, step 1 of `agents/reviewer.md`. The SubagentStart hook cannot do this for it: SubagentStart stdout is never rendered into a spawned agent's context at any size, so a payload written there would reach nobody. The hook only runs `ateam pull`, so that self-fetch reads current data.
 
 Include in the reviewer's prompt:
 

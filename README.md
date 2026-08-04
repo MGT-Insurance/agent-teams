@@ -31,6 +31,16 @@ Commit the file. It's read straight off disk, so an untracked `.agent-teams` ena
 
 When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative, mail wakeups, and PR-event routing all skip without erroring. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
 
+## Machine-local instructions
+
+A human can give a role standing custom direction by hand-writing a file at `$AGENT_TEAMS_HOME/instructions/<role>.md`, served to a spawning role agent by `ateam instructions <role>`. It's machine-local: the file lives outside the global workspace's beads DB, so it needs no check-in and doesn't sync to other machines the way `ateam learn` memories do.
+
+If cross-machine sharing IS wanted, `git add`-ing the file into the `~/.agent-teams` workspace repo is an available choice — nothing about the mechanism forces machine-locality, it's just the default because nothing creates or commits the file for you.
+
+Content over 4096 bytes is refused rather than truncated: the human sees a loud marker naming the file and its size instead of a silently cut-off instruction. The instructions extend a role's shipped definition — they can't override its hard guardrails.
+
+Today only the reviewer role fetches this on spawn; the other roles don't yet self-fetch it.
+
 ## Use
 
 - `/dri <problem statement>` — make the current session the DRI for an initiative and run it end-to-end in the current worktree. Interactive: you approve the plan and answer load-bearing questions.
@@ -120,6 +130,7 @@ The plugin's slash commands wrap these `ateam` verbs; agents and the DRI also ca
 | `register`, `gate`, `clear-gate`, `note`, `close` | DRI | initiative lifecycle |
 | `mail send`, `mail inbox`, `mail list`, `mail close`, `mail purge` | agent / human | cross-session mail (see [Cross-session messaging](#cross-session-messaging)) |
 | `learn`, `learnings`, `recall`, `forget`, `applied` | role agents | role-memory read and write |
+| `instructions` | role agents | read a role's machine-local instructions file (see [Machine-local instructions](#machine-local-instructions)) |
 | `condense`, `fresh-drain`, `condense-check` | DRI / human | role-memory curation (`condense-check` is read-only: it reports the per-role fire/skip verdict) |
 | `sync`, `pull` | DRI / hooks | sync the global workspace |
 | `worktree-setup` | agent | hydrate a fresh track worktree |
