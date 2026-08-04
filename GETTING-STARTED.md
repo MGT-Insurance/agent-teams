@@ -92,6 +92,21 @@ Error: cannot use -C directory "<repo>": no beads project found
 
 It's easy to miss and nothing stops for it — so if a task never seems to make progress, this is the first thing to check.
 
+One more thing before you hand off a task: this project also needs a small file that turns agent-teams on for it.
+
+```
+cd /path/to/your-project
+touch .agent-teams
+git add .agent-teams
+git commit -m "Enable agent-teams"
+```
+
+The file's contents don't matter — empty is fine. What matters is that it sits at the top of your project and gets committed, so it travels with the repo instead of living only in your own copy.
+
+That holds even on a shared repo where you picked the stealth option above: this is one empty file, not a folder of data, and it needs to be in the repo.
+
+**If you skip this:** handing off a task fails immediately, with a message that includes `agent-teams is not enabled for`. Create and commit the file above, then try again.
+
 ## Hand over your first task
 
 From inside your project's folder, in Claude Code, type:
@@ -174,6 +189,7 @@ Either way, nothing breaks if you don't bother. You'll just have a finished task
 
 - **A task seems stuck from the very start, or teammates never join.** You likely skipped the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` setting from one-time setup, or set it without starting a new Claude Code session. Check `~/.claude/settings.json`, add it if missing, and start a fresh session.
 - **A task hands off fine but nothing ever seems to happen in it.** You probably never set up the task database in your project — see "Get your own project ready" above for `bd init` and the stealth variant. Look for the "could not create root epic" warning right after you dispatched.
+- **Handing off a task fails right away, with `agent-teams is not enabled for ...`.** You skipped the `.agent-teams` file — see "Get your own project ready" above.
 - **Setup stops with `ateam: command not found`.** The `~/.local/bin` folder it linked the tool into isn't on your terminal's search path. Add this line to your `~/.zshrc` (or `~/.bashrc`):
   ```
   export PATH="$HOME/.local/bin:$PATH"

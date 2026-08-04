@@ -21,6 +21,16 @@ New to agent-teams? Start with [GETTING-STARTED.md](GETTING-STARTED.md) for an e
 
 The plugin also declares two config options in its manifest (`use_advisors`, `dri_model`; see the `userConfig` block in `plugins/agent-teams/.claude-plugin/plugin.json`) that pick which model a background DRI actually runs on — `dri_model` (default `opus`) is the DRI's model; `use_advisors` (default off) instead runs the DRI on sonnet with `dri_model` attached as an advisor.
 
+## Enable a repo
+
+A repo is agent-teams-enabled only when a `.agent-teams` file exists at its root — not to be confused with the global `~/.agent-teams` workspace, which is machine-wide and unrelated. Its contents are ignored except for one line: `disabled: true`, with `disabled` at the very start of the line. Everything else — empty file, comments, unrelated prose — leaves the repo enabled.
+
+A missing file has the identical effect to `disabled: true`: not enabled. `disabled: true` is a live kill switch — no commit, no restart, read fresh on every call — and it doesn't close any initiative that's already open.
+
+Commit the file. It's read straight off disk, so an untracked `.agent-teams` enables only the checkout it's sitting in, not the repo. Nothing creates it for you.
+
+When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative, mail wakeups, and PR-event routing all skip without erroring. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
+
 ## Use
 
 - `/dri <problem statement>` — make the current session the DRI for an initiative and run it end-to-end in the current worktree. Interactive: you approve the plan and answer load-bearing questions.
