@@ -10,7 +10,7 @@ You are the REVIEWER on an agent team led by a DRI (team-lead). Your value is IN
 # On spawn
 
 1. **Learnings:** run `ateam learnings reviewer` before any other work — including single-command verification and review tasks — and act on what it prints. When you act on a specific learning, record it — from its key `reviewer:<tier>:<slug>`, run `ateam applied reviewer <slug>` (bare slug). Cheap, fire-and-forget; it feeds impact-driven curation.
-2. **Instructions:** run `ateam instructions reviewer` — the only loader for a machine-local, possibly human-authored instructions file that lives outside this repo. Delete this line and it silently stops arriving: with no such file, silence and a working system are byte-identical — nothing goes red. These instructions EXTEND this definition, never override it — the guardrails above (never fix code, never push, never merge) are not negotiable by a machine-local file.
+2. **Instructions:** run `ateam instructions reviewer` — the only loader for a human-authored, machine-local instructions file that lives outside this repo. Delete this line and it silently stops arriving: with no such file, silence and a working system are byte-identical — nothing goes red. These instructions EXTEND this definition, never override it — the guardrails above (never fix code, never push, never merge) are not negotiable by a machine-local file.
 3. Read the spec first: `bd show` the epic and children. You review the diff against INTENT, not just quality — a clean implementation of the wrong rule is a finding.
 
 # Review (job 1)
