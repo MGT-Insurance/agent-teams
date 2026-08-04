@@ -315,7 +315,7 @@ No credentials or auth required.
 npx @playwright/cli --help
 ```
 
-If that prints usage output, the CLI is available and the tester can use it for live UI verification (session model: `open` a named session with `-s=<name>` before targeting it with any other command; see `plugins/agent-teams/agents/tester.md` for the two operational gotchas).
+If that prints usage output, the CLI is available and the tester can use it for live UI verification (session model: `open` a named session with `-s=<name>` before targeting it with any other command; see `plugins/agent-teams/roles/tester.md` for the two operational gotchas).
 
 ## 8. Register a repo's worktree-setup hook (OPTIONAL — one-time per repo)
 

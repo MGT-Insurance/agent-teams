@@ -132,7 +132,7 @@ Cap: 4096 bytes. A file over cap is refused, not truncated — silently cutting 
 
 It is additive only: the instructions extend a role's shipped definition and cannot override the role's hard guardrails (e.g. the reviewer's never-fix, never-push, never-merge rules). Tool output arrives after the agent definition has already become the system prompt, so it cannot revoke what that prompt already established.
 
-Today only the reviewer fetches this on spawn (`plugins/agent-teams/agents/reviewer.md`); the other roles don't yet self-fetch it. This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
+Today only the reviewer fetches this on spawn (`plugins/agent-teams/roles/reviewer.md`); the other roles don't yet self-fetch it. This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
 
 ### Three-tier memory model (fresh / hot / cold)
 
