@@ -24,7 +24,7 @@ The dashboard joins the initiative to any live Claude session whose `cwd` matche
 1. **NEEDS-DECISION** — `human` + `gate:question` labels present. Highest human priority.
 2. **IN-PROGRESS** — the joined session is actively working (`status == "busy"` / `state == "working"`). This **overrides** the review gate. A DRI that keeps working on a PR after opening it (e.g. improving the diff) correctly reads as IN-PROGRESS.
 3. `human` + `gate:review` present AND no actively-working session. First match wins:
-   - the initiative carries the **`external-review` label** → **AWAITING-EXTERNAL-REVIEW**. Eric has declared he is done looking; the PR is with the team.
+   - the initiative carries the **`external-review` label** → **AWAITING-EXTERNAL-REVIEW**. The human has declared he is done looking; the PR is with the team.
    - otherwise → **REVIEWABLE**.
 4. **IN-PROGRESS** — open initiative, no review/question gate.
 
@@ -34,15 +34,15 @@ The DRI sets NO phase field and maintains no status field. The run/park state of
 
 ### REVIEWABLE means awaiting ERIC
 
-REVIEWABLE means **work genuinely awaiting Eric, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a PR Eric has already declared he's done looking at (`external-review`) is a row that needs nothing from him, and it does not belong in the queue that says it does.
+REVIEWABLE means **work genuinely awaiting the human, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a PR the human has already declared he's done looking at (`external-review`) is a row that needs nothing from him, and it does not belong in the queue that says it does.
 
-**Only Eric moves work out of REVIEWABLE** — by declaring he's done looking (`ateam handoff`), or by the DRI resuming/closing the initiative on his behalf once he's answered elsewhere.
+**Only the human moves work out of REVIEWABLE** — by declaring he's done looking (`ateam handoff`), or by the DRI resuming/closing the initiative on his behalf once he's answered elsewhere.
 
 ### 🚨 The DRI must NEVER declare the handoff
 
-`ateam handoff <id>` writes the `external-review` label. **It is Eric's verb. A DRI must never run it** — not at delivery, not at wind-down, not "to be helpful."
+`ateam handoff <id>` writes the `external-review` label. **It is the human's verb. A DRI must never run it** — not at delivery, not at wind-down, not "to be helpful."
 
-The reason is not etiquette, it is arithmetic: the label asserts *"Eric has looked at this PR and is done with it."* At delivery Eric has not looked at it yet — the PR is minutes old — so the answer is always no. A DRI that runs `ateam handoff` at delivery hides the PR from the one person who still needs to see it, and it disappears to the bottom of `/initiatives` with no one waiting on it. This is the single most likely misuse of the verb.
+The reason is not etiquette, it is arithmetic: the label asserts *"the human has looked at this PR and is done with it."* At delivery the human has not looked at it yet — the PR is minutes old — so the answer is always no. A DRI that runs `ateam handoff` at delivery hides the PR from the one person who still needs to see it, and it disappears to the bottom of `/initiatives` with no one waiting on it. This is the single most likely misuse of the verb.
 
 Underneath the arithmetic is the principle: **it is an agent asserting the human's state on the human's behalf.** Whether Eric has finished looking at something is a fact only Eric holds. That is the same failure this initiative exists to correct — the previous design inferred his attention from GitHub's reviewer assignments, and he rejected it flatly, because "as soon as a PR is created, it automatically adds other reviewers. That doesn't mean I have looked at it." Guessing the fact from a label you wrote yourself is the same error with a shorter causal chain.
 
@@ -65,7 +65,7 @@ ateam gate <id> --decision "<one line ≤120 chars>" --recommendation "<short>" 
 
 ## The plan-approval gate
 
-A plan-approval gate carries a plan-document URL, as does a design-pivot gate (below) when the planner republishes the page for a pivot — the one gate flavor with a document behind it. The planner authors and publishes the page (Artifact tool); the DRI never writes it, only links it. The URL goes as the FIRST line of `--context-file` (280-char cap; a claude.ai URL runs ~68 chars, leaving ~210 for prose — budget for it up front). `--decision`/`--recommendation`/`--alternative` stay authoritative regardless of the link — Eric must be able to decide from the ask text alone; the URL is enrichment, never a dependency (graceful degradation if claude.ai doesn't open on his phone). When a design-pivot gate falls to the `--file` fallback, the plan-doc URL still goes on its own line near the top, ahead of the Mechanism evidence / Recommendation / Literal-reading alternative lines.
+A plan-approval gate carries a plan-document URL, as does a design-pivot gate (below) when the planner republishes the page for a pivot — the one gate flavor with a document behind it. The planner authors and publishes the page (Artifact tool); the DRI never writes it, only links it. The URL goes as the FIRST line of `--context-file` (280-char cap; a claude.ai URL runs ~68 chars, leaving ~210 for prose — budget for it up front). `--decision`/`--recommendation`/`--alternative` stay authoritative regardless of the link — the human must be able to decide from the ask text alone; the URL is enrichment, never a dependency (graceful degradation if claude.ai doesn't open on his phone). When a design-pivot gate falls to the `--file` fallback, the plan-doc URL still goes on its own line near the top, ahead of the Mechanism evidence / Recommendation / Literal-reading alternative lines.
 
 ## The design-pivot gate
 

@@ -17,7 +17,7 @@ import (
 //	ateam handoff <id> --clear    // undo: Eric has re-opened the question
 type handoffKong struct {
 	ID    string `arg:"" name:"id" help:"Initiative ID."`
-	Clear bool   `name:"clear" help:"Undo the declaration; the question is Eric's again."`
+	Clear bool   `name:"clear" help:"Undo the declaration; the question is the human's again."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.

@@ -173,8 +173,8 @@ while true; do
     if [ "$is_steward_session" = 1 ]; then
       # Under FROZEN-4 (see skills/steward/SKILL.md §5), the Steward has
       # something to do on this wake, unlike a DRI: check whether anything
-      # went to Eric during this window, and if not, post one briefing line.
-      printf 'agent-teams: heartbeat re-arm for the Steward — check whether anything went to Eric in this window; if nothing did, post one briefing line confirming what is running and that it is green.\n' >&2
+      # went to the human during this window, and if not, post one briefing line.
+      printf 'agent-teams: heartbeat re-arm for the Steward — check whether anything went to the human in this window; if nothing did, post one briefing line confirming what is running and that it is green.\n' >&2
     else
       printf 'agent-teams: heartbeat re-arm for initiative %s — no new mail, do nothing.\n' "$match_id" >&2
     fi
