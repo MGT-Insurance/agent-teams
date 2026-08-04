@@ -101,7 +101,9 @@ git add .agent-teams
 git commit -m "Enable agent-teams"
 ```
 
-The file's contents don't matter — empty is fine. What matters is that it exists at the top of your project and is committed, so it travels with the repo instead of sitting only in your own copy of it.
+The file's contents don't matter — empty is fine. What matters is that it sits at the top of your project and gets committed, so it travels with the repo instead of living only in your own copy.
+
+That holds even on a shared repo where you picked the stealth option above: this is one empty file, not a folder of data, and it needs to be in the repo.
 
 **If you skip this:** handing off a task fails immediately, with a message that includes `agent-teams is not enabled for`. Create and commit the file above, then try again.
 

@@ -23,13 +23,13 @@ The plugin also declares two config options in its manifest (`use_advisors`, `dr
 
 ## Enable a repo
 
-A repo is agent-teams-enabled only when a `.agent-teams` file exists at its root — a separate thing from the global `~/.agent-teams` workspace above. Contents are ignored except for one line: `disabled: true`, key starting at column 0. Everything else — empty file, comments, unrelated prose — leaves the repo enabled.
+A repo is agent-teams-enabled only when a `.agent-teams` file exists at its root — not to be confused with the global `~/.agent-teams` workspace, which is machine-wide and unrelated. Its contents are ignored except for one line: `disabled: true`, with `disabled` at the very start of the line. Everything else — empty file, comments, unrelated prose — leaves the repo enabled.
 
 A missing file has the identical effect to `disabled: true`: not enabled. `disabled: true` is a live kill switch — no commit, no restart, read fresh on every call — and it doesn't close any initiative that's already open.
 
-Commit the file. It's read straight off disk, so an untracked `.agent-teams` enables only the checkout it's sitting in, not the repo; nothing creates it for you.
+Commit the file. It's read straight off disk, so an untracked `.agent-teams` enables only the checkout it's sitting in, not the repo. Nothing creates it for you.
 
-When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly (`agent-teams is not enabled for ...`, exit 1) — but the hook-driven paths (resolving a session to its initiative, mail wakeups, PR-event routing) go quiet instead of erroring, so a disabled repo can look like agent-teams silently stopped rather than like it was ever told to.
+When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative, mail wakeups, and PR-event routing all skip without erroring. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
 
 ## Use
 
