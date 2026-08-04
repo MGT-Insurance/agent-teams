@@ -130,6 +130,7 @@ The plugin's slash commands wrap these `ateam` verbs; agents and the DRI also ca
 | `register`, `gate`, `clear-gate`, `note`, `close` | DRI | initiative lifecycle |
 | `mail send`, `mail inbox`, `mail list`, `mail close`, `mail purge` | agent / human | cross-session mail (see [Cross-session messaging](#cross-session-messaging)) |
 | `learn`, `learnings`, `recall`, `forget`, `applied` | role agents | role-memory read and write |
+| `instructions` | role agents | read a role's machine-local instructions file (see [Machine-local instructions](#machine-local-instructions)) |
 | `condense`, `fresh-drain`, `condense-check` | DRI / human | role-memory curation (`condense-check` is read-only: it reports the per-role fire/skip verdict) |
 | `sync`, `pull` | DRI / hooks | sync the global workspace |
 | `worktree-setup` | agent | hydrate a fresh track worktree |
