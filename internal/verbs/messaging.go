@@ -14,6 +14,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // ── sendKong ──────────────────────────────────────────────────────────────────
@@ -97,6 +98,23 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
 	if liveErr != nil {
 		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
+		return nil
+	}
+
+	// Disabled repo: the message stays queued (the bd issue above already
+	// exists, a mailbox entry rather than a delivery), but this call must not
+	// actively wake or revive anything. Remove the doorbell just touched
+	// above so neither an already-armed watcher nor any other doorbell-driven
+	// path has something to react to, and skip the resume/respawn escalation
+	// below entirely — respawn in particular has no gate of its own (unlike
+	// resumeFunc, which routes through the already-gated resumeKong), so
+	// this is the one place that closes it. recipientWorktree's doc comment
+	// makes recipIssue the zero value for the Steward, so repo is always ""
+	// there and this never gates Steward mail.
+	if repo := initiative.Of(recipIssue).Repo; repo != "" && !repoconfig.Enabled(repo) {
+		_ = os.Remove(doorbellPath)
+		fmt.Fprintf(ctx.Stdout, "note: recipient %s's repo is disabled (%s); message queued, not waking\n",
+			c.RecipientID, repoconfig.FileName)
 		return nil
 	}
 

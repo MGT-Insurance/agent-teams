@@ -31,7 +31,7 @@ The plugin also declares two config options in its manifest (`use_advisors`, `dr
 - `/bg-session [prompt] [dir]` — launch a bare background Claude session with no `ateam`, no beads, no worktree, no initiative registration. A deliberate escape hatch for work that isn't a tracked initiative (e.g. running a dev server); use `/dispatch-dri` for real feature work.
 - `/dispatch-review-pr <PR>` — register a review initiative for a GitHub PR (URL, `owner/repo#123`, or a bare number) and launch a background review session.
 - `/agent-teams:steward` — start or act as the machine's Steward (see [Steward](#steward)).
-- `/condense` — drain fresh memories and curate hot/cold learnings for over-threshold roles; can be triggered manually or runs automatically at DRI wind-down.
+- `/condense` — curate hot/cold learnings, then drain what is left of the fresh tier; can be triggered manually or runs automatically at DRI wind-down. A role is skipped unless its fresh tier has accumulated enough NEW material to be worth a pass.
 
 ### Headless spawn
 
@@ -110,7 +110,7 @@ The plugin's slash commands wrap these `ateam` verbs; agents and the DRI also ca
 | `register`, `gate`, `clear-gate`, `note`, `close` | DRI | initiative lifecycle |
 | `mail send`, `mail inbox`, `mail list`, `mail close`, `mail purge` | agent / human | cross-session mail (see [Cross-session messaging](#cross-session-messaging)) |
 | `learn`, `learnings`, `recall`, `forget`, `applied` | role agents | role-memory read and write |
-| `condense`, `fresh-drain` | DRI / human | role-memory curation |
+| `condense`, `fresh-drain`, `condense-check` | DRI / human | role-memory curation (`condense-check` is read-only: it reports the per-role fire/skip verdict) |
 | `sync`, `pull` | DRI / hooks | sync the global workspace |
 | `worktree-setup` | agent | hydrate a fresh track worktree |
 | `steward init`, `steward start`, `steward remove` | human | start or stop the machine's Steward session |

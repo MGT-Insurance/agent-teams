@@ -12,6 +12,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // ── hasLiveSession ────────────────────────────────────────────────────────────
@@ -837,6 +838,25 @@ func (sf *sendFixture) fakeBD(recipientID, msgID string) *fakeBD {
 	}
 }
 
+// fakeBDWithRepo is fakeBD plus a "repo:" field, for the repoconfig.Enabled
+// gate tests below.
+func (sf *sendFixture) fakeBDWithRepo(recipientID, msgID, repo string) *fakeBD {
+	return &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			sf.createArgs = args
+			if issue, ok := dst.(*bd.Issue); ok {
+				issue.ID = msgID
+			}
+			return nil
+		},
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: recipientID, Description: "worktree: " + sf.recipientWt + "\nrepo: " + repo + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+}
+
 func TestSendKong_BusySession_NoOp(t *testing.T) {
 	sf := newSendFixture(t)
 	var resumeCalled, sleeperCalled, respawnCalled bool
@@ -1022,6 +1042,87 @@ func TestSendKong_IdleSession_DoorbellPresent_Respawns(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "respawned abc12345") {
 		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_DisabledRepo_QueuesWithoutWakingOrRespawn pins the Codex
+// adversarial-review finding on this feature's "strongest bypass": mail send
+// escalating straight to `claude respawn` for a deaf recipient, with no gate
+// of its own (unlike the not-found branch, which routes through the
+// already-gated resumeFunc/resumeKong). The message bead still gets created
+// (queued), but the doorbell touched earlier in Run must be removed and
+// nothing downstream (agentsFunc/resume/respawn) may run.
+func TestSendKong_DisabledRepo_QueuesWithoutWakingOrRespawn(t *testing.T) {
+	sf := newSendFixture(t)
+	repoDir := t.TempDir() // no .agent-teams marker -> disabled
+	var agentsCalled, resumeCalled, respawnCalled bool
+	cmd := &sendKong{
+		RecipientID: "at-kong-disabled",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			agentsCalled = true
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { resumeCalled = true; return nil },
+		sleeper:        func(time.Duration) { t.Fatal("sleeper should not be called for a disabled repo") },
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(string) error { respawnCalled = true; return nil },
+	}
+
+	ctx, stdout, _ := makeCtx(sf.fakeBDWithRepo("at-kong-disabled", "at-kong-msg-disabled", repoDir), sf.home)
+	doorbellPath := filepath.Join(sf.home, "mailbox", "at-kong-disabled.wake")
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if agentsCalled {
+		t.Error("agentsFunc should not be called once the repo is known to be disabled")
+	}
+	if resumeCalled {
+		t.Error("resume should not be called for a disabled repo")
+	}
+	if respawnCalled {
+		t.Error("respawn should not be called for a disabled repo")
+	}
+	if _, err := os.Stat(doorbellPath); err == nil {
+		t.Error("doorbell should have been removed for a disabled repo")
+	}
+	if !strings.Contains(stdout.String(), "message_id: at-kong-msg-disabled") {
+		t.Errorf("message should still be queued (bd create) for a disabled repo: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "repo is disabled") {
+		t.Errorf("stdout missing disabled-repo notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_EnabledRepoField_StillRespawns proves the new check doesn't
+// accidentally block legitimate respawns just because a "repo:" field is
+// present and enabled — the counterpart to the disabled-repo test above.
+func TestSendKong_EnabledRepoField_StillRespawns(t *testing.T) {
+	sf := newSendFixture(t)
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", repoconfig.FileName, err)
+	}
+	var respawnedID string
+	cmd := &sendKong{
+		RecipientID: "at-kong-enabled",
+		File:        sf.file,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
+		},
+		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:        func(time.Duration) {},
+		doorbellExists: func(string) bool { return true },
+		respawnFunc:    func(id string) error { respawnedID = id; return nil },
+	}
+
+	ctx, _, _ := makeCtx(sf.fakeBDWithRepo("at-kong-enabled", "at-kong-msg-enabled", repoDir), sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if respawnedID != "abc12345" {
+		t.Errorf("respawn not called with correct short id; got %q", respawnedID)
 	}
 }
 

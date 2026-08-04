@@ -4,8 +4,10 @@
 # accumulation; blocks on a dependency-free poll-loop until either the
 # per-initiative doorbell fires (real mail) or the 4h heartbeat deadline
 # arrives (keepalive re-arm); exits 2 in both cases to wake the session.
-# Silently exits 0 when cwd is not a registered OPEN initiative or when
-# the initiative has since been CLOSED.
+# Silently exits 0 when cwd is not a registered OPEN initiative, when the
+# initiative has since been CLOSED, or when its repo has gone
+# `disabled: true` (internal/repoconfig) — re-checked via resolve-initiative
+# on every doorbell and heartbeat, not just at arm-time.
 #
 # On doorbell: emits a SIGNAL to stderr (the woken turn's prompt) telling the
 # model to run `ateam mail inbox`. Does NOT consume (drain) mail — the model is the
@@ -36,9 +38,10 @@ export HOOK_SESSION_ID
 # Log start BEFORE any guard check so we always know the hook fired.
 hook_log_start "wake-watcher.sh"
 
-# Dependency guard — need bd + jq in PATH for the stdin parse above and the
-# stop-on-closed status check below. `ateam` is needed only on the initiative
-# branch, so it is guarded there instead (see below).
+# Dependency guard — need bd + jq in PATH for the stdin parse above and
+# because `ateam` itself (resolve-initiative, below) shells out to bd.
+# `ateam` is needed only on the initiative branch, so it is guarded there
+# instead (see below).
 if ! command -v bd  >/dev/null 2>&1 \
    || ! command -v jq  >/dev/null 2>&1 \
    || [ ! -d "$ATH/.beads" ]; then
@@ -133,6 +136,25 @@ start_epoch=$(date +%s)
 last_alive_log=$start_epoch
 alive_interval=60   # log an "alive" tick every 60 seconds
 
+# still_open_and_enabled re-validates match_id against $PWD via the SAME
+# ateam resolve-initiative call used to arm this watcher in the first place
+# (internal/verbs/match.go), rather than re-deriving "closed or disabled" as
+# a second, independent rule here. That match already returns no match for
+# BOTH a closed initiative (--status=open filter) and an open one whose repo
+# has gone `disabled: true` (repoconfig.Enabled check) — so one re-check
+# covers both. Without this, a watcher armed BEFORE a repo was disabled kept
+# firing on its next doorbell or heartbeat regardless, riding out the rest of
+# its 4h window — the gap a Codex adversarial review flagged on this file.
+# Skipped for the Steward: resolve-initiative resolves no match_id for it at
+# all (see the Steward branch above), so there is nothing to re-validate.
+still_open_and_enabled() {
+  if [ "$is_steward_session" = 1 ]; then
+    return 0
+  fi
+  current_match=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
+  [ "$current_match" = "$match_id" ]
+}
+
 # ── Poll-loop ────────────────────────────────────────────────────────────────
 while true; do
   # Guard: still the registered watcher for this initiative?
@@ -147,6 +169,10 @@ while true; do
   # SessionStart). inbox-drain.sh removes it when a turn actually starts, so
   # a lost rewake just means the next armed watcher fires again.
   if [ -f "$DOORBELL" ]; then
+    if ! still_open_and_enabled; then
+      HOOK_EXIT_REASON="closed-or-disabled"
+      exit 0
+    fi
     hook_log_note "note" "doorbell-seen initiative=${match_id}"
     HOOK_EXIT_REASON="doorbell-fired"
     printf "You have new mail — run \`ateam mail inbox\` to read it. (Messages are beads, not files — nothing to read on disk.)\n" >&2
@@ -156,18 +182,11 @@ while true; do
   # Heartbeat deadline: exit 2 to trigger a cheap re-arm turn.
   now=$(date +%s)
   if [ "$now" -ge "$deadline" ]; then
-    # Stop-on-closed: check initiative status before re-arming. Skipped for
-    # the Steward — it is not a closeable initiative bead and always re-arms.
-    if [ "$is_steward_session" != 1 ]; then
-      initiative_status=$(bd -C "$ATH" show "$match_id" --json 2>/dev/null \
-        | jq -r '.status // empty' 2>/dev/null || true)
-      case "$initiative_status" in
-        closed|CLOSED|done|DONE)
-          # Initiative is closed — stop pulsing, go quiet.
-          HOOK_EXIT_REASON="initiative-closed"
-          exit 0
-          ;;
-      esac
+    if ! still_open_and_enabled; then
+      # Initiative closed, or its repo went disabled since this watcher
+      # armed — stop pulsing, go quiet.
+      HOOK_EXIT_REASON="closed-or-disabled"
+      exit 0
     fi
     HOOK_EXIT_REASON="heartbeat-rearm"
     if [ "$is_steward_session" = 1 ]; then

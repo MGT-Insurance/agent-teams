@@ -11,7 +11,7 @@ Store the learning itself, not the story of how it was found — include only en
 Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
 
 - **Fresh:** `<role>:fresh:<slug>` — the default write tier. `ateam learn <role> <slug> --file <f>` (bare slug, no prefix) writes here automatically. Fresh accumulates between condense runs; `ateam learnings <role>` serves it alongside hot. It's the "just written, not yet curated" tier, periodically drained into cold by `ateam fresh-drain <role>`.
-- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct; target budget ~6000 tokens (~15–25 learnings) across all hot keys for a role.
+- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct. The budget for a role's whole hot set (~15–25 learnings) is stated ONCE, in TOKENS, by the `hot_budget_tokens` field of the `ateam condense <role>` packet — read it there rather than carrying a number in your head.
 - **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. Write explicitly with `ateam learn <role> cold:<slug> --file <f>` (the `cold:` prefix is stripped to produce the bare `role:<slug>` key). Pre-tier `dri:<slug>` memories are already cold, no migration needed.
 
 `ateam learnings <role>` serves the **hot ∪ fresh** union, falling back to all `role:` keys only when both are empty. All three tiers are living; cold is not a frozen archive.

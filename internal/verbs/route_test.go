@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -72,6 +73,31 @@ func makeRouteCtxWithHome(t *testing.T, issues []bd.Issue) (*cli.Context, *bytes
 	return ctx, stdout, stderr, tmpHome
 }
 
+// newEnabledClonePath returns a fresh temp dir seeded with a .agent-teams
+// marker file, so review-repos fixtures reach past spawnReviewInitiative's
+// repo-enabled gate without re-deriving that setup individually.
+func newEnabledClonePath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("newEnabledClonePath: write %s: %v", repoconfig.FileName, err)
+	}
+	return dir
+}
+
+// newDisabledClonePath returns a fresh temp dir marked "disabled: true" —
+// the sibling of newEnabledClonePath for tests pinning the routing gates
+// added against the Codex adversarial-review finding that mail send/reopen
+// could revive a disabled repo.
+func newDisabledClonePath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, repoconfig.FileName), []byte("disabled: true\n"), 0o644); err != nil {
+		t.Fatalf("newDisabledClonePath: write %s: %v", repoconfig.FileName, err)
+	}
+	return dir
+}
+
 // writeTempFile creates a temp file with the given content and returns its path.
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
@@ -87,12 +113,17 @@ func writeTempFile(t *testing.T, content string) string {
 }
 
 // prFieldIssue builds an issue that will MatchPRField for ownerRepo + prNumber.
-func prFieldIssue(id, ownerRepo string, prNumber int) bd.Issue {
+// Its "repo:" field points at a real, .agent-teams-enabled temp dir (rather
+// than a synthetic /code/<ownerRepo> path that doesn't exist on disk), so the
+// many route-pr-event tests built on it keep exercising the non-disabled
+// routing path now that it's gated on repoconfig.Enabled.
+func prFieldIssue(t *testing.T, id, ownerRepo string, prNumber int) bd.Issue {
+	t.Helper()
 	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", ownerRepo, prNumber)
 	return bd.Issue{
 		ID:          id,
 		Title:       "Initiative " + id,
-		Description: fmt.Sprintf("repo: /code/%s\nworktree: /tmp/wt-%s\nbranch: main\n", ownerRepo, id),
+		Description: fmt.Sprintf("repo: %s\nworktree: /tmp/wt-%s\nbranch: main\n", newEnabledClonePath(t), id),
 		Notes:       "pr: " + prURL,
 		Status:      "open",
 	}
@@ -100,11 +131,23 @@ func prFieldIssue(id, ownerRepo string, prNumber int) bd.Issue {
 
 // branchIssue builds an issue that will MatchBranch for repoName + headBranch
 // (no pr: URL, so MatchPRField is skipped).
-func branchIssue(id, repoName, headBranch string) bd.Issue {
+// branchIssue's "repo:" field must be a real, enabled directory whose
+// BASENAME is exactly repoName — MatchBranch matches on
+// filepath.Base(f.Repo), so an arbitrary temp dir (as prFieldIssue uses)
+// would silently break the match instead of just failing the enabled check.
+func branchIssue(t *testing.T, id, repoName, headBranch string) bd.Issue {
+	t.Helper()
+	repoDir := filepath.Join(t.TempDir(), repoName)
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", repoDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", repoconfig.FileName, err)
+	}
 	return bd.Issue{
 		ID:          id,
 		Title:       "Initiative " + id,
-		Description: fmt.Sprintf("repo: /code/%s\nworktree: /tmp/wt-%s\nbranch: %s\n", repoName, id, headBranch),
+		Description: fmt.Sprintf("repo: %s\nworktree: /tmp/wt-%s\nbranch: %s\n", repoDir, id, headBranch),
 		Notes:       "",
 		Status:      "open",
 	}
@@ -146,7 +189,7 @@ func TestRoutePREvent_PositivePRNumberValidate(t *testing.T) {
 // owned initiative (MatchPRField) → runner("mail", "send", id, "--file", body, "--sender", "pr-shepherd").
 func TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	bodyFile := writeTempFile(t, "CI failed output")
-	issue := prFieldIssue("at-abc.1", "owner/myrepo", 42)
+	issue := prFieldIssue(t, "at-abc.1", "owner/myrepo", 42)
 
 	ctx, stdout, _ := makeRouteCtx([]bd.Issue{issue})
 	fr := &fakeRunner{}
@@ -195,11 +238,49 @@ func TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	}
 }
 
+// TestDecisionMatrix_OwnedViaPRField_DisabledRepoSkips pins the highest-severity
+// Codex adversarial-review finding on this feature: an OPEN initiative matched
+// by pr: field must not be revived via mail send once its repo is disabled —
+// this is the direct path that bypassed the original repoconfig gate (which
+// only covered spawnReviewInitiative, the unowned/no-match SPAWN path).
+func TestDecisionMatrix_OwnedViaPRField_DisabledRepoSkips(t *testing.T) {
+	bodyFile := writeTempFile(t, "CI failed output")
+	repoDir := newDisabledClonePath(t)
+	issue := bd.Issue{
+		ID:          "at-abc.9",
+		Title:       "Initiative at-abc.9",
+		Description: "repo: " + repoDir + "\nworktree: /tmp/wt-at-abc.9\nbranch: main\n",
+		Notes:       "pr: https://github.com/owner/myrepo/pull/42",
+		Status:      "open",
+	}
+
+	ctx, stdout, _ := makeRouteCtx([]bd.Issue{issue})
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/myrepo",
+		PRNumber:   42,
+		HeadBranch: "feat-x",
+		Transition: TransitionCIFailed,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("expected 0 runner calls for a disabled repo, got %d: %v", len(fr.calls), fr.calls)
+	}
+	if !strings.Contains(stdout.String(), "repo is disabled") {
+		t.Errorf("stdout should say 'repo is disabled'; got: %q", stdout.String())
+	}
+}
+
 // TestDecisionMatrix_OwnedViaMatchBranchRoutesViaSend verifies the MatchBranch
 // path (no pr: URL) also calls send with the correct initiative id.
 func TestDecisionMatrix_OwnedViaMatchBranchRoutesViaSend(t *testing.T) {
 	bodyFile := writeTempFile(t, "changes requested body")
-	issue := branchIssue("at-xyz.2", "myrepo", "feature-branch")
+	issue := branchIssue(t, "at-xyz.2", "myrepo", "feature-branch")
 
 	ctx, _, _ := makeRouteCtx([]bd.Issue{issue})
 	fr := &fakeRunner{}
@@ -226,6 +307,40 @@ func TestDecisionMatrix_OwnedViaMatchBranchRoutesViaSend(t *testing.T) {
 	}
 	if fr.calls[0][2] != "at-xyz.2" {
 		t.Errorf("runner initiative id: got %q, want \"at-xyz.2\"", fr.calls[0][2])
+	}
+}
+
+// TestDecisionMatrix_OwnedViaMatchBranch_DisabledRepoSkips is the MatchBranch
+// counterpart of TestDecisionMatrix_OwnedViaPRField_DisabledRepoSkips.
+func TestDecisionMatrix_OwnedViaMatchBranch_DisabledRepoSkips(t *testing.T) {
+	bodyFile := writeTempFile(t, "changes requested body")
+	repoDir := newDisabledClonePath(t)
+	issue := bd.Issue{
+		ID:          "at-xyz.9",
+		Title:       "Initiative at-xyz.9",
+		Description: "repo: " + repoDir + "\nworktree: /tmp/wt-at-xyz.9\nbranch: feature-branch\n",
+		Status:      "open",
+	}
+
+	ctx, stdout, _ := makeRouteCtx([]bd.Issue{issue})
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/" + filepath.Base(repoDir),
+		PRNumber:   99,
+		HeadBranch: "feature-branch",
+		Transition: TransitionChangesRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("expected 0 runner calls for a disabled repo, got %d: %v", len(fr.calls), fr.calls)
+	}
+	if !strings.Contains(stdout.String(), "repo is disabled") {
+		t.Errorf("stdout should say 'repo is disabled'; got: %q", stdout.String())
 	}
 }
 
@@ -258,6 +373,47 @@ func TestDecisionMatrix_UnownedReviewRequestedUnconfiguredSkips(t *testing.T) {
 	}
 }
 
+// TestDecisionMatrix_UnownedReviewRequestedDisabledCloneSkips verifies the
+// SPAWN seam when the repo IS registered in review-repos but the clone has no
+// (or a disabled) .agent-teams file: skip quietly, one log line, no dispatch
+// subprocess — the fix for a repeatedly-polled review_requested PR on a
+// disabled repo otherwise spamming a refused `dispatch` call every pr-shepherd
+// poll cycle.
+func TestDecisionMatrix_UnownedReviewRequestedDisabledCloneSkips(t *testing.T) {
+	bodyFile := writeTempFile(t, "reviewer added")
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil) // no issues → MatchNone
+
+	clonePath := t.TempDir() // deliberately no .agent-teams marker
+	configDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "repo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/repo",
+		PRNumber:   7,
+		HeadBranch: "some-branch",
+		Transition: TransitionReviewRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("expected 0 runner calls for a disabled clone, got %d: %v", len(fr.calls), fr.calls)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "agent-teams not enabled") {
+		t.Errorf("stdout should say 'agent-teams not enabled' for a disabled clone; got: %q", out)
+	}
+}
+
 // TestSpawnReviewInitiative_Configured verifies the happy path: a review-repos
 // config file is present → runner called with dispatch + correct args including
 // --launch-prompt and --skip-epic for the lightweight review-pr skill.
@@ -265,7 +421,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
 	// Register a fake clone path in the config.
-	clonePath := t.TempDir()
+	clonePath := newEnabledClonePath(t)
 	repoKey := "midgard" // Slugify(basename("MGT-Insurance/midgard"))
 	configDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -359,7 +515,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
-	clonePath := t.TempDir()
+	clonePath := newEnabledClonePath(t)
 	repoKey := "midgard"
 	configDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -426,7 +582,7 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 func TestSpawnReviewInitiative_PRURLConstructed(t *testing.T) {
 	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 
-	clonePath := t.TempDir()
+	clonePath := newEnabledClonePath(t)
 	repoKey := "myrepo"
 	configDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
@@ -641,7 +797,7 @@ func TestRoutePREventKong_NilContext(t *testing.T) {
 // owned (MatchPRField) → runner("mail", "send", id, "--file", body, "--sender", "pr-shepherd").
 func TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	bodyFile := writeTempFile(t, "CI failed output")
-	issue := prFieldIssue("at-kong.1", "owner/myrepo", 42)
+	issue := prFieldIssue(t, "at-kong.1", "owner/myrepo", 42)
 
 	ctx, _, _ := makeRouteCtx([]bd.Issue{issue})
 	fr := &fakeRunner{}
@@ -797,7 +953,7 @@ func makeStatusCtx(open, closed []bd.Issue) (*cli.Context, *bytes.Buffer, *bytes
 
 func TestReReview_OpenMatch_SendsWithResumeFlags(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
-	issue := prFieldIssue("at-rr.1", "owner/myrepo", 42)
+	issue := prFieldIssue(t, "at-rr.1", "owner/myrepo", 42)
 	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
 
 	runner := &fakeRunner{}
@@ -821,7 +977,7 @@ func TestReReview_OpenMatch_SendsWithResumeFlags(t *testing.T) {
 
 func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
-	closed := prFieldIssue("at-rr.2", "owner/myrepo", 42)
+	closed := prFieldIssue(t, "at-rr.2", "owner/myrepo", 42)
 	closed.Status = "closed"
 	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
@@ -850,6 +1006,40 @@ func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
 	}
 }
 
+// TestReReview_DisabledRepo_SkipsWithoutReopenOrSpawn pins the Codex
+// adversarial-review finding: a re_review matching a CLOSED initiative whose
+// repo is disabled must not reopen it (nor fall back to spawning a fresh
+// review, unlike a reopen/send failure) — the repo being disabled is
+// deliberate operator policy, not a transient error.
+func TestReReview_DisabledRepo_SkipsWithoutReopenOrSpawn(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	repoDir := newDisabledClonePath(t)
+	closed := bd.Issue{
+		ID:          "at-rr.9",
+		Title:       "Initiative at-rr.9",
+		Description: "repo: " + repoDir + "\nworktree: /tmp/wt-at-rr.9\nbranch: main\n",
+		Notes:       "pr: https://github.com/owner/myrepo/pull/42",
+		Status:      "closed",
+	}
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("expected 0 runner calls for a disabled repo, got %d: %v", len(runner.calls), runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "repo is disabled") {
+		t.Errorf("stdout should say 'repo is disabled'; got: %s", stdout.String())
+	}
+}
+
 func TestReReview_NoInitiative_FallsBackToSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
@@ -860,7 +1050,8 @@ func TestReReview_NoInitiative_FallsBackToSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -883,7 +1074,7 @@ func TestReReview_NoInitiative_FallsBackToSpawn(t *testing.T) {
 
 func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
-	closed := prFieldIssue("at-rr.3", "owner/myrepo", 42)
+	closed := prFieldIssue(t, "at-rr.3", "owner/myrepo", 42)
 	closed.Status = "closed"
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
 	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
@@ -891,7 +1082,8 @@ func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -915,7 +1107,7 @@ func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
 
 func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
-	closed := prFieldIssue("at-rr.4", "owner/myrepo", 42)
+	closed := prFieldIssue(t, "at-rr.4", "owner/myrepo", 42)
 	closed.Status = "closed"
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
 	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
@@ -923,7 +1115,8 @@ func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -957,7 +1150,7 @@ func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
 
 func TestReReview_OtherTransitionSendHasNoResumeFlags(t *testing.T) {
 	bodyFile := writeTempFile(t, "ci failed body")
-	issue := prFieldIssue("at-ci.1", "owner/myrepo", 42)
+	issue := prFieldIssue(t, "at-ci.1", "owner/myrepo", 42)
 	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
 
 	runner := &fakeRunner{}
@@ -980,7 +1173,7 @@ func TestReReview_OtherTransitionSendHasNoResumeFlags(t *testing.T) {
 
 func TestCommentReply_OpenMatch_PlainSendNoResumeFlags(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
-	issue := prFieldIssue("at-cr.1", "owner/myrepo", 42)
+	issue := prFieldIssue(t, "at-cr.1", "owner/myrepo", 42)
 	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
 
 	runner := &fakeRunner{}
@@ -1003,7 +1196,7 @@ func TestCommentReply_OpenMatch_PlainSendNoResumeFlags(t *testing.T) {
 
 func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
-	closed := prFieldIssue("at-cr.2", "owner/myrepo", 42)
+	closed := prFieldIssue(t, "at-cr.2", "owner/myrepo", 42)
 	closed.Status = "closed"
 	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
@@ -1032,6 +1225,37 @@ func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *test
 	}
 }
 
+// TestCommentReply_DisabledRepo_SkipsWithoutReopen is the comment_reply
+// counterpart of TestReReview_DisabledRepo_SkipsWithoutReopenOrSpawn.
+func TestCommentReply_DisabledRepo_SkipsWithoutReopen(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	repoDir := newDisabledClonePath(t)
+	closed := bd.Issue{
+		ID:          "at-cr.9",
+		Title:       "Initiative at-cr.9",
+		Description: "repo: " + repoDir + "\nworktree: /tmp/wt-at-cr.9\nbranch: main\n",
+		Notes:       "pr: https://github.com/owner/myrepo/pull/42",
+		Status:      "closed",
+	}
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("expected 0 runner calls for a disabled repo, got %d: %v", len(runner.calls), runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "repo is disabled") {
+		t.Errorf("stdout should say 'repo is disabled'; got: %s", stdout.String())
+	}
+}
+
 func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
@@ -1042,7 +1266,8 @@ func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte("/local/clone/myrepo\n"), 0o644); err != nil {
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1065,7 +1290,7 @@ func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
 
 func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
-	closed := prFieldIssue("at-cr.3", "owner/myrepo", 42)
+	closed := prFieldIssue(t, "at-cr.3", "owner/myrepo", 42)
 	closed.Status = "closed"
 	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
@@ -1088,7 +1313,7 @@ func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
 
 func TestCommentReply_SendFails_DropsWithoutSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
-	closed := prFieldIssue("at-cr.4", "owner/myrepo", 42)
+	closed := prFieldIssue(t, "at-cr.4", "owner/myrepo", 42)
 	closed.Status = "closed"
 	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
