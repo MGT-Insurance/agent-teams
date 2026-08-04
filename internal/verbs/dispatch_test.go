@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -223,11 +224,14 @@ func TestDispatch_RepoNotEnabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for a repo with no .agent-teams file, got nil")
 	}
-	if code := cli.ExitCode(err); code != 1 {
-		t.Errorf("expected exit 1, got %d", code)
+	if code := cli.ExitCode(err); code != cli.ExitNotOptedIn {
+		t.Errorf("expected exit %d, got %d", cli.ExitNotOptedIn, code)
 	}
-	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
-		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled for") {
+		t.Errorf("expected 'agent-teams is not enabled for' in stderr, got: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ateam enable-repo") {
+		t.Errorf("expected 'ateam enable-repo' in stderr, got: %s", stderr.String())
 	}
 }
 
@@ -253,11 +257,14 @@ func TestDispatch_RepoDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for a repo with disabled: true, got nil")
 	}
-	if code := cli.ExitCode(err); code != 1 {
-		t.Errorf("expected exit 1, got %d", code)
+	if code := cli.ExitCode(err); code != cli.ExitNotOptedIn {
+		t.Errorf("expected exit %d, got %d", cli.ExitNotOptedIn, code)
 	}
-	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
-		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled for") {
+		t.Errorf("expected 'agent-teams is not enabled for' in stderr, got: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ateam enable-repo") {
+		t.Errorf("expected 'ateam enable-repo' in stderr, got: %s", stderr.String())
 	}
 }
 
@@ -1700,14 +1707,43 @@ func TestResumeKong_RepoDisabled_Refuses(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for a disabled repo, got nil")
 	}
-	if code := cli.ExitCode(err); code != 1 {
-		t.Errorf("expected exit 1, got %d", code)
+	if code := cli.ExitCode(err); code != cli.ExitNotOptedIn {
+		t.Errorf("expected exit %d, got %d", cli.ExitNotOptedIn, code)
 	}
 	if launched {
 		t.Error("launch was called despite the repo being disabled")
 	}
-	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
-		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled for") {
+		t.Errorf("expected 'agent-teams is not enabled for' in stderr, got: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ateam enable-repo") {
+		t.Errorf("expected 'ateam enable-repo' in stderr, got: %s", stderr.String())
+	}
+}
+
+// TestCondenseLockAcquire_StillExitsFive is a regression guard for this
+// initiative's new exit code: introducing cli.ExitNotOptedIn (6) for
+// dispatch/resume's repo-not-opted-in refusal must not disturb
+// condenseLockHeldCode (5), which /condense branches on to skip a run when
+// another condense is in flight. Distinct codes only work as a signal if
+// each one stays put.
+func TestCondenseLockAcquire_StillExitsFive(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now()
+	cmd := newLockCmd(now)
+
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := cmd.acquire(ctx, condenseLockPath(home)); err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+
+	ctx2, _, _ := makeCtx(&fakeBD{}, home)
+	err := cmd.acquire(ctx2, condenseLockPath(home))
+	if err == nil {
+		t.Fatal("expected held error on second acquire; got nil")
+	}
+	if code := cli.ExitCode(err); code != 5 {
+		t.Errorf("condense-lock acquire against a held lock: exit = %d, want 5", code)
 	}
 }
 

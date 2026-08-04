@@ -20,7 +20,7 @@ For webhook-triggered reviews (CI/GitHub Actions), `ateam route-pr-event` handle
 The dispatcher MUST NOT read the diff, evaluate code quality, form opinions about the changes, or do any review work. That is the background `review-pr` session's job. If you find yourself reading the PR diff or reasoning about the code, STOP immediately.
 
 **ABSOLUTE CONSTRAINT — ALWAYS launch a background review. This is not optional.**
-Every invocation of this skill MUST end by launching a background session via `ateam dispatch`. The only stopping points before dispatch are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no PR reference was provided — ask the human for one, then dispatch immediately once received; (3) the PR reference cannot be parsed into owner/repo/number — report the parsing failure and stop. Once those conditions are resolved, dispatch unconditionally.
+Every invocation of this skill MUST end by launching a background session via `ateam dispatch`. The only stopping points before a background review is launched are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no PR reference was provided — ask the human for one, then dispatch immediately once received; (3) the PR reference cannot be parsed into owner/repo/number — report the parsing failure and stop; (4) `ateam dispatch` exits 6 (the target repo is not opted in) and the recovery in step 4 does not end in a successful dispatch — because no human is attached to ask, the human declines, or the retried dispatch fails again. Once those conditions are resolved, dispatch unconditionally.
 
 Your job is: preflight, parse the PR reference, dispatch. Nothing more.
 
@@ -89,6 +89,12 @@ ateam dispatch \
 `--skip-epic` prevents the review initiative from being grouped under an epic. `--launch-prompt` causes the background session to run the `review-pr` skill instead of the full `/dri` playbook. `--model sonnet` overrides the default Opus model — PR reviews don't need the top-tier model.
 
 `--topic reviews` posts the registration line into the single shared **Reviews** topic instead of opening a forum topic per review, and writes no `thread:` label on the initiative bead. Pass it so a human-dispatched review behaves exactly like the webhook path. Do NOT add a `pr-title` line to `$TMPFILE` — `ateam dispatch` fetches the title itself, deliberately in one place rather than in each caller.
+
+**Recovery: repo not opted in (exit 6).** If `ateam dispatch` exits 6 (stderr contains `agent-teams is not enabled for <repo>`), the target repo has no `.agent-teams` opt-in marker, or its marker carries `disabled: true`. Opting a repo in is consent to run unattended bypass-permissions agents there — that decision belongs to the human, never to this skill.
+
+- **Human attached:** ask whether to opt the repo in — say plainly that this lets agent-teams create worktrees and run background sessions with bypassed permissions there. On yes, run `ateam enable-repo <repo>` using the absolute path the refusal printed (don't re-derive it — dispatch gates on the cwd-derived repo root). Relay the `enabled: ...` line verbatim so the human knows whether it created the marker or removed an existing `disabled: true`. If `enable-repo` itself fails (e.g. a permissions error), report that and stop — don't retry the original command against an unchanged repo. Otherwise, retry the original `ateam dispatch` call ONCE. A second refusal is a real failure — report it and stop, do not loop. On no: stop and tell the human nothing was created.
+- **No human attached:** do NOT create the marker and do NOT prompt. Report the refusal verbatim to the caller and stop; a blocking prompt would hang a headless session forever.
+- Either way, `.agent-teams` is a real file in the target repo — it will show up in `git status`. Whether to commit it is the human's call, not this skill's.
 
 ### 5. Report and hand off
 

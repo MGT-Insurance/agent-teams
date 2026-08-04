@@ -192,9 +192,9 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	}
 
 	if !repoconfig.Enabled(repoRoot) {
-		fmt.Fprintf(ctx.Stderr, "dispatch: agent-teams is not enabled for %s — add a %s file there (see internal/repoconfig) or remove its \"disabled: true\" line\n",
-			repoRoot, repoconfig.FileName)
-		return cli.Silent(1)
+		fmt.Fprintf(ctx.Stderr, "dispatch: agent-teams is not enabled for %s — run `ateam enable-repo %s` to opt this repo in (or remove the \"disabled: true\" line from its %s file)\n",
+			repoRoot, repoRoot, repoconfig.FileName)
+		return cli.Silent(cli.ExitNotOptedIn)
 	}
 
 	// 2. Base branch.
@@ -595,9 +595,9 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	}
 
 	if f.Repo != "" && !repoconfig.Enabled(f.Repo) {
-		fmt.Fprintf(ctx.Stderr, "ateam resume: agent-teams is not enabled for %s — add a %s file there (see internal/repoconfig) or remove its \"disabled: true\" line\n",
-			f.Repo, repoconfig.FileName)
-		return cli.Silent(1)
+		fmt.Fprintf(ctx.Stderr, "ateam resume: agent-teams is not enabled for %s — run `ateam enable-repo %s` to opt this repo in (or remove the \"disabled: true\" line from its %s file)\n",
+			f.Repo, f.Repo, repoconfig.FileName)
+		return cli.Silent(cli.ExitNotOptedIn)
 	}
 
 	if _, err := os.Stat(dir); err != nil {
