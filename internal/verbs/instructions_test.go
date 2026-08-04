@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // writeInstructionsFile writes content to
@@ -244,5 +246,35 @@ func TestInstructions_MultibyteBodyRoundTrips(t *testing.T) {
 	}
 	if !strings.Contains(out, strconv.Itoa(byteLen)+" bytes") {
 		t.Errorf("expected stats to report byte length %d, not rune length; got:\n%s", byteLen, out)
+	}
+}
+
+// TestInstructions_RoleWithPathSeparatorRejected pins the guard that keeps role
+// inside instructions/. Without it, `ateam instructions ../secret` serves a file
+// from outside that directory — reproduced live before the guard existed.
+func TestInstructions_RoleWithPathSeparatorRejected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGENT_TEAMS_HOME", home)
+
+	// A file OUTSIDE instructions/ that a traversing role would reach.
+	if err := os.WriteFile(filepath.Join(home, "secret.md"), []byte("ESCAPED-BODY-MUST-NOT-SERVE\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	writeInstructionsFile(t, home, "reviewer", []byte("legitimate\n"))
+
+	for _, role := range []string{"../secret", "a/b", "", ".", ".."} {
+		ctx, stdout, _ := makeCtx(nil, home)
+		cmd := &instructionsKong{Role: role}
+		err := cmd.Run(ctx)
+		if err == nil {
+			t.Errorf("role %q: expected a usage error, got nil (stdout=%q)", role, stdout.String())
+			continue
+		}
+		if _, ok := err.(*cli.UsageError); !ok {
+			t.Errorf("role %q: expected *cli.UsageError, got %T: %v", role, err, err)
+		}
+		if strings.Contains(stdout.String(), "ESCAPED-BODY") {
+			t.Errorf("role %q: body from outside instructions/ leaked: %q", role, stdout.String())
+		}
 	}
 }

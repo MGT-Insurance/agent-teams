@@ -66,6 +66,17 @@ func (c *instructionsKong) Run(ctx *cli.Context) error {
 // (e.g. a permissions failure) is the one case that returns a non-nil error;
 // it is not one of the three documented paths.
 func runInstructions(ctx *cli.Context, role string) error {
+	// role becomes a path segment, so a separator in it escapes the
+	// instructions directory entirely (`../secret` reads a sibling of
+	// instructions/). Every other role-taking verb — learningsKong, recallKong
+	// — uses role only as a bd-memory-key prefix, which has no filesystem
+	// meaning, so there is no existing guard for this one to inherit. Reject
+	// anything that is not a plain name. "." and ".." need naming explicitly:
+	// filepath.Base maps each to itself, so they survive the Base comparison.
+	if role == "." || role == ".." || filepath.Base(role) != role {
+		return cli.Usagef("ateam instructions: role %q must be a plain name, not a path", role)
+	}
+
 	path := filepath.Join(workspace.Home(), "instructions", role+".md")
 
 	body, err := os.ReadFile(path)
