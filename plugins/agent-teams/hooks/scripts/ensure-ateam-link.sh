@@ -23,7 +23,17 @@ WRAPPER="$PLUGIN_ROOT/bin/ateam"
 
 # C3: link path — env override exists solely so the test can sandbox it. Not
 # a user-facing feature; do not document it as one.
-LINK="${AGENT_TEAMS_ATEAM_LINK:-$HOME/.local/bin/ateam}"
+# D1 fix (agent-teams-wtf3.8): a bare $HOME under set -u aborts the whole
+# hook (C7 violation) when HOME is unset — measured-reachable. Use ${HOME:-}
+# so an unset HOME degrades LINK to empty rather than crashing; empty is
+# handled below as "no usable directory", never as "/.local/bin/ateam".
+if [ -n "${AGENT_TEAMS_ATEAM_LINK:-}" ]; then
+  LINK="$AGENT_TEAMS_ATEAM_LINK"
+elif [ -n "${HOME:-}" ]; then
+  LINK="$HOME/.local/bin/ateam"
+else
+  LINK=""
+fi
 
 # Capture stdin once non-blocking — Claude Code passes {session_id, ...} on stdin;
 # direct invocations have no stdin.
@@ -41,9 +51,19 @@ hook_log_start "ensure-ateam-link.sh"
 # by plugins/agent-teams/bin/ateam:11-19. Do not shell out to readlink -f or
 # realpath (not portable to older macOS). Canonicalizes the final directory
 # via cd+pwd so relative and ".." segments collapse before comparison.
+# D2 fix (agent-teams-wtf3.8): hop-bounded — a self-referential symlink (the
+# state /setup-agent-teams/SKILL.md:149 warns ln -sf can create) previously
+# looped forever here. Capping hops makes an unresolvable/cyclic chain
+# terminate returning $src unresolved (its own path, not WRAPPER), so the
+# case (b) comparison below fails and the case (d)/(e) relink heals it
+# instead of hanging or failing the session.
 resolve_chain() {
-  local src="$1" target d b canon
+  local src="$1" target d b canon hops=0
   while [ -h "$src" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+      break
+    fi
     target="$(readlink "$src")"
     case "$target" in
       /*) src="$target" ;;
@@ -58,6 +78,14 @@ resolve_chain() {
     printf '%s\n' "$src"
   fi
 }
+
+# D1 fix: no usable LINK path (HOME unset and no override given) -> nothing
+# safe to act on. Never write under an empty HOME (e.g. "/.local/bin/ateam",
+# a root-owned path unrelated to any user).
+if [ -z "$LINK" ]; then
+  HOOK_EXIT_REASON="no-home"
+  exit 0
+fi
 
 # C4 — exactly these five cases, in this order.
 

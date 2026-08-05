@@ -161,4 +161,75 @@ run_hook "$VERSION_B" "$LINK"
 [ ! -e "$LINK/ateam" ] || fail "T7 (directory guard): hook created $LINK/ateam inside the directory (the ln -sf-into-a-directory trap)"
 echo "PASS T7 (directory guard — a directory at the link path is never touched)"
 
+# ── T8: HOME UNSET — regression guard for agent-teams-wtf3.8 (D1) ──────────
+# A bare $HOME under set -u aborted the whole hook (C7 "never fail a
+# session" violation) when HOME was unset. Case 1: override given, HOME
+# unset -> normal operation must still succeed. Case 2: neither given ->
+# there is no safe path to act on (an unset HOME must never degrade to
+# writing under "/.local/bin/ateam", a root-owned path unrelated to any
+# user) so the hook must no-op cleanly rather than crash or write there.
+LINK="$T/case8/local-bin/ateam"; assert_scratch_path "$LINK"
+rc=0
+env -u HOME CLAUDE_PLUGIN_ROOT="$VERSION_B" AGENT_TEAMS_ATEAM_LINK="$LINK" "$SCRIPT" || rc=$?
+[ "$rc" -eq 0 ] || fail "T8 (HOME unset, override set): hook exited $rc, want 0"
+out=$("$LINK") || fail "T8 (HOME unset, override set): link failed to execute after the hook ran"
+[ "$out" = "VERSION-B" ] || fail "T8 (HOME unset, override set): link ran '$out', want 'VERSION-B'"
+echo "PASS T8a (HOME unset, override set — hook still self-heals)"
+
+rc=0
+env -u HOME -u AGENT_TEAMS_ATEAM_LINK CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT" || rc=$?
+[ "$rc" -eq 0 ] || fail "T8 (HOME unset, no override): hook exited $rc, want 0"
+[ ! -e "/.local/bin/ateam" ] || fail "T8 (HOME unset, no override): hook created /.local/bin/ateam — must never write under an empty HOME"
+echo "PASS T8b (HOME unset, no override — no-op, nothing created)"
+
+# ── T9: SELF-REFERENTIAL LINK — regression guard for agent-teams-wtf3.8 (D2) ─
+# resolve_chain() had no cycle guard: a link pointing at itself (the state
+# setup-agent-teams/SKILL.md:149 warns `ln -sf` can create) looped forever.
+# A hanging SessionStart hook is worse than a failing one — it blocks
+# session start. Bounded here to 8s wall-clock so a regression fails this
+# test instead of hanging the whole suite.
+LINK="$T/case9/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf ateam "$LINK"
+( CLAUDE_PLUGIN_ROOT="$VERSION_B" AGENT_TEAMS_ATEAM_LINK="$LINK" "$SCRIPT" ) &
+pid=$!
+hung=0
+for i in $(seq 1 8); do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid"; rc=$?
+    [ "$rc" -eq 0 ] || fail "T9 (self-referential): hook exited $rc, want 0"
+    break
+  fi
+  sleep 1
+  if [ "$i" -eq 8 ]; then
+    hung=1
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+done
+[ "$hung" -eq 0 ] || fail "T9 (self-referential): hook was still running after 8s — HUNG"
+out=$("$LINK") || fail "T9 (self-referential): link failed to execute after the hook ran"
+[ "$out" = "VERSION-B" ] || fail "T9 (self-referential): link ran '$out' after the hook, want 'VERSION-B'"
+echo "PASS T9 (self-referential link — hook terminates and heals the link)"
+
+# ── T10: LONG LEGAL CHAIN — proves the hop bound doesn't break real chains ─
+# A 3+ hop chain that already ends at WRAPPER must still be recognized as
+# already-current and left untouched (case b), even with resolve_chain's
+# new hop cap in place.
+CASE10="$T/case10"
+mkdir -p "$CASE10"
+ln -sf "$VERSION_B/bin/ateam" "$CASE10/hop3"
+ln -sf "$CASE10/hop3" "$CASE10/hop2"
+ln -sf "$CASE10/hop2" "$CASE10/hop1"
+LINK="$T/case10/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$CASE10/hop1" "$LINK"
+BEFORE_TARGET="$(readlink "$LINK")"
+run_hook "$VERSION_B" "$LINK"
+AFTER_TARGET="$(readlink "$LINK")"
+[ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T10 (long legal chain): hook touched an already-current chain (target changed '$BEFORE_TARGET' -> '$AFTER_TARGET')"
+out=$("$LINK") || fail "T10 (long legal chain): link failed to execute after the hook ran"
+[ "$out" = "VERSION-B" ] || fail "T10 (long legal chain): link ran '$out', want 'VERSION-B'"
+echo "PASS T10 (long legal chain — already-current chain resolved correctly and left alone)"
+
 echo "PASS"
