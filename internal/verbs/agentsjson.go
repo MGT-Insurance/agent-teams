@@ -69,11 +69,27 @@ func resolveRolesDir() (string, error) {
 	return "", fmt.Errorf("resolve plugin roles dir: no roles/*.md found; tried: %s", strings.Join(tried, "; "))
 }
 
-// buildAgentsJSON parses every *.md file directly inside dir into the
-// --agents JSON payload (agent-teams-wf7o.9 artifact (2)) and returns it
-// marshaled. Key order is deterministic: encoding/json sorts map[string]...
-// keys when marshaling, and the input files are walked in sorted order too,
-// so the argv this feeds is stable and diffable across runs.
+// nonRoleFiles names *.md files directly inside roles/ that are NOT role
+// definitions and must be skipped by name before parsing — never by a
+// content-shaped heuristic like "lacks frontmatter". agent-teams-wf7o.18:
+// roles/README.md is the workaround doc for this very mechanism (see the
+// package doc comment above); it deliberately has no frontmatter, but it
+// stays in roles/ rather than moving elsewhere so it sits next to what it
+// documents. Any OTHER frontmatter-less .md file in this directory is a
+// genuinely malformed role and must still fail loud — that is the exact
+// failure class this initiative exists to catch, so do not widen this to
+// "skip anything without frontmatter" and do not hardcode role names here
+// either (this is an exclude-list of non-roles, not an allow-list of roles).
+var nonRoleFiles = map[string]bool{
+	"README.md": true,
+}
+
+// buildAgentsJSON parses every *.md file directly inside dir — except the
+// non-role files named in nonRoleFiles — into the --agents JSON payload
+// (agent-teams-wf7o.9 artifact (2)) and returns it marshaled. Key order is
+// deterministic: encoding/json sorts map[string]... keys when marshaling,
+// and the input files are walked in sorted order too, so the argv this
+// feeds is stable and diffable across runs.
 //
 // Fails loud on any problem — an empty/missing dir, a file that isn't
 // parseable frontmatter+body, or zero *.md files found — rather than
@@ -87,6 +103,9 @@ func buildAgentsJSON(dir string) (string, error) {
 	var names []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		if nonRoleFiles[e.Name()] {
 			continue
 		}
 		names = append(names, e.Name())

@@ -241,6 +241,63 @@ func TestBuildAgentsJSON_UnparseableFileFailsLoud(t *testing.T) {
 	}
 }
 
+// TestBuildAgentsJSON_SkipsReadmeByExactName proves roles/README.md — the
+// frontmatter-less workaround doc this package's own doc comment points at
+// (agent-teams-wf7o.18) — is excluded from the payload by exact filename,
+// while the real role files still build normally.
+func TestBuildAgentsJSON_SkipsReadmeByExactName(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureRole(t, dir, "planner.md", "d", "opus", "body\n")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Not a role\n\nNo frontmatter here at all.\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+
+	got, err := buildAgentsJSON(dir)
+	if err != nil {
+		t.Fatalf("buildAgentsJSON: %v, want README.md skipped and build to succeed", err)
+	}
+	var payload map[string]agentDefinition
+	if err := json.Unmarshal([]byte(got), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("payload has %d keys, want exactly 1 (README.md must not become a role): %v", len(payload), keysOf(payload))
+	}
+	if _, ok := payload["agent-teams-README"]; ok {
+		t.Errorf("payload must not contain an agent-teams-README key")
+	}
+	if _, ok := payload["agent-teams-planner"]; !ok {
+		t.Errorf("payload missing agent-teams-planner despite README.md sitting alongside it")
+	}
+}
+
+// TestBuildAgentsJSON_OtherFrontmatterLessFileStillFailsLoud proves the
+// README.md skip is scoped to that exact filename, NOT to "any file lacking
+// frontmatter" — a genuinely malformed role file (any other name) must still
+// fail the whole build loudly. This is the non-vacuous half of wf7o.18's
+// acceptance bar: it is written to catch the over-broad fix (skip anything
+// without frontmatter) that the bead explicitly forbids, and was confirmed to
+// go red under that over-broad implementation before this file was restored
+// to the exact-name skip (see the implementer's report for that transcript).
+func TestBuildAgentsJSON_OtherFrontmatterLessFileStillFailsLoud(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureRole(t, dir, "planner.md", "d", "opus", "body\n")
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Not a role, not README.md either\n\nNo frontmatter here.\n"), 0o644); err != nil {
+		t.Fatalf("write notes.md: %v", err)
+	}
+
+	got, err := buildAgentsJSON(dir)
+	if err == nil {
+		t.Fatalf("expected an error: a frontmatter-less .md file other than README.md must fail loud, got nil (payload: %q)", got)
+	}
+	if got != "" {
+		t.Errorf("expected an empty payload on failure, got %q", got)
+	}
+	if !strings.Contains(err.Error(), "notes.md") {
+		t.Errorf("error should name the offending file (notes.md); got: %v", err)
+	}
+}
+
 // TestResolveRolesDir_PluginRootHappyPath verifies the $CLAUDE_PLUGIN_ROOT
 // resolution branch: when it is set and <root>/roles exists, that directory
 // is returned.
