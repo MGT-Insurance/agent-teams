@@ -207,6 +207,10 @@ rc=0
 env -u HOME -u AGENT_TEAMS_ATEAM_LINK CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT" || rc=$?
 [ "$rc" -eq 0 ] || fail "T8 (HOME unset, no override): hook exited $rc, want 0"
 [ ! -e "/.local/bin/ateam" ] || fail "T8 (HOME unset, no override): hook created /.local/bin/ateam — must never write under an empty HOME"
+# Contract amendment (agent-teams-wtf3.1, ratified by DRI): the empty-LINK
+# no-op is a SIXTH frozen exit reason, "no-home", added alongside C6's
+# original five.
+assert_reason "T8b (HOME unset, no override)" "no-home"
 echo "PASS T8b (HOME unset, no override — no-op, nothing created)"
 
 # ── T9: SELF-REFERENTIAL LINK — regression guard for agent-teams-wtf3.8 (D2) ─
