@@ -224,15 +224,24 @@ env -u HOME -u AGENT_TEAMS_ATEAM_LINK CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT" 
 assert_reason "T8b (HOME unset, no override)" "no-home"
 echo "PASS T8b (HOME unset, no override — no-op, nothing created)"
 
-# ── T9: SELF-REFERENTIAL LINK — regression guard for agent-teams-wtf3.8 (D2) ─
+# ── T9: SELF-REFERENTIAL LINK — regression guard for agent-teams-wtf3.8 (D2),
+# narrowed by agent-teams-wtf3.11 ────────────────────────────────────────────
 # resolve_chain() had no cycle guard: a link pointing at itself (the state
 # setup-agent-teams/SKILL.md:149 warns `ln -sf` can create) looped forever.
 # A hanging SessionStart hook is worse than a failing one — it blocks
 # session start. Bounded here to 8s wall-clock so a regression fails this
-# test instead of hanging the whole suite.
+# test instead of hanging the whole suite — that hang regression guard is
+# why this test exists, and it must still fail rather than hang if the hop
+# cap is ever removed.
+# agent-teams-wtf3.11 narrowed what happens once the hook terminates: a
+# self-referential/cyclic link is user error, not something the hook takes
+# ownership of repairing. It must now exit 0, print nothing, and leave the
+# link COMPLETELY UNTOUCHED — same readlink target before and after — under
+# the new frozen exit reason "unresolvable-link".
 LINK="$T/case9/local-bin/ateam"; assert_scratch_path "$LINK"
 mkdir -p "$(dirname "$LINK")"
 ln -sf ateam "$LINK"
+BEFORE_TARGET="$(readlink "$LINK")"
 ( CLAUDE_PLUGIN_ROOT="$VERSION_B" AGENT_TEAMS_ATEAM_LINK="$LINK" "$SCRIPT" ) &
 pid=$!
 hung=0
@@ -250,13 +259,10 @@ for i in $(seq 1 8); do
   fi
 done
 [ "$hung" -eq 0 ] || fail "T9 (self-referential): hook was still running after 8s — HUNG"
-out=$("$LINK") || fail "T9 (self-referential): link failed to execute after the hook ran"
-[ "$out" = "VERSION-B" ] || fail "T9 (self-referential): link ran '$out' after the hook, want 'VERSION-B'"
-# An unresolvable chain is routed to the existing case (d) relink path (see
-# ensure-ateam-link.sh resolve_chain doc comment), so C6's label here is
-# "relinked" — the same reason a stale-but-resolvable symlink gets.
-assert_reason "T9 (self-referential)" "relinked"
-echo "PASS T9 (self-referential link — hook terminates and heals the link)"
+AFTER_TARGET="$(readlink "$LINK")"
+[ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T9 (self-referential): link target changed ('$BEFORE_TARGET' -> '$AFTER_TARGET') — an unresolvable/cyclic chain must be left completely untouched"
+assert_reason "T9 (self-referential)" "unresolvable-link"
+echo "PASS T9 (self-referential link — hook terminates without hanging and leaves the link untouched)"
 
 # ── T10: LONG LEGAL CHAIN — proves the hop bound doesn't break real chains ─
 # A 3+ hop chain that already ends at WRAPPER must still be recognized as
@@ -403,5 +409,43 @@ out=$("$LINK") || fail "T15b (0.51.10 own, 0.51.9 target): link failed to execut
 [ "$out" = "OWN-15B" ] || fail "T15b (0.51.10 own, 0.51.9 target): link ran '$out' after the hook, want 'OWN-15B' — 0.51.9 is the older version, must relink"
 assert_reason "T15b (0.51.10 own, 0.51.9 target)" "relinked"
 echo "PASS T15b (numeric ordering — 0.51.9 correctly recognized as older than 0.51.10)"
+
+# ── T16: TWO-HOP CYCLE (a -> b -> a) — regression guard for agent-teams-wtf3.11
+# Only the self-link shape (T9) was covered before this bead; the DRI had
+# verified the two-hop shape by hand, which is not the same as coverage in
+# the suite. LINK points at "a", which points at "b", which points back at
+# "a" — a cycle that never involves LINK itself, so this exercises a
+# different path through resolve_chain than T9's single-hop self-reference.
+# Same contract as T9: hop cap still bounds the hang, but the hook now
+# leaves the link completely untouched under "unresolvable-link" rather
+# than healing it.
+CASE16="$T/case16"
+mkdir -p "$CASE16/local-bin"
+ln -sf "$CASE16/b" "$CASE16/a"
+ln -sf "$CASE16/a" "$CASE16/b"
+LINK="$CASE16/local-bin/ateam"; assert_scratch_path "$LINK"
+ln -sf "$CASE16/a" "$LINK"
+BEFORE_TARGET="$(readlink "$LINK")"
+( CLAUDE_PLUGIN_ROOT="$VERSION_B" AGENT_TEAMS_ATEAM_LINK="$LINK" "$SCRIPT" ) &
+pid=$!
+hung=0
+for i in $(seq 1 8); do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid"; rc=$?
+    [ "$rc" -eq 0 ] || fail "T16 (two-hop cycle): hook exited $rc, want 0"
+    break
+  fi
+  sleep 1
+  if [ "$i" -eq 8 ]; then
+    hung=1
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+done
+[ "$hung" -eq 0 ] || fail "T16 (two-hop cycle): hook was still running after 8s — HUNG"
+AFTER_TARGET="$(readlink "$LINK")"
+[ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T16 (two-hop cycle): link target changed ('$BEFORE_TARGET' -> '$AFTER_TARGET') — an unresolvable/cyclic chain must be left completely untouched"
+assert_reason "T16 (two-hop cycle)" "unresolvable-link"
+echo "PASS T16 (two-hop cycle a -> b -> a — hook terminates without hanging and leaves the link untouched)"
 
 echo "PASS"

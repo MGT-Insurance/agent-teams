@@ -21,20 +21,6 @@ if [ -z "$PLUGIN_ROOT" ]; then
 fi
 WRAPPER="$PLUGIN_ROOT/bin/ateam"
 
-# C3: link path — env override exists solely so the test can sandbox it. Not
-# a user-facing feature; do not document it as one.
-# D1 fix (agent-teams-wtf3.8): a bare $HOME under set -u aborts the whole
-# hook (C7 violation) when HOME is unset — measured-reachable. Use ${HOME:-}
-# so an unset HOME degrades LINK to empty rather than crashing; empty is
-# handled below as "no usable directory", never as "/.local/bin/ateam".
-if [ -n "${AGENT_TEAMS_ATEAM_LINK:-}" ]; then
-  LINK="$AGENT_TEAMS_ATEAM_LINK"
-elif [ -n "${HOME:-}" ]; then
-  LINK="$HOME/.local/bin/ateam"
-else
-  LINK=""
-fi
-
 # Capture stdin once non-blocking — Claude Code passes {session_id, ...} on stdin;
 # direct invocations have no stdin.
 HOOK_STDIN=$(cat 2>/dev/null || true)
@@ -47,21 +33,54 @@ export HOOK_SESSION_ID
 # Log start BEFORE any guard check.
 hook_log_start "ensure-ateam-link.sh"
 
+# C3: link path — env override exists solely so the test can sandbox it. Not
+# a user-facing feature; do not document it as one.
+# D1 fix (agent-teams-wtf3.8), collapsed by agent-teams-wtf3.11: a bare
+# $HOME under set -u aborted the whole hook (C7 violation) when HOME was
+# unset. Previously handled as a two-part arrangement — compute LINK as an
+# empty-string sentinel, then check for that sentinel further down. Collapsed
+# to a single early exit: if neither the override nor HOME is set there is no
+# usable directory, so exit "no-home" HERE, immediately — after
+# hook_log_start (so the exit is still traced in the debug log; placing this
+# any earlier would recreate the untraced-exit defect this hook exists to
+# avoid) — rather than carrying an empty-LINK state for downstream code to
+# keep checking.
+# The bare $HOME below is safe precisely because this guard already ran: if
+# the override is set, ${VAR:-...} short-circuits and never evaluates $HOME;
+# if it's unset, the guard above has already proven HOME is non-empty. Do
+# NOT change it back to ${HOME:-} — that would just reintroduce the
+# empty-LINK state this change deletes.
+if [ -z "${AGENT_TEAMS_ATEAM_LINK:-}" ] && [ -z "${HOME:-}" ]; then
+  HOOK_EXIT_REASON="no-home"
+  exit 0
+fi
+LINK="${AGENT_TEAMS_ATEAM_LINK:-$HOME/.local/bin/ateam}"
+
 # C5: resolve a path through chained symlinks — same POSIX loop already used
 # by plugins/agent-teams/bin/ateam:11-19. Do not shell out to readlink -f or
 # realpath (not portable to older macOS). Canonicalizes the final directory
 # via cd+pwd so relative and ".." segments collapse before comparison.
 # D2 fix (agent-teams-wtf3.8): hop-bounded — a self-referential symlink (the
 # state /setup-agent-teams/SKILL.md:149 warns ln -sf can create) previously
-# looped forever here. Capping hops makes an unresolvable/cyclic chain
-# terminate returning $src unresolved (its own path, not WRAPPER), so the
-# case (b) comparison below fails and the case (d)/(e) relink heals it
-# instead of hanging or failing the session.
+# looped forever here. Capping hops guarantees termination.
+# agent-teams-wtf3.11 narrowed what happens next: hitting the cap no longer
+# heals the link. It sets RESOLVE_UNRESOLVABLE so the caller can leave a
+# cyclic/unresolvable chain completely untouched instead of falling through
+# to the case (d)/(e) relink — a self-referential symlink is user error, not
+# something this hook takes ownership of repairing. A DANGLING link (chain
+# terminates normally because the final target simply doesn't exist) never
+# sets this flag and still heals via (d) — dangling and cyclic are different
+# conditions.
+# Communicates via globals (RESOLVED_PATH, RESOLVE_UNRESOLVABLE) rather than
+# a $(...) capture: command substitution runs in a subshell, so a variable
+# set inside one is invisible to the caller once it returns.
 resolve_chain() {
   local src="$1" target d b canon hops=0
+  RESOLVE_UNRESOLVABLE=""
   while [ -h "$src" ]; do
     hops=$((hops + 1))
     if [ "$hops" -gt 40 ]; then
+      RESOLVE_UNRESOLVABLE=1
       break
     fi
     target="$(readlink "$src")"
@@ -73,19 +92,11 @@ resolve_chain() {
   d="$(dirname "$src")"
   b="$(basename "$src")"
   if canon="$(cd "$d" 2>/dev/null && pwd)"; then
-    printf '%s/%s\n' "$canon" "$b"
+    RESOLVED_PATH="$canon/$b"
   else
-    printf '%s\n' "$src"
+    RESOLVED_PATH="$src"
   fi
 }
-
-# D1 fix: no usable LINK path (HOME unset and no override given) -> nothing
-# safe to act on. Never write under an empty HOME (e.g. "/.local/bin/ateam",
-# a root-owned path unrelated to any user).
-if [ -z "$LINK" ]; then
-  HOOK_EXIT_REASON="no-home"
-  exit 0
-fi
 
 # agent-teams-wtf3.10: FORWARD-ONLY RELINK. A live session's hook re-fires on
 # every compact/clear (SessionStart matcher includes both). After a plugin
@@ -142,7 +153,10 @@ version_gt() {
 
 OWN_VERSION="$(get_version "$PLUGIN_ROOT/.claude-plugin/plugin.json")"
 
-# C4 — exactly these five cases, in this order.
+# C4 — the five original cases below, in this order (agent-teams-wtf3.11
+# adds a sixth: the unresolvable-chain check just after resolving LINK,
+# which must run before any of these — it is not itself lettered (a)-(e)
+# since it can only fire when LINK is a symlink, ahead of case (b)).
 
 # (a) WRAPPER not executable -> do nothing.
 if [ ! -x "$WRAPPER" ]; then
@@ -154,7 +168,18 @@ fi
 # already-current check (b) and the forward-only version check in (d).
 RESOLVED=""
 if [ -L "$LINK" ]; then
-  RESOLVED="$(resolve_chain "$LINK")"
+  resolve_chain "$LINK"
+  RESOLVED="$RESOLVED_PATH"
+  # agent-teams-wtf3.11: an UNRESOLVABLE chain (hop cap exhausted — a cyclic
+  # or self-referential symlink) is a distinct condition from a dangling one
+  # (chain resolves fine, final target just doesn't exist). Only the former
+  # is left completely untouched: exit here, before (b)/(c)/(d)/(e) ever
+  # run, so nothing below can heal it. A dangling link never sets this flag
+  # and still falls through to the (d) relink below.
+  if [ -n "$RESOLVE_UNRESOLVABLE" ]; then
+    HOOK_EXIT_REASON="unresolvable-link"
+    exit 0
+  fi
 fi
 
 # (b) LINK already resolves (through chained symlinks) to WRAPPER -> do
@@ -177,7 +202,8 @@ fi
 # relink — UNLESS the target is a strictly newer install than this hook's
 # own (the forward-only rule above). A dangling target, or one whose version
 # can't be read, has no comparable version and falls straight through to the
-# relink it already got before this change.
+# relink it already got before this change. (An unresolvable/cyclic chain
+# never reaches this case — it exits above, at C4's sixth case.)
 if [ -L "$LINK" ]; then
   TARGET_VERSION=""
   if [ -e "$RESOLVED" ]; then
