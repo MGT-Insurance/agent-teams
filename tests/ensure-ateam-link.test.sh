@@ -36,6 +36,15 @@ assert_scratch_path() {
   esac
 }
 
+# lib/hook-debug-log.sh derives its log path from AGENT_TEAMS_HOME (falling
+# back to ~/.agent-teams). Pin it to scratch and export once so every
+# invocation of $SCRIPT below inherits it — never let the hook read or
+# write the real ~/.agent-teams/debug/hooks.log, which live sessions on
+# this machine are appending to right now.
+AGENT_TEAMS_HOME="$T/ateam-home"; assert_scratch_path "$AGENT_TEAMS_HOME"
+export AGENT_TEAMS_HOME
+HOOKS_LOG="$AGENT_TEAMS_HOME/debug/hooks.log"
+
 # ── Fake "plugin version" fixtures ───────────────────────────────────────────
 # Each version dir mimics a real plugin install root: bin/ateam is a copy of
 # the committed POSIX dispatch wrapper, and bin/ateam-<os>-<arch> is a stub
@@ -75,6 +84,18 @@ run_hook() {
   [ "$rc" -eq 0 ] || fail "C7 (never fail a session): hook exited $rc, want 0"
 }
 
+# assert_reason <label> <expected-reason> — C6 freezes exactly five exit
+# reasons (no-wrapper, already-current, not-a-symlink, relinked, created).
+# Reads the newest "exit" line from the scratch debug log (HOOKS_LOG, under
+# AGENT_TEAMS_HOME above) and checks its reason= matches the contract case
+# just exercised. Call immediately after the hook run being checked, since
+# the log is a single accumulating file shared by every case in this suite.
+assert_reason() {
+  local label="$1" want="$2" got
+  got="$(awk -F'\t' '$5=="exit"{line=$6} END{print line}' "$HOOKS_LOG" 2>/dev/null | sed -n 's/.*reason=//p')"
+  [ "$got" = "$want" ] || fail "$label: HOOK_EXIT_REASON was '${got:-<none>}', want '$want' (C6)"
+}
+
 # ── T2: MUTATION PROOF — must be checkable with NO implementation present ───
 # Placed first (not T1) so a single run of this file demonstrates the
 # implementation-independent case going green even while T1 (which requires
@@ -95,6 +116,7 @@ ln -s "$VERSION_A/bin/ateam" "$LINK"
 run_hook "$VERSION_B" "$LINK"
 out=$("$LINK") || fail "T1 (version bump): link failed to execute after the hook ran"
 [ "$out" = "VERSION-B" ] || fail "T1 (version bump): link ran '$out' after the hook, want 'VERSION-B'"
+assert_reason "T1 (version bump)" "relinked"
 echo "PASS T1 (version bump — hook re-points a stale link to the current version)"
 
 # ── T3: SHADOWING — proves why this matters at all ──────────────────────────
@@ -121,6 +143,7 @@ run_hook "$VERSION_B" "$LINK"
 [ -x "$LINK" ] || fail "T4 (dangling): link is not executable after the hook ran"
 out=$("$LINK") || fail "T4 (dangling): link failed to execute after the hook ran"
 [ "$out" = "VERSION-B" ] || fail "T4 (dangling): link ran '$out' after the hook, want 'VERSION-B'"
+assert_reason "T4 (dangling)" "relinked"
 echo "PASS T4 (dangling link heals to the current version)"
 
 # ── T5: NO-CLOBBER — a regular file at the link path is never touched ──────
@@ -132,6 +155,7 @@ cp "$LINK" "$BEFORE"
 run_hook "$VERSION_B" "$LINK"
 [ ! -L "$LINK" ] || fail "T5 (no-clobber): a hand-placed regular file was replaced with a symlink"
 cmp -s "$BEFORE" "$LINK" || fail "T5 (no-clobber): file content changed after the hook ran"
+assert_reason "T5 (no-clobber)" "not-a-symlink"
 echo "PASS T5 (no-clobber — a hand-placed regular file is left byte-identical)"
 
 # ── T6: IDEMPOTENT NO-OP — running twice against an already-current link ───
@@ -140,10 +164,12 @@ mkdir -p "$(dirname "$LINK")"
 out1=$(run_hook "$VERSION_B" "$LINK") || fail "T6 (idempotent): first hook run failed"
 [ -z "$out1" ] || fail "T6 (idempotent): first run printed to stdout: '$out1' — SessionStart stdout is injected into every session's context and must stay silent"
 target1="$(readlink "$LINK")" || fail "T6 (idempotent): link missing after first run"
+assert_reason "T6 (idempotent, first run)" "created"
 out2=$(run_hook "$VERSION_B" "$LINK") || fail "T6 (idempotent): second hook run failed"
 [ -z "$out2" ] || fail "T6 (idempotent): second run printed to stdout: '$out2'"
 target2="$(readlink "$LINK")" || fail "T6 (idempotent): link missing after second run"
 [ "$target1" = "$target2" ] || fail "T6 (idempotent): link target changed between runs ('$target1' -> '$target2')"
+assert_reason "T6 (idempotent, second run)" "already-current"
 out=$("$LINK") || fail "T6 (idempotent): link failed to execute"
 [ "$out" = "VERSION-B" ] || fail "T6 (idempotent): link ran '$out', want 'VERSION-B'"
 echo "PASS T6 (idempotent no-op — repeat runs are silent and stable)"
@@ -159,6 +185,7 @@ mkdir -p "$LINK"
 run_hook "$VERSION_B" "$LINK"
 [ -d "$LINK" ] || fail "T7 (directory guard): link path is no longer a directory after the hook ran"
 [ ! -e "$LINK/ateam" ] || fail "T7 (directory guard): hook created $LINK/ateam inside the directory (the ln -sf-into-a-directory trap)"
+assert_reason "T7 (directory guard)" "not-a-symlink"
 echo "PASS T7 (directory guard — a directory at the link path is never touched)"
 
 # ── T8: HOME UNSET — regression guard for agent-teams-wtf3.8 (D1) ──────────
@@ -210,6 +237,10 @@ done
 [ "$hung" -eq 0 ] || fail "T9 (self-referential): hook was still running after 8s — HUNG"
 out=$("$LINK") || fail "T9 (self-referential): link failed to execute after the hook ran"
 [ "$out" = "VERSION-B" ] || fail "T9 (self-referential): link ran '$out' after the hook, want 'VERSION-B'"
+# An unresolvable chain is routed to the existing case (d) relink path (see
+# ensure-ateam-link.sh resolve_chain doc comment), so C6's label here is
+# "relinked" — the same reason a stale-but-resolvable symlink gets.
+assert_reason "T9 (self-referential)" "relinked"
 echo "PASS T9 (self-referential link — hook terminates and heals the link)"
 
 # ── T10: LONG LEGAL CHAIN — proves the hop bound doesn't break real chains ─
@@ -230,6 +261,46 @@ AFTER_TARGET="$(readlink "$LINK")"
 [ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T10 (long legal chain): hook touched an already-current chain (target changed '$BEFORE_TARGET' -> '$AFTER_TARGET')"
 out=$("$LINK") || fail "T10 (long legal chain): link failed to execute after the hook ran"
 [ "$out" = "VERSION-B" ] || fail "T10 (long legal chain): link ran '$out', want 'VERSION-B'"
+assert_reason "T10 (long legal chain)" "already-current"
 echo "PASS T10 (long legal chain — already-current chain resolved correctly and left alone)"
+
+# ── T11: WRAPPER NOT EXECUTABLE — regression guard, contract case (a) ──────
+# Case (a) [ ! -x "$WRAPPER" ] was never exercised by any prior case: every
+# fixture above passes a valid, executable wrapper. A hook that relinked
+# anyway — to a nonexistent or non-executable wrapper — would break `ateam`
+# for the user entirely, and nothing before this caught it.
+# (i) CLAUDE_PLUGIN_ROOT has no bin/ateam at all.
+CASE11_NO_BIN="$T/case11/no-bin-root"
+mkdir -p "$CASE11_NO_BIN"
+LINK="$T/case11/local-bin-a/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$VERSION_A/bin/ateam" "$LINK"
+BEFORE_TARGET="$(readlink "$LINK")"
+rc=0
+out=$(CLAUDE_PLUGIN_ROOT="$CASE11_NO_BIN" AGENT_TEAMS_ATEAM_LINK="$LINK" "$SCRIPT") || rc=$?
+[ "$rc" -eq 0 ] || fail "T11a (no bin/ateam): hook exited $rc, want 0"
+[ -z "$out" ] || fail "T11a (no bin/ateam): hook printed to stdout: '$out'"
+AFTER_TARGET="$(readlink "$LINK")"
+[ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T11a (no bin/ateam): link target changed ('$BEFORE_TARGET' -> '$AFTER_TARGET') — must be left untouched when the wrapper doesn't exist"
+assert_reason "T11a (no bin/ateam)" "no-wrapper"
+echo "PASS T11a (CLAUDE_PLUGIN_ROOT with no bin/ateam — link left untouched)"
+
+# (ii) bin/ateam exists but is not executable.
+CASE11_NOT_X="$T/case11/not-executable-root"
+mkdir -p "$CASE11_NOT_X/bin"
+printf '#!/bin/sh\necho should-never-run\n' > "$CASE11_NOT_X/bin/ateam"
+chmod -x "$CASE11_NOT_X/bin/ateam"
+LINK="$T/case11/local-bin-b/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$VERSION_A/bin/ateam" "$LINK"
+BEFORE_TARGET="$(readlink "$LINK")"
+rc=0
+out=$(CLAUDE_PLUGIN_ROOT="$CASE11_NOT_X" AGENT_TEAMS_ATEAM_LINK="$LINK" "$SCRIPT") || rc=$?
+[ "$rc" -eq 0 ] || fail "T11b (non-executable bin/ateam): hook exited $rc, want 0"
+[ -z "$out" ] || fail "T11b (non-executable bin/ateam): hook printed to stdout: '$out'"
+AFTER_TARGET="$(readlink "$LINK")"
+[ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T11b (non-executable bin/ateam): link target changed ('$BEFORE_TARGET' -> '$AFTER_TARGET') — must be left untouched when the wrapper isn't executable"
+assert_reason "T11b (non-executable bin/ateam)" "no-wrapper"
+echo "PASS T11b (CLAUDE_PLUGIN_ROOT with non-executable bin/ateam — link left untouched)"
 
 echo "PASS"
