@@ -1283,4 +1283,6 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterStewardKong(p)
 	RegisterTieSessionKong(p)
 	RegisterSentKong(p)
+	RegisterAgentsJSONKong(p)
+	RegisterSpawnCheckKong(p)
 }

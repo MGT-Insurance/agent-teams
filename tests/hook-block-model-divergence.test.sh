@@ -111,6 +111,18 @@ assert_deny "case10-reviewer-opus-1m" \
   "reviewer.*model: sonnet" \
   "asked for opus[1m]"
 
+# Case 14: hyphen-key spawn (agent-teams-implementer, definition: sonnet)
+# spawned with opus -> reject. Proves the hyphen form resolves the definition
+# file at all — a suite that only ever exercises the colon form cannot tell
+# "no divergence" apart from "the lookup can no longer find any definition"
+# (see plugins/agent-teams/hooks/scripts/block-model-divergence.sh's own
+# comment on that failure mode). Uses the real roles/implementer.md, not a
+# fixture, so it also exercises the real $0-relative directory resolution.
+assert_deny "case14-hyphen-implementer-opus" \
+  "$(make_payload "agent-teams-implementer" '"opus"')" \
+  "implementer.*model: sonnet" \
+  "asked for opus"
+
 # Case 13: payload over the 64 KiB pipe buffer -> deny AND exit 0. Regression
 # test for jnh5.5: `printf '%s' "$payload" | jq -n ...` never had jq read
 # stdin (-n ignores it), so the pipe was dead weight — worse than dead once
@@ -131,17 +143,17 @@ assert_deny "case13-large-payload-deny" "$big_payload" \
 # No real agent definition has either shape, so these two allow branches are
 # otherwise unwitnessed — a no-op branch on a hook that fires for every Agent
 # spawn machine-wide is exactly the risk worth testing directly. Build a temp
-# plugin-root layout (hooks/scripts/ + agents/, siblings, mirroring the real
+# plugin-root layout (hooks/scripts/ + roles/, siblings, mirroring the real
 # plugin) and invoke a COPY of the script from there. This also exercises the
 # $0-relative resolution from a root that is not the repo — the resolution
 # mechanism itself, not just its output on the real repo layout.
 FIXTURE=$(mktemp -d)
 trap 'rm -rf "$FIXTURE"' EXIT
-mkdir -p "$FIXTURE/hooks/scripts" "$FIXTURE/agents"
+mkdir -p "$FIXTURE/hooks/scripts" "$FIXTURE/roles"
 cp "$SCRIPT" "$FIXTURE/hooks/scripts/block-model-divergence.sh"
 chmod +x "$FIXTURE/hooks/scripts/block-model-divergence.sh"
 
-cat > "$FIXTURE/agents/inherit-role.md" <<'EOF'
+cat > "$FIXTURE/roles/inherit-role.md" <<'EOF'
 ---
 description: fixture role with model: inherit
 model: inherit
@@ -149,7 +161,7 @@ model: inherit
 body
 EOF
 
-cat > "$FIXTURE/agents/nomodel-role.md" <<'EOF'
+cat > "$FIXTURE/roles/nomodel-role.md" <<'EOF'
 ---
 description: fixture role with no model: line
 ---

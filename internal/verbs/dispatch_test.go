@@ -1116,7 +1116,7 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "")
+	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "", "{}")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical memoryRoutingRule const.
@@ -1150,7 +1150,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
 	// caller (launchBGSession), not by bgSessionArgs itself.
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs(name, prompt, "", "", "", "")
+	args := bgSessionArgs(name, prompt, "", "", "", "", "{}")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -1199,7 +1199,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 // TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
 // replaces the "opus" default in the --model flag.
 func TestBGSessionArgs_ModelOverride(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "", "{}")
 
 	found := false
 	for i, a := range args {
@@ -1225,7 +1225,7 @@ func TestBGSessionArgs_ModelOverride(t *testing.T) {
 // TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
 // argument falls back to the "opus" default.
 func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "", "{}")
 
 	found := false
 	for i, a := range args {
@@ -1244,7 +1244,7 @@ func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
 // Per contract decision 7 (agent-teams-wvx2.1), this must be asserted at the
 // bgSessionArgs level (pure, no env reads).
 func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "", "{}")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1265,7 +1265,7 @@ func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
 // TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
 // defaults to "opus" and no "--advisor" flag appears anywhere in argv.
 func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1794,7 +1794,7 @@ func TestBGSessionArgs_SettingsOmitsAutoCompactWindow(t *testing.T) {
 		{"dri", ""},
 		{"steward", ""},
 	} {
-		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID)
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}")
 		got := settingsValue(t, args)
 		if strings.Contains(got, "autoCompactWindow") {
 			t.Errorf("--settings for role=%q must not pin autoCompactWindow; got %q", tc.role, got)
@@ -1822,7 +1822,7 @@ func settingsValue(t *testing.T, args []string) string {
 // path's merged --settings JSON: role and initiative id both present, in the
 // contract's documented field order (agent-teams-142k.1, PLAN.md §1).
 func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}")
 	got := settingsValue(t, args)
 	want := `{"env":{"ATEAM_ROLE":"dri","ATEAM_INITIATIVE":"at-abc123"}}`
 	if got != want {
@@ -1834,7 +1834,7 @@ func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
 // bare-problem-statement case: role present, ATEAM_INITIATIVE omitted
 // entirely (not an empty string) when the launcher doesn't know the id.
 func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "")
+	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "", "{}")
 	got := settingsValue(t, args)
 	want := `{"env":{"ATEAM_ROLE":"dri"}}`
 	if got != want {
@@ -1851,7 +1851,7 @@ func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
 // map is the only thing ateam configures, so with nothing to say it says
 // nothing — an empty "{}" would read like an intent that went missing.
 func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}")
 	for _, a := range args {
 		if a == "--settings" {
 			t.Fatalf("argv must omit --settings when role and initiative id are both empty; got: %v", args)
