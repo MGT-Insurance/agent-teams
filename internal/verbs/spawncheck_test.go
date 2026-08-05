@@ -21,6 +21,24 @@ const spawnCheckFixtureBad = `{"agentType":"namedplug","description":"named plug
 
 const spawnCheckFixtureIrrelevant = `{"agentType":"qr2i-scope-probe","spawnDepth":1}`
 
+// spawnCheckFixtureBuiltinNamed is the fixture shape agent-teams-wf7o.19
+// found missing from the original suite: a NAMED spawn of a BUILT-IN type
+// (general-purpose, Explore, fork, claude-code-guide, ...). It carries
+// taskKind == in_process_teammate (unlike spawnCheckFixtureIrrelevant, which
+// has no taskKind at all) but, being a built-in type, never carries
+// customAgentType even though the spawn is completely healthy. Presence of a
+// matching Agent tool_use call in the parent transcript (added per-test via
+// putSpawnCheckParentTranscript) requesting a non-role type is what proves
+// this must resolve OK rather than DEFINITION-DROPPED.
+const spawnCheckFixtureBuiltinNamed = `{"agentType":"ci-helper","name":"ci-helper","spawnDepth":0,"model":"sonnet","taskKind":"in_process_teammate","teamName":"session-builtin","permissionMode":"bypassPermissions"}`
+
+// spawnCheckFixtureNestedBuiltinNamed is spawnCheckFixtureBuiltinNamed's
+// spawnDepth-1 counterpart: a named built-in spawn made BY another agent
+// (parentAgentId set), not by the top-level session. Its Agent tool_use call
+// lives in the parent agent's own subagent transcript, not the top-level
+// <session-id>.jsonl.
+const spawnCheckFixtureNestedBuiltinNamed = `{"agentType":"nested-helper","name":"nested-helper","parentAgentId":"aparent0011","spawnDepth":1,"model":"sonnet","taskKind":"in_process_teammate","teamName":"session-builtin","permissionMode":"bypassPermissions"}`
+
 // makeSpawnCheckCtx builds a minimal *cli.Context with captured stdout/stderr.
 func makeSpawnCheckCtx() (*cli.Context, *strings.Builder, *strings.Builder) {
 	var stdout, stderr strings.Builder
@@ -38,6 +56,67 @@ func putSpawnCheckSidecar(t *testing.T, root, project, session, name, body strin
 	}
 	path := filepath.Join(dir, name+".meta.json")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+// spawnCheckAgentToolUseLine builds one transcript line in the real shape
+// spawnCheckReadAgentCalls parses: a message whose content is a one-element
+// tool_use array for the Agent tool.
+func spawnCheckAgentToolUseLine(t *testing.T, subagentType, name, description string) string {
+	t.Helper()
+	rec := map[string]any{
+		"message": map[string]any{
+			"content": []map[string]any{
+				{
+					"type": "tool_use",
+					"name": "Agent",
+					"input": map[string]any{
+						"subagent_type": subagentType,
+						"name":          name,
+						"description":   description,
+					},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal transcript line: %v", err)
+	}
+	return string(b)
+}
+
+// putSpawnCheckParentTranscript writes a top-level session transcript at
+// <root>/<project>/<session>.jsonl — the file spawnCheckParentTranscriptPath
+// looks up for a spawnDepth-0 sidecar (no parentAgentId) — one line per
+// entry in lines.
+func putSpawnCheckParentTranscript(t *testing.T, root, project, session string, lines ...string) string {
+	t.Helper()
+	dir := filepath.Join(root, project)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, session+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+// putSpawnCheckNestedParentTranscript writes a subagent's OWN transcript at
+// <root>/<project>/<session>/subagents/agent-<parentAgentID>.jsonl — the
+// file spawnCheckParentTranscriptPath looks up for a spawnDepth>=1 sidecar
+// whose parentAgentId is parentAgentID.
+func putSpawnCheckNestedParentTranscript(t *testing.T, root, project, session, parentAgentID string, lines ...string) string {
+	t.Helper()
+	dir := filepath.Join(root, project, session, "subagents")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, "agent-"+parentAgentID+".jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return path
@@ -79,6 +158,11 @@ func TestScanSpawnCheck_GoodFixtureIsOK(t *testing.T) {
 func TestScanSpawnCheck_BadFixtureIsDropped(t *testing.T) {
 	root := t.TempDir()
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-bad", spawnCheckFixtureBad)
+	// The Agent tool_use call the sidecar was recovered from: a role was
+	// requested via the removed colon key, which is exactly the KNOWN-bad
+	// shape this verb was built to catch.
+	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
+		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "namedplug", "named plugin scoped"))
 
 	findings, warnings, err := scanSpawnCheck(root, "", nil)
 	if err != nil {
@@ -99,6 +183,9 @@ func TestScanSpawnCheck_BadFixtureIsDropped(t *testing.T) {
 	}
 	if f.Name != "namedplug" {
 		t.Errorf("Name = %q, want namedplug", f.Name)
+	}
+	if f.RequestedType != "agent-teams:planner" {
+		t.Errorf("RequestedType = %q, want agent-teams:planner", f.RequestedType)
 	}
 }
 
@@ -123,6 +210,8 @@ func TestScanSpawnCheck_MixedCorpus(t *testing.T) {
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-good", spawnCheckFixtureGood)
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-bad", spawnCheckFixtureBad)
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-irrelevant", spawnCheckFixtureIrrelevant)
+	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
+		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "namedplug", "named plugin scoped"))
 
 	findings, _, err := scanSpawnCheck(root, "", nil)
 	if err != nil {
@@ -137,6 +226,131 @@ func TestScanSpawnCheck_MixedCorpus(t *testing.T) {
 	}
 	if byStatus[spawnCheckStatusOK] != 1 || byStatus[spawnCheckStatusDropped] != 1 {
 		t.Errorf("byStatus = %v, want 1 OK and 1 DEFINITION-DROPPED", byStatus)
+	}
+}
+
+// TestScanSpawnCheck_NamedBuiltinTypeIsNotFlagged is THE verification-bar
+// fixture agent-teams-wf7o.19 found missing: a NAMED spawn of a BUILT-IN
+// type (general-purpose here) with no customAgentType — exactly the healthy,
+// common pattern (forking yourself, spawning a general-purpose helper) that
+// the pre-fix predicate flagged as DEFINITION-DROPPED, because it could not
+// tell "no definition was ever expected" apart from "one was expected and
+// didn't attach". Reverting the fix (checking only CustomAgentType == "" as
+// the pre-wf7o.19 code did) turns this test red; restoring it goes green —
+// see the implementer's report for that transcript.
+func TestScanSpawnCheck_NamedBuiltinTypeIsNotFlagged(t *testing.T) {
+	root := t.TempDir()
+	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-ci-helper", spawnCheckFixtureBuiltinNamed)
+	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
+		spawnCheckAgentToolUseLine(t, "general-purpose", "ci-helper", ""))
+
+	findings, warnings, err := scanSpawnCheck(root, "", nil)
+	if err != nil {
+		t.Fatalf("scanSpawnCheck: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly 1", findings)
+	}
+	f := findings[0]
+	if f.Status != spawnCheckStatusOK {
+		t.Errorf("Status = %q, want %q (a named built-in spawn must not be flagged)", f.Status, spawnCheckStatusOK)
+	}
+	if f.RequestedType != "general-purpose" {
+		t.Errorf("RequestedType = %q, want general-purpose", f.RequestedType)
+	}
+}
+
+// TestScanSpawnCheck_NestedNamedBuiltinTypeIsOK covers the spawnDepth >= 1
+// path: the Agent tool_use call that spawned this sidecar was made by
+// ANOTHER agent, not the top-level session, so the join must look in that
+// parent agent's own subagent transcript (keyed by parentAgentId), not
+// <session-id>.jsonl. Mirrors the real ci-gate-runner / nested-explore-probe
+// shape from agent-teams-wf7o.19's evidence session.
+func TestScanSpawnCheck_NestedNamedBuiltinTypeIsOK(t *testing.T) {
+	root := t.TempDir()
+	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-nested-helper", spawnCheckFixtureNestedBuiltinNamed)
+	putSpawnCheckNestedParentTranscript(t, root, "proj", "sess1", "aparent0011",
+		spawnCheckAgentToolUseLine(t, "Explore", "nested-helper", ""))
+
+	findings, warnings, err := scanSpawnCheck(root, "", nil)
+	if err != nil {
+		t.Fatalf("scanSpawnCheck: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly 1", findings)
+	}
+	f := findings[0]
+	if f.Status != spawnCheckStatusOK {
+		t.Errorf("Status = %q, want %q", f.Status, spawnCheckStatusOK)
+	}
+	if f.RequestedType != "Explore" {
+		t.Errorf("RequestedType = %q, want Explore", f.RequestedType)
+	}
+}
+
+// TestScanSpawnCheck_MissingParentTranscriptIsTypeUnknown proves the third
+// classification bucket: when the join cannot be made at all (no parent
+// transcript on disk), the result must be its own distinct TYPE-UNKNOWN
+// status — never silently folded into OK or DEFINITION-DROPPED.
+func TestScanSpawnCheck_MissingParentTranscriptIsTypeUnknown(t *testing.T) {
+	root := t.TempDir()
+	fixture := `{"agentType":"mystery","name":"mystery","spawnDepth":0,"taskKind":"in_process_teammate","teamName":"session-mystery","permissionMode":"bypassPermissions"}`
+	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-mystery", fixture)
+	// Deliberately no parent transcript written.
+
+	findings, warnings, err := scanSpawnCheck(root, "", nil)
+	if err != nil {
+		t.Fatalf("scanSpawnCheck: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none (this is a per-finding Note, not a global warning)", warnings)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly 1", findings)
+	}
+	f := findings[0]
+	if f.Status != spawnCheckStatusUnknown {
+		t.Errorf("Status = %q, want %q", f.Status, spawnCheckStatusUnknown)
+	}
+	if f.Note == "" {
+		t.Error("Note = \"\", want a non-empty explanation")
+	}
+	if f.RequestedType != "" {
+		t.Errorf("RequestedType = %q, want empty (undetermined)", f.RequestedType)
+	}
+}
+
+// TestScanSpawnCheck_DescriptionDisambiguatesCollision exercises the exact
+// disambiguation rule agent-teams-wf7o.19 specifies: when the parent
+// transcript has more than one Agent tool_use call sharing the sidecar's
+// spawn name, the sidecar's description picks out the right one.
+func TestScanSpawnCheck_DescriptionDisambiguatesCollision(t *testing.T) {
+	root := t.TempDir()
+	fixture := `{"agentType":"dup","name":"dup","description":"second call","spawnDepth":0,"taskKind":"in_process_teammate","teamName":"session-dup","permissionMode":"bypassPermissions"}`
+	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-dup", fixture)
+	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
+		spawnCheckAgentToolUseLine(t, "general-purpose", "dup", "first call"),
+		spawnCheckAgentToolUseLine(t, "agent-teams-planner", "dup", "second call"))
+
+	findings, _, err := scanSpawnCheck(root, "", nil)
+	if err != nil {
+		t.Fatalf("scanSpawnCheck: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %v, want exactly 1", findings)
+	}
+	f := findings[0]
+	if f.RequestedType != "agent-teams-planner" {
+		t.Errorf("RequestedType = %q, want agent-teams-planner (the description-matched call)", f.RequestedType)
+	}
+	if f.Status != spawnCheckStatusDropped {
+		t.Errorf("Status = %q, want %q (role requested, no customAgentType)", f.Status, spawnCheckStatusDropped)
 	}
 }
 
@@ -212,6 +426,8 @@ func TestScanSpawnCheck_SessionFilterCrossesProjects(t *testing.T) {
 	root := t.TempDir()
 	putSpawnCheckSidecar(t, root, "proj-a", "target-session", "agent-bad", spawnCheckFixtureBad)
 	putSpawnCheckSidecar(t, root, "proj-b", "other-session", "agent-good", spawnCheckFixtureGood)
+	putSpawnCheckParentTranscript(t, root, "proj-a", "target-session",
+		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "namedplug", "named plugin scoped"))
 
 	findings, _, err := scanSpawnCheck(root, "target-session", nil)
 	if err != nil {
@@ -293,6 +509,8 @@ func TestSpawnCheckKong_Run_DroppedIsNonZeroExit(t *testing.T) {
 
 	root := filepath.Join(home, ".claude", "projects")
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-bad", spawnCheckFixtureBad)
+	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
+		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "namedplug", "named plugin scoped"))
 
 	ctx, stdout, _ := makeSpawnCheckCtx()
 	c := &spawnCheckKong{}
@@ -335,6 +553,8 @@ func TestSpawnCheckKong_Run_JSONOutput(t *testing.T) {
 	root := filepath.Join(home, ".claude", "projects")
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-good", spawnCheckFixtureGood)
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-bad", spawnCheckFixtureBad)
+	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
+		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "namedplug", "named plugin scoped"))
 
 	ctx, stdout, _ := makeSpawnCheckCtx()
 	c := &spawnCheckKong{JSON: true}
