@@ -32,7 +32,7 @@ Conservative rule: while the DRI's session is still running — including wind-d
 
 The DRI sets NO phase field and maintains no status field. The run/park state of its session IS the signal.
 
-### REVIEWABLE means awaiting ERIC
+### REVIEWABLE means awaiting THE HUMAN
 
 REVIEWABLE means **work genuinely awaiting the human, that he has not yet looked at.** It does not mean "a PR exists." That is the whole point of rule 3's body: a PR the human has already declared he's done looking at (`external-review`) is a row that needs nothing from him, and it does not belong in the queue that says it does.
 

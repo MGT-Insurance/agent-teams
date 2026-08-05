@@ -251,8 +251,8 @@ longer one he does not.
 
 ## Not yet calibrated
 
-Round 2 (`agent-teams-ubbz.9`) takes real sent messages back to Eric, one kind at
-a time; his answers land here. Until then, empty: `hung-escalation`,
+Round 2 (`agent-teams-ubbz.9`) takes real sent messages back to the human, one
+kind at a time; his answers land here. Until then, empty: `hung-escalation`,
 `reply-ack`, `direct-answer`, `briefing-post`, `briefing-ack`, `anomaly-flag` —
 see SKILL.md §5's table for what triggers each and what the human must do.
 
@@ -265,4 +265,4 @@ SKILL.md §5's table, listed here only so the nine-kind vocabulary stays
 complete and so machine prose is never mistaken for Steward prose. Nothing
 about it is the Steward's to compose.
 
-_(No calibrated specimen yet — awaiting Eric.)_
+_(No calibrated specimen yet — awaiting the human.)_

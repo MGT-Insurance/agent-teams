@@ -22,6 +22,7 @@ func RegisterQueryKong(p *cli.Parser) {
 	p.AddVerb("human-list", "List gated beads awaiting human input.", &humanListKong{})
 	p.AddVerb("show", "Show details for an initiative.", &showKong{})
 	p.AddVerb("learnings", "Print role memories (hot+fresh, or all).", &learningsKong{})
+	p.AddVerb("instructions", "Print a role's machine-local human-authored instructions file, if any.", &instructionsKong{})
 	p.AddVerb("recall", "Search role memories by tokenized query, ranked by matched terms.", &recallKong{})
 	p.AddVerb("prime", "Print cross-project user preferences.", &primeKong{})
 	p.AddVerb("roles", "List role namespaces present in workspace memories.", &rolesKong{})

@@ -719,9 +719,14 @@ func bgSessionSettingsJSON(role, initiativeID string) string {
 // driDefaultModel when non-empty. advisor, when non-empty, appends
 // "--advisor <advisor>" to the argv (a hidden claude CLI flag taking a model
 // alias). role and initiativeID are merged into --settings via
-// bgSessionSettingsJSON. Pure: does not read env. Extracted so tests can
-// assert the argv without executing the command.
-func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []string {
+// bgSessionSettingsJSON. agentsJSON is the --agents payload generated from
+// plugins/agent-teams/roles/*.md (agentsjson.go) — the workaround for
+// anthropics/claude-code#81746, see agent-teams-wf7o.9 — and is always
+// emitted; resolving/validating it is the CALLER's job (rawLaunchBGSession),
+// not this function's: bgSessionArgs stays pure and does not read the
+// filesystem. Extracted so tests can assert the argv without executing the
+// command.
+func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON string) []string {
 	if model == "" {
 		model = driDefaultModel
 	}
@@ -738,6 +743,7 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []st
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
+	args = append(args, "--agents", agentsJSON)
 	return append(args, prompt)
 }
 
@@ -786,12 +792,22 @@ type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor, role, ini
 // role and initiativeID are merged into --settings via bgSessionArgs. Shared
 // by the --launch-prompt production path and tests (via injection into
 // dispatchKong.launchRaw).
+//
+// Resolves the --agents payload (agentsjson.go) itself — bgSessionArgs stays
+// pure and does not read the filesystem — and fails loud (returns an error,
+// launches nothing) when that payload can't be built, per the fail-loud
+// contract in agent-teams-wf7o.9 artifact (4): a session launched without
+// --agents would silently run every named teammate as a generic agent.
 func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, initiativeID string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
+	agentsJSON, err := buildAgentsPayload()
+	if err != nil {
+		return fmt.Errorf("ateam: build --agents payload: %w", err)
+	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID)
+	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout

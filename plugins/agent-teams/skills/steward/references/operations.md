@@ -44,7 +44,7 @@ The startup load (SKILL.md §1), gate enrichment (§2), and every direct questio
 
 - `NEEDS-DECISION` — a question gate. The human's, now.
 - `IN-PROGRESS` — actively being worked, or open with no gate. Not his.
-- `REVIEWABLE` — a PR awaiting ERIC that he has not yet looked at. This is the queue that means "you"; it does not mean "a PR exists."
+- `REVIEWABLE` — a PR awaiting THE HUMAN that he has not yet looked at. This is the queue that means "you"; it does not mean "a PR exists."
 - `AWAITING-EXTERNAL-REVIEW` — **healthy, not idle.** The human has declared he is done looking (references/handoff.md); the PR is with third-party reviewers. NOT ours and NOT his.
 - `unknown` — `claude agents --json` failed; every row degrades to this and no status is trustworthy for that run.
 
