@@ -63,9 +63,16 @@ make_version() {
 VERSION_A="$T/versionA"; make_version "$VERSION_A" "VERSION-A"
 VERSION_B="$T/versionB"; make_version "$VERSION_B" "VERSION-B"
 
+# Contract C7: the hook must NEVER fail a session — every path exits 0.
+# Asserted explicitly rather than relying on `set -e` to abort the suite: a
+# bare abort IS caught, but reports nothing about which invariant broke. This
+# is not hypothetical — an unbound $ATH referenced by lib/hook-debug-log.sh
+# made the hook exit 1 on every invocation during development, and stdout
+# stayed empty throughout, so an stdout-only check would have called it clean.
 run_hook() {
-  local plugin_root="$1" link="$2"
-  CLAUDE_PLUGIN_ROOT="$plugin_root" AGENT_TEAMS_ATEAM_LINK="$link" "$SCRIPT"
+  local plugin_root="$1" link="$2" rc=0
+  CLAUDE_PLUGIN_ROOT="$plugin_root" AGENT_TEAMS_ATEAM_LINK="$link" "$SCRIPT" || rc=$?
+  [ "$rc" -eq 0 ] || fail "C7 (never fail a session): hook exited $rc, want 0"
 }
 
 # ── T2: MUTATION PROOF — must be checkable with NO implementation present ───
