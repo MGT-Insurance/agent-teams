@@ -87,6 +87,61 @@ if [ -z "$LINK" ]; then
   exit 0
 fi
 
+# agent-teams-wtf3.10: FORWARD-ONLY RELINK. A live session's hook re-fires on
+# every compact/clear (SessionStart matcher includes both). After a plugin
+# update, an old still-running session's hook and a new session's hook can
+# both target ~/.local/bin/ateam, dragging the link back and forth for as
+# long as both live. Before relinking onto a candidate target, compare the
+# hook's OWN plugin version against the version the target install reports;
+# decline only when the target is STRICTLY NEWER. Get either side wrong
+# (unreadable/absent/malformed) and this must fall back to today's behavior
+# (relink) — see get_version()/version_gt() below.
+
+# get_version <plugin.json path> -> prints .version, or empty if the file is
+# missing/unreadable/malformed. Tries jq if present, falls back to a grep/sed
+# scrape so this never hard-depends on jq being installed.
+get_version() {
+  local f="$1" v=""
+  if [ -f "$f" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      v="$(jq -r '.version // empty' "$f" 2>/dev/null || true)"
+    fi
+    if [ -z "$v" ]; then
+      v="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null \
+        | head -n1 | sed 's/.*"\([^"]*\)"[[:space:]]*$/\1/' || true)"
+    fi
+  fi
+  printf '%s' "$v"
+}
+
+# version_gt <a> <b> -> true (0) iff <a> is a strictly greater X.Y.Z... version
+# than <b>, comparing components numerically (0.51.10 > 0.51.9 — a string
+# compare gets this wrong). Missing trailing components default to 0. ANY
+# ambiguity — empty input, a non-numeric component on either side — returns
+# false rather than erroring, so a malformed/unreadable version can never
+# cause an incorrect decline; the caller's default action (relink) always
+# wins on doubt.
+version_gt() {
+  local a="$1" b="$2"
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  local -a ap bp
+  IFS=. read -r -a ap <<<"$a"
+  IFS=. read -r -a bp <<<"$b"
+  local len=${#ap[@]} i x y
+  [ "${#bp[@]}" -gt "$len" ] && len=${#bp[@]}
+  for ((i = 0; i < len; i++)); do
+    x="${ap[i]:-0}"
+    y="${bp[i]:-0}"
+    case "$x" in '' | *[!0-9]*) return 1 ;; esac
+    case "$y" in '' | *[!0-9]*) return 1 ;; esac
+    if [ "$x" -gt "$y" ]; then return 0; fi
+    if [ "$x" -lt "$y" ]; then return 1; fi
+  done
+  return 1 # equal
+}
+
+OWN_VERSION="$(get_version "$PLUGIN_ROOT/.claude-plugin/plugin.json")"
+
 # C4 — exactly these five cases, in this order.
 
 # (a) WRAPPER not executable -> do nothing.
@@ -95,9 +150,16 @@ if [ ! -x "$WRAPPER" ]; then
   exit 0
 fi
 
+# Resolve LINK's chain once (if it's a symlink) and reuse it for both the
+# already-current check (b) and the forward-only version check in (d).
+RESOLVED=""
+if [ -L "$LINK" ]; then
+  RESOLVED="$(resolve_chain "$LINK")"
+fi
+
 # (b) LINK already resolves (through chained symlinks) to WRAPPER -> do
 # nothing. This is the overwhelmingly common path.
-if [ -L "$LINK" ] && [ "$(resolve_chain "$LINK")" = "$WRAPPER" ]; then
+if [ -n "$RESOLVED" ] && [ "$RESOLVED" = "$WRAPPER" ]; then
   HOOK_EXIT_REASON="already-current"
   exit 0
 fi
@@ -112,15 +174,27 @@ if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
 fi
 
 # (d) LINK is a symlink pointing elsewhere, including a dangling one ->
-# relink.
+# relink — UNLESS the target is a strictly newer install than this hook's
+# own (the forward-only rule above). A dangling target, or one whose version
+# can't be read, has no comparable version and falls straight through to the
+# relink it already got before this change.
 if [ -L "$LINK" ]; then
+  TARGET_VERSION=""
+  if [ -e "$RESOLVED" ]; then
+    TARGET_PLUGIN_ROOT="$(dirname "$(dirname "$RESOLVED")")"
+    TARGET_VERSION="$(get_version "$TARGET_PLUGIN_ROOT/.claude-plugin/plugin.json")"
+  fi
+  if version_gt "$TARGET_VERSION" "$OWN_VERSION"; then
+    HOOK_EXIT_REASON="target-newer"
+    exit 0
+  fi
   mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
   ln -sf "$WRAPPER" "$LINK" 2>/dev/null || true
   HOOK_EXIT_REASON="relinked"
   exit 0
 fi
 
-# (e) LINK does not exist -> create it.
+# (e) LINK does not exist -> create it. No prior install to compare against.
 mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
 ln -sf "$WRAPPER" "$LINK" 2>/dev/null || true
 HOOK_EXIT_REASON="created"

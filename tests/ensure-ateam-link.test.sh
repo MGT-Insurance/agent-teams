@@ -67,6 +67,17 @@ make_version() {
   chmod +x "$dir/bin/ateam-${PLATFORM_OS}-${PLATFORM_ARCH}"
 }
 
+# make_versioned_root <dir> <label> <semver> — like make_version, plus a real
+# .claude-plugin/plugin.json reporting <semver>, so the fixture can stand in
+# as either side (own or target) of the forward-only version comparison
+# (agent-teams-wtf3.10).
+make_versioned_root() {
+  local dir="$1" label="$2" semver="$3"
+  make_version "$dir" "$label"
+  mkdir -p "$dir/.claude-plugin"
+  printf '{"name": "agent-teams", "version": "%s"}\n' "$semver" > "$dir/.claude-plugin/plugin.json"
+}
+
 # Shared, read-only fixtures reused across cases. T4 needs its own throwaway
 # copy of "version A" since it deletes it.
 VERSION_A="$T/versionA"; make_version "$VERSION_A" "VERSION-A"
@@ -306,5 +317,91 @@ AFTER_TARGET="$(readlink "$LINK")"
 [ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T11b (non-executable bin/ateam): link target changed ('$BEFORE_TARGET' -> '$AFTER_TARGET') — must be left untouched when the wrapper isn't executable"
 assert_reason "T11b (non-executable bin/ateam)" "no-wrapper"
 echo "PASS T11b (CLAUDE_PLUGIN_ROOT with non-executable bin/ateam — link left untouched)"
+
+# ── T12: FORWARD-ONLY RELINK — target strictly NEWER, link left alone ──────
+# regression guard for agent-teams-wtf3.10: an old live session's hook must
+# NOT drag the link back onto its own older install.
+OWN_12="$T/case12/own"; make_versioned_root "$OWN_12" "OWN-12" "0.51.4"
+TARGET_12="$T/case12/target"; make_versioned_root "$TARGET_12" "TARGET-12" "0.52.0"
+LINK="$T/case12/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$TARGET_12/bin/ateam" "$LINK"
+BEFORE_TARGET="$(readlink "$LINK")"
+run_hook "$OWN_12" "$LINK"
+AFTER_TARGET="$(readlink "$LINK")"
+[ "$BEFORE_TARGET" = "$AFTER_TARGET" ] || fail "T12 (target newer): link target changed ('$BEFORE_TARGET' -> '$AFTER_TARGET') — must be left untouched when the target is strictly newer"
+out=$("$LINK") || fail "T12 (target newer): link failed to execute after the hook ran"
+[ "$out" = "TARGET-12" ] || fail "T12 (target newer): link ran '$out', want 'TARGET-12' (unchanged)"
+assert_reason "T12 (target newer)" "target-newer"
+echo "PASS T12 (forward-only — target strictly newer than own version, link left untouched)"
+
+# ── T13: FORWARD-ONLY RELINK — target strictly OLDER, still relinks ────────
+# This is the load-bearing case: proves the forward-only rule did not
+# silently disable the whole self-healing feature.
+OWN_13="$T/case13/own"; make_versioned_root "$OWN_13" "OWN-13" "0.51.4"
+TARGET_13="$T/case13/target"; make_versioned_root "$TARGET_13" "TARGET-13" "0.50.1"
+LINK="$T/case13/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$TARGET_13/bin/ateam" "$LINK"
+run_hook "$OWN_13" "$LINK"
+out=$("$LINK") || fail "T13 (target older): link failed to execute after the hook ran"
+[ "$out" = "OWN-13" ] || fail "T13 (target older): link ran '$out' after the hook, want 'OWN-13' — target strictly older must still relink"
+assert_reason "T13 (target older)" "relinked"
+echo "PASS T13 (forward-only — target strictly older than own version, still relinks)"
+
+# ── T14: FORWARD-ONLY RELINK — target version unreadable/malformed ─────────
+# Missing or malformed version data on either side must fall back to today's
+# behavior (relink), never to a decline.
+OWN_14="$T/case14/own"; make_versioned_root "$OWN_14" "OWN-14" "0.51.4"
+TARGET_14="$T/case14/target"; make_version "$TARGET_14" "TARGET-14"
+mkdir -p "$TARGET_14/.claude-plugin"
+printf 'not valid json\n' > "$TARGET_14/.claude-plugin/plugin.json"
+LINK="$T/case14/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$TARGET_14/bin/ateam" "$LINK"
+run_hook "$OWN_14" "$LINK"
+out=$("$LINK") || fail "T14 (malformed target version): link failed to execute after the hook ran"
+[ "$out" = "OWN-14" ] || fail "T14 (malformed target version): link ran '$out' after the hook, want 'OWN-14' — malformed target version must fall back to relink"
+assert_reason "T14 (malformed target version)" "relinked"
+echo "PASS T14a (forward-only — malformed target plugin.json falls back to relink)"
+
+# Own version malformed too (own's own plugin.json unreadable) must also
+# fall back to relink, not to an accidental decline.
+OWN_14B="$T/case14b/own"; make_version "$OWN_14B" "OWN-14B"
+mkdir -p "$OWN_14B/.claude-plugin"
+printf '{}\n' > "$OWN_14B/.claude-plugin/plugin.json"
+TARGET_14B="$T/case14b/target"; make_versioned_root "$TARGET_14B" "TARGET-14B" "0.52.0"
+LINK="$T/case14b/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$TARGET_14B/bin/ateam" "$LINK"
+run_hook "$OWN_14B" "$LINK"
+out=$("$LINK") || fail "T14b (missing own version): link failed to execute after the hook ran"
+[ "$out" = "OWN-14B" ] || fail "T14b (missing own version): link ran '$out' after the hook, want 'OWN-14B' — unreadable own version must fall back to relink (relink always points at own WRAPPER)"
+assert_reason "T14b (missing own version)" "relinked"
+echo "PASS T14b (forward-only — own plugin.json missing a version falls back to relink)"
+
+# ── T15: NUMERIC ORDERING — 0.51.9 vs 0.51.10, both directions ─────────────
+# A string compare gets this backwards ("0.51.9" > "0.51.10" lexically).
+OWN_15A="$T/case15a/own"; make_versioned_root "$OWN_15A" "OWN-15A" "0.51.9"
+TARGET_15A="$T/case15a/target"; make_versioned_root "$TARGET_15A" "TARGET-15A" "0.51.10"
+LINK="$T/case15a/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$TARGET_15A/bin/ateam" "$LINK"
+run_hook "$OWN_15A" "$LINK"
+out=$("$LINK") || fail "T15a (0.51.9 own, 0.51.10 target): link failed to execute after the hook ran"
+[ "$out" = "TARGET-15A" ] || fail "T15a (0.51.9 own, 0.51.10 target): link ran '$out', want 'TARGET-15A' (unchanged) — 0.51.10 is the newer version"
+assert_reason "T15a (0.51.9 own, 0.51.10 target)" "target-newer"
+echo "PASS T15a (numeric ordering — 0.51.10 correctly recognized as newer than 0.51.9)"
+
+OWN_15B="$T/case15b/own"; make_versioned_root "$OWN_15B" "OWN-15B" "0.51.10"
+TARGET_15B="$T/case15b/target"; make_versioned_root "$TARGET_15B" "TARGET-15B" "0.51.9"
+LINK="$T/case15b/local-bin/ateam"; assert_scratch_path "$LINK"
+mkdir -p "$(dirname "$LINK")"
+ln -sf "$TARGET_15B/bin/ateam" "$LINK"
+run_hook "$OWN_15B" "$LINK"
+out=$("$LINK") || fail "T15b (0.51.10 own, 0.51.9 target): link failed to execute after the hook ran"
+[ "$out" = "OWN-15B" ] || fail "T15b (0.51.10 own, 0.51.9 target): link ran '$out' after the hook, want 'OWN-15B' — 0.51.9 is the older version, must relink"
+assert_reason "T15b (0.51.10 own, 0.51.9 target)" "relinked"
+echo "PASS T15b (numeric ordering — 0.51.9 correctly recognized as older than 0.51.10)"
 
 echo "PASS"
