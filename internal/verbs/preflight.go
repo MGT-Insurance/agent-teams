@@ -340,6 +340,30 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 		return cli.Silent(2)
 	}
 
+	// The payload BUILDING is not the property. The property is that it
+	// carries the role the probe is about to request — buildPayload succeeds
+	// on any well-formed roles/ directory, including one the probed role has
+	// been deleted from. Live negative control (agent-teams-25s3.3,
+	// 2026-08-06): with roles/implementer.md removed, this check PASSED at
+	// 36733 bytes, the run spent $0.25, and the failure surfaced downstream
+	// as role-types-available with a remediation telling the operator to run
+	// the command they had just run. Asserting it here is REASON-NO-SESSION,
+	// deterministic, free, and can name the actual missing file.
+	if _, err := preflightExpectedProbeModel(agentsJSON); err != nil {
+		checks := append([]preflightCheck{{
+			Check:       checkRolesPayloadBuilds,
+			Status:      preflightFail,
+			Detail:      fmt.Sprintf("--agents payload built (%d bytes) but carries no %q entry: %v", len(agentsJSON), preflightProbedRoleKey, err),
+			Witness:     "plugins/agent-teams/roles/*.md (built payload)",
+			Remediation: fmt.Sprintf("the probed role is missing from the resolved roles directory — restore roles/implementer.md (the %q definition), then re-run", preflightProbedRoleKey),
+		}}, preflightSkippedChecks("the --agents payload does not carry the probed role; no probe session was launched")...)
+		result := buildPreflightResult(checks, "")
+		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
+			return renderErr
+		}
+		return cli.Silent(2)
+	}
+
 	sessionID := newPreflightSessionID()
 
 	stdout, err := launch(sessionID, agentsJSON, skill, c.MaxBudgetUSD, c.PluginDir)
@@ -389,7 +413,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// JSON verdict parsed: the sidecar is the harness's own record and is
 	// independent of what the skill printed, so a broken skill emission
 	// doesn't hide a healthy (or unhealthy) spawn.
-	checks = append(checks, preflightSidecarChecks(scan, sleep, sessionID)...)
+	checks = append(checks, preflightSidecarChecks(scan, sleep, sessionID, preflightSkillDeclinedToSpawn(checks))...)
 
 	result := buildPreflightResult(checks, sessionID)
 	if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
@@ -520,7 +544,34 @@ func preflightRoleModelCheck(sc spawnCheckSidecarWithPath, expectedModel string,
 // 2026-08-06) confirmed one root cause should produce one FAIL and three
 // honest SKIPs, not four reds, so the report points at the single broken
 // thing.
-func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Duration), sessionID string) []preflightCheck {
+// preflightSkillDeclinedToSpawn reports whether the skill's own verdict says
+// it correctly refused to spawn: role-types-available FAIL is its specified
+// Step 1 stop, not a fault. An absent sidecar is then the RIGHT outcome, and
+// reporting spawn-record-present FAIL would be a second red for one root
+// cause — accusing the upstream teammate-spawn regression, which is exactly
+// what is NOT happening. Same keying the skill-owned-check assertion already
+// uses (preflightMissingSkillChecks); this branch was simply never given it.
+// Live negative control, agent-teams-25s3.3 2026-08-06.
+func preflightSkillDeclinedToSpawn(checks []preflightCheck) bool {
+	for _, c := range checks {
+		if c.Check == preflightSkillStandaloneStopID {
+			return c.Status == preflightFail
+		}
+	}
+	return false
+}
+
+func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Duration), sessionID string, skillDeclinedToSpawn bool) []preflightCheck {
+	if skillDeclinedToSpawn {
+		reason := "the skill correctly did not spawn: the probed role type was absent from the probe session (role-types-available FAIL)"
+		return []preflightCheck{
+			{Check: checkSpawnRecordPresent, Status: preflightSkip, Detail: reason, Witness: "probe session verdict (role-types-available)"},
+			{Check: checkRoleTypeRegistered, Status: preflightSkip, Detail: reason},
+			{Check: checkRoleModelAttached, Status: preflightSkip, Detail: reason},
+			{Check: checkSpawnPermissionMode, Status: preflightSkip, Detail: reason},
+		}
+	}
+
 	sidecars := pollPreflightSidecars(scan, sleep, sessionID, preflightExpectedTeammates, preflightSidecarPollDeadline, preflightSidecarPollInterval)
 
 	if len(sidecars) < preflightExpectedTeammates {

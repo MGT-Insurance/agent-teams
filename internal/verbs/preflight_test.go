@@ -82,6 +82,13 @@ const preflightFixtureBadSidecar = `{"agentType":"general-purpose","description"
 // discriminates rather than matching every sidecar in the session.
 const preflightFixtureIrrelevantSidecar = `{"agentType":"general-purpose","description":"peer-a sender","name":"peer-a","toolUseId":"toolu_019L4mhKJcSSr2js4U9iyf9o","spawnDepth":1}`
 
+// preflightFixturePayload is a minimal --agents payload carrying the probed
+// role. Tests that exercise the LAUNCH path must supply one: the verb now
+// asserts pre-launch that the payload contains the role the probe will
+// request, so an empty "{}" — which no real roles/ directory can produce —
+// correctly fails that check and never reaches the code under test.
+const preflightFixturePayload = `{"agent-teams-implementer":{"description":"impl","prompt":"body","model":"sonnet"}}`
+
 // ── preflightSidecarChecks: the ACCEPTANCE fixture pair ─────────────────────
 //
 // REWRITTEN by the agent-teams-25s3.19/.20 amendment: under this verb's only
@@ -100,7 +107,7 @@ func TestPreflightSidecarChecks_GoodFixture_SpawnRecordAndRoleTypePass(t *testin
 		return scanTeammateSidecarsForSession(root, sessionID)
 	}
 
-	checks := preflightSidecarChecks(scan, noopSleep, "sessGood")
+	checks := preflightSidecarChecks(scan, noopSleep, "sessGood", false)
 	if len(checks) != 4 {
 		t.Fatalf("len(checks) = %d, want 4", len(checks))
 	}
@@ -132,7 +139,7 @@ func TestPreflightSidecarChecks_BadFixture_RoleTypeFailsWithRemediation(t *testi
 		return scanTeammateSidecarsForSession(root, sessionID)
 	}
 
-	checks := preflightSidecarChecks(scan, noopSleep, "sessBad")
+	checks := preflightSidecarChecks(scan, noopSleep, "sessBad", false)
 	byID := map[string]preflightCheck{}
 	for _, c := range checks {
 		byID[c.Check] = c
@@ -173,7 +180,7 @@ func TestPreflightSidecarChecks_UnpinnedRegardlessOfFixture(t *testing.T) {
 			scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 				return scanTeammateSidecarsForSession(root, sessionID)
 			}
-			checks := preflightSidecarChecks(scan, noopSleep, "sess")
+			checks := preflightSidecarChecks(scan, noopSleep, "sess", false)
 			byID := map[string]preflightCheck{}
 			for _, c := range checks {
 				byID[c.Check] = c
@@ -200,7 +207,7 @@ func TestPreflightSidecarChecks_IgnoresOtherNamedSidecarsInSameSession(t *testin
 	scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 		return scanTeammateSidecarsForSession(root, sessionID)
 	}
-	checks := preflightSidecarChecks(scan, noopSleep, "sessMixed")
+	checks := preflightSidecarChecks(scan, noopSleep, "sessMixed", false)
 	byID := map[string]preflightCheck{}
 	for _, c := range checks {
 		byID[c.Check] = c
@@ -213,7 +220,7 @@ func TestPreflightSidecarChecks_IgnoresOtherNamedSidecarsInSameSession(t *testin
 	// one match (the peer sidecar must not be double-counted or mistaken
 	// for the probe's).
 	putSpawnCheckSidecar(t, root, "proj", "sessMixed", "preflight-probe", preflightFixtureGoodSidecar)
-	checks = preflightSidecarChecks(scan, noopSleep, "sessMixed")
+	checks = preflightSidecarChecks(scan, noopSleep, "sessMixed", false)
 	byID = map[string]preflightCheck{}
 	for _, c := range checks {
 		byID[c.Check] = c
@@ -346,7 +353,7 @@ func TestPreflightSidecarChecks_NoSidecar_SpawnRecordFailsAndRestSkip(t *testing
 		return scanTeammateSidecarsForSession(root, sessionID) // never written
 	}
 
-	checks := preflightSidecarChecks(scan, noopSleep, "sess-missing")
+	checks := preflightSidecarChecks(scan, noopSleep, "sess-missing", false)
 	byID := map[string]preflightCheck{}
 	for _, c := range checks {
 		byID[c.Check] = c
@@ -573,7 +580,7 @@ func TestPreflightKong_RolesPayloadBuildFailure_Exit2AllSkip(t *testing.T) {
 func TestPreflightKong_LaunchError_Exit2(t *testing.T) {
 	ctx, _, stderr := makePreflightCtx()
 	c := &preflightKong{
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
 		launch: func(string, string, string, string, string) (string, error) {
 			return "", errors.New("'claude' not found in PATH")
 		},
@@ -592,7 +599,7 @@ func TestPreflightKong_BudgetAbort_Exit2NoFailMessageNamesCap(t *testing.T) {
 	ctx, stdout, stderr := makePreflightCtx()
 	envelope := buildPreflightEnvelope(t, true, preflightBudgetAbortSubtype, "", 4.99)
 	c := &preflightKong{
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
 		launch:             func(_, _, _, maxBudgetUSD, _ string) (string, error) { return envelope, nil },
 		MaxBudgetUSD:       "5",
 		sleep:              noopSleep,
@@ -617,7 +624,7 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 	var mintedSession string
 	envelope := buildPreflightEnvelope(t, false, "success", "not json at all, a stray prose reply", 0.10)
 	c := &preflightKong{
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
 		launch: func(sessionID, _, _, _, _ string) (string, error) {
 			mintedSession = sessionID
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
@@ -664,7 +671,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	ctx, stdout, stderr := makePreflightCtx()
 	c := &preflightKong{
 		JSON:               true,
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
 		launch: func(sessionID, _, _, _, _ string) (string, error) {
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return envelope, nil
@@ -708,7 +715,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 func TestPreflightKong_EnvelopeUnparseable_Exit2(t *testing.T) {
 	ctx, _, stderr := makePreflightCtx()
 	c := &preflightKong{
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
 		launch:             func(string, string, string, string, string) (string, error) { return "not json", nil },
 		sleep:              noopSleep,
 	}
@@ -761,5 +768,50 @@ func TestPreflightKong_Help_RendersFromKongTags(t *testing.T) {
 	// panic or fail to resolve the flags defined via struct tags.
 	if parseErr != nil && !strings.Contains(parseErr.Error(), "help") {
 		t.Fatalf("Parse --help: unexpected error: %v", parseErr)
+	}
+}
+
+// TestPreflightSidecarChecks_SkillDeclinedToSpawn_NoRedForACorrectRefusal pins
+// the second defect the live negative control found (agent-teams-25s3.3,
+// 2026-08-06): with roles/implementer.md deleted, the skill CORRECTLY refused
+// to spawn per its Step 1, and the verb reported spawn-record-present FAIL
+// accusing "the upstream teammate-spawn regression this initiative exists to
+// catch" — which was not happening. Two reds for one root cause, one of them
+// blaming an innocent party. An absent sidecar is the RIGHT outcome here.
+func TestPreflightSidecarChecks_SkillDeclinedToSpawn_NoRedForACorrectRefusal(t *testing.T) {
+	scan := func(string) ([]spawnCheckSidecarWithPath, error) {
+		t.Fatal("scan must not run: the skill declined to spawn, so there is nothing to poll for")
+		return nil, nil
+	}
+
+	checks := preflightSidecarChecks(scan, noopSleep, "sess-declined", true)
+
+	fails := 0
+	for _, c := range checks {
+		if c.Status == preflightFail {
+			fails++
+		}
+		if c.Status != preflightSkip {
+			t.Errorf("%s: status = %s, want SKIP — the skill's refusal to spawn is specified behaviour, not a fault", c.Check, c.Status)
+		}
+	}
+	if fails != 0 {
+		t.Errorf("FAIL count = %d, want 0 — role-types-available already carries the one red for this root cause", fails)
+	}
+}
+
+// TestPreflightSkillDeclinedToSpawn_KeysOnStandaloneStop proves the keying
+// itself discriminates, rather than the caller always passing false.
+func TestPreflightSkillDeclinedToSpawn_KeysOnStandaloneStop(t *testing.T) {
+	declined := []preflightCheck{{Check: preflightSkillStandaloneStopID, Status: preflightFail}}
+	if !preflightSkillDeclinedToSpawn(declined) {
+		t.Error("role-types-available FAIL must read as a declined spawn")
+	}
+	spawned := []preflightCheck{{Check: preflightSkillStandaloneStopID, Status: preflightPass}}
+	if preflightSkillDeclinedToSpawn(spawned) {
+		t.Error("role-types-available PASS must NOT read as a declined spawn — the sidecar checks have to run")
+	}
+	if preflightSkillDeclinedToSpawn(nil) {
+		t.Error("absent role-types-available must not read as declined — a broken verdict must not suppress the sidecar checks")
 	}
 }
