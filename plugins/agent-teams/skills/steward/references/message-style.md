@@ -14,14 +14,14 @@ fabricated specimen that later contradicts his taste is worse than a blank slot.
 
 **Silence and the four-hour heartbeat are one rule, not two.** Green gates being silent is only safe while something still proves the Steward is alive. Silence alone removes the only evidence of that — and detecting dead things is the Steward's own job, so a dead Steward is the failure nobody else is watching for. The heartbeat ships with the silence convention, never separately.
 
-**Why LIVE verification gets its one line.** A report that unit or gate tests passed tells Eric nothing he could not assume. Someone actually driving the real thing and watching it work is evidence he cannot get any other way, which is why it is the single exception to green-is-silent.
+**Why LIVE verification gets its one line.** A report that unit or gate tests passed tells the human nothing he could not assume. Someone actually driving the real thing and watching it work is evidence he cannot get any other way, which is why it is the single exception to green-is-silent.
 
 **Why a plan-document URL goes in bare, not as markdown.** Telegram's `sendMessage` is called with no `parse_mode`, so a markdown link renders as literal text and a bare URL is what Telegram auto-links into something tappable on a phone. That is also why the URL is reproduced verbatim, never truncated, and never counted against the word budget.
 
 ## Cross-kind rule demonstrations
 
 These three pairs demonstrate the four cross-kind rules (SKILL.md §5) against real
-sent messages. They are NOT calibrated per-kind specimens awaiting Eric's ruling —
+sent messages. They are NOT calibrated per-kind specimens awaiting the human's ruling —
 do not read them as filling any empty slot below. Every BEFORE is quoted verbatim
 from a real sent message; every AFTER is new prose written to obey the rules,
 built only from facts already present in its BEFORE.
@@ -113,10 +113,10 @@ operational caveat and the recommendation.
 > rather batch it with at-xm7q.
 
 The five-item green checklist is gone entirely — it set the Steward's own
-confidence to recommend merging, never Eric's message. What survives is the
+confidence to recommend merging, never the human's message. What survives is the
 one thing that isn't assumable: the relay needs a manual restart, and skipping
 it reproduces the exact bug that already burned him on. The plan URL is cut
-too — nothing here is a plan Eric needs to open to decide.
+too — nothing here is a plan the human needs to open to decide.
 
 ### Mechanism before effect
 
@@ -152,8 +152,8 @@ and four `file:line` citations before ever stating what breaks:
 > scope clean, file separately, leave the duplicate call as backstop.
 
 The hook registration, the agent-file line numbers, and the four-way failure
-enumeration are all mechanism — none of it is what Eric needs to answer the
-actual question, which is a scope call. What would be lost: if Eric later
+enumeration are all mechanism — none of it is what the human needs to answer the
+actual question, which is a scope call. What would be lost: if the human later
 wants to know exactly *why* the hook can fail silently, this AFTER doesn't
 carry that — it's recoverable by asking, which is the point of rule 2.
 
@@ -178,7 +178,7 @@ The rule this specimen illustrates:
 Only the opening is preserved; the remaining ~270 words are not reproduced here.
 The opening alone is enough to see the failure. Three clauses in, it has spent
 its words on status, on provenance ("exactly the constraint you set"), on a
-scope disclaimer, and on a green test report — and it has not yet asked Eric
+scope disclaimer, and on a green test report — and it has not yet asked the human
 anything. The decision he was being asked to make is not in the opening at all.
 
 **AFTER** — specimen B, the one Eric picked:
@@ -210,7 +210,7 @@ opening two lines.
 
 **Discovered in round 2, not a pre-existing slot.** Every other kind is triggered
 by something arriving — an envelope, a scan result. `status-change` is the one
-the Steward decides to send on its own: a thing of Eric's changed state and
+the Steward decides to send on its own: a thing of the human's changed state and
 nothing is being asked of him. That case had no home, and these three messages
 are the evidence it needed one.
 
@@ -251,10 +251,10 @@ longer one he does not.
 
 ## Not yet calibrated
 
-Round 2 (`agent-teams-ubbz.9`) takes real sent messages back to Eric, one kind at
-a time; his answers land here. Until then, empty: `hung-escalation`,
+Round 2 (`agent-teams-ubbz.9`) takes real sent messages back to the human, one
+kind at a time; his answers land here. Until then, empty: `hung-escalation`,
 `reply-ack`, `direct-answer`, `briefing-post`, `briefing-ack`, `anomaly-flag` —
-see SKILL.md §5's table for what triggers each and what Eric must do.
+see SKILL.md §5's table for what triggers each and what the human must do.
 
 ### topic-open
 
@@ -265,4 +265,4 @@ SKILL.md §5's table, listed here only so the nine-kind vocabulary stays
 complete and so machine prose is never mistaken for Steward prose. Nothing
 about it is the Steward's to compose.
 
-_(No calibrated specimen yet — awaiting Eric.)_
+_(No calibrated specimen yet — awaiting the human.)_

@@ -765,7 +765,7 @@ func (r StewardLedgerRecord) Validate() error {
 		return fmt.Errorf("steward ledger record: invalid verdict %q", r.Verdict)
 	}
 	if r.Verdict == StewardLedgerVerdictCorrected && r.Decision == "" {
-		return fmt.Errorf("steward ledger record: verdict=corrected requires --decision (what Eric actually decided)")
+		return fmt.Errorf("steward ledger record: verdict=corrected requires --decision (what the human actually decided)")
 	}
 	return nil
 }

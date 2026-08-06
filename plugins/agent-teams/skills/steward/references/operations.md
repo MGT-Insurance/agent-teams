@@ -42,13 +42,13 @@ The lock is released by the kernel whenever the holder's process ends, including
 
 The startup load (SKILL.md §1), gate enrichment (§2), and every direct question about the landscape read this verb. One entry per open initiative: `id`, `title`, `worktree`, `labels`, `execution_status`, `ask`, `pr`. The statuses:
 
-- `NEEDS-DECISION` — a question gate. Eric's, now.
+- `NEEDS-DECISION` — a question gate. The human's, now.
 - `IN-PROGRESS` — actively being worked, or open with no gate. Not his.
-- `REVIEWABLE` — a PR awaiting ERIC that he has not yet looked at. This is the queue that means "you"; it does not mean "a PR exists."
-- `AWAITING-EXTERNAL-REVIEW` — **healthy, not idle.** Eric has declared he is done looking (references/handoff.md); the PR is with third-party reviewers. NOT ours and NOT his.
+- `REVIEWABLE` — a PR awaiting THE HUMAN that he has not yet looked at. This is the queue that means "you"; it does not mean "a PR exists."
+- `AWAITING-EXTERNAL-REVIEW` — **healthy, not idle.** The human has declared he is done looking (references/handoff.md); the PR is with third-party reviewers. NOT ours and NOT his.
 - `unknown` — `claude agents --json` failed; every row degrades to this and no status is trustworthy for that run.
 
-**`AWAITING-EXTERNAL-REVIEW` is the trap.** It is the one healthy state that looks exactly like a stall: no live session, no movement, a gate label still on the bead. Chasing things that look idle is your whole job, so absent an explicit rule you will chase this one and generate precisely the noise the state exists to remove. Explicitly, then: do NOT nudge it, do NOT surface it in a briefing as needing attention, do NOT count it as stalled or hung, do NOT ask Eric about it. It leaves the state only when he says so (`ateam handoff <id> --clear`), or when the DRI resumes and runs `ateam clear-gate`.
+**`AWAITING-EXTERNAL-REVIEW` is the trap.** It is the one healthy state that looks exactly like a stall: no live session, no movement, a gate label still on the bead. Chasing things that look idle is your whole job, so absent an explicit rule you will chase this one and generate precisely the noise the state exists to remove. Explicitly, then: do NOT nudge it, do NOT surface it in a briefing as needing attention, do NOT count it as stalled or hung, do NOT ask the human about it. It leaves the state only when he says so (`ateam handoff <id> --clear`), or when the DRI resumes and runs `ateam clear-gate`.
 
 `hung-scan` never sees it as a problem either: a handed-off initiative keeps its `human` + `gate:review` pair, so it still classifies AWAITING-HUMAN and SKILL.md §2's scan bullets already say "no action." That pair is retained deliberately — dropping it would arm both the DEAD escalation ladder and the work-product flatline trip (`internal/verbs/external_review.go` §2).
 
@@ -66,7 +66,7 @@ SKILL.md §2's scan bullets key off a subset of these. One JSON entry per open i
 
 ## Ledger CLI
 
-`ateam steward ledger record` REJECTS a `corrected` verdict submitted without `--decision` — the flag is required there and optional on `accepted`. The rejection is deliberate: a `corrected` row with no record of what Eric actually decided is the one shape of ledger entry that teaches nothing.
+`ateam steward ledger record` REJECTS a `corrected` verdict submitted without `--decision` — the flag is required there and optional on `accepted`. The rejection is deliberate: a `corrected` row with no record of what the human actually decided is the one shape of ledger entry that teaches nothing.
 
 ## Disabling the Steward on a machine
 

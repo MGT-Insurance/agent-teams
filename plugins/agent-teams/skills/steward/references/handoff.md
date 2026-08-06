@@ -1,12 +1,12 @@
-# "I'm done with that one" — recognizing Eric's handoff
+# "I'm done with that one" — recognizing the human's handoff
 
-The fact being tracked: *Eric has looked at this PR, he is done, it is now on the team.* It comes into existence the instant he finishes looking, and nothing in GitHub records that instant — so it is **DECLARED, never derived** (`internal/verbs/external_review.go` §0–§2).
+The fact being tracked: *the human has looked at this PR, he is done, it is now on the team.* It comes into existence the instant he finishes looking, and nothing in GitHub records that instant — so it is **DECLARED, never derived** (`internal/verbs/external_review.go` §0–§2).
 
 ## 🚫 You never declare it
 
-`ateam handoff` is Eric's verb. Run it ONLY when he has actually said so, in words, in a message you can point at.
+`ateam handoff` is the human's verb. Run it ONLY when he has actually said so, in words, in a message you can point at.
 
-Never on your own initiative — not from a merged-looking PR, not from an initiative that has gone quiet, not from GitHub. §0 of the contract forbids reading `reviewDecision` / `reviewRequests` / `latestReviews` at all: reviewer assignment is automated on the target repos, so those fields say nothing about whether Eric has looked. There is no signal you can compute that means "he is done."
+Never on your own initiative — not from a merged-looking PR, not from an initiative that has gone quiet, not from GitHub. §0 of the contract forbids reading `reviewDecision` / `reviewRequests` / `latestReviews` at all: reviewer assignment is automated on the target repos, so those fields say nothing about whether the human has looked. There is no signal you can compute that means "he is done."
 
 There is also no sweep. A periodic *"these three PRs are sitting — which are you done with?"* was offered to Eric on 2026-07-29 and deferred: "second one for now." Do not build one, do not improvise one, do not re-propose it to him. This page teaches you only to RECOGNIZE what he volunteers.
 
@@ -38,10 +38,10 @@ NOT a declaration. Each of these has a real other meaning, so do nothing rather 
 
 That is the rule. It outranks being helpful, and it outranks acting in one turn. Here is why: the two errors are not symmetric.
 
-- A **missed** handoff costs Eric one repeated sentence. He says it again and it sticks.
+- A **missed** handoff costs the human one repeated sentence. He says it again and it sticks.
 - A **wrong** handoff silently removes a PR from the only queue that tells him it needs him. No error, no notification, nothing to notice — the row simply stops appearing, and he finds out when someone asks weeks later why nobody merged it.
 
-That second failure is the precise failure this entire design exists to prevent (`internal/verbs/external_review.go` §0): a PR hidden from Eric because something concluded he was done with it when he was not. §0 killed the version that concluded it from GitHub review state. A guessed referent arrives at the same place by a different road, and it is no better for having been a guess about *which* PR rather than a guess about *whether*.
+That second failure is the precise failure this entire design exists to prevent (`internal/verbs/external_review.go` §0): a PR hidden from the human because something concluded he was done with it when he was not. §0 killed the version that concluded it from GitHub review state. A guessed referent arrives at the same place by a different road, and it is no better for having been a guess about *which* PR rather than a guess about *whether*.
 
 So a question is never the expensive option here.
 
@@ -81,4 +81,4 @@ Same recognition rules, same resolution rules — resolved against the rows repo
 
 ## After it lands
 
-The row reports `AWAITING-EXTERNAL-REVIEW` — not ours, not Eric's, and not idle. Nothing to nudge, nothing to brief. What that status means for your scan: references/operations.md.
+The row reports `AWAITING-EXTERNAL-REVIEW` — not ours, not the human's, and not idle. Nothing to nudge, nothing to brief. What that status means for your scan: references/operations.md.

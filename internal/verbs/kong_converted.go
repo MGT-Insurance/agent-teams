@@ -1247,7 +1247,7 @@ func RegisterWriteKong(p *cli.Parser) {
 		notify: notifyToSteward,
 	})
 	p.AddVerb("clear-gate", "Clear the human-review gate on an initiative.", &clearGateKong{})
-	p.AddVerb("handoff", "Declare (or clear) that Eric is done looking at an initiative; it's on the team for external review.", &handoffKong{})
+	p.AddVerb("handoff", "Declare (or clear) that the human is done looking at an initiative; it's on the team for external review.", &handoffKong{})
 	p.AddVerb("learn", "Store a memory for a role.", &learnKong{})
 	p.AddVerb("close", "Close an initiative.", &closeKong{
 		runUpdateLocalMain: runUpdateLocalMainScript,
