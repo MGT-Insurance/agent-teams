@@ -149,7 +149,13 @@ func watcherState(pidFile string) (state string, pid int) {
 		// No pidfile.
 		return "MISSING-WATCHER", 0
 	}
-	pidStr := strings.TrimSpace(string(data))
+	// Pidfile is "<pid>\t<session-id>" (see pidfileEntryPid, messaging.go) —
+	// not a bare pid. A plain Atoi on the whole entry always fails against a
+	// real pidfile written by wake-watcher.sh, so every healthy watcher
+	// reported STALE-PIDFILE. Reuse the same helper relay_pidfile.go and
+	// relay_supervise.go already use for this format.
+	entry := strings.TrimSpace(string(data))
+	pidStr := pidfileEntryPid(entry)
 	p, err := strconv.Atoi(pidStr)
 	if err != nil || p <= 0 {
 		// Pidfile present but contents invalid — treat as stale.
