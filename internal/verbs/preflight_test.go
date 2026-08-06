@@ -946,6 +946,15 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 	}
 }
 
+// LOAD-BEARING, do not weaken: this is the ONLY test that proves Run() actually
+// CALLS preflightOverrideTokenCheck to wire the minted token into the verdict.
+// Verified by mutation (agent-teams-25s3.3): bypassing the override in Run()
+// reddens only this test; the dedicated TestCheckRoleProseInContext_* tests stay
+// green because they exercise the compare logic directly, never through Run().
+// So compare-logic coverage and wiring coverage are complementary, and this test
+// is the whole of the wiring half — its launch closure must keep echoing back the
+// REAL injected token (via extractInjectedPreflightToken), never a hardcoded
+// value, or an unwired override would ship with a fully green suite.
 func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude", "projects")
