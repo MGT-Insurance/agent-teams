@@ -1,8 +1,9 @@
 # Why these definitions live here instead of `agents/`
 
-These are the four agent-teams role agent definitions (`planner.md`,
-`implementer.md`, `tester.md`, `reviewer.md`). They live in `roles/` instead
-of `plugins/agent-teams/agents/` **so Claude Code does not auto-register
+These are the agent-teams role agent definitions (`planner.md`,
+`implementer.md`, `tester.md`, `reviewer.md`, `investigator.md`). They live
+in `roles/` instead of
+`plugins/agent-teams/agents/` **so Claude Code does not auto-register
 them**, because plugin-scope registration is broken for named teammate
 spawns. This is a workaround for an open upstream Claude Code bug, not a
 stylistic choice — read on before "cleaning it up."
@@ -16,7 +17,7 @@ All three OPEN as of 2026-08-04:
   filter excluding `built-in` and `plugin` sources.
 - **anthropics/claude-code#81746** — our exact case.
 - **anthropics/claude-code#81852** — the `tools:` allowlist is dropped on
-  the same path. Does not currently affect us — none of our four
+  the same path. Does not currently affect us — none of our role
   definitions declare a `tools:` key — but it will the moment someone adds
   one.
 
@@ -54,7 +55,7 @@ the plugin definition correctly.
 
 ## The fix in force
 
-The four definitions moved to `plugins/agent-teams/roles/`, a directory
+The definitions moved to `plugins/agent-teams/roles/`, a directory
 Claude Code does not scan for auto-registration (unlike `agents/`,
 `skills/`, `hooks/`, `commands/`). `ateam dispatch` (and `ateam resume`,
 and every other background launcher that goes through `bgSessionArgs`)
@@ -88,7 +89,7 @@ back in `agents/`.
 
 | Location | Why |
 |---|---|
-| `plugins/agent-teams/roles/*.md` (this directory) | The four role definitions themselves, kept out of Claude Code's `agents/` auto-registration scan. |
+| `plugins/agent-teams/roles/*.md` (this directory) | The role definitions themselves, kept out of Claude Code's `agents/` auto-registration scan. Adding one here is all it takes: `buildAgentsJSON` scans the directory and has no allow-list of role names. |
 | `internal/verbs/agentsjson.go` | Builds the `--agents` JSON payload from these files at launch time (`resolveRolesDir` + `buildAgentsJSON`); also backs the `ateam agents-json` verb used to inspect the payload without launching a session. |
 | `internal/verbs/dispatch.go` (`bgSessionArgs`) | Passes `--agents <payload>` on every background launch (`ateam dispatch`, `ateam resume`, `ateam new-initiative`, the `--launch-prompt` path). |
 | `plugins/agent-teams/hooks/scripts/block-colon-named-role-spawn.sh` | PreToolUse hook that denies a **named** spawn of the removed `agent-teams:<role>` colon form. The colon path never consults the type registry, so a stale colon-named spawn would otherwise launch a generic agent with full tools and no error, silently — this hook converts that into a loud, actionable message pointing at the hyphen key. |
