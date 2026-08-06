@@ -48,6 +48,22 @@ const (
 // The six verb-owned check ids, CLOSED per contract artifact (1) as of the
 // 2026-08-06 freeze. Check ids are stable API (contract artifact (3)) —
 // renaming one is a breaking change.
+//
+// checkRoleDefinitionAttached was RENAMED to checkRoleTypeRegistered by the
+// agent-teams-25s3.19/.20 amendment. Measured live (2026-08-06): the ONLY
+// session this verb ever launches is `claude -p`, and its sidecar is a THIN
+// shape (agentType, description, name, spawnDepth, toolUseId — no
+// customAgentType, no taskKind, no model, no permissionMode). What that
+// shape can witness is that the requested role TYPE resolved (an
+// unresolvable subagent_type is rejected before any spawn, writing no
+// sidecar at all — verified with two deliberately-bogus type requests that
+// produced zero sidecars), NOT that the role's definition body attached.
+// The rename is mandatory, not cosmetic: a check named for attachment while
+// witnessing only registration is the exact silent-overclaim species this
+// initiative exists to eliminate (the corpus contains a real sidecar,
+// planner-baretest, where the type registered and the spawn succeeded but
+// the rich-shape attachment witness, customAgentType, was silently absent —
+// anthropics/claude-code#78234).
 const (
 	// REASON-NO-SESSION: runs before launch; its own failure IS "no session
 	// can be launched" (contract artifact (1)(c)).
@@ -58,16 +74,24 @@ const (
 	// REASON-POST-EXIT (this and the three below): the sidecar is written
 	// by the harness beside the transcript and cannot be read reliably from
 	// inside the session that produces it — amendment (A)'s write-lag race.
-	checkSpawnRecordPresent     = "spawn-record-present"
-	checkRoleDefinitionAttached = "role-definition-attached"
-	checkRoleModelAttached      = "role-model-attached"
-	checkSpawnPermissionMode    = "spawn-permission-mode"
+	checkSpawnRecordPresent  = "spawn-record-present"
+	checkRoleTypeRegistered  = "role-type-registered"
+	checkRoleModelAttached   = "role-model-attached"
+	checkSpawnPermissionMode = "spawn-permission-mode"
 )
 
 // preflightProbedRoleKey is the --agents payload key (and expected
-// customAgentType) for the role the skill spawns (agent-teams-25s3.4 step
-// 2: "agent-teams-implementer", hyphen key, no model argument).
+// agentType under this verb's thin -p sidecars) for the role the skill
+// spawns (agent-teams-25s3.4 step 2: "agent-teams-implementer", hyphen key,
+// no model argument).
 const preflightProbedRoleKey = "agent-teams-implementer"
+
+// preflightProbeSpawnName is the fixed name the skill spawns its one
+// teammate under (agent-teams-25s3.4 step 2: `name: "preflight-probe"`).
+// Matching sidecars by this name — rather than by taskKind, which the thin
+// -p shape never carries — is what makes spawn-record-present salvageable
+// under this launch mode (agent-teams-25s3.19/.20 amendment).
+const preflightProbeSpawnName = "preflight-probe"
 
 // preflightProbeSessionModel is the probe session's own --model (contract
 // artifact (6)) — named as a constant, not a comment, so
@@ -365,8 +389,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// JSON verdict parsed: the sidecar is the harness's own record and is
 	// independent of what the skill printed, so a broken skill emission
 	// doesn't hide a healthy (or unhealthy) spawn.
-	expectedModel, expectedModelErr := preflightExpectedProbeModel(agentsJSON)
-	checks = append(checks, preflightSidecarChecks(scan, sleep, sessionID, expectedModel, expectedModelErr)...)
+	checks = append(checks, preflightSidecarChecks(scan, sleep, sessionID)...)
 
 	result := buildPreflightResult(checks, sessionID)
 	if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
@@ -388,7 +411,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 // never ran because roles-payload-builds failed before any session could
 // be launched.
 func preflightSkippedChecks(reason string) []preflightCheck {
-	ids := []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleDefinitionAttached, checkRoleModelAttached, checkSpawnPermissionMode}
+	ids := []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleTypeRegistered, checkRoleModelAttached, checkSpawnPermissionMode}
 	out := make([]preflightCheck, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, preflightCheck{Check: id, Status: preflightSkip, Detail: reason})
@@ -397,10 +420,34 @@ func preflightSkippedChecks(reason string) []preflightCheck {
 }
 
 // preflightRoleModelCheck computes the role-model-attached verdict for one
-// sidecar. MEASURED, not assumed (agent-teams-25s3.2 note, clean
-// first-party control captured 2026-08-05: spawning agent-teams-tester from
-// an opus session with NO model argument produced sidecar model=sonnet,
-// matching roles/tester.md's frontmatter, not the caller's session model).
+// sidecar — the REAL predicate, correct, and mutation-verified twice
+// (agent-teams-25s3.3 commits 35fbaff, 7a8b87d). CURRENTLY UNREACHABLE FROM
+// Run(): agent-teams-25s3.19/.20 measured live that the ONLY sidecar shape
+// this verb's `claude -p` launch mode ever produces is the THIN five-key
+// shape, which never carries a `model` field at all (0 written, not merely
+// 0 matching an expectation) — so this function's entire premise, a sidecar
+// that MIGHT carry the field, does not hold under this launch mode.
+// preflightSidecarChecks ROUTES AROUND this function today, emitting a
+// direct UNPINNED for role-model-attached instead of calling it — calling
+// it against an always-absent field would report a per-run FAIL for a
+// property this launch mode can never witness, which is exactly the
+// false-red direction this rewrite exists to fix.
+//
+// KEPT, NOT DELETED, on team-lead's explicit instruction: this becomes live
+// again — reachable from preflightSidecarChecks once more — the moment the
+// launch mode changes to one that writes a rich sidecar (e.g. contract
+// artifact (6) is amended to launch a dispatched/background session rather
+// than `-p`). Its own fixtures (TestPreflightRoleModelCheck_*) keep proving
+// it correct in isolation so it is ready to be wired back in without
+// re-deriving any of this.
+//
+// MEASURED, not assumed (agent-teams-25s3.2 note, clean first-party control
+// captured 2026-08-05: spawning agent-teams-tester from an opus session
+// with NO model argument produced sidecar model=sonnet, matching
+// roles/tester.md's frontmatter, not the caller's session model) — that
+// control was against a DISPATCHED session's rich sidecar, which is exactly
+// the population this function is designed for and exactly the population
+// this verb never creates.
 //
 // PRECONDITION GATE (agent-teams-25s3.3 AMENDMENT 2026-08-06, second pass):
 // this check can only discriminate "the role definition attached" from "it
@@ -456,7 +503,24 @@ func preflightRoleModelCheck(sc spawnCheckSidecarWithPath, expectedModel string,
 // teammate. All four are REASON-POST-EXIT (contract artifact (1)(c)): the
 // sidecar is written by the harness beside the transcript and cannot be
 // read reliably from inside the session that produces it.
-func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Duration), sessionID, expectedModel string, expectedModelErr error) []preflightCheck {
+//
+// REWRITTEN by the agent-teams-25s3.19/.20 amendment: this verb only ever
+// launches `claude -p`, and that launch mode's sidecar is the THIN shape
+// (agentType, description, name, spawnDepth, toolUseId — no taskKind, no
+// customAgentType, no model, no permissionMode), never the rich shape a
+// dispatched session produces. Two of the four checks stay real predicates
+// under the thin shape (spawn-record-present, role-type-registered); two
+// become honest UNPINNED because their fields are never written under this
+// launch mode at all (role-model-attached, spawn-permission-mode) — see
+// preflightRoleModelCheck's doc comment for why that function is kept but
+// routed around rather than called.
+//
+// SKIP CASCADE PRESERVED: when no sidecar is found, all three dependent
+// checks SKIP, never FAIL — a live checkpoint run (agent-teams-25s3.3,
+// 2026-08-06) confirmed one root cause should produce one FAIL and three
+// honest SKIPs, not four reds, so the report points at the single broken
+// thing.
+func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Duration), sessionID string) []preflightCheck {
 	sidecars := pollPreflightSidecars(scan, sleep, sessionID, preflightExpectedTeammates, preflightSidecarPollDeadline, preflightSidecarPollInterval)
 
 	if len(sidecars) < preflightExpectedTeammates {
@@ -465,11 +529,11 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 		// pass — a healthy-looking zero-findings read is indistinguishable
 		// from "the sidecar has not landed yet" otherwise. ZERO FINDINGS
 		// WHEN N ARE EXPECTED MUST NEVER EXIT 0.
-		detail := fmt.Sprintf("observed %d in_process_teammate sidecar(s) for session %s, expected %d", len(sidecars), sessionID, preflightExpectedTeammates)
+		detail := fmt.Sprintf("observed %d sidecar(s) named %q for session %s, expected %d", len(sidecars), preflightProbeSpawnName, sessionID, preflightExpectedTeammates)
 		reason := "no teammate sidecar was found to inspect"
 		return []preflightCheck{
 			{Check: checkSpawnRecordPresent, Status: preflightFail, Detail: detail, Witness: "harness subagent sidecar (~/.claude/projects/*/<session>/subagents/*.meta.json)", Remediation: "the probe's teammate spawn never landed a sidecar — re-run `ateam preflight`; if it recurs, this is the upstream teammate-spawn regression this initiative exists to catch"},
-			{Check: checkRoleDefinitionAttached, Status: preflightSkip, Detail: reason},
+			{Check: checkRoleTypeRegistered, Status: preflightSkip, Detail: reason},
 			{Check: checkRoleModelAttached, Status: preflightSkip, Detail: reason},
 			{Check: checkSpawnPermissionMode, Status: preflightSkip, Detail: reason},
 		}
@@ -479,39 +543,56 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 	checks := []preflightCheck{{
 		Check:   checkSpawnRecordPresent,
 		Status:  preflightPass,
-		Detail:  fmt.Sprintf("observed %d in_process_teammate sidecar(s), expected %d", len(sidecars), preflightExpectedTeammates),
+		Detail:  fmt.Sprintf("observed %d sidecar(s) named %q, expected %d", len(sidecars), preflightProbeSpawnName, preflightExpectedTeammates),
 		Witness: sc.Path,
 	}}
 
-	// role-definition-attached: customAgentType is the harness's own record
-	// of which role definition attached to the named spawn — the spawned
-	// agent cannot influence it (agent-teams-25s3.3 step 5a; spawncheck.go's
-	// package doc explains why this field, not agentType, is the
-	// discriminator).
-	if sc.CustomAgentType == preflightProbedRoleKey {
-		checks = append(checks, preflightCheck{Check: checkRoleDefinitionAttached, Status: preflightPass, Detail: "customAgentType=" + preflightProbedRoleKey, Witness: sc.Path + "#customAgentType"})
+	// role-type-registered (RENAMED from role-definition-attached — see the
+	// doc comment on the const block above for why the rename is mandatory).
+	// agentType is the thin shape's REQUESTED subagent_type; a sidecar
+	// existing at all with agentType == the probed role proves the type
+	// RESOLVED in this session (an unresolvable type is rejected outright
+	// before any spawn, writing no sidecar — measured live,
+	// agent-teams-25s3.19). This witnesses REGISTRATION, never ATTACHMENT:
+	// it does not prove the role's prose body was non-empty. That property
+	// is instead caught deterministically, pre-launch, by parseRoleFile's
+	// hard-fail (agentsjson.go) surfacing through roles-payload-builds — the
+	// two checks together cover what this initiative wants; this one alone
+	// does not.
+	if sc.AgentType == preflightProbedRoleKey {
+		checks = append(checks, preflightCheck{Check: checkRoleTypeRegistered, Status: preflightPass, Detail: "agentType=" + preflightProbedRoleKey + " (type registered)", Witness: sc.Path + "#agentType"})
 	} else {
-		got := sc.CustomAgentType
+		got := sc.AgentType
 		if got == "" {
 			got = "(absent)"
 		}
-		checks = append(checks, preflightCheck{Check: checkRoleDefinitionAttached, Status: preflightFail, Detail: fmt.Sprintf("customAgentType=%s, want %s", got, preflightProbedRoleKey), Witness: sc.Path + "#customAgentType", Remediation: "the named spawn did not attach a role definition — confirm --agents is present in the probe launch argv and that roles/implementer.md still resolves"})
+		checks = append(checks, preflightCheck{Check: checkRoleTypeRegistered, Status: preflightFail, Detail: fmt.Sprintf("agentType=%s, want %s", got, preflightProbedRoleKey), Witness: sc.Path + "#agentType", Remediation: "the named spawn's role type did not resolve — confirm --agents is present in the probe launch argv and that roles/implementer.md still resolves"})
 	}
 
-	checks = append(checks, preflightRoleModelCheck(sc, expectedModel, expectedModelErr))
+	// role-model-attached — UNPINNED, unconditionally, under this verb's
+	// ONLY launch mode. Measured live (agent-teams-25s3.19, 2026-08-06): a
+	// `claude -p` probe's sidecar never carries a `model` field at all — not
+	// "carries one that happens not to match", genuinely absent by launch
+	// mode, every time. ROUTES AROUND preflightRoleModelCheck rather than
+	// calling it (see that function's doc comment): calling it here would
+	// report a per-run FAIL for a property this launch mode can never
+	// witness, which is the exact false-red direction this rewrite exists
+	// to fix.
+	checks = append(checks, preflightCheck{
+		Check:   checkRoleModelAttached,
+		Status:  preflightUnpinned,
+		Detail:  "a claude -p probe session's sidecar never carries a model field — not witnessable under this launch mode",
+		Witness: sc.Path,
+	})
 
-	// spawn-permission-mode (amendment B): execution.md requires
-	// bypassPermissions for hands-off operation — a teammate without it
-	// stalls on prompts in a background session with no one to answer.
-	if sc.PermissionMode == "bypassPermissions" {
-		checks = append(checks, preflightCheck{Check: checkSpawnPermissionMode, Status: preflightPass, Detail: "permissionMode=bypassPermissions", Witness: sc.Path + "#permissionMode"})
-	} else {
-		got := sc.PermissionMode
-		if got == "" {
-			got = "(absent)"
-		}
-		checks = append(checks, preflightCheck{Check: checkSpawnPermissionMode, Status: preflightFail, Detail: fmt.Sprintf("permissionMode=%s, want bypassPermissions", got), Witness: sc.Path + "#permissionMode", Remediation: "the teammate spawn did not request bypassPermissions — a background teammate without it stalls on prompts with no one to answer; fix the spawn's mode argument"})
-	}
+	// spawn-permission-mode — UNPINNED for the same reason: the thin -p
+	// sidecar never carries a permissionMode field either.
+	checks = append(checks, preflightCheck{
+		Check:   checkSpawnPermissionMode,
+		Status:  preflightUnpinned,
+		Detail:  "a claude -p probe session's sidecar never carries a permissionMode field — not witnessable under this launch mode",
+		Witness: sc.Path,
+	})
 
 	return checks
 }

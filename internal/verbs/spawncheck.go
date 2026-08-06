@@ -592,15 +592,27 @@ type spawnCheckSidecarWithPath struct {
 	spawnCheckSidecar
 }
 
-// scanTeammateSidecarsForSession returns every in_process_teammate sidecar
-// under sessionID, across any project directory — the same glob
-// scanSpawnCheck uses, since <slug> is cwd-derived and a session's project
-// can't be guessed without walking. Unlike scanSpawnCheck this never
-// surfaces a malformed/unreadable sidecar as a warning: it is meant to be
-// called from inside a poll loop (agent-teams-25s3.3 amendment (A)) that
-// already treats "not enough sidecars yet" as expected transient state, so
-// a still-being-written file is silently skipped rather than reported on
-// every poll attempt.
+// scanTeammateSidecarsForSession returns the sidecar(s) named
+// preflightProbeSpawnName under sessionID, across any project directory —
+// the same glob scanSpawnCheck uses, since <slug> is cwd-derived and a
+// session's project can't be guessed without walking.
+//
+// MATCHES ON NAME, NOT taskKind (agent-teams-25s3.19/.20 amendment,
+// SUPERSEDES the original taskKind=="in_process_teammate" filter): measured
+// live that a `claude -p` probe session's sidecar is the THIN shape and
+// never carries a taskKind field at all, so that filter matched nothing and
+// hard-FAILed every healthy `-p` run. Filtering by the skill's fixed spawn
+// name works identically for both the thin shape (this verb's only real
+// population) and the rich shape (should this ever be pointed at one),
+// since `name` is present in both. This is preflight's OWN function — it
+// does not change scanSpawnCheck's semantics or its other callers (`ateam
+// spawn-check` has its own contract, untouched here).
+//
+// Unlike scanSpawnCheck this never surfaces a malformed/unreadable sidecar
+// as a warning: it is meant to be called from inside a poll loop
+// (agent-teams-25s3.3 amendment (A)) that already treats "not enough
+// sidecars yet" as expected transient state, so a still-being-written file
+// is silently skipped rather than reported on every poll attempt.
 func scanTeammateSidecarsForSession(projectsRoot, sessionID string) ([]spawnCheckSidecarWithPath, error) {
 	pattern := filepath.Join(projectsRoot, "*", sessionID, "subagents", "*.meta.json")
 	matches, err := filepath.Glob(pattern)
@@ -619,7 +631,7 @@ func scanTeammateSidecarsForSession(projectsRoot, sessionID string) ([]spawnChec
 		if json.Unmarshal(data, &sc) != nil {
 			continue
 		}
-		if sc.TaskKind != spawnCheckTeammateTaskKind {
+		if sc.Name != preflightProbeSpawnName {
 			continue
 		}
 		out = append(out, spawnCheckSidecarWithPath{Path: path, spawnCheckSidecar: sc})
