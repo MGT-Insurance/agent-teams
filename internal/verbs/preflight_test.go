@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -863,5 +864,48 @@ func TestPreflightKong_RolesDirUnresolvable_Exit2NoFail(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "resolve plugin roles dir") {
 		t.Errorf("stderr = %q, want it to name the unresolvable roles dir", stderr.String())
+	}
+}
+
+// TestPreflightProbeSpawnNameMatchesSkill pins the ONE literal that lives in
+// two artifacts: preflightProbeSpawnName here, and the spawn instruction in
+// plugins/agent-teams/skills/preflight/SKILL.md. The verb finds the probe's
+// harness record BY THAT NAME, so if the skill is renamed and this constant
+// is not, the verb matches zero sidecars and reports spawn-record-present
+// FAIL on a healthy install — a false red produced by a rename nobody would
+// think to check, in the tool whose whole value is being believed when it
+// goes red.
+//
+// A recognizer and its producer must share ONE literal; two hand-typed copies
+// cannot witness their own divergence. This test is what makes the drift loud
+// instead of silent. (The structurally better fix — the verb passing the name
+// to the skill at launch — would remove the second copy entirely, but it
+// changes the frozen launch argv and standalone mode has no verb to supply
+// it; recorded on agent-teams-25s3.3 as the move if this ever bites twice.)
+//
+// Asserts the spawn-parameter FORM, not the bare name: a test that only
+// checked the string appears somewhere would pass vacuously if the name
+// survived in prose while the spawn instruction was renamed. The shutdown
+// reference is pinned too — a rename that updates the spawn but not the
+// shutdown leaves the probe running.
+func TestPreflightProbeSpawnNameMatchesSkill(t *testing.T) {
+	// Deliberately FATAL, never skip, when SKILL.md is absent. A test that
+	// skips when its subject is missing silently stops checking, which is the
+	// exact defect class this initiative exists to remove — shipping one here
+	// would be indefensible.
+	path := filepath.Join("..", "..", "plugins", "agent-teams", "skills", "preflight", "SKILL.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v — this pin must FAIL, never skip, when its subject is missing", path, err)
+	}
+	skill := string(body)
+
+	spawnParam := `name: "` + preflightProbeSpawnName + `"`
+	if !strings.Contains(skill, spawnParam) {
+		t.Errorf("SKILL.md carries no %s — the skill and preflightProbeSpawnName (%q) have diverged, so the verb will match zero sidecars and report a healthy install as broken",
+			spawnParam, preflightProbeSpawnName)
+	}
+	if !strings.Contains(skill, preflightProbeSpawnName+"`") && !strings.Contains(skill, "`"+preflightProbeSpawnName) {
+		t.Errorf("SKILL.md never references %q outside the spawn parameter — the shutdown step must name the same probe, or a rename leaves it running", preflightProbeSpawnName)
 	}
 }
