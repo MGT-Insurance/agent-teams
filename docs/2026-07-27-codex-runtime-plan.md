@@ -38,9 +38,9 @@ Shared agent-teams domain
                   tie-session / stop
                   |                 |
           Claude adapter       Codex adapter
-          claude --bg          codex exec
-          claude respawn       codex exec resume
-          asyncRewake hook     Stop hook + supervisor
+          claude --bg          managed app-server
+          claude respawn       turn/start | turn/steer
+          asyncRewake hook     delivery coordinator
 ```
 
 Introduce only the runtime seams required by dispatch, session identity, mail,
@@ -84,10 +84,12 @@ The frozen interface and state-machine decisions for Phases 1–3 are in the
   turn.
 - Verify `stop_hook_active` can prevent accidental continuation loops.
 
-**Go/no-go gate:** an idle Codex thread must be externally prompted and perform
-one resumed turn under the same thread ID. Prefer `codex exec resume` for the
-first implementation. Evaluate app-server `thread/resume` plus `turn/start`
-only if the CLI route is inadequate.
+**Gate result (2026-08-06): GO with managed app-server.** An idle thread was
+externally prompted under the same thread ID; an active thread accepted mail
+through `turn/steer`; client disconnect, graceful daemon restart, and hard
+daemon failure were recoverable. The first slice requires standalone Codex
+and uses its managed daemon rather than one `codex exec resume` process per
+turn. See the [lifecycle spike](./2026-08-06-codex-app-server-spike.md).
 
 ## Phase 1 — Runtime-aware `ateam`
 
@@ -108,8 +110,9 @@ Work:
 - Extract a narrow runtime interface for launch, resume/wake, status, stop, and
   monitoring instructions.
 - Retain the current Claude implementation behind the Claude adapter.
-- Add a Codex adapter that launches `codex exec --json`, captures its thread
-  ID, and records it through a runtime-neutral session tie.
+- Add a Codex app-server client that idempotently starts the standalone managed
+  daemon, starts or resumes a thread, and records its thread ID through a
+  runtime-neutral session tie.
 - Accept Claude and Codex session IDs at the adapter boundary rather than
   treating `CLAUDE_CODE_SESSION_ID` as the domain identity.
 - Test with fake `claude` and `codex` executables. Never use the paid eval
@@ -123,13 +126,13 @@ Mail remains Beads-backed. Only the waking mechanism is runtime-specific.
 
 1. `ateam mail send` creates the message bead.
 2. It creates or reconciles the initiative doorbell.
-3. If a Codex turn is active, it leaves the doorbell pending.
-4. The Codex `Stop` hook sees the pending doorbell and requests a continuation
-   whose instruction is to run `ateam mail inbox`.
-5. If the thread is idle, `ateam` starts
-   `codex exec resume <thread-id> <mail-prompt>`.
-6. A small supervisor owns the resumed worker and checks the doorbell again
-   after process exit, closing the mail-during-shutdown race.
+3. A short-lived delivery coordinator calls the idempotent managed-daemon
+   start operation and acquires the initiative delivery lock.
+4. It reads the target thread and uses `turn/steer` when active.
+5. If the thread is idle or not loaded, it resumes the thread and uses
+   `turn/start`.
+6. It reconciles unread mail and the doorbell after completion or reconnect;
+   the Codex daemon, not the coordinator, owns the model turn lifetime.
 
 Machine-local, reconstructible runtime state may live at:
 
@@ -137,8 +140,8 @@ Machine-local, reconstructible runtime state may live at:
 ~/.agent-teams/runtimes/codex/<initiative-id>.json
 ```
 
-It may contain the Codex thread ID, active worker PID, last transition, and
-runtime version. Initiative and message truth remain in Beads.
+It may contain the Codex thread ID, active turn ID, last delivery transition,
+and runtime version. Initiative and message truth remain in Beads.
 
 ### Invariants
 
@@ -149,7 +152,8 @@ runtime version. Initiative and message truth remain in Beads.
   all currently unread mail.
 - Repair a missing doorbell whenever unread message beads exist.
 - Treat a stale doorbell as harmless and self-reconciling.
-- Hold a per-initiative lock while starting or running a wake worker.
+- Hold a per-initiative lock while inspecting state and selecting/delivering a
+  wake operation; do not hold it as a proxy for the daemon's turn lifetime.
 - Deliver mail that arrives while the worker is active, stopping, starting,
   or crashing.
 - Route relay- and Telegram-originated messages through the same path.
@@ -159,7 +163,7 @@ runtime version. Initiative and message truth remain in Beads.
 - Mail while idle wakes the same Codex thread.
 - Mail while busy is consumed before dormancy.
 - Two rapid messages cause one wake and both are read.
-- A worker crash leaves unread mail retriable.
+- A client or daemon crash leaves unread mail retriable.
 - Duplicate wake attempts never create parallel turns for one initiative.
 
 ## Phase 3 — Codex role definitions
@@ -527,3 +531,21 @@ Before reshaping PR #160, settle the daemon deployment contract. On the tested
 npm/mise installation, `codex app-server daemon start` required OpenAI's
 standalone Codex installation. The next gate decides whether standalone Codex
 is a prerequisite or ateam owns a user-service fallback.
+
+### Phase 0.6 addendum — managed daemon decision
+
+The deployment gate is now settled. Standalone Codex 0.146.1 exposed the
+official managed daemon, which detached under parent PID 1, treated duplicate
+start as idempotent, survived client disconnect, drained an active turn during
+supported stop, and recovered the same thread after hard daemon death.
+
+The first slice therefore requires standalone Codex and does not add an
+always-running ateam supervisor. Each short-lived delivery attempt ensures the
+managed daemon is running, acquires an initiative delivery lock, then selects
+`turn/steer` for an active turn or `thread/resume` plus `turn/start` for an
+idle/not-loaded thread. Beads unread mail remains authoritative.
+
+Shared setup/audit logic must report Codex absent, incompatible non-standalone
+Codex, or compatible standalone Codex. General setup warns for the optional
+incompatible case; explicitly selecting the Codex runtime fails with an
+actionable standalone-installer message.

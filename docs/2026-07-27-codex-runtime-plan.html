@@ -801,6 +801,24 @@ Before reshaping PR #160, settle the daemon deployment contract. On the tested
 npm/mise installation, `codex app-server daemon start` required OpenAI's
 standalone Codex installation. The next gate decides whether standalone Codex
 is a prerequisite or ateam owns a user-service fallback.
+
+### Phase 0.6 addendum — managed daemon decision
+
+The deployment gate is now settled. Standalone Codex 0.146.1 exposed the
+official managed daemon, which detached under parent PID 1, treated duplicate
+start as idempotent, survived client disconnect, drained an active turn during
+supported stop, and recovered the same thread after hard daemon death.
+
+The first slice therefore requires standalone Codex and does not add an
+always-running ateam supervisor. Each short-lived delivery attempt ensures the
+managed daemon is running, acquires an initiative delivery lock, then selects
+`turn/steer` for an active turn or `thread/resume` plus `turn/start` for an
+idle/not-loaded thread. Beads unread mail remains authoritative.
+
+Shared setup/audit logic must report Codex absent, incompatible non-standalone
+Codex, or compatible standalone Codex. General setup warns for the optional
+incompatible case; explicitly selecting the Codex runtime fails with an
+actionable standalone-installer message.
 </script>
   <script>
     (() => {

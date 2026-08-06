@@ -1,8 +1,8 @@
 # Codex app-server lifecycle spike
 
-- **Bead:** `agent-teams-bhe0.10`
+- **Beads:** `agent-teams-bhe0.10`, `agent-teams-bhe0.11`
 - **Date:** 2026-08-06
-- **Codex:** `codex-cli 0.145.0`
+- **Codex:** `codex-cli 0.145.0` (transient server), `0.146.1` (managed daemon)
 - **Branch:** `codex/runtime-worker-contract`
 
 [Open the styled HTML report](./2026-08-06-codex-app-server-spike.html)
@@ -12,10 +12,11 @@
 Use Codex app-server, rather than a detached `codex exec` process per turn, as
 the preferred Codex DRI runtime.
 
-This does **not** eliminate supervision. It moves supervision to the correct
-boundary: keep or restart one app-server daemon, then reconcile durable mail
-against its thread and turn state. App-server owns active turns, interruption,
-thread persistence, and steering. `ateam` still owns daemon health, a
+Require the standalone Codex installation and use its supported
+`codex app-server daemon` lifecycle. This eliminates the need for an
+`ateam`-owned always-running process supervisor. The managed daemon owns its
+process lifetime, active turns, interruption, thread persistence, and steering.
+`ateam` still owns an idempotent daemon-start health check, a short-lived
 per-initiative delivery lock, Beads-backed mail truth, and crash reconciliation.
 
 Do not begin `agent-teams-bhe0.4` against the current `codex exec` worker
@@ -35,17 +36,17 @@ durable Beads mail + doorbell
  active thread      idle/notLoaded thread
  turn/steer         thread/resume + turn/start
        \             /
-        Codex app-server daemon
+     Codex managed app-server daemon
               |
        persisted Codex thread
 ```
 
-The supervisor is no longer the owner of every model turn. Its job is to make
-the daemon reachable and restart it after failure. If the supervisor/client
-dies while app-server remains alive, the turn continues and another client can
-reconnect. If app-server itself dies, the active turn is durably marked
-interrupted; after restart, the same thread resumes idle and unread mail starts
-a recovery turn.
+There is no long-lived `ateam` supervisor in this design. Every delivery
+attempt first calls the idempotent managed-daemon start operation, connects to
+the Unix socket, and reconciles the target thread while holding the initiative
+delivery lock. If that short-lived client dies, the turn continues. If the
+daemon dies, the next delivery attempt restarts it; the old active turn is
+durably marked interrupted and unread mail starts a recovery turn.
 
 ## Reproduction
 
@@ -71,6 +72,16 @@ The harness:
 - stops every process it creates; and
 - refuses to disturb an already-running managed daemon.
 
+The managed-daemon follow-up is independently reproducible with:
+
+```bash
+node scripts/spike-codex-managed-daemon.mjs --run-live \
+  > /tmp/codex-managed-daemon-spike.json
+```
+
+It requires the standalone Codex layout, refuses to run when a daemon is
+already active, and restores the daemon to its initial stopped state.
+
 The final successful run used thread
 `019fd84e-7418-7bf3-9f4a-2555292b0e8f`. Its durable rollout is local Codex
 evidence, not a checked-in fixture; IDs and timings below identify that run.
@@ -88,6 +99,9 @@ evidence, not a checked-in fixture; IDs and timings below identify that run.
 | CLI launcher `SIGKILL`, native app-server alive | Native PID survived; a new client reconnected, read the turn as active, steered mail, and observed completion | A dead launcher/supervisor does not strand a live Codex session |
 | Native app-server `SIGKILL` | Restarted server read the old turn as `interrupted`; `thread/resume` returned idle; a new recovery turn completed | Daemon death is recoverable from durable thread + durable mail state |
 | `thread/list` after restart | Same thread was discoverable with path, cwd, git branch, version, and idle status | Status/list tooling can be built without scanning process tables |
+| Official managed daemon start | Fixed standalone binary detached with parent PID 1; a second start returned `alreadyRunning` | Codex, not `ateam`, can own the durable daemon process |
+| Managed daemon graceful stop during a turn | Stop waited about 10.7 seconds for completion; restart read the completed turn | Supported stop drains active work |
+| Managed daemon `SIGKILL` during a turn | Restart read the old turn as `interrupted`; resume returned idle; recovery turn completed | A short-lived delivery attempt can restart and reconcile daemon failure |
 
 ### Exact lifecycle evidence
 
@@ -132,23 +146,21 @@ Production delivery should primarily consume `turn/completed` notifications and
 use persisted turn metadata for reconnect recovery. Beads message consumption,
 not Codex thread status, remains the authoritative mail acknowledgment.
 
-### The managed daemon has an installation constraint
+### Standalone Codex is the selected installation contract
 
-On this machine, `codex app-server daemon start` failed because Codex was
-installed through npm/mise. Codex 0.145.0 requires the standalone installer at
-`~/.codex/packages/standalone/current/codex` for its managed daemon commands.
-The spike did not alter the machine installation; it launched the same native
-app-server on a private socket instead.
+The npm/mise Codex 0.145.0 installation could run transient app-server but was
+rejected by `codex app-server daemon start`. After installing standalone Codex
+0.146.1, the managed daemon started from
+`~/.codex/packages/standalone/current/codex`, detached under parent PID 1, and
+passed reconnect, graceful restart, hard-crash recovery, and thread discovery.
 
-Before shipping, choose and test one deployment contract:
-
-- require the supported standalone Codex installation and use
-  `codex app-server daemon`; or
-- let `ateam` install/manage app-server as a user service with an adoptable
-  socket and explicit health checks.
-
-Do not silently depend on the npm wrapper's observed child-orphan behavior as a
-supervision guarantee.
+The first Codex slice therefore requires standalone Codex. Shared setup/audit
+logic must distinguish three states: Codex absent, Codex present but without
+the standalone managed binary, and a compatible standalone installation. Both
+the Claude `/setup-agent-teams` flow and the future Codex setup skill must
+surface the same result. General setup warns for an incompatible optional
+Codex install; selecting `runtime: codex` fails with an actionable installer
+message.
 
 ### Source classification was unexpected
 
@@ -176,7 +188,7 @@ Replace or amend:
 
 Add:
 
-- one app-server daemon endpoint and health/restart policy per machine;
+- the standalone managed-daemon endpoint and idempotent start operation;
 - a JSON-RPC client for initialize, thread read/list/resume, turn start/steer,
   turn completion, and interrupt;
 - an initiative delivery lock around state inspection and wake selection;
@@ -185,18 +197,10 @@ Add:
 - regression fixtures for active `turn/start` folding and transient incomplete
   terminal snapshots.
 
-## Next spike
+## Remaining operational verification
 
-Before production code, settle daemon deployment:
-
-1. install the standalone Codex CLI in an isolated environment, not over the
-   user's current install;
-2. repeat launcher/native crash cases through `codex app-server daemon` and
-   `codex app-server proxy`;
-3. verify daemon bootstrap across logout/reboot and CLI upgrade;
-4. decide whether standalone Codex is a prerequisite or `ateam` owns a user
-   service fallback; and
-5. amend `docs/codex-runtime-contract.md` only after that decision.
-
-The feasibility ruling itself is **GO for app-server**, with daemon deployment
-still an explicit pre-implementation gate.
+The daemon deployment decision is settled: **GO with standalone Codex and its
+managed app-server daemon**. Logout/reboot and CLI-upgrade behavior remains an
+operational compatibility check, not a blocker for replacing the incorrect
+per-turn `codex exec` contract. Delivery must always call the idempotent start
+operation, so it does not rely on login-time bootstrap to wake mail.

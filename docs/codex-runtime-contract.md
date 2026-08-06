@@ -2,7 +2,7 @@
 
 - **Initiative:** `agent-teams-bhe0`
 - **Contract bead:** `agent-teams-bhe0.2`
-- **Status:** frozen for the first Codex loop-closing slice
+- **Status:** amended 2026-08-06 for the managed app-server architecture
 
 This document is the shared contract for the runtime adapter, Codex worker,
 mail wake supervisor, lifecycle hooks, and Codex role definitions. The
@@ -13,16 +13,60 @@ The first slice supports the existing Claude runtime and one background Codex
 DRI thread per initiative. It does not attempt a general multi-runtime
 scheduler or persistent Codex role-agent threads.
 
+## 0. Managed app-server amendment
+
+The live lifecycle spikes invalidated the original assumption that Codex needs
+one detached `codex exec` child plus a long-lived `ateam` supervisor for every
+turn. Sections 3 through 7 and the conformance tests below must be read with
+this amendment; where old worker-process language conflicts, this section wins.
+
+The selected deployment contract is:
+
+- Codex runtime support requires the standalone Codex installation and its
+  fixed managed binary under `~/.codex/packages/standalone/current/codex`.
+- The supported `codex app-server daemon` owns the long-lived machine daemon.
+  `ateam` does not install a second user service and does not remain alive to
+  supervise the daemon.
+- Every launch, resume, wake, status, or stop operation first performs the
+  appropriate managed-daemon health/lifecycle operation and then speaks the
+  app-server protocol over its Unix socket.
+- A short-lived per-initiative delivery coordinator serializes state
+  inspection and one delivery decision. It uses `turn/steer` for the actual
+  active turn, or `thread/resume` plus `turn/start` when idle/not loaded.
+- Codex owns turn lifetime. Client death does not stop an active turn. Daemon
+  death makes that turn interrupted; a later coordinator restarts the daemon,
+  resumes the same thread, and retries still-unread durable mail.
+- Beads unread messages remain the delivery truth. An accepted JSON-RPC call,
+  thread status, or completed model turn does not itself acknowledge mail.
+
+The managed daemon detached under parent PID 1, treated duplicate start as
+idempotent, drained an active turn during supported stop, and recovered the
+same thread after hard daemon death. See the
+[app-server lifecycle spike](./2026-08-06-codex-app-server-spike.md).
+
+Setup and runtime selection share one compatibility check:
+
+1. no `codex` executable: report Codex unavailable;
+2. `codex` exists but the standalone managed binary is absent or incompatible:
+   warn during general setup and explain how to install standalone Codex;
+3. a compatible standalone installation: report its CLI and app-server
+   versions; and
+4. an explicitly selected Codex runtime fails closed for states 1 and 2.
+
+The existing Claude `/setup-agent-teams` flow and the future Codex setup skill
+must invoke this shared check rather than maintaining separate shell probes.
+
 ## 1. Terms and sources of truth
 
 - A **runtime** is the program that owns an agent session: `claude` or `codex`.
   It is not the initiative's launch `mode`.
 - A **session** is an opaque runtime-scoped identifier. It is a Claude session
   ID for `claude` and a Codex thread ID for `codex`.
-- A **worker** is the machine-local process currently executing a turn for an
-  initiative.
-- A **supervisor** owns worker serialization, process lifecycle, and the
-  post-exit mail check.
+- A **Codex daemon** is the standalone CLI's managed app-server process. It
+  owns machine-local Codex threads and turns across client connections.
+- A **delivery coordinator** is a short-lived `ateam` operation that serializes
+  thread inspection and one wake/delivery decision for an initiative. It does
+  not own the daemon or the complete turn lifetime.
 - A **doorbell** is an expendable wake signal. The unread Beads messages are
   the durable mail payload.
 
@@ -92,15 +136,16 @@ boundary. Claude hooks may continue using `CLAUDE_CODE_SESSION_ID` as a
 compatibility fallback. Codex code must pass the captured thread ID
 explicitly; the domain must not invent a Codex environment-variable contract.
 
-If a Codex thread-start event cannot be durably tied to its initiative, the
-supervisor stops that worker and reports an error. It must not leave an active,
-unrouteable thread.
+If a Codex thread cannot be durably tied to its initiative, the coordinator
+interrupts its verified active turn when possible and reports an error. It must
+not acknowledge mail or leave an active, unrouteable thread intentionally.
 
 ## 3. Package boundaries and frozen interfaces
 
 Use `internal/sessionruntime` for runtime-neutral types and adapter selection.
-Use `internal/worker` for machine-local state, locking, and supervision. This
-avoids conflating the adapter with Go's standard `runtime` package.
+Use `internal/worker` for machine-local delivery state and locking; the package
+may be renamed during the amendment implementation. This avoids conflating the
+adapter with Go's standard `runtime` package.
 
 The implementation may add private fields, but downstream work may depend on
 the following semantic interface:
@@ -138,7 +183,7 @@ type Adapter interface {
 }
 ```
 
-Interface semantics:
+Original interface semantics (superseded for Codex by section 0):
 
 - `Launch` and `Resume` block for the complete runtime-process lifetime. A
   detached `ateam runtime-worker` owns that blocking call, so public dispatch
@@ -152,17 +197,19 @@ Interface semantics:
 - An adapter owns command construction, runtime event parsing, and
   event output. Verbs and skills must not assemble `claude` or `codex` command
   lines themselves.
-- Status, stop, and monitoring are worker/supervisor concerns layered over the
-  adapter. Stopping a Codex worker does not archive or delete its durable
+- Status, stop, and monitoring are coordinator/app-server concerns layered over
+  the adapter. Stopping a Codex turn does not archive or delete its durable
   thread.
 - Tests inject an adapter registry and fake executables. Paid live Codex runs
   are feasibility probes, not unit or integration test dependencies.
 
-The supervisor is the only component allowed to call `Launch` or `Resume` for
-Codex. Public dispatch, resume, mail, and hook paths request supervision; they
-do not directly start a Codex turn.
+The Codex adapter boundary must instead expose the semantic operations needed
+by the coordinator: ensure daemon, start/resume/read/list a thread,
+start/steer/interrupt a turn, and observe completion. Public dispatch, resume,
+mail, and hook paths request coordination; they do not construct app-server
+requests or choose active-versus-idle delivery themselves.
 
-## 4. Machine-local worker state
+## 4. Machine-local delivery state
 
 Runtime state lives under the resolved `AGENT_TEAMS_HOME`:
 
@@ -179,77 +226,62 @@ The JSON schema starts at version 1:
   "runtime": "codex",
   "initiative_id": "agent-teams-1234",
   "session_id": "opaque-thread-id",
-  "phase": "starting",
-  "generation": "unique-launch-token",
-  "supervisor_pid": 1001,
-  "worker_pid": 1002,
-  "worker_started_at": "2026-08-03T12:00:00.000000000Z",
+  "phase": "delivering",
+  "generation": "unique-delivery-token",
+  "active_turn_id": "opaque-turn-id",
+  "daemon_version": "0.146.1",
   "updated_at": "2026-08-03T12:00:00.000000000Z"
 }
 ```
 
-`session_id` and worker fields may be absent while starting. State writes are
-atomic and private to the user. `generation` changes for each acquired worker
-lifetime and prevents an old supervisor from overwriting a newer generation.
-The state-file PID is diagnostic, not proof of lock ownership or sufficient
-authority to signal a process.
+`session_id` and turn fields may be absent while starting. State writes are
+atomic and private to the user. `generation` changes for each acquired
+delivery attempt and prevents an old coordinator from overwriting a newer
+generation. Daemon status comes from the managed-daemon operation and
+app-server protocol, not a cached PID.
 
 The initial phase vocabulary is:
 
-- `starting`: lock held, runtime worker not yet durably bound;
-- `running`: lock held and worker executing;
-- `stopping`: a verified stop was requested and exit is pending;
-- `idle`: no worker owns the initiative locally;
-- `stale`: reported status when active-looking state exists without its
-  corresponding ownership proof.
+- `starting`: coordinator is ensuring the daemon or binding a new thread;
+- `delivering`: coordinator is inspecting or delivering to a thread;
+- `active`: app-server reports an active turn, whether or not a coordinator is
+  connected;
+- `idle`: app-server reports the thread idle or not loaded;
+- `interrupted`: the last active turn was interrupted and unread mail remains
+  eligible for retry; and
+- `unavailable`: the standalone daemon contract is unavailable or incompatible.
 
-## 5. Per-initiative worker lock
+## 5. Per-initiative delivery lock
 
-There may be at most one active Codex worker per initiative on a machine. The
-supervisor acquires an exclusive, non-blocking per-initiative lock before
-starting either a new thread or a resumed turn and holds ownership through:
+There may be at most one Codex delivery decision per initiative at a time.
+The coordinator acquires an exclusive, non-blocking OS-backed lock before it
+reads app-server thread state and holds it through the selected `turn/steer` or
+`turn/start` request and immediate durable-state reconciliation.
 
-1. process creation;
-2. the complete runtime process lifetime;
-3. the post-exit unread-mail and doorbell reconciliation; and
-4. any immediately chained turn required by that reconciliation.
+The lock does **not** represent ownership of the model turn and does not need
+to survive for the complete turn lifetime. App-server prevents simultaneous
+turn execution. The lock prevents racing senders from both reading stale state
+and making contradictory delivery choices.
 
 Lock-file existence and timestamps are never ownership evidence. An abandoned
-lock file is harmless. The implementation must use an OS-backed lease or an
-equivalent primitive with these observable properties:
+lock file is harmless. Multiple wake callers may race; exactly one acquires
+the lock. A loser exits successfully with delivery still pending and leaves
+the doorbell intact. Timestamp-based stale-lock stealing is not acceptable.
 
-- a second supervisor cannot acquire it while the worker is alive;
-- killing only the supervisor cannot permit a parallel worker while its child
-  is still alive;
-- supervisor and worker death release ownership without an age timeout; and
-- a new supervisor can recover without manually deleting a file.
+### 5.1 Reconnect and stale recovery
 
-An inherited advisory-lock file descriptor is an acceptable implementation if
-the crash test proves the child retains it. Any alternative must pass the same
-test. Timestamp-only stale-lock stealing is not acceptable.
+After acquiring the lock, the coordinator:
 
-Multiple wake callers may race to start supervisors. Exactly one supervisor
-acquires the lock; losers exit successfully as `already running` and leave the
-doorbell intact. External callers must not acquire a lock and then attempt to
-transfer it to a detached supervisor.
+- ensures the managed daemon is running using its idempotent start operation;
+- reconciles durable initiative/session metadata before cached observations;
+- resumes the durable thread when app-server reports it not loaded;
+- treats a prior `interrupted` turn as retryable only while durable unread mail
+  remains; and
+- never clears the doorbell or acknowledges mail from a cached turn status.
 
-### 5.1 Stale recovery
-
-After acquiring ownership and before launching a worker, the supervisor
-reconciles local state with durable initiative metadata:
-
-- stale `starting`, `running`, or `stopping` state from an older generation is
-  replaced by the new generation;
-- the durable initiative runtime and active session win over cached values;
-- a missing Codex session prevents resume but does not discard unread mail or
-  clear the doorbell; and
-- stale state never authorizes killing a PID.
-
-Stop verifies the recorded PID's process-start identity as well as the current
-generation before signaling it. PID alone is insufficient because of PID
-reuse. If ownership is absent, stop reconciles stale state to idle and is an
-idempotent no-op. If ownership is present, the owner performs final cleanup;
-the stop caller does not unlink the lock or declare the worker idle early.
+A coordinator crash releases the lock without affecting the active Codex
+turn. A later coordinator reconnects and repeats reconciliation. Daemon death
+is detected through the managed lifecycle/socket, not through cached PIDs.
 
 ## 6. Mail wake state machine
 
@@ -260,46 +292,42 @@ The durable-message-first behavior remains unchanged:
 3. It requests a runtime-neutral wake for the target initiative.
 
 For Claude, wake delegates to the existing watcher/respawn behavior. For
-Codex, wake starts a detached supervisor attempt. A busy lock is success: the
-current worker or its post-exit reconciliation owns delivery.
+Codex, wake invokes a delivery attempt. A busy lock is success: durable mail
+and the doorbell remain pending for the winning or next coordinator.
 
-The Codex supervisor runs this loop while retaining one lock generation:
+The Codex coordinator performs:
 
 ```text
 acquire lock
 reconcile durable initiative + local state
-launch new thread or resume active thread
-wait for the complete Codex process to exit
-reconcile unread messages + doorbell while still holding the lock
-if delivery is pending and the initiative is runnable:
-    resume the same thread and repeat
-otherwise:
-    record idle, then release the lock
+idempotently ensure the managed daemon is running
+start a new thread, or resume/read the bound thread
+if an actual turn is active: turn/steer(expectedTurnId)
+otherwise: turn/start
+record the delivery observation, then release the lock
 ```
 
-The lifecycle hook and supervisor cover complementary race windows:
+Notifications, later senders, and optional thin hooks cover race windows:
 
-- If mail is pending when an active Codex turn reaches `Stop`, the Stop hook
-  requests exactly one continuation instructing the thread to run
-  `ateam mail inbox`. `stop_hook_active` prevents a continuation loop.
-- If mail arrives after the Stop hook's last check but before process exit,
-  the supervisor sees it during post-exit reconciliation and resumes the same
-  thread before releasing ownership.
-- If mail arrives after ownership is released, the sender's wake supervisor
-  acquires the idle lock and resumes the same thread.
+- Mail arriving during an active turn is delivered with `turn/steer`.
+- Mail arriving after a turn becomes idle starts a new turn.
+- Client death leaves the doorbell intact; a new delivery attempt reads the
+  current state and makes the same choice safely.
+- Daemon death leaves the old turn interrupted; restart and unread-mail replay
+  start a recovery turn on the same thread.
 
-The doorbell is never cleared merely because a worker started, stopped, or
-exited. It is cleared or reconciled only after `ateam mail inbox` successfully
+The doorbell is never cleared merely because a client or turn started, stopped,
+or completed. It is cleared or reconciled only after `ateam mail inbox` successfully
 consumes all mail that was unread for that initiative. If unread messages
 remain, a missing doorbell is repaired.
 
 Consequences:
 
-- mail during `starting`, `running`, or `stopping` stays pending;
+- mail during daemon or client transitions stays pending;
 - two rapid messages may share one doorbell and one turn, but both durable
   messages are read;
 - a failed resume leaves mail retriable;
-- a worker crash releases ownership but does not acknowledge mail; and
+- a client or daemon crash does not acknowledge mail; and
 - relayed and Telegram-originated messages use the same send/wake path.
 
 An initiative that is closed, abandoned, or at an unresolved human gate is
@@ -318,19 +346,21 @@ ateam runtime stop <initiative-id>
 ```
 
 - Dispatch records the concrete runtime before requesting a launch.
-- Codex dispatch/resume returns after a detached supervisor has accepted the
-  request; the thread ID may appear asynchronously once the start event is
-  durably tied.
-- Status combines durable initiative/session data with adapter and local-lock
-  observations. It distinguishes `idle`, `starting`, `running`, `stopping`,
-  `stale`, and `unavailable` rather than treating a PID file as truth.
+- Codex dispatch/resume returns after the app-server request is accepted and a
+  new thread ID is durably tied when applicable; it does not wait for the
+  complete model turn.
+- Status combines durable initiative/session data with managed-daemon and
+  app-server observations. It distinguishes `starting`, `delivering`,
+  `active`, `idle`, `interrupted`, and `unavailable`.
 - Stop is idempotent and runtime-neutral. Claude preserves its current stop
-  behavior; Codex terminates only the verified local worker/process group.
+  behavior; Codex uses `turn/interrupt` for the initiative's verified active
+  turn. Stopping the shared machine daemon is an administrative operation, not
+  ordinary initiative stop.
 - Monitoring instructions come from `Adapter.Controls`, so dispatch and resume
   output contains no hard-coded Claude commands for a Codex initiative.
 
-An internal supervisor entry point may be added to support detached workers.
-It is not a skill-facing API and may change as long as the ownership and wake
+An internal delivery entry point may be added for hooks and senders. It is not
+a skill-facing API and may change as long as serialization and durable-mail
 semantics above remain intact.
 
 ## 8. Lifecycle and role startup boundaries
@@ -358,15 +388,15 @@ durable consumption to `ateam mail inbox`.
 |---|---|
 | Parse/preserve `runtime:` and `session:` | `internal/initiative` |
 | Runtime kinds, session refs, adapters, controls | `internal/sessionruntime` |
-| Lock, local JSON, generation, process ownership | `internal/worker` |
+| Delivery lock, local observations, generation | `internal/worker` (rename optional) |
 | Durable messages and doorbell reconciliation | existing messaging domain |
-| Dispatch/resume/status/stop orchestration | CLI verbs using adapter registry and supervisor |
-| Runtime event parsing and command construction | Claude/Codex adapters |
+| Dispatch/resume/status/stop orchestration | CLI verbs using adapter registry and coordinator |
+| Managed lifecycle, app-server protocol, event parsing | Codex adapter/client |
 | Stop continuation decision | thin Codex lifecycle hook |
 | Role memory freshness and assignment reconstruction | Codex role definitions themselves |
 
 Skills invoke public `ateam` commands. They do not read runtime JSON, inspect
-lock files, parse Codex JSONL, or construct resume commands.
+lock files, speak app-server, or construct daemon commands.
 
 ## 10. Required conformance tests
 
@@ -377,35 +407,40 @@ except where an explicit manual spike is noted:
 2. New Claude and Codex dispatches persist a concrete runtime; `auto` is never
    persisted.
 3. Unknown runtime fails closed and does not invoke Claude.
-4. A Codex thread-start event appends exactly one session ID; bind failure
-   stops the worker.
-5. Resume uses the last active Codex session and rejects an event for a
+4. Codex runtime selection fails with actionable output when Codex is absent or
+   installed without the compatible standalone managed binary.
+5. Managed-daemon start is idempotent; a client can reconnect to a turn it did
+   not create.
+6. A Codex thread start appends exactly one session ID; bind failure interrupts
+   the verified turn and leaves mail retriable.
+7. Resume uses the last active Codex session and rejects a response for a
    different thread.
-6. Concurrent wake attempts produce one worker.
-7. The lock remains owned for the full worker lifetime and post-exit check.
-8. Killing the supervisor while its child lives cannot create a second worker
-   (manual/OS integration test if necessary).
-9. Killing worker and supervisor permits recovery without age-based stealing.
-10. Mail while idle resumes the same thread.
-11. Mail while busy is consumed before dormancy.
-12. Mail between Stop-hook check and process exit triggers a chained resume.
-13. Two quick messages cause one serialized wake and both are consumed.
-14. Failed resume/crash retains unread mail and a repairable doorbell.
-15. Stop verifies process identity and is idempotent on stale state.
-16. Claude dispatch, resume, watcher wake, status, and monitoring output retain
+8. Concurrent delivery attempts make one state-based delivery choice; losing
+   attempts leave the doorbell intact.
+9. Mail while idle resumes the same thread and uses `turn/start`.
+10. Mail while busy targets the actual active turn with `turn/steer`.
+11. A second `turn/start` is never used as a busy-thread delivery primitive.
+12. Two quick messages cause serialized delivery and both are consumed.
+13. Client death does not stop the active turn; a new client reconnects.
+14. Daemon death leaves the old turn interrupted; idempotent restart, thread
+    resume, and unread-mail replay recover on the same thread.
+15. Failed start/resume/steer retains unread mail and a repairable doorbell.
+16. Stop interrupts only the initiative's verified active turn and does not
+    stop the shared daemon.
+17. Claude dispatch, resume, watcher wake, status, and monitoring output retain
     their existing behavior.
-17. Codex role startup succeeds without SubagentStart by pulling and fetching
+18. Codex role startup succeeds without SubagentStart by pulling and fetching
     its own learnings.
 
 ## 11. Explicit non-goals for this slice
 
-- app-server transport or remote multi-machine lock coordination;
+- remote app-server transport or multi-machine lock coordination;
 - simultaneous Codex turns for one initiative;
 - runtime migration of an existing initiative;
 - durable persistent identity for planner/implementer/tester/reviewer child
   agents;
 - replacing Beads mail with process IPC; and
-- making local worker JSON a second registry.
+- making local delivery JSON a second registry.
 
 Any implementation need that contradicts this contract should update this
 document and the contract bead before dependent work proceeds.
