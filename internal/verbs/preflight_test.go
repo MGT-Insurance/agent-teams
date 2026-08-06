@@ -367,6 +367,22 @@ func TestPreflightSidecarChecks_NoSidecar_SpawnRecordFailsAndRestSkip(t *testing
 			t.Errorf("%s: status = %s, want SKIP (no sidecar to inspect)", id, got)
 		}
 	}
+
+	// One root cause must produce exactly ONE red. The per-check assertions
+	// above are individually correct but collectively blind: a fifth check
+	// that also FAILs on this branch leaves every one of them green while
+	// the report degrades from naming a cause to shouting four of them.
+	// Verified by mutation — appending an extra FAIL to this branch alone
+	// left the whole internal/verbs suite green without this count.
+	fails := 0
+	for _, c := range checks {
+		if c.Status == preflightFail {
+			fails++
+		}
+	}
+	if fails != 1 {
+		t.Errorf("FAIL count = %d, want exactly 1 — one root cause must yield one red and the rest SKIP", fails)
+	}
 }
 
 // ── pollPreflightSidecars ────────────────────────────────────────────────
