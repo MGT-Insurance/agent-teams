@@ -54,7 +54,7 @@ cp -rf source dest          # NOT: cp -r source dest
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer | investigator`.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 

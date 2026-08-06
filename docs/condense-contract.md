@@ -14,7 +14,7 @@ the three implementer tracks can proceed in parallel without collision.
 
 ## 1. THE KEEPER MAP (plan §2, clusters A–N)
 
-### Cluster A — the "Conventions" block, ×4 (implementer/planner/reviewer/tester)
+### Cluster A — the "Conventions" block, ×5 (implementer/planner/reviewer/tester/investigator)
 
 **No single keeper — KEEP IN ALL FOUR, independently compressed in place. Do
 NOT extract to a shared `agents/CONVENTIONS.md` or any other shared file.**
@@ -289,7 +289,7 @@ miscalibrated before the cross-check addendum). Fix exactly these six:**
 
 ## 3. THE DO-NOT-TOUCH LIST (verbatim, from the bead description)
 
-- The four `model:` frontmatter lines — `hooks/scripts/block-model-divergence.sh`
+- The `model:` frontmatter lines — `hooks/scripts/block-model-divergence.sh`
   awk-parses the FIRST `---` block of `agents/*.md` for the first `^model:`
   line.
 - All four never-push/never-merge statements: `implementer.md:35`,

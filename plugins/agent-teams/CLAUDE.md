@@ -114,7 +114,7 @@ hung config: tick_interval=20m0s stuck_threshold=2h0m0s wake_attempts_before_ale
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer | investigator`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 - Durable, human-authored instruction for a role, on THIS MACHINE only → a file at `$AGENT_TEAMS_HOME/instructions/<role>.md`, served by `ateam instructions <role>`. See "Machine-local instructions" below.

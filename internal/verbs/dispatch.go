@@ -627,7 +627,7 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 // every bg-DRI session at harness-instruction altitude so it overrides the
 // built-in file-memory prompt. Source of truth: contract bead agent-teams-8qm.
 const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. ~/.claude/projects/*/memory/). Persistent memory routes by kind:
-- Role/process learnings (transferable across repos) -> ateam learn <role> <slug> --file <tmpfile>, where <role> is dri | planner | implementer | tester | reviewer.
+- Role/process learnings (transferable across repos) -> ateam learn <role> <slug> --file <tmpfile>, where <role> is dri | planner | implementer | tester | reviewer | investigator.
 - User/cross-project preferences & feedback -> ateam learn user <slug> --file <tmpfile>.
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
