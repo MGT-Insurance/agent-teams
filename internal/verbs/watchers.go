@@ -139,6 +139,17 @@ func (c *watchersKong) Run(ctx *cli.Context) error {
 // watcherState reads the pidfile at path and returns the watcher state plus
 // the pid it found (0 when absent or unreadable).
 //
+// A pidfile entry is "pid<TAB>session_id" (wake-watcher.sh's claim format,
+// plugins/agent-teams/hooks/scripts/lib/watcher-pidfile.sh) or a bare pid
+// (pre-e3mq.30 format). Every OTHER reader of this file in this package
+// (pidfileEntryPid, messaging.go) already parses it that way; this function
+// used to run strconv.Atoi on the whole entry instead, so a live watcher's
+// current-format "pid\tsession_id" pidfile always failed to parse as an
+// integer and was reported STALE-PIDFILE regardless of whether the pid was
+// actually alive — never OK. Reusing pidfileEntryPid here is what fixes that
+// (agent-teams-wisp-izc.1): it strips the "\tsession_id" suffix before the
+// liveness check the same way the rest of the package already does.
+//
 // States:
 //   - "OK"             — pidfile present and pid is alive
 //   - "STALE-PIDFILE"  — pidfile present but pid is dead
@@ -149,7 +160,8 @@ func watcherState(pidFile string) (state string, pid int) {
 		// No pidfile.
 		return "MISSING-WATCHER", 0
 	}
-	pidStr := strings.TrimSpace(string(data))
+	entry := strings.TrimSpace(string(data))
+	pidStr := pidfileEntryPid(entry)
 	p, err := strconv.Atoi(pidStr)
 	if err != nil || p <= 0 {
 		// Pidfile present but contents invalid — treat as stale.

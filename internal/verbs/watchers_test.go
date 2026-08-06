@@ -25,6 +25,22 @@ func writePidfile(t *testing.T, mailboxDir, id string, pid int) {
 	}
 }
 
+// writePidfileWithSession creates <mailboxDir>/<id>.watcher.pid containing
+// "pid\tsession_id" — the current format wake-watcher.sh actually writes
+// (plugins/agent-teams/hooks/scripts/lib/watcher-pidfile.sh), as opposed to
+// writePidfile's bare-pid pre-e3mq.30 format.
+func writePidfileWithSession(t *testing.T, mailboxDir, id string, pid int, sessionID string) {
+	t.Helper()
+	if err := os.MkdirAll(mailboxDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll mailbox: %v", err)
+	}
+	path := filepath.Join(mailboxDir, id+".watcher.pid")
+	entry := fmt.Sprintf("%d\t%s", pid, sessionID)
+	if err := os.WriteFile(path, []byte(entry), 0o644); err != nil {
+		t.Fatalf("write pidfile: %v", err)
+	}
+}
+
 // makeWatchersCtx builds a Context pointing at home with captured stdout/stderr.
 func makeWatchersCtx(fbd cli.BDRunner, home string) (*cli.Context, *strings.Builder) {
 	var stdout strings.Builder
@@ -70,6 +86,43 @@ func TestWatcherState_DeadPid(t *testing.T) {
 	writePidfile(t, dir, "at-dead", deadPid)
 
 	state, pid := watcherState(filepath.Join(dir, "at-dead.watcher.pid"))
+	if state != "STALE-PIDFILE" {
+		t.Errorf("state = %q, want STALE-PIDFILE", state)
+	}
+	if pid != deadPid {
+		t.Errorf("pid = %d, want %d", pid, deadPid)
+	}
+}
+
+// TestWatcherState_LivePidWithSession: a pid<TAB>session_id pidfile (the
+// format wake-watcher.sh actually writes) for a live process must read OK,
+// not STALE-PIDFILE (agent-teams-wisp-izc.1 — this is the flip a real
+// watcher's pidfile was hitting on every check before the fix, since
+// strconv.Atoi on "pid\tsession_id" always failed).
+func TestWatcherState_LivePidWithSession(t *testing.T) {
+	dir := t.TempDir()
+	selfPid := os.Getpid()
+	writePidfileWithSession(t, dir, "at-live-sess", selfPid, "session-abc-123")
+
+	state, pid := watcherState(filepath.Join(dir, "at-live-sess.watcher.pid"))
+	if state != "OK" {
+		t.Errorf("state = %q, want OK", state)
+	}
+	if pid != selfPid {
+		t.Errorf("pid = %d, want %d", pid, selfPid)
+	}
+}
+
+// TestWatcherState_DeadPidWithSession: a pid<TAB>session_id pidfile for a
+// dead process still reads STALE-PIDFILE (not a parse-failure STALE that
+// happens to look right for the wrong reason — pid must still be extracted
+// and checked for liveness, not just defaulted).
+func TestWatcherState_DeadPidWithSession(t *testing.T) {
+	dir := t.TempDir()
+	const deadPid = 9999999
+	writePidfileWithSession(t, dir, "at-dead-sess", deadPid, "session-abc-123")
+
+	state, pid := watcherState(filepath.Join(dir, "at-dead-sess.watcher.pid"))
 	if state != "STALE-PIDFILE" {
 		t.Errorf("state = %q, want STALE-PIDFILE", state)
 	}
