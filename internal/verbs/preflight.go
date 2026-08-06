@@ -216,7 +216,7 @@ type preflightEnvelope struct {
 // claude -p can exit non-zero while still emitting a valid result envelope
 // (e.g. an is_error result), and that envelope — not the process exit code
 // — is the precise signal downstream parsing decides on.
-type preflightLaunchFunc func(sessionID, agentsJSON, skill, maxBudgetUSD string) (stdout string, err error)
+type preflightLaunchFunc func(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) (stdout string, err error)
 
 // preflightSidecarScanFunc returns the in_process_teammate sidecars found
 // for sessionID at the moment it is called — ONE poll attempt, not a
@@ -229,6 +229,19 @@ type preflightKong struct {
 	JSON         bool   `name:"json" help:"Output machine-readable JSON (contract shape) instead of a table."`
 	MaxBudgetUSD string `name:"max-budget-usd" help:"Cap the probe session's API spend in USD. Unset: uncapped, passed through only when supplied."`
 	Skill        string `name:"skill" hidden:"" help:"Override the skill invoked by the probe session (for tests)."`
+	// PluginDir is a PRE-MERGE VERIFICATION SEAM, not a user-facing feature.
+	// The verb and the skill ship as one artifact but resolve through two
+	// paths: skills load from the MAIN CHECKOUT's marketplace plugin
+	// directory, not from a feature branch, so before this branch merges
+	// the probe session cannot reach /agent-teams:preflight through the
+	// ordinary path at all — there is no other way to exercise this verb
+	// end to end pre-merge. `claude --help` documents --plugin-dir as
+	// "Load a plugin from a directory or .zip for this session only", so
+	// it is session-scoped and leaves no residue. Hidden (never appears in
+	// --help — this is not an invitation to run preflight against an
+	// arbitrary plugin tree) and unset by default: empty means the flag is
+	// simply absent from argv, i.e. today's exact behavior.
+	PluginDir string `name:"plugin-dir" hidden:"" help:"Load the plugin from this directory for the probe session only (pre-merge verification seam)."`
 
 	buildAgentsPayload func() (string, error)   `kong:"-"`
 	launch             preflightLaunchFunc      `kong:"-"`
@@ -305,7 +318,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 
 	sessionID := newPreflightSessionID()
 
-	stdout, err := launch(sessionID, agentsJSON, skill, c.MaxBudgetUSD)
+	stdout, err := launch(sessionID, agentsJSON, skill, c.MaxBudgetUSD, c.PluginDir)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam preflight: could not launch the probe session: %v\n", err)
 		return cli.Silent(2)
@@ -680,18 +693,22 @@ func newPreflightSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// productionPreflightLaunch is the production preflightLaunchFunc: it
-// launches the probe session per contract artifact (6). No --settings: this
+// preflightLaunchArgs returns the argv slice (everything after "claude") for
+// the probe session launch, per contract artifact (6). Extracted as a pure
+// function (mirroring bgSessionArgs, dispatch.go) so the argv itself is
+// testable without executing a real claude binary. No --settings: this
 // synchronous -p probe, launched and reaped inline by this verb, has
 // nothing to encode in it — bgSessionSettingsJSON's env map exists for
 // background-session role/initiative signaling (dispatch.go), which does
 // not apply here. Contract artifact (6)'s "<payload>" is the general argv
 // shape when a settings payload exists, not a mandate to always emit one.
-func productionPreflightLaunch(sessionID, agentsJSON, skill, maxBudgetUSD string) (string, error) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		return "", fmt.Errorf("'claude' not found in PATH")
-	}
-
+//
+// pluginDir is a PRE-MERGE VERIFICATION SEAM (see preflightKong.PluginDir):
+// --plugin-dir is appended ONLY when pluginDir is non-empty, so an unset
+// flag leaves the argv byte-identical to before this seam existed — a stray
+// --plugin-dir in an ordinary run would silently change which plugin tree
+// (and therefore which skill) the probe loads.
+func preflightLaunchArgs(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) []string {
 	args := []string{
 		"-p",
 		"--session-id", sessionID,
@@ -703,7 +720,19 @@ func productionPreflightLaunch(sessionID, agentsJSON, skill, maxBudgetUSD string
 	if maxBudgetUSD != "" {
 		args = append(args, "--max-budget-usd", maxBudgetUSD)
 	}
-	args = append(args, skill)
+	if pluginDir != "" {
+		args = append(args, "--plugin-dir", pluginDir)
+	}
+	return append(args, skill)
+}
+
+// productionPreflightLaunch is the production preflightLaunchFunc.
+func productionPreflightLaunch(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) (string, error) {
+	if _, err := exec.LookPath("claude"); err != nil {
+		return "", fmt.Errorf("'claude' not found in PATH")
+	}
+
+	args := preflightLaunchArgs(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir)
 
 	cmd := exec.Command("claude", args...)
 	var stdout, stderr bytes.Buffer
