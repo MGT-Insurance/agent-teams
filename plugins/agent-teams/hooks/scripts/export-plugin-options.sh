@@ -38,9 +38,10 @@ set -eu
 use_advisors="${CLAUDE_PLUGIN_OPTION_USE_ADVISORS:-false}"
 # Keep this default byte-identical to driDefaultModel in
 # internal/verbs/dispatch.go — the two are one setting in two layers, and
-# tests/hook-export-plugin-options.test.sh fails if they drift. No [1m] suffix:
-# the "opus" alias already resolves to a native 1M-context model.
-dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-opus}"
+# tests/hook-export-plugin-options.test.sh fails if they drift. Pinned to the
+# concrete id claude-opus-4-8 (not the bare "opus" alias) so the default stays
+# put instead of following "latest"; no [1m] suffix since it is natively 1M.
+dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-claude-opus-4-8}"
 # Empty default is deliberate: an empty export is what the Go side reads as
 # "unset" (omit --autocompact entirely). No numeric parsing or range checking
 # here — the value passes through verbatim; Claude Code's own --autocompact

@@ -123,7 +123,7 @@ type dispatchKong struct {
 	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch claude bg session."`
 	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
-	Model        string `name:"model"         help:"Model override for bg session (default: opus)."`
+	Model        string `name:"model"         help:"Model override for bg session (default: claude-opus-4-8)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
 	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
@@ -553,7 +553,7 @@ func defaultPRTitle(ownerRepo string, prNumber int) (string, error) {
 type resumeKong struct {
 	ID           string `arg:"" name:"id" optional:"" help:"Initiative ID to resume."`
 	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: /dri <id>)."`
-	Model        string `name:"model" help:"Model for a --launch-prompt session (default: opus). Requires --launch-prompt."`
+	Model        string `name:"model" help:"Model for a --launch-prompt session (default: claude-opus-4-8). Requires --launch-prompt."`
 
 	launch    launchFunc    `kong:"-"`
 	launchRaw rawLaunchFunc `kong:"-"`
@@ -633,14 +633,16 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
 // driDefaultModel is the model background sessions launch on when no explicit
-// override is supplied. No [1m] suffix: the CLI's model catalogue marks
-// claude-opus-5 (the "opus" alias) native_1m, so the alias already resolves to
-// a 1M-context window on a first-party endpoint. The suffix is a second route
-// to the same window, and it does not survive the one case that really does
-// clamp to 200000 (long-context credits exhausted), so it buys nothing here.
+// override is supplied. Pinned to the concrete id claude-opus-4-8 rather than
+// the bare "opus" alias so the default stays put instead of silently following
+// whatever "latest opus" resolves to. No [1m] suffix: claude-opus-4-8 is
+// natively 1M-context on a first-party endpoint, so the alias-vs-id choice does
+// not change the context window. The suffix is a second route to the same
+// window, and it does not survive the one case that really does clamp to 200000
+// (long-context credits exhausted), so it buys nothing here.
 // Kept as a constant so this default and the export-plugin-options.sh hook
 // default cannot drift apart (tests/hook-export-plugin-options.test.sh).
-const driDefaultModel = "opus"
+const driDefaultModel = "claude-opus-4-8"
 
 // bgSessionEnv is the "env" map merged into a background session's --settings
 // JSON, publishing the role-signal contract (agent-teams-142k.1): ATEAM_ROLE
@@ -817,7 +819,7 @@ type launchFunc func(ctx *cli.Context, dir, driArg, role, initiativeID string) e
 type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor, role, initiativeID string) error
 
 // rawLaunchBGSession launches a background claude session with an arbitrary
-// prompt (no /dri prefix). model overrides the default "opus" model when
+// prompt (no /dri prefix). model overrides driDefaultModel when
 // non-empty; advisor, when non-empty, adds "--advisor <advisor>" to the argv.
 // role and initiativeID are merged into --settings via bgSessionArgs. Shared
 // by the --launch-prompt production path and tests (via injection into

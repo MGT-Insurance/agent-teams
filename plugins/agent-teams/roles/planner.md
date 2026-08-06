@@ -1,6 +1,6 @@
 ---
 description: Expert software planner for agent teams. Investigates a codebase, surfaces clarifying questions, and decomposes work into a beads plan with parallel, file-disjoint tracks implementers can execute cleanly. Never writes feature code. Persistent — stays available for follow-up design questions.
-model: opus
+model: claude-opus-4-8
 ---
 
 **The `ateam` tool.** `ateam` is on PATH — installed by `/setup-agent-teams`. Call it as bare `ateam`.

@@ -1159,7 +1159,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	}{
 		{"--bg", ""},
 		{"-n", name},
-		{"--model", "opus"},
+		{"--model", "claude-opus-4-8"},
 		{"--permission-mode", "bypassPermissions"},
 	}
 	for _, c := range checks {
@@ -1197,7 +1197,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 }
 
 // TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
-// replaces the "opus" default in the --model flag.
+// replaces the "claude-opus-4-8" default in the --model flag.
 func TestBGSessionArgs_ModelOverride(t *testing.T) {
 	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "", "{}", "")
 
@@ -1214,28 +1214,28 @@ func TestBGSessionArgs_ModelOverride(t *testing.T) {
 	if !found {
 		t.Errorf("argv missing --model flag; got: %v", args)
 	}
-	// The default "opus" must NOT appear anywhere when overridden.
+	// The default "claude-opus-4-8" must NOT appear anywhere when overridden.
 	for _, a := range args {
-		if a == "opus" {
-			t.Errorf("argv should not contain default \"opus\" when model override is set; got: %v", args)
+		if a == "claude-opus-4-8" {
+			t.Errorf("argv should not contain default \"claude-opus-4-8\" when model override is set; got: %v", args)
 		}
 	}
 }
 
 // TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
-// argument falls back to the "opus" default.
+// argument falls back to the "claude-opus-4-8" default.
 func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
 	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "", "{}", "")
 
 	found := false
 	for i, a := range args {
-		if a == "--model" && i+1 < len(args) && args[i+1] == "opus" {
+		if a == "--model" && i+1 < len(args) && args[i+1] == "claude-opus-4-8" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("argv missing --model opus pair for empty override; got: %v", args)
+		t.Errorf("argv missing --model claude-opus-4-8 pair for empty override; got: %v", args)
 	}
 }
 
@@ -1263,7 +1263,7 @@ func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
 }
 
 // TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
-// defaults to "opus" and no "--advisor" flag appears anywhere in argv.
+// defaults to "claude-opus-4-8" and no "--advisor" flag appears anywhere in argv.
 func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
 
@@ -1275,8 +1275,8 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 		}
 		return false
 	}
-	if !hasPair("--model", "opus") {
-		t.Errorf("argv missing \"--model\" \"opus\" pair; got: %v", args)
+	if !hasPair("--model", "claude-opus-4-8") {
+		t.Errorf("argv missing \"--model\" \"claude-opus-4-8\" pair; got: %v", args)
 	}
 	for _, a := range args {
 		if a == "--advisor" {
@@ -1291,7 +1291,7 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 // driModel) only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true",
 // and (driModel, "") for every other value, including unset, empty, "false",
 // and any casing/value other than the exact string "true". driModel comes
-// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "opus" when unset or
+// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "claude-opus-4-8" when unset or
 // empty. Cases with an explicit non-default dri_model ("haiku") in both the
 // advisor-on and advisor-off branches prove the env var actually threads
 // through, not just the default.
@@ -1308,11 +1308,11 @@ func TestDriAdvisorSettings(t *testing.T) {
 		wantModel      string
 		wantAdvisor    string
 	}{
-		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "opus"},
-		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "opus", wantAdvisor: ""},
-		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "opus", wantAdvisor: ""},
-		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "opus", wantAdvisor: ""},
-		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "opus", wantAdvisor: ""},
+		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "claude-opus-4-8"},
+		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "claude-opus-4-8", wantAdvisor: ""},
 		{name: "true_nondefault_model", setAdvisorsEnv: true, advisorsValue: "true", setModelEnv: true, modelValue: "haiku", wantModel: "sonnet", wantAdvisor: "haiku"},
 		{name: "false_nondefault_model", setAdvisorsEnv: true, advisorsValue: "false", setModelEnv: true, modelValue: "haiku", wantModel: "haiku", wantAdvisor: ""},
 	}
