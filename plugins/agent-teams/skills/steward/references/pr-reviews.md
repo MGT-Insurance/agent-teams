@@ -1,6 +1,6 @@
 # Retrieving a past PR review
 
-Eric asks what a review found, or asks for a deeper one, after seeing a line in the shared Reviews topic. This file is the whole answer path: read the findings back from GitHub, never from beads.
+The human asks what a review found, or asks for a deeper one, after seeing a line in the shared Reviews topic. This file is the whole answer path: read the findings back from GitHub, never from beads.
 
 ## What the Reviews topic lines carry — and what they deliberately omit
 
@@ -45,17 +45,17 @@ Both endpoints return every review by every author, ours and the humans'. That i
 
 The topic line renders the repo BASENAME (`midgard`), not `owner/repo` — but the URL on the line's second line carries the owner. Read it off the message rather than reconstructing it: `https://github.com/MGT-Insurance/midgard/pull/4408` gives owner `MGT-Insurance`, repo `midgard`, PR `4408`.
 
-When Eric names a bare basename with no URL in reach ("what did that midgard review say?"), assume owner `MGT-Insurance` — every repo in play is under that org, this one included (`git@github.com:MGT-Insurance/agent-teams.git`) — but confirm rather than firing a request at a guessed path:
+When the human names a bare basename with no URL in reach ("what did that midgard review say?"), assume owner `MGT-Insurance` — every repo in play is under that org, this one included (`git@github.com:MGT-Insurance/agent-teams.git`) — but confirm rather than firing a request at a guessed path:
 
 ```bash
 gh repo view MGT-Insurance/<basename> --json nameWithOwner -q .nameWithOwner
 ```
 
-If that 404s, `gh search repos <basename> --owner=MGT-Insurance --json fullName`. Near-miss names are real (`midgard` and `midgard-e2e` both exist), and each repo has its own PR-number space, so a wrong owner or a wrong sibling repo returns a confidently wrong review for a completely different PR. If neither command resolves it, ask Eric for the URL — one short question beats an answer about the wrong repo.
+If that 404s, `gh search repos <basename> --owner=MGT-Insurance --json fullName`. Near-miss names are real (`midgard` and `midgard-e2e` both exist), and each repo has its own PR-number space, so a wrong owner or a wrong sibling repo returns a confidently wrong review for a completely different PR. If neither command resolves it, ask the human for the URL — one short question beats an answer about the wrong repo.
 
 ### What to send back
 
-A direct-answer, under SKILL.md §5: the answer as the first word, sized to the question, never over T-DECIDE, no preamble. Summarize — do **not** paste raw bodies into Telegram. The comment bodies above run to thousands of characters each; one dump wrecks the topic and buries the point. Name the findings that matter in Eric's terms, keep the severity words the reviewer used, and let the PR URL carry anything deeper.
+A direct-answer, under SKILL.md §5: the answer as the first word, sized to the question, never over T-DECIDE, no preamble. Summarize — do **not** paste raw bodies into Telegram. The comment bodies above run to thousands of characters each; one dump wrecks the topic and buries the point. Name the findings that matter in the human's terms, keep the severity words the reviewer used, and let the PR URL carry anything deeper.
 
 ## NOT via `ateam` — do not go hunting for the initiative
 
@@ -79,4 +79,4 @@ Pass the full URL, or `owner/repo#<pr-number>`. **Never a bare number.** The bar
 
 Running it is a hand-off, not a review: it parses the reference, registers a review initiative, and launches a background session that does the reading. You still never read the diff or form an opinion on the code yourself.
 
-**Authority is unchanged (SKILL.md §3).** Deciding a PR deserves another look is Eric's call, never yours. If a finding warrants it, recommend it in one clause and wait for him to say go.
+**Authority is unchanged (SKILL.md §3).** Deciding a PR deserves another look is the human's call, never yours. If a finding warrants it, recommend it in one clause and wait for him to say go.

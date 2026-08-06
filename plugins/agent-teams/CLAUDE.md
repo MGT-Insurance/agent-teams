@@ -2,7 +2,7 @@
 
 This plugin hard-requires **beads** (`bd`) — all work tracking is beads-first. Never use TodoWrite/TaskCreate/markdown TODO lists in agent-teams workflows.
 
-**Global workspace:** `~/.agent-teams` — a git-backed beads workspace holding role learnings and the initiative registry (one bd issue per initiative). Access is via `ateam`, which ships as prebuilt per-platform binaries in the plugin `bin/` (auto-added to PATH by Claude Code); `bin/ateam` is the POSIX dispatch wrapper that selects the right binary for the current platform. Skills call bare `ateam`; the single allowlist entry is `Bash(ateam:*)`. If the workspace does not exist or `ateam` is not found, run `/setup-agent-teams`.
+**Global workspace:** `~/.agent-teams` — a git-backed beads workspace holding role learnings and the initiative registry (one bd issue per initiative). Access is via `ateam`, which ships as prebuilt per-platform binaries in the plugin `bin/` (auto-added to PATH by Claude Code); `bin/ateam` is the POSIX dispatch wrapper that selects the right binary for the current platform. Skills call bare `ateam`; the single allowlist entry is `Bash(ateam:*)`. If the workspace does not exist or `ateam` is not found, run `/setup-agent-teams`. A SessionStart hook (`ensure-ateam-link.sh`) keeps `~/.local/bin/ateam` pinned to the loaded install rather than a fixed version, so a stale symlink from an older plugin install self-heals on the next session instead of shadowing the current one.
 
 **DEV:** after editing `cmd/ateam`, regenerate the binaries with `scripts/build-binaries.sh` and commit `plugins/agent-teams/bin/`.
 
@@ -114,18 +114,32 @@ hung config: tick_interval=20m0s stuck_threshold=2h0m0s wake_attempts_before_ale
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer | investigator`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
+- Durable, human-authored instruction for a role, on THIS MACHINE only → a file at `$AGENT_TEAMS_HOME/instructions/<role>.md`, served by `ateam instructions <role>`. See "Machine-local instructions" below.
 
 Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
+
+### Machine-local instructions (`ateam instructions <role>`)
+
+This is the route for a human who wants to give a role standing custom direction and does NOT want it to replicate or be autonomously edited. `ateam learn <role> …` is the wrong tool for that job even though it also produces "durable direction to an agent": it writes to the global workspace's beads DB, which syncs to every machine via `refs/dolt/data`, and the condense agent may demote, merge, reword, or evict it with no human gate (see Condensing below). A machine-local instruction file has neither property, and that is the whole reason it exists:
+
+- **It does not replicate.** The instructions file lives at `$AGENT_TEAMS_HOME/instructions/<role>.md`, outside the beads DB entirely. It stays on the machine it was written on unless a human deliberately `git add`s it into the `~/.agent-teams` workspace repo.
+- **It is never condensed.** Being a plain file rather than a bd memory, it is structurally invisible to `bd memories --json` — and therefore to `condense`, `condense-check`, `fresh-drain`, `recall`, and `forget`. Nothing autonomous can touch it.
+
+Cap: 4096 bytes. A file over cap is refused, not truncated — silently cutting a human's instruction mid-sentence is worse than not applying it, so `ateam instructions <role>` prints a loud marker naming the file and its size instead of a partial body.
+
+It is additive only: the instructions extend a role's shipped definition and cannot override the role's hard guardrails (e.g. the reviewer's never-fix, never-push, never-merge rules). Tool output arrives after the agent definition has already become the system prompt, so it cannot revoke what that prompt already established.
+
+Today only the reviewer fetches this on spawn (`plugins/agent-teams/roles/reviewer.md`); the other roles don't yet self-fetch it. This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
 
 ### Three-tier memory model (fresh / hot / cold)
 
 Role memories use a three-tier key convention — the tier is encoded in the key, not in metadata:
 
 - **Fresh:** `<role>:fresh:<slug>` — the default write tier. `ateam learn <role> <slug> --file <f>` (bare slug, no prefix) writes here automatically. Fresh memories accumulate between condense runs; `ateam learnings <role>` serves them alongside hot. Fresh is the "just written, not yet curated" tier and is periodically drained into cold by `ateam fresh-drain <role>`.
-- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct; target budget is ~6000 tokens (~15–25 learnings) across all hot keys for a role.
+- **Hot:** `<role>:hot:<slug>` — curated, auto-injected into every session via `ateam learnings <role>`. Write explicitly with `ateam learn <role> hot:<slug> --file <f>`. Hot bodies are deliberately succinct. The budget for a role's whole hot set (~15–25 learnings) is stated ONCE, in TOKENS, by the `hot_budget_tokens` field of the `ateam condense <role>` packet — read it there rather than restating it here or carrying a number in your head. There is no byte equivalent of that budget; the only byte limits in this model are the per-entry write-time caps, frozen by contract `agent-teams-b2xr.2` (900 bytes hot and fresh, 1500 cold).
 - **Cold:** `<role>:<slug>` — searchable on demand, NOT auto-injected. Write explicitly with `ateam learn <role> cold:<slug> --file <f>` (the `cold:` prefix is stripped to produce the bare `role:<slug>` key). The existing pre-tier `dri:<slug>` memories are already cold with no migration needed.
 
 `ateam learnings <role>` serves the **hot ∪ fresh** union. It falls back to all `role:` keys only when BOTH hot and fresh are empty (preserving pre-tier behavior for roles with no curated set). All three tiers are living; cold is not a frozen archive.
@@ -143,7 +157,9 @@ Role memories use a three-tier key convention — the tier is encoded in the key
 
 ### Condensing (autonomous)
 
-Condensing is **lock-guarded** via `ateam condense-lock`. Use the `/agent-teams:condense` skill (no arg = all roles; `<role>` arg = single role) — do not call `ateam condense <role>` directly. The skill acquires the lock, skips cleanly if another session holds it, drains fresh into cold first (`ateam fresh-drain <role>`, deterministic, no LLM), then emits the condense packet (`ateam condense <role>`) for agent curation, and releases the lock on all exit paths.
+Condensing is **lock-guarded** via `ateam condense-lock`. Use the `/agent-teams:condense` skill (no arg = all roles; `<role>` arg = single role) — do not call `ateam condense <role>` directly. The skill acquires the lock, skips cleanly if another session holds it, emits the condense packet FIRST (`ateam condense <role>`) for agent curation, drains fresh into cold only afterward (`ateam fresh-drain <role>`, deterministic, no LLM, once the curated hot set has been written), and releases the lock on all exit paths.
+
+**That order is load-bearing — do not "tidy" it back.** The packet marks tiers by the prefix a key carries at read time, and `ateam fresh-drain` prints only a count, never the key list. Draining first would leave the just-served, un-curated entries shape-identical to long-settled cold in the packet, and those are precisely the entries the run must judge for promotion. Keeping the drain last also keeps `ateam condense` a pure read: a run that dies before curation has mutated nothing and retries clean.
 
 The condense agent applies changes directly via `ateam learn` and `ateam forget` — cold writes use `ateam learn <role> cold:<slug> --file <f>` (since bare `ateam learn` now writes fresh). There is NO human-review gate and NO staged diff — the agent acts autonomously.
 

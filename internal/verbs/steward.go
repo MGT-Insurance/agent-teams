@@ -413,7 +413,7 @@ type stewardLedgerRecordKong struct {
 	Initiative     string `name:"initiative" required:"" help:"Initiative id the decision concerns."`
 	Recommendation string `name:"recommendation" required:"" help:"What the Steward recommended."`
 	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected" help:"Outcome: accepted or corrected."`
-	Decision       string `name:"decision" help:"What Eric actually decided (REQUIRED when verdict=corrected)."`
+	Decision       string `name:"decision" help:"What the human actually decided (REQUIRED when verdict=corrected)."`
 }
 
 // Run builds a StewardLedgerRecord, validates it against the contract's

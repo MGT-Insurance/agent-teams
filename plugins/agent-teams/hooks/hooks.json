@@ -36,6 +36,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ensure-ateam-link.sh"
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-pull.sh"
           },
           {
@@ -92,13 +96,17 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/block-model-divergence.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/block-colon-named-role-spawn.sh"
           }
         ]
       }
     ],
     "SubagentStart": [
       {
-        "matcher": "(^|:)(implementer|planner|tester|reviewer)$",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",

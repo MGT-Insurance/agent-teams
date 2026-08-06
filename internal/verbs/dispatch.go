@@ -18,6 +18,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
@@ -122,7 +123,7 @@ type dispatchKong struct {
 	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch claude bg session."`
 	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
-	Model        string `name:"model"         help:"Model override for bg session (default: opus)."`
+	Model        string `name:"model"         help:"Model override for bg session (default: claude-opus-4-8)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
 	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
@@ -187,6 +188,12 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	repoRoot, err := c.git.RepoRoot(repoDir)
 	if err != nil {
 		fmt.Fprintln(ctx.Stderr, "dispatch: not inside a git repo: "+repoDir)
+		return cli.Silent(1)
+	}
+
+	if !repoconfig.Enabled(repoRoot) {
+		fmt.Fprintf(ctx.Stderr, "dispatch: agent-teams is not enabled for %s — add a %s file there (see internal/repoconfig) or remove its \"disabled: true\" line\n",
+			repoRoot, repoconfig.FileName)
 		return cli.Silent(1)
 	}
 
@@ -546,7 +553,7 @@ func defaultPRTitle(ownerRepo string, prNumber int) (string, error) {
 type resumeKong struct {
 	ID           string `arg:"" name:"id" optional:"" help:"Initiative ID to resume."`
 	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: /dri <id>)."`
-	Model        string `name:"model" help:"Model for a --launch-prompt session (default: opus). Requires --launch-prompt."`
+	Model        string `name:"model" help:"Model for a --launch-prompt session (default: claude-opus-4-8). Requires --launch-prompt."`
 
 	launch    launchFunc    `kong:"-"`
 	launchRaw rawLaunchFunc `kong:"-"`
@@ -580,9 +587,16 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
-	dir := initiative.Of(issue).Worktree
+	f := initiative.Of(issue)
+	dir := f.Worktree
 	if dir == "" {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", c.ID)
+		return cli.Silent(1)
+	}
+
+	if f.Repo != "" && !repoconfig.Enabled(f.Repo) {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: agent-teams is not enabled for %s — add a %s file there (see internal/repoconfig) or remove its \"disabled: true\" line\n",
+			f.Repo, repoconfig.FileName)
 		return cli.Silent(1)
 	}
 
@@ -613,20 +627,22 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 // every bg-DRI session at harness-instruction altitude so it overrides the
 // built-in file-memory prompt. Source of truth: contract bead agent-teams-8qm.
 const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. ~/.claude/projects/*/memory/). Persistent memory routes by kind:
-- Role/process learnings (transferable across repos) -> ateam learn <role> <slug> --file <tmpfile>, where <role> is dri | planner | implementer | tester | reviewer.
+- Role/process learnings (transferable across repos) -> ateam learn <role> <slug> --file <tmpfile>, where <role> is dri | planner | implementer | tester | reviewer | investigator.
 - User/cross-project preferences & feedback -> ateam learn user <slug> --file <tmpfile>.
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
 // driDefaultModel is the model background sessions launch on when no explicit
-// override is supplied. No [1m] suffix: the CLI's model catalogue marks
-// claude-opus-5 (the "opus" alias) native_1m, so the alias already resolves to
-// a 1M-context window on a first-party endpoint. The suffix is a second route
-// to the same window, and it does not survive the one case that really does
-// clamp to 200000 (long-context credits exhausted), so it buys nothing here.
+// override is supplied. Pinned to the concrete id claude-opus-4-8 rather than
+// the bare "opus" alias so the default stays put instead of silently following
+// whatever "latest opus" resolves to. No [1m] suffix: claude-opus-4-8 is
+// natively 1M-context on a first-party endpoint, so the alias-vs-id choice does
+// not change the context window. The suffix is a second route to the same
+// window, and it does not survive the one case that really does clamp to 200000
+// (long-context credits exhausted), so it buys nothing here.
 // Kept as a constant so this default and the export-plugin-options.sh hook
 // default cannot drift apart (tests/hook-export-plugin-options.test.sh).
-const driDefaultModel = "opus"
+const driDefaultModel = "claude-opus-4-8"
 
 // bgSessionEnv is the "env" map merged into a background session's --settings
 // JSON, publishing the role-signal contract (agent-teams-142k.1): ATEAM_ROLE
@@ -643,24 +659,34 @@ type bgSessionEnv struct {
 // bgSessionSettings is the --settings JSON payload for a background session
 // launch: an optional env map, and nothing else.
 //
-// Notably absent: autoCompactWindow. Background sessions deliberately do not
-// configure Claude Code's auto-compact trigger, and re-adding one here is a
-// regression — TestBGSessionArgs_SettingsOmitsAutoCompactWindow guards it. The
-// CLI resolves that window as
+// Notably absent: autoCompactWindow. It never enters this payload — re-adding
+// it here is a regression, guarded by
+// TestBGSessionArgs_SettingsOmitsAutoCompactWindow — because the window is
+// settable through a different mechanism: the claude CLI's own --autocompact
+// flag, appended to argv by bgSessionArgs whenever
+// CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW is non-empty (see
+// driAutoCompactWindow). The flag and this struct's absent field write the
+// same resolver slot, so there is never a reason to carry the value in both
+// places. The CLI resolves the window as (2.1.222, function qX):
 //
 //	W  = first match of: CLAUDE_CODE_AUTO_COMPACT_WINDOW env >
-//	     autoCompactWindow setting > server clientdata > experiment gate >
-//	     model-default (200000, reached ONLY when the model's real window is
-//	     under 1M) > auto (the model's full window)
+//	     configured (the --autocompact flag OR an autoCompactWindow settings
+//	     key, merged by gFu — same slot, both report source "settings") >
+//	     server clientdata > experiment gate > model-default (200000, reached
+//	     ONLY when the model's real window is under 1M) > per-model table
+//	     (claude-sonnet-5 -> 967000, or 500000 on the remote_cowork /
+//	     local-agent surfaces) > auto (the model's full window)
 //	W  = min(realModelWindow, W)
 //	effective = W - min(maxOutputTokens, 20000)
 //	compact  at effective - 13000
 //
-// Sending nothing falls through to "auto" on a 1M-context model — the
-// model-default tier is gated on the real window being under 1M, so a 1M model
-// skips it — giving a ~967000 trigger that tracks whatever model the session
-// actually runs on. Any value pinned here can only lower that: this call site
-// used to request 200000, which produced a 167000 trigger
+// The rest of this comment is the argument for the DEFAULT (empty, i.e.
+// --autocompact omitted) — not an argument against the knob existing. Sending
+// nothing falls through to "auto" on a 1M-context model — the model-default
+// tier is gated on the real window being under 1M, so a 1M model skips it —
+// giving a ~967000 trigger that tracks whatever model the session actually
+// runs on. Any value pinned here can only lower that: this call site used to
+// request 200000, which produced a 167000 trigger
 // (200000 - 20000 - 13000, matching compactions observed at 167,030 / 167,041
 // / 167,052) — a self-inflicted ~6x reduction of the trigger the same session
 // reaches with nothing set.
@@ -705,9 +731,19 @@ func bgSessionSettingsJSON(role, initiativeID string) string {
 // driDefaultModel when non-empty. advisor, when non-empty, appends
 // "--advisor <advisor>" to the argv (a hidden claude CLI flag taking a model
 // alias). role and initiativeID are merged into --settings via
-// bgSessionSettingsJSON. Pure: does not read env. Extracted so tests can
+// bgSessionSettingsJSON. agentsJSON is the --agents payload generated from
+// plugins/agent-teams/roles/*.md (agentsjson.go) — the workaround for
+// anthropics/claude-code#81746, see agent-teams-wf7o.9 — and is always
+// emitted; resolving/validating it is the CALLER's job (rawLaunchBGSession),
+// not this function's: bgSessionArgs stays pure and does not read the
+// filesystem or environment. autoCompactWindow, when non-empty, appends
+// "--autocompact <autoCompactWindow>" to the argv verbatim — no parsing, no
+// range check; the claude CLI's own --autocompact flag validates form and
+// range and fails loudly on bad input (see bgSessionSettings for why nothing
+// duplicates that check here). When empty (the default), argv is
+// byte-identical to before this parameter existed. Extracted so tests can
 // assert the argv without executing the command.
-func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []string {
+func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, autoCompactWindow string) []string {
 	if model == "" {
 		model = driDefaultModel
 	}
@@ -720,10 +756,14 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID string) []st
 	if settings := bgSessionSettingsJSON(role, initiativeID); settings != "" {
 		args = append(args, "--settings", settings)
 	}
+	if autoCompactWindow != "" {
+		args = append(args, "--autocompact", autoCompactWindow)
+	}
 	args = append(args, "--append-system-prompt", memoryRoutingRule)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
+	args = append(args, "--agents", agentsJSON)
 	return append(args, prompt)
 }
 
@@ -751,6 +791,18 @@ func driAdvisorSettings() (model, advisor string) {
 	return driModel, ""
 }
 
+// driAutoCompactWindow reads CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW and
+// returns it verbatim — empty when unset, unparsed and unvalidated otherwise.
+// The claude CLI's own --autocompact flag (bgSessionArgs) owns validation;
+// see bgSessionSettings for why this helper must not duplicate it. Unlike
+// driAdvisorSettings, this is read by rawLaunchBGSession rather than
+// launchBGSession, so it covers every session this producer launches,
+// including the raw --launch-prompt path, not just /dri. Unit testable via
+// t.Setenv.
+func driAutoCompactWindow() string {
+	return os.Getenv("CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW")
+}
+
 // launchFunc is the function type for launching a background DRI session.
 // dispatchKong and resumeKong hold an injected field of this type so tests
 // can substitute a fake without touching a package global. role and
@@ -767,17 +819,32 @@ type launchFunc func(ctx *cli.Context, dir, driArg, role, initiativeID string) e
 type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor, role, initiativeID string) error
 
 // rawLaunchBGSession launches a background claude session with an arbitrary
-// prompt (no /dri prefix). model overrides the default "opus" model when
+// prompt (no /dri prefix). model overrides driDefaultModel when
 // non-empty; advisor, when non-empty, adds "--advisor <advisor>" to the argv.
 // role and initiativeID are merged into --settings via bgSessionArgs. Shared
 // by the --launch-prompt production path and tests (via injection into
 // dispatchKong.launchRaw).
+//
+// Resolves the --agents payload (agentsjson.go) itself — bgSessionArgs stays
+// pure and does not read the filesystem — and fails loud (returns an error,
+// launches nothing) when that payload can't be built, per the fail-loud
+// contract in agent-teams-wf7o.9 artifact (4): a session launched without
+// --agents would silently run every named teammate as a generic agent.
+//
+// Also resolves the auto-compact window (driAutoCompactWindow) itself, here
+// rather than in launchBGSession, so the knob applies to every launch this
+// function makes — including --launch-prompt — not only the /dri path that
+// driAdvisorSettings is scoped to.
 func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, initiativeID string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
+	agentsJSON, err := buildAgentsPayload()
+	if err != nil {
+		return fmt.Errorf("ateam: build --agents payload: %w", err)
+	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID)
+	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, driAutoCompactWindow())
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout

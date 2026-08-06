@@ -440,10 +440,10 @@ func TestMatchResult_NoneZeroValue(t *testing.T) {
 // ── matchClosedFromIssues ─────────────────────────────────────────────────────
 
 func TestMatchClosed_PicksMostRecentlyCreated(t *testing.T) {
-	older := prFieldIssue("at-old.1", "owner/myrepo", 42)
+	older := prFieldIssue(t, "at-old.1", "owner/myrepo", 42)
 	older.Status = "closed"
 	older.CreatedAt = "2026-07-01T00:00:00Z"
-	newer := prFieldIssue("at-new.1", "owner/myrepo", 42)
+	newer := prFieldIssue(t, "at-new.1", "owner/myrepo", 42)
 	newer.Status = "closed"
 	newer.CreatedAt = "2026-07-10T00:00:00Z"
 
@@ -460,7 +460,7 @@ func TestMatchClosed_PicksMostRecentlyCreated(t *testing.T) {
 }
 
 func TestMatchClosed_NoMatchReturnsMatchNone(t *testing.T) {
-	other := prFieldIssue("at-other.1", "owner/otherrepo", 7)
+	other := prFieldIssue(t, "at-other.1", "owner/otherrepo", 7)
 	other.Status = "closed"
 
 	got := matchClosedFromIssues([]bd.Issue{other}, PREvent{Repo: "owner/myrepo", PRNumber: 42})
@@ -470,7 +470,7 @@ func TestMatchClosed_NoMatchReturnsMatchNone(t *testing.T) {
 }
 
 func TestMatchClosed_IgnoresBranchOnlyIssues(t *testing.T) {
-	branchOnly := branchIssue("at-br.1", "myrepo", "feat-x")
+	branchOnly := branchIssue(t, "at-br.1", "myrepo", "feat-x")
 	branchOnly.Status = "closed"
 
 	got := matchClosedFromIssues([]bd.Issue{branchOnly}, PREvent{Repo: "owner/myrepo", PRNumber: 42})

@@ -20,11 +20,11 @@ The parked DRI is waiting on the answer message itself; that mail is what it res
 
 ## steward-reply — the learning-capture rationale
 
-Why a `corrected` verdict gets an immediate learning, not just a ledger row: the ledger's `--decision` field captures the raw call for that one case, but a case-by-case log doesn't generalize — you'd have to re-derive the pattern from scratch on every similar future gate. A distilled RULE/TRIGGER/APPLY learning turns one correction into a reusable rule, which is the highest-value thing a persistent Steward can produce, because it's what makes the NEXT recommendation closer to Eric's actual preference instead of just repeating the same miss. The ledger is the tally; the learning is the lesson.
+Why a `corrected` verdict gets an immediate learning, not just a ledger row: the ledger's `--decision` field captures the raw call for that one case, but a case-by-case log doesn't generalize — you'd have to re-derive the pattern from scratch on every similar future gate. A distilled RULE/TRIGGER/APPLY learning turns one correction into a reusable rule, which is the highest-value thing a persistent Steward can produce, because it's what makes the NEXT recommendation closer to the human's actual preference instead of just repeating the same miss. The ledger is the tally; the learning is the lesson.
 
 ## steward-direct
 
-**Two sources, one envelope kind.** Eric reaches the Steward outside any initiative in two ways: by @mentioning the bot in the shared General channel, or by DMing the bot 1:1. Both produce a steward-direct envelope, because to the Steward they are the same thing — a conversation with no initiative behind it and no dedicated topic to reply into. Neither ever carries a thread ref.
+**Two sources, one envelope kind.** The human reaches the Steward outside any initiative in two ways: by @mentioning the bot in the shared General channel, or by DMing the bot 1:1. Both produce a steward-direct envelope, because to the Steward they are the same thing — a conversation with no initiative behind it and no dedicated topic to reply into. Neither ever carries a thread ref.
 
 The DM path additionally admits only allow-listed senders, so whether a given DM reaches you at all is settled upstream, before any envelope exists. That gate is not yours to reason about: act on the envelope you actually received, never on a belief about which paths are currently open.
 

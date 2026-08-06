@@ -1,6 +1,6 @@
 # agent-teams
 
-Multi-agent software delivery for Claude Code. One session acts as the **DRI** (directly responsible individual) for an initiative: it plans the work as beads, runs a background team of role agents — planner, implementers, tester, reviewer — and drives the initiative to a reviewable pull request. A persistent **Steward** session watches every initiative on the machine and is your single conversational counterpart for gates and decisions; you review and merge.
+Multi-agent software delivery for Claude Code. One session acts as the **DRI** (directly responsible individual) for an initiative: it plans the work as beads, runs a background team of role agents — planner, implementers, tester, reviewer, investigators — and drives the initiative to a reviewable pull request. A persistent **Steward** session watches every initiative on the machine and is your single conversational counterpart for gates and decisions; you review and merge.
 
 New to agent-teams? Start with [GETTING-STARTED.md](GETTING-STARTED.md) for an end-to-end walkthrough.
 
@@ -19,7 +19,29 @@ New to agent-teams? Start with [GETTING-STARTED.md](GETTING-STARTED.md) for an e
 
 (For local development: `/plugin marketplace add /path/to/agent-teams`.)
 
-The plugin also declares two config options in its manifest (`use_advisors`, `dri_model`; see the `userConfig` block in `plugins/agent-teams/.claude-plugin/plugin.json`) that pick which model a background DRI actually runs on — `dri_model` (default `opus`) is the DRI's model; `use_advisors` (default off) instead runs the DRI on sonnet with `dri_model` attached as an advisor.
+The plugin also declares two config options in its manifest (`use_advisors`, `dri_model`; see the `userConfig` block in `plugins/agent-teams/.claude-plugin/plugin.json`) that pick which model a background DRI actually runs on — `dri_model` (default `claude-opus-4-8`) is the DRI's model; `use_advisors` (default off) instead runs the DRI on sonnet with `dri_model` attached as an advisor.
+
+A third option, `auto_compact_window`, sets the token window agent-teams asks Claude Code to use for the background sessions it launches (DRI and steward). Left empty (the default), agent-teams sends nothing — Claude Code picks the window from the model, which is today's behavior, unchanged. Set it to lower that window: a plain number (`450000`), a `k`/`m` suffix (`500k`, `1m`), a bare `100`–`1000` as thousands shorthand (`200` means `200000`), or the literal `auto`. It can only lower the window — it can never raise it above the model's real context window. Note this sets the *window*, not the point where compaction actually fires: compaction kicks in roughly 33,000 tokens below it, so `500000` means compaction fires near `467000`. A bad value fails the launch loudly with Claude Code's own error message; agent-teams doesn't validate it itself.
+
+## Enable a repo
+
+A repo is agent-teams-enabled only when a `.agent-teams` file exists at its root — not to be confused with the global `~/.agent-teams` workspace, which is machine-wide and unrelated. Its contents are ignored except for one line: `disabled: true`, with `disabled` at the very start of the line. Everything else — empty file, comments, unrelated prose — leaves the repo enabled.
+
+A missing file has the identical effect to `disabled: true`: not enabled. `disabled: true` is a live kill switch — no commit, no restart, read fresh on every call — and it doesn't close any initiative that's already open.
+
+Commit the file. It's read straight off disk, so an untracked `.agent-teams` enables only the checkout it's sitting in, not the repo. Nothing creates it for you.
+
+When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative, mail wakeups, and PR-event routing all skip without erroring. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
+
+## Machine-local instructions
+
+A human can give a role standing custom direction by hand-writing a file at `$AGENT_TEAMS_HOME/instructions/<role>.md`, served to a spawning role agent by `ateam instructions <role>`. It's machine-local: the file lives outside the global workspace's beads DB, so it needs no check-in and doesn't sync to other machines the way `ateam learn` memories do.
+
+If cross-machine sharing IS wanted, `git add`-ing the file into the `~/.agent-teams` workspace repo is an available choice — nothing about the mechanism forces machine-locality, it's just the default because nothing creates or commits the file for you.
+
+Content over 4096 bytes is refused rather than truncated: the human sees a loud marker naming the file and its size instead of a silently cut-off instruction. The instructions extend a role's shipped definition — they can't override its hard guardrails.
+
+Today only the reviewer role fetches this on spawn; the other roles don't yet self-fetch it.
 
 ## Use
 
@@ -31,7 +53,7 @@ The plugin also declares two config options in its manifest (`use_advisors`, `dr
 - `/bg-session [prompt] [dir]` — launch a bare background Claude session with no `ateam`, no beads, no worktree, no initiative registration. A deliberate escape hatch for work that isn't a tracked initiative (e.g. running a dev server); use `/dispatch-dri` for real feature work.
 - `/dispatch-review-pr <PR>` — register a review initiative for a GitHub PR (URL, `owner/repo#123`, or a bare number) and launch a background review session.
 - `/agent-teams:steward` — start or act as the machine's Steward (see [Steward](#steward)).
-- `/condense` — drain fresh memories and curate hot/cold learnings for over-threshold roles; can be triggered manually or runs automatically at DRI wind-down.
+- `/condense` — curate hot/cold learnings, then drain what is left of the fresh tier; can be triggered manually or runs automatically at DRI wind-down. A role is skipped unless its fresh tier has accumulated enough NEW material to be worth a pass.
 
 ### Headless spawn
 
@@ -55,7 +77,7 @@ The session shows up in `claude agents`; attach to answer gates (`claude attach 
 ## Concepts
 
 - **Global workspace** (`${AGENT_TEAMS_HOME:-$HOME/.agent-teams}`): a git-backed beads workspace. Role learnings (`<role>:<slug>` memories — every planner learns from every planner) and the initiative registry (one issue per initiative; a `human` label = "waiting on a human" — enumerate with `bd human list` or `ateam human-list`). Syncs across machines via its git remote.
-- **Roles:** planner (opus) plans as beads; implementers (sonnet, ephemeral) write code + unit tests in isolated worktrees; tester runs suites + live verification (including `@playwright/cli` browser automation for UI checks — it's plain Bash, so it works in any session, including `claude --bg`, with no MCP wiring); reviewer reviews independently and runs the CI gate. All file `discovery` beads; the DRI triages them.
+- **Roles:** planner (opus) plans as beads; implementers (sonnet, ephemeral) write code + unit tests in isolated worktrees; tester runs suites + live verification (including `@playwright/cli` browser automation for UI checks — it's plain Bash, so it works in any session, including `claude --bg`, with no MCP wiring); reviewer reviews independently and runs the CI gate; investigators (opus, ephemeral) each answer one bounded question and return an evidence-backed brief, fanned out in parallel on disjoint charges. All file `discovery` beads; the DRI triages them.
 - **Prime directive:** deliver a PR that solves the problem — investigating beats asking; asking beats delivering wrong.
 - **Lifecycle:** the DRI drives to an opened PR, then leaves the initiative open in an `awaiting-merge` state. Opening the PR is delivery — merging is yours. Nothing closes it on merge: a `merged` PR event has no handler, so close-out is either a DRI resume that finds the PR merged, or a human running `ateam close <id> --reason "merged: <url>"` directly. The DRI (or a human) can also declare an initiative done with `ateam handoff <id>`, moving it to an `awaiting-external-review` state for third-party reviewers (`ateam handoff <id> --clear` undoes it).
 - **Role-memory model:** memories use a three-tier key convention — fresh (default write tier, accumulates between condense runs) and hot (curated) are both auto-injected into every role session via `ateam learnings <role>`; cold is searchable on demand via `ateam recall <role> <query>`, not auto-injected. `ateam learn <role> <slug>` writes fresh; `ateam condense <role>` emits a structured memory packet that curates fresh into hot; `ateam fresh-drain <role>` moves uncurated fresh into cold; `ateam applied <role> <slug>` records that a learning was actually used, feeding impact-driven curation. Full mechanics in `plugins/agent-teams/CLAUDE.md`.
@@ -110,7 +132,8 @@ The plugin's slash commands wrap these `ateam` verbs; agents and the DRI also ca
 | `register`, `gate`, `clear-gate`, `note`, `close` | DRI | initiative lifecycle |
 | `mail send`, `mail inbox`, `mail list`, `mail close`, `mail purge` | agent / human | cross-session mail (see [Cross-session messaging](#cross-session-messaging)) |
 | `learn`, `learnings`, `recall`, `forget`, `applied` | role agents | role-memory read and write |
-| `condense`, `fresh-drain` | DRI / human | role-memory curation |
+| `instructions` | role agents | read a role's machine-local instructions file (see [Machine-local instructions](#machine-local-instructions)) |
+| `condense`, `fresh-drain`, `condense-check` | DRI / human | role-memory curation (`condense-check` is read-only: it reports the per-role fire/skip verdict) |
 | `sync`, `pull` | DRI / hooks | sync the global workspace |
 | `worktree-setup` | agent | hydrate a fresh track worktree |
 | `steward init`, `steward start`, `steward remove` | human | start or stop the machine's Steward session |

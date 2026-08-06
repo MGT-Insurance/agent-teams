@@ -13,6 +13,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -88,12 +89,24 @@ func makeCtx(bd cli.BDRunner, home string) (*cli.Context, *bytes.Buffer, *bytes.
 	}, &stdout, &stderr
 }
 
+// newEnabledRepoDir returns a fresh temp dir seeded with a .agent-teams
+// marker file, so fixtures that expect dispatch/resume to reach past the
+// repo-enabled gate don't need to re-derive that setup individually.
+func newEnabledRepoDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("newEnabledRepoDir: write %s: %v", repoconfig.FileName, err)
+	}
+	return dir
+}
+
 // ---- dispatch happy path (--no-launch) -------------------------------------
 
 func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 	// Create a real temp dir to act as the "repo root" so WorktreeExists can
 	// stat it, and a sub-dir for the worktree target that does NOT exist yet.
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
 
 	// The worktree path is <home>-worktrees/<slug>; it must not exist yet.
@@ -189,11 +202,70 @@ func TestDispatch_NotARepo(t *testing.T) {
 	}
 }
 
+// ---- dispatch: repo not enabled ---------------------------------------------
+
+// TestDispatch_RepoNotEnabled: a real git repo with no .agent-teams file is
+// refused — the opt-in gate, not the "not a repo" gate above.
+func TestDispatch_RepoNotEnabled(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir() // deliberately NOT newEnabledRepoDir — no .agent-teams file
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for a repo with no .agent-teams file, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
+		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	}
+}
+
+// TestDispatch_RepoDisabled: a .agent-teams file carrying "disabled: true"
+// refuses dispatch exactly like a missing file.
+func TestDispatch_RepoDisabled(t *testing.T) {
+	home := t.TempDir()
+	repoDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), []byte("disabled: true\n"), 0o644); err != nil {
+		t.Fatalf("write .agent-teams: %v", err)
+	}
+	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
+	ctx, _, stderr := makeCtx(&fakeBD{}, home)
+	cmd := &dispatchKong{
+		Problem:  "Some work",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git:      fg,
+		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for a repo with disabled: true, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
+		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	}
+}
+
 // ---- dispatch: empty slug --------------------------------------------------
 
 func TestDispatch_EmptySlug(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	// A problem that slugifies to empty (pure punctuation).
@@ -218,7 +290,7 @@ func TestDispatch_EmptySlug(t *testing.T) {
 
 func TestDispatch_WorktreeCollision(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	fg := &fakeGit{
 		repoRootFn:       func(dir string) (string, error) { return repoDir, nil },
 		worktreeExistsFn: func(repoRoot, wtPath string) bool { return true }, // collision
@@ -255,7 +327,7 @@ func TestDispatch_WorktreeCollision(t *testing.T) {
 // command is cleanly retryable.
 func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var removedRepo, removedWt string
 	fg := &fakeGit{
@@ -305,12 +377,14 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 
 func TestDispatch_MissingProblem(t *testing.T) {
 	home := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	// Problem: "" slugifies to "" → UsageError (exit 2).
 	cmd := &dispatchKong{
 		Problem:  "",
+		Repo:     repoDir,
 		NoLaunch: true,
-		git:      &fakeGit{},
+		git:      &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }},
 		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
@@ -327,7 +401,7 @@ func TestDispatch_MissingProblem(t *testing.T) {
 
 func TestDispatch_IDOnly(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -368,7 +442,7 @@ func TestDispatch_IDOnly(t *testing.T) {
 
 func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "my-work"
 	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
@@ -423,7 +497,7 @@ func TestDispatch_RegistryBodyWorktreeLine(t *testing.T) {
 // "mode: bg" (contract: agent-teams-yl6t.1).
 func TestDispatch_Standby_WritesMarker(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var gotBody string
 	fbd := &fakeBD{
@@ -477,7 +551,7 @@ func TestDispatch_Standby_WritesMarker(t *testing.T) {
 // contains no "standby" line at all (never "standby: false").
 func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var gotBody string
 	fbd := &fakeBD{
@@ -522,7 +596,7 @@ func TestDispatch_NoStandby_OmitsMarker(t *testing.T) {
 
 func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "add-feature"
 	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
@@ -588,7 +662,7 @@ func TestDispatch_BodyFile_AppendsContext(t *testing.T) {
 // TestDispatch_BodyFile_Missing errors when the file does not exist.
 func TestDispatch_BodyFile_Missing(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	fg := &fakeGit{repoRootFn: func(dir string) (string, error) { return repoDir, nil }}
 	ctx, _, _ := makeCtx(&fakeBD{}, home)
 	cmd := &dispatchKong{
@@ -614,7 +688,7 @@ func TestDispatch_BodyFile_Missing(t *testing.T) {
 // returning the usage error.
 func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var removedWt string
 	fg := &fakeGit{
@@ -654,7 +728,7 @@ func TestDispatch_BodyFile_Missing_RemovesWorktree(t *testing.T) {
 // an error — no launch is attempted, no initiative_id line is printed.
 func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var removedWt string
 	fg := &fakeGit{
@@ -708,7 +782,7 @@ func TestDispatch_EmptyID_RemovesWorktree(t *testing.T) {
 // schema-only body unchanged (backward-compat).
 func TestDispatch_BodyFile_Omitted(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "schema-only"
 	expectedWt := filepath.Join(home+"-worktrees", expectedSlug)
@@ -777,7 +851,7 @@ func TestDispatch_BodyFile_Omitted(t *testing.T) {
 // the old "last-wins — this value replaces the header's" wording was false.
 func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	redefineLine := "rep" + "o: /bogus/other/repo"
 	bodyContent := "Some prose framing the task.\n" + redefineLine + "\nMore prose after.\n"
@@ -838,7 +912,7 @@ func TestDispatch_BodyFileWarnsOnFieldRedefinition(t *testing.T) {
 // to be unwound.
 func TestDispatch_MultiLineProblemRejectedBeforeWorktree(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	addCalled := false
 	fg := &fakeGit{
@@ -877,7 +951,7 @@ func TestDispatch_MultiLineProblemRejectedBeforeWorktree(t *testing.T) {
 // with no field-shaped line produces no stderr output at all.
 func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	bodyContent := "Just some framing prose.\nNo colons here that matter.\nDone.\n"
 	bfPath := filepath.Join(t.TempDir(), "body.txt")
@@ -922,7 +996,7 @@ func TestDispatch_BodyFileNoWarningWithoutCollision(t *testing.T) {
 // false positive on the most common briefing style.
 func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	// Safe to write literally: this line does not begin with a routing-field
 	// word followed by a colon — it begins with "- ".
@@ -970,7 +1044,7 @@ func TestDispatch_BodyFileNoWarningOnHyphenPrefixedLine(t *testing.T) {
 // and the reader's rule are now one rule, so this shape must stay silent.
 func TestDispatch_BodyFileNoWarningOnWrongCaseLine(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	bodyContent := "BRAN" + "CH: totally-wrong-branch" + "\n"
 	bfPath := filepath.Join(t.TempDir(), "body.txt")
@@ -1042,7 +1116,7 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "")
+	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "", "{}", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical memoryRoutingRule const.
@@ -1076,7 +1150,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
 	// caller (launchBGSession), not by bgSessionArgs itself.
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs(name, prompt, "", "", "", "")
+	args := bgSessionArgs(name, prompt, "", "", "", "", "{}", "")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -1085,7 +1159,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	}{
 		{"--bg", ""},
 		{"-n", name},
-		{"--model", "opus"},
+		{"--model", "claude-opus-4-8"},
 		{"--permission-mode", "bypassPermissions"},
 	}
 	for _, c := range checks {
@@ -1123,9 +1197,9 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 }
 
 // TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
-// replaces the "opus" default in the --model flag.
+// replaces the "claude-opus-4-8" default in the --model flag.
 func TestBGSessionArgs_ModelOverride(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "", "{}", "")
 
 	found := false
 	for i, a := range args {
@@ -1140,28 +1214,28 @@ func TestBGSessionArgs_ModelOverride(t *testing.T) {
 	if !found {
 		t.Errorf("argv missing --model flag; got: %v", args)
 	}
-	// The default "opus" must NOT appear anywhere when overridden.
+	// The default "claude-opus-4-8" must NOT appear anywhere when overridden.
 	for _, a := range args {
-		if a == "opus" {
-			t.Errorf("argv should not contain default \"opus\" when model override is set; got: %v", args)
+		if a == "claude-opus-4-8" {
+			t.Errorf("argv should not contain default \"claude-opus-4-8\" when model override is set; got: %v", args)
 		}
 	}
 }
 
 // TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
-// argument falls back to the "opus" default.
+// argument falls back to the "claude-opus-4-8" default.
 func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "", "{}", "")
 
 	found := false
 	for i, a := range args {
-		if a == "--model" && i+1 < len(args) && args[i+1] == "opus" {
+		if a == "--model" && i+1 < len(args) && args[i+1] == "claude-opus-4-8" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("argv missing --model opus pair for empty override; got: %v", args)
+		t.Errorf("argv missing --model claude-opus-4-8 pair for empty override; got: %v", args)
 	}
 }
 
@@ -1170,7 +1244,7 @@ func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
 // Per contract decision 7 (agent-teams-wvx2.1), this must be asserted at the
 // bgSessionArgs level (pure, no env reads).
 func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "", "{}", "")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1189,9 +1263,9 @@ func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
 }
 
 // TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
-// defaults to "opus" and no "--advisor" flag appears anywhere in argv.
+// defaults to "claude-opus-4-8" and no "--advisor" flag appears anywhere in argv.
 func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1201,8 +1275,8 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 		}
 		return false
 	}
-	if !hasPair("--model", "opus") {
-		t.Errorf("argv missing \"--model\" \"opus\" pair; got: %v", args)
+	if !hasPair("--model", "claude-opus-4-8") {
+		t.Errorf("argv missing \"--model\" \"claude-opus-4-8\" pair; got: %v", args)
 	}
 	for _, a := range args {
 		if a == "--advisor" {
@@ -1217,7 +1291,7 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 // driModel) only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true",
 // and (driModel, "") for every other value, including unset, empty, "false",
 // and any casing/value other than the exact string "true". driModel comes
-// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "opus" when unset or
+// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "claude-opus-4-8" when unset or
 // empty. Cases with an explicit non-default dri_model ("haiku") in both the
 // advisor-on and advisor-off branches prove the env var actually threads
 // through, not just the default.
@@ -1234,11 +1308,11 @@ func TestDriAdvisorSettings(t *testing.T) {
 		wantModel      string
 		wantAdvisor    string
 	}{
-		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "opus"},
-		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "opus", wantAdvisor: ""},
-		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "opus", wantAdvisor: ""},
-		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "opus", wantAdvisor: ""},
-		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "opus", wantAdvisor: ""},
+		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "claude-opus-4-8"},
+		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "claude-opus-4-8", wantAdvisor: ""},
 		{name: "true_nondefault_model", setAdvisorsEnv: true, advisorsValue: "true", setModelEnv: true, modelValue: "haiku", wantModel: "sonnet", wantAdvisor: "haiku"},
 		{name: "false_nondefault_model", setAdvisorsEnv: true, advisorsValue: "false", setModelEnv: true, modelValue: "haiku", wantModel: "haiku", wantAdvisor: ""},
 	}
@@ -1265,6 +1339,48 @@ func TestDriAdvisorSettings(t *testing.T) {
 			gotModel, gotAdvisor := driAdvisorSettings()
 			if gotModel != tc.wantModel || gotAdvisor != tc.wantAdvisor {
 				t.Errorf("driAdvisorSettings() = (%q, %q), want (%q, %q)", gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
+			}
+		})
+	}
+}
+
+// ---- driAutoCompactWindow: env-reading helper ------------------------------
+
+// TestDriAutoCompactWindow verifies driAutoCompactWindow() returns
+// CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW verbatim — empty when unset, and
+// unmodified otherwise, including a non-numeric CLI shorthand and the literal
+// "auto". The helper must NOT reject or normalize any value: validation is
+// the claude CLI's job (bgSessionArgs), not this helper's.
+func TestDriAutoCompactWindow(t *testing.T) {
+	const key = "CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW"
+
+	cases := []struct {
+		name   string
+		setEnv bool
+		value  string
+		want   string
+	}{
+		{name: "unset", setEnv: false, want: ""},
+		{name: "empty", setEnv: true, value: "", want: ""},
+		{name: "numeric", setEnv: true, value: "450000", want: "450000"},
+		{name: "shorthand", setEnv: true, value: "500k", want: "500k"},
+		{name: "literal_auto", setEnv: true, value: "auto", want: "auto"},
+		{name: "non_numeric_garbage", setEnv: true, value: "banana", want: "banana"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.setEnv {
+				t.Setenv(key, tc.value)
+			} else {
+				// Ensure the var is unset for this subtest, in case the outer
+				// test process inherited it from the environment.
+				t.Setenv(key, "")
+				os.Unsetenv(key)
+			}
+
+			if got := driAutoCompactWindow(); got != tc.want {
+				t.Errorf("driAutoCompactWindow() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -1332,7 +1448,7 @@ func TestNewInitiative_RegularFileNotDirectory(t *testing.T) {
 // TestDispatchKong_FlagsRoundtrip verifies that dispatchKong.Run passes all
 // seven flags through to the underlying dispatchCommand correctly.
 func TestDispatchKong_FlagsRoundtrip(t *testing.T) {
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
 
 	var capturedSlug string
@@ -1382,7 +1498,7 @@ func TestDispatchKong_FlagsRoundtrip(t *testing.T) {
 
 // TestDispatchKong_IDOnly verifies --id-only routes through dispatchKong correctly.
 func TestDispatchKong_IDOnly(t *testing.T) {
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
 
 	fbd := &fakeBD{
@@ -1557,13 +1673,93 @@ func TestResumeKong_DelegatesLaunch(t *testing.T) {
 	}
 }
 
+// TestResumeKong_RepoEnabled_DelegatesLaunch verifies a "repo:" field pointing
+// at an enabled repo does not block resume — the positive counterpart to
+// TestResumeKong_RepoDisabled_Refuses below.
+func TestResumeKong_RepoEnabled_DelegatesLaunch(t *testing.T) {
+	dir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-rk2",
+				Status:      "open",
+				Description: "worktree: " + dir + "\nrepo: " + repoDir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	var launchedID string
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-rk2",
+		launch: func(_ *cli.Context, _, arg, _, _ string) error {
+			launchedID = arg
+			return nil
+		},
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if launchedID != "at-rk2" {
+		t.Errorf("launch driArg = %q, want %q", launchedID, "at-rk2")
+	}
+}
+
+// TestResumeKong_RepoDisabled_Refuses verifies resume refuses to relaunch a
+// session whose initiative's "repo:" field points at a repo with no (or a
+// disabled) .agent-teams file — the same gate as dispatch, applied to an
+// already-registered initiative.
+func TestResumeKong_RepoDisabled_Refuses(t *testing.T) {
+	dir := t.TempDir()
+	repoDir := t.TempDir() // no .agent-teams file
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{
+				ID:          "at-rk3",
+				Status:      "open",
+				Description: "worktree: " + dir + "\nrepo: " + repoDir + "\n",
+			}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+
+	launched := false
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-rk3",
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for a disabled repo, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if launched {
+		t.Error("launch was called despite the repo being disabled")
+	}
+	if !strings.Contains(stderr.String(), "agent-teams is not enabled") {
+		t.Errorf("expected 'agent-teams is not enabled' in stderr, got: %s", stderr.String())
+	}
+}
+
 // ── dispatch: epic creation ───────────────────────────────────────────────────
 
 // TestDispatch_EpicCreatedAndAppendedToBody verifies that when createEpic
 // succeeds, "epic: <id>" is written into the initiative body before bd create.
 func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	expectedSlug := "epic-work"
 
@@ -1635,15 +1831,64 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 // change reintroduces the key, this test is the thing that should stop it.
 func TestBGSessionArgs_SettingsOmitsAutoCompactWindow(t *testing.T) {
 	// Every production launch path supplies a role, so --settings is present.
-	for _, tc := range []struct{ role, initiativeID string }{
-		{"dri", "at-abc123"},
-		{"dri", ""},
-		{"steward", ""},
+	// The non-empty window cases are the ones that matter: the regression this
+	// guards against is a future change that pins the window in --settings as
+	// well as on argv, which can only happen when a window is actually set.
+	for _, tc := range []struct{ role, initiativeID, window string }{
+		{"dri", "at-abc123", ""},
+		{"dri", "", ""},
+		{"steward", "", ""},
+		{"dri", "at-abc123", "450000"},
+		{"dri", "", "500k"},
+		{"steward", "", "auto"},
 	} {
-		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID)
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}", tc.window)
 		got := settingsValue(t, args)
 		if strings.Contains(got, "autoCompactWindow") {
-			t.Errorf("--settings for role=%q must not pin autoCompactWindow; got %q", tc.role, got)
+			t.Errorf("--settings for role=%q window=%q must not pin autoCompactWindow; got %q", tc.role, tc.window, got)
+		}
+	}
+}
+
+// TestBGSessionArgs_OmitsAutocompactFlagWhenEmpty is the guard that actually
+// protects the empty default now that the auto-compact window rides argv
+// instead of --settings (see TestBGSessionArgs_SettingsOmitsAutoCompactWindow
+// above): with autoCompactWindow == "", argv must not contain "--autocompact"
+// at all, so today's launches stay byte-identical.
+func TestBGSessionArgs_OmitsAutocompactFlagWhenEmpty(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}", "")
+	for _, a := range args {
+		if a == "--autocompact" {
+			t.Fatalf("argv must omit --autocompact when the window is empty; got: %v", args)
+		}
+	}
+}
+
+// TestBGSessionArgs_AutocompactFlagWhenSet pins the pass-through-verbatim
+// contract: when autoCompactWindow is non-empty, bgSessionArgs appends
+// "--autocompact" followed by the exact string given, exactly once — no
+// parsing, no normalization, no range check. Cases include a non-numeric CLI
+// shorthand ("500k") and the literal "auto" to prove neither is rejected or
+// altered here; the claude CLI itself owns validation.
+func TestBGSessionArgs_AutocompactFlagWhenSet(t *testing.T) {
+	for _, window := range []string{"450000", "500k", "1m", "200", "auto"} {
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}", window)
+
+		count := 0
+		for i, a := range args {
+			if a != "--autocompact" {
+				continue
+			}
+			count++
+			if i+1 >= len(args) {
+				t.Fatalf("--autocompact has no following value in argv: %v", args)
+			}
+			if args[i+1] != window {
+				t.Errorf("--autocompact value = %q, want %q", args[i+1], window)
+			}
+		}
+		if count != 1 {
+			t.Errorf("argv must contain --autocompact exactly once for window %q; got %d occurrences in %v", window, count, args)
 		}
 	}
 }
@@ -1668,7 +1913,7 @@ func settingsValue(t *testing.T, args []string) string {
 // path's merged --settings JSON: role and initiative id both present, in the
 // contract's documented field order (agent-teams-142k.1, PLAN.md §1).
 func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}", "")
 	got := settingsValue(t, args)
 	want := `{"env":{"ATEAM_ROLE":"dri","ATEAM_INITIATIVE":"at-abc123"}}`
 	if got != want {
@@ -1680,7 +1925,7 @@ func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
 // bare-problem-statement case: role present, ATEAM_INITIATIVE omitted
 // entirely (not an empty string) when the launcher doesn't know the id.
 func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "")
+	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "", "{}", "")
 	got := settingsValue(t, args)
 	want := `{"env":{"ATEAM_ROLE":"dri"}}`
 	if got != want {
@@ -1697,7 +1942,7 @@ func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
 // map is the only thing ateam configures, so with nothing to say it says
 // nothing — an empty "{}" would read like an intent that went missing.
 func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
 	for _, a := range args {
 		if a == "--settings" {
 			t.Fatalf("argv must omit --settings when role and initiative id are both empty; got: %v", args)
@@ -1721,7 +1966,7 @@ func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
 // never called (even when it is injected).
 func TestDispatch_SkipEpic(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1763,7 +2008,7 @@ func TestDispatch_SkipEpic(t *testing.T) {
 // session receives the custom prompt verbatim (not /dri <id>).
 func TestDispatch_LaunchPrompt(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1807,7 +2052,7 @@ func TestDispatch_LaunchPrompt(t *testing.T) {
 // is replaced with the actual initiative id returned by bd create.
 func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1856,7 +2101,7 @@ func TestDispatch_LaunchPrompt_Substitution(t *testing.T) {
 // advisor defaults to "" when --advisor is not set.
 func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1902,7 +2147,7 @@ func TestDispatch_LaunchPrompt_ModelOverride(t *testing.T) {
 // --launch-prompt path into advisor mode.
 func TestDispatch_LaunchPrompt_AdvisorOverride(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -1946,7 +2191,7 @@ func TestDispatch_LaunchPrompt_AdvisorOverride(t *testing.T) {
 // error, dispatch still succeeds and registers the initiative without epic:.
 func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	var gotBody string
 	fbd := &fakeBD{
@@ -2001,7 +2246,7 @@ func TestDispatch_EpicCreation_FailSoft(t *testing.T) {
 // and records the returned ref as "thread:<ref>" on that bead.
 func TestDispatch_EagerTopic_CreatesAndLabelsThread(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2068,7 +2313,7 @@ func TestDispatch_EagerTopic_CreatesAndLabelsThread(t *testing.T) {
 // rather than opening a second topic.
 func TestDispatch_EagerTopic_ThenNotify_ReusesThread(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2140,7 +2385,7 @@ func TestDispatch_EagerTopic_ThenNotify_ReusesThread(t *testing.T) {
 // stderr warning — the normal state for installs without Telegram set up).
 func TestDispatch_EagerTopic_TransportDisabled_NoSend(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2183,7 +2428,7 @@ func TestDispatch_EagerTopic_TransportDisabled_NoSend(t *testing.T) {
 // not record a thread label (nothing to label — the topic never opened).
 func TestDispatch_EagerTopic_SendError_FailSoft(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2269,7 +2514,7 @@ func reviewDispatch(t *testing.T, repoDir, slug string, ft *fakeTransport, prTit
 // per the contract, not an omission.
 func TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2339,7 +2584,7 @@ func TestDispatch_TopicReviews_PostsSharedLine_NoThreadLabel(t *testing.T) {
 // segment (and no dangling " — " separator), and never fails the dispatch.
 func TestDispatch_TopicReviews_TitleFetchFails_StillDispatches(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2379,7 +2624,7 @@ func TestDispatch_TopicReviews_TitleFetchFails_StillDispatches(t *testing.T) {
 // creating another — the whole point of the initiative.
 func TestDispatch_TopicReviews_SecondDispatch_ReusesRef(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2418,7 +2663,7 @@ func TestDispatch_TopicReviews_SecondDispatch_ReusesRef(t *testing.T) {
 // prTitle is never called (so a plain dispatch never spawns gh).
 func TestDispatch_NoTopic_LeavesEagerPathAlone(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
@@ -2483,7 +2728,7 @@ func TestDispatch_NoTopic_LeavesEagerPathAlone(t *testing.T) {
 // nothing to chase.
 func TestDispatch_TopicReviews_MissingPRMetadata_NamesTheKey(t *testing.T) {
 	home := t.TempDir()
-	repoDir := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
 
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {

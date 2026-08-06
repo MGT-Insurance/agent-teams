@@ -33,6 +33,8 @@ In Claude Code:
 
 If `/setup-agent-teams` isn't recognized right after installing, restart Claude Code and try again.
 
+The plugin also has a config option for advanced use: `auto_compact_window` sets how much conversation the background sessions it launches (DRI and steward) keep before they compact to free up space. Left at its default (nothing set), it doesn't change anything — Claude Code decides based on the model, exactly like today. If you do set it, you can use a plain number (`450000`), a `k`/`m` shorthand (`500k`, `1m`), a bare number like `200` meaning `200000`, or the word `auto`. Worth knowing: this sets the window, not the moment compaction fires — that happens roughly 33,000 tokens before the number you set, so `500000` means compaction kicks in around `467000`. It can only shrink the window, never grow it past what the model actually supports. A bad value makes the session fail to start with Claude Code's own error message, not a silent misconfiguration.
+
 ## One-time setup
 
 `/setup-agent-teams` walks you through setting up your machine. You only do this once, ever — not once per project. It will:
@@ -91,6 +93,21 @@ Error: cannot use -C directory "<repo>": no beads project found
 ```
 
 It's easy to miss and nothing stops for it — so if a task never seems to make progress, this is the first thing to check.
+
+One more thing before you hand off a task: this project also needs a small file that turns agent-teams on for it.
+
+```
+cd /path/to/your-project
+touch .agent-teams
+git add .agent-teams
+git commit -m "Enable agent-teams"
+```
+
+The file's contents don't matter — empty is fine. What matters is that it sits at the top of your project and gets committed, so it travels with the repo instead of living only in your own copy.
+
+That holds even on a shared repo where you picked the stealth option above: this is one empty file, not a folder of data, and it needs to be in the repo.
+
+**If you skip this:** handing off a task fails immediately, with a message that includes `agent-teams is not enabled for`. Create and commit the file above, then try again.
 
 ## Hand over your first task
 
@@ -170,10 +187,31 @@ The `<id>` is the one `/initiatives` shows next to the task. The background agen
 
 Either way, nothing breaks if you don't bother. You'll just have a finished task still showing as open, an idle session still running, and a local `main` that's a few commits behind.
 
+## Telling the reviewer what you care about
+
+Before a task opens its pull request, another agent reviews the work. If you find yourself wanting that reviewer to always check something — a habit your projects have, a mistake you keep seeing — you can write it down once and have it read every time.
+
+Put it in a file at:
+
+```
+~/.agent-teams/instructions/reviewer.md
+```
+
+Plain text, whatever you want to say. For example: *"Flag any new environment variable that isn't also added to the example env file."*
+
+Things worth knowing:
+
+- **This is entirely optional.** If the file isn't there, nothing happens and nothing complains — that's the normal state, and you can ignore this section completely.
+- **It stays on this computer.** You don't commit it anywhere, and it doesn't follow you to another machine. If you later decide you *do* want it everywhere, the folder it lives in is a git repository, so you can commit it there yourself.
+- **It adds to what the reviewer already does — it can't switch anything off.** You can ask for extra checks; you can't use it to tell the reviewer to stop reviewing, or to push and merge things itself.
+- **Keep it short.** The limit is 4,096 bytes. A file over that is refused outright, with a message saying so — it won't quietly use half of what you wrote.
+- **Only the reviewer reads its file today.** The other agents don't yet.
+
 ## When things go wrong
 
 - **A task seems stuck from the very start, or teammates never join.** You likely skipped the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` setting from one-time setup, or set it without starting a new Claude Code session. Check `~/.claude/settings.json`, add it if missing, and start a fresh session.
 - **A task hands off fine but nothing ever seems to happen in it.** You probably never set up the task database in your project — see "Get your own project ready" above for `bd init` and the stealth variant. Look for the "could not create root epic" warning right after you dispatched.
+- **Handing off a task fails right away, with `agent-teams is not enabled for ...`.** You skipped the `.agent-teams` file — see "Get your own project ready" above.
 - **Setup stops with `ateam: command not found`.** The `~/.local/bin` folder it linked the tool into isn't on your terminal's search path. Add this line to your `~/.zshrc` (or `~/.bashrc`):
   ```
   export PATH="$HOME/.local/bin:$PATH"

@@ -103,6 +103,7 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 				prMatches = append(prMatches, MatchResult{
 					InitiativeID: iss.ID,
 					Worktree:     f.Worktree,
+					Repo:         f.Repo,
 					How:          MatchPRField,
 				})
 				continue // this initiative matched at tier-1; skip tier-2
@@ -118,6 +119,7 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 			branchMatches = append(branchMatches, MatchResult{
 				InitiativeID: iss.ID,
 				Worktree:     f.Worktree,
+				Repo:         f.Repo,
 				How:          MatchBranch,
 			})
 		}
@@ -186,5 +188,6 @@ func matchClosedFromIssues(issues []bd.Issue, event PREvent) MatchResult {
 	if best == nil {
 		return MatchResult{How: MatchNone}
 	}
-	return MatchResult{InitiativeID: best.ID, Worktree: initiative.Of(*best).Worktree, How: MatchPRField}
+	f := initiative.Of(*best)
+	return MatchResult{InitiativeID: best.ID, Worktree: f.Worktree, Repo: f.Repo, How: MatchPRField}
 }

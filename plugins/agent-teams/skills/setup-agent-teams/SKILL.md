@@ -92,6 +92,8 @@ This setting applies to all future sessions. It is required regardless of whethe
 
 `ateam` ships as prebuilt per-platform binaries inside the plugin's `bin/` directory. Setup owns putting bare `ateam` on PATH — it creates a symlink in `~/.local/bin` (which is on PATH on standard macOS/Linux user setups). This is idempotent: re-running setup is always safe.
 
+A SessionStart hook (`ensure-ateam-link.sh`) now keeps this symlink pointed at the active plugin installation on every session, so it self-heals across plugin updates. Step 5 remains useful as a first-run convenience, not something you need to re-run after an upgrade.
+
 ### 5a. Resolve the installed wrapper path
 
 Work through the following resolution order and stop at the first path that exists:
@@ -315,7 +317,7 @@ No credentials or auth required.
 npx @playwright/cli --help
 ```
 
-If that prints usage output, the CLI is available and the tester can use it for live UI verification (session model: `open` a named session with `-s=<name>` before targeting it with any other command; see `plugins/agent-teams/agents/tester.md` for the two operational gotchas).
+If that prints usage output, the CLI is available and the tester can use it for live UI verification (session model: `open` a named session with `-s=<name>` before targeting it with any other command; see `plugins/agent-teams/roles/tester.md` for the two operational gotchas).
 
 ## 8. Register a repo's worktree-setup hook (OPTIONAL — one-time per repo)
 
