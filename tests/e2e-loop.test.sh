@@ -37,9 +37,16 @@ git -C "$AGENT_TEAMS_HOME" init -q
 export AGENT_TEAMS_STUB_DIR="$T/stub"
 mkdir -p "$AGENT_TEAMS_STUB_DIR"
 
-# Initiative worktree (a directory that must exist so ateam inbox can find it).
+# Initiative worktree (a directory that must exist so ateam inbox can find
+# it). It must also be a real git checkout on the branch: field below —
+# claimsInitiativeLocally (routing_ownership.go) requires gitIsWorkTree(wt)
+# and gitCurrentBranch(wt) == branch:, and a tied reply (case6) only routes
+# when the caller claims the initiative locally.
 export INITIATIVE_WT="$T/wt-test"
 mkdir -p "$INITIATIVE_WT"
+git -C "$INITIATIVE_WT" init -q
+git -C "$INITIATIVE_WT" checkout -q -b feat/e2e-loop
+git -C "$INITIATIVE_WT" -c user.email=test@test -c user.name=test commit -q --allow-empty -m "init"
 
 # Determine the current platform (same logic as ateam.test.sh).
 PLATFORM_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -106,9 +113,14 @@ export AGENT_TEAMS_STUB_DIR="$T/stub"
 mkdir -p "$AGENT_TEAMS_STUB_DIR"
 
 # ── Case 3: register the test initiative ─────────────────────────────────────
-# The initiative body must have a worktree: line so ateam inbox can resolve it.
-printf 'problem: e2e loop test\nworktree: %s\nbranch: feat/e2e-loop\nteam: test\nmode: interactive\n' \
-  "$INITIATIVE_WT" > "$T/init-body.md"
+# The initiative body must have worktree:/branch:/repo: lines so
+# claimsInitiativeLocally (routing_ownership.go) resolves true for this
+# machine — required for case6's tied reply to route. repo: must match
+# INITIATIVE_WT's canonical repo root: gitRepoMatches resolves that via
+# git-common-dir, which for a plain (non-worktree) checkout is
+# INITIATIVE_WT itself.
+printf 'problem: e2e loop test\nworktree: %s\nbranch: feat/e2e-loop\nrepo: %s\nteam: test\nmode: interactive\n' \
+  "$INITIATIVE_WT" "$INITIATIVE_WT" > "$T/init-body.md"
 init_id=$(ateam register --title "E2E Loop Test Initiative" --file "$T/init-body.md")
 [ -n "$init_id" ] \
   || { echo "FAIL case3: register returned empty id"; exit 1; }
