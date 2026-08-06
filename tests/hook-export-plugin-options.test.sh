@@ -39,23 +39,29 @@ fail() { echo "FAIL $1"; exit 1; }
 
 # --- Case 2: unset options fall back to the documented defaults -------------
 EF="$WORK/unset.env"
-run_hook "$EF" -u CLAUDE_PLUGIN_OPTION_DRI_MODEL -u CLAUDE_PLUGIN_OPTION_USE_ADVISORS
+run_hook "$EF" -u CLAUDE_PLUGIN_OPTION_DRI_MODEL -u CLAUDE_PLUGIN_OPTION_USE_ADVISORS -u CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL)"
 [ "$got" = "opus" ] \
   || fail "unset-default: sourced dri_model = '$got', want 'opus'"
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_USE_ADVISORS)"
 [ "$got" = "false" ] \
   || fail "unset-default: sourced use_advisors = '$got', want 'false'"
+got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW)"
+[ "$got" = "" ] \
+  || fail "unset-default: sourced auto_compact_window = '$got', want '' (empty = send nothing downstream)"
 
 # --- Case 3: an explicitly set option wins over the default -----------------
 EF="$WORK/override.env"
-run_hook "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL=sonnet CLAUDE_PLUGIN_OPTION_USE_ADVISORS=true
+run_hook "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL=sonnet CLAUDE_PLUGIN_OPTION_USE_ADVISORS=true CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW=500k
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL)"
 [ "$got" = "sonnet" ] \
   || fail "override: sourced dri_model = '$got', want 'sonnet'"
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_USE_ADVISORS)"
 [ "$got" = "true" ] \
   || fail "override: sourced use_advisors = '$got', want 'true'"
+got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW)"
+[ "$got" = "500k" ] \
+  || fail "override: sourced auto_compact_window = '$got', want '500k'"
 
 # --- Case 4: the hook default and the Go default must not drift -------------
 # Two layers hold this same default: this hook (the value `ateam dispatch`
