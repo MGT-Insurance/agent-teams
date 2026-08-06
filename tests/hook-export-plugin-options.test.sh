@@ -41,8 +41,8 @@ fail() { echo "FAIL $1"; exit 1; }
 EF="$WORK/unset.env"
 run_hook "$EF" -u CLAUDE_PLUGIN_OPTION_DRI_MODEL -u CLAUDE_PLUGIN_OPTION_USE_ADVISORS
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_DRI_MODEL)"
-[ "$got" = "opus" ] \
-  || fail "unset-default: sourced dri_model = '$got', want 'opus'"
+[ "$got" = "claude-opus-4-8" ] \
+  || fail "unset-default: sourced dri_model = '$got', want 'claude-opus-4-8'"
 got="$(sourced_value "$EF" CLAUDE_PLUGIN_OPTION_USE_ADVISORS)"
 [ "$got" = "false" ] \
   || fail "unset-default: sourced use_advisors = '$got', want 'false'"
