@@ -89,7 +89,7 @@ fi
 
 # Matched — emit a deny decision and exit 0.
 # Canonical hook denial message (verbatim from agent-teams-8qm):
-DENIAL_MSG="BLOCKED: agent-teams routes persistent memory to ateam, not to Claude memory files. Do NOT write MEMORY.md or files under a Claude memory/ dir. Instead: role/process learning -> \`ateam learn <role> <slug> --file <tmpfile>\` (role = dri|planner|implementer|tester|reviewer); user/cross-project preference -> \`ateam learn user <slug> --file <tmpfile>\`; repo-shared project fact -> \`bd remember\`. (If you genuinely intended a normal repo file that is not agent memory, this matcher only fires on ~/.claude memory paths — re-check your target path.)"
+DENIAL_MSG="BLOCKED: agent-teams routes persistent memory to ateam, not to Claude memory files. Do NOT write MEMORY.md or files under a Claude memory/ dir. Instead: role/process learning -> \`ateam learn <role> <slug> --file <tmpfile>\` (role = dri|planner|implementer|tester|reviewer|investigator); user/cross-project preference -> \`ateam learn user <slug> --file <tmpfile>\`; repo-shared project fact -> \`bd remember\`. (If you genuinely intended a normal repo file that is not agent memory, this matcher only fires on ~/.claude memory paths — re-check your target path.)"
 
 printf '%s' "$payload" | jq -n \
   --arg msg "$DENIAL_MSG" \
