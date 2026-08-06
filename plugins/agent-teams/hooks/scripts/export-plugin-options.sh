@@ -8,14 +8,18 @@
 # decide whether a DRI session launches sonnet+opus-advisor vs the default
 # opus, and which model fills the "strong model" slot (advisor model when
 # advisors are on, the DRI session's own model when advisors are off).
-# Without this hook those vars are never present at dispatch time, so advisor
-# mode and dri_model would silently never take effect.
+# CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW carries the --autocompact value for
+# those same background sessions; empty means "send nothing", leaving the
+# launch's argv byte-identical to today. Without this hook none of these vars
+# are present at dispatch time, so advisor mode, dri_model, and the
+# auto-compact window would silently never take effect.
 #
 # This runs at SessionStart (a hook process, which receives
-# CLAUDE_PLUGIN_OPTION_USE_ADVISORS and CLAUDE_PLUGIN_OPTION_DRI_MODEL in its
-# environment — when each option is set — and the CLAUDE_ENV_FILE path) and
-# appends export lines to $CLAUDE_ENV_FILE, which the harness then applies to
-# every subsequent Bash tool call in the session.
+# CLAUDE_PLUGIN_OPTION_USE_ADVISORS, CLAUDE_PLUGIN_OPTION_DRI_MODEL, and
+# CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW in its environment — when each
+# option is set — and the CLAUDE_ENV_FILE path) and appends export lines to
+# $CLAUDE_ENV_FILE, which the harness then applies to every subsequent Bash
+# tool call in the session.
 #
 # We read the values from the CLAUDE_PLUGIN_OPTION_* env vars, NOT from
 # interpolated ${user_config.*} hook args: Claude Code rejects
@@ -38,6 +42,12 @@ use_advisors="${CLAUDE_PLUGIN_OPTION_USE_ADVISORS:-false}"
 # concrete id claude-opus-4-8 (not the bare "opus" alias) so the default stays
 # put instead of following "latest"; no [1m] suffix since it is natively 1M.
 dri_model="${CLAUDE_PLUGIN_OPTION_DRI_MODEL:-claude-opus-4-8}"
+# Empty default is deliberate: an empty export is what the Go side reads as
+# "unset" (omit --autocompact entirely). No numeric parsing or range checking
+# here — the value passes through verbatim; Claude Code's own --autocompact
+# flag validates it.
+auto_compact_window="${CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW:-}"
 
 printf 'export CLAUDE_PLUGIN_OPTION_USE_ADVISORS=%s\n' "$use_advisors" >> "$CLAUDE_ENV_FILE"
 printf 'export CLAUDE_PLUGIN_OPTION_DRI_MODEL=%s\n' "$dri_model" >> "$CLAUDE_ENV_FILE"
+printf 'export CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW=%s\n' "$auto_compact_window" >> "$CLAUDE_ENV_FILE"
