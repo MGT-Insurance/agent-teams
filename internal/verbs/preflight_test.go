@@ -905,7 +905,17 @@ func TestPreflightProbeSpawnNameMatchesSkill(t *testing.T) {
 		t.Errorf("SKILL.md carries no %s — the skill and preflightProbeSpawnName (%q) have diverged, so the verb will match zero sidecars and report a healthy install as broken",
 			spawnParam, preflightProbeSpawnName)
 	}
-	if !strings.Contains(skill, preflightProbeSpawnName+"`") && !strings.Contains(skill, "`"+preflightProbeSpawnName) {
-		t.Errorf("SKILL.md never references %q outside the spawn parameter — the shutdown step must name the same probe, or a rename leaves it running", preflightProbeSpawnName)
+	// EXACT and DELIMITED on both sides. An unanchored Contains does not
+	// discriminate: renaming the shutdown reference to `preflight-probe-x`
+	// still contains "`preflight-probe" as a prefix, so a prefix-or-suffix
+	// test matches the mutant and passes. Appending is how people rename
+	// things, so that is the likeliest drift, not an exotic one.
+	// (Demonstrated: with the prefix/suffix form, mutating ONLY line 76 left
+	// this test green — the exact failure it exists to prevent.)
+	// This stays independent of the spawn assertion above: SKILL.md's spawn
+	// line wraps the whole `name: "preflight-probe"` expression in backticks,
+	// so the bare name is not backtick-adjacent there and cannot satisfy this.
+	if !strings.Contains(skill, "`"+preflightProbeSpawnName+"`") {
+		t.Errorf("SKILL.md never references %q as a delimited bare name — the shutdown step must name the same probe, or a rename that updates the spawn but not the shutdown leaves the probe running", preflightProbeSpawnName)
 	}
 }
