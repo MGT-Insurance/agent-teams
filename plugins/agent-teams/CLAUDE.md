@@ -2,7 +2,7 @@
 
 This plugin hard-requires **beads** (`bd`) — all work tracking is beads-first. Never use TodoWrite/TaskCreate/markdown TODO lists in agent-teams workflows.
 
-**Global workspace:** `~/.agent-teams` — a git-backed beads workspace holding role learnings and the initiative registry (one bd issue per initiative). Access is via `ateam`, which ships as prebuilt per-platform binaries in the plugin `bin/` (auto-added to PATH by Claude Code); `bin/ateam` is the POSIX dispatch wrapper that selects the right binary for the current platform. Skills call bare `ateam`; the single allowlist entry is `Bash(ateam:*)`. If the workspace does not exist or `ateam` is not found, run `/setup-agent-teams`.
+**Global workspace:** `~/.agent-teams` — a git-backed beads workspace holding role learnings and the initiative registry (one bd issue per initiative). Access is via `ateam`, which ships as prebuilt per-platform binaries in the plugin `bin/` (auto-added to PATH by Claude Code); `bin/ateam` is the POSIX dispatch wrapper that selects the right binary for the current platform. Skills call bare `ateam`; the single allowlist entry is `Bash(ateam:*)`. If the workspace does not exist or `ateam` is not found, run `/setup-agent-teams`. A SessionStart hook (`ensure-ateam-link.sh`) keeps `~/.local/bin/ateam` pinned to the loaded install rather than a fixed version, so a stale symlink from an older plugin install self-heals on the next session instead of shadowing the current one.
 
 **DEV:** after editing `cmd/ateam`, regenerate the binaries with `scripts/build-binaries.sh` and commit `plugins/agent-teams/bin/`.
 
@@ -114,7 +114,7 @@ hung config: tick_interval=20m0s stuck_threshold=2h0m0s wake_attempts_before_ale
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory feature here: do NOT write MEMORY.md or any file under a Claude memory/ directory (e.g. `~/.claude/projects/*/memory/`). Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>`, where `<role>` is `dri | planner | implementer | tester | reviewer | investigator`. This is an UPSERT-by-key: writing the same `<slug>` again overwrites the previous body. **A bare `<slug>` (no prefix) defaults to the fresh tier** (`role:fresh:<slug>`); use `hot:<slug>` or `cold:<slug>` to target those tiers explicitly. See the three-tier model below.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 - Durable, human-authored instruction for a role, on THIS MACHINE only → a file at `$AGENT_TEAMS_HOME/instructions/<role>.md`, served by `ateam instructions <role>`. See "Machine-local instructions" below.

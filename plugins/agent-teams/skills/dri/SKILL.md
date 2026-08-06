@@ -60,7 +60,7 @@ Otherwise: `ateam resume-match "$PWD"` for an OPEN initiative whose `worktree:` 
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn explorers/planners — never burn the human's attention on grep-able questions); ask only what changes the design, each with your recommended default. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park; while parked, keep non-dependent work moving, batch questions. Default to the structured `--decision`/`--recommendation`/`--alternative` form (references/gate-protocol.md, "Structured ask form (primary)"); `--file` prose is a fallback for asks that don't fit.
+Investigate FIRST (spawn investigators/planners — never burn the human's attention on grep-able questions); ask only what changes the design, each with your recommended default. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park; while parked, keep non-dependent work moving, batch questions. Default to the structured `--decision`/`--recommendation`/`--alternative` form (references/gate-protocol.md, "Structured ask form (primary)"); `--file` prose is a fallback for asks that don't fit.
 
 ## Phase 3 — Plan
 
@@ -72,7 +72,7 @@ Spawn one or more `agent-teams-planner` agents (persistent, background) — ring
 
 Drive ONLY the loop-closing set first. Before opening any enhancement ring, the loop must be closed.
 
-- Spawn role agents background + team-joined: `agent-teams-implementer` (one per track, own worktree, branched at contract tip), `agent-teams-tester`, `agent-teams-reviewer` when there's code to review. Always `run_in_background: true` + `mode: bypassPermissions`; every spawn prompt carries `EPIC_ID` (`--parent <EPIC_ID>` or ring epic). Live-env worktrees provision via `ateam worktree-setup <path>` — never a raw script from memory. Mechanics + guardrails: references/execution.md.
+- Spawn role agents background + team-joined: `agent-teams-implementer` (one per track, own worktree, branched at contract tip), `agent-teams-tester`, `agent-teams-reviewer` when there's code to review, `agent-teams-investigator` for a bounded question — ephemeral, fanned out on disjoint charges, and its spawn prompt MUST name SendMessage to team-lead as the delivery channel or the brief dies in an empty idle. Always `run_in_background: true` + `mode: bypassPermissions`; every spawn prompt carries `EPIC_ID` (`--parent <EPIC_ID>` or ring epic). Live-env worktrees provision via `ateam worktree-setup <path>` — never a raw script from memory. Mechanics + guardrails: references/execution.md.
 - Implementers are EPHEMERAL — shut down (SendMessage shutdown_request) once work is verified merged; spawn fresh ones for fixes (references/execution.md).
 - Own integration: merge each track into the integration branch as it lands, resolve conflicts, advance worktrees as the contract moves (references/execution.md, "Integration (DRI-owned)").
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files (spawn agents, often a planner, to investigate) — this is how the team converges on a PR that solves the problem. Discovery invalidating the framing is a pivot, not just a finding — triggers the mandatory design-pivot gate (Phase 3), never silent redesign.
@@ -126,7 +126,7 @@ Follow references/wind-down.md exactly: shut down teammates -> remove worktrees 
 
 **MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory — never write MEMORY.md or a Claude memory/ file. Persistent memory routes by kind:
 
-- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>` (`<role>` = `dri|planner|implementer|tester|reviewer`). Upsert-by-key. Body shape (RULE/TRIGGER/APPLY/PROVENANCE): references/memory.md.
+- Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>` (`<role>` = `dri|planner|implementer|tester|reviewer|investigator`). Upsert-by-key. Body shape (RULE/TRIGGER/APPLY/PROVENANCE): references/memory.md.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 

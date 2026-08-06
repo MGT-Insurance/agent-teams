@@ -384,10 +384,11 @@ func TestBuildAgentsJSON_RealRolesStructure(t *testing.T) {
 	}
 
 	wantModel := map[string]string{
-		"agent-teams-planner":     "opus",
-		"agent-teams-implementer": "sonnet",
-		"agent-teams-reviewer":    "sonnet",
-		"agent-teams-tester":      "sonnet",
+		"agent-teams-planner":      "opus",
+		"agent-teams-implementer":  "sonnet",
+		"agent-teams-reviewer":     "sonnet",
+		"agent-teams-tester":       "sonnet",
+		"agent-teams-investigator": "opus",
 	}
 	if len(payload) != len(wantModel) {
 		t.Fatalf("payload has %d keys, want exactly %d: %v", len(payload), len(wantModel), keysOf(payload))

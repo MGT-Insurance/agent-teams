@@ -3,7 +3,7 @@
 # never rendered into a spawned agent's context at any size (verified,
 # bbsz.15) — a role-learnings payload written here would reach nobody. Actual
 # delivery is the spawned agent's own on-spawn step 1, which unconditionally
-# self-fetches via `ateam learnings <role>` (roles/{implementer,planner,
+# self-fetches via `ateam learnings <role>` (roles/{implementer,planner,investigator,
 # tester,reviewer}.md). This hook's only job is to freshen the local memory
 # store (`ateam pull`) before that self-fetch runs, so it reads current data.
 # Silent no-op if ateam/jq not installed. Never fails.
