@@ -3,7 +3,7 @@
 # key. Exists because of an open Claude Code bug (anthropics/claude-code#81746)
 # — see plugins/agent-teams/roles/README.md for the full workaround writeup.
 #
-# The four role definitions moved out of the plugin's agents/ directory into
+# The role definitions moved out of the plugin's agents/ directory into
 # roles/ (agent-teams-wf7o.16), so the colon types (agent-teams:planner etc.)
 # no longer exist. That would be fine if a bad spawn failed loudly, but the
 # two spawn paths validate differently: the UNNAMED path checks the registry
@@ -44,7 +44,7 @@ name=$(printf '%s' "$payload" | jq -r '.tool_input.name // empty' 2>/dev/null ||
 
 # Denial message — exact string from agent-teams-wf7o.9 artifact (6), with
 # <role> substituted. Do not paraphrase or re-derive.
-DENIAL_MSG="BLOCKED: agent-teams:${role} no longer exists. The four role definitions were moved out of the plugin's agents/ directory into roles/ to work around an open Claude Code bug (anthropics/claude-code#81746): the teammate spawn path discards plugin-scope agent definitions when a name is passed, and it does so silently - your agent would have started with a generic system prompt and no error. Re-issue this call with subagent_type agent-teams-${role} and keep the name. If agent-teams-${role} is not in your available agent types, this session was not launched by ateam dispatch/ateam resume, so it has no role agents at all - stop and tell the human to dispatch the initiative instead of running it interactively. See plugins/agent-teams/roles/README.md."
+DENIAL_MSG="BLOCKED: agent-teams:${role} no longer exists. The role definitions were moved out of the plugin's agents/ directory into roles/ to work around an open Claude Code bug (anthropics/claude-code#81746): the teammate spawn path discards plugin-scope agent definitions when a name is passed, and it does so silently - your agent would have started with a generic system prompt and no error. Re-issue this call with subagent_type agent-teams-${role} and keep the name. If agent-teams-${role} is not in your available agent types, this session was not launched by ateam dispatch/ateam resume, so it has no role agents at all - stop and tell the human to dispatch the initiative instead of running it interactively. See plugins/agent-teams/roles/README.md."
 
 jq -n \
   --arg msg "$DENIAL_MSG" \

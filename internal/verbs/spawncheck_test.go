@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -602,5 +604,44 @@ func TestSpawnCheckKong_Run_InvalidSince(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "invalid --since") {
 		t.Errorf("stderr = %q, want it to mention invalid --since", stderr.String())
+	}
+}
+
+// TestSpawnCheckRoleNamesMatchRolesDir pins spawnCheckRoleNames to the actual
+// shipped role definitions. Without this, adding plugins/agent-teams/roles/
+// <role>.md and forgetting this list produces NO failure anywhere: spawn-check
+// silently stops classifying that role's named spawns as role requests, so the
+// only guard that catches a teammate whose definition never attached quietly
+// stops watching the new role. That is the exact silent-miss spawn-check was
+// built to eliminate, so it must not be reintroducible by omission.
+func TestSpawnCheckRoleNamesMatchRolesDir(t *testing.T) {
+	dir := filepath.Join("..", "..", "plugins", "agent-teams", "roles")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("real roles dir not found at %s (unexpected repo layout?): %v", dir, err)
+	}
+
+	var onDisk []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		if nonRoleFiles[e.Name()] {
+			continue
+		}
+		onDisk = append(onDisk, strings.TrimSuffix(e.Name(), ".md"))
+	}
+	if len(onDisk) == 0 {
+		t.Fatalf("no role *.md files found in %s — the comparison would pass vacuously", dir)
+	}
+
+	got := append([]string(nil), spawnCheckRoleNames...)
+	sort.Strings(got)
+	sort.Strings(onDisk)
+
+	if !reflect.DeepEqual(got, onDisk) {
+		t.Errorf("spawnCheckRoleNames = %v, but roles/ ships %v.\n"+
+			"Add the missing role(s) to spawnCheckRoleNames — otherwise spawn-check "+
+			"stops witnessing them and a generic teammate goes undetected.", got, onDisk)
 	}
 }
