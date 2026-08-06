@@ -321,6 +321,42 @@ func TestPollPreflightSidecars_ExhaustsDeadlineAndReturnsLastRead(t *testing.T) 
 	}
 }
 
+// ── preflightLaunchArgs: the --plugin-dir pre-merge verification seam ────
+//
+// team-lead's finding: skills resolve from the main checkout's marketplace
+// directory, not from a feature branch, so before this branch merges the
+// probe session cannot reach /agent-teams:preflight through the ordinary
+// path at all. --plugin-dir is a hidden, test-only escape hatch for that —
+// the ABSENT case matters most, since a stray --plugin-dir in a normal run
+// would silently change which plugin tree (and skill) the probe loads.
+
+// TestPreflightLaunchArgs_PluginDirAbsentWhenUnset is the case that matters:
+// an empty pluginDir must leave the argv byte-identical to before this seam
+// existed — no --plugin-dir anywhere in it.
+func TestPreflightLaunchArgs_PluginDirAbsentWhenUnset(t *testing.T) {
+	args := preflightLaunchArgs("sess-id", "{}", "/agent-teams:preflight", "", "")
+	for _, a := range args {
+		if a == "--plugin-dir" {
+			t.Fatalf("args = %v, --plugin-dir must be absent when unset", args)
+		}
+	}
+}
+
+// TestPreflightLaunchArgs_PluginDirReachesArgvWhenSet proves the seam
+// actually works when a caller does set it.
+func TestPreflightLaunchArgs_PluginDirReachesArgvWhenSet(t *testing.T) {
+	args := preflightLaunchArgs("sess-id", "{}", "/agent-teams:preflight", "", "/path/to/plugin")
+	for i, a := range args {
+		if a == "--plugin-dir" {
+			if i+1 >= len(args) || args[i+1] != "/path/to/plugin" {
+				t.Fatalf("args = %v, want --plugin-dir immediately followed by the path", args)
+			}
+			return
+		}
+	}
+	t.Fatalf("args = %v, want --plugin-dir present when pluginDir is set", args)
+}
+
 // ── newPreflightSessionID ────────────────────────────────────────────────
 
 func TestNewPreflightSessionID_LooksLikeUUIDv4AndIsUnique(t *testing.T) {
@@ -409,7 +445,7 @@ func TestPreflightKong_RolesPayloadBuildFailure_Exit2AllSkip(t *testing.T) {
 	ctx, stdout, _ := makePreflightCtx()
 	c := &preflightKong{
 		buildAgentsPayload: func() (string, error) { return "", errors.New("frontmatter missing a non-empty description") },
-		launch: func(string, string, string, string) (string, error) {
+		launch: func(string, string, string, string, string) (string, error) {
 			t.Fatal("launch must not be called")
 			return "", nil
 		},
@@ -444,7 +480,7 @@ func TestPreflightKong_LaunchError_Exit2(t *testing.T) {
 	ctx, _, stderr := makePreflightCtx()
 	c := &preflightKong{
 		buildAgentsPayload: func() (string, error) { return "{}", nil },
-		launch: func(string, string, string, string) (string, error) {
+		launch: func(string, string, string, string, string) (string, error) {
 			return "", errors.New("'claude' not found in PATH")
 		},
 		sleep: noopSleep,
@@ -463,7 +499,7 @@ func TestPreflightKong_BudgetAbort_Exit2NoFailMessageNamesCap(t *testing.T) {
 	envelope := buildPreflightEnvelope(t, true, preflightBudgetAbortSubtype, "", 4.99)
 	c := &preflightKong{
 		buildAgentsPayload: func() (string, error) { return "{}", nil },
-		launch:             func(_, _, _, maxBudgetUSD string) (string, error) { return envelope, nil },
+		launch:             func(_, _, _, maxBudgetUSD, _ string) (string, error) { return envelope, nil },
 		MaxBudgetUSD:       "5",
 		sleep:              noopSleep,
 	}
@@ -488,7 +524,7 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 	envelope := buildPreflightEnvelope(t, false, "success", "not json at all, a stray prose reply", 0.10)
 	c := &preflightKong{
 		buildAgentsPayload: func() (string, error) { return preflightFakeAgentsJSON, nil },
-		launch: func(sessionID, _, _, _ string) (string, error) {
+		launch: func(sessionID, _, _, _, _ string) (string, error) {
 			mintedSession = sessionID
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return envelope, nil
@@ -535,7 +571,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	c := &preflightKong{
 		JSON:               true,
 		buildAgentsPayload: func() (string, error) { return preflightFakeAgentsJSON, nil },
-		launch: func(sessionID, _, _, _ string) (string, error) {
+		launch: func(sessionID, _, _, _, _ string) (string, error) {
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return envelope, nil
 		},
@@ -574,7 +610,7 @@ func TestPreflightKong_EnvelopeUnparseable_Exit2(t *testing.T) {
 	ctx, _, stderr := makePreflightCtx()
 	c := &preflightKong{
 		buildAgentsPayload: func() (string, error) { return "{}", nil },
-		launch:             func(string, string, string, string) (string, error) { return "not json", nil },
+		launch:             func(string, string, string, string, string) (string, error) { return "not json", nil },
 		sleep:              noopSleep,
 	}
 	err := c.Run(ctx)
