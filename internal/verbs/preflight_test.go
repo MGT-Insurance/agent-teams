@@ -589,40 +589,75 @@ func TestCheckRoleProseInContext_ExactMatch_Passes(t *testing.T) {
 	if c.Check != checkRoleProseInContextID {
 		t.Errorf("Check = %s, want %s", c.Check, checkRoleProseInContextID)
 	}
+	if c.Detail != "token matched" {
+		t.Errorf(`Detail = %q, want "token matched" (planner ruling 2026-08-06: PASS need not repeat the value)`, c.Detail)
+	}
 	if c.Remediation != "" {
 		t.Errorf("Remediation = %q, want empty on PASS", c.Remediation)
 	}
 }
 
 // TestCheckRoleProseInContext_NoToken_Fails is the negative-control shape: a
-// probe with no role definition attached reports it has nothing.
+// probe with no role definition attached reports it has nothing, via the
+// reserved sentinel (planner correction 2026-08-06: never empty).
 func TestCheckRoleProseInContext_NoToken_Fails(t *testing.T) {
-	c := checkRoleProseInContext("NO-TOKEN", "6738a6028acc8c31")
+	c := checkRoleProseInContext(preflightNoTokenSentinel, "6738a6028acc8c31")
 	if c.Status != preflightFail {
 		t.Errorf("Status = %s, want FAIL", c.Status)
+	}
+	if c.Detail != `token absent — probe replied "NO-TOKEN"` {
+		t.Errorf("Detail = %q, want the pinned NO-TOKEN phrasing naming the raw reply", c.Detail)
 	}
 	if c.Remediation == "" {
 		t.Error("Remediation is empty, want a non-empty remediation on FAIL (contract artifact (3))")
 	}
 }
 
+// TestCheckRoleProseInContext_ProbeNoAnswer_FailsWithDistinctRemediation
+// covers the OTHER reserved sentinel (planner correction 2026-08-06): no
+// answer was ever obtained at all, a different root cause (the probe/spawn
+// machinery failing) from NO-TOKEN (the probe answered and had nothing).
+// Collapsing the two loses "the install is broken" vs "the probe machinery
+// is broken" — pinned here as a remediation that must differ, not just a
+// status/Detail difference.
+func TestCheckRoleProseInContext_ProbeNoAnswer_FailsWithDistinctRemediation(t *testing.T) {
+	c := checkRoleProseInContext(preflightProbeNoAnswerSentinel, "6738a6028acc8c31")
+	if c.Status != preflightFail {
+		t.Errorf("Status = %s, want FAIL", c.Status)
+	}
+	if c.Detail != `no reply obtained — probe replied "PROBE-NO-ANSWER"` {
+		t.Errorf("Detail = %q, want the pinned PROBE-NO-ANSWER phrasing naming the raw reply", c.Detail)
+	}
+	noToken := checkRoleProseInContext(preflightNoTokenSentinel, "6738a6028acc8c31")
+	if c.Remediation == "" {
+		t.Error("Remediation is empty, want a non-empty remediation on FAIL")
+	}
+	if c.Remediation == noToken.Remediation {
+		t.Error("PROBE-NO-ANSWER and NO-TOKEN must carry DIFFERENT remediations — they are different root causes (probe machinery vs. dropped role definition), and an identical remediation collapses that distinction")
+	}
+}
+
 // TestCheckRoleProseInContext_WrongValue_Fails is the cheat-control shape: a
 // probe that read the role file instead of its assembled prompt reports a
 // value that is present but wrong (e.g. "NOT-IN-FILE", or any other string
-// that isn't the minted token).
+// that isn't the minted token, and isn't one of the two reserved sentinels).
 func TestCheckRoleProseInContext_WrongValue_Fails(t *testing.T) {
 	c := checkRoleProseInContext("NOT-IN-FILE", "6738a6028acc8c31")
 	if c.Status != preflightFail {
 		t.Errorf("Status = %s, want FAIL", c.Status)
 	}
-	if !strings.Contains(c.Detail, "NOT-IN-FILE") {
-		t.Errorf("Detail = %q, want it to name what was observed", c.Detail)
+	if c.Detail != `token mismatch — probe replied "NOT-IN-FILE"` {
+		t.Errorf("Detail = %q, want the pinned generic-mismatch phrasing naming the raw reply", c.Detail)
 	}
 }
 
 // TestCheckRoleProseInContext_Empty_Fails covers the probe answering with
 // nothing at all (declined, crashed before reporting, or the skill's own
-// report field came back blank).
+// report field came back blank) — a CONTRACT VIOLATION under the
+// never-empty payload shape (the skill should emit
+// preflightProbeNoAnswerSentinel instead), but this must still fail safely
+// rather than panicking or silently passing if the skill's contract is
+// ever violated.
 func TestCheckRoleProseInContext_Empty_Fails(t *testing.T) {
 	c := checkRoleProseInContext("", "6738a6028acc8c31")
 	if c.Status != preflightFail {
@@ -655,15 +690,19 @@ func TestCheckRoleProseInContext_WitnessNamesRaisedBarNotUncheatable(t *testing.
 
 // TestPreflightOverrideTokenCheck_ExactMatch_ReplacesWithPass proves the
 // full merge: a fabricated skill verdict carrying the skill's raw report
-// (Detail only — Status/Witness are whatever the skill guessed, since it
-// never knows token) gets its role-prose-in-context entry fully replaced by
-// the verb's own comparison.
+// (Detail only, per the payload-shape contract — Status/Witness/Remediation
+// are whatever the skill guessed, since it never knows token; Status is
+// FAIL per the fail-closed placeholder rule) gets its role-prose-in-context
+// entry fully replaced — ALL FOUR fields, not just Status/Witness — by the
+// verb's own comparison. Detail is the one planner corrected: it is shipped
+// text, not a transport slot, so the raw token must not survive verbatim
+// into the final report.
 func TestPreflightOverrideTokenCheck_ExactMatch_ReplacesWithPass(t *testing.T) {
 	token := "abc123"
 	checks := []preflightCheck{
 		{Check: "role-types-available", Status: preflightPass},
 		{Check: "teammate-spawns", Status: preflightPass},
-		{Check: checkRoleProseInContextID, Status: preflightUnpinned, Detail: token, Witness: "whatever the skill guessed", Remediation: "whatever the skill guessed"},
+		{Check: checkRoleProseInContextID, Status: preflightFail, Detail: token, Witness: "whatever the skill guessed", Remediation: "whatever the skill guessed"},
 	}
 	got := preflightOverrideTokenCheck(checks, token)
 	if len(got) != 3 {
@@ -674,8 +713,14 @@ func TestPreflightOverrideTokenCheck_ExactMatch_ReplacesWithPass(t *testing.T) {
 			if c.Status != preflightPass {
 				t.Errorf("Status = %s, want PASS", c.Status)
 			}
+			if c.Detail != "token matched" {
+				t.Errorf(`Detail = %q, want "token matched" — the skill's raw report (the bare token) must not survive into the shipped report`, c.Detail)
+			}
 			if c.Witness == "whatever the skill guessed" {
 				t.Error("Witness was not overwritten — the skill's guess must never survive into the final verdict")
+			}
+			if c.Remediation != "" {
+				t.Errorf("Remediation = %q, want empty on PASS — the skill's guessed remediation must not survive either", c.Remediation)
 			}
 			return
 		}
@@ -727,7 +772,7 @@ func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
 			skillChecks := []preflightCheck{
 				{Check: "role-types-available", Status: preflightPass},
 				{Check: "teammate-spawns", Status: preflightPass},
-				{Check: checkRoleProseInContextID, Status: preflightUnpinned, Detail: observedToken},
+				{Check: checkRoleProseInContextID, Status: preflightFail, Detail: observedToken}, // FAIL is the fail-closed placeholder; the verb overwrites it
 			}
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return buildPreflightEnvelope(t, false, "success", buildPreflightVerdictJSON(t, skillChecks), 0.10), nil
@@ -966,16 +1011,18 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 		launch: func(sessionID, agentsJSON, _, _, _ string) (string, error) {
 			// The skill's role-prose-in-context entry carries the probe's raw
 			// observed reply, verbatim, in Detail — here that's the REAL
-			// minted token, so a healthy round trip PASSes. Status/Witness on
-			// this entry are whatever the skill would emit (it doesn't know
-			// token, so it can't compute PASS/FAIL) and are fully overwritten
-			// by preflightOverrideTokenCheck; UNPINNED is a plausible
-			// placeholder but any value would do.
+			// minted token, so a healthy round trip PASSes. Status/Witness/
+			// Remediation on this entry are whatever the skill would emit (it
+			// doesn't know token, so it can't compute PASS/FAIL) and are
+			// fully overwritten by preflightOverrideTokenCheck; FAIL is the
+			// fail-closed placeholder the skill's contract requires (never
+			// PASS/SKIP), so a broken override path ships loud red, not a
+			// decorative green.
 			token := extractInjectedPreflightToken(t, agentsJSON)
 			skillChecks := []preflightCheck{
 				{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available", Witness: "session agent type list"},
 				{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe", Witness: "live probe"},
-				{Check: checkRoleProseInContextID, Status: preflightUnpinned, Detail: token},
+				{Check: checkRoleProseInContextID, Status: preflightFail, Detail: token},
 			}
 			verdictJSON := buildPreflightVerdictJSON(t, skillChecks)
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)

@@ -209,13 +209,44 @@ const preflightBudgetAbortSubtype = "error_max_budget_usd"
 // is the same discipline as REASON-POST-EXIT: the observer sits outside the
 // thing observed.
 //
-// PAYLOAD SHAPE THIS VERB REQUIRES OF THE SKILL: the check object the skill
-// emits for checkRoleProseInContextID carries the probe's raw, uninterpreted
-// reply — or "" if the probe never answered at all — in Detail, and nothing
-// else. Status/Witness/Remediation on that object are ignored and fully
-// overwritten by preflightOverrideTokenCheck; the skill cannot compute them
-// because it doesn't have token.
+// PAYLOAD SHAPE THIS VERB REQUIRES OF THE SKILL (pinned as a note on
+// agent-teams-25s3.4, 2026-08-06 — no contract-artifact-(3) shape change,
+// the check object stays {check,status,detail,witness,remediation}):
+//   - Detail carries the probe's raw reply, VERBATIM AND UNTRIMMED. Never
+//     empty — if the probe gave no reply at all (spawn or ask failed), the
+//     skill emits preflightProbeNoAnswerSentinel instead of "", so "the
+//     install is broken" (a healthy answer that's simply wrong) is never
+//     conflated with "the probe machinery is broken" (no answer was ever
+//     obtained). If the probe genuinely answered that it has nothing, the
+//     skill emits preflightNoTokenSentinel (a THIRD, DIFFERENT case).
+//   - Status is a placeholder the skill cannot compute — it never has
+//     token, by design — and MUST be FAIL, never PASS or SKIP. Direction
+//     matters: this verb unconditionally overwrites Status below, but if
+//     that override path ever breaks (a refactor, an early return, an
+//     unhandled branch), a FAIL placeholder ships a loud wrong red, while a
+//     PASS placeholder would ship a decorative green manufactured by a
+//     plumbing bug — inside the one check this initiative built specifically
+//     to catch decorative greens. Do not "tidy" this placeholder to PASS.
+//   - Witness/Remediation on that object are likewise placeholders, ignored
+//     and fully overwritten by preflightOverrideTokenCheck below.
 const checkRoleProseInContextID = "role-prose-in-context"
+
+// preflightNoTokenSentinel and preflightProbeNoAnswerSentinel are the two
+// reserved values the skill's payload-shape contract requires in Detail
+// instead of an empty string (see the note above) — named here, not just
+// documented in prose, so checkRoleProseInContext's branches can't silently
+// drift from what the skill actually emits.
+//
+//	preflightNoTokenSentinel:      the probe ANSWERED and had no token — the
+//	                               install is broken (the role definition
+//	                               likely didn't attach).
+//	preflightProbeNoAnswerSentinel: no answer was ever obtained at all — the
+//	                               probe/spawn machinery itself failed, a
+//	                               different root cause from the above.
+const (
+	preflightNoTokenSentinel       = "NO-TOKEN"
+	preflightProbeNoAnswerSentinel = "PROBE-NO-ANSWER"
+)
 
 // preflightTokenSectionFormat is the exact section appended to the probed
 // role's prompt in the --agents payload. FROZEN wording — verified working
@@ -276,9 +307,28 @@ func injectPreflightToken(agentsJSON, token string) (string, error) {
 //
 // EXACT match only (token-hygiene requirement 3): no case-folding, no
 // substring — the whole point is an arbitrary value reproduced precisely.
-// observed is trimmed of surrounding whitespace first; that is JSON/LLM-
-// output hygiene (a stray trailing newline is not a different answer), not
-// a relaxation of the exact-match rule itself.
+// observed is trimmed of surrounding whitespace before comparing (planner
+// ruling 2026-08-06): that is JSON/LLM-output hygiene (a stray trailing
+// newline is not a different answer), and it is the ONE narrow allowance —
+// no case-folding, no substring, no punctuation stripping, no markdown
+// unwrapping. The skill still reports verbatim and untrimmed; the trim
+// happens only here, on the verb side, where ground truth lives — the
+// skill must never become a place where a reply gets tidied before
+// comparison.
+//
+// Detail IS SHIPPED TEXT, not a transport slot (planner correction
+// 2026-08-06): the skill's raw Detail is consumed here and REPLACED with a
+// human-facing sentence for every outcome, always naming the raw value
+// that came back so an operator can see what actually happened rather than
+// just that it was wrong. The three FAIL shapes are kept distinct because
+// they point at different root causes (also planner correction — collapsing
+// them loses "the install is broken" vs "the probe machinery is broken"):
+//   - preflightNoTokenSentinel: the probe answered and had nothing — the
+//     role definition likely never attached.
+//   - preflightProbeNoAnswerSentinel: no answer was ever obtained — the
+//     probe/spawn machinery failed, independent of role attachment.
+//   - anything else (including the cheat-control's "NOT-IN-FILE", or a
+//     genuinely wrong value): a generic mismatch.
 //
 // WITNESS WORDING IS PINNED (agent-teams-25s3.4 step 3, FROZEN): state the
 // raised bar, never claim uncheatability. The token rides on the --agents
@@ -291,34 +341,51 @@ func injectPreflightToken(agentsJSON, token string) (string, error) {
 func checkRoleProseInContext(observed, token string) preflightCheck {
 	const witness = "live probe (raised bar: a probe would have to ignore its instructions AND read its parent process's argv mid-run to obtain the token without the role attaching)"
 
-	observed = strings.TrimSpace(observed)
-	if observed != "" && observed == token {
+	trimmed := strings.TrimSpace(observed)
+
+	switch trimmed {
+	case token:
 		return preflightCheck{
 			Check:   checkRoleProseInContextID,
 			Status:  preflightPass,
-			Detail:  fmt.Sprintf("token=%s (exact match)", token),
+			Detail:  "token matched",
 			Witness: witness,
 		}
-	}
-
-	got := observed
-	if got == "" {
-		got = "(empty)"
-	}
-	return preflightCheck{
-		Check:       checkRoleProseInContextID,
-		Status:      preflightFail,
-		Detail:      fmt.Sprintf("token=%s, want %s", got, token),
-		Witness:     witness,
-		Remediation: "the probed role's assembled prompt did not carry (or the probe could not or would not read) the injected Preflight self-check section — confirm --agents is present in the probe launch argv and that the probed role's definition attached",
+	case preflightNoTokenSentinel:
+		return preflightCheck{
+			Check:       checkRoleProseInContextID,
+			Status:      preflightFail,
+			Detail:      fmt.Sprintf("token absent — probe replied %q", trimmed),
+			Witness:     witness,
+			Remediation: "the probe answered but reported no token — the probed role's assembled prompt likely never carried the injected Preflight self-check section; confirm --agents is present in the probe launch argv and that the probed role's definition attached",
+		}
+	case preflightProbeNoAnswerSentinel:
+		return preflightCheck{
+			Check:       checkRoleProseInContextID,
+			Status:      preflightFail,
+			Detail:      fmt.Sprintf("no reply obtained — probe replied %q", trimmed),
+			Witness:     witness,
+			Remediation: "the probe never produced an answer to compare — this points at the skill's own spawn/ask step failing, not necessarily a dropped role definition; check the probe session's transcript for why it never replied",
+		}
+	default:
+		return preflightCheck{
+			Check:       checkRoleProseInContextID,
+			Status:      preflightFail,
+			Detail:      fmt.Sprintf("token mismatch — probe replied %q", trimmed),
+			Witness:     witness,
+			Remediation: "the probe answered with a value that doesn't match the injected token — confirm --agents is present in the probe launch argv and that the probed role's definition attached (or, if the probe was told it may read files, that this isn't the cheat-control shape reading roles/*.md directly)",
+		}
 	}
 }
 
 // preflightOverrideTokenCheck replaces the skill's role-prose-in-context
 // entry — which the payload shape above says carries only the probe's raw
-// observed reply, verbatim, in Detail — with this verb's own PASS/FAIL
-// comparison against token. Does nothing if the check is absent: that is
-// only legitimate on Step 1's standalone stop, and
+// observed reply, verbatim and untrimmed, in Detail, with a FAIL placeholder
+// in Status — with this verb's own PASS/FAIL comparison against token.
+// EVERY field (Status, Detail, Witness, Remediation) is overwritten: Detail
+// is shipped text, not a transport slot, so the skill's raw value must not
+// survive into the final report unformatted. Does nothing if the check is
+// absent: that is only legitimate on Step 1's standalone stop, and
 // parsePreflightVerdict/preflightMissingSkillChecks already assert it can't
 // be silently absent for any other reason before this function ever runs.
 func preflightOverrideTokenCheck(checks []preflightCheck, token string) []preflightCheck {
