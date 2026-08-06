@@ -187,6 +187,150 @@ const (
 // AMENDMENT): no FAIL check, exit 2, every check SKIP.
 const preflightBudgetAbortSubtype = "error_max_budget_usd"
 
+// ── role-prose-in-context: the token probe (agent-teams-25s3.4 step 3) ──────
+//
+// FROZEN 2026-08-06, SUPERSEDES the earlier UNPINNED ruling this same check
+// id shipped under (see the bead's notes: three earlier predicates — counts,
+// line positions, verbatim spans — each false-red'd a healthy install before
+// UNPINNED, and UNPINNED itself was then overruled). Every earlier shape
+// assumed the question had to be about text ALREADY IN the role file, which
+// is why "a disobedient probe could just read roles/*.md" looked unclosable.
+// This one inverts the direction: mint a value the role file could never
+// contain, inject it into the probed role's prompt, and compare.
+//
+// OWNERSHIP SPLIT, AND WHY THE COMPARE LOGIC LIVES HERE RATHER THAN IN THE
+// SKILL — the stated reason contract artifact (1)(c) requires before any
+// check logic lands on the Go side: the skill asks the probe for the value
+// and must report it back VERBATIM AND UNINTERPRETED, and it must NEVER be
+// told the correct answer — a component that knows the right answer can leak
+// it into the probe's own prompt by accident (a paraphrase, a hint, a retry
+// that quotes it). Minting and comparing here instead means the only process
+// that knows ground truth is one that never talks to the probe at all. That
+// is the same discipline as REASON-POST-EXIT: the observer sits outside the
+// thing observed.
+//
+// PAYLOAD SHAPE THIS VERB REQUIRES OF THE SKILL: the check object the skill
+// emits for checkRoleProseInContextID carries the probe's raw, uninterpreted
+// reply — or "" if the probe never answered at all — in Detail, and nothing
+// else. Status/Witness/Remediation on that object are ignored and fully
+// overwritten by preflightOverrideTokenCheck; the skill cannot compute them
+// because it doesn't have token.
+const checkRoleProseInContextID = "role-prose-in-context"
+
+// preflightTokenSectionFormat is the exact section appended to the probed
+// role's prompt in the --agents payload. FROZEN wording — verified working
+// in the DRI's live control. An earlier phrasing that asked for "your
+// preflight token" by name failed: a HEALTHY agent replied NO-TOKEN because
+// it had the text but had not categorised it under that name. The skill's
+// own question must point at this section explicitly for the same reason —
+// never assume an agent has named its own instructions the way we would.
+const preflightTokenSectionFormat = "\n\n## Preflight self-check\n\nPREFLIGHT-TOKEN: %s\n\nIf asked, reply with that value. It is a disposable check value, not a secret.\n"
+
+// mintPreflightToken returns a fresh, cryptographically random hex token.
+// FRESHNESS IS LOAD-BEARING: a cached, reused, or derived token would let a
+// probe that saw a PREVIOUS run's transcript (or a hardcoded guess) replay
+// the answer without the role ever attaching on THIS run. Mint per
+// invocation; never cache; never derive from anything stable (env, cwd, the
+// session id).
+func mintPreflightToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Same posture as newPreflightSessionID: no entropy source is
+		// effectively unrecoverable for a check whose entire value depends
+		// on the token being unguessable.
+		panic(fmt.Sprintf("ateam preflight: crypto/rand: %v", err))
+	}
+	return fmt.Sprintf("%x", b)
+}
+
+// injectPreflightToken appends the token section to the probed role's
+// prompt (preflightProbedRoleKey) inside the built --agents payload and
+// returns the re-marshaled payload. This touches ONLY the in-memory payload
+// on its way to argv — never a file, never a log (token-hygiene requirement
+// 2: the payload was already verified not to reach disk anywhere today, and
+// this function adds no new write path). Re-validates that the probed role
+// entry exists rather than trusting that a caller's earlier gate ran first.
+func injectPreflightToken(agentsJSON, token string) (string, error) {
+	var payload map[string]agentDefinition
+	if err := json.Unmarshal([]byte(agentsJSON), &payload); err != nil {
+		return "", fmt.Errorf("parse --agents payload: %w", err)
+	}
+	entry, ok := payload[preflightProbedRoleKey]
+	if !ok {
+		return "", fmt.Errorf("--agents payload has no %q entry", preflightProbedRoleKey)
+	}
+	entry.Prompt += fmt.Sprintf(preflightTokenSectionFormat, token)
+	payload[preflightProbedRoleKey] = entry
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal --agents payload with token section: %w", err)
+	}
+	return string(b), nil
+}
+
+// checkRoleProseInContext computes the FINAL role-prose-in-context verdict.
+// observed is the skill's verbatim, uninterpreted report of what the probe
+// replied (see the payload-shape note above); token is the value this
+// invocation minted and injected.
+//
+// EXACT match only (token-hygiene requirement 3): no case-folding, no
+// substring — the whole point is an arbitrary value reproduced precisely.
+// observed is trimmed of surrounding whitespace first; that is JSON/LLM-
+// output hygiene (a stray trailing newline is not a different answer), not
+// a relaxation of the exact-match rule itself.
+//
+// WITNESS WORDING IS PINNED (agent-teams-25s3.4 step 3, FROZEN): state the
+// raised bar, never claim uncheatability. The token rides on the --agents
+// argv (preflightLaunchArgs), so a disobedient probe with Bash could shell
+// out and read its parent process's argv mid-run without the role ever
+// attaching — that residual is real and is named here, not hidden. This is
+// the fifth residual claimed in this initiative; the previous four were each
+// declared closed and each declaration was wrong, so this wording must never
+// be loosened into a stronger claim.
+func checkRoleProseInContext(observed, token string) preflightCheck {
+	const witness = "live probe (raised bar: a probe would have to ignore its instructions AND read its parent process's argv mid-run to obtain the token without the role attaching)"
+
+	observed = strings.TrimSpace(observed)
+	if observed != "" && observed == token {
+		return preflightCheck{
+			Check:   checkRoleProseInContextID,
+			Status:  preflightPass,
+			Detail:  fmt.Sprintf("token=%s (exact match)", token),
+			Witness: witness,
+		}
+	}
+
+	got := observed
+	if got == "" {
+		got = "(empty)"
+	}
+	return preflightCheck{
+		Check:       checkRoleProseInContextID,
+		Status:      preflightFail,
+		Detail:      fmt.Sprintf("token=%s, want %s", got, token),
+		Witness:     witness,
+		Remediation: "the probed role's assembled prompt did not carry (or the probe could not or would not read) the injected Preflight self-check section — confirm --agents is present in the probe launch argv and that the probed role's definition attached",
+	}
+}
+
+// preflightOverrideTokenCheck replaces the skill's role-prose-in-context
+// entry — which the payload shape above says carries only the probe's raw
+// observed reply, verbatim, in Detail — with this verb's own PASS/FAIL
+// comparison against token. Does nothing if the check is absent: that is
+// only legitimate on Step 1's standalone stop, and
+// parsePreflightVerdict/preflightMissingSkillChecks already assert it can't
+// be silently absent for any other reason before this function ever runs.
+func preflightOverrideTokenCheck(checks []preflightCheck, token string) []preflightCheck {
+	for i, c := range checks {
+		if c.Check == checkRoleProseInContextID {
+			checks[i] = checkRoleProseInContext(c.Detail, token)
+			return checks
+		}
+	}
+	return checks
+}
+
 // preflightCheck is one entry in the contract-(3) checks array.
 type preflightCheck struct {
 	Check       string `json:"check"`
@@ -389,9 +533,32 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
+	// TOKEN PROBE (agent-teams-25s3.4 step 3, FROZEN): mint fresh and inject
+	// into the probed role's prompt ONLY, before this payload ever reaches
+	// argv. See the checkRoleProseInContext doc comment for the full design.
+	token := mintPreflightToken()
+	tokenizedAgentsJSON, err := injectPreflightToken(agentsJSON, token)
+	if err != nil {
+		// Unreachable in practice — preflightExpectedProbeModel above already
+		// confirmed this payload carries preflightProbedRoleKey — guarded
+		// anyway rather than silently launching a session nothing will probe.
+		checks := append([]preflightCheck{{
+			Check:       checkRolesPayloadBuilds,
+			Status:      preflightFail,
+			Detail:      fmt.Sprintf("could not inject the preflight token into the probed role's prompt: %v", err),
+			Witness:     "plugins/agent-teams/roles/*.md (built payload)",
+			Remediation: "confirm roles/implementer.md still resolves and its frontmatter parses",
+		}}, preflightSkippedChecks("token injection failed; no probe session was launched")...)
+		result := buildPreflightResult(checks, "")
+		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
+			return renderErr
+		}
+		return cli.Silent(1)
+	}
+
 	sessionID := newPreflightSessionID()
 
-	stdout, err := launch(sessionID, agentsJSON, skill, c.MaxBudgetUSD, c.PluginDir)
+	stdout, err := launch(sessionID, tokenizedAgentsJSON, skill, c.MaxBudgetUSD, c.PluginDir)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam preflight: could not launch the probe session: %v\n", err)
 		return cli.Silent(2)
@@ -431,7 +598,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 			Detail:  fmt.Sprintf("probe session emitted %d check(s)", len(verdict.Checks)),
 			Witness: "probe session final message (--output-format json .result)",
 		})
-		checks = append(checks, verdict.Checks...)
+		checks = append(checks, preflightOverrideTokenCheck(verdict.Checks, token)...)
 	}
 
 	// Verb-owned sidecar checks run regardless of whether the skill's own
@@ -741,7 +908,7 @@ func parsePreflightEnvelope(stdout string) (preflightEnvelope, error) {
 // TestParsePreflightVerdict_StandaloneStopAlone_DoesNotTripMissingCheck) —
 // must move too. Per contract addendum agent-teams-25s3.15 (A6): a stated
 // validity condition needs a fixture, or it is documentation.
-var preflightSkillOwnedChecks = []string{"role-types-available", "teammate-spawns", "role-prose-in-context"}
+var preflightSkillOwnedChecks = []string{"role-types-available", "teammate-spawns", checkRoleProseInContextID}
 
 // preflightSkillStandaloneStopID is the one owned check whose FAIL means
 // the skill stopped BY DESIGN before spawning anything (agent-teams-25s3.4

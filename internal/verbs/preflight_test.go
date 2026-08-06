@@ -56,6 +56,37 @@ func buildPreflightVerdictJSON(t *testing.T, checks []preflightCheck) string {
 	return string(b)
 }
 
+// extractInjectedPreflightToken parses a tokenized --agents payload (the
+// second argument launch fakes receive, since preflightKong.Run injects the
+// token before ever calling launch) and returns the PREFLIGHT-TOKEN value
+// injected into the probed role's prompt — the reverse of
+// injectPreflightToken. Fixtures that need to fabricate a skill verdict
+// echoing the REAL minted token (rather than a stale hardcoded guess) call
+// this from inside their launch closure, where the tokenized payload is
+// available.
+func extractInjectedPreflightToken(t *testing.T, agentsJSON string) string {
+	t.Helper()
+	var payload map[string]agentDefinition
+	if err := json.Unmarshal([]byte(agentsJSON), &payload); err != nil {
+		t.Fatalf("extractInjectedPreflightToken: parse payload: %v", err)
+	}
+	entry, ok := payload[preflightProbedRoleKey]
+	if !ok {
+		t.Fatalf("extractInjectedPreflightToken: payload has no %q entry", preflightProbedRoleKey)
+	}
+	const marker = "PREFLIGHT-TOKEN: "
+	idx := strings.Index(entry.Prompt, marker)
+	if idx == -1 {
+		t.Fatalf("extractInjectedPreflightToken: prompt has no %q marker: %q", marker, entry.Prompt)
+	}
+	rest := entry.Prompt[idx+len(marker):]
+	end := strings.IndexAny(rest, "\r\n")
+	if end == -1 {
+		end = len(rest)
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
 // preflightFixtureGoodSidecar is the REAL sidecar `ateam preflight`'s own
 // live checkpoint run wrote for its probe teammate — captured verbatim,
 // 2026-08-06, from
@@ -483,6 +514,247 @@ func TestNewPreflightSessionID_LooksLikeUUIDv4AndIsUnique(t *testing.T) {
 	}
 }
 
+// ── the token probe: mint, inject, compare (agent-teams-25s3.4 step 3) ─────
+//
+// All comparisons are exercised against FAKE injected observed values — no
+// test here execs a real claude binary or spawns a real teammate; the three
+// live controls (positive/negative/cheat) are the DRI's to run separately.
+
+// TestMintPreflightToken_FreshPerCall is the freshness requirement: a
+// cached/reused token would let a probe that saw a PREVIOUS run's
+// transcript replay the answer without the role ever attaching this run.
+func TestMintPreflightToken_FreshPerCall(t *testing.T) {
+	a := mintPreflightToken()
+	b := mintPreflightToken()
+	if a == "" || b == "" {
+		t.Fatalf("mintPreflightToken returned empty: %q, %q", a, b)
+	}
+	if a == b {
+		t.Fatalf("two calls produced the same token: %s — freshness is load-bearing", a)
+	}
+}
+
+// TestInjectPreflightToken_ReachesImplementerPromptOnly proves injection
+// lands in the PROBED ROLE'S prompt in the --agents payload, and nowhere
+// else in the payload — a sibling role's prompt must be untouched.
+func TestInjectPreflightToken_ReachesImplementerPromptOnly(t *testing.T) {
+	agentsJSON := `{"agent-teams-implementer":{"description":"impl","prompt":"implementer body","model":"sonnet"},"agent-teams-tester":{"description":"test","prompt":"tester body","model":"sonnet"}}`
+	token := "deadbeefcafef00d"
+
+	got, err := injectPreflightToken(agentsJSON, token)
+	if err != nil {
+		t.Fatalf("injectPreflightToken: %v", err)
+	}
+
+	var payload map[string]agentDefinition
+	if err := json.Unmarshal([]byte(got), &payload); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	impl, ok := payload[preflightProbedRoleKey]
+	if !ok {
+		t.Fatalf("result payload has no %q entry", preflightProbedRoleKey)
+	}
+	if !strings.Contains(impl.Prompt, "PREFLIGHT-TOKEN: "+token) {
+		t.Errorf("implementer prompt = %q, want it to carry PREFLIGHT-TOKEN: %s", impl.Prompt, token)
+	}
+	if !strings.HasPrefix(impl.Prompt, "implementer body") {
+		t.Errorf("implementer prompt = %q, want the original body preserved before the appended section", impl.Prompt)
+	}
+	tester, ok := payload["agent-teams-tester"]
+	if !ok {
+		t.Fatalf("result payload lost the untouched %q entry", "agent-teams-tester")
+	}
+	if tester.Prompt != "tester body" || strings.Contains(tester.Prompt, token) {
+		t.Errorf("tester prompt = %q, want it unmodified and never carrying the token", tester.Prompt)
+	}
+}
+
+// TestInjectPreflightToken_MissingProbedRole_Errors is the defensive
+// re-validation: injectPreflightToken must not silently no-op when the
+// payload doesn't carry the role it's supposed to inject into.
+func TestInjectPreflightToken_MissingProbedRole_Errors(t *testing.T) {
+	_, err := injectPreflightToken(`{"agent-teams-tester":{"description":"test","prompt":"body"}}`, "sometoken")
+	if err == nil {
+		t.Fatal("injectPreflightToken: want an error when the payload has no probed-role entry")
+	}
+}
+
+// TestCheckRoleProseInContext_ExactMatch_Passes is the healthy case: the
+// probe reproduced the injected token precisely.
+func TestCheckRoleProseInContext_ExactMatch_Passes(t *testing.T) {
+	c := checkRoleProseInContext("6738a6028acc8c31", "6738a6028acc8c31")
+	if c.Status != preflightPass {
+		t.Errorf("Status = %s, want PASS", c.Status)
+	}
+	if c.Check != checkRoleProseInContextID {
+		t.Errorf("Check = %s, want %s", c.Check, checkRoleProseInContextID)
+	}
+	if c.Remediation != "" {
+		t.Errorf("Remediation = %q, want empty on PASS", c.Remediation)
+	}
+}
+
+// TestCheckRoleProseInContext_NoToken_Fails is the negative-control shape: a
+// probe with no role definition attached reports it has nothing.
+func TestCheckRoleProseInContext_NoToken_Fails(t *testing.T) {
+	c := checkRoleProseInContext("NO-TOKEN", "6738a6028acc8c31")
+	if c.Status != preflightFail {
+		t.Errorf("Status = %s, want FAIL", c.Status)
+	}
+	if c.Remediation == "" {
+		t.Error("Remediation is empty, want a non-empty remediation on FAIL (contract artifact (3))")
+	}
+}
+
+// TestCheckRoleProseInContext_WrongValue_Fails is the cheat-control shape: a
+// probe that read the role file instead of its assembled prompt reports a
+// value that is present but wrong (e.g. "NOT-IN-FILE", or any other string
+// that isn't the minted token).
+func TestCheckRoleProseInContext_WrongValue_Fails(t *testing.T) {
+	c := checkRoleProseInContext("NOT-IN-FILE", "6738a6028acc8c31")
+	if c.Status != preflightFail {
+		t.Errorf("Status = %s, want FAIL", c.Status)
+	}
+	if !strings.Contains(c.Detail, "NOT-IN-FILE") {
+		t.Errorf("Detail = %q, want it to name what was observed", c.Detail)
+	}
+}
+
+// TestCheckRoleProseInContext_Empty_Fails covers the probe answering with
+// nothing at all (declined, crashed before reporting, or the skill's own
+// report field came back blank).
+func TestCheckRoleProseInContext_Empty_Fails(t *testing.T) {
+	c := checkRoleProseInContext("", "6738a6028acc8c31")
+	if c.Status != preflightFail {
+		t.Errorf("Status = %s, want FAIL", c.Status)
+	}
+	if c.Remediation == "" {
+		t.Error("Remediation is empty, want a non-empty remediation on FAIL")
+	}
+}
+
+// TestCheckRoleProseInContext_WitnessNamesRaisedBarNotUncheatable pins the
+// FROZEN witness wording (agent-teams-25s3.4 step 3): state the raised bar,
+// never claim the residual is closed. This is the fifth residual claimed in
+// this initiative; the previous four were each declared closed and wrong.
+func TestCheckRoleProseInContext_WitnessNamesRaisedBarNotUncheatable(t *testing.T) {
+	for _, c := range []preflightCheck{
+		checkRoleProseInContext("tok", "tok"),
+		checkRoleProseInContext("wrong", "tok"),
+	} {
+		for _, forbidden := range []string{"uncheatable", "cannot be faked", "tamper-proof", "proves the definition attached and nothing else could"} {
+			if strings.Contains(strings.ToLower(c.Witness), forbidden) || strings.Contains(strings.ToLower(c.Detail), forbidden) {
+				t.Errorf("status %s: witness/detail contains forbidden overclaim %q: witness=%q detail=%q", c.Status, forbidden, c.Witness, c.Detail)
+			}
+		}
+		if !strings.Contains(c.Witness, "argv") {
+			t.Errorf("status %s: witness = %q, want it to name the argv residual (the token rides on --agents argv, readable mid-run by a disobedient probe with Bash)", c.Status, c.Witness)
+		}
+	}
+}
+
+// TestPreflightOverrideTokenCheck_ExactMatch_ReplacesWithPass proves the
+// full merge: a fabricated skill verdict carrying the skill's raw report
+// (Detail only — Status/Witness are whatever the skill guessed, since it
+// never knows token) gets its role-prose-in-context entry fully replaced by
+// the verb's own comparison.
+func TestPreflightOverrideTokenCheck_ExactMatch_ReplacesWithPass(t *testing.T) {
+	token := "abc123"
+	checks := []preflightCheck{
+		{Check: "role-types-available", Status: preflightPass},
+		{Check: "teammate-spawns", Status: preflightPass},
+		{Check: checkRoleProseInContextID, Status: preflightUnpinned, Detail: token, Witness: "whatever the skill guessed", Remediation: "whatever the skill guessed"},
+	}
+	got := preflightOverrideTokenCheck(checks, token)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3 (override replaces in place, never adds/removes)", len(got))
+	}
+	for _, c := range got {
+		if c.Check == checkRoleProseInContextID {
+			if c.Status != preflightPass {
+				t.Errorf("Status = %s, want PASS", c.Status)
+			}
+			if c.Witness == "whatever the skill guessed" {
+				t.Error("Witness was not overwritten — the skill's guess must never survive into the final verdict")
+			}
+			return
+		}
+	}
+	t.Fatal("role-prose-in-context missing from the merged checks")
+}
+
+// TestPreflightOverrideTokenCheck_AbsentCheck_NoOp covers the legitimate
+// standalone-stop case: role-prose-in-context never ran, so there is nothing
+// to override, and the function must not fabricate an entry.
+func TestPreflightOverrideTokenCheck_AbsentCheck_NoOp(t *testing.T) {
+	checks := []preflightCheck{{Check: "role-types-available", Status: preflightFail}}
+	got := preflightOverrideTokenCheck(checks, "abc123")
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1 (no fabricated entry)", len(got))
+	}
+	for _, c := range got {
+		if c.Check == checkRoleProseInContextID {
+			t.Fatal("preflightOverrideTokenCheck fabricated a role-prose-in-context entry that was never in the input")
+		}
+	}
+}
+
+// TestPreflightKong_Run_TokenNeverWrittenToAnyFile is the token-hygiene
+// requirement 2 end to end through Run(): mint a real token via the real
+// launch path (buildAgentsPayload + injectPreflightToken, not a hand-built
+// fixture) and confirm it never lands on disk anywhere under this run's
+// scratch $HOME (t.TempDir, via home/root below — so "no file" is
+// checkable: nothing this process writes lands outside it). The token
+// legitimately DOES appear in the rendered stdout verdict (Detail says what
+// was observed, same style as role-model-attached's "model=%s, want %s") —
+// that's the tool's one designed output, not a log/file/bead write, and the
+// token is stated to the probe as "a disposable check value, not a secret".
+// What must never happen is a SEPARATE, silent persistence of it.
+func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude", "projects")
+
+	var observedToken string
+	ctx, _, _ := makePreflightCtx()
+	c := &preflightKong{
+		JSON:               true,
+		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
+		launch: func(sessionID, agentsJSON, _, _, _ string) (string, error) {
+			observedToken = extractInjectedPreflightToken(t, agentsJSON)
+			if !strings.Contains(agentsJSON, observedToken) {
+				t.Fatalf("sanity: token %q not found in its own source payload", observedToken)
+			}
+			skillChecks := []preflightCheck{
+				{Check: "role-types-available", Status: preflightPass},
+				{Check: "teammate-spawns", Status: preflightPass},
+				{Check: checkRoleProseInContextID, Status: preflightUnpinned, Detail: observedToken},
+			}
+			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
+			return buildPreflightEnvelope(t, false, "success", buildPreflightVerdictJSON(t, skillChecks), 0.10), nil
+		},
+		scanSidecars: func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
+			return scanTeammateSidecarsForSession(root, sessionID)
+		},
+		sleep: noopSleep,
+	}
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if observedToken == "" {
+		t.Fatal("launch was never given a tokenized payload")
+	}
+	filepath.WalkDir(home, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, readErr := os.ReadFile(path)
+		if readErr == nil && strings.Contains(string(b), observedToken) {
+			t.Errorf("file %s contains the token %q — the token must never reach disk via a code path this verb owns", path, observedToken)
+		}
+		return nil
+	})
+}
+
 // ── parsePreflightVerdict: the skill-owned-checks completeness guard ──────
 //
 // team-lead's finding (contract addendum agent-teams-25s3.15 (A5), one level
@@ -678,21 +950,27 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude", "projects")
 
-	skillChecks := []preflightCheck{
-		{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available", Witness: "session agent type list"},
-		{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe", Witness: "live probe"},
-		{Check: "role-prose-in-context", Status: preflightPass, Detail: "answered from role instructions", Witness: "live probe (weak)"},
-	}
-	verdictJSON := buildPreflightVerdictJSON(t, skillChecks)
-	envelope := buildPreflightEnvelope(t, false, "success", verdictJSON, 0.37)
-
 	ctx, stdout, stderr := makePreflightCtx()
 	c := &preflightKong{
 		JSON:               true,
 		buildAgentsPayload: func() (string, error) { return preflightFixturePayload, nil },
-		launch: func(sessionID, _, _, _, _ string) (string, error) {
+		launch: func(sessionID, agentsJSON, _, _, _ string) (string, error) {
+			// The skill's role-prose-in-context entry carries the probe's raw
+			// observed reply, verbatim, in Detail — here that's the REAL
+			// minted token, so a healthy round trip PASSes. Status/Witness on
+			// this entry are whatever the skill would emit (it doesn't know
+			// token, so it can't compute PASS/FAIL) and are fully overwritten
+			// by preflightOverrideTokenCheck; UNPINNED is a plausible
+			// placeholder but any value would do.
+			token := extractInjectedPreflightToken(t, agentsJSON)
+			skillChecks := []preflightCheck{
+				{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available", Witness: "session agent type list"},
+				{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe", Witness: "live probe"},
+				{Check: checkRoleProseInContextID, Status: preflightUnpinned, Detail: token},
+			}
+			verdictJSON := buildPreflightVerdictJSON(t, skillChecks)
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
-			return envelope, nil
+			return buildPreflightEnvelope(t, false, "success", verdictJSON, 0.37), nil
 		},
 		scanSidecars: func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 			return scanTeammateSidecarsForSession(root, sessionID)
@@ -712,7 +990,10 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	}
 	// Under this verb's only launch mode (claude -p), role-model-attached and
 	// spawn-permission-mode are UNPINNED, not PASS (agent-teams-25s3.19/.20).
-	wantPass := len(skillChecks) + 1 /* roles-payload-builds */ + 1 /* probe-session-verdict */ + 2 /* spawn-record-present, role-type-registered */
+	// role-types-available, teammate-spawns, role-prose-in-context (now a real
+	// PASS via the token round trip), roles-payload-builds, probe-session-
+	// verdict, spawn-record-present, role-type-registered.
+	const wantPass = 7
 	if result.Pass != wantPass {
 		t.Errorf("pass = %d, want %d", result.Pass, wantPass)
 	}
