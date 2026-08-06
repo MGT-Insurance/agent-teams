@@ -169,6 +169,35 @@ func TestAppendSessionID_CrossOpenInitiativeGuardRejects(t *testing.T) {
 	}
 }
 
+func TestAppendSessionID_CrossRuntimeIDsDoNotConflict(t *testing.T) {
+	var updateCalled bool
+	f := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			switch args[0] {
+			case "show":
+				return issueJSON(bd.Issue{ID: "at-codex", Description: "runtime: codex\n"}), nil
+			case "update":
+				updateCalled = true
+				return "", nil
+			}
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			return json.Unmarshal([]byte(issuesJSON(
+				bd.Issue{ID: "at-codex", Status: "open", Description: "runtime: codex\n"},
+				bd.Issue{ID: "at-claude", Status: "open", Description: "session: same-opaque-id\n"},
+			)), dst)
+		},
+	}
+	ctx, _, _ := makeCtx(f, t.TempDir())
+	if err := appendSessionID(ctx, "at-codex", "same-opaque-id"); err != nil {
+		t.Fatalf("cross-runtime id should be allowed: %v", err)
+	}
+	if !updateCalled {
+		t.Fatal("expected Codex session to be appended")
+	}
+}
+
 func TestAppendSessionID_NewSessionAppendsLine(t *testing.T) {
 	// The body file passed to `bd update --body-file` is read here, inside
 	// the runFn callback, because appendSessionID removes it (via defer) as

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 )
 
 // The worktreePath unit tests that lived here are gone with the helper —
@@ -242,6 +243,72 @@ func TestResume_HappyPath(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout missing %q\ngot:\n%s", want, out)
 		}
+	}
+}
+
+func TestResume_CodexUsesLastSessionAndRuntimeControls(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+		issues := []bd.Issue{{
+			ID:     "at-codex-resume",
+			Status: "open",
+			Description: "worktree: " + dir + "\n" +
+				"runtime: codex\n" +
+				"session: old-thread\n" +
+				"session: active-thread\n",
+		}}
+		raw, _ := json.Marshal(issues)
+		return string(raw), nil
+	}}
+	var started runtimeStartRequest
+	ctx, stdout, _ := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-codex-resume",
+		launch: func(*cli.Context, string, string, string, string) error {
+			t.Fatal("Claude launcher called")
+			return nil
+		},
+		runtimeStart: func(_ *cli.Context, req runtimeStartRequest) error {
+			started = req
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if started.Runtime != sessionruntime.Codex || started.ResumeID != "active-thread" || started.Prompt != "/dri at-codex-resume" {
+		t.Fatalf("runtime start = %+v", started)
+	}
+	if !strings.Contains(stdout.String(), "codex resume active-thread") || strings.Contains(stdout.String(), "claude attach") {
+		t.Fatalf("monitoring output is not Codex-specific:\n%s", stdout.String())
+	}
+}
+
+func TestResume_RuntimeFailures(t *testing.T) {
+	dir := t.TempDir()
+	tests := []struct {
+		name, description, assertion, want string
+	}{
+		{name: "unknown stored runtime", description: "runtime: other\n", want: "unknown runtime"},
+		{name: "assertion mismatch", description: "runtime: codex\nsession: thread-1\n", assertion: "claude", want: "does not match"},
+		{name: "codex missing session", description: "runtime: codex\n", want: "no session"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+				raw, _ := json.Marshal([]bd.Issue{{ID: "at-r", Status: "open", Description: "worktree: " + dir + "\n" + tt.description}})
+				return string(raw), nil
+			}}
+			ctx, _, stderr := makeCtx(fbd, t.TempDir())
+			err := (&resumeKong{ID: "at-r", Runtime: tt.assertion}).Run(ctx)
+			combined := stderr.String()
+			if err != nil {
+				combined += err.Error()
+			}
+			if err == nil || !strings.Contains(combined, tt.want) {
+				t.Fatalf("err=%v stderr=%q want %q", err, stderr.String(), tt.want)
+			}
+		})
 	}
 }
 

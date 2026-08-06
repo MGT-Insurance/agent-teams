@@ -13,6 +13,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
+	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 )
 
 // errSessionTiedElsewhere is the sentinel wrapped by appendSessionID's
@@ -87,7 +88,12 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 	if err != nil {
 		return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)
 	}
-	for _, id := range initiative.Of(issue).Sessions {
+	fields := initiative.Of(issue)
+	targetRuntime, err := sessionruntime.ResolveStored(fields.Runtime)
+	if err != nil {
+		return fmt.Errorf("appendSessionID: initiative %s: %w", initiativeID, err)
+	}
+	for _, id := range fields.Sessions {
 		if id == sessionID {
 			return nil // already tied to this initiative — respawn reuses the same id
 		}
@@ -101,11 +107,19 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		if other.ID == initiativeID {
 			continue
 		}
-		for _, id := range initiative.Of(other).Sessions {
-			if id == sessionID {
+		otherFields := initiative.Of(other)
+		for _, id := range otherFields.Sessions {
+			if id != sessionID {
+				continue
+			}
+			otherRuntime, err := sessionruntime.ResolveStored(otherFields.Runtime)
+			if err != nil {
+				return fmt.Errorf("appendSessionID: matching open initiative %s: %w", other.ID, err)
+			}
+			if otherRuntime == targetRuntime {
 				return fmt.Errorf(
-					"appendSessionID: session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
-					sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
+					"appendSessionID: %s session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
+					targetRuntime, sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
 			}
 		}
 	}

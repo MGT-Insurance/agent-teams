@@ -120,65 +120,41 @@ type SessionRef struct {
     ID      string
 }
 
-type StartRequest struct {
+type Request struct {
     InitiativeID string
     Worktree     string
     Prompt       string
-    Role         string
     Model        string
+    Events       io.Writer
+    Stderr       io.Writer
 }
 
 type SessionSink func(SessionRef) error
 
-type Worker interface {
-    PID() int
-    Wait() error
-}
-
-type WorkerRef struct {
-    InitiativeID string
-    Runtime      Kind
-    Session      *SessionRef
-    Generation   string
-    PID          int
-    StartedAt    time.Time
-}
-
-type SessionStatus struct {
-    State   string // unavailable, idle, starting, running, stopping, stale
-    Session *SessionRef
-    Worker  *WorkerRef
-    Detail  string
-}
-
-type Control struct {
-    Label   string
-    Command string
-}
-
 type Adapter interface {
     Kind() Kind
-    Launch(context.Context, StartRequest, SessionSink) (Worker, error)
-    Resume(context.Context, StartRequest, SessionRef, SessionSink) (Worker, error)
-    Status(context.Context, SessionRef, *WorkerRef) (SessionStatus, error)
-    Stop(context.Context, WorkerRef) error
-    Controls(SessionRef) []Control
+    Launch(context.Context, Request, SessionSink) error
+    Resume(context.Context, Request, SessionRef) error
 }
 ```
 
 Interface semantics:
 
-- `Launch` and `Resume` start the runtime process and return a handle whose
-  `Wait` covers the full worker-process lifetime.
+- `Launch` and `Resume` block for the complete runtime-process lifetime. A
+  detached `ateam runtime-worker` owns that blocking call, so public dispatch
+  remains asynchronous without orphaning the JSONL reader. The mail
+  supervisor extends this same process boundary with locking and post-exit
+  reconciliation.
 - `SessionSink` may be called zero or one time. The Codex adapter must call it
   once for a new thread and must verify the resumed event identifies the
   requested thread. The legacy Claude path may continue binding through its
   session hook.
 - An adapter owns command construction, runtime event parsing, and
-  runtime-specific status/control text. Verbs and skills must not assemble
-  `claude` or `codex` command lines themselves.
-- `Stop` targets a verified machine-local worker. Stopping a Codex worker does
-  not archive or delete its durable thread.
+  event output. Verbs and skills must not assemble `claude` or `codex` command
+  lines themselves.
+- Status, stop, and monitoring are worker/supervisor concerns layered over the
+  adapter. Stopping a Codex worker does not archive or delete its durable
+  thread.
 - Tests inject an adapter registry and fake executables. Paid live Codex runs
   are feasibility probes, not unit or integration test dependencies.
 

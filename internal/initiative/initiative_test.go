@@ -668,6 +668,7 @@ func TestNew_ComposesHeaderInFixedOrder(t *testing.T) {
 		Branch:   "b",
 		Team:     "t",
 		Mode:     "bg",
+		Runtime:  "codex",
 		Epic:     "epic-1",
 		Standby:  true,
 		Sessions: []string{"sess-1"},
@@ -678,7 +679,7 @@ func TestNew_ComposesHeaderInFixedOrder(t *testing.T) {
 	}
 
 	got := initiative.Of(bd.Issue{ID: "at-new1", Description: plan.Description})
-	if got.Problem != "fix the thing" || got.Repo != "/r" || got.Worktree != "/w" || got.Branch != "b" || got.Team != "t" || got.Mode != "bg" || got.Epic != "epic-1" {
+	if got.Problem != "fix the thing" || got.Repo != "/r" || got.Worktree != "/w" || got.Branch != "b" || got.Team != "t" || got.Mode != "bg" || got.Runtime != "codex" || got.Epic != "epic-1" {
 		t.Fatalf("round-trip through Of did not preserve composed fields: %+v", got)
 	}
 	if !got.Standby {

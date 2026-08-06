@@ -111,13 +111,13 @@
 //   - A future migration off this description format (e.g. to bd labels)
 //     must carry every canonical key found in the raw text, not merely the
 //     ones that happen to have a Fields member. A migration that moves only
-//     the ten modeled fields drops unmodeled keys (e.g. the pr-* trio) on
+//     the eleven modeled fields drops unmodeled keys (e.g. the pr-* trio) on
 //     the floor.
 //
 // # Package surface
 //
 //	type Fields struct {
-//	    Problem, Repo, Worktree, Branch, Team, Mode, Epic string
+//	    Problem, Repo, Worktree, Branch, Team, Mode, Runtime, Epic string
 //	    Standby  bool
 //	    Sessions []string
 //	    Tracks   []string
