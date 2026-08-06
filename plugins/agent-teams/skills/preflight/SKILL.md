@@ -3,7 +3,7 @@ name: preflight
 description: Verify an agent-teams install by spawning one real teammate and witnessing what it actually got. Use when asked to "run preflight", "check agent-teams is working", "verify the install", or when invoked as /agent-teams:preflight. This is the primary check — directly invocable inside an already-dispatched session as a first-class standalone mode, not a fallback. `ateam preflight` is a launcher on top of this skill for use OUTSIDE a dispatched session; it does not replace it.
 ---
 
-You verify that role teammates spawned from this session actually work, by spawning one real `agent-teams-implementer`, confirming it responds, and shutting it down. Whether its role definition actually attached is NOT something this skill asks the probe about — that property is proven elsewhere, by stronger evidence than any in-session question could produce (see Step 3). `ateam preflight` (a separate Go verb) exists only to launch this skill from a session that has no role agents of its own yet.
+You verify that role teammates spawned from this session actually work, by spawning one real `agent-teams-implementer`, confirming it responds, asking it to echo back a one-time token the launching verb planted in its own prompt, and shutting it down. `ateam preflight` (a separate Go verb) exists to launch this skill from a session that has no role agents of its own yet, and it is also the process that mints the token and makes the final PASS/FAIL judgement on it — this skill asks the question and reports what came back, but never learns the correct answer (see Step 3).
 
 Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check-result and top-level JSON shapes, and exit-code handling. This skill implements the JSON side of that contract; it does not restate the reasoning behind it.
 
@@ -15,7 +15,7 @@ Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check
 |---|---|
 | `role-types-available` | `agent-teams-implementer` is a spawnable agent type in this session |
 | `teammate-spawns` | the Agent tool call actually returns a response from the probe |
-| `role-prose-in-context` | ships `UNPINNED` by design — no in-session question can soundly distinguish a role-loaded probe from one with nothing attached; see Step 3 |
+| `role-prose-in-context` | the probe echoes back a one-time token the launching verb planted in its assembled prompt — proof the prompt it actually received carried the role's instructions, not just that some agent replied; see Step 3 |
 
 ## Step 1 — role types available
 
@@ -55,21 +55,29 @@ Hold the outcome for Step 5 — nothing is printed here either way:
 
 This check is the WEAKER witness of "a teammate spawned." The authority is `spawn-record-present` (agent-teams-25s3.3) — the harness-written sidecar, verb-side — and if the two ever disagree, the sidecar wins.
 
-Either way, continue to Step 3 — `role-prose-in-context`'s status does not depend on how the spawn went.
+Either way, continue to Step 3. If the spawn FAILed and there is no probe to ask, Step 3 reports that plainly rather than skipping — see its `PROBE-NO-ANSWER` case.
 
-## Step 3 — role-prose-in-context ships UNPINNED
+## Step 3 — role-prose-in-context (token probe)
 
-No in-session question can soundly witness whether a role definition attached to the probe. Do not add one — every shape tried failed against a real control run, for reasons specific to the property itself, not to the phrasing, and each fix broke a different way:
+FROZEN mechanism (agent-teams-25s3.4 step 3). The VERB — never this skill — minted a fresh random token before launch and appended a section titled "Preflight self-check" to the probed role's prompt inside the `--agents` payload, carrying a line `PREFLIGHT-TOKEN: <value>`. This skill never learns that value; ground truth lives only in the process that never talks to the probe.
 
-- **Exact-match verbatim reproduction** fails a HEALTHY install: a correctly role-loaded agent PARAPHRASES rather than reproducing its own instruction text verbatim.
-- **Relaxing to "contains" or semantic equivalence** fails the other way: the anchor phrase handed to the probe leaks enough of the answer that a role-less agent can infer a plausible match with nothing attached — discriminating power goes DOWN, not up.
-- **Refusal is available to both classes.** A healthy agent may decline to quote its own instructions verbatim; so may a generic agent with nothing attached. It cannot be scored soundly in either direction: ruling refusal FAIL reds a healthy install; ruling it PASS or SKIP greens the role-less case, which is the likely path a declining agent takes, not a corner case.
+Earlier shapes for this check (counting occurrences of a phrase, matching a line position, or asking for a verbatim or paraphrased reproduction of role text) each either passed a role-less agent or failed a healthy one — because they compared the probe's answer against the role FILE, when the probe only ever sees the assembled PROMPT (which also carries harness-injected text no role file contains, and strips frontmatter so file line numbers don't match). A random token sidesteps all of that: it has no textual relationship to any file content, so nothing can infer, paraphrase, or count its way to the right answer — the probe either has it verbatim in its prompt, or it does not.
 
-This is exactly what contract artifact (2) means by `UNPINNED`: "the property CANNOT be witnessed by this tool, by design." Hold this check object unconditionally, regardless of how Step 2's spawn went — it never varies run to run, and it is not printed now:
+Ask `preflight-probe` (via `SendMessage`, the same teammate spawned in Step 2) and wait for its reply before proceeding:
 
-`{"check":"role-prose-in-context","status":"UNPINNED","detail":"no in-session question can soundly witness role-prompt attachment: a probe that disobeys \"do not read any file\" can answer correctly with nothing attached; refusal is available to both a role-loaded and a role-less agent; a healthy agent may paraphrase rather than reproduce","witness":"no in-session question distinguishes a role-loaded agent from one that declines or paraphrases; the assembled prompt the live agent actually received cannot be read by the verb (sees only what it built), by this skill, or reliably self-reported by the probe","remediation":""}`
+> Your instructions end with a section titled "Preflight self-check" containing a line "PREFLIGHT-TOKEN: <value>". Reply with only that value. If your instructions contain no such section, reply exactly NO-TOKEN. Do not read any file to answer.
 
-**What IS proven, elsewhere — `UNPINNED` here does not mean unverified.** Role attachment itself is proven by `role-definition-attached` (agent-teams-25s3.3): a harness-written sidecar record the spawned agent cannot influence. A non-empty prompt body is proven deterministically before any session even launches: `parseRoleFile` hard-fails ("role body is empty after stripping frontmatter", `internal/verbs/agentsjson.go`), surfacing as exit 2 through `roles-payload-builds`. The one genuinely unwitnessed residual is narrower than either of those: whether the assembled prompt was truncated or mangled somewhere between the payload the verb built and the agent that actually ran — something no party can observe (not the verb, which sees only what it built; not this skill, which cannot read the assembled prompt; not the probe's own self-report, which is precisely the unreliable channel this design eliminates).
+Do not ask for "your preflight token" by that bare name — a HEALTHY, correctly role-loaded agent replied `NO-TOKEN` to that phrasing in a live control: it had the text but had not categorised it under that name. Point at the section explicitly, as above; never assume an agent has named or categorised its own instructions.
+
+Hold this check object for Step 5 — nothing is printed here. `status` is a placeholder the VERB always overwrites by comparing `detail` against the token it minted — a value this skill never has. That placeholder MUST fail closed: PASS or SKIP would ship a decorative green if the verb's override step ever broke, in the one check built to catch decorative greens.
+
+- Probe replies with any content: hold `{"check":"role-prose-in-context","status":"FAIL","detail":"<the reply, EXACTLY as received — no trimming, no normalizing, no judging>","witness":"live probe","remediation":""}`.
+- Probe replies `NO-TOKEN`: `detail` is the literal string `"NO-TOKEN"` — it answered, and the token was absent from what it saw.
+- The `SendMessage` errors, or no reply ever arrives (including the case where Step 2's spawn already FAILed and there is no probe left to ask): `detail` is the literal reserved string `"PROBE-NO-ANSWER"`.
+
+`detail` must never be empty and this check must never be omitted. `PROBE-NO-ANSWER`, `NO-TOKEN`, and an actual observed value are three different facts with three different remediations on the verb side — collapsing any of them into `""` destroys the distinction.
+
+Then continue to Step 4 regardless of what Step 3 held — nothing about Step 4 depends on how this check came out.
 
 ## Step 4 — shut it down (best-effort, non-blocking)
 
