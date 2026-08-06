@@ -53,6 +53,8 @@ Hold the outcome for Step 5 — nothing is printed here either way:
 - If the Agent call errors, hangs with no response, or otherwise produces nothing, hold `{"check":"teammate-spawns","status":"FAIL","detail":"<what happened — error text or \"no response\">","witness":"live probe","remediation":"confirm claude is on PATH and the roles directory resolves; retry the spawn"}`.
 - If it responds at all — with any content — hold `{"check":"teammate-spawns","status":"PASS","detail":"probe returned a response","witness":"live probe","remediation":""}`.
 
+This check is the WEAKER witness of "a teammate spawned." The authority is `spawn-record-present` (agent-teams-25s3.3) — the harness-written sidecar, verb-side — and if the two ever disagree, the sidecar wins.
+
 Either way, continue to Step 3 — `role-prose-in-context`'s status does not depend on how the spawn went.
 
 ## Step 3 — role-prose-in-context ships UNPINNED
@@ -69,9 +71,9 @@ This is exactly what contract artifact (2) means by `UNPINNED`: "the property CA
 
 **What IS proven, elsewhere — `UNPINNED` here does not mean unverified.** Role attachment itself is proven by `role-definition-attached` (agent-teams-25s3.3): a harness-written sidecar record the spawned agent cannot influence. A non-empty prompt body is proven deterministically before any session even launches: `parseRoleFile` hard-fails ("role body is empty after stripping frontmatter", `internal/verbs/agentsjson.go`), surfacing as exit 2 through `roles-payload-builds`. The one genuinely unwitnessed residual is narrower than either of those: whether the assembled prompt was truncated or mangled somewhere between the payload the verb built and the agent that actually ran — something no party can observe (not the verb, which sees only what it built; not this skill, which cannot read the assembled prompt; not the probe's own self-report, which is precisely the unreliable channel this design eliminates).
 
-## Step 4 — shut it down
+## Step 4 — shut it down (best-effort, non-blocking)
 
-`SendMessage` a `shutdown_request` to `preflight-probe`. This is a one-shot probe — it does not need to persist past this run. Still nothing printed.
+Send a `shutdown_request` to `preflight-probe` via `SendMessage`. This is cleanup, not part of the verdict: attempt it once, and whether it succeeds, errors, or does not complete promptly, proceed to Step 5 regardless — never wait for it, and never let it stop you from emitting the verdict. No check depends on the probe having shut down. Still nothing printed.
 
 ## Step 5 — emit the verdict
 
