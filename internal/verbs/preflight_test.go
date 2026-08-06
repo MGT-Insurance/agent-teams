@@ -991,15 +991,26 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 	}
 }
 
-// LOAD-BEARING, do not weaken: this is the ONLY test that proves Run() actually
-// CALLS preflightOverrideTokenCheck to wire the minted token into the verdict.
-// Verified by mutation (agent-teams-25s3.3): bypassing the override in Run()
-// reddens only this test; the dedicated TestCheckRoleProseInContext_* tests stay
-// green because they exercise the compare logic directly, never through Run().
-// So compare-logic coverage and wiring coverage are complementary, and this test
-// is the whole of the wiring half — its launch closure must keep echoing back the
-// REAL injected token (via extractInjectedPreflightToken), never a hardcoded
-// value, or an unwired override would ship with a fully green suite.
+// LOAD-BEARING, do not weaken. This test and TestPreflightKong_Run_TokenNeverWrittenToAnyFile
+// are the two tests that exercise the override WIRING through Run(); the dedicated
+// TestCheckRoleProseInContext_* tests cover the compare LOGIC directly and never
+// touch Run(). Verified by mutation (agent-teams-25s3.3): bypassing
+// preflightOverrideTokenCheck in Run() reddens exactly those two and leaves the
+// compare tests green. So wiring coverage and compare coverage are complementary.
+//
+// WHAT MAKES THE WIRING DETECTABLE: the skill fixture ships a fail-closed
+// placeholder Status: preflightFail. An unwired override lets that FAIL survive
+// into the result, and the wantPass=7 / clean-exit assertions below then trip.
+// The extraction (extractInjectedPreflightToken echoing the REAL minted token) is
+// also required, but hardcoding a WRONG token there fails LOUDLY through the
+// compare — it is not the fragile part. Protect the fail-closed placeholder and
+// the count/exit assertions.
+//
+// This comment was wrong TWICE before this line — first aimed at the extraction
+// (a loud failure, not the guard), then claimed this was the ONLY wiring test
+// (it is one of two). Both errors were caught by re-running the bypass mutation,
+// not by re-reading. If you edit this comment, re-run that mutation; proximity to
+// the code makes a claim more likely READ, not more likely RIGHT.
 func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude", "projects")
