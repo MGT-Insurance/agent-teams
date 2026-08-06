@@ -3,7 +3,7 @@ name: preflight
 description: Verify an agent-teams install by spawning one real teammate and witnessing what it actually got. Use when asked to "run preflight", "check agent-teams is working", "verify the install", or when invoked as /agent-teams:preflight. This is the primary check — directly invocable inside an already-dispatched session as a first-class standalone mode, not a fallback. `ateam preflight` is a launcher on top of this skill for use OUTSIDE a dispatched session; it does not replace it.
 ---
 
-You verify that role teammates spawned from this session actually get their role definition, by spawning one real `agent-teams-implementer` and asking it something only a teammate with role instructions attached can answer. This is the substance of the check — `ateam preflight` (a separate Go verb) exists only to launch this skill from a session that has no role agents of its own yet.
+You verify that role teammates spawned from this session actually work, by spawning one real `agent-teams-implementer`, confirming it responds, and shutting it down. Whether its role definition actually attached is NOT something this skill asks the probe about — that property is proven elsewhere, by stronger evidence than any in-session question could produce (see Step 3). `ateam preflight` (a separate Go verb) exists only to launch this skill from a session that has no role agents of its own yet.
 
 Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check-result and top-level JSON shapes, and exit-code handling. This skill implements the JSON side of that contract; it does not restate the reasoning behind it.
 
@@ -13,7 +13,7 @@ Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check
 |---|---|
 | `role-types-available` | `agent-teams-implementer` is a spawnable agent type in this session |
 | `teammate-spawns` | the Agent tool call actually returns a response from the probe |
-| `role-prose-in-context` | the probe's answer is concrete and role-consistent, not a generic agent's disclaimer |
+| `role-prose-in-context` | ships `UNPINNED` by design — no in-session question can soundly distinguish a role-loaded probe from one with nothing attached; see Step 3 |
 
 ## Step 1 — role types available
 
@@ -40,39 +40,39 @@ Check the "Available agent types for the Agent tool" listing already present in 
 - `mode: "bypassPermissions"`
 - **No `model` argument.** This is load-bearing (agent-teams-25s3.2 amendment): the sidecar's resolved model is only meaningful evidence on the Go side of this initiative when the caller passed none.
 
-The prompt must NOT name the role, must NOT quote any role prose, and must instruct the probe to answer only from its own instructions as already given to it, without reading any file. For example:
+This spawn exists to exercise the spawn mechanism itself — its purpose is the sidecar record it produces (read by the GO track's `role-definition-attached`, `role-model-attached`, `spawn-record-present`, and `spawn-permission-mode` checks), not any answer the probe gives. The prompt should not name the role or quote role prose; it only needs to elicit a response. For example:
 
-> You are being asked a single question. Do not read any file to answer it — answer only from the instructions you were already given. Do not identify what role or instructions you have. Question: how many times does the literal token `SendMessage` appear in your instructions, and what is the first word of the line containing the last occurrence? Reply with only the number and the word.
+> This is a one-shot preflight connectivity check, unrelated to any task. Reply with a brief acknowledgement, then take no further action.
 
-If the Agent call errors, hangs with no response, or otherwise produces nothing to judge:
+If the Agent call errors, hangs with no response, or otherwise produces nothing:
 
 ```json
 {"check":"teammate-spawns","status":"FAIL","detail":"<what happened — error text or \"no response\">","witness":"live probe","remediation":"confirm claude is on PATH and the roles directory resolves; retry the spawn"}
 ```
 
-Emit `role-prose-in-context` as `SKIP` (its dependency failed — contract agent-teams-25s3.2 artifact (2)), `detail: "teammate-spawns did not produce a response to judge"`, `witness: "live probe"`, `remediation: ""`, then go to Step 5.
-
-If it responds at all — with any content, even a bad answer — record:
+If it responds at all — with any content:
 
 ```json
 {"check":"teammate-spawns","status":"PASS","detail":"probe returned a response","witness":"live probe","remediation":""}
 ```
 
-and continue to Step 3.
+Either way, continue to Step 3 — `role-prose-in-context`'s status does not depend on how the spawn went.
 
-## Step 3 — judge the reply
+## Step 3 — role-prose-in-context ships UNPINNED
 
-This check's predicate is deliberately weak, and it must be labelled as such — see "What this check does NOT prove" below. No fixture value lives anywhere in the role prose or in this skill; there is no numeric answer to compare against.
+No in-session question can soundly witness whether a role definition attached to the probe. Do not add one — every shape tried failed against a real control run, for reasons specific to the property itself, not to the phrasing, and each fix broke a different way:
 
-**PASS** iff the reply gives a concrete, role-consistent answer (an actual count and an actual word) — i.e. it looks like something computed by reading a real instruction body, whatever that number turns out to be.
+- **Exact-match verbatim reproduction** fails a HEALTHY install: a correctly role-loaded agent PARAPHRASES rather than reproducing its own instruction text verbatim.
+- **Relaxing to "contains" or semantic equivalence** fails the other way: the anchor phrase handed to the probe leaks enough of the answer that a role-less agent can infer a plausible match with nothing attached — discriminating power goes DOWN, not up.
+- **Refusal is available to both classes.** A healthy agent may decline to quote its own instructions verbatim; so may a generic agent with nothing attached. It cannot be scored soundly in either direction: ruling refusal FAIL reds a healthy install; ruling it PASS or SKIP greens the role-less case, which is the likely path a declining agent takes, not a corner case.
 
-**FAIL** iff the reply reports having no role-specific instructions, describes itself as a generic or general-purpose agent, declines the question because it "has no such instructions", or otherwise fails to produce a concrete count-and-word pair.
+This is exactly what contract artifact (2) means by `UNPINNED`: "the property CANNOT be witnessed by this tool, by design." Emit it unconditionally, regardless of how Step 2's spawn went:
 
 ```json
-{"check":"role-prose-in-context","status":"<PASS|FAIL>","detail":"probe answered: <verbatim reply, truncated to one line>","witness":"live probe (weak: an agent in this repo could in principle read roles/*.md)","remediation":"<empty on PASS; on FAIL: \"confirm buildAgentsJSON is attaching a non-empty prompt body for agent-teams-implementer\">"}
+{"check":"role-prose-in-context","status":"UNPINNED","detail":"no in-session question can soundly witness role-prompt attachment: a probe that disobeys \"do not read any file\" can answer correctly with nothing attached; refusal is available to both a role-loaded and a role-less agent; a healthy agent may paraphrase rather than reproduce","witness":"no in-session question distinguishes a role-loaded agent from one that declines or paraphrases; the assembled prompt the live agent actually received cannot be read by the verb (sees only what it built), by this skill, or reliably self-reported by the probe","remediation":""}
 ```
 
-**What this check does NOT prove:** a concrete answer shows the prompt body reached the probe and was non-empty and in context. It does NOT independently confirm the answer is *correct* — this skill cannot read `roles/implementer.md` to check the count without contaminating the very thing it's probing, so it cannot verify the content is *right*, only that it is present, concrete, and not a generic agent's disclaimer. The strong evidence that the correct role definition attached is the verb-side sidecar check (`ateam spawn-check`, agent-teams-25s3.3); this probe only adds what that sidecar cannot show.
+**What IS proven, elsewhere — `UNPINNED` here does not mean unverified.** Role attachment itself is proven by `role-definition-attached` (agent-teams-25s3.3): a harness-written sidecar record the spawned agent cannot influence. A non-empty prompt body is proven deterministically before any session even launches: `parseRoleFile` hard-fails ("role body is empty after stripping frontmatter", `internal/verbs/agentsjson.go`), surfacing as exit 2 through `roles-payload-builds`. The one genuinely unwitnessed residual is narrower than either of those: whether the assembled prompt was truncated or mangled somewhere between the payload the verb built and the agent that actually ran — something no party can observe (not the verb, which sees only what it built; not this skill, which cannot read the assembled prompt; not the probe's own self-report, which is precisely the unreliable channel this design eliminates).
 
 ## Step 4 — shut it down
 
