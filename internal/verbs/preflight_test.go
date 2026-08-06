@@ -344,6 +344,60 @@ func TestNewPreflightSessionID_LooksLikeUUIDv4AndIsUnique(t *testing.T) {
 	}
 }
 
+// ── parsePreflightVerdict: the skill-owned-checks completeness guard ──────
+//
+// team-lead's finding (contract addendum agent-teams-25s3.15 (A5), one level
+// up from the empty-set case): a NON-empty verdict that silently dropped one
+// of the skill's owned checks must still go red — "ran something, but not
+// everything expected" is the same defect class as "ran nothing". The one
+// legitimate exception (agent-teams-25s3.4 step 1) is standalone-stop mode:
+// role-types-available FAILing alone, by design, before any spawn.
+
+// TestParsePreflightVerdict_MissingOwnedCheck_Fails is the NEGATIVE control:
+// role-types-available PASSes (so this is NOT standalone-stop mode) but
+// role-prose-in-context never showed up. Must FAIL and name the missing id.
+func TestParsePreflightVerdict_MissingOwnedCheck_Fails(t *testing.T) {
+	verdictJSON := buildPreflightVerdictJSON(t, []preflightCheck{
+		{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available"},
+		{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe"},
+		// role-prose-in-context is missing.
+	})
+	_, err := parsePreflightVerdict(verdictJSON)
+	if err == nil {
+		t.Fatal("want an error for a verdict missing an owned check id")
+	}
+	if !strings.Contains(err.Error(), "role-prose-in-context") {
+		t.Errorf("error = %q, want it to name the missing check id", err.Error())
+	}
+}
+
+// TestParsePreflightVerdict_StandaloneStopAlone_DoesNotTripMissingCheck is
+// the POSITIVE control: the real standalone-mode verdict (role-types-
+// available FAILing alone, by design, before any spawn) must NOT be reported
+// as missing checks.
+func TestParsePreflightVerdict_StandaloneStopAlone_DoesNotTripMissingCheck(t *testing.T) {
+	verdictJSON := buildPreflightVerdictJSON(t, []preflightCheck{
+		{Check: "role-types-available", Status: preflightFail, Detail: "agent-teams-implementer not in this session's available agent types", Remediation: "run `ateam preflight` rather than invoking the skill directly"},
+	})
+	if _, err := parsePreflightVerdict(verdictJSON); err != nil {
+		t.Fatalf("parsePreflightVerdict: %v, want nil — a standalone-stop verdict is complete, not an under-count", err)
+	}
+}
+
+// TestParsePreflightVerdict_AllOwnedChecksPresent_Succeeds pins the ordinary
+// full-verdict shape so the completeness guard doesn't regress the common
+// case.
+func TestParsePreflightVerdict_AllOwnedChecksPresent_Succeeds(t *testing.T) {
+	verdictJSON := buildPreflightVerdictJSON(t, []preflightCheck{
+		{Check: "role-types-available", Status: preflightPass},
+		{Check: "teammate-spawns", Status: preflightPass},
+		{Check: "role-prose-in-context", Status: preflightPass},
+	})
+	if _, err := parsePreflightVerdict(verdictJSON); err != nil {
+		t.Fatalf("parsePreflightVerdict: %v, want nil", err)
+	}
+}
+
 // ── preflightKong.Run: core paths ────────────────────────────────────────
 
 func makePreflightCtx() (*cli.Context, *strings.Builder, *strings.Builder) {

@@ -563,13 +563,60 @@ func parsePreflightEnvelope(stdout string) (preflightEnvelope, error) {
 	return env, nil
 }
 
+// preflightSkillOwnedChecks are the check ids plugins/agent-teams/skills/
+// preflight/SKILL.md (agent-teams-25s3.4) emits on a normal (non-standalone-
+// stop) run. THIS SET MUST MOVE WITH THE SKILL: if that bead adds, renames,
+// or drops an owned check, this list — and the fixture pair pinning it
+// (TestParsePreflightVerdict_MissingOwnedCheck_Fails and
+// TestParsePreflightVerdict_StandaloneStopAlone_DoesNotTripMissingCheck) —
+// must move too. Per contract addendum agent-teams-25s3.15 (A6): a stated
+// validity condition needs a fixture, or it is documentation.
+var preflightSkillOwnedChecks = []string{"role-types-available", "teammate-spawns", "role-prose-in-context"}
+
+// preflightSkillStandaloneStopID is the one owned check whose FAIL means
+// the skill stopped BY DESIGN before spawning anything (agent-teams-25s3.4
+// step 1: invoked in a session not launched with --agents). A verdict where
+// this FAILed and the other two owned ids are absent is COMPLETE — they
+// were never going to run — not an under-count.
+const preflightSkillStandaloneStopID = "role-types-available"
+
+// preflightMissingSkillChecks reports which of the skill's owned check ids
+// are absent from checks, honoring the standalone-stop exception above. An
+// UNDER-COUNT is unguarded otherwise: parsePreflightVerdict's zero-checks
+// floor only catches an EMPTY verdict, not one that silently dropped some
+// of what the skill owns — "ran something, found something, but not
+// everything expected" is the same defect class contract addendum (A5)
+// names for the empty-set case, one level up.
+func preflightMissingSkillChecks(checks []preflightCheck) []string {
+	present := make(map[string]bool, len(checks))
+	var stopStatus string
+	for _, c := range checks {
+		present[c.Check] = true
+		if c.Check == preflightSkillStandaloneStopID {
+			stopStatus = c.Status
+		}
+	}
+	if stopStatus == preflightFail {
+		return nil
+	}
+	var missing []string
+	for _, id := range preflightSkillOwnedChecks {
+		if !present[id] {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
 // parsePreflightVerdict parses the envelope's .result as contract shape (4)
 // (only the checks array is actually consumed — see preflightVerdict). A
-// parse failure, OR valid JSON carrying zero checks, is reported as the
-// probe-session-verdict FAIL by the caller — never a silent zero-check pass
-// (the standing rule amendment (A) states: any existing reader we lean on
-// gets demonstrated against a known-bad input before we trust it; applied
-// here to the skill's own handoff, not just the sidecar reader).
+// parse failure, valid JSON carrying zero checks, or a non-standalone-stop
+// verdict missing one of the skill's owned check ids, is reported as the
+// probe-session-verdict FAIL by the caller — never a silent zero-check (or
+// under-count) pass (the standing rule amendment (A) states: any existing
+// reader we lean on gets demonstrated against a known-bad input before we
+// trust it; applied here to the skill's own handoff, not just the sidecar
+// reader).
 func parsePreflightVerdict(result string) (preflightVerdict, error) {
 	var v preflightVerdict
 	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &v); err != nil {
@@ -577,6 +624,9 @@ func parsePreflightVerdict(result string) (preflightVerdict, error) {
 	}
 	if len(v.Checks) == 0 {
 		return preflightVerdict{}, fmt.Errorf("final message parsed but carried zero checks")
+	}
+	if missing := preflightMissingSkillChecks(v.Checks); len(missing) > 0 {
+		return preflightVerdict{}, fmt.Errorf("final message is missing check(s) the skill owns: %s", strings.Join(missing, ", "))
 	}
 	return v, nil
 }
