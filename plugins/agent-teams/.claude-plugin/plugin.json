@@ -1,6 +1,6 @@
 {
   "name": "agent-teams",
-  "version": "0.51.8",
+  "version": "0.51.11",
   "description": "DRI-led agent teams: the /dri playbook, four role agents, a global learning workspace and initiative registry. Hard-requires beads (bd).",
   "author": { "name": "Eric Lloyd" },
   "userConfig": {
@@ -13,8 +13,14 @@
     "dri_model": {
       "type": "string",
       "title": "DRI model",
-      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Defaults to \"opus\", which resolves to a native 1M-context model — no [1m] suffix needed. Background sessions do not pin an auto-compact window, so whatever model is set here also decides the compaction threshold: a 200k-context model here means compaction near 167k tokens.",
+      "description": "The 'strong model' slot: when advisors are enabled, this is the advisor's model (the DRI session worker stays sonnet); when advisors are disabled, this is the DRI session's own model. Defaults to \"opus\", which resolves to a native 1M-context model — no [1m] suffix needed. When auto_compact_window is left empty (the default), background sessions don't pin an auto-compact window, so whatever model is set here also decides the compaction threshold: a 200k-context model here means compaction near 167k tokens. Set auto_compact_window to override that.",
       "default": "opus"
+    },
+    "auto_compact_window": {
+      "type": "string",
+      "title": "Auto-compact window",
+      "description": "Token window agent-teams requests for the background sessions it launches (DRI and steward), passed straight to Claude Code's --autocompact flag. Empty = send nothing, letting Claude Code resolve the window from the model — for a 1M-context model that means ~967000. A value here can only LOWER the window, never raise it above the model's real one. Note this is the WINDOW, not the trigger: compaction fires roughly 33000 tokens below it (the engine reserves min(max_output_tokens, 20000) + 13000). Accepts anything Claude Code's --autocompact accepts: 100k-1M as a plain number (450000), with a k/m suffix (500k, 1m), a bare 100-1000 as thousands shorthand (200 means 200000), or the literal 'auto' to ignore any autoCompactWindow in your settings and let Claude Code resolve it. An out-of-range or unparseable value makes the launch fail loudly with Claude Code's own error message.",
+      "default": ""
     }
   }
 }

@@ -33,6 +33,8 @@ In Claude Code:
 
 If `/setup-agent-teams` isn't recognized right after installing, restart Claude Code and try again.
 
+The plugin also has a config option for advanced use: `auto_compact_window` sets how much conversation the background sessions it launches (DRI and steward) keep before they compact to free up space. Left at its default (nothing set), it doesn't change anything — Claude Code decides based on the model, exactly like today. If you do set it, you can use a plain number (`450000`), a `k`/`m` shorthand (`500k`, `1m`), a bare number like `200` meaning `200000`, or the word `auto`. Worth knowing: this sets the window, not the moment compaction fires — that happens roughly 33,000 tokens before the number you set, so `500000` means compaction kicks in around `467000`. It can only shrink the window, never grow it past what the model actually supports. A bad value makes the session fail to start with Claude Code's own error message, not a silent misconfiguration.
+
 ## One-time setup
 
 `/setup-agent-teams` walks you through setting up your machine. You only do this once, ever — not once per project. It will:

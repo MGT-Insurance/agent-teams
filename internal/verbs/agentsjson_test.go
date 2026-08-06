@@ -384,11 +384,11 @@ func TestBuildAgentsJSON_RealRolesStructure(t *testing.T) {
 	}
 
 	wantModel := map[string]string{
-		"agent-teams-planner":      "opus",
+		"agent-teams-planner":      "claude-opus-4-8",
 		"agent-teams-implementer":  "sonnet",
 		"agent-teams-reviewer":     "sonnet",
 		"agent-teams-tester":       "sonnet",
-		"agent-teams-investigator": "opus",
+		"agent-teams-investigator": "claude-opus-4-8",
 	}
 	if len(payload) != len(wantModel) {
 		t.Fatalf("payload has %d keys, want exactly %d: %v", len(payload), len(wantModel), keysOf(payload))
@@ -459,7 +459,7 @@ func (e *fixtureError) Error() string { return e.msg }
 func TestBGSessionArgs_AgentsFlag(t *testing.T) {
 	const payload = `{"agent-teams-planner":{"description":"d","prompt":"p","model":"opus"}}`
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs("my-session", prompt, "", "", "", "", payload)
+	args := bgSessionArgs("my-session", prompt, "", "", "", "", payload, "")
 
 	found := false
 	for i, a := range args {

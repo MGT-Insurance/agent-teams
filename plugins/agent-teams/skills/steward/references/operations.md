@@ -16,6 +16,8 @@ ateam steward start
 ateam steward init && cd "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}/steward/session" && claude --bg --permission-mode bypassPermissions --settings '{"env":{"ATEAM_ROLE":"steward"}}' "/agent-teams:steward"
 ```
 
+That's the no-knob form (the `auto_compact_window` plugin option unset or empty, today's default). When it's set, `steward start` inserts `--autocompact <value>` between `--settings` and the trailing prompt — the same mechanism and env var (`CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW`) the dispatch-launched DRI/resume sessions use.
+
 `--permission-mode bypassPermissions` is required — a background steward launched without it hangs invisibly on its first permission prompt, with no one watching to approve it. Running `ateam steward init` BEFORE the session starts ensures the session marker exists before any SessionStart hook can fire for it.
 
 `steward start` does NOT start a relay. Pass `--relay` if you want it to. Without one, outbound `ateam notify` still works but nothing receives inbound replies, and the command says so on stdout — start a relay yourself with `ateam relay` when you want the steward to listen.

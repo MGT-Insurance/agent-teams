@@ -534,10 +534,11 @@ func TestStewardStartKong_RelayFlag_DefaultsFalse(t *testing.T) {
 // Steward launch argv carries "--settings" immediately followed by the exact
 // stewardSettingsJSON string — the mechanism that publishes ATEAM_ROLE=steward
 // per the role-signal contract (agent-teams-142k.1). No ATEAM_INITIATIVE (the
-// steward is fleet-scoped) and no autoCompactWindow (no background session
-// pins one — see stewardSettingsJSON's doc comment).
+// steward is fleet-scoped) and no autoCompactWindow in the settings payload
+// (it travels as a separate argv pair — see
+// TestStewardLaunchArgs_AutoCompactWindow — not through stewardSettingsJSON).
 func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
-	args := stewardLaunchArgs()
+	args := stewardLaunchArgs("")
 
 	found := false
 	for i, a := range args {
@@ -564,7 +565,7 @@ func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
 // TestStewardLaunchArgs_StandardArgsPresent verifies the remaining flags and
 // prompt are unchanged by the --settings addition.
 func TestStewardLaunchArgs_StandardArgsPresent(t *testing.T) {
-	args := stewardLaunchArgs()
+	args := stewardLaunchArgs("")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -589,5 +590,54 @@ func TestStewardLaunchArgs_StandardArgsPresent(t *testing.T) {
 	}
 	if last := args[len(args)-1]; last != "/agent-teams:steward" {
 		t.Errorf("last argv element = %q, want %q", last, "/agent-teams:steward")
+	}
+}
+
+// TestStewardLaunchArgs_OmitsAutocompactFlagWhenEmpty is the byte-identical
+// guard (agent-teams-ufoy.4): with autoCompactWindow == "" (today's default),
+// argv must not contain "--autocompact" at all, mirroring
+// TestBGSessionArgs_OmitsAutocompactFlagWhenEmpty in dispatch_test.go for the
+// steward's own argv producer.
+func TestStewardLaunchArgs_OmitsAutocompactFlagWhenEmpty(t *testing.T) {
+	args := stewardLaunchArgs("")
+	for _, a := range args {
+		if a == "--autocompact" {
+			t.Fatalf("argv must omit --autocompact when the window is empty; got: %v", args)
+		}
+	}
+	if last := args[len(args)-1]; last != "/agent-teams:steward" {
+		t.Errorf("last argv element = %q, want %q", last, "/agent-teams:steward")
+	}
+}
+
+// TestStewardLaunchArgs_AutocompactFlagWhenSet pins the pass-through-verbatim
+// contract for the steward's argv producer, matching
+// TestBGSessionArgs_AutocompactFlagWhenSet in dispatch_test.go: when
+// autoCompactWindow is non-empty, stewardLaunchArgs appends "--autocompact"
+// followed by the exact string given, exactly once, and the trailing
+// "/agent-teams:steward" prompt stays last.
+func TestStewardLaunchArgs_AutocompactFlagWhenSet(t *testing.T) {
+	for _, window := range []string{"450000", "500k", "1m", "200", "auto"} {
+		args := stewardLaunchArgs(window)
+
+		count := 0
+		for i, a := range args {
+			if a != "--autocompact" {
+				continue
+			}
+			count++
+			if i+1 >= len(args) {
+				t.Fatalf("--autocompact has no following value in argv: %v", args)
+			}
+			if args[i+1] != window {
+				t.Errorf("--autocompact value = %q, want %q", args[i+1], window)
+			}
+		}
+		if count != 1 {
+			t.Errorf("window %q: --autocompact appeared %d times, want 1; args: %v", window, count, args)
+		}
+		if last := args[len(args)-1]; last != "/agent-teams:steward" {
+			t.Errorf("window %q: last argv element = %q, want %q", window, last, "/agent-teams:steward")
+		}
 	}
 }

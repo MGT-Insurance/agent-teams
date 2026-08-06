@@ -99,10 +99,10 @@ assert_deny "case8-implementer-opus" \
   "implementer.*model: sonnet" \
   "asked for opus"
 
-# Case 9: planner (definition: opus) spawned with sonnet -> reject.
+# Case 9: planner (definition: claude-opus-4-8) spawned with sonnet -> reject.
 assert_deny "case9-planner-sonnet" \
   "$(make_payload "agent-teams:planner" '"sonnet"')" \
-  "planner.*model: opus" \
+  "planner.*model: claude-opus-4-8" \
   "asked for sonnet"
 
 # Case 10: reviewer (definition: sonnet) spawned with opus[1m] -> reject.
