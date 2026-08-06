@@ -150,31 +150,53 @@ func TestPreflightSidecarChecks_ConcreteModelID_SameFamilyPasses(t *testing.T) {
 	}
 }
 
-// TestPreflightSidecarChecks_ModelAbsent_NeverPassesEvenAgainstNoExpectation
-// pins REQUIRED (3): absence of the sidecar model field is FAIL even when
-// the role declares no discriminating model (expectedModel == "") — "" ==
-// "" must never be read as a match.
-func TestPreflightSidecarChecks_ModelAbsent_NeverPassesEvenAgainstNoExpectation(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(home, ".claude", "projects")
-	fixture := `{"agentType":"preflight-probe","name":"preflight-probe","spawnDepth":0,"taskKind":"in_process_teammate","teamName":"session-abc","customAgentType":"agent-teams-implementer","permissionMode":"bypassPermissions"}`
-	putSpawnCheckSidecar(t, root, "proj", "sessNoModel", "preflight-probe", fixture)
+// ── preflightRoleModelCheck: the false-green precondition gate ─────────────
+//
+// planner-at-6oxi's second-pass finding on the 2026-08-06 amendment: the
+// first fix (runtime-read expected model, family matching) was correct but
+// left the "must differ from the probe session's own model" precondition as
+// a doc comment, not code. If roles/implementer.md's model ever becomes
+// "opus" (the probe session's own model), an UNATTACHED spawn silently
+// inherits "opus" too — sc.Model == expectedModel would PASS for the wrong
+// reason. Both fixtures below are the regression guard; per agent-teams-
+// 25s3.15 (A1), both directions must be demonstrated, not just documented.
 
-	scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
-		return scanTeammateSidecarsForSession(root, sessionID)
+// TestPreflightRoleModelCheck_SameFamilyAsProbeSession_Unpinned is the FALSE
+// GREEN guard: an expected model sharing the probe session's own family
+// must report UNPINNED, never PASS, however the sidecar's model reads.
+func TestPreflightRoleModelCheck_SameFamilyAsProbeSession_Unpinned(t *testing.T) {
+	sc := spawnCheckSidecarWithPath{Path: "sidecar.json", spawnCheckSidecar: spawnCheckSidecar{Model: preflightProbeSessionModel}}
+	got := preflightRoleModelCheck(sc, preflightProbeSessionModel, nil)
+	if got.Status != preflightUnpinned {
+		t.Fatalf("status = %s, want UNPINNED — the property is not witnessable when the role's expected model matches the probe session's own", got.Status)
 	}
-	checks := preflightSidecarChecks(scan, noopSleep, "sessNoModel", "", nil)
+}
 
-	byID := map[string]preflightCheck{}
-	for _, c := range checks {
-		byID[c.Check] = c
+// TestPreflightRoleModelCheck_NoExpectedModel_Unpinned is the FALSE RED
+// guard: a role declaring no discriminating model (frontmatter absent or
+// "inherit") is a property this check cannot witness, not a broken install
+// — UNPINNED, never FAIL.
+func TestPreflightRoleModelCheck_NoExpectedModel_Unpinned(t *testing.T) {
+	sc := spawnCheckSidecarWithPath{Path: "sidecar.json"} // Model absent too
+	got := preflightRoleModelCheck(sc, "", nil)
+	if got.Status != preflightUnpinned {
+		t.Fatalf("status = %s, want UNPINNED, not FAIL", got.Status)
 	}
-	got := byID[checkRoleModelAttached]
+}
+
+// TestPreflightRoleModelCheck_AbsentModel_FailsWhenExpectationDiscriminates
+// proves the gate doesn't swallow a REAL absence: when the expected model
+// actually differs from the probe session's own, a missing sidecar model
+// field is still a hard FAIL (never observed on a teammate, 0/288 in the
+// census).
+func TestPreflightRoleModelCheck_AbsentModel_FailsWhenExpectationDiscriminates(t *testing.T) {
+	sc := spawnCheckSidecarWithPath{Path: "sidecar.json"} // Model absent
+	got := preflightRoleModelCheck(sc, "sonnet", nil)
 	if got.Status != preflightFail {
-		t.Errorf("role-model-attached = %s, want FAIL — absence must never pass, even against an empty expectation", got.Status)
+		t.Fatalf("status = %s, want FAIL", got.Status)
 	}
 	if got.Remediation == "" {
-		t.Error("role-model-attached FAIL carries empty remediation")
+		t.Error("FAIL carries empty remediation")
 	}
 }
 

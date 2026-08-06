@@ -69,6 +69,13 @@ const (
 // 2: "agent-teams-implementer", hyphen key, no model argument).
 const preflightProbedRoleKey = "agent-teams-implementer"
 
+// preflightProbeSessionModel is the probe session's own --model (contract
+// artifact (6)) — named as a constant, not a comment, so
+// preflightRoleModelCheck's precondition gate can reference the SAME value
+// productionPreflightLaunch passes as --model, rather than a doc comment
+// describing it that the code never checks.
+const preflightProbeSessionModel = "opus"
+
 // preflightModelFamilies names the alias->concrete-id naming convention
 // recognized as "the same family" for role-model-attached (agent-teams-
 // 25s3.3 AMENDMENT 2026-08-06): a resolved concrete id like
@@ -376,6 +383,61 @@ func preflightSkippedChecks(reason string) []preflightCheck {
 	return out
 }
 
+// preflightRoleModelCheck computes the role-model-attached verdict for one
+// sidecar. MEASURED, not assumed (agent-teams-25s3.2 note, clean
+// first-party control captured 2026-08-05: spawning agent-teams-tester from
+// an opus session with NO model argument produced sidecar model=sonnet,
+// matching roles/tester.md's frontmatter, not the caller's session model).
+//
+// PRECONDITION GATE (agent-teams-25s3.3 AMENDMENT 2026-08-06, second pass):
+// this check can only discriminate "the role definition attached" from "it
+// silently fell back to a generic agent" when the probed role's expected
+// model DIFFERS from the probe session's own (preflightProbeSessionModel,
+// contract artifact (6)) — an unattached spawn inherits the session's
+// model, so if the role's declared model happens to share the session's
+// family (or declares none at all), a healthy-looking match is
+// indistinguishable from a silent fallback. That was previously a doc
+// comment a human had to notice before repointing the probe at a different
+// role; it is now a gate the code enforces, reporting UNPINNED — the
+// property genuinely cannot be witnessed here (contract artifact (2)) —
+// rather than a PASS that would land right for the wrong reason
+// (agent-teams-25s3.15 (A1)/(A2): a false green is the direction this
+// initiative exists to catch, more dangerous than a false red).
+//
+// Past the gate: the expected value is READ AT RUNTIME (expectedModel,
+// computed by the caller from the --agents payload build), never
+// hardcoded — AMENDMENT 2026-08-06 (first pass) found the sidecar's model
+// field does not always carry the frontmatter alias verbatim (22 of 288
+// teammate sidecars on the census machine carried a resolved concrete id,
+// e.g. "claude-sonnet-5", instead). So: exact match, or a concrete id of
+// the same family: PASS; absence (never observed on a teammate, 0/288) or
+// any other value: FAIL.
+func preflightRoleModelCheck(sc spawnCheckSidecarWithPath, expectedModel string, expectedModelErr error) preflightCheck {
+	if expectedModelErr != nil {
+		return preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("could not determine the expected model: %v", expectedModelErr), Witness: "plugins/agent-teams/roles/implementer.md#model (via --agents payload)", Remediation: "confirm roles/implementer.md still resolves and its frontmatter parses"}
+	}
+
+	if expectedModel == "" || preflightModelFamily(expectedModel) == preflightModelFamily(preflightProbeSessionModel) {
+		return preflightCheck{
+			Check:   checkRoleModelAttached,
+			Status:  preflightUnpinned,
+			Detail:  fmt.Sprintf("the probed role's expected model (%s) is not distinguishable from the probe session's own (%s) — an unattached spawn silently inherits the session default and would look identical to a healthy one", preflightDisplayModel(expectedModel), preflightProbeSessionModel),
+			Witness: "plugins/agent-teams/roles/implementer.md#model (via --agents payload)",
+		}
+	}
+
+	switch {
+	case sc.Model == "":
+		return preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("model=(absent), want %s", expectedModel), Witness: sc.Path + "#model", Remediation: "the spawned role's model did not resolve — confirm roles/implementer.md still declares a `model:` frontmatter line"}
+	case sc.Model == expectedModel:
+		return preflightCheck{Check: checkRoleModelAttached, Status: preflightPass, Detail: fmt.Sprintf("model=%s", sc.Model), Witness: sc.Path + "#model"}
+	case preflightModelFamily(sc.Model) != "" && preflightModelFamily(sc.Model) == preflightModelFamily(expectedModel):
+		return preflightCheck{Check: checkRoleModelAttached, Status: preflightPass, Detail: fmt.Sprintf("model=%s (resolved concrete id for alias %s)", sc.Model, expectedModel), Witness: sc.Path + "#model"}
+	default:
+		return preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("model=%s, want %s", sc.Model, expectedModel), Witness: sc.Path + "#model", Remediation: "the spawned role's model did not resolve — confirm roles/implementer.md still declares its expected `model:` frontmatter line"}
+	}
+}
+
 // preflightSidecarChecks implements the four verb-owned checks that read
 // the harness's OWN post-exit sidecar record for the probe's one spawned
 // teammate. All four are REASON-POST-EXIT (contract artifact (1)(c)): the
@@ -423,41 +485,7 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 		checks = append(checks, preflightCheck{Check: checkRoleDefinitionAttached, Status: preflightFail, Detail: fmt.Sprintf("customAgentType=%s, want %s", got, preflightProbedRoleKey), Witness: sc.Path + "#customAgentType", Remediation: "the named spawn did not attach a role definition — confirm --agents is present in the probe launch argv and that roles/implementer.md still resolves"})
 	}
 
-	// role-model-attached: MEASURED, not assumed (agent-teams-25s3.2 note,
-	// clean first-party control captured 2026-08-05: spawning
-	// agent-teams-tester from an opus session with NO model argument
-	// produced sidecar model=sonnet, matching roles/tester.md's frontmatter,
-	// not the caller's session model). This check is valid ONLY because the
-	// probed role (implementer) declares a model in its frontmatter that
-	// DIFFERS from the probe session's own --model opus (contract artifact
-	// (6)), AND the probe passes no model argument (agent-teams-25s3.4 step
-	// 2). Both conditions are load-bearing: a probe that ever spawns
-	// agent-teams-planner (model: opus, same as the probe session) would
-	// read "opus" whether the definition attached or not and silently stop
-	// discriminating — do not repoint this check at a planner probe.
-	//
-	// The expected value is READ AT RUNTIME (expectedModel, computed by the
-	// caller from the same --agents payload build), never hardcoded:
-	// AMENDMENT 2026-08-06 found the sidecar's model field does not always
-	// carry the frontmatter alias verbatim — 22 of 288 teammate sidecars on
-	// the census machine carried a resolved concrete id (e.g.
-	// "claude-sonnet-5") instead. A hardcoded == "sonnet" would eventually
-	// false-red a healthy install if alias resolution drifted that way for
-	// this role too, with no change in this repo. So: exact match on the
-	// runtime-read expectation, OR a concrete id of the same family: PASS;
-	// absence (never observed on a teammate, 0/288) or any other value: FAIL.
-	switch {
-	case expectedModelErr != nil:
-		checks = append(checks, preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("could not determine the expected model: %v", expectedModelErr), Witness: "plugins/agent-teams/roles/implementer.md#model (via --agents payload)", Remediation: "confirm roles/implementer.md still resolves and its frontmatter parses"})
-	case sc.Model == "":
-		checks = append(checks, preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("model=(absent), want %s", preflightDisplayModel(expectedModel)), Witness: sc.Path + "#model", Remediation: "the spawned role's model did not resolve — confirm roles/implementer.md still declares a `model:` frontmatter line"})
-	case sc.Model == expectedModel:
-		checks = append(checks, preflightCheck{Check: checkRoleModelAttached, Status: preflightPass, Detail: fmt.Sprintf("model=%s", sc.Model), Witness: sc.Path + "#model"})
-	case expectedModel != "" && preflightModelFamily(sc.Model) != "" && preflightModelFamily(sc.Model) == preflightModelFamily(expectedModel):
-		checks = append(checks, preflightCheck{Check: checkRoleModelAttached, Status: preflightPass, Detail: fmt.Sprintf("model=%s (resolved concrete id for alias %s)", sc.Model, expectedModel), Witness: sc.Path + "#model"})
-	default:
-		checks = append(checks, preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("model=%s, want %s", sc.Model, preflightDisplayModel(expectedModel)), Witness: sc.Path + "#model", Remediation: "the spawned role's model did not resolve — confirm roles/implementer.md still declares its expected `model:` frontmatter line"})
-	}
+	checks = append(checks, preflightRoleModelCheck(sc, expectedModel, expectedModelErr))
 
 	// spawn-permission-mode (amendment B): execution.md requires
 	// bypassPermissions for hands-off operation — a teammate without it
@@ -620,7 +648,7 @@ func productionPreflightLaunch(sessionID, agentsJSON, skill, maxBudgetUSD string
 		"--output-format", "json",
 		"--agents", agentsJSON,
 		"--permission-mode", "bypassPermissions",
-		"--model", "opus",
+		"--model", preflightProbeSessionModel,
 	}
 	if maxBudgetUSD != "" {
 		args = append(args, "--max-budget-usd", maxBudgetUSD)
