@@ -56,6 +56,12 @@ func buildPreflightVerdictJSON(t *testing.T, checks []preflightCheck) string {
 
 const preflightFixtureGoodSidecar = `{"agentType":"preflight-probe","name":"preflight-probe","spawnDepth":0,"model":"sonnet","taskKind":"in_process_teammate","teamName":"session-abc","customAgentType":"agent-teams-implementer","permissionMode":"bypassPermissions"}`
 
+// preflightFakeAgentsJSON is a minimal --agents payload fixture carrying the
+// probed role's expected model, for tests that exercise the full Run() flow
+// through role-model-attached (which reads this via
+// preflightExpectedProbeModel rather than a hardcoded literal).
+const preflightFakeAgentsJSON = `{"agent-teams-implementer":{"description":"d","prompt":"p","model":"sonnet"}}`
+
 const preflightFixtureBadSidecar = `{"agentType":"preflight-probe","name":"preflight-probe","spawnDepth":0,"model":"opus","taskKind":"in_process_teammate","teamName":"session-abc","permissionMode":"default"}`
 
 // ── preflightSidecarChecks: the ACCEPTANCE fixture pair ─────────────────────
@@ -69,7 +75,7 @@ func TestPreflightSidecarChecks_GoodFixture_AllFourPass(t *testing.T) {
 		return scanTeammateSidecarsForSession(root, sessionID)
 	}
 
-	checks := preflightSidecarChecks(scan, noopSleep, "sessGood")
+	checks := preflightSidecarChecks(scan, noopSleep, "sessGood", "sonnet", nil)
 	if len(checks) != 4 {
 		t.Fatalf("len(checks) = %d, want 4", len(checks))
 	}
@@ -95,7 +101,7 @@ func TestPreflightSidecarChecks_BadFixture_AllThreeFieldChecksFailWithRemediatio
 		return scanTeammateSidecarsForSession(root, sessionID)
 	}
 
-	checks := preflightSidecarChecks(scan, noopSleep, "sessBad")
+	checks := preflightSidecarChecks(scan, noopSleep, "sessBad", "sonnet", nil)
 	if len(checks) != 4 {
 		t.Fatalf("len(checks) = %d, want 4", len(checks))
 	}
@@ -119,6 +125,119 @@ func TestPreflightSidecarChecks_BadFixture_AllThreeFieldChecksFailWithRemediatio
 	}
 }
 
+// TestPreflightSidecarChecks_ConcreteModelID_SameFamilyPasses pins the
+// 2026-08-06 AMENDMENT: a resolved concrete id (e.g. "claude-sonnet-5")
+// must PASS against an expected alias of "sonnet" — the census showed 22 of
+// 288 teammate sidecars already carry a concrete id instead of the alias.
+func TestPreflightSidecarChecks_ConcreteModelID_SameFamilyPasses(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude", "projects")
+	fixture := `{"agentType":"preflight-probe","name":"preflight-probe","spawnDepth":0,"model":"claude-sonnet-5","taskKind":"in_process_teammate","teamName":"session-abc","customAgentType":"agent-teams-implementer","permissionMode":"bypassPermissions"}`
+	putSpawnCheckSidecar(t, root, "proj", "sessConcrete", "preflight-probe", fixture)
+
+	scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
+		return scanTeammateSidecarsForSession(root, sessionID)
+	}
+	checks := preflightSidecarChecks(scan, noopSleep, "sessConcrete", "sonnet", nil)
+
+	byID := map[string]preflightCheck{}
+	for _, c := range checks {
+		byID[c.Check] = c
+	}
+	got := byID[checkRoleModelAttached]
+	if got.Status != preflightPass {
+		t.Errorf("role-model-attached = %s, want PASS for a same-family concrete id (detail: %s)", got.Status, got.Detail)
+	}
+}
+
+// TestPreflightSidecarChecks_ModelAbsent_NeverPassesEvenAgainstNoExpectation
+// pins REQUIRED (3): absence of the sidecar model field is FAIL even when
+// the role declares no discriminating model (expectedModel == "") — "" ==
+// "" must never be read as a match.
+func TestPreflightSidecarChecks_ModelAbsent_NeverPassesEvenAgainstNoExpectation(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude", "projects")
+	fixture := `{"agentType":"preflight-probe","name":"preflight-probe","spawnDepth":0,"taskKind":"in_process_teammate","teamName":"session-abc","customAgentType":"agent-teams-implementer","permissionMode":"bypassPermissions"}`
+	putSpawnCheckSidecar(t, root, "proj", "sessNoModel", "preflight-probe", fixture)
+
+	scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
+		return scanTeammateSidecarsForSession(root, sessionID)
+	}
+	checks := preflightSidecarChecks(scan, noopSleep, "sessNoModel", "", nil)
+
+	byID := map[string]preflightCheck{}
+	for _, c := range checks {
+		byID[c.Check] = c
+	}
+	got := byID[checkRoleModelAttached]
+	if got.Status != preflightFail {
+		t.Errorf("role-model-attached = %s, want FAIL — absence must never pass, even against an empty expectation", got.Status)
+	}
+	if got.Remediation == "" {
+		t.Error("role-model-attached FAIL carries empty remediation")
+	}
+}
+
+// TestPreflightSidecarChecks_ExpectedModelErr_FailsWithoutHidingOtherChecks
+// proves that a failure to determine the expected model degrades ONLY
+// role-model-attached, not the other three sidecar checks.
+func TestPreflightSidecarChecks_ExpectedModelErr_FailsWithoutHidingOtherChecks(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, ".claude", "projects")
+	putSpawnCheckSidecar(t, root, "proj", "sessErr", "preflight-probe", preflightFixtureGoodSidecar)
+
+	scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
+		return scanTeammateSidecarsForSession(root, sessionID)
+	}
+	checks := preflightSidecarChecks(scan, noopSleep, "sessErr", "", errors.New("--agents payload has no \"agent-teams-implementer\" entry"))
+
+	byID := map[string]preflightCheck{}
+	for _, c := range checks {
+		byID[c.Check] = c
+	}
+	if got := byID[checkRoleModelAttached].Status; got != preflightFail {
+		t.Errorf("role-model-attached = %s, want FAIL", got)
+	}
+	if got := byID[checkSpawnRecordPresent].Status; got != preflightPass {
+		t.Errorf("spawn-record-present = %s, want PASS (unaffected by the model-lookup error)", got)
+	}
+	if got := byID[checkRoleDefinitionAttached].Status; got != preflightPass {
+		t.Errorf("role-definition-attached = %s, want PASS (unaffected by the model-lookup error)", got)
+	}
+}
+
+func TestPreflightModelFamily(t *testing.T) {
+	cases := map[string]string{
+		"sonnet":          "sonnet",
+		"claude-sonnet-5": "sonnet",
+		"opus":            "opus",
+		"claude-opus-4-8": "opus",
+		"haiku":           "haiku",
+		"":                "",
+		"gpt-4":           "",
+	}
+	for in, want := range cases {
+		if got := preflightModelFamily(in); got != want {
+			t.Errorf("preflightModelFamily(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPreflightExpectedProbeModel_ReadsFromAgentsPayload(t *testing.T) {
+	payload := `{"agent-teams-implementer":{"description":"d","prompt":"p","model":"sonnet"},"agent-teams-planner":{"description":"d","prompt":"p","model":"opus"}}`
+	got, err := preflightExpectedProbeModel(payload)
+	if err != nil {
+		t.Fatalf("preflightExpectedProbeModel: %v", err)
+	}
+	if got != "sonnet" {
+		t.Errorf("got %q, want %q", got, "sonnet")
+	}
+
+	if _, err := preflightExpectedProbeModel(`{"agent-teams-planner":{"model":"opus"}}`); err == nil {
+		t.Error("want an error when the payload has no agent-teams-implementer entry")
+	}
+}
+
 func TestPreflightSidecarChecks_NoSidecar_SpawnRecordFailsAndRestSkip(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude", "projects")
@@ -127,7 +246,7 @@ func TestPreflightSidecarChecks_NoSidecar_SpawnRecordFailsAndRestSkip(t *testing
 		return scanTeammateSidecarsForSession(root, sessionID) // never written
 	}
 
-	checks := preflightSidecarChecks(scan, noopSleep, "sess-missing")
+	checks := preflightSidecarChecks(scan, noopSleep, "sess-missing", "sonnet", nil)
 	byID := map[string]preflightCheck{}
 	for _, c := range checks {
 		byID[c.Check] = c
@@ -292,7 +411,7 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 	var mintedSession string
 	envelope := buildPreflightEnvelope(t, false, "success", "not json at all, a stray prose reply", 0.10)
 	c := &preflightKong{
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFakeAgentsJSON, nil },
 		launch: func(sessionID, _, _, _ string) (string, error) {
 			mintedSession = sessionID
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
@@ -339,7 +458,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	ctx, stdout, stderr := makePreflightCtx()
 	c := &preflightKong{
 		JSON:               true,
-		buildAgentsPayload: func() (string, error) { return "{}", nil },
+		buildAgentsPayload: func() (string, error) { return preflightFakeAgentsJSON, nil },
 		launch: func(sessionID, _, _, _ string) (string, error) {
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return envelope, nil
