@@ -20,7 +20,7 @@ import (
 )
 
 // agentDefinition is one entry in the --agents JSON payload (frozen shape,
-// agent-teams-wf7o.9 artifact (2)). No "tools" key: none of the four role
+// agent-teams-wf7o.9 artifact (2)). No "tools" key: none of the role
 // files carry a tools frontmatter key, so there is nothing to allowlist.
 type agentDefinition struct {
 	Description string `json:"description"`

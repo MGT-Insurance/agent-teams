@@ -19,7 +19,8 @@ by this prime output:
 
 - `ateam learnings <role>` — hot+fresh set for a role (DRI/steward skills load
   this at startup; `role-recall-recovery.sh` re-injects it on clear/compact;
-  SubagentStart injects it for implementer/planner/tester/reviewer).
+  every role subagent self-fetches it on spawn -- SubagentStart only freshens
+  the local store first, since its stdout never reaches an agent's context).
 - `ateam recall <role> <query>` — search the FULL set, cold entries included.
 - `ateam prime` — cross-project `user:` preferences (injected every SessionStart).
 - `ateam learn <role> <slug> --file <f>` — write a learning. Never `bd remember`.
