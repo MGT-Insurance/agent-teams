@@ -81,7 +81,7 @@ directly, an ad hoc session — has **no** `agent-teams-<role>` types at all,
 because only those two launchers inject the `--agents` payload. Such a
 session cannot run a team: naming `agent-teams:<role>` (colon) is blocked
 by a hook, and it no longer resolves to anything even if it weren't. This
-is a deliberate, accepted trade-off — Eric only dispatches DRIs — not an
+is a deliberate, accepted trade-off — the human only dispatches DRIs — not an
 oversight, and it must not be "fixed" by putting a copy of the definitions
 back in `agents/`.
 

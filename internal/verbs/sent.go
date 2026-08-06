@@ -23,7 +23,7 @@ import (
 // RegisterSentKong registers the `sent` verb onto p using a native kong
 // struct. Called from RegisterAllKong in kong_converted.go.
 func RegisterSentKong(p *cli.Parser) {
-	p.AddVerb("sent", "Read back the audit log of messages sent to Eric (who sent what, when).", &sentKong{})
+	p.AddVerb("sent", "Read back the audit log of messages sent to the human (who sent what, when).", &sentKong{})
 }
 
 // sentDefaultLimit matches stewardLedgerDefaultRecallLimit's role for this

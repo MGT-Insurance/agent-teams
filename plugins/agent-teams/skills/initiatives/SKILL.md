@@ -29,7 +29,7 @@ Each element in the returned array has:
 
 ## Render: four-tier ranked list
 
-Render a single ranked list in four tiers, ordered by how much of Eric's attention the row needs:
+Render a single ranked list in four tiers, ordered by how much of the human's attention the row needs:
 
 ### Tier 1 — NEEDS DECISION (`execution_status == "NEEDS-DECISION"`)
 
@@ -49,7 +49,7 @@ If `ask` is null (no structured block), show the raw notes in place of the struc
 
 ### Tier 2 — REVIEWABLE (`execution_status == "REVIEWABLE"`)
 
-Genuinely awaiting Eric: a PR is ready, no agent is actively working, and Eric has not said he is done looking at it. Show id, title, and the PR link. Mark with `✅`.
+Genuinely awaiting the human: a PR is ready, no agent is actively working, and the human has not said he is done looking at it. Show id, title, and the PR link. Mark with `✅`.
 
 ```
 ✅ at-def  Another initiative   PR: <pr url>
@@ -67,7 +67,7 @@ Agent is working or no gate is set — do not touch. Mark with `▶`. Show id an
 
 ### Tier 4 — WITH REVIEWERS (`execution_status == "AWAITING-EXTERNAL-REVIEW"`)
 
-Eric has **declared** he is done looking (he ran `ateam handoff`); the PR is with the team. **Not in his action queue** — it ranks below REVIEWABLE, at the bottom of the board, and reads as a standing state rather than a request. Mark with `⋯`.
+The human has **declared** he is done looking (he ran `ateam handoff`); the PR is with the team. **Not in his action queue** — it ranks below REVIEWABLE, at the bottom of the board, and reads as a standing state rather than a request. Mark with `⋯`.
 
 ```
 ⋯ at-mno  Handed-off initiative   you've already looked at this; it's with the team   PR: <pr url>
@@ -76,7 +76,7 @@ Eric has **declared** he is done looking (he ran `ateam handoff`); the PR is wit
 Two things this tier must never do:
 
 - **Never name reviewers.** We do not have them and will not fetch them — `execution-status` never asks GitHub who is assigned, because auto-assignment makes that field meaningless. Any phrasing like "waiting on `<login>`" is wrong.
-- **Never suggest the system worked this out from GitHub.** This state exists only because Eric said so; nothing in GitHub records the moment he finished looking.
+- **Never suggest the system worked this out from GitHub.** This state exists only because the human said so; nothing in GitHub records the moment he finished looking.
 
 ### Unknown status (`execution_status == "unknown"`)
 
