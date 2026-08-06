@@ -500,3 +500,30 @@ implementation:
 
 The app-server path is not required for the first implementation. It remains a
 future option for richer status and turn control.
+
+### Phase 0.5 addendum — app-server supervisor spike
+
+The earlier CLI-first decision above is **superseded** by the
+[2026-08-06 app-server lifecycle spike](./2026-08-06-codex-app-server-spike.html).
+
+The spike proved that app-server provides the better turn-ownership boundary:
+
+1. an active turn survives client disconnect;
+2. active mail can be injected with `turn/steer`;
+3. idle mail starts a new turn under the same thread;
+4. killing the CLI launcher leaves the native app-server and turn reachable;
+5. killing native app-server marks the old turn interrupted, after which the
+   same thread resumes idle and accepts a recovery turn; and
+6. graceful shutdown drains active work.
+
+The revised direction is app-server plus a small daemon-health supervisor, not
+a detached `codex exec` worker per turn. An ateam-owned initiative delivery
+lock is still required: `turn/start` while active was accepted but folded into
+the existing turn under a surprising response ID, and transient
+`thread/read` snapshots were not strong enough to serve as mail
+acknowledgments.
+
+Before reshaping PR #160, settle the daemon deployment contract. On the tested
+npm/mise installation, `codex app-server daemon start` required OpenAI's
+standalone Codex installation. The next gate decides whether standalone Codex
+is a prerequisite or ateam owns a user-service fallback.
