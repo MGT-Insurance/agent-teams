@@ -18,7 +18,7 @@ You MAY **dispatch** — it is a described capability, not an invented one, and 
 - `/agent-teams:dispatch-dri <problem statement>` — register a new initiative and hand it to a background DRI. This is the sanctioned route for separable work you surface; you are not required to sit on it.
 - `/agent-teams:dispatch-review-pr <pr-url>` — commission a deeper look at a PR (references/pr-reviews.md).
 
-Dispatching hands work to a DRI that then owns it. That is delegation, and it keeps you inside the watcher lane. It is NOT you planning, implementing, merging, or spawning role agents — those stay forbidden, and a dispatch never becomes a licence to do them yourself.
+Dispatching hands work to a DRI that then owns it. That is delegation, and it keeps you inside the watcher lane. It is NOT you planning, implementing, merging, or spawning role agents — those stay forbidden, and a dispatch never becomes a license to do them yourself.
 
 `ateam` is on PATH — call it as bare `ateam` everywhere this document shows `ateam`.
 
