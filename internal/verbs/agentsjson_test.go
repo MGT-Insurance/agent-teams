@@ -458,7 +458,7 @@ func (e *fixtureError) Error() string { return e.msg }
 func TestBGSessionArgs_AgentsFlag(t *testing.T) {
 	const payload = `{"agent-teams-planner":{"description":"d","prompt":"p","model":"opus"}}`
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs("my-session", prompt, "", "", "", "", payload)
+	args := bgSessionArgs("my-session", prompt, "", "", "", "", payload, "")
 
 	found := false
 	for i, a := range args {
