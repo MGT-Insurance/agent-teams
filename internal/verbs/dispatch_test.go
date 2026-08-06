@@ -1831,15 +1831,21 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 // change reintroduces the key, this test is the thing that should stop it.
 func TestBGSessionArgs_SettingsOmitsAutoCompactWindow(t *testing.T) {
 	// Every production launch path supplies a role, so --settings is present.
-	for _, tc := range []struct{ role, initiativeID string }{
-		{"dri", "at-abc123"},
-		{"dri", ""},
-		{"steward", ""},
+	// The non-empty window cases are the ones that matter: the regression this
+	// guards against is a future change that pins the window in --settings as
+	// well as on argv, which can only happen when a window is actually set.
+	for _, tc := range []struct{ role, initiativeID, window string }{
+		{"dri", "at-abc123", ""},
+		{"dri", "", ""},
+		{"steward", "", ""},
+		{"dri", "at-abc123", "450000"},
+		{"dri", "", "500k"},
+		{"steward", "", "auto"},
 	} {
-		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}", "")
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}", tc.window)
 		got := settingsValue(t, args)
 		if strings.Contains(got, "autoCompactWindow") {
-			t.Errorf("--settings for role=%q must not pin autoCompactWindow; got %q", tc.role, got)
+			t.Errorf("--settings for role=%q window=%q must not pin autoCompactWindow; got %q", tc.role, tc.window, got)
 		}
 	}
 }
