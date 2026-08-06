@@ -139,6 +139,8 @@ If no SendMessage arrives within a reasonable time, note the timeout in the init
 
 Post the review using the GitHub API. Build the inline comments from the reviewer's findings (one comment per finding at the reported `file:line`).
 
+**The two lens conclusions always go in the body, unconditionally.** The reviewer always reports a parity/overlap enumeration and an after-the-fact-identifiability answer as their own section, separate from its findings list, even when the answer is "none" (reviewer-prompt.md). Treat them like the `question`-labelled findings below: no severity prefix, posted verbatim. This applies in every branch below — no-findings or findings — never drop or summarize them while condensing the rest into the one-sentence summary; a reported "checked, nothing found" is what makes the check falsifiable later.
+
 #### Handle the no-findings case
 
 If the reviewer reported no substantive findings, the event depends on step 3's self-review determination:
@@ -149,7 +151,9 @@ If the reviewer reported no substantive findings, the event depends on step 3's 
   REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
     --method POST \
     -f event=APPROVE \
-    -f body="Automated review: no substantive findings." \
+    -f body="Automated review: no substantive findings.
+
+<parity/overlap enumeration and identifiability answer, verbatim from the reviewer>" \
     --jq .html_url)
   ```
 
@@ -159,13 +163,15 @@ If the reviewer reported no substantive findings, the event depends on step 3's 
   REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
     --method POST \
     -f event=COMMENT \
-    -f body="Automated review: no substantive findings." \
+    -f body="Automated review: no substantive findings.
+
+<parity/overlap enumeration and identifiability answer, verbatim from the reviewer>" \
     --jq .html_url)
   ```
 
 #### Handle findings
 
-Inline comments only work on lines present in the PR diff. Two kinds of finding won't post inline and belong in the review body instead: blast-radius findings that reference a consumer line **outside the diff**, and design/approach findings labeled `question` (post those verbatim as questions in the body — do not prefix them with a severity, which would read as a defect). Everything else posts inline.
+Inline comments only work on lines present in the PR diff. Two kinds of finding won't post inline and belong in the review body instead: parity/overlap findings that reference a consumer line **outside the diff**, and design/approach findings labeled `question` (post those verbatim as questions in the body — do not prefix them with a severity, which would read as a defect). Everything else posts inline.
 
 For each inline finding, construct an inline comment. Collect them into a single review POST:
 
@@ -173,7 +179,9 @@ For each inline finding, construct an inline comment. Collect them into a single
 REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --method POST \
   -f event=COMMENT \
-  -f body="<one-sentence overall summary>" \
+  -f body="<one-sentence overall summary>
+
+<parity/overlap enumeration and identifiability answer, verbatim from the reviewer>" \
   -F 'comments[][path]=<file-path>' \
   -F 'comments[][line]=<line-number>' \
   -F 'comments[][body]=<severity>: <finding description>\n\n<suggestion>' \
@@ -182,7 +190,7 @@ REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
 
 Repeat the `-F 'comments[]…'` flags for each finding. Post as `COMMENT` — not `APPROVE` and not `REQUEST_CHANGES`. This applies regardless of authorship: any critical/high/medium finding keeps the review at `COMMENT`, even on a PR that isn't ours.
 
-The review body is a single sentence summarizing the overall assessment (e.g. "Two high-severity findings related to error handling and one medium concerning missing test coverage.").
+The review body is a single sentence summarizing the overall assessment (e.g. "Two high-severity findings related to error handling and one medium concerning missing test coverage."), followed by the two lens conclusions — always, unprefixed, verbatim.
 
 Every review POST above — every variant, including the retry and re-review
 cases below — must append `--jq .html_url` and capture the result into
