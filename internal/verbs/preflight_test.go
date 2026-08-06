@@ -8,6 +8,7 @@ package verbs
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -542,7 +543,23 @@ func makePreflightCtx() (*cli.Context, *strings.Builder, *strings.Builder) {
 	return &cli.Context{Stdout: &stdout, Stderr: &stderr}, &stdout, &stderr
 }
 
-func TestPreflightKong_RolesPayloadBuildFailure_Exit2AllSkip(t *testing.T) {
+// TestPreflightKong_MalformedRoleFile_Exit1WithFail and its sibling below pin
+// the exit-code discriminator ruled on 2026-08-06 (agent-teams-25s3.2
+// interpretation note): STATUSES AND THE EXIT CODE MUST AGREE. Exit 2 is an
+// anti-false-green device for when the INSTRUMENT failed, so emitting a FAIL
+// alongside it says "the install is broken" and "I could not form a
+// judgement" in one breath.
+//
+// The discriminator is whether the condition could exist on a HEALTHY install:
+// an unresolvable roles dir can (wrong cwd, unset $CLAUDE_PLUGIN_ROOT, binary
+// run from a scratch path) -> environment -> no FAIL, all SKIP, exit 2. A
+// malformed role file inside a directory that DID resolve cannot -> that is
+// the install being broken -> FAIL, exit 1.
+//
+// This test formerly asserted exit 2 for the malformed case. That assertion
+// was changed deliberately under the ruling above — not to make a failing test
+// pass — and split in two so each class is pinned separately.
+func TestPreflightKong_MalformedRoleFile_Exit1WithFail(t *testing.T) {
 	ctx, stdout, _ := makePreflightCtx()
 	c := &preflightKong{
 		buildAgentsPayload: func() (string, error) { return "", errors.New("frontmatter missing a non-empty description") },
@@ -560,8 +577,8 @@ func TestPreflightKong_RolesPayloadBuildFailure_Exit2AllSkip(t *testing.T) {
 	if err == nil {
 		t.Fatal("Run: want non-nil error")
 	}
-	if code := cli.ExitCode(err); code != 2 {
-		t.Errorf("ExitCode = %d, want 2", code)
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("ExitCode = %d, want 1 — a FAIL was emitted, so a verdict WAS formed", code)
 	}
 	out := stdout.String()
 	if !strings.Contains(out, checkRolesPayloadBuilds) || !strings.Contains(out, preflightFail) {
@@ -813,5 +830,38 @@ func TestPreflightSkillDeclinedToSpawn_KeysOnStandaloneStop(t *testing.T) {
 	}
 	if preflightSkillDeclinedToSpawn(nil) {
 		t.Error("absent role-types-available must not read as declined — a broken verdict must not suppress the sidecar checks")
+	}
+}
+
+// TestPreflightKong_RolesDirUnresolvable_Exit2NoFail is the other half of the
+// discriminator: the roles directory could not be located at all, which a
+// healthy install can hit from the wrong cwd. The tool formed NO judgement, so
+// it must emit no FAIL and exit 2 — the anti-false-green code doing the job it
+// exists for.
+func TestPreflightKong_RolesDirUnresolvable_Exit2NoFail(t *testing.T) {
+	ctx, stdout, stderr := makePreflightCtx()
+	c := &preflightKong{
+		buildAgentsPayload: func() (string, error) {
+			return "", fmt.Errorf("resolve plugin roles dir: no roles/*.md found; tried: /nope: %w", errRolesDirUnresolvable)
+		},
+		launch: func(string, string, string, string, string) (string, error) {
+			t.Fatal("launch must not be called")
+			return "", nil
+		},
+		scanSidecars: func(string) ([]spawnCheckSidecarWithPath, error) {
+			t.Fatal("scanSidecars must not be called")
+			return nil, nil
+		},
+		sleep: noopSleep,
+	}
+	err := c.Run(ctx)
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("ExitCode = %d, want 2 — the tool could not run the check at all", code)
+	}
+	if strings.Contains(stdout.String(), preflightFail) {
+		t.Errorf("stdout carries a FAIL: %q — exit 2 must never accompany a FAIL, or the report contradicts its own exit code", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "resolve plugin roles dir") {
+		t.Errorf("stderr = %q, want it to name the unresolvable roles dir", stderr.String())
 	}
 }

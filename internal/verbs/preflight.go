@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -326,18 +327,37 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// ── check 1: roles-payload-builds ────────────────────────────────────
 	agentsJSON, err := buildPayload()
 	if err != nil {
+		// STATUSES AND EXIT CODE MUST AGREE (agent-teams-25s3.2 artifact (7),
+		// interpretation note 2026-08-06). Exit 2 is an anti-false-green
+		// device for when the INSTRUMENT failed; using it alongside a FAIL
+		// says "the install is broken" and "I could not form a judgement" in
+		// one breath. The discriminator: could this condition exist on a
+		// HEALTHY install? An unresolvable roles dir — wrong cwd, unset
+		// $CLAUDE_PLUGIN_ROOT, binary run from a scratch path — yes, so it is
+		// environment: no FAIL, all SKIP, exit 2. A malformed role file
+		// inside a directory that DID resolve — no, that is the install
+		// being broken, which is what exit 1 means.
+		if errors.Is(err, errRolesDirUnresolvable) {
+			checks := preflightSkippedChecks("the roles directory could not be resolved; no probe session was launched")
+			result := buildPreflightResult(checks, "")
+			if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
+				return renderErr
+			}
+			fmt.Fprintf(ctx.Stderr, "ateam preflight: %v\n", err)
+			return cli.Silent(2)
+		}
 		checks := append([]preflightCheck{{
 			Check:       checkRolesPayloadBuilds,
 			Status:      preflightFail,
 			Detail:      err.Error(),
 			Witness:     "plugins/agent-teams/roles/*.md",
-			Remediation: "fix the role file named above (missing/malformed frontmatter, or roles/ moved/renamed) so the --agents payload can be built, then re-run",
+			Remediation: "fix the role file named above (missing/malformed frontmatter) so the --agents payload can be built, then re-run",
 		}}, preflightSkippedChecks("the --agents payload failed to build; no probe session was launched")...)
 		result := buildPreflightResult(checks, "")
 		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
 			return renderErr
 		}
-		return cli.Silent(2)
+		return cli.Silent(1)
 	}
 
 	// The payload BUILDING is not the property. The property is that it
@@ -361,7 +381,12 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
 			return renderErr
 		}
-		return cli.Silent(2)
+		// Exit 1, not 2: a FAIL was emitted, so a verdict WAS formed. A
+		// missing role file cannot happen on a healthy install — that is the
+		// install being broken, which is exactly what this tool exists to
+		// report. Exit 2 here would read as infrastructure flakiness in CI
+		// and get retried instead of acted on.
+		return cli.Silent(1)
 	}
 
 	sessionID := newPreflightSessionID()
