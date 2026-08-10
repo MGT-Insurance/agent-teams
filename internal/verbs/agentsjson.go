@@ -10,6 +10,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,15 @@ type agentDefinition struct {
 // the roles/ move there is no plugin-scope fallback left at all, so silently
 // proceeding without --agents would launch a DRI whose teammates are all
 // silently generic. The returned error names every path tried.
+// errRolesDirUnresolvable marks the ENVIRONMENT failure — no roles/ directory
+// could be located at all — as distinct from an install defect found INSIDE a
+// roles/ directory that did resolve. Callers that map failures to exit codes
+// need the difference: an unresolvable roles dir can happen with a perfectly
+// healthy install (wrong cwd, unset $CLAUDE_PLUGIN_ROOT, binary run from a
+// scratch path), so it is "the tool could not run"; a malformed or missing
+// role file inside a resolved directory IS the install being broken.
+var errRolesDirUnresolvable = errors.New("roles directory unresolvable")
+
 func resolveRolesDir() (string, error) {
 	var tried []string
 
@@ -58,7 +68,7 @@ func resolveRolesDir() (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		tried = append(tried, fmt.Sprintf("<self-binary unresolvable: %v>", err))
-		return "", fmt.Errorf("resolve plugin roles dir: no roles/*.md found; tried: %s", strings.Join(tried, "; "))
+		return "", fmt.Errorf("resolve plugin roles dir: no roles/*.md found; tried: %s: %w", strings.Join(tried, "; "), errRolesDirUnresolvable)
 	}
 	dir := filepath.Join(filepath.Dir(self), "..", "roles")
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -66,7 +76,7 @@ func resolveRolesDir() (string, error) {
 	}
 	tried = append(tried, dir+" (relative to self binary "+self+")")
 
-	return "", fmt.Errorf("resolve plugin roles dir: no roles/*.md found; tried: %s", strings.Join(tried, "; "))
+	return "", fmt.Errorf("resolve plugin roles dir: no roles/*.md found; tried: %s: %w", strings.Join(tried, "; "), errRolesDirUnresolvable)
 }
 
 // nonRoleFiles names *.md files directly inside roles/ that are NOT role

@@ -13,14 +13,18 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// writePidfile creates <mailboxDir>/<id>.watcher.pid containing pid.
+// writePidfile creates <mailboxDir>/<id>.watcher.pid in the real
+// "<pid>\t<session-id>" format wake-watcher.sh writes (see
+// pidfileEntryPid, messaging.go) — NOT a bare pid. Every test that goes
+// through this helper exercises the two-field format the production
+// pidfile actually uses.
 func writePidfile(t *testing.T, mailboxDir, id string, pid int) {
 	t.Helper()
 	if err := os.MkdirAll(mailboxDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll mailbox: %v", err)
 	}
 	path := filepath.Join(mailboxDir, id+".watcher.pid")
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d", pid)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\tsession-%s", pid, id)), 0o644); err != nil {
 		t.Fatalf("write pidfile: %v", err)
 	}
 }

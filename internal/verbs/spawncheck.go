@@ -131,6 +131,13 @@ type spawnCheckSidecar struct {
 	// sidecar file — not in the top-level <session-id>.jsonl. See
 	// spawnCheckParentTranscriptPath.
 	ParentAgentID string `json:"parentAgentId"`
+	// Model and PermissionMode ride free on the same sidecar read but are
+	// not used by this verb's own DEFINITION-DROPPED predicate — they exist
+	// for agent-teams-25s3.3's verb-owned checks (role-model-attached,
+	// spawn-permission-mode), added here per that bead's amendment (B)
+	// rather than duplicating this struct.
+	Model          string `json:"model"`
+	PermissionMode string `json:"permissionMode"`
 }
 
 // spawnCheckFinding is one in_process_teammate sidecar's verdict. JSON field
@@ -572,4 +579,62 @@ func renderSpawnCheckText(w io.Writer, findings []spawnCheckFinding, droppedCoun
 	}
 
 	return nil
+}
+
+// spawnCheckSidecarWithPath pairs a parsed sidecar with the file it came
+// from. agent-teams-25s3.3's verb-owned checks need the path itself as a
+// contract-(3) "witness" value; scanSpawnCheck's own spawnCheckFinding
+// doesn't carry raw Model/PermissionMode, so this is a separate minimal
+// return shape rather than widening that struct for a use case it doesn't
+// have.
+type spawnCheckSidecarWithPath struct {
+	Path string
+	spawnCheckSidecar
+}
+
+// scanTeammateSidecarsForSession returns the sidecar(s) named
+// preflightProbeSpawnName under sessionID, across any project directory —
+// the same glob scanSpawnCheck uses, since <slug> is cwd-derived and a
+// session's project can't be guessed without walking.
+//
+// MATCHES ON NAME, NOT taskKind (agent-teams-25s3.19/.20 amendment,
+// SUPERSEDES the original taskKind=="in_process_teammate" filter): measured
+// live that a `claude -p` probe session's sidecar is the THIN shape and
+// never carries a taskKind field at all, so that filter matched nothing and
+// hard-FAILed every healthy `-p` run. Filtering by the skill's fixed spawn
+// name works identically for both the thin shape (this verb's only real
+// population) and the rich shape (should this ever be pointed at one),
+// since `name` is present in both. This is preflight's OWN function — it
+// does not change scanSpawnCheck's semantics or its other callers (`ateam
+// spawn-check` has its own contract, untouched here).
+//
+// Unlike scanSpawnCheck this never surfaces a malformed/unreadable sidecar
+// as a warning: it is meant to be called from inside a poll loop
+// (agent-teams-25s3.3 amendment (A)) that already treats "not enough
+// sidecars yet" as expected transient state, so a still-being-written file
+// is silently skipped rather than reported on every poll attempt.
+func scanTeammateSidecarsForSession(projectsRoot, sessionID string) ([]spawnCheckSidecarWithPath, error) {
+	pattern := filepath.Join(projectsRoot, "*", sessionID, "subagents", "*.meta.json")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob %s: %w", pattern, err)
+	}
+	sort.Strings(matches)
+
+	var out []spawnCheckSidecarWithPath
+	for _, path := range matches {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		var sc spawnCheckSidecar
+		if json.Unmarshal(data, &sc) != nil {
+			continue
+		}
+		if sc.Name != preflightProbeSpawnName {
+			continue
+		}
+		out = append(out, spawnCheckSidecarWithPath{Path: path, spawnCheckSidecar: sc})
+	}
+	return out, nil
 }
