@@ -299,12 +299,22 @@ func TestListJSONPreservesEveryBdKey(t *testing.T) {
 			t.Errorf("key %q = %s, want %s", key, got, expected)
 		}
 	}
-	// Exactly one key added.
-	if len(got[0]) != len(original[0])+1 {
-		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\")", len(got[0]), len(original[0])+1)
+	// Exactly three keys added: fields, prs, pr_reviews.
+	if len(got[0]) != len(original[0])+3 {
+		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\", \"prs\", \"pr_reviews\")", len(got[0]), len(original[0])+3)
 	}
-	if _, present := got[0]["fields"]; !present {
-		t.Error(`no "fields" key was added`)
+	for _, key := range []string{"fields", "prs", "pr_reviews"} {
+		if _, present := got[0][key]; !present {
+			t.Errorf("no %q key was added", key)
+		}
+	}
+	// realBdElement has no PR anywhere (rail, notes, or description) — both
+	// resolved-PR-derived keys come back as empty arrays, never omitted/null.
+	if got0Prs := compactJSON(t, got[0]["prs"]); got0Prs != "[]" {
+		t.Errorf(`prs = %s, want "[]"`, got0Prs)
+	}
+	if got0Reviews := compactJSON(t, got[0]["pr_reviews"]); got0Reviews != "[]" {
+		t.Errorf(`pr_reviews = %s, want "[]"`, got0Reviews)
 	}
 }
 
@@ -425,6 +435,67 @@ func TestListJSONFailsLoudlyOnANonObjectElement(t *testing.T) {
 // real data. Refuse instead.
 func TestListJSONRefusesToOverwriteAnExistingFieldsKey(t *testing.T) {
 	err := listJSONErr(t, `[{"id":"at-x","title":"T","fields":{"bd":"owns this"}}]`)
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Errorf("error = %v, want a \"refusing to overwrite\" error", err)
+	}
+}
+
+// ── list-json: "prs" / "pr_reviews" (docs/multi-pr-contract.md §2a, §5) ──────
+
+// TestListJSONPRsFallsBackToNotesOnlyPR proves this verb's OWN wiring — not
+// initiative.ResolvedPRs itself, which Track P's contract bead already
+// mutation-tests — surfaces the resolved-PR fallback: an initiative with no
+// "pr" rail line at all, only a "pr:" line in bd Notes (the shape the `dri`
+// skill has written for every initiative until now, docs/multi-pr-
+// contract.md §2a), must still appear in the "prs" sibling key. Without this
+// wiring, list-json's own "prs" key would go empty for the 178/549
+// initiatives whose PR lives only in Notes, even though ResolvedPRs itself
+// resolves it correctly.
+func TestListJSONPRsFallsBackToNotesOnlyPR(t *testing.T) {
+	const prURL = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	bdOutput := `[{"id":"at-notes-only","title":"T","notes":"pr: ` + prURL + `\n","labels":["human","gate:review"]}]`
+
+	got := listJSON(t, bdOutput)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(got))
+	}
+
+	var prs []string
+	if err := json.Unmarshal(got[0]["prs"], &prs); err != nil {
+		t.Fatalf("prs is not a JSON array: %v", err)
+	}
+	if len(prs) != 1 || prs[0] != prURL {
+		t.Errorf("prs = %v, want [%q]", prs, prURL)
+	}
+
+	// fields.pr stays absent — it is a verbatim rail projection, and this
+	// fixture has no "pr" rail line at all (docs/multi-pr-contract.md §4).
+	var fields map[string]any
+	if err := json.Unmarshal(got[0]["fields"], &fields); err != nil {
+		t.Fatalf("fields is not a JSON object: %v", err)
+	}
+	if _, present := fields["pr"]; present {
+		t.Errorf("fields.pr = %v, want absent (rail-only; this fixture has no rail line)", fields["pr"])
+	}
+
+	// pr_reviews carries the same resolved PR, gate computed from labels —
+	// single resolved PR, so the bare "gate:review" label attributes to it.
+	var reviews []struct {
+		PR   string `json:"pr"`
+		Gate string `json:"gate"`
+	}
+	if err := json.Unmarshal(got[0]["pr_reviews"], &reviews); err != nil {
+		t.Fatalf("pr_reviews is not a JSON array: %v", err)
+	}
+	if len(reviews) != 1 || reviews[0].PR != prURL || reviews[0].Gate != "review" {
+		t.Errorf("pr_reviews = %+v, want [{%q review}]", reviews, prURL)
+	}
+}
+
+// TestListJSONRefusesToOverwriteAnExistingPRsKey mirrors the "fields"
+// collision guard for the new "prs" sibling key.
+func TestListJSONRefusesToOverwriteAnExistingPRsKey(t *testing.T) {
+	err := listJSONErr(t, `[{"id":"at-x","title":"T","prs":["already here"]}]`)
 	if !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Errorf("error = %v, want a \"refusing to overwrite\" error", err)
 	}

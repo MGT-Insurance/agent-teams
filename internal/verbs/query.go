@@ -100,9 +100,13 @@ func (c *listJSONKong) Run(ctx *cli.Context) error {
 }
 
 // withRoutingFields returns raw — bd's JSON array of issues — with a "fields"
-// object added to every element, holding that issue's routing data as parsed by
-// internal/initiative. Nothing else about any element changes: each existing
-// key is re-emitted as the exact bytes bd produced for its value. The only
+// object, a "prs" array, and a "pr_reviews" array added to every element.
+// "fields" holds that issue's routing data as parsed by internal/initiative.
+// "prs" is the RESOLVED PR list (initiative.ResolvedPRs — docs/multi-pr-
+// contract.md §2a; NOT fields.pr, which stays the raw rail-only projection).
+// "pr_reviews" is the Go-computed per-PR gate array (§5), one entry per
+// resolved PR. Nothing else about any element changes: each existing key is
+// re-emitted as the exact bytes bd produced for its value. The only
 // difference is insignificant whitespace — the document is re-indented as a
 // whole, so a nested value bd printed on one line comes out across several.
 //
@@ -130,10 +134,13 @@ func withRoutingFields(raw []byte) ([]byte, error) {
 		if err := json.Unmarshal(element, &keyed); err != nil {
 			return nil, fmt.Errorf("ateam list-json: element %d is not a JSON object: %w", i, err)
 		}
-		// bd emitting its own "fields" key would make the line below a silent
-		// overwrite of real data. Refuse instead of guessing which one wins.
-		if _, exists := keyed["fields"]; exists {
-			return nil, fmt.Errorf("ateam list-json: element %d already carries a \"fields\" key; refusing to overwrite it", i)
+		// bd emitting any of these keys itself would make the assignments
+		// below a silent overwrite of real data. Refuse instead of guessing
+		// which one wins.
+		for _, key := range []string{"fields", "prs", "pr_reviews"} {
+			if _, exists := keyed[key]; exists {
+				return nil, fmt.Errorf("ateam list-json: element %d already carries a %q key; refusing to overwrite it", i, key)
+			}
 		}
 		var issue bd.Issue
 		if err := json.Unmarshal(element, &issue); err != nil {
@@ -144,6 +151,23 @@ func withRoutingFields(raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("ateam list-json: element %d: encoding routing fields: %w", i, err)
 		}
 		keyed["fields"] = fields
+
+		prs := initiative.ResolvedPRs(issue)
+		if prs == nil {
+			prs = []string{}
+		}
+		prsJSON, err := json.Marshal(prs)
+		if err != nil {
+			return nil, fmt.Errorf("ateam list-json: element %d: encoding prs: %w", i, err)
+		}
+		keyed["prs"] = prsJSON
+
+		reviewsJSON, err := json.Marshal(computePRReviews(issue.Labels, prs))
+		if err != nil {
+			return nil, fmt.Errorf("ateam list-json: element %d: encoding pr_reviews: %w", i, err)
+		}
+		keyed["pr_reviews"] = reviewsJSON
+
 		enriched = append(enriched, keyed)
 	}
 	// Indented to match what bd itself prints — this output is read by humans
@@ -152,7 +176,22 @@ func withRoutingFields(raw []byte) ([]byte, error) {
 	return json.MarshalIndent(enriched, "", "  ")
 }
 
+// humanListRow is one rendered row: an issue paired with its gate kind and,
+// for a per-PR row, the PR it belongs to ("" for the legacy, no-PR shape).
+type humanListRow struct {
+	issue bd.Issue
+	kind  string // "REVIEW" or "QUESTION"
+	pr    string // "" when not PR-specific
+}
+
 // humanListKong renders gated beads with their gate kind and note.
+//
+// Reshaped per docs/multi-pr-contract.md §6: an initiative with a resolved
+// PR list (initiative.ResolvedPRs) prints ONE ROW PER GATED PR, not one row
+// per initiative — a bead with two PRs gated independently prints two rows,
+// each with its own "pr:" line. A bead with no resolved PR at all (a plain
+// gated work item, or an initiative that hasn't recorded a PR yet) keeps the
+// original single-row-per-bead rendering, unchanged.
 type humanListKong struct{}
 
 func (c *humanListKong) Run(ctx *cli.Context) error {
@@ -163,33 +202,53 @@ func (c *humanListKong) Run(ctx *cli.Context) error {
 	if err := ctx.BD.RunJSON(&issues, "human", "list", "--json"); err != nil {
 		return err
 	}
-	// A handed-off initiative (external_review.go §2) still carries human +
-	// gate:review by design, so `bd human list` still returns it — but Eric
-	// already declared he's done looking, so it is no longer awaiting him.
-	// Filter here rather than smearing this condition across hung_scan.go /
-	// hung_workproduct.go.
-	//
-	// The filter runs BEFORE the empty check, not inside the render loop:
-	// every row being handed off is this feature's SUCCESS case, and it must
-	// answer "nothing needs you" rather than print nothing at all.
-	waiting := make([]bd.Issue, 0, len(issues))
+
+	// The row-selection filter runs BEFORE the empty check, not inside the
+	// render loop: every row being handed off is this feature's SUCCESS
+	// case, and it must answer "nothing needs you" rather than print
+	// nothing at all (agent-teams-p9dm.23 regression).
+	var rows []humanListRow
 	for _, issue := range issues {
-		if !hasLabel(issue.Labels, externalReviewLabel) {
-			waiting = append(waiting, issue)
+		prs := initiative.ResolvedPRs(issue)
+		if len(prs) == 0 {
+			// No PR concept at all — legacy single-row rendering. A
+			// handed-off initiative (external_review.go §2) still carries
+			// human + gate:review by design, so `bd human list` still
+			// returns it — but Eric already declared he's done looking, so
+			// it is no longer awaiting him. Filter here rather than
+			// smearing this condition across hung_scan.go / hung_workproduct.go.
+			if hasLabel(issue.Labels, externalReviewLabel) {
+				continue
+			}
+			rows = append(rows, humanListRow{issue: issue, kind: gateKind(issue.Labels)})
+			continue
+		}
+		for _, r := range computePRReviews(issue.Labels, prs) {
+			switch r.Gate {
+			case "question":
+				rows = append(rows, humanListRow{issue: issue, kind: "QUESTION", pr: r.PR})
+			case "review":
+				rows = append(rows, humanListRow{issue: issue, kind: "REVIEW", pr: r.PR})
+				// "external" (handed off) and "" (ungated) produce no row —
+				// same "no longer awaiting Eric" / "nothing to report" logic
+				// as the legacy branch above, applied per PR.
+			}
 		}
 	}
-	if len(waiting) == 0 {
+	if len(rows) == 0 {
 		fmt.Fprintln(ctx.Stdout, "No human-needed beads found.")
 		return nil
 	}
-	for _, issue := range waiting {
-		kind := gateKind(issue.Labels)
-		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", issue.ID, kind, issue.Title)
-		if issue.Notes != "" {
-			if ask, ok := extractLatestAsk(issue.Notes); ok {
+	for _, row := range rows {
+		fmt.Fprintf(ctx.Stdout, "%s  [%s]  %s\n", row.issue.ID, row.kind, row.issue.Title)
+		if row.pr != "" {
+			fmt.Fprintf(ctx.Stdout, "    pr: %s\n", row.pr)
+		}
+		if row.issue.Notes != "" {
+			if ask, ok := extractLatestAsk(row.issue.Notes); ok {
 				fmt.Fprint(ctx.Stdout, renderAsk(ask))
 			} else {
-				fmt.Fprintf(ctx.Stdout, "    %s\n", lastNoteBlock(issue.Notes))
+				fmt.Fprintf(ctx.Stdout, "    %s\n", lastNoteBlock(row.issue.Notes))
 			}
 		}
 	}
