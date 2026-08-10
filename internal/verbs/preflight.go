@@ -12,10 +12,18 @@
 // it owns exactly four things: launching the probe session, minting and
 // passing the session id, reading what the harness recorded about that
 // session AFTER the child process exits, and exit codes/rendering. Each of
-// the six checks implemented directly in this file carries a
+// the four checks implemented directly in this file carries a
 // REASON-POST-EXIT or REASON-NO-SESSION justification at its predicate
-// (contract artifact (1)(c)) — this is a CLOSED list; do not add a seventh
+// (contract artifact (1)(c)) — this is a CLOSED list; do not add a fifth
 // here without a stated reason and a note on the contract bead.
+//
+// UNPINNED RETIRED (agent-teams-25s3.24, Eric ruling 2026-08-10): the status
+// vocabulary is PASS/FAIL/SKIP, three tokens, not four. role-model-attached
+// and spawn-permission-mode — the two checks that only ever emitted
+// UNPINNED under this verb's `claude -p` launch mode — are deleted, not
+// merely silenced; a check retired for unwitnessability is removed and its
+// limit documented (Help() below, and the stderr footer printed by Run()),
+// never left emitting a status nobody acts on.
 package verbs
 
 import (
@@ -35,20 +43,20 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// Status vocabulary — contract artifact (2). Exactly these four tokens;
-// UNPINNED is never produced by this file today (none of the six verb-owned
-// checks has a proxy-only predicate) but the constant exists so a future
-// check can't invent its own spelling.
+// Status vocabulary — contract artifact (2), amended 2026-08-10 (agent-
+// teams-25s3.24): exactly these three tokens. UNPINNED is retired — see the
+// package doc comment above.
 const (
-	preflightPass     = "PASS"
-	preflightFail     = "FAIL"
-	preflightSkip     = "SKIP"
-	preflightUnpinned = "UNPINNED"
+	preflightPass = "PASS"
+	preflightFail = "FAIL"
+	preflightSkip = "SKIP"
 )
 
-// The six verb-owned check ids, CLOSED per contract artifact (1) as of the
-// 2026-08-06 freeze. Check ids are stable API (contract artifact (3)) —
-// renaming one is a breaking change.
+// The four verb-owned check ids, CLOSED per contract artifact (1) as of the
+// 2026-08-06 freeze (narrowed from six to four by agent-teams-25s3.24: role-
+// model-attached and spawn-permission-mode, the two checks that only ever
+// emitted UNPINNED, are deleted). Check ids are stable API (contract
+// artifact (3)) — renaming one is a breaking change.
 //
 // checkRoleDefinitionAttached was RENAMED to checkRoleTypeRegistered by the
 // agent-teams-25s3.19/.20 amendment. Measured live (2026-08-06): the ONLY
@@ -72,13 +80,11 @@ const (
 	// REASON-POST-EXIT: a session that fails to emit a verdict cannot
 	// report that fact from inside itself.
 	checkProbeSessionVerdict = "probe-session-verdict"
-	// REASON-POST-EXIT (this and the three below): the sidecar is written
-	// by the harness beside the transcript and cannot be read reliably from
+	// REASON-POST-EXIT (this and the one below): the sidecar is written by
+	// the harness beside the transcript and cannot be read reliably from
 	// inside the session that produces it — amendment (A)'s write-lag race.
-	checkSpawnRecordPresent  = "spawn-record-present"
-	checkRoleTypeRegistered  = "role-type-registered"
-	checkRoleModelAttached   = "role-model-attached"
-	checkSpawnPermissionMode = "spawn-permission-mode"
+	checkSpawnRecordPresent = "spawn-record-present"
+	checkRoleTypeRegistered = "role-type-registered"
 )
 
 // preflightProbedRoleKey is the --agents payload key (and expected
@@ -94,67 +100,30 @@ const preflightProbedRoleKey = "agent-teams-implementer"
 // under this launch mode (agent-teams-25s3.19/.20 amendment).
 const preflightProbeSpawnName = "preflight-probe"
 
-// preflightProbeSessionModel is the probe session's own --model (contract
-// artifact (6)) — named as a constant, not a comment, so
-// preflightRoleModelCheck's precondition gate can reference the SAME value
-// productionPreflightLaunch passes as --model, rather than a doc comment
-// describing it that the code never checks.
-const preflightProbeSessionModel = "opus"
-
-// preflightModelFamilies names the alias->concrete-id naming convention
-// recognized as "the same family" for role-model-attached (agent-teams-
-// 25s3.3 AMENDMENT 2026-08-06): a resolved concrete id like
-// "claude-sonnet-5" for the "sonnet" alias. Verified against the corpus —
-// 22 of 288 teammate sidecars on the census machine already carried a
-// concrete id instead of an alias, so this is observed current behavior,
-// not a speculative future case.
-var preflightModelFamilies = []string{"sonnet", "opus", "haiku"}
-
-// preflightModelFamily returns which family (sonnet/opus/haiku) model
-// belongs to, matching either the bare alias or a "claude-<family>-..."
-// concrete id. Returns "" for anything else (an unrecognized id, or "").
-func preflightModelFamily(model string) string {
-	for _, fam := range preflightModelFamilies {
-		if model == fam || strings.HasPrefix(model, "claude-"+fam+"-") {
-			return fam
-		}
-	}
-	return ""
-}
-
-// preflightExpectedProbeModel extracts the `model` frontmatter value the
-// --agents payload resolved for the probed role, so role-model-attached
-// compares against a value read at RUNTIME rather than a hardcoded literal
-// (agent-teams-25s3.3 AMENDMENT 2026-08-06: the sidecar's model field does
-// NOT always carry the frontmatter alias — the census above — so a
-// hardcoded == "sonnet" would eventually false-red a healthy install).
-// Editing the role's model line moves both sides together, since this and
-// buildAgentsJSON read the same source. An empty return means the role
-// declares no discriminating model (frontmatter absent or "inherit") —
-// callers must still treat that as a real predicate (the spawned sidecar
-// then inherits the probe session's own model), not a skip.
-func preflightExpectedProbeModel(agentsJSON string) (string, error) {
+// preflightProbedRolePresent confirms the built --agents payload carries an
+// entry for the role this verb's probe session requests
+// (preflightProbedRoleKey). Used by the pre-launch roles-payload-builds
+// guard (Run()), which must FAIL — not launch a probe session that requests
+// a role nobody can supply — when the probed role is missing from the
+// resolved roles directory.
+//
+// Renamed and simplified from preflightExpectedProbeModel by agent-teams-
+// 25s3.24 (RETIRE UNPINNED): the earlier version also returned the role's
+// declared model, read by role-model-attached's now-deleted precondition
+// gate. This function's only remaining job — and the only reason the
+// pre-launch guard needs it — is the presence check; the model value it used
+// to hand back has no caller left.
+func preflightProbedRolePresent(agentsJSON string) error {
 	var payload map[string]struct {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal([]byte(agentsJSON), &payload); err != nil {
-		return "", fmt.Errorf("parse --agents payload: %w", err)
+		return fmt.Errorf("parse --agents payload: %w", err)
 	}
-	entry, ok := payload[preflightProbedRoleKey]
-	if !ok {
-		return "", fmt.Errorf("--agents payload has no %q entry", preflightProbedRoleKey)
+	if _, ok := payload[preflightProbedRoleKey]; !ok {
+		return fmt.Errorf("--agents payload has no %q entry", preflightProbedRoleKey)
 	}
-	return entry.Model, nil
-}
-
-// preflightDisplayModel renders an expected-model value for a check detail
-// string, naming the "no model declared" case explicitly rather than
-// printing a bare empty string.
-func preflightDisplayModel(model string) string {
-	if model == "" {
-		return "(no model declared in roles/implementer.md)"
-	}
-	return model
+	return nil
 }
 
 // preflightExpectedTeammates is how many in_process_teammate sidecars a
@@ -407,24 +376,25 @@ type preflightCheck struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
-// preflightResult is the contract-(4) top-level JSON shape. Pass/Fail/Skip/
-// Unpinned are recomputed by this verb over the MERGED check list (the
-// skill's own checks plus the four verb-owned sidecar checks) rather than
-// trusted from the skill's echo of them — see buildPreflightResult.
+// preflightResult is the contract-(4) top-level JSON shape (amended agent-
+// teams-25s3.24: the `unpinned` field is retired along with the status
+// token). Pass/Fail/Skip are recomputed by this verb over the MERGED check
+// list (the skill's own checks plus the two verb-owned sidecar checks)
+// rather than trusted from the skill's echo of them — see
+// buildPreflightResult.
 type preflightResult struct {
 	Checks    []preflightCheck `json:"checks"`
 	Pass      int              `json:"pass"`
 	Fail      int              `json:"fail"`
 	Skip      int              `json:"skip"`
-	Unpinned  int              `json:"unpinned"`
 	SessionID string           `json:"session_id"`
 }
 
 // preflightVerdict is the subset of the skill's own contract-(4) emission
 // this verb reads: its checks array. The skill's own pass/fail/skip/
-// unpinned/session_id fields are ignored — session_id is this verb's own
-// minted uuid, not an echo, and the totals are recomputed once verb-owned
-// checks are merged in (buildPreflightResult).
+// session_id fields are ignored — session_id is this verb's own minted
+// uuid, not an echo, and the totals are recomputed once verb-owned checks
+// are merged in (buildPreflightResult).
 type preflightVerdict struct {
 	Checks []preflightCheck `json:"checks"`
 }
@@ -483,6 +453,33 @@ type preflightKong struct {
 	launch             preflightLaunchFunc      `kong:"-"`
 	scanSidecars       preflightSidecarScanFunc `kong:"-"`
 	sleep              func(time.Duration)      `kong:"-"` // nil => time.Sleep
+}
+
+// preflightLimitsNote documents what this tool cannot verify — the "delete
+// and document" half of retiring UNPINNED (agent-teams-25s3.24, Eric ruling
+// 2026-08-10: a check retired for unwitnessability is deleted, and its
+// limit stated once, not left emitting a status every run). Printed by
+// preflightKong.Help() (`ateam preflight --help`) and as a stderr footer on
+// every normal run (Run()), so the limit is read where it's useful rather
+// than scrolled past as a row that never changes.
+//
+// Wording rule (contract artifact (8)): never name the concrete human-
+// message delivery medium/vendor — "the configured transport" only.
+const preflightLimitsNote = `What this cannot verify:
+  - the spawned teammate's model and permission mode: this launch mode's
+    harness record (claude -p's sidecar) never carries a model or
+    permissionMode field, by design of that launch mode — not a gap this
+    tool failed to close. A different launch mode would carry them.
+  - the inbound leg of the human-message transport: only one poller may run
+    against the configured transport at a time, so witnessing an inbound
+    message end to end would require a second poller that knocks out real
+    mail. Structural and permanent, not an unsolved problem.`
+
+// Help implements kong's HelpProvider interface: this text renders as the
+// extended body of `ateam preflight --help`, below the one-line summary
+// passed to RegisterPreflightKong's AddVerb call.
+func (c *preflightKong) Help() string {
+	return preflightLimitsNote
 }
 
 // RegisterPreflightKong registers the preflight verb onto p.
@@ -580,7 +577,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// as role-types-available with a remediation telling the operator to run
 	// the command they had just run. Asserting it here is REASON-NO-SESSION,
 	// deterministic, free, and can name the actual missing file.
-	if _, err := preflightExpectedProbeModel(agentsJSON); err != nil {
+	if err := preflightProbedRolePresent(agentsJSON); err != nil {
 		checks := append([]preflightCheck{{
 			Check:       checkRolesPayloadBuilds,
 			Status:      preflightFail,
@@ -606,7 +603,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	token := mintPreflightToken()
 	tokenizedAgentsJSON, err := injectPreflightToken(agentsJSON, token)
 	if err != nil {
-		// Unreachable in practice — preflightExpectedProbeModel above already
+		// Unreachable in practice — preflightProbedRolePresent above already
 		// confirmed this payload carries preflightProbedRoleKey — guarded
 		// anyway rather than silently launching a session nothing will probe.
 		checks := append([]preflightCheck{{
@@ -683,6 +680,9 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// --json stdout stays exactly contract shape (4) for machine
 	// consumption.
 	fmt.Fprintf(ctx.Stderr, "probe session cost: $%.4f\n", envelope.TotalCostUSD)
+	// Limits footer (agent-teams-25s3.24, delete-and-document): same
+	// stderr-only rule as the cost footer above, for the same reason.
+	fmt.Fprintf(ctx.Stderr, "%s\n", preflightLimitsNote)
 
 	if result.Fail > 0 {
 		return cli.Silent(1)
@@ -690,11 +690,11 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	return nil
 }
 
-// preflightSkippedChecks returns SKIP entries for the five checks that
+// preflightSkippedChecks returns SKIP entries for the three checks that
 // never ran because roles-payload-builds failed before any session could
 // be launched.
 func preflightSkippedChecks(reason string) []preflightCheck {
-	ids := []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleTypeRegistered, checkRoleModelAttached, checkSpawnPermissionMode}
+	ids := []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleTypeRegistered}
 	out := make([]preflightCheck, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, preflightCheck{Check: id, Status: preflightSkip, Detail: reason})
@@ -702,107 +702,6 @@ func preflightSkippedChecks(reason string) []preflightCheck {
 	return out
 }
 
-// preflightRoleModelCheck computes the role-model-attached verdict for one
-// sidecar — the REAL predicate, correct, and mutation-verified twice
-// (agent-teams-25s3.3 commits 35fbaff, 7a8b87d). CURRENTLY UNREACHABLE FROM
-// Run(): agent-teams-25s3.19/.20 measured live that the ONLY sidecar shape
-// this verb's `claude -p` launch mode ever produces is the THIN five-key
-// shape, which never carries a `model` field at all (0 written, not merely
-// 0 matching an expectation) — so this function's entire premise, a sidecar
-// that MIGHT carry the field, does not hold under this launch mode.
-// preflightSidecarChecks ROUTES AROUND this function today, emitting a
-// direct UNPINNED for role-model-attached instead of calling it — calling
-// it against an always-absent field would report a per-run FAIL for a
-// property this launch mode can never witness, which is exactly the
-// false-red direction this rewrite exists to fix.
-//
-// KEPT, NOT DELETED, on team-lead's explicit instruction: this becomes live
-// again — reachable from preflightSidecarChecks once more — the moment the
-// launch mode changes to one that writes a rich sidecar (e.g. contract
-// artifact (6) is amended to launch a dispatched/background session rather
-// than `-p`). Its own fixtures (TestPreflightRoleModelCheck_*) keep proving
-// it correct in isolation so it is ready to be wired back in without
-// re-deriving any of this.
-//
-// MEASURED, not assumed (agent-teams-25s3.2 note, clean first-party control
-// captured 2026-08-05: spawning agent-teams-tester from an opus session
-// with NO model argument produced sidecar model=sonnet, matching
-// roles/tester.md's frontmatter, not the caller's session model) — that
-// control was against a DISPATCHED session's rich sidecar, which is exactly
-// the population this function is designed for and exactly the population
-// this verb never creates.
-//
-// PRECONDITION GATE (agent-teams-25s3.3 AMENDMENT 2026-08-06, second pass):
-// this check can only discriminate "the role definition attached" from "it
-// silently fell back to a generic agent" when the probed role's expected
-// model DIFFERS from the probe session's own (preflightProbeSessionModel,
-// contract artifact (6)) — an unattached spawn inherits the session's
-// model, so if the role's declared model happens to share the session's
-// family (or declares none at all), a healthy-looking match is
-// indistinguishable from a silent fallback. That was previously a doc
-// comment a human had to notice before repointing the probe at a different
-// role; it is now a gate the code enforces, reporting UNPINNED — the
-// property genuinely cannot be witnessed here (contract artifact (2)) —
-// rather than a PASS that would land right for the wrong reason
-// (agent-teams-25s3.15 (A1)/(A2): a false green is the direction this
-// initiative exists to catch, more dangerous than a false red).
-//
-// Past the gate: the expected value is READ AT RUNTIME (expectedModel,
-// computed by the caller from the --agents payload build), never
-// hardcoded — AMENDMENT 2026-08-06 (first pass) found the sidecar's model
-// field does not always carry the frontmatter alias verbatim (22 of 288
-// teammate sidecars on the census machine carried a resolved concrete id,
-// e.g. "claude-sonnet-5", instead). So: exact match, or a concrete id of
-// the same family: PASS; absence (never observed on a teammate, 0/288) or
-// any other value: FAIL.
-func preflightRoleModelCheck(sc spawnCheckSidecarWithPath, expectedModel string, expectedModelErr error) preflightCheck {
-	if expectedModelErr != nil {
-		return preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("could not determine the expected model: %v", expectedModelErr), Witness: "plugins/agent-teams/roles/implementer.md#model (via --agents payload)", Remediation: "confirm roles/implementer.md still resolves and its frontmatter parses"}
-	}
-
-	if expectedModel == "" || preflightModelFamily(expectedModel) == preflightModelFamily(preflightProbeSessionModel) {
-		return preflightCheck{
-			Check:   checkRoleModelAttached,
-			Status:  preflightUnpinned,
-			Detail:  fmt.Sprintf("the probed role's expected model (%s) is not distinguishable from the probe session's own (%s) — an unattached spawn silently inherits the session default and would look identical to a healthy one", preflightDisplayModel(expectedModel), preflightProbeSessionModel),
-			Witness: "plugins/agent-teams/roles/implementer.md#model (via --agents payload)",
-		}
-	}
-
-	switch {
-	case sc.Model == "":
-		return preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("model=(absent), want %s", expectedModel), Witness: sc.Path + "#model", Remediation: "the spawned role's model did not resolve — confirm roles/implementer.md still declares a `model:` frontmatter line"}
-	case sc.Model == expectedModel:
-		return preflightCheck{Check: checkRoleModelAttached, Status: preflightPass, Detail: fmt.Sprintf("model=%s", sc.Model), Witness: sc.Path + "#model"}
-	case preflightModelFamily(sc.Model) != "" && preflightModelFamily(sc.Model) == preflightModelFamily(expectedModel):
-		return preflightCheck{Check: checkRoleModelAttached, Status: preflightPass, Detail: fmt.Sprintf("model=%s (resolved concrete id for alias %s)", sc.Model, expectedModel), Witness: sc.Path + "#model"}
-	default:
-		return preflightCheck{Check: checkRoleModelAttached, Status: preflightFail, Detail: fmt.Sprintf("model=%s, want %s", sc.Model, expectedModel), Witness: sc.Path + "#model", Remediation: "the spawned role's model did not resolve — confirm roles/implementer.md still declares its expected `model:` frontmatter line"}
-	}
-}
-
-// preflightSidecarChecks implements the four verb-owned checks that read
-// the harness's OWN post-exit sidecar record for the probe's one spawned
-// teammate. All four are REASON-POST-EXIT (contract artifact (1)(c)): the
-// sidecar is written by the harness beside the transcript and cannot be
-// read reliably from inside the session that produces it.
-//
-// REWRITTEN by the agent-teams-25s3.19/.20 amendment: this verb only ever
-// launches `claude -p`, and that launch mode's sidecar is the THIN shape
-// (agentType, description, name, spawnDepth, toolUseId — no taskKind, no
-// customAgentType, no model, no permissionMode), never the rich shape a
-// dispatched session produces. Two of the four checks stay real predicates
-// under the thin shape (spawn-record-present, role-type-registered); two
-// become honest UNPINNED because their fields are never written under this
-// launch mode at all (role-model-attached, spawn-permission-mode) — see
-// preflightRoleModelCheck's doc comment for why that function is kept but
-// routed around rather than called.
-//
-// SKIP CASCADE PRESERVED: when no sidecar is found, all three dependent
-// checks SKIP, never FAIL — a live checkpoint run (agent-teams-25s3.3,
-// 2026-08-06) confirmed one root cause should produce one FAIL and three
-// honest SKIPs, not four reds, so the report points at the single broken
-// thing.
 // preflightSkillDeclinedToSpawn reports whether the skill's own verdict says
 // it correctly refused to spawn: role-types-available FAIL is its specified
 // Step 1 stop, not a fault. An absent sidecar is then the RIGHT outcome, and
@@ -820,14 +719,34 @@ func preflightSkillDeclinedToSpawn(checks []preflightCheck) bool {
 	return false
 }
 
+// preflightSidecarChecks implements the two verb-owned checks that read the
+// harness's OWN post-exit sidecar record for the probe's one spawned
+// teammate. Both are REASON-POST-EXIT (contract artifact (1)(c)): the
+// sidecar is written by the harness beside the transcript and cannot be read
+// reliably from inside the session that produces it.
+//
+// NARROWED from four checks to two by agent-teams-25s3.24 (RETIRE UNPINNED,
+// Eric ruling 2026-08-10): role-model-attached and spawn-permission-mode are
+// DELETED, not silenced — this verb's only launch mode (`claude -p`) writes
+// a THIN sidecar shape (agentType, description, name, spawnDepth,
+// toolUseId — no model, no permissionMode field, ever) that could never
+// witness either property, so the two checks did nothing but emit UNPINNED
+// on every run. That limit is now documented once, in preflightKong.Help()
+// and Run()'s stderr footer, rather than repeated as a row every run. What
+// remains, spawn-record-present and role-type-registered, are real
+// predicates under the thin shape.
+//
+// SKIP CASCADE PRESERVED: when no sidecar is found, the one dependent check
+// (role-type-registered) SKIPs, never FAILs — a live checkpoint run
+// (agent-teams-25s3.3, 2026-08-06) confirmed one root cause should produce
+// one FAIL and honest SKIPs, not multiple reds, so the report points at the
+// single broken thing.
 func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Duration), sessionID string, skillDeclinedToSpawn bool) []preflightCheck {
 	if skillDeclinedToSpawn {
 		reason := "the skill correctly did not spawn: the probed role type was absent from the probe session (role-types-available FAIL)"
 		return []preflightCheck{
 			{Check: checkSpawnRecordPresent, Status: preflightSkip, Detail: reason, Witness: "probe session verdict (role-types-available)"},
 			{Check: checkRoleTypeRegistered, Status: preflightSkip, Detail: reason},
-			{Check: checkRoleModelAttached, Status: preflightSkip, Detail: reason},
-			{Check: checkSpawnPermissionMode, Status: preflightSkip, Detail: reason},
 		}
 	}
 
@@ -844,8 +763,6 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 		return []preflightCheck{
 			{Check: checkSpawnRecordPresent, Status: preflightFail, Detail: detail, Witness: "harness subagent sidecar (~/.claude/projects/*/<session>/subagents/*.meta.json)", Remediation: "the probe's teammate spawn never landed a sidecar — re-run `ateam preflight`; if it recurs, this is the upstream teammate-spawn regression this initiative exists to catch"},
 			{Check: checkRoleTypeRegistered, Status: preflightSkip, Detail: reason},
-			{Check: checkRoleModelAttached, Status: preflightSkip, Detail: reason},
-			{Check: checkSpawnPermissionMode, Status: preflightSkip, Detail: reason},
 		}
 	}
 
@@ -879,31 +796,6 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 		checks = append(checks, preflightCheck{Check: checkRoleTypeRegistered, Status: preflightFail, Detail: fmt.Sprintf("agentType=%s, want %s", got, preflightProbedRoleKey), Witness: sc.Path + "#agentType", Remediation: "the named spawn's role type did not resolve — confirm --agents is present in the probe launch argv and that roles/implementer.md still resolves"})
 	}
 
-	// role-model-attached — UNPINNED, unconditionally, under this verb's
-	// ONLY launch mode. Measured live (agent-teams-25s3.19, 2026-08-06): a
-	// `claude -p` probe's sidecar never carries a `model` field at all — not
-	// "carries one that happens not to match", genuinely absent by launch
-	// mode, every time. ROUTES AROUND preflightRoleModelCheck rather than
-	// calling it (see that function's doc comment): calling it here would
-	// report a per-run FAIL for a property this launch mode can never
-	// witness, which is the exact false-red direction this rewrite exists
-	// to fix.
-	checks = append(checks, preflightCheck{
-		Check:   checkRoleModelAttached,
-		Status:  preflightUnpinned,
-		Detail:  "a claude -p probe session's sidecar never carries a model field — not witnessable under this launch mode",
-		Witness: sc.Path,
-	})
-
-	// spawn-permission-mode — UNPINNED for the same reason: the thin -p
-	// sidecar never carries a permissionMode field either.
-	checks = append(checks, preflightCheck{
-		Check:   checkSpawnPermissionMode,
-		Status:  preflightUnpinned,
-		Detail:  "a claude -p probe session's sidecar never carries a permissionMode field — not witnessable under this launch mode",
-		Witness: sc.Path,
-	})
-
 	return checks
 }
 
@@ -932,8 +824,8 @@ func pollPreflightSidecars(scan preflightSidecarScanFunc, sleep func(time.Durati
 }
 
 // buildPreflightResult tallies the merged check list into contract shape
-// (4), recomputing pass/fail/skip/unpinned itself rather than trusting any
-// upstream total.
+// (4), recomputing pass/fail/skip itself rather than trusting any upstream
+// total.
 func buildPreflightResult(checks []preflightCheck, sessionID string) preflightResult {
 	r := preflightResult{Checks: checks, SessionID: sessionID}
 	for _, c := range checks {
@@ -944,8 +836,6 @@ func buildPreflightResult(checks []preflightCheck, sessionID string) preflightRe
 			r.Fail++
 		case preflightSkip:
 			r.Skip++
-		case preflightUnpinned:
-			r.Unpinned++
 		}
 	}
 	if r.Checks == nil {
@@ -1058,7 +948,7 @@ func renderPreflight(ctx *cli.Context, result preflightResult, asJSON bool) erro
 		return err
 	}
 
-	fmt.Fprintf(ctx.Stdout, "\n%d pass, %d fail, %d skip, %d unpinned\n", result.Pass, result.Fail, result.Skip, result.Unpinned)
+	fmt.Fprintf(ctx.Stdout, "\n%d pass, %d fail, %d skip\n", result.Pass, result.Fail, result.Skip)
 	for _, c := range result.Checks {
 		if c.Status == preflightFail && c.Remediation != "" {
 			fmt.Fprintf(ctx.Stdout, "  - %s: %s\n", c.Check, c.Remediation)
@@ -1106,7 +996,10 @@ func preflightLaunchArgs(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir s
 		"--output-format", "json",
 		"--agents", agentsJSON,
 		"--permission-mode", "bypassPermissions",
-		"--model", preflightProbeSessionModel,
+		// "opus" is pinned by contract artifact (6), independent of the
+		// (now-deleted) role-model-attached check that used to also read
+		// this value for its precondition gate (agent-teams-25s3.24).
+		"--model", "opus",
 	}
 	if maxBudgetUSD != "" {
 		args = append(args, "--max-budget-usd", maxBudgetUSD)

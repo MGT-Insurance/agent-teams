@@ -30,7 +30,7 @@ Check the "Available agent types for the Agent tool" listing already present in 
 Embed it as the sole element of the envelope and end your turn on this — the entire final message, bare, no fence, nothing before or after it:
 
 ```json
-{"checks":[{"check":"role-types-available","status":"FAIL","detail":"agent-teams-implementer is not in this session's available agent types","witness":"available agent types listing in session context","remediation":"run \"ateam preflight\" to launch a dispatched probe session, or invoke this skill from inside a session already launched by \"ateam dispatch\"/\"ateam resume\""}],"pass":0,"fail":1,"skip":0,"unpinned":0,"session_id":"<$CLAUDE_CODE_SESSION_ID>"}
+{"checks":[{"check":"role-types-available","status":"FAIL","detail":"agent-teams-implementer is not in this session's available agent types","witness":"available agent types listing in session context","remediation":"run \"ateam preflight\" to launch a dispatched probe session, or invoke this skill from inside a session already launched by \"ateam dispatch\"/\"ateam resume\""}],"pass":0,"fail":1,"skip":0,"session_id":"<$CLAUDE_CODE_SESSION_ID>"}
 ```
 
 ## Step 2 — spawn the probe teammate
@@ -44,7 +44,7 @@ Spawn exactly one teammate via the Agent tool:
 - `mode: "bypassPermissions"`
 - **No `model` argument.** This is load-bearing (agent-teams-25s3.2 amendment): the sidecar's resolved model is only meaningful evidence on the Go side of this initiative when the caller passed none.
 
-This spawn exists to exercise the spawn mechanism itself — its purpose is the sidecar record it produces (read by the GO track's `role-definition-attached`, `role-model-attached`, `spawn-record-present`, and `spawn-permission-mode` checks), not any answer the probe gives. The prompt should not name the role or quote role prose; it only needs to elicit a response. For example:
+This spawn exists to exercise the spawn mechanism itself — its purpose is the sidecar record it produces (read by the GO track's `spawn-record-present` and `role-type-registered` checks — `role-model-attached` and `spawn-permission-mode` were retired, agent-teams-25s3.24: this launch mode's sidecar never carries a model or permissionMode field to check), not any answer the probe gives. The prompt should not name the role or quote role prose; it only needs to elicit a response. For example:
 
 > This is a one-shot preflight connectivity check, unrelated to any task. Reply with a brief acknowledgement, then take no further action.
 
@@ -85,12 +85,12 @@ Send a `shutdown_request` to `preflight-probe` via `SendMessage`. This is cleanu
 
 ## Step 5 — emit the verdict
 
-This is the ONLY point in the entire run where you print anything. Take the check objects you held from Steps 1-3 (three of them, in this path: `role-types-available`, `teammate-spawns`, `role-prose-in-context`), place them into one `checks` array, and count `PASS`/`FAIL`/`SKIP`/`UNPINNED` across it for the top-level fields. End your turn by printing that single envelope object — bare JSON text, no code fence, no prose before or after it, nothing else in the message. The fenced block below is shown that way only for this document's readability; your actual output has no backticks around it:
+This is the ONLY point in the entire run where you print anything. Take the check objects you held from Steps 1-3 (three of them, in this path: `role-types-available`, `teammate-spawns`, `role-prose-in-context`), place them into one `checks` array, and count `PASS`/`FAIL`/`SKIP` across it for the top-level fields. End your turn by printing that single envelope object — bare JSON text, no code fence, no prose before or after it, nothing else in the message. The fenced block below is shown that way only for this document's readability; your actual output has no backticks around it:
 
 entire final message:
 
 ```json
-{"checks":[...],"pass":N,"fail":N,"skip":N,"unpinned":N,"session_id":"<$CLAUDE_CODE_SESSION_ID>"}
+{"checks":[...],"pass":N,"fail":N,"skip":N,"session_id":"<$CLAUDE_CODE_SESSION_ID>"}
 ```
 
 `session_id` is this session's own id (the `$CLAUDE_CODE_SESSION_ID` environment variable) — the same session that ran the probe, regardless of whether it was launched interactively or by `ateam preflight`'s `--session-id`. This is the exact object `ateam preflight` parses out of `--output-format json`'s `.result` field — a parse failure there is that verb's `probe-session-verdict` check, not something to guard against here beyond printing valid JSON and nothing but that JSON.
