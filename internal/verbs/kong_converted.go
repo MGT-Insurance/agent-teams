@@ -284,6 +284,19 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	structuredUsed := c.Decision != "" || c.Recommendation != "" ||
 		c.Alternative != "" || c.ContextFile != ""
 
+	// Resolve --pr to its canonical form and require it to be one of the
+	// initiative's ACTUAL resolved PRs before minting a per-PR label from it
+	// (agent-teams-ssib.25) — a typo'd or differently-spelled --pr must be
+	// rejected, not silently turned into a label nothing can ever pair with.
+	pr := c.PR
+	if pr != "" {
+		canon, err := resolvePR(ctx, "ateam gate", c.ID, pr)
+		if err != nil {
+			return err
+		}
+		pr = canon
+	}
+
 	if structuredUsed {
 		ask := &gateAsk{
 			decision:       c.Decision,
@@ -295,7 +308,7 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		if buildErr != nil {
 			return buildErr
 		}
-		if c.PR != "" {
+		if pr != "" {
 			// Tag the block with the PR it's about, so human-list can pair
 			// each per-PR row with the block that's actually about IT,
 			// instead of always showing the initiative's latest ask
@@ -304,8 +317,11 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 			// never tagged and human-list's fallback for that case (the
 			// latest block, tag or no tag) is unaffected. buildAskBlock's
 			// output always starts with this exact literal, so this is a
-			// safe one-shot insertion, not a fragile string scan.
-			block = strings.Replace(block, "<<<ateam-ask\n", "<<<ateam-ask\npr: "+c.PR+"\n", 1)
+			// safe one-shot insertion, not a fragile string scan. Tagged
+			// with the CANONICAL pr (resolved above), matching what
+			// ResolvedPRs hands human-list, so the tag and the row it must
+			// pair with always compare equal (agent-teams-ssib.25).
+			block = strings.Replace(block, "<<<ateam-ask\n", "<<<ateam-ask\npr: "+pr+"\n", 1)
 		}
 		tmp, tmpErr := os.CreateTemp("", "ateam-gate-ask-*")
 		if tmpErr != nil {
@@ -337,8 +353,8 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		return runErr
 	}
 	gateLabel := "gate:" + c.Kind
-	if c.PR != "" {
-		gateLabel += ":" + c.PR
+	if pr != "" {
+		gateLabel += ":" + pr
 	}
 	out, runErr = ctx.BD.Run("label", "add", c.ID, gateLabel)
 	if out != "" {
@@ -503,8 +519,21 @@ func perPRGateLabels(labels []string) []string {
 // removed only once NO PR on the initiative remains gated; while any other
 // PR is still gated, "human" stays.
 func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
+	// Resolve --pr to the SAME canonical form a `gate --pr`/`handoff --pr`
+	// call would have used to build the label in the first place
+	// (agent-teams-ssib.25) — without this, clearing with a differently-
+	// cased or http-vs-https spelling of the same PR would silently remove
+	// nothing (bd label remove is exact-match) and leave the gate stuck.
+	// Fails loudly if --pr doesn't name one of the initiative's actual
+	// resolved PRs; the unconditional bare `clear-gate` (no --pr) remains
+	// the escape hatch for a stray per-PR label that predates this fix or
+	// no longer matches a resolved PR.
+	pr, err := resolvePR(ctx, "ateam clear-gate", c.ID, c.PR)
+	if err != nil {
+		return err
+	}
 	for _, base := range []string{"gate:review", "gate:question", externalReviewLabel} {
-		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+c.PR)
+		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+pr)
 		if out != "" {
 			fmt.Fprintln(ctx.Stdout, out)
 		}

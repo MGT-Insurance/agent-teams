@@ -63,7 +63,26 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam pr add: bd show %s: %w", c.InitiativeID, err)
 	}
 
-	plan, err := initiative.WithPR(issue, c.URL)
+	// Seed the rail from the RESOLVED list — not Of(issue).PRs, the raw rail
+	// alone — before appending the requested URL (agent-teams-ssib.23).
+	// Of(issue).PRs is empty for the 178 initiatives whose PR was recorded
+	// only in Notes (docs/multi-pr-contract.md §2a); seeding from it would
+	// leave the rail holding ONLY the newly-added PR, and ResolvedPRs' rail-
+	// wins-wholesale rule would then make the legacy Notes-only PR vanish
+	// from every consumer the moment this second PR lands — a regression
+	// against today, not an improvement. Seeding through WithPR (not a raw
+	// append) reuses the same canonicalizing dedup so a resolved PR that
+	// happens to already canonically equal c.URL doesn't get written twice.
+	seeded := issue
+	for _, existing := range initiative.ResolvedPRs(issue) {
+		plan, err := initiative.WithPR(seeded, existing)
+		if err != nil {
+			return fmt.Errorf("ateam pr add: seed existing PR %s: %w", existing, err)
+		}
+		seeded.Description = plan.Description
+	}
+
+	plan, err := initiative.WithPR(seeded, c.URL)
 	if err != nil {
 		return fmt.Errorf("ateam pr add: %w", err)
 	}
@@ -89,4 +108,37 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	}
 	fmt.Fprintf(ctx.Stdout, "pr add: recorded %s on %s\n", c.URL, c.InitiativeID)
 	return nil
+}
+
+// resolvePR canonicalizes pr and requires it to identify one of id's actual
+// resolved PRs (initiative.ResolvedPRs), not just look like a well-formed
+// GitHub PR URL — the shared --pr resolver for gate/clear-gate/handoff
+// (agent-teams-ssib.25). Returns the canonical form (initiative.
+// CanonicalPRURL) to embed in a per-PR label, so a label built from any
+// spelling of a PR always lines up byte-for-byte with the rail and with
+// every other per-PR label for that same PR.
+//
+// verb names the caller (e.g. "ateam gate") for the error message.
+//
+// Fails loudly — a rejected command — rather than minting a label for a PR
+// the initiative doesn't actually have: an orphaned per-PR label can never
+// be paired (gate cannot find a matching handoff) or reliably cleared by
+// --pr again, which is strictly worse than making the human re-run the
+// command with the right URL.
+func resolvePR(ctx *cli.Context, verb, id, pr string) (string, error) {
+	canon, ok := initiative.CanonicalPRURL(pr)
+	if !ok {
+		return "", cli.Usagef("%s: --pr must be a full GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>), got %q", verb, pr)
+	}
+	issue, err := bd.ShowIssue(ctx.BD, id)
+	if err != nil {
+		return "", fmt.Errorf("%s: bd show %s: %w", verb, id, err)
+	}
+	resolved := initiative.ResolvedPRs(issue)
+	for _, r := range resolved {
+		if r == canon {
+			return canon, nil
+		}
+	}
+	return "", cli.Usagef("%s: --pr %s is not a PR recorded on %s (recorded PRs: %v)", verb, pr, id, resolved)
 }

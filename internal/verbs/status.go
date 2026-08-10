@@ -232,29 +232,34 @@ func gateIDs(labels []string, base string) map[string]bool {
 // "external" and "review"; "external" outranks "review".
 //
 // Bare, un-suffixed gate labels (predating this bead's --pr discriminator,
-// docs/multi-pr-contract.md §3) are attributed to the one resolved PR only
-// when the initiative has EXACTLY one — with two or more PRs a bare label
-// can't be attributed to either without guessing, so it contributes nothing
-// here (it still counts toward the initiative-scoped execution_status
-// rollup above, which is label-text-based and needs no PR attribution).
+// docs/multi-pr-contract.md §3) are attributed to EVERY resolved PR,
+// regardless of how many the initiative has (agent-teams-ssib.24). A bare
+// gate names no PR, so with 2+ PRs there is no way to attribute it to one
+// without guessing — but the alternative (attributing it to none, the
+// original behavior once a second PR existed) meant computeExecutionStatus
+// still reported NEEDS-DECISION/REVIEWABLE from the SAME bare label while
+// human-list, driven by this function, emitted zero rows for any PR: an
+// initiative the rollup calls gated and the queue calls empty, with no way
+// for the human to find it. Loud, possibly-over-reporting agreement beats
+// that silent disagreement — every PR shows the gate until it's cleared or
+// migrated onto its own per-PR label. (It also, unconditionally, counts
+// toward the initiative-scoped execution_status rollup above, which is
+// label-text-based and needs no PR attribution of its own.)
 func computePRReviews(labels []string, prs []string) []PRReview {
 	reviews := make([]PRReview, 0, len(prs))
-	allowBareFallback := len(prs) == 1
 	for _, pr := range prs {
-		reviews = append(reviews, PRReview{PR: pr, Gate: gateForPR(labels, pr, allowBareFallback)})
+		reviews = append(reviews, PRReview{PR: pr, Gate: gateForPR(labels, pr)})
 	}
 	return reviews
 }
 
 // gateForPR computes the gate kind for one PR: "question", "external",
-// "review", or "" — checking the per-PR suffixed label first and, when
-// allowBareFallback is set, falling back to the bare label of the same base.
-func gateForPR(labels []string, pr string, allowBareFallback bool) string {
+// "review", or "" — checking the per-PR suffixed label first, then falling
+// back to the bare label of the same base (attributed to every PR, per
+// computePRReviews's doc comment).
+func gateForPR(labels []string, pr string) string {
 	matches := func(base string) bool {
-		if hasLabel(labels, base+":"+pr) {
-			return true
-		}
-		return allowBareFallback && hasLabel(labels, base)
+		return hasLabel(labels, base+":"+pr) || hasLabel(labels, base)
 	}
 	switch {
 	case matches("gate:question"):

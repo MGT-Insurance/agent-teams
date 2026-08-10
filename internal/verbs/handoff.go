@@ -41,11 +41,25 @@ func (c *handoffKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam handoff: no context")
 	}
 
+	// Resolve --pr to its canonical form and require it to be one of the
+	// initiative's ACTUAL resolved PRs (agent-teams-ssib.25) — the same
+	// resolver gate/clear-gate use, so a handoff label always lines up
+	// byte-for-byte with the review gate it's meant to pair with, whatever
+	// spelling the caller typed.
+	pr := c.PR
+	if pr != "" {
+		canon, err := resolvePR(ctx, "ateam handoff", c.ID, pr)
+		if err != nil {
+			return err
+		}
+		pr = canon
+	}
+
 	label := externalReviewLabel
 	reviewLabel := "gate:review"
-	if c.PR != "" {
-		label += ":" + c.PR
-		reviewLabel += ":" + c.PR
+	if pr != "" {
+		label += ":" + pr
+		reviewLabel += ":" + pr
 	}
 
 	if c.Clear {

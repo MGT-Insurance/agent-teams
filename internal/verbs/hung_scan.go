@@ -294,7 +294,14 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 	}
 
 	hasHuman := hasLabel(labels, "human")
-	hasGate := hasLabel(labels, "gate:question") || hasLabel(labels, "gate:review")
+	// hasGateKind (status.go), not hasLabel: a per-PR-gated initiative's
+	// label is "gate:review:<pr-url>", not the bare "gate:review" — hasLabel
+	// alone never learned the per-PR suffix form, so a correctly-parked
+	// per-PR-gated initiative misclassified as DEAD/STUCK and accumulated a
+	// false stall alert (agent-teams-ssib.22). Call the same predicate
+	// status.go uses for computeExecutionStatus's identical question rather
+	// than writing a second implementation of it.
+	hasGate := hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:review")
 	if hasHuman && hasGate {
 		return hungClassAwaitingHuman, matched, cwdPresent
 	}

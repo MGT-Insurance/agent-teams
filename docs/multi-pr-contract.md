@@ -132,14 +132,22 @@ separator inside the frozen grammar's suffix portion is the literal string
 array for free (no code change needed there — it already branches on
 `multiValued(key)`).
 
-**Value format: the full GitHub PR URL, verbatim** — e.g.
-`https://github.com/erlloyd/pr-shepherd/pull/3`. This is not a new format
-invented for this contract: it is dictated by the existing
-`prURLRE`/`parsePrURL`/`extractPrURL` machinery in
-`internal/verbs/route_match.go` (ported from `dashboard/server/src/parse.ts`
-`extractPrUrl`), which Track P's `matchInitiative` rewrite must keep using
-unchanged — iterating `Fields.PRs` instead of regex-scanning free text, not
-reimplementing URL parsing.
+**Value format: the full GitHub PR URL, CANONICALIZED** — e.g.
+`https://github.com/erlloyd/pr-shepherd/pull/3` (lower-cased owner/repo,
+forced `https`). This is not a new format invented for this contract: the
+shape is dictated by the existing `prURLRE`/`parsePrURL`/`extractPrURL`
+machinery in `internal/verbs/route_match.go` (ported from
+`dashboard/server/src/parse.ts` `extractPrUrl`), which Track P's
+`matchInitiative` rewrite must keep using unchanged — iterating `Fields.PRs`
+instead of regex-scanning free text, not reimplementing URL parsing.
+
+**Amendment (agent-teams-ssib.25 — "verbatim" corrected to "canonicalized").**
+The original contract text called this value verbatim; that was wrong in a
+way that produced a real defect: comparing two spellings of one PR (`http` vs
+`https`, differently-cased owner/repo) by exact byte equality let the rail
+store BOTH as if they were different PRs, and let a per-PR gate label written
+with one spelling never pair with a handoff label written with the other —
+a state with no way out. See §2c for the fix and the exact stored form.
 
 **This is a *different* mechanism from the pre-existing `pr:` line the `dri`
 skill writes into bd NOTES today** (`plugins/agent-teams/skills/dri/SKILL.md`,
@@ -279,6 +287,65 @@ itself onto `ateam pr add` is loop-closing work filed as its own bead,
 this contract's job to implement, only to name the sanctioned/deprecated
 boundary so nobody builds a third way to record a PR.
 
+## 2c. Canonical PR identity (amendment, agent-teams-ssib.25)
+
+**The bug.** Nothing canonicalized a PR URL before it became an identity, so
+`http://github.com/Owner/Repo/pull/3` and `https://github.com/owner/repo/pull/3`
+were two different PRs to the rail (dedup was byte equality), to `--pr`
+(anything well-formed was accepted, minting a label from whatever string was
+typed), and to the gate/handoff pairing in `computeExecutionStatus` (paired
+by exact discriminator string). The last of these was a state with no way
+out: a correctly-run `ateam handoff` could never pair with a `gate --pr`
+written with a different spelling of the same PR, so the PR could never
+reach `AWAITING-EXTERNAL-REVIEW`.
+
+**The fix — one canonicalization point.**
+`initiative.CanonicalPRURL(url string) (string, bool)`
+(`internal/initiative/initiative.go`) is the ONE function that turns a PR URL
+into an identity: forced `https` scheme, lower-cased owner/repo, the number
+verbatim (via `PRURLRE`). `ok` is `false` when `url` doesn't match `PRURLRE`
+at all.
+
+Every place a PR URL becomes — or is compared against — an identity goes
+through it:
+
+- **`WithPR`** canonicalizes `url` before both the dedup check and storage.
+  **The stored rail form is now the CANONICAL string, not the caller's raw
+  spelling** — this is the amendment to §2's "Value format" above. A `url`
+  that doesn't parse as a GitHub PR URL at all (which `WithPR` still does not
+  require — that stays `ateam pr add`'s job, unchanged) is compared and
+  stored verbatim, exactly as before this fix.
+- **`ResolvedPRs`** canonicalizes every URL it returns, regardless of source
+  (rail, Notes, or Description) — so `prs` / `pr_reviews` (§4, §5, §6) are
+  always canonical, and a rail entry written before this fix, or a
+  Notes/Description free-text match with mixed-case owner/repo, comes out
+  canonical on read even though nothing rewrote the source text.
+- **`gate --pr` / `clear-gate --pr` / `handoff --pr`** all resolve through
+  one shared helper, `resolvePR` (`internal/verbs/pr.go`): canonicalize the
+  flag value, then require it to equal one of `initiative.ResolvedPRs(id)` —
+  **exactly**, since `ResolvedPRs` is already canonical — and **fail loudly
+  (a rejected command) if it doesn't match**, rather than minting a label for
+  a PR the initiative doesn't actually have. The canonical form (not the
+  caller's spelling) is what gets embedded in the per-PR label and in the
+  structured-ask block's `pr:` tag, so a label or tag built from any spelling
+  of one PR is byte-identical to every other label or tag for that same PR.
+
+Because every write path now emits canonical labels and `ResolvedPRs` always
+returns canonical strings, every existing reader that compares a `pr_reviews`
+entry against a label by exact string match (`gateForPR`, `gateIDs`,
+`extractAskForPR`'s `pr:` tag match) needed **no changes** — canonicalizing
+at the two boundaries (write: `WithPR`/`resolvePR`; read: `ResolvedPRs`) was
+sufficient. No second "is this the same PR" comparator was introduced.
+
+**Migration.** No stored data needs migrating. The `pr` rail was populated
+for exactly one initiative before this fix (`at-d9ck`, Eric's manual repair,
+§2a) and per-PR gate labels had not yet been used in production (Track G's
+per-PR grammar, ssib.8, shipped in this same initiative, not yet released —
+see the repo's release protocol). A rail entry or per-PR label written
+before this fix that happens to already be lower-case/`https` is unaffected;
+one that isn't will simply read as canonical from now on (`ResolvedPRs`
+canonicalizes on read) without needing a rewrite.
+
 ## 3. The per-PR gate label grammar (collision-safe, repo-inclusive)
 
 Today's gate mechanism (`internal/verbs/status.go`, `query.go`) is
@@ -350,6 +417,12 @@ every initiative in the registry (178/549 measured, all on Notes instead —
 §2a). A consumer needing the resolved answer reads the new `prs` sibling key
 (§2a, §5) instead, sourced from `ResolvedPRs`; `fields.pr[]` remains for a
 caller that specifically wants the raw rail state.
+
+Since `WithPR` now stores the CANONICAL form on the rail (§2c), every `pr`
+line written from this fix onward reads back canonical here too — `Of`/
+`JSONFields` themselves do no canonicalization, so this key stays whatever
+was actually written to Description, byte-for-byte; it happens to already be
+canonical because the writer is.
 
 ## 5. Wire shape — the Go-computed per-PR review array (second wire element)
 

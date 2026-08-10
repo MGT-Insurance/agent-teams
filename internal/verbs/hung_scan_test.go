@@ -87,6 +87,20 @@ func TestClassifyInitiative(t *testing.T) {
 			wantCwd:   true,
 		},
 		{
+			// agent-teams-ssib.22: a per-PR-gated initiative's label is
+			// "gate:review:<pr-url>", not the bare "gate:review" hasLabel
+			// alone matches. Before this fix, this case misclassified DEAD
+			// (matched=nil, cwd present, no live session) instead of
+			// AWAITING-HUMAN, accumulating a false stall anchor on an
+			// initiative that is correctly parked waiting on a human.
+			name:      "idle + human + per-PR gate:review:<url> => AWAITING-HUMAN, not DEAD/STUCK",
+			labels:    []string{"human", "gate:review:https://github.com/erlloyd/pr-shepherd/pull/3"},
+			sessions:  []agentSession{{CWD: wt, Status: "idle", PID: &pid}},
+			dirExists: dirExists,
+			wantClass: hungClassAwaitingHuman,
+			wantCwd:   true,
+		},
+		{
 			name:      "idle, no gate => STUCK",
 			labels:    nil,
 			sessions:  []agentSession{{CWD: wt, Status: "idle", PID: &pid}},
