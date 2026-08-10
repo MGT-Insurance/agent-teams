@@ -210,7 +210,7 @@ func TestResolvePR_RejectsPRNotOnInitiative(t *testing.T) {
 	}}
 	ctx, _, _ := makeCtx(f, t.TempDir())
 
-	_, err := resolvePR(ctx, "ateam gate", "at-r1", "https://github.com/owner/repo/pull/999")
+	_, _, err := resolvePR(ctx, "ateam gate", "at-r1", "https://github.com/owner/repo/pull/999")
 	if err == nil {
 		t.Fatal("expected rejection for a --pr not recorded on the initiative, got nil")
 	}
@@ -235,7 +235,7 @@ func TestResolvePR_ResolvesDifferentSpellingOfSameResolvedPR(t *testing.T) {
 	}}
 	ctx, _, _ := makeCtx(f, t.TempDir())
 
-	got, err := resolvePR(ctx, "ateam gate", "at-r2", "http://github.com/Owner/Repo/pull/1")
+	got, _, err := resolvePR(ctx, "ateam gate", "at-r2", "http://github.com/Owner/Repo/pull/1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestResolvePR_RejectsMalformedURL(t *testing.T) {
 		return "", nil
 	}}, t.TempDir())
 
-	if _, err := resolvePR(ctx, "ateam gate", "at-r3", "not-a-url"); err == nil {
+	if _, _, err := resolvePR(ctx, "ateam gate", "at-r3", "not-a-url"); err == nil {
 		t.Fatal("expected rejection for a malformed --pr, got nil")
 	}
 }

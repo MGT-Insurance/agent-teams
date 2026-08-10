@@ -116,7 +116,10 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 // (agent-teams-ssib.25). Returns the canonical form (initiative.
 // CanonicalPRURL) to embed in a per-PR label, so a label built from any
 // spelling of a PR always lines up byte-for-byte with the rail and with
-// every other per-PR label for that same PR.
+// every other per-PR label for that same PR. Also returns the bd.Issue read
+// to resolve against, so a caller that needs the current label set too
+// (e.g. clear-gate's bare-gate guard, agent-teams-ssib.30) reuses this one
+// read instead of issuing a second `bd show`.
 //
 // verb names the caller (e.g. "ateam gate") for the error message.
 //
@@ -125,20 +128,20 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 // be paired (gate cannot find a matching handoff) or reliably cleared by
 // --pr again, which is strictly worse than making the human re-run the
 // command with the right URL.
-func resolvePR(ctx *cli.Context, verb, id, pr string) (string, error) {
+func resolvePR(ctx *cli.Context, verb, id, pr string) (string, bd.Issue, error) {
 	canon, ok := initiative.CanonicalPRURL(pr)
 	if !ok {
-		return "", cli.Usagef("%s: --pr must be a full GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>), got %q", verb, pr)
+		return "", bd.Issue{}, cli.Usagef("%s: --pr must be a full GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>), got %q", verb, pr)
 	}
 	issue, err := bd.ShowIssue(ctx.BD, id)
 	if err != nil {
-		return "", fmt.Errorf("%s: bd show %s: %w", verb, id, err)
+		return "", bd.Issue{}, fmt.Errorf("%s: bd show %s: %w", verb, id, err)
 	}
 	resolved := initiative.ResolvedPRs(issue)
 	for _, r := range resolved {
 		if r == canon {
-			return canon, nil
+			return canon, issue, nil
 		}
 	}
-	return "", cli.Usagef("%s: --pr %s is not a PR recorded on %s (recorded PRs: %v)", verb, pr, id, resolved)
+	return "", bd.Issue{}, cli.Usagef("%s: --pr %s is not a PR recorded on %s (recorded PRs: %v)", verb, pr, id, resolved)
 }

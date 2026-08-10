@@ -290,7 +290,7 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	// rejected, not silently turned into a label nothing can ever pair with.
 	pr := c.PR
 	if pr != "" {
-		canon, err := resolvePR(ctx, "ateam gate", c.ID, pr)
+		canon, _, err := resolvePR(ctx, "ateam gate", c.ID, pr)
 		if err != nil {
 			return err
 		}
@@ -528,10 +528,27 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 	// resolved PRs; the unconditional bare `clear-gate` (no --pr) remains
 	// the escape hatch for a stray per-PR label that predates this fix or
 	// no longer matches a resolved PR.
-	pr, err := resolvePR(ctx, "ateam clear-gate", c.ID, c.PR)
+	pr, issue, err := resolvePR(ctx, "ateam clear-gate", c.ID, c.PR)
 	if err != nil {
 		return err
 	}
+
+	// A bare, initiative-wide gate label can't be scoped to one PR. If this
+	// PR carries no per-PR label of its own but the initiative DOES carry a
+	// bare gate, the removals below would all be no-ops against labels that
+	// were never there — and `bd label remove` prints a ✓ regardless,
+	// reporting a confident false success while nothing actually changes
+	// (agent-teams-ssib.30, reproduced live: three ✓ lines, labels and
+	// human-list unchanged). Refuse loudly and name the fix that actually
+	// works, matching resolvePR's own posture on an unresolved --pr.
+	hasOwnPerPRLabel := hasLabel(issue.Labels, "gate:review:"+pr) ||
+		hasLabel(issue.Labels, "gate:question:"+pr) ||
+		hasLabel(issue.Labels, externalReviewLabel+":"+pr)
+	hasBareGate := hasLabel(issue.Labels, "gate:review") || hasLabel(issue.Labels, "gate:question")
+	if !hasOwnPerPRLabel && hasBareGate {
+		return cli.Usagef("ateam clear-gate: %s's gate is initiative-wide, not per-PR — run `ateam clear-gate %s` without --pr to clear it", c.ID, c.ID)
+	}
+
 	for _, base := range []string{"gate:review", "gate:question", externalReviewLabel} {
 		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+pr)
 		if out != "" {
@@ -542,7 +559,7 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 		}
 	}
 
-	issue, err := bd.ShowIssue(ctx.BD, c.ID)
+	issueAfter, err := bd.ShowIssue(ctx.BD, c.ID)
 	if err != nil {
 		// Can't verify whether another PR is still gated without reading
 		// current labels — fail soft by leaving "human" in place. A stray
@@ -552,7 +569,7 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 		fmt.Fprintf(ctx.Stderr, "ateam clear-gate: warning: could not read labels for %s (%v) — leaving \"human\" label as-is\n", c.ID, err)
 		return nil
 	}
-	if anyGateLabelRemains(issue.Labels) {
+	if anyGateLabelRemains(issueAfter.Labels) {
 		return nil
 	}
 	out, err := ctx.BD.Run("label", "remove", c.ID, "human")
