@@ -8,7 +8,6 @@ package verbs
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -17,24 +16,20 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
-// prURLRE matches a full GitHub PR URL:
-//
-//	https://github.com/<owner>/<repo>/pull/<number>
-//
-// Capture groups: [1] owner, [2] repo, [3] number.
-var prURLRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
-
 // extractPrURL returns the first GitHub PR URL found in text, or "".
-// Mirrors parse.ts extractPrUrl.
+// Mirrors parse.ts extractPrUrl. Delegates to initiative.PRURLRE — the one
+// Go implementation of "find a GitHub PR URL" (docs/multi-pr-contract.md,
+// "read precedence"); this file used to carry its own byte-identical copy
+// (prURLRE), consolidated away so status.go's extractPrURL(iss.Notes) call
+// and initiative.ResolvedPRs's free-text fallback can never drift apart.
 func extractPrURL(text string) string {
-	m := prURLRE.FindString(text)
-	return m
+	return initiative.PRURLRE.FindString(text)
 }
 
 // parsePrURL parses a GitHub PR URL and returns (owner/repo, prNumber, ok).
 // owner/repo is lower-cased for comparison.
 func parsePrURL(url string) (ownerRepo string, prNumber int, ok bool) {
-	m := prURLRE.FindStringSubmatch(url)
+	m := initiative.PRURLRE.FindStringSubmatch(url)
 	if m == nil {
 		return "", 0, false
 	}
@@ -51,11 +46,18 @@ func parsePrURL(url string) (ownerRepo string, prNumber int, ok bool) {
 // carry the head branch — the caller (fkr.21) threads it through from the
 // route-pr-event argv.
 //
-// Precedence (frozen by fkr.18 contract):
+// Precedence (frozen by fkr.18 contract; tier-1 amended for agent-teams-ssib
+// per docs/multi-pr-contract.md, "read precedence"):
 //
-//  1. MatchPRField (exact): initiative has a "pr: <url>" line in Notes (checked
-//     first) or Description whose GitHub owner/repo+number equals event.Repo
-//     (owner/repo) + event.PRNumber.
+//  1. MatchPRField (exact): initiative has ANY resolved PR
+//     (initiative.ResolvedPRs — the "pr" rail when non-empty, else the
+//     pre-existing Notes-then-Description free-text scan) whose GitHub
+//     owner/repo+number equals event.Repo (owner/repo) + event.PRNumber. Every
+//     resolved PR is checked, not just the first — an initiative can have
+//     opened a SECOND or THIRD PR, and a matching event for any of them must
+//     still route (this is the production-critical fix agent-teams-ssib.7
+//     exists for: reading only the first PR silently drops every non-
+//     review_requested event for a second PR, route.go's default branch).
 //
 //  2. MatchBranch (fallback): basename of initiative "repo:" field equals the
 //     repo-name portion of event.Repo (i.e. the part after "/"), AND the
@@ -92,12 +94,12 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 		f := initiative.Of(iss)
 
 		// ── Tier 1: MatchPRField ───────────────────────────────────────────────
-		// Check Notes first, then Description (convention from fkr.20).
-		prURL := extractPrURL(iss.Notes)
-		if prURL == "" {
-			prURL = extractPrURL(iss.Description)
-		}
-		if prURL != "" {
+		// Iterate EVERY resolved PR for this initiative (rail wins wholesale
+		// when non-empty, else the Notes-then-Description fallback — see
+		// initiative.ResolvedPRs), not just the first: a first-match-only read
+		// makes a second or third PR invisible to tier-1 matching.
+		matchedTier1 := false
+		for _, prURL := range initiative.ResolvedPRs(iss) {
 			ownerRepo, prNumber, ok := parsePrURL(prURL)
 			if ok && ownerRepo == eventOwnerRepo && prNumber == event.PRNumber {
 				prMatches = append(prMatches, MatchResult{
@@ -106,8 +108,12 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 					Repo:         f.Repo,
 					How:          MatchPRField,
 				})
-				continue // this initiative matched at tier-1; skip tier-2
+				matchedTier1 = true
+				break // one match per initiative is enough to record it
 			}
+		}
+		if matchedTier1 {
+			continue // this initiative matched at tier-1; skip tier-2
 		}
 
 		// ── Tier 2: MatchBranch ────────────────────────────────────────────────

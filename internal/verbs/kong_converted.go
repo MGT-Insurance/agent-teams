@@ -1286,4 +1286,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterAgentsJSONKong(p)
 	RegisterSpawnCheckKong(p)
 	RegisterPreflightKong(p)
+	RegisterPRKong(p)
 }

@@ -387,21 +387,27 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 	return WritePlan{Description: appendLine(iss.Description, "track-worktree", path)}, nil
 }
 
-// prURLFallbackRE mirrors internal/verbs/route_match.go's prURLRE
-// byte-for-byte. Duplicated here rather than imported: internal/verbs
-// already imports internal/initiative, so importing back would cycle.
-// THIS IS A KNOWN, FLAGGED DUPLICATE (docs/multi-pr-contract.md, "read
-// precedence") — whoever next touches route_match.go should point its
-// tier-1 matching at [ResolvedPRs] instead of keeping its own copy of this
-// pattern, so the rule has one implementation again, not two.
-var prURLFallbackRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
+// PRURLRE matches a full GitHub PR URL:
+//
+//	https://github.com/<owner>/<repo>/pull/<number>
+//
+// Capture groups: [1] owner, [2] repo, [3] number.
+//
+// This is the ONE Go implementation of "find/parse a GitHub PR URL" — it used
+// to have a sibling copy in internal/verbs/route_match.go (prURLRE), byte-
+// identical, because internal/verbs already imports internal/initiative and
+// importing back would cycle. Exporting this instead of duplicating it lets
+// route_match.go's extractPrURL/parsePrURL delegate here, so the pattern has
+// exactly one definition again (docs/multi-pr-contract.md, "read
+// precedence" — this consolidation was that section's flagged follow-up).
+var PRURLRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
 
 // extractPRURLFallback returns the first GitHub PR URL found in text, or ""
 // — the free-text scan every initiative's PR was recorded through before
 // the "pr" rail existed (and still is, via the dri skill's Notes-based
 // "pr:" line — see [ResolvedPRs]).
 func extractPRURLFallback(text string) string {
-	return prURLFallbackRE.FindString(text)
+	return PRURLRE.FindString(text)
 }
 
 // ResolvedPRs returns iss's PR URLs per the frozen, PERMANENT read
