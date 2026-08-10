@@ -104,7 +104,7 @@ const sampleDetail: DrillInDetail = {
   branch: "feat/thing",
   team: "default",
   mode: "auto",
-  prUrl: "https://github.com/org/repo/pull/42",
+  prs: ["https://github.com/org/repo/pull/42"],
   epic: null,
   // ParsedInitiative carries the CLI-parsed routing fields (agent-teams-ully.12).
   // The view reads the flattened members below, so an empty object is honest here.
@@ -162,6 +162,29 @@ describe("DrillInView", () => {
     expect(plannerEls.length).toBeGreaterThanOrEqual(1);
 
     // Work beads table
+  });
+
+  // agent-teams-ssib.9: an initiative can have more than one PR open at once —
+  // the drill-in must render every one of them, not just the first.
+  it("renders a link for every PR when the initiative has more than one open", async () => {
+    const multiPrDetail: DrillInDetail = {
+      ...sampleDetail,
+      prs: [
+        "https://github.com/erlloyd/pr-shepherd/pull/3",
+        "https://github.com/MGT-Insurance/midgard/pull/4632",
+      ],
+    };
+    mockFetchInitiative.mockResolvedValue(multiPrDetail);
+    render(<DrillInView />);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Test Initiative")).toBeTruthy();
+    });
+
+    const firstLink = screen.getByText("https://github.com/erlloyd/pr-shepherd/pull/3");
+    const secondLink = screen.getByText("https://github.com/MGT-Insurance/midgard/pull/4632");
+    expect(firstLink.tagName.toLowerCase()).toBe("a");
+    expect(secondLink.tagName.toLowerCase()).toBe("a");
     expect(screen.getByText("Implement the thing")).toBeTruthy();
     expect(screen.getByText("bead-1")).toBeTruthy();
   });

@@ -7,7 +7,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
-  extractPrUrl,
   extractEpicFromNotes,
   extractLatestAsk,
   parseInitiative,
@@ -69,6 +68,8 @@ const RAW_AT_V4E: RawInitiative = {
     team: "agent-teams-local-web-dashboard-for-agent-teams-inbox-of",
     mode: "bg",
   },
+  // Go's initiative.ResolvedPRs falling back to the URL in notes above.
+  prs: ["https://github.com/MGT-Insurance/midgard/pull/3551"],
 };
 
 // Captured from real `ateam list-json` output (at-2jh — specialty quote, no PR in description).
@@ -94,6 +95,8 @@ const RAW_AT_2JH: RawInitiative = {
     team: "midgard0-specialty-quote-api",
     mode: "bg",
   },
+  // Go's initiative.ResolvedPRs falling back to the URL in notes above.
+  prs: ["https://github.com/MGT-Insurance/midgard/pull/3551"],
 };
 
 // Captured from real `claude agents --json --all` output.
@@ -163,28 +166,6 @@ const DETACHED_SESSION: SessionState = {
   name: "detached-initiative",
   // No status — process exited, session no longer live.
 };
-
-// ---- extractPrUrl -----------------------------------------------------------
-
-describe("extractPrUrl", () => {
-  it("finds a GitHub PR URL in text", () => {
-    const text = "DELIVERED — awaiting-merge. PR #3551: https://github.com/MGT-Insurance/midgard/pull/3551";
-    expect(extractPrUrl(text)).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
-  });
-
-  it("returns null when no PR URL present", () => {
-    expect(extractPrUrl("no link here")).toBeNull();
-  });
-
-  it("returns null for empty string", () => {
-    expect(extractPrUrl("")).toBeNull();
-  });
-
-  it("finds URL in multi-line text", () => {
-    const text = "session 1\nsome context\nhttps://github.com/org/repo/pull/42\nmore text";
-    expect(extractPrUrl(text)).toBe("https://github.com/org/repo/pull/42");
-  });
-});
 
 // ---- epic resolution --------------------------------------------------------
 //
@@ -294,20 +275,31 @@ describe("parseInitiative", () => {
     expect(parsed.fields["tostring"]).toBe("also-lowercase");
   });
 
-  it("extracts PR URL from notes", () => {
+  it("reads prs verbatim from raw.prs — Go's already-resolved list", () => {
     const parsed = parseInitiative(RAW_AT_V4E);
-    expect(parsed.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+    expect(parsed.prs).toEqual(["https://github.com/MGT-Insurance/midgard/pull/3551"]);
   });
 
-  it("extracts PR URL from at-2jh notes", () => {
-    const parsed = parseInitiative(RAW_AT_2JH);
-    expect(parsed.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
-  });
-
-  it("returns null prUrl when neither notes nor description has a PR URL", () => {
-    const raw: RawInitiative = { ...RAW_AT_V4E, notes: "no pr here", description: "just text" };
+  it("reads a multi-PR raw.prs list verbatim, in order", () => {
+    const raw: RawInitiative = {
+      ...RAW_AT_V4E,
+      prs: [
+        "https://github.com/erlloyd/pr-shepherd/pull/3",
+        "https://github.com/MGT-Insurance/midgard/pull/4632",
+      ],
+    };
     const parsed = parseInitiative(raw);
-    expect(parsed.prUrl).toBeNull();
+    expect(parsed.prs).toEqual([
+      "https://github.com/erlloyd/pr-shepherd/pull/3",
+      "https://github.com/MGT-Insurance/midgard/pull/4632",
+    ]);
+  });
+
+  it("defaults prs to [] when raw.prs is absent (ad-hoc/older callers)", () => {
+    const raw: RawInitiative = { ...RAW_AT_V4E };
+    delete (raw as { prs?: string[] }).prs;
+    const parsed = parseInitiative(raw);
+    expect(parsed.prs).toEqual([]);
   });
 
   it("preserves raw initiative fields", () => {
@@ -686,7 +678,7 @@ describe("deriveActivity", () => {
   });
 
   it("needs-human (generic) when PR URL + idle session (no explicit gate)", () => {
-    const init = { ...baseInitiative, prUrl: "https://github.com/o/r/pull/1" };
+    const init = { ...baseInitiative, prs: ["https://github.com/o/r/pull/1"] };
     // delivery=pr-open, signal=ended, gate=null → needs-human:generic → "needs-human"
     expect(deriveActivity(init, idleSession, null)).toBe("needs-human");
   });
@@ -703,7 +695,7 @@ describe("deriveActivity", () => {
   it("idle when session is not busy and state is not working", () => {
     const quietSession: SessionState = { ...busySession, status: "idle", state: "done" };
     // Use an initiative without a PR URL so the delivered branch doesn't fire.
-    const noPrInitiative = { ...baseInitiative, prUrl: null as string | null };
+    const noPrInitiative = { ...baseInitiative, prs: [] as string[] };
     expect(deriveActivity(noPrInitiative, quietSession, null)).toBe("idle");
   });
 
@@ -713,13 +705,13 @@ describe("deriveActivity", () => {
   });
 
   it("needs-human (generic) when no session but PR open and status is open", () => {
-    // delivery=pr-open (prUrl present, status=open), signal=none, gate=null
+    // delivery=pr-open (prs non-empty, status=open), signal=none, gate=null
     // → needsHuman="generic" (graceful degrade) → deriveActivity returns "needs-human"
     expect(deriveActivity(baseInitiative, null, null)).toBe("needs-human");
   });
 
   it("idle when no session, no PR, status is open", () => {
-    const noPr = { ...baseInitiative, prUrl: null as string | null };
+    const noPr = { ...baseInitiative, prs: [] as string[] };
     expect(deriveActivity(noPr, null, null)).toBe("idle");
   });
 });
@@ -791,11 +783,11 @@ describe("parseInitiative — no-notes resilience", () => {
     expect(parsed.description).toBe("");
   });
 
-  it("still extracts a prUrl when notes is present", () => {
+  it("still reads prs when notes is present", () => {
     // Regression: the coercion must not lose real notes data.
     const parsed = parseInitiative(RAW_AT_V4E);
     expect(parsed.notes).toBe(RAW_AT_V4E.notes);
-    expect(parsed.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+    expect(parsed.prs).toEqual(["https://github.com/MGT-Insurance/midgard/pull/3551"]);
   });
 });
 
@@ -858,7 +850,7 @@ describe("buildInbox", () => {
   const sessions = parseClaudeAgents(REAL_SESSIONS_JSON);
 
   // at-v4e: worktree matches a busy+working session -> needsHuman=false (refining)
-  // at-2jh: no matched session, prUrl present -> needsHuman="review"
+  // at-2jh: no matched session, prs non-empty -> needsHuman="review"
 
   it("includes waiting items (needsHuman=waiting) with kind='waiting'", () => {
     // Make at-v4e human-gated -> needsHuman="waiting"
@@ -885,7 +877,7 @@ describe("buildInbox", () => {
   });
 
   it("includes generic items (needsHuman=generic) when delivered + no session", () => {
-    // at-2jh: prUrl present, no matched session -> signal=none -> needsHuman="generic" (graceful degrade)
+    // at-2jh: prs non-empty, no matched session -> signal=none -> needsHuman="generic" (graceful degrade)
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
       sessions,
@@ -895,11 +887,11 @@ describe("buildInbox", () => {
     const item = inbox.find((i) => i.initiativeId === "at-2jh");
     expect(item).toBeDefined();
     expect(item?.kind).toBe("generic");
-    expect(item?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+    expect(item?.prUrls).toEqual(["https://github.com/MGT-Insurance/midgard/pull/3551"]);
   });
 
   it("includes generic items (needsHuman=generic) when delivered + session ENDED (no explicit gate)", () => {
-    // at-2jh: prUrl present, matched ENDED session, no labels -> signal=ended, gate=null -> needsHuman="generic"
+    // at-2jh: prs non-empty, matched ENDED session, no labels -> signal=ended, gate=null -> needsHuman="generic"
     // (DEMOTED from "review": review now requires explicit gate:review label)
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
@@ -910,11 +902,11 @@ describe("buildInbox", () => {
     const item = inbox.find((i) => i.initiativeId === "at-2jh");
     expect(item).toBeDefined();
     expect(item?.kind).toBe("generic");
-    expect(item?.prUrl).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
+    expect(item?.prUrls).toEqual(["https://github.com/MGT-Insurance/midgard/pull/3551"]);
   });
 
   it("does NOT include pr-open + working (refining) initiatives — the key correctness case", () => {
-    // at-v4e: prUrl present, session is busy+working -> needsHuman=false (refining, not in inbox)
+    // at-v4e: prs non-empty, session is busy+working -> needsHuman=false (refining, not in inbox)
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E)],
       sessions,
@@ -934,7 +926,7 @@ describe("buildInbox", () => {
   });
 
   it("waiting takes priority over generic when humanGatedIds set (legacy path)", () => {
-    // at-2jh: prUrl present, no working session, humanGatedIds set -> gate="question" -> needsHuman="waiting"
+    // at-2jh: prs non-empty, no working session, humanGatedIds set -> gate="question" -> needsHuman="waiting"
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_2JH)],
       sessions,
@@ -947,8 +939,8 @@ describe("buildInbox", () => {
   });
 
   it("returns empty array when all nodes have needsHuman=false", () => {
-    // at-v4e is refining (busy+working), at-2jh with null prUrl has needsHuman=false
-    const noPr = { ...parseInitiative(RAW_AT_2JH), prUrl: null as string | null };
+    // at-v4e is refining (busy+working), at-2jh with no PRs has needsHuman=false
+    const noPr = { ...parseInitiative(RAW_AT_2JH), prs: [] as string[] };
     const nodes = buildInitiativeNodes(
       [parseInitiative(RAW_AT_V4E), noPr],
       sessions,
@@ -1005,7 +997,7 @@ describe("buildInbox — sessionId for detached/alive sessions (agent-teams-u9f2
       branch: "at-detached",
       team: "t-x",
       mode: "bg",
-      prUrl: "https://github.com/org/repo/pull/99",
+      prs: ["https://github.com/org/repo/pull/99"],
       labels: ["gate:review"],
       epic: null,
       fields: {},
@@ -1051,17 +1043,17 @@ describe("buildInbox — sessionId for detached/alive sessions (agent-teams-u9f2
 // ---- deriveDelivery (agent-teams-3e6) ----------------------------------------
 
 describe("deriveDelivery", () => {
-  it("returns pr-open when prUrl present and status is open", () => {
-    const init = parseInitiative(RAW_AT_V4E); // has prUrl, status="open"
+  it("returns pr-open when prs is non-empty and status is open", () => {
+    const init = parseInitiative(RAW_AT_V4E); // has prs, status="open"
     expect(deriveDelivery(init)).toBe("pr-open");
   });
 
-  it("returns pr-open when prUrl present and status is anything other than closed/done", () => {
+  it("returns pr-open when prs is non-empty and status is anything other than closed/done", () => {
     const init = { ...parseInitiative(RAW_AT_V4E), status: "in_progress" };
     expect(deriveDelivery(init)).toBe("pr-open");
   });
 
-  it("returns merged when status is closed (regardless of prUrl)", () => {
+  it("returns merged when status is closed (regardless of prs)", () => {
     const init = { ...parseInitiative(RAW_AT_V4E), status: "closed" };
     expect(deriveDelivery(init)).toBe("merged");
   });
@@ -1071,8 +1063,8 @@ describe("deriveDelivery", () => {
     expect(deriveDelivery(init)).toBe("merged");
   });
 
-  it("returns none when no prUrl and status is open", () => {
-    const init = { ...parseInitiative(RAW_AT_V4E), prUrl: null as string | null };
+  it("returns none when prs is empty and status is open", () => {
+    const init = { ...parseInitiative(RAW_AT_V4E), prs: [] as string[] };
     expect(deriveDelivery(init)).toBe("none");
   });
 });
@@ -1379,14 +1371,14 @@ describe("deriveNeedsHuman", () => {
 describe("buildInitiativeNodes — two-dimension fields", () => {
   const sessions = parseClaudeAgents(REAL_SESSIONS_JSON);
 
-  it("delivery is pr-open when initiative has prUrl and is open", () => {
-    const parsed = parseInitiative(RAW_AT_V4E); // has prUrl, status=open
+  it("delivery is pr-open when initiative has a resolved PR and is open", () => {
+    const parsed = parseInitiative(RAW_AT_V4E); // has prs, status=open
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
     expect(nodes[0]?.delivery).toBe("pr-open");
   });
 
   it("needsHuman is generic when delivery=pr-open and no matched session", () => {
-    // at-2jh: has prUrl, status=open, no matched session -> signal=none -> needsHuman="generic" (graceful degrade)
+    // at-2jh: has prs, status=open, no matched session -> signal=none -> needsHuman="generic" (graceful degrade)
     const parsed = parseInitiative(RAW_AT_2JH);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
     expect(nodes[0]?.delivery).toBe("pr-open");
@@ -1394,7 +1386,7 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
   });
 
   it("needsHuman is generic when delivery=pr-open and session ENDED (no explicit gate)", () => {
-    // at-2jh: has prUrl, matched ENDED session, no labels -> signal=ended, gate=null -> needsHuman="generic"
+    // at-2jh: has prs, matched ENDED session, no labels -> signal=ended, gate=null -> needsHuman="generic"
     // (DEMOTED: delivered+ended is no longer "review" — review requires explicit gate:review label)
     const parsed = parseInitiative(RAW_AT_2JH);
     const nodes = buildInitiativeNodes([parsed], [ENDED_SESSION], new Set());
@@ -1403,7 +1395,7 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
   });
 
   it("needsHuman is false when delivery=pr-open and working session present", () => {
-    // at-v4e: has prUrl, matched session is busy+working
+    // at-v4e: has prs, matched session is busy+working
     const parsed = parseInitiative(RAW_AT_V4E);
     const nodes = buildInitiativeNodes([parsed], sessions, new Set());
     expect(nodes[0]?.delivery).toBe("pr-open");
@@ -1424,8 +1416,8 @@ describe("buildInitiativeNodes — two-dimension fields", () => {
     expect(nodes[0]?.needsHuman).toBe(false);
   });
 
-  it("delivery is none when no prUrl and status open", () => {
-    const noPr = { ...parseInitiative(RAW_AT_V4E), prUrl: null as string | null };
+  it("delivery is none when prs is empty and status open", () => {
+    const noPr = { ...parseInitiative(RAW_AT_V4E), prs: [] as string[] };
     const nodes = buildInitiativeNodes([noPr], sessions, new Set());
     expect(nodes[0]?.delivery).toBe("none");
   });
@@ -1467,7 +1459,7 @@ describe("attention state: spec-required scenarios", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: haspr ? `https://github.com/org/repo/pull/1` : null,
+      prs: haspr ? ["https://github.com/org/repo/pull/1"] : [],
       epic: null,
       fields: {},
     };
@@ -1600,7 +1592,7 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
       team: `t-${id}`,
       mode: "bg",
       labels,
-      prUrl: haspr ? "https://github.com/org/repo/pull/1" : null,
+      prs: haspr ? ["https://github.com/org/repo/pull/1"] : [],
       epic: null,
       fields: {},
     };
@@ -1655,7 +1647,7 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.kind).toBe("review");
-    expect(inbox[0]?.prUrl).toBe("https://github.com/org/repo/pull/1");
+    expect(inbox[0]?.prUrls).toEqual(["https://github.com/org/repo/pull/1"]);
   });
 
   it("labels=[]: tolerate empty array -> no gate", () => {
@@ -1702,7 +1694,7 @@ describe("buildInitiativeNodes/buildInbox — external-review (agent-teams-p9dm.
       mode: "bg",
       fields: {},
       labels,
-      prUrl: "https://github.com/org/repo/pull/1",
+      prs: ["https://github.com/org/repo/pull/1"],
       epic: null,
     };
   }
@@ -1856,7 +1848,7 @@ describe("buildInbox — updatedAt and nextAction", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: kind === "generic" || kind === "review" ? "https://github.com/org/repo/pull/1" : null,
+      prs: kind === "generic" || kind === "review" ? ["https://github.com/org/repo/pull/1"] : [],
       labels,
       epic: null,
       fields: {},
@@ -1952,7 +1944,7 @@ describe("buildInbox — lastActivityAt (session-transition-aware recency)", () 
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: "https://github.com/org/repo/pull/1",
+      prs: ["https://github.com/org/repo/pull/1"],
       labels: ["gate:review"],
       epic: null,
       fields: {},
@@ -2028,7 +2020,7 @@ describe("buildInbox — notes fallback skips ask-sentinel blocks", () => {
       branch: "chk",
       team: "t-chk",
       mode: "bg",
-      prUrl: null,
+      prs: [],
       epic: null,
       fields: {},
     };
@@ -2092,7 +2084,7 @@ describe("buildInbox — recommendation and alternative", () => {
       branch: "w-rec",
       team: "t-w-rec",
       mode: "bg",
-      prUrl: null,
+      prs: [],
       labels: ["human"],
       epic: null,
       fields: {},
@@ -2141,7 +2133,7 @@ describe("buildInbox — recommendation and alternative", () => {
       branch: "rv",
       team: "t-rv",
       mode: "bg",
-      prUrl: "https://github.com/org/repo/pull/1",
+      prs: ["https://github.com/org/repo/pull/1"],
       labels: ["gate:review"],
       epic: null,
       fields: {},
@@ -2175,7 +2167,7 @@ describe("buildInbox — onThisMachine", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: null,
+      prs: [],
       labels: ["human"],
       epic: null,
       fields: {},
@@ -2312,7 +2304,7 @@ describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: null,
+      prs: [],
       epic: null,
       fields: {},
     };
@@ -2383,7 +2375,7 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: null,
+      prs: [],
       epic: null,
       fields: {},
     };
@@ -2474,7 +2466,7 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: null,
+      prs: [],
       epic: null,
       fields: {},
     };
@@ -2643,7 +2635,7 @@ describe("buildInbox — merge semantics: gate row also carrying an alert (agent
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: null,
+      prs: [],
       labels,
       epic: null,
       fields: {},
@@ -2827,7 +2819,7 @@ describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => 
       branch: "cap-test",
       team: "t-cap-test",
       mode: "bg",
-      prUrl: null,
+      prs: [],
       labels: ["human"],
       epic: null,
       fields: {},
@@ -2901,7 +2893,7 @@ describe("buildInbox — raw status/state/waitingFor pass-through", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: null,
+      prs: [],
       labels,
       epic: null,
       fields: {},
@@ -2957,7 +2949,7 @@ describe("buildInbox — waiting item context from ask block", () => {
       branch: "ctx-test",
       team: "t-ctx-test",
       mode: "bg",
-      prUrl: null,
+      prs: [],
       labels: ["human"],
       epic: null,
       fields: {},
@@ -3012,7 +3004,7 @@ describe("buildInbox — notes-block nextAction fallback for check/generic/revie
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prUrl: "https://github.com/org/repo/pull/1",
+      prs: ["https://github.com/org/repo/pull/1"],
       labels,
       epic: null,
       fields: {},
@@ -3038,7 +3030,7 @@ describe("buildInbox — notes-block nextAction fallback for check/generic/revie
 
   it("check item nextAction falls back to the last notes block when present", () => {
     const notes = "session 1 — session paused mid-rebase, no explicit gate set.";
-    const init = { ...makeInit("chk-fb", notes), prUrl: null };
+    const init = { ...makeInit("chk-fb", notes), prs: [] as string[] };
     const sess: SessionState = {
       sessionId: "sess-chk-fb",
       kind: "background",

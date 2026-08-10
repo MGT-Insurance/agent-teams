@@ -25,14 +25,6 @@ import { splitNotesBlocks } from "./notes.js";
 // a SessionState's raw status/state fields. See shared/types.ts.
 export { deriveSessionSignal };
 
-// GitHub PR URL pattern — matches https://github.com/<owner>/<repo>/pull/<n>
-const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
-
-export function extractPrUrl(text: string): string | null {
-  const m = PR_URL_RE.exec(text);
-  return m ? (m[0] ?? null) : null;
-}
-
 // Legacy fallback for the root epic bead id: some initiatives registered before
 // at-e3m recorded `epic:` in NOTES rather than in the description's routing
 // header. Notes are not routing data — internal/initiative reads Description
@@ -56,6 +48,15 @@ export function extractEpicFromNotes(notes: string): string | null {
 // because tests said so, and the rule is subtle enough that the drift is what
 // caused the at-jno7 incident. Reading raw.fields makes parity structural: a key
 // rename or a rule change is a Go-only edit for this consumer.
+//
+// The PR list (raw.prs) is the same story (agent-teams-ssib.9): this file used
+// to run its own extractPrUrl regex over notes/description to find one PR URL.
+// That regex was https-only where the Go equivalent (route_match.go) accepts
+// http too — a live divergence, not just a duplication — and it only ever
+// found the first PR, invisible to any later one. raw.prs is Go's already-
+// RESOLVED list (docs/multi-pr-contract.md §2a): the rail when non-empty, else
+// the same Notes-then-Description fallback scan, computed once, in one
+// language. Reading it removes both the divergence and the first-match bug.
 export function parseInitiative(raw: RawInitiative): ParsedInitiative {
   // notes and description are typed as string but the registry can emit undefined
   // for freshly-created initiatives that have no NOTES section yet.  Coerce to ""
@@ -69,11 +70,6 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
   // access.
   const fields = raw.fields ?? {};
 
-  // PR URL may appear in notes (later entries) or description. This is a URL
-  // hunt over freeform text, not a routing-field read — internal/initiative's
-  // scope boundary leaves it here deliberately.
-  const prUrl = extractPrUrl(notes) ?? extractPrUrl(description);
-
   return {
     ...raw,
     // Normalise notes/description so downstream code always has real strings.
@@ -85,7 +81,9 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     branch: fields.branch ?? "",
     team: fields.team ?? "",
     mode: fields.mode ?? "",
-    prUrl,
+    // Defensive default for direct/ad-hoc callers (tests, older payloads) that
+    // omit the key — a real `ateam list-json` payload always includes it.
+    prs: raw.prs ?? [],
     epic: fields.epic ?? extractEpicFromNotes(notes),
   };
 }
@@ -173,7 +171,7 @@ export function parseBdList(raw: string): WorkBead[] {
 export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
   const s = initiative.status.toLowerCase();
   if (s === "closed" || s === "done") return "merged";
-  if (initiative.prUrl !== null) return "pr-open";
+  if (initiative.prs.length > 0) return "pr-open";
   return "none";
 }
 
@@ -644,7 +642,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -666,7 +664,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -694,7 +692,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -716,7 +714,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -739,7 +737,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -762,7 +760,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,

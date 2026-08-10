@@ -49,6 +49,17 @@ export interface RawInitiative {
   // would silently render with blank routing data. parseAteamListJson rejects
   // that payload loudly instead.
   fields: InitiativeFields;
+  // The RESOLVED PR list — a sibling of `fields`, not nested inside it — sourced
+  // from `initiative.ResolvedPRs` (docs/multi-pr-contract.md §2a/§4): the rail
+  // when non-empty, else a single-URL fallback scanned from Notes-then-
+  // Description. This is what every consumer renders. `fields.pr` (when present)
+  // is the raw, rail-only projection and stays unused here on purpose — reading
+  // it directly would go empty for every initiative whose PR was recorded only
+  // in Notes (the legacy write path). Optional here (rather than required, unlike
+  // `fields`) so hand-built RawInitiative literals in existing tests need not all
+  // grow this key; a real `ateam list-json` payload always includes it, possibly
+  // as `[]`.
+  prs?: string[];
 }
 
 // Explicit gate kind derived from labels:
@@ -61,7 +72,10 @@ export interface RawInitiative {
 //   none       -> no gate label present
 export type ExplicitGateKind = "review" | "question" | "external";
 
-// RawInitiative plus fields parsed out of description text, and a derived PR URL.
+// RawInitiative plus fields parsed out of description text, and the resolved
+// PR list (agent-teams-ssib.9: replaces the old single `prUrl`, which came
+// from this file's own regex scan over notes/description — deleted along with
+// extractPrUrl in favor of reading the already-resolved `raw.prs`).
 export interface ParsedInitiative extends RawInitiative {
   problem: string;
   repo: string;
@@ -69,7 +83,9 @@ export interface ParsedInitiative extends RawInitiative {
   branch: string;
   team: string;
   mode: string;
-  prUrl: string | null;
+  // The initiative's resolved PR URLs, in registration order. [] when it has
+  // none — never used as a truthiness check for "has a PR"; check .length.
+  prs: string[];
   // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
   // Absent for legacy initiatives registered before at-e3m. Dashboard uses
   // this to filter the drill-in work-bead list to just this initiative's subtree.
@@ -296,7 +312,7 @@ export interface InboxItem {
   title: string;
   kind: "waiting" | "review" | "generic" | "check" | "reap" | "alert";
   // The one-sentence action for Eric right now.
-  //   review  -> "Review the PR and merge or send it back." (prUrl rendered separately)
+  //   review  -> "Review the PR and merge or send it back." (prUrls rendered separately)
   //   waiting -> decision field from the latest <<<ateam-ask >>> sentinel block in notes,
   //              or "Look at the session for more info." when no structured ask block exists.
   //   generic -> "Delivered with no gate — open the worktree to see what's needed."
@@ -320,7 +336,8 @@ export interface InboxItem {
   // map (ad-hoc/endpoint fallback before the first poll).
   lastActivityAt: string;
   worktree: string;
-  prUrl: string | null;
+  // The initiative's resolved PR URLs (agent-teams-ssib.9). [] when it has none.
+  prUrls: string[];
   // true when initiative.worktree is non-empty and exists on the local filesystem.
   // Derived server-side (dashboard server runs locally); used for the "This machine only" toggle.
   onThisMachine: boolean;

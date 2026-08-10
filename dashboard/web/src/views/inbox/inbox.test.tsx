@@ -56,7 +56,7 @@ const waitingItem: InboxItem = {
   updatedAt: "2026-06-25T10:00:00Z",
   lastActivityAt: "2026-06-25T10:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-1",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: true,
   status: null,
   state: null,
@@ -76,7 +76,7 @@ const reviewItem: InboxItem = {
   updatedAt: "2026-06-25T12:00:00Z",
   lastActivityAt: "2026-06-25T12:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-2",
-  prUrl: "https://github.com/org/repo/pull/42",
+  prUrls: ["https://github.com/org/repo/pull/42"],
   onThisMachine: true,
   status: null,
   state: null,
@@ -96,7 +96,7 @@ const genericItem: InboxItem = {
   updatedAt: "2026-06-25T08:00:00Z",
   lastActivityAt: "2026-06-25T08:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-3",
-  prUrl: "https://github.com/org/repo/pull/99",
+  prUrls: ["https://github.com/org/repo/pull/99"],
   onThisMachine: true,
   status: null,
   state: null,
@@ -117,7 +117,7 @@ const waitingItemWithPr: InboxItem = {
   updatedAt: "2026-06-25T11:00:00Z",
   lastActivityAt: "2026-06-25T11:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-4",
-  prUrl: "https://github.com/MGT-Insurance/midgard/pull/3551",
+  prUrls: ["https://github.com/MGT-Insurance/midgard/pull/3551"],
   onThisMachine: true,
   status: null,
   state: null,
@@ -137,7 +137,7 @@ const offMachineItem: InboxItem = {
   updatedAt: "2026-06-25T09:00:00Z",
   lastActivityAt: "2026-06-25T09:00:00Z",
   worktree: "/Users/other/.worktrees/init-5",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: false,
   status: null,
   state: null,
@@ -157,7 +157,7 @@ const checkItem: InboxItem = {
   updatedAt: "2026-06-25T13:00:00Z", // newer than reviewItem (12:00) — used to prove recency wins over kind
   lastActivityAt: "2026-06-25T13:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-6",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: true,
   status: null,
   state: null,
@@ -179,7 +179,7 @@ const waitingStatusItem: InboxItem = {
   updatedAt: "2026-06-25T09:30:00Z",
   lastActivityAt: "2026-06-25T09:30:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-8",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: true,
   status: "waiting",
   state: null,
@@ -199,7 +199,7 @@ const blockedStateItem: InboxItem = {
   updatedAt: "2026-06-25T09:15:00Z",
   lastActivityAt: "2026-06-25T09:15:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-9",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: true,
   status: "idle",
   state: "blocked",
@@ -220,7 +220,7 @@ const alertStalledItem: InboxItem = {
   updatedAt: "2026-06-25T14:00:00Z",
   lastActivityAt: "2026-06-25T14:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-10",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: true,
   status: null,
   state: null,
@@ -288,7 +288,7 @@ const reapItem: InboxItem = {
   updatedAt: "2026-06-25T15:00:00Z",
   lastActivityAt: "2026-06-25T15:00:00Z",
   worktree: "/Users/ericlloyd/.worktrees/init-14",
-  prUrl: null,
+  prUrls: [],
   onThisMachine: false,
   status: null,
   state: null,
@@ -398,7 +398,7 @@ describe("InboxView — kind='waiting' row", () => {
     expect(screen.getByText("Should we enable the feature flag for all users?")).toBeTruthy();
   });
 
-  it("does not render a PR link for waiting items with no prUrl", () => {
+  it("does not render a PR link for waiting items with no PR", () => {
     renderInbox();
     expect(screen.queryByText(/view pr/i)).toBeNull();
   });
@@ -420,7 +420,7 @@ describe("InboxView — kind='waiting' row", () => {
 describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => {
   beforeEach(() => setInbox([waitingItemWithPr]));
 
-  it("renders the 'view PR' link for a waiting item that has a prUrl", () => {
+  it("renders the 'view PR' link for a waiting item that has a PR", () => {
     renderInbox();
     const link = screen.getByRole("link", { name: /view pr/i });
     expect(link.getAttribute("href")).toBe("https://github.com/MGT-Insurance/midgard/pull/3551");
@@ -442,6 +442,29 @@ describe("InboxView — waiting + PR (delivery is orthogonal to flavor)", () => 
     renderInbox();
     const row = screen.getByRole("button", { name: /specialty products quote api/i });
     expect(row.getAttribute("data-kind")).toBe("waiting");
+  });
+});
+
+// agent-teams-ssib.9: an initiative can have more than one PR open at once —
+// the inbox row must render a link for every one of them, not just the first.
+describe("InboxView — multiple PRs on one row", () => {
+  const twoPrItem: InboxItem = {
+    ...waitingItemWithPr,
+    initiativeId: "init-12",
+    prUrls: [
+      "https://github.com/erlloyd/pr-shepherd/pull/3",
+      "https://github.com/MGT-Insurance/midgard/pull/4632",
+    ],
+  };
+  beforeEach(() => setInbox([twoPrItem]));
+
+  it("renders a 'view PR' link for every PR in prUrls", () => {
+    renderInbox();
+    const links = screen.getAllByRole("link", { name: /view pr/i });
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      "https://github.com/erlloyd/pr-shepherd/pull/3",
+      "https://github.com/MGT-Insurance/midgard/pull/4632",
+    ]);
   });
 });
 
@@ -515,7 +538,7 @@ describe("InboxView — kind='generic' row", () => {
     );
   });
 
-  it("renders a link to the PR URL for generic items (has prUrl)", () => {
+  it("renders a link to the PR URL for generic items (has a PR)", () => {
     renderInbox();
     const link = screen.getByRole("link", { name: /view pr/i });
     expect(link.getAttribute("href")).toBe("https://github.com/org/repo/pull/99");
