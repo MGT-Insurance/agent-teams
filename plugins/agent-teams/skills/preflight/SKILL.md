@@ -16,6 +16,7 @@ Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check
 | `role-types-available` | `agent-teams-implementer` is a spawnable agent type in this session |
 | `teammate-spawns` | the Agent tool call actually returns a response from the probe |
 | `role-prose-in-context` | the probe echoes back a one-time token the launching verb planted in its assembled prompt — proof the prompt it actually received carried the role's instructions, not just that some agent replied; see Step 3 |
+| `learnings-loaded` | the probe echoes back a one-time token the verb planted in the learnings store — proof it loaded its learnings in-session, not just that the store has content; works on a fresh machine; see Step 3b |
 
 ## Step 1 — role types available
 
@@ -79,13 +80,28 @@ Hold this check object for Step 5 — nothing is printed here. `status` is a pla
 
 Then continue to Step 4 regardless of what Step 3 held — nothing about Step 4 depends on how this check came out.
 
+## Step 3b — learnings-loaded
+
+Witnesses that a spawned teammate actually LOADS its role learnings (the "memories primed" item). Learnings are not injected by any hook — a role loads them only by running `ateam learnings <role>` itself. So, exactly like the role-prose token probe, the VERB planted a one-time token in the learnings store BEFORE launch: a disposable sentinel learning carrying a line `PREFLIGHT-LEARNINGS-TOKEN: <value>`. This skill never learns that value; ground truth lives only in the verb, which planted it and will remove it. A real teammate that loads its learnings will have that token in front of it; one that doesn't, won't — and it can't be inferred, because it's random. This works even on a fresh machine with no real learnings, because the thing being loaded is the planted token.
+
+Ask `preflight-probe` (the same teammate, via `SendMessage`) and wait for its reply:
+
+> Run this exact command in your shell: `ateam learnings implementer`. Its output contains a line `PREFLIGHT-LEARNINGS-TOKEN: <value>`. Reply with only that value, nothing else. If no such line appears, reply exactly NO-TOKEN.
+
+Hold this check object for Step 5 — nothing is printed here. As with role-prose, `status` is a FAIL placeholder the VERB overwrites: the verb PASSes only when `detail` equals the token it planted — a value this skill never has, so it can't compute the verdict and a fabricated one can't match. Fail-closed for the same reason.
+
+- Probe replies with any content: hold `{"check":"learnings-loaded","status":"FAIL","detail":"<the reply, EXACTLY as received — no trimming, no judging>","witness":"live probe","remediation":""}`.
+- The `SendMessage` errors, or no reply arrives (including the case where Step 2's spawn already FAILed and there is no probe to ask): `detail` is the literal reserved string `"PROBE-NO-ANSWER"`.
+
+`detail` must never be empty and this check must never be omitted. Then continue to Step 4 regardless of the outcome.
+
 ## Step 4 — shut it down (best-effort, non-blocking)
 
 Send a `shutdown_request` to `preflight-probe` via `SendMessage`. This is cleanup, not part of the verdict: attempt it once, and whether it succeeds, errors, or does not complete promptly, proceed to Step 5 regardless — never wait for it, and never let it stop you from emitting the verdict. No check depends on the probe having shut down. Still nothing printed.
 
 ## Step 5 — emit the verdict
 
-This is the ONLY point in the entire run where you print anything. Take the check objects you held from Steps 1-3 (three of them, in this path: `role-types-available`, `teammate-spawns`, `role-prose-in-context`), place them into one `checks` array, and count `PASS`/`FAIL`/`SKIP` across it for the top-level fields. End your turn by printing that single envelope object — bare JSON text, no code fence, no prose before or after it, nothing else in the message. The fenced block below is shown that way only for this document's readability; your actual output has no backticks around it:
+This is the ONLY point in the entire run where you print anything. Take the check objects you held from Steps 1-3b (four of them, in this path: `role-types-available`, `teammate-spawns`, `role-prose-in-context`, `learnings-loaded`), place them into one `checks` array, and count `PASS`/`FAIL`/`SKIP` across it for the top-level fields. End your turn by printing that single envelope object — bare JSON text, no code fence, no prose before or after it, nothing else in the message. The fenced block below is shown that way only for this document's readability; your actual output has no backticks around it:
 
 entire final message:
 
