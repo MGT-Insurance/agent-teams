@@ -9,8 +9,16 @@ do not work around it.
 ## 1. Empirical keystone — what `bd label add` actually accepts
 
 Run against a throwaway scratch `bd` database (`bd init` in an empty tmp dir,
-never the project or global workspace DB). Commands and raw results below;
-nothing here is taken from documentation or assumption.
+never the project or global workspace DB). Every row below is a command that
+was actually run; nothing here is taken from documentation or assumption.
+
+**Bottom line up front: nothing the frozen grammar (§3) actually uses was
+rejected.** Colon, slash, `#`, uppercase, and multiple colons in combination
+were all accepted — repo-inclusion required zero substitution. The one
+genuine rejection found (below) is a character the grammar never emits
+anyway. Recorded per the planner's ask: separator/encoding was negotiable if
+the probe forced a change; it didn't force one, but the full transcript is
+here so the next reader doesn't have to re-probe to confirm that.
 
 | input                                                          | accepted? |
 |-----------------------------------------------------------------|-----------|
@@ -24,8 +32,43 @@ nothing here is taken from documentation or assumption.
 | `gate:review:https://github.com/erlloyd/pr-shepherd/pull/3` (the actual frozen grammar, §3) | yes |
 | `gate:question:https://github.com/MGT-Insurance/midgard/pull/4632` | yes |
 | `pr:a,b#3` (comma)                                               | yes, but see hazard below |
+| a literal space (`"gate review"`)                                | yes — accepted, not rejected; irrelevant to the grammar since it never emits one |
+| a literal embedded newline (`"gate:review\nextra"`)              | yes — accepted AND round-trips through `bd label list` with the newline intact; irrelevant to the grammar since it never emits one |
+| **empty string `""`**                                            | **REJECTED** — the one genuine rejection found; see exact command/output below |
 | 255-char label                                                   | yes, stored verbatim (255 chars) |
 | 256-char label                                                   | **silently truncated to 255 chars** — the CLI success message echoes the full untruncated 256-char string, but `bd label list` reads back only the first 255 chars. A 255-char and a 256-char input that share the same first 255 chars collapse into ONE stored label. |
+
+Exact command + output for the two non-accept cases:
+
+```
+$ bd label add bd-label-scratch-yy3 "" --json
+{
+  "error": "label cannot be empty",
+  "schema_version": 1
+}
+exit=1
+
+$ bd label add bd-label-scratch-yy3 "$(python3 -c "print('a'*256)")" --json
+[
+  {
+    "issue_id": "bd-label-scratch-yy3",
+    "label": "aaaa...(256 a's, printed in full by bd)...aaaa",
+    "status": "added"
+  }
+]
+exit=0
+$ bd label list bd-label-scratch-yy3 --json | python3 -c "
+import json,sys
+for l in json.load(sys.stdin):
+    if l.startswith('aaa'): print(len(l))
+"
+255
+```
+
+The 256-char add call exits 0 and echoes the full 256-char string in its
+`"label"` field — that field is an echo of the CLI's input argument, not a
+read of what got stored. Only the follow-up `bd label list` read exposes the
+truncation to 255.
 
 Hazards (both already known from prior work, reconfirmed here):
 - **Comma is the AND-separator in label filters** — a label value containing
@@ -44,10 +87,42 @@ Round-trip and collision checks, both passing:
   cross-match between the two PRs.
 - The two-repo case from at-d9ck (`erlloyd/pr-shepherd#3` and
   `MGT-Insurance/midgard#4632`) is the concrete case this was checked
-  against: a PR-number-only discriminator (`#3` vs `#3`... no, `#3` vs
-  `#4632` happens to differ here, but a same-numbered PR in two different
-  repos is the live collision case the discriminator must survive by
-  construction) — hence repo-inclusion is not optional.
+  against — a same-numbered PR in two different repos is the live collision
+  case a discriminator must survive by construction, which is why
+  repo-inclusion is not optional even though this specific pairing happens to
+  have different numbers too.
+
+**Round-trip PARSE verification (not just storage round-trip).** Storing and
+reading a label back byte-exact proves nothing about whether it still means
+the same repo+number once parsed — so this checks that too, deliberately
+against the *existing* parser rather than a new one: `prURLRE`
+(`internal/verbs/route_match.go:24`,
+`` `https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)` ``) transcribed
+verbatim into a standalone Python check (no code added to `internal/verbs` —
+out of this bead's FILES). For each of the three per-PR labels actually
+written above: strip the frozen `<base>:` prefix, run the transcribed regex
+on the remainder, and confirm it recovers the exact owner/repo/number that
+went in:
+
+```
+OK: label='gate:review:https://github.com/erlloyd/pr-shepherd/pull/3'
+      stripped-suffix='https://github.com/erlloyd/pr-shepherd/pull/3'
+      parsePrURL(suffix)=('erlloyd', 'pr-shepherd', 3)  want=('erlloyd', 'pr-shepherd', 3)
+
+OK: label='gate:question:https://github.com/MGT-Insurance/midgard/pull/4632'
+      stripped-suffix='https://github.com/MGT-Insurance/midgard/pull/4632'
+      parsePrURL(suffix)=('MGT-Insurance', 'midgard', 4632)  want=('MGT-Insurance', 'midgard', 4632)
+
+OK: label='external-review:https://github.com/erlloyd/pr-shepherd/pull/3'
+      stripped-suffix='https://github.com/erlloyd/pr-shepherd/pull/3'
+      parsePrURL(suffix)=('erlloyd', 'pr-shepherd', 3)  want=('erlloyd', 'pr-shepherd', 3)
+```
+
+All three round-trip to the exact repo+number written. This also confirms
+the parse-back is unambiguous by construction, not just by luck: the only
+separator inside the frozen grammar's suffix portion is the literal string
+`/pull/` inside a URL `prURLRE` already anchors on, so stripping the
+`<base>:` prefix can never leave an ambiguous remainder to parse.
 
 ## 2. The `pr` rail key (multi-valued, Description)
 
