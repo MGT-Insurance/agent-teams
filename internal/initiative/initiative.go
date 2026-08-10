@@ -19,6 +19,15 @@ type Fields struct {
 	Standby                                           bool
 	Sessions                                          []string
 	Tracks                                            []string
+	// PRs is every "pr: <url>" line's value, in registration order — the
+	// GitHub PR URLs a DRI has opened for this initiative. Multi-valued
+	// because one initiative can open more than one PR (agent-teams-ssib).
+	// Distinct from the review-pr initiative kind's unmodeled pr-number /
+	// pr-repo / pr-url trio (frozen item 3): those describe the single PR a
+	// REVIEW initiative is reviewing; PRs describes the PR(s) a DRI
+	// initiative has opened. Same URL shape, different key, different
+	// initiative kind — no collision.
+	PRs []string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -39,16 +48,16 @@ type Collision struct {
 }
 
 // singleValuedKeys lists every canonical key backed by a single-valued
-// Fields member (i.e. excluding the multi-valued "session" and
-// "track-worktree" keys). New does not iterate this slice — it writes each
-// field individually in its own fixed order — so this is a set, not an
-// ordering claim.
+// Fields member (i.e. excluding the multi-valued "session",
+// "track-worktree", and "pr" keys). New does not iterate this slice — it
+// writes each field individually in its own fixed order — so this is a set,
+// not an ordering claim.
 var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "standby", "epic"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
 // single-valued.
-var multiValuedKeys = []string{"session", "track-worktree"}
+var multiValuedKeys = []string{"session", "track-worktree", "pr"}
 
 // multiValued reports whether key accumulates instead of first-wins.
 func multiValued(key string) bool {
@@ -162,13 +171,13 @@ func first(lines map[string][]string, key string) string {
 
 // Of parses iss's routing fields per the frozen rule. Single-valued keys
 // (problem, repo, worktree, branch, team, mode, epic, standby) are
-// first-occurrence-wins; the multi-valued session and track-worktree keys
-// accumulate into Sessions and Tracks in registration order.
+// first-occurrence-wins; the multi-valued session, track-worktree, and pr
+// keys accumulate into Sessions, Tracks, and PRs in registration order.
 //
-// Of is the TYPED projection of all, and models ten keys only — an initiative
-// carrying an unmodeled canonical key (e.g. pr-url) has no Fields member to
-// hold it, so a caller that needs every stored key wants JSONFields instead
-// (package doc comment, frozen item 3).
+// Of is the TYPED projection of all, and models eleven keys only — an
+// initiative carrying an unmodeled canonical key (e.g. pr-url) has no Fields
+// member to hold it, so a caller that needs every stored key wants
+// JSONFields instead (package doc comment, frozen item 3).
 //
 // Of takes the whole bd.Issue, not iss.Description, so that a future labels
 // backend can read iss.Labels instead without changing this signature or any
@@ -186,6 +195,7 @@ func Of(iss bd.Issue) Fields {
 		Standby:  first(lines, "standby") == "true",
 		Sessions: lines["session"],
 		Tracks:   lines["track-worktree"],
+		PRs:      lines["pr"],
 	}
 }
 
@@ -253,6 +263,7 @@ func New(f Fields) (WritePlan, error) {
 		{"epic", []string{f.Epic}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
+		{"pr", f.PRs},
 	}
 	for _, fv := range fields {
 		for _, v := range fv.values {
@@ -287,6 +298,9 @@ func New(f Fields) (WritePlan, error) {
 	}
 	for _, t := range f.Tracks {
 		write("track-worktree", t)
+	}
+	for _, u := range f.PRs {
+		write("pr", u)
 	}
 	return WritePlan{Description: b.String()}, nil
 }
@@ -371,6 +385,156 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 		}
 	}
 	return WritePlan{Description: appendLine(iss.Description, "track-worktree", path)}, nil
+}
+
+// PRURLRE matches a full GitHub PR URL:
+//
+//	https://github.com/<owner>/<repo>/pull/<number>
+//
+// Capture groups: [1] owner, [2] repo, [3] number.
+//
+// This is the ONE Go implementation of "find/parse a GitHub PR URL" — it used
+// to have a sibling copy in internal/verbs/route_match.go (prURLRE), byte-
+// identical, because internal/verbs already imports internal/initiative and
+// importing back would cycle. Exporting this instead of duplicating it lets
+// route_match.go's extractPrURL/parsePrURL delegate here, so the pattern has
+// exactly one definition again (docs/multi-pr-contract.md, "read
+// precedence" — this consolidation was that section's flagged follow-up).
+var PRURLRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
+
+// CanonicalPRURL returns the canonical identity form of a GitHub PR URL —
+// forced https scheme, lower-cased owner/repo, the number verbatim — or ok
+// == false when url doesn't match PRURLRE at all.
+//
+// This is the ONE canonicalization point (agent-teams-ssib.25): two
+// spellings of the same PR (http vs https, differently-cased owner/repo)
+// must become byte-identical before they are ever compared, stored on the
+// "pr" rail, or embedded in a per-PR label — otherwise the rail dedups by
+// exact string match and stores both, and a gate label written with one
+// spelling can never be paired with a handoff label written with the other,
+// producing a PR that can never reach rest. ResolvedPRs (read side) and
+// WithPR (write side) both canonicalize through this function so every
+// caller downstream — status.go's gateForPR, query.go's per-PR ask
+// tagging, the --pr resolver gate/clear-gate/handoff share — can compare
+// PR-identity strings with plain "==" and get the right answer, instead of
+// each writing its own case/scheme-insensitive comparator.
+func CanonicalPRURL(url string) (string, bool) {
+	m := PRURLRE.FindStringSubmatch(url)
+	if m == nil {
+		return "", false
+	}
+	return "https://github.com/" + strings.ToLower(m[1]) + "/" + strings.ToLower(m[2]) + "/pull/" + m[3], true
+}
+
+// extractPRURLFallback returns the first GitHub PR URL found in text, or ""
+// — the free-text scan every initiative's PR was recorded through before
+// the "pr" rail existed (and still is, via the dri skill's Notes-based
+// "pr:" line — see [ResolvedPRs]).
+func extractPRURLFallback(text string) string {
+	return PRURLRE.FindString(text)
+}
+
+// ResolvedPRs returns iss's PR URLs per the frozen, PERMANENT read
+// precedence (docs/multi-pr-contract.md, "read precedence"): the "pr" rail
+// (Of(iss).PRs) wins WHOLESALE when non-empty; only when the rail is
+// completely empty does this fall back to a single URL extracted from free
+// text — Notes first, then Description, matching the pre-existing
+// extractPrURL order (internal/verbs/route_match.go). The two sources are
+// NEVER unioned — mixing a rail entry with a free-text-scanned one risks
+// duplicates and an undefined ordering that nobody could reconstruct later.
+//
+// This is permanent, not transitional. A repo-wide census at the time this
+// was written found "pr:" in a Description line 0 times and in Notes 178
+// times across 549 registered initiatives — the DRI skill has always
+// written the PR to Notes, never to Description, and Eric's ruling repairs
+// only the one still-open multi-PR initiative onto the rail, leaving the
+// rest on Notes indefinitely. Every reader of "what PR(s) does this
+// initiative have" — execution-status, list-json's resolved sibling key,
+// and route_match.go's tier-1 matching — MUST call ResolvedPRs, not
+// Of(iss).PRs directly: reading the rail alone silently returns zero PRs
+// for every initiative that has never called WithPR, which today is all of
+// them. (Of(iss).PRs itself stays a pure rail projection — unchanged — for
+// callers that specifically want the rail's own state, e.g. list-json's
+// "fields.pr" key.)
+//
+// Every returned URL is canonicalized (CanonicalPRURL, agent-teams-ssib.25)
+// regardless of which source it came from — the rail, Notes, or
+// Description — so a caller never has to re-canonicalize or fuzzy-compare
+// what this function hands back; a value that doesn't parse as a GitHub PR
+// URL at all is returned verbatim (can only happen for a rail entry written
+// before this fix shipped, or a caller misusing WithPR directly).
+func ResolvedPRs(iss bd.Issue) []string {
+	var raw []string
+	switch {
+	case len(Of(iss).PRs) > 0:
+		raw = Of(iss).PRs
+	case extractPRURLFallback(iss.Notes) != "":
+		raw = []string{extractPRURLFallback(iss.Notes)}
+	case extractPRURLFallback(iss.Description) != "":
+		raw = []string{extractPRURLFallback(iss.Description)}
+	default:
+		return nil
+	}
+	out := make([]string, len(raw))
+	for i, url := range raw {
+		if canon, ok := CanonicalPRURL(url); ok {
+			out[i] = canon
+		} else {
+			out[i] = url
+		}
+	}
+	return out
+}
+
+// WithPR returns the WritePlan that registers url as a pr of iss by
+// appending a "pr: <url>" line below iss's entire current description. It is
+// idempotent: if url is already registered on iss, the returned
+// WritePlan.Description is iss.Description, unchanged.
+//
+// url must be non-empty and have no leading/trailing whitespace or line
+// break, for the identical structural reason WithTrack rejects them on path
+// (frozen matching rule: fieldLine right-trims a value on read and requires
+// a non-whitespace first character, so an edge-whitespace or multi-line
+// value would never read back equal to what the caller passed in, and this
+// function's own idempotency check — Of(iss).PRs — would then never find it
+// and would keep re-appending it forever).
+//
+// WithPR does not validate that url is a well-formed GitHub PR URL — that is
+// the frozen grammar's job (docs/multi-pr-contract.md), enforced by callers
+// (the ateam pr add verb) that have a reason to reject a malformed value.
+// This writer, like WithSession and WithTrack, only enforces the structural
+// constraints the field-line rule itself imposes.
+//
+// url is canonicalized (CanonicalPRURL, agent-teams-ssib.25) before both the
+// idempotency check and storage, so two spellings of one PR (http vs https,
+// differently-cased owner/repo) collapse to a single rail entry instead of
+// appending a second, unpairable one. A url that doesn't parse as a GitHub
+// PR URL at all is compared and stored verbatim, unchanged from before this
+// fix — WithPR still does not enforce the URL shape.
+func WithPR(iss bd.Issue, url string) (WritePlan, error) {
+	if url == "" {
+		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not be empty")
+	}
+	if strings.ContainsAny(url, "\r\n") {
+		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not contain a line break: %q", url)
+	}
+	if hasEdgeWhitespace(url) {
+		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not have leading or trailing whitespace: %q", url)
+	}
+	stored := url
+	if canon, ok := CanonicalPRURL(url); ok {
+		stored = canon
+	}
+	for _, existing := range Of(iss).PRs {
+		existingCanon := existing
+		if canon, ok := CanonicalPRURL(existing); ok {
+			existingCanon = canon
+		}
+		if existingCanon == stored {
+			return WritePlan{Description: iss.Description}, nil
+		}
+	}
+	return WritePlan{Description: appendLine(iss.Description, "pr", stored)}, nil
 }
 
 // singleValued returns the set of single-valued canonical keys f currently

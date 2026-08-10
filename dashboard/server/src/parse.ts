@@ -11,6 +11,7 @@ import type {
   DeliveryStatus,
   NeedsHumanFlavor,
   ExplicitGateKind,
+  PRReview,
   InitiativeNode,
   InboxItem,
   WorkBead,
@@ -24,14 +25,6 @@ import { splitNotesBlocks } from "./notes.js";
 // (agent-teams-rybk.5.2), alongside sessionKind, as the one place that reads
 // a SessionState's raw status/state fields. See shared/types.ts.
 export { deriveSessionSignal };
-
-// GitHub PR URL pattern — matches https://github.com/<owner>/<repo>/pull/<n>
-const PR_URL_RE = /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
-
-export function extractPrUrl(text: string): string | null {
-  const m = PR_URL_RE.exec(text);
-  return m ? (m[0] ?? null) : null;
-}
 
 // Legacy fallback for the root epic bead id: some initiatives registered before
 // at-e3m recorded `epic:` in NOTES rather than in the description's routing
@@ -56,6 +49,15 @@ export function extractEpicFromNotes(notes: string): string | null {
 // because tests said so, and the rule is subtle enough that the drift is what
 // caused the at-jno7 incident. Reading raw.fields makes parity structural: a key
 // rename or a rule change is a Go-only edit for this consumer.
+//
+// The PR list (raw.prs) is the same story (agent-teams-ssib.9): this file used
+// to run its own extractPrUrl regex over notes/description to find one PR URL.
+// That regex was https-only where the Go equivalent (route_match.go) accepts
+// http too — a live divergence, not just a duplication — and it only ever
+// found the first PR, invisible to any later one. raw.prs is Go's already-
+// RESOLVED list (docs/multi-pr-contract.md §2a): the rail when non-empty, else
+// the same Notes-then-Description fallback scan, computed once, in one
+// language. Reading it removes both the divergence and the first-match bug.
 export function parseInitiative(raw: RawInitiative): ParsedInitiative {
   // notes and description are typed as string but the registry can emit undefined
   // for freshly-created initiatives that have no NOTES section yet.  Coerce to ""
@@ -69,11 +71,6 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
   // access.
   const fields = raw.fields ?? {};
 
-  // PR URL may appear in notes (later entries) or description. This is a URL
-  // hunt over freeform text, not a routing-field read — internal/initiative's
-  // scope boundary leaves it here deliberately.
-  const prUrl = extractPrUrl(notes) ?? extractPrUrl(description);
-
   return {
     ...raw,
     // Normalise notes/description so downstream code always has real strings.
@@ -85,7 +82,10 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     branch: fields.branch ?? "",
     team: fields.team ?? "",
     mode: fields.mode ?? "",
-    prUrl,
+    // Defensive default for direct/ad-hoc callers (tests, older payloads) that
+    // omit the key — a real `ateam list-json` payload always includes it.
+    prs: raw.prs ?? [],
+    prReviews: raw.pr_reviews ?? [],
     epic: fields.epic ?? extractEpicFromNotes(notes),
   };
 }
@@ -173,7 +173,7 @@ export function parseBdList(raw: string): WorkBead[] {
 export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
   const s = initiative.status.toLowerCase();
   if (s === "closed" || s === "done") return "merged";
-  if (initiative.prUrl !== null) return "pr-open";
+  if (initiative.prs.length > 0) return "pr-open";
   return "none";
 }
 
@@ -181,42 +181,32 @@ export function deriveDelivery(initiative: ParsedInitiative): DeliveryStatus {
 // "working"/"ended") now lives in @agent-teams/shared — imported above and
 // re-exported for existing consumers. See shared/types.ts for the doc.
 
-// Eric's DECLARED "I have looked at this PR; it is now on the team" state,
-// written by `ateam handoff` (contract: internal/verbs/external_review.go §2).
-// It is ADDITIVE — "human" and "gate:review" are deliberately RETAINED so that
-// hung_scan.go keeps classifying the initiative AWAITING-HUMAN and the DEAD /
-// work-product-flatline escalation ladders stay disarmed. So the label cannot be
-// read as "the gate labels are gone"; it has to actively suppress them here.
-export const EXTERNAL_REVIEW_LABEL = "external-review";
-
-// Derive the explicit gate kind from an initiative's labels array.
-// Resilient: tolerates undefined/null/empty labels (missing or unset).
-//   "gate:review"     => "review"   (AUTHORITATIVE: initiative is awaiting PR review)
-//   "gate:question"   => "question" (agent is parked asking a question)
-//   "external-review" => "external" (Eric declared he is done looking)
-//   "human" (no gate:*) => "question" (legacy/plain gate; treat as question)
-//   else none
+// Roll up the Go-computed per-PR gate array (docs/multi-pr-contract.md §5)
+// into the single ExplicitGateKind | null that deriveNeedsHuman/deriveActivity
+// below still need. This is an EXISTENTIAL check across PRs ("does ANY PR
+// carry this gate kind") — not a re-derivation of which label wins ON one PR;
+// that precedence is Go's job now (already baked into each entry's own
+// `gate` value by internal/verbs/status.go's gateForPR). The old
+// deriveExplicitGate, which re-derived that per-PR precedence a third time
+// here from raw labels, is deleted (agent-teams-ssib.10) — it also silently
+// stopped matching anything the moment Track G's per-PR label grammar
+// (`gate:review:<pr-url>`) replaced the bare `gate:review` label it scanned for.
 //
-// "external-review" outranks BOTH the review derivation and the legacy human-only
-// one: the whole point of the declaration is that Eric is done looking, so a row
-// he just handed off must not report back as awaiting him. It does NOT outrank
-// "gate:question" — a parked question is a live ask that still needs an answer,
-// and status.go's rule 1 likewise returns NEEDS-DECISION before the
-// external-review label is ever consulted. Precedence among the gate labels
-// themselves is unchanged; without the label nothing here behaves differently.
-//
-// It resolves to its own kind rather than to null because "no gate" is not the
-// same claim: deriveNeedsHuman's delivered-with-no-gate branch would relabel a
-// nulled-out handed-off row "generic" ("needs you"), putting it right back in the
-// inbox it was declared out of.
-export function deriveExplicitGate(labels: string[] | undefined): ExplicitGateKind | null {
-  if (!labels || labels.length === 0) return null;
-  const handedOff = labels.includes(EXTERNAL_REVIEW_LABEL);
-  if (!handedOff && labels.includes("gate:review")) return "review";
-  if (labels.includes("gate:question")) return "question";
-  if (handedOff) return "external";
-  // Plain "human" with no gate:* label = legacy gate, treat as question.
-  if (labels.includes("human")) return "question";
+// Order mirrors internal/verbs/status.go's computeExecutionStatus rollup
+// (rule 1 checks "any gate:question" before rule 3's "any gate:review"), so
+// the dashboard's aggregate signal can't disagree with the CLI's:
+//   any "question" -> "question" (a live ask on ANY PR is as urgent as one on
+//                     the only PR — matches Go's NEEDS-DECISION rule)
+//   else any "review" -> "review"
+//   else any "external" -> "external" (every review-worthy PR has been handed
+//                     off; deriveNeedsHuman must still short-circuit this to
+//                     false rather than falling into the check/generic
+//                     session-based branches below)
+//   else -> null (no PR carries any gate)
+export function rollupGate(prReviews: PRReview[]): ExplicitGateKind | null {
+  if (prReviews.some((r) => r.gate === "question")) return "question";
+  if (prReviews.some((r) => r.gate === "review")) return "review";
+  if (prReviews.some((r) => r.gate === "external")) return "external";
   return null;
 }
 
@@ -436,9 +426,8 @@ export function buildInitiativeNodes(
     const session = matched.find((s) => sessionKind(s) === "alive") ?? matched[0] ?? null;
     try {
 
-      // Derive explicit gate from labels first; fall back to humanGatedIds legacy path.
-      // labels is optional/missing on older entries — deriveExplicitGate handles that safely.
-      let gate = deriveExplicitGate(initiative.labels);
+      // Roll up the per-PR gate array first; fall back to humanGatedIds legacy path.
+      let gate = rollupGate(initiative.prReviews);
       if (gate === null && humanGatedIds.has(initiative.id)) {
         // Legacy: bd list --label human with no labels array -> treat as question gate.
         // A handed-off initiative resolves to gate "external", never null, so this
@@ -570,8 +559,10 @@ function lastNotesBlock(notes: string): string {
 // (agent-teams-rybk: any initiative with the 'i'-icon alert surfaces, even with
 // no gate/session signal — e.g. a closed initiative with a still-running session).
 //   needsHuman="reap"    -> zombie (at-asi): merged + worktree gone + alive session (stop to reap)
-//   needsHuman="review"  -> explicit gate:review label (AUTHORITATIVE; "review the PR")
-//   needsHuman="waiting" -> explicit gate:question/human (declared ask; may have ask block)
+//   needsHuman="review"  -> ANY PR carries a "review" gate (agent-teams-ssib.10: one row PER
+//                           such PR, read from pr_reviews — AUTHORITATIVE; "review the PR")
+//   needsHuman="waiting" -> ANY PR carries a "question" gate, or legacy human-only (declared
+//                           ask; may have ask block) — likewise one row per gated PR
 //   needsHuman="generic" -> delivered + no explicit gate (graceful degrade)
 //   needsHuman="check"   -> session waiting/blocked with NO gate (soft tier; check on it)
 //   needsHuman=false + alert!=null -> kind="alert" (no declared gate/session signal, but anomalous)
@@ -644,7 +635,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -653,56 +644,55 @@ export function buildInbox(
         alert: alertField,
         isClosed,
       });
-    } else if (node.needsHuman === "review") {
-      // Explicit gate:review — AUTHORITATIVE "review the PR" signal.
-      items.push({
-        initiativeId: initiative.id,
-        title: initiative.title,
-        kind: "review",
-        nextAction: notesFallback || "Review the PR and merge or send it back.",
-        recommendation: "",
-        alternative: "",
-        context: "",
-        updatedAt: initiative.updated_at,
-        lastActivityAt,
-        worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
-        onThisMachine,
-        sessionId,
-        status,
-        state,
-        waitingFor,
-        alert: alertField,
-        isClosed,
-      });
-    } else if (node.needsHuman === "waiting") {
-      // Agent waiting on human input: explicit gate:question/human (declared ask).
-      // nextAction = decision from the latest ask block, or constant fallback.
-      const ask = extractLatestAsk(initiative.notes);
-      const nextAction = ask
-        ? ask.decision.slice(0, 120)
-        : "Look at the session for more info.";
+    } else if (node.needsHuman === "review" || node.needsHuman === "waiting") {
+      // Per-PR gate rows (agent-teams-ssib.10): one row per PR that carries
+      // its OWN "review" or "question" gate, read directly off Go's
+      // pr_reviews array (docs/multi-pr-contract.md §5) — never re-derived
+      // from labels. A single-PR initiative has exactly one gated entry, so
+      // this is 1:1 with the old single-row behavior; a multi-gated
+      // initiative (the agent-teams-ssib.2 bug this whole initiative exists
+      // to fix) now surfaces every gated PR instead of silently showing one.
+      const gatedReviews = initiative.prReviews.filter(
+        (r) => r.gate === "review" || r.gate === "question",
+      );
+      // Legacy fallback: humanGatedIds (buildInitiativeNodes) resolved a
+      // "question" gate with no matching pr_reviews entry at all — e.g. an
+      // old `ateam` build that doesn't emit `labels`/`pr_reviews`. Keep the
+      // old single-row shape (all PRs in prUrls) so the initiative doesn't
+      // silently vanish from the inbox instead.
+      const reviewsForRow: Array<{ pr?: string; kind: "review" | "waiting" }> =
+        gatedReviews.length > 0
+          ? gatedReviews.map((r) => ({ pr: r.pr, kind: r.gate === "review" ? "review" : "waiting" }))
+          : [{ kind: node.needsHuman }];
 
-      items.push({
-        initiativeId: initiative.id,
-        title: initiative.title,
-        kind: "waiting",
-        nextAction,
-        recommendation: ask?.recommendation.slice(0, 120) ?? "",
-        alternative: ask?.alternative.slice(0, 120) ?? "",
-        context: ask?.context.slice(0, 280) ?? "",
-        updatedAt: initiative.updated_at,
-        lastActivityAt,
-        worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
-        onThisMachine,
-        sessionId,
-        status,
-        state,
-        waitingFor,
-        alert: alertField,
-        isClosed,
-      });
+      for (const { pr, kind } of reviewsForRow) {
+        const ask = kind === "waiting" ? extractLatestAsk(initiative.notes) : null;
+        items.push({
+          initiativeId: initiative.id,
+          title: initiative.title,
+          kind,
+          nextAction:
+            kind === "review"
+              ? notesFallback || "Review the PR and merge or send it back."
+              : ask
+                ? ask.decision.slice(0, 120)
+                : "Look at the session for more info.",
+          recommendation: ask?.recommendation.slice(0, 120) ?? "",
+          alternative: ask?.alternative.slice(0, 120) ?? "",
+          context: ask?.context.slice(0, 280) ?? "",
+          updatedAt: initiative.updated_at,
+          lastActivityAt,
+          worktree: initiative.worktree,
+          prUrls: pr !== undefined ? [pr] : initiative.prs,
+          onThisMachine,
+          sessionId,
+          status,
+          state,
+          waitingFor,
+          alert: alertField,
+          isClosed,
+        });
+      }
     } else if (node.needsHuman === "check") {
       // Session waiting/blocked with no explicit gate — soft "check on it" tier.
       items.push({
@@ -716,7 +706,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -739,7 +729,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,
@@ -762,7 +752,7 @@ export function buildInbox(
         updatedAt: initiative.updated_at,
         lastActivityAt,
         worktree: initiative.worktree,
-        prUrl: initiative.prUrl,
+        prUrls: initiative.prs,
         onThisMachine,
         sessionId,
         status,

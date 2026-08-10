@@ -264,19 +264,21 @@ export default function DrillInView() {
             <span className="meta-label">repo</span>
             <span className="meta-value meta-value--mono">{detail.repo || "—"}</span>
           </span>
-          {detail.prUrl && (
-            <span className="meta-item">
+          {/* One meta-item per PR — an initiative can have more than one open
+              at once (agent-teams-ssib.9). */}
+          {detail.prs.map((url) => (
+            <span key={url} className="meta-item">
               <span className="meta-label">PR</span>
               <a
                 className="meta-link"
-                href={detail.prUrl}
+                href={url}
                 target="_blank"
                 rel="noreferrer"
               >
-                {detail.prUrl}
+                {url}
               </a>
             </span>
-          )}
+          ))}
         </div>
       </section>
 

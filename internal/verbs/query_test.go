@@ -299,12 +299,22 @@ func TestListJSONPreservesEveryBdKey(t *testing.T) {
 			t.Errorf("key %q = %s, want %s", key, got, expected)
 		}
 	}
-	// Exactly one key added.
-	if len(got[0]) != len(original[0])+1 {
-		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\")", len(got[0]), len(original[0])+1)
+	// Exactly three keys added: fields, prs, pr_reviews.
+	if len(got[0]) != len(original[0])+3 {
+		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\", \"prs\", \"pr_reviews\")", len(got[0]), len(original[0])+3)
 	}
-	if _, present := got[0]["fields"]; !present {
-		t.Error(`no "fields" key was added`)
+	for _, key := range []string{"fields", "prs", "pr_reviews"} {
+		if _, present := got[0][key]; !present {
+			t.Errorf("no %q key was added", key)
+		}
+	}
+	// realBdElement has no PR anywhere (rail, notes, or description) — both
+	// resolved-PR-derived keys come back as empty arrays, never omitted/null.
+	if got0Prs := compactJSON(t, got[0]["prs"]); got0Prs != "[]" {
+		t.Errorf(`prs = %s, want "[]"`, got0Prs)
+	}
+	if got0Reviews := compactJSON(t, got[0]["pr_reviews"]); got0Reviews != "[]" {
+		t.Errorf(`pr_reviews = %s, want "[]"`, got0Reviews)
 	}
 }
 
@@ -425,6 +435,67 @@ func TestListJSONFailsLoudlyOnANonObjectElement(t *testing.T) {
 // real data. Refuse instead.
 func TestListJSONRefusesToOverwriteAnExistingFieldsKey(t *testing.T) {
 	err := listJSONErr(t, `[{"id":"at-x","title":"T","fields":{"bd":"owns this"}}]`)
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Errorf("error = %v, want a \"refusing to overwrite\" error", err)
+	}
+}
+
+// ── list-json: "prs" / "pr_reviews" (docs/multi-pr-contract.md §2a, §5) ──────
+
+// TestListJSONPRsFallsBackToNotesOnlyPR proves this verb's OWN wiring — not
+// initiative.ResolvedPRs itself, which Track P's contract bead already
+// mutation-tests — surfaces the resolved-PR fallback: an initiative with no
+// "pr" rail line at all, only a "pr:" line in bd Notes (the shape the `dri`
+// skill has written for every initiative until now, docs/multi-pr-
+// contract.md §2a), must still appear in the "prs" sibling key. Without this
+// wiring, list-json's own "prs" key would go empty for the 178/549
+// initiatives whose PR lives only in Notes, even though ResolvedPRs itself
+// resolves it correctly.
+func TestListJSONPRsFallsBackToNotesOnlyPR(t *testing.T) {
+	const prURL = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	bdOutput := `[{"id":"at-notes-only","title":"T","notes":"pr: ` + prURL + `\n","labels":["human","gate:review"]}]`
+
+	got := listJSON(t, bdOutput)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(got))
+	}
+
+	var prs []string
+	if err := json.Unmarshal(got[0]["prs"], &prs); err != nil {
+		t.Fatalf("prs is not a JSON array: %v", err)
+	}
+	if len(prs) != 1 || prs[0] != prURL {
+		t.Errorf("prs = %v, want [%q]", prs, prURL)
+	}
+
+	// fields.pr stays absent — it is a verbatim rail projection, and this
+	// fixture has no "pr" rail line at all (docs/multi-pr-contract.md §4).
+	var fields map[string]any
+	if err := json.Unmarshal(got[0]["fields"], &fields); err != nil {
+		t.Fatalf("fields is not a JSON object: %v", err)
+	}
+	if _, present := fields["pr"]; present {
+		t.Errorf("fields.pr = %v, want absent (rail-only; this fixture has no rail line)", fields["pr"])
+	}
+
+	// pr_reviews carries the same resolved PR, gate computed from labels —
+	// single resolved PR, so the bare "gate:review" label attributes to it.
+	var reviews []struct {
+		PR   string `json:"pr"`
+		Gate string `json:"gate"`
+	}
+	if err := json.Unmarshal(got[0]["pr_reviews"], &reviews); err != nil {
+		t.Fatalf("pr_reviews is not a JSON array: %v", err)
+	}
+	if len(reviews) != 1 || reviews[0].PR != prURL || reviews[0].Gate != "review" {
+		t.Errorf("pr_reviews = %+v, want [{%q review}]", reviews, prURL)
+	}
+}
+
+// TestListJSONRefusesToOverwriteAnExistingPRsKey mirrors the "fields"
+// collision guard for the new "prs" sibling key.
+func TestListJSONRefusesToOverwriteAnExistingPRsKey(t *testing.T) {
+	err := listJSONErr(t, `[{"id":"at-x","title":"T","prs":["already here"]}]`)
 	if !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Errorf("error = %v, want a \"refusing to overwrite\" error", err)
 	}
@@ -908,6 +979,122 @@ func TestHumanListStructuredAskPathUnchanged(t *testing.T) {
 	// The preamble note block must not appear (fallback not taken).
 	if strings.Contains(got, "preamble note") {
 		t.Errorf("preamble must not appear when structured ask is present, got: %q", got)
+	}
+}
+
+// ── human-list: multi-PR ask pairing (agent-teams-ssib.8 follow-up) ──────────
+
+// TestHumanListMultiPR_PairsAskWithItsOwnPR is the load-bearing witness for
+// the live-run bug team-lead found: two PRs gated independently via two
+// `gate --pr` calls, each carrying a DIFFERENT decision. Before this fix,
+// human-list paired EVERY per-PR row with the initiative's LATEST ask block
+// system-wide, so PR one's row rendered PR two's question. Each row must
+// carry its OWN decision now.
+//
+// Notes below are hand-constructed to mirror EXACTLY what gateKong.Run's
+// --pr path writes (kong_converted.go): a "pr: <url>" line as the first
+// field inside the sentinel block. Description carries the "pr" rail lines
+// (ateam pr add's write path) so initiative.ResolvedPRs resolves both PRs
+// from the rail, matching the real multi-PR shape. urlTwo is already in
+// CANONICAL form (agent-teams-ssib.25) — every real gate label and rail
+// entry is, since resolvePR/WithPR canonicalize before writing; a
+// mixed-case owner here would silently desync from ResolvedPRs' canonical
+// output and defeat the very pairing this test exists to check.
+func TestHumanListMultiPR_PairsAskWithItsOwnPR(t *testing.T) {
+	const (
+		urlOne = "https://github.com/erlloyd/pr-shepherd/pull/3"
+		urlTwo = "https://github.com/mgt-insurance/midgard/pull/4632"
+	)
+	notes := "<<<ateam-ask\n" +
+		"pr: " + urlOne + "\n" +
+		"decision: PR one ready?\n" +
+		"recommendation: yes\n" +
+		"alternative: no\n" +
+		">>>\n" +
+		"<<<ateam-ask\n" +
+		"pr: " + urlTwo + "\n" +
+		"decision: PR two ready?\n" +
+		"recommendation: yes\n" +
+		"alternative: no\n" +
+		">>>\n"
+	issues := []bd.Issue{
+		{
+			ID:          "loopws-xgq",
+			Title:       "loop closure: two PRs gated independently",
+			Description: "pr: " + urlOne + "\npr: " + urlTwo + "\n",
+			Labels:      []string{"human", "gate:review:" + urlOne, "gate:review:" + urlTwo},
+			Notes:       notes,
+		},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	rowOne, rowTwo := splitAtPRLine(t, got, urlOne, urlTwo)
+
+	if !strings.Contains(rowOne, "decision: PR one ready?") {
+		t.Errorf("row for %s missing its own decision, got: %q", urlOne, rowOne)
+	}
+	if strings.Contains(rowOne, "PR two ready?") {
+		t.Errorf("row for %s wrongly carries PR two's decision, got: %q", urlOne, rowOne)
+	}
+	if !strings.Contains(rowTwo, "decision: PR two ready?") {
+		t.Errorf("row for %s missing its own decision, got: %q", urlTwo, rowTwo)
+	}
+	if strings.Contains(rowTwo, "PR one ready?") {
+		t.Errorf("row for %s wrongly carries PR one's decision, got: %q", urlTwo, rowTwo)
+	}
+}
+
+// splitAtPRLine splits human-list output into the segment starting at
+// "pr: <urlOne>" up to (not including) "pr: <urlTwo>", and the segment from
+// "pr: <urlTwo>" to the end — i.e. each PR's own rendered row, so a test can
+// assert what appears under ONE row without the other row's content
+// leaking into the assertion by being present elsewhere in the full output.
+func splitAtPRLine(t *testing.T, got, urlOne, urlTwo string) (rowOne, rowTwo string) {
+	t.Helper()
+	idxOne := strings.Index(got, "pr: "+urlOne)
+	idxTwo := strings.Index(got, "pr: "+urlTwo)
+	if idxOne == -1 || idxTwo == -1 {
+		t.Fatalf("expected both pr: lines in output, got: %q", got)
+	}
+	if idxOne < idxTwo {
+		return got[idxOne:idxTwo], got[idxTwo:]
+	}
+	return got[idxOne:], got[idxTwo:idxOne]
+}
+
+// TestHumanListSinglePR_AskRenderingUnchanged pins that a single-resolved-PR
+// initiative's ask rendering is byte-for-byte what it was before this fix —
+// no ambiguity exists with only one PR, so the original "latest block"
+// lookup (extractLatestAsk) is still what renders, tag or no tag.
+func TestHumanListSinglePR_AskRenderingUnchanged(t *testing.T) {
+	const url = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	notes := "<<<ateam-ask\ndecision: Ship it?\nrecommendation: yes\nalternative: no\n>>>"
+	issues := []bd.Issue{
+		{
+			ID:          "at-single",
+			Title:       "single PR initiative",
+			Description: "pr: " + url + "\n",
+			Labels:      []string{"human", "gate:review:" + url},
+			Notes:       notes,
+		},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "decision: Ship it?") {
+		t.Errorf("expected the untagged block's decision to render for a single-PR initiative, got: %q", got)
+	}
+	if !strings.Contains(got, "pr: "+url) {
+		t.Errorf("expected the pr: line, got: %q", got)
 	}
 }
 

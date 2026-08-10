@@ -144,10 +144,15 @@ func TestMatchInitiative_PRFieldInDescription(t *testing.T) {
 }
 
 func TestMatchInitiative_NotesCheckedBeforeDescription(t *testing.T) {
-	// Notes has PR #10 (owner/notes-repo), Description has PR #20 (owner/desc-repo).
-	// Event matches the notes PR → should be MatchPRField.
+	// No "pr:" rail line on this issue — the Description PR reference is
+	// prose, not a "pr: <url>" field line, so initiative.ResolvedPRs' rail
+	// stays empty and it falls back to the free-text scan, Notes checked
+	// before Description (docs/multi-pr-contract.md, "read precedence"). Had
+	// this been a real rail entry, the rail would win wholesale over Notes
+	// regardless of which PR the event names — see
+	// TestMatchInitiative_PRFieldInDescription for that (single-PR) rail case.
 	desc := descLines("/repo", "/wt/at-ccc", "br") +
-		"pr: https://github.com/owner/desc-repo/pull/20\n"
+		"delivered as https://github.com/owner/desc-repo/pull/20\n"
 	issues := []bd.Issue{
 		makeIssue("at-ccc", desc, "pr delivered: https://github.com/owner/notes-repo/pull/10"),
 	}
@@ -197,6 +202,81 @@ func TestMatchInitiative_PRNumberMustMatch(t *testing.T) {
 	}
 	if result.How != MatchNone {
 		t.Errorf("How: got %v, want MatchNone (wrong PR number, branch mismatch)", result.How)
+	}
+}
+
+// ── matchInitiativeFromIssues — multi-PR rail (agent-teams-ssib.7) ───────────
+//
+// The bug these guard: reading only the FIRST resolved PR (the pre-fix
+// extractPrURL(Notes)-then-extractPrURL(Description) single-URL scan) makes a
+// SECOND or THIRD PR opened on the same initiative invisible to tier-1
+// matching. Each issue below deliberately mismatches tier-2 (different repo
+// basename, or a "branch:" field the test's headBranch does not equal) so a
+// tier-1 miss cannot be masked by an accidental branch-fallback match —
+// mutating matchInitiativeFromIssues back to first-match-only must turn these
+// red, not leave them passing for the wrong reason.
+
+// railIssue builds an issue whose "pr" rail holds prURLs in registration
+// order (Description "pr: <url>" lines, the ateam-pr-add write path), with no
+// pr: mention in Notes at all.
+func railIssue(id string, prURLs []string, repo, worktree, branch string) bd.Issue {
+	desc := descLines(repo, worktree, branch)
+	for _, u := range prURLs {
+		desc += "pr: " + u + "\n"
+	}
+	return makeIssue(id, desc, "")
+}
+
+func TestMatchInitiative_SecondRailEntryMatches(t *testing.T) {
+	prURLs := []string{
+		"https://github.com/owner/repo/pull/1",
+		"https://github.com/owner/second-repo/pull/2",
+	}
+	issues := []bd.Issue{railIssue("at-multi", prURLs, "/code/repo", "/wt/at-multi", "main")}
+	event := PREvent{Repo: "owner/second-repo", PRNumber: 2}
+	result, err := matchInitiativeFromIssues(issues, event, "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.How != MatchPRField {
+		t.Fatalf("How: got %v, want MatchPRField (second rail entry must match)", result.How)
+	}
+	if result.InitiativeID != "at-multi" {
+		t.Errorf("InitiativeID: got %q", result.InitiativeID)
+	}
+}
+
+func TestMatchInitiative_ThirdRailEntryMatches(t *testing.T) {
+	prURLs := []string{
+		"https://github.com/owner/repo/pull/1",
+		"https://github.com/owner/repo2/pull/2",
+		"https://github.com/owner/third-repo/pull/3",
+	}
+	issues := []bd.Issue{railIssue("at-multi3", prURLs, "/code/repo", "/wt/at-multi3", "main")}
+	event := PREvent{Repo: "owner/third-repo", PRNumber: 3}
+	result, err := matchInitiativeFromIssues(issues, event, "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.How != MatchPRField {
+		t.Fatalf("How: got %v, want MatchPRField (third rail entry must match)", result.How)
+	}
+	if result.InitiativeID != "at-multi3" {
+		t.Errorf("InitiativeID: got %q", result.InitiativeID)
+	}
+}
+
+func TestMatchInitiative_RailOnlyPRStillRoutes(t *testing.T) {
+	// No Notes at all — the PR is recorded ONLY via the rail (ateam pr add).
+	// initiative.ResolvedPRs must still surface it to tier-1 matching.
+	issues := []bd.Issue{railIssue("at-rail-only", []string{"https://github.com/owner/repo/pull/5"}, "/code/repo", "/wt/at-rail-only", "main")}
+	event := PREvent{Repo: "owner/repo", PRNumber: 5}
+	result, err := matchInitiativeFromIssues(issues, event, "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.How != MatchPRField {
+		t.Fatalf("How: got %v, want MatchPRField", result.How)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // ── computeExecutionStatus ────────────────────────────────────────────────────
@@ -577,10 +578,13 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 		t.Errorf("at-001: expected nil ask for bare notes (no sentinel block), got %+v", byID["at-001"].Ask)
 	}
 
-	// Verify pr field is empty when notes contain no PR URL.
+	// Verify prs is empty (never null) when notes contain no PR URL.
 	for _, id := range []string{"at-001", "at-002", "at-003", "at-004"} {
-		if byID[id].PR != "" {
-			t.Errorf("%s: expected empty pr, got %q", id, byID[id].PR)
+		if len(byID[id].PRs) != 0 {
+			t.Errorf("%s: expected empty prs, got %v", id, byID[id].PRs)
+		}
+		if len(byID[id].PRReviews) != 0 {
+			t.Errorf("%s: expected empty pr_reviews, got %v", id, byID[id].PRReviews)
 		}
 	}
 	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
@@ -641,8 +645,11 @@ func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
 	if r.ExecutionStatus != "NEEDS-DECISION" {
 		t.Errorf("execution_status = %q, want NEEDS-DECISION", r.ExecutionStatus)
 	}
-	if r.PR != prURL {
-		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	if len(r.PRs) != 1 || r.PRs[0] != prURL {
+		t.Errorf("prs = %v, want [%q]", r.PRs, prURL)
+	}
+	if len(r.PRReviews) != 1 || r.PRReviews[0].PR != prURL || r.PRReviews[0].Gate != "question" {
+		t.Errorf("pr_reviews = %v, want [{%q question}]", r.PRReviews, prURL)
 	}
 	if r.Ask == nil {
 		t.Fatal("ask is nil, expected structured block")
@@ -708,8 +715,8 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 	if r.Ask != nil {
 		t.Errorf("ask = %+v, want nil (no sentinel block)", r.Ask)
 	}
-	if r.PR != prURL {
-		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	if len(r.PRs) != 1 || r.PRs[0] != prURL {
+		t.Errorf("prs = %v, want [%q]", r.PRs, prURL)
 	}
 	if r.ExecutionStatus != "REVIEWABLE" {
 		t.Errorf("execution_status = %q, want REVIEWABLE", r.ExecutionStatus)
@@ -873,5 +880,79 @@ func TestExecutionStatusCmd_Run_HandoffAndReviewable(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Errorf("expected no stderr on a clean run, got %q", stderr)
+	}
+}
+
+// TestComputePRReviews_BareGateAttributedToAllPRs is the load-bearing
+// witness for agent-teams-ssib.24: a bare, un-suffixed gate label on a 2+-PR
+// initiative names no PR, so it is attributed to EVERY resolved PR rather
+// than none. Before this fix, a 2+-PR initiative with only a bare gate
+// reported gated at the execution_status rollup (hasGateKind sees the bare
+// label) while computePRReviews attributed it to nobody, so human-list (which
+// renders from computePRReviews) emitted zero rows — the rollup and the
+// queue disagreed about whether a human was needed.
+func TestComputePRReviews_BareGateAttributedToAllPRs(t *testing.T) {
+	labels := []string{"human", "gate:review"}
+	prs := []string{
+		"https://github.com/erlloyd/pr-shepherd/pull/3",
+		"https://github.com/mgt-insurance/midgard/pull/4632",
+	}
+	got := computePRReviews(labels, prs)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 PRReview entries, got %d: %+v", len(got), got)
+	}
+	for _, r := range got {
+		if r.Gate != "review" {
+			t.Errorf("PR %s: gate = %q, want %q (bare gate must attribute to every PR)", r.PR, r.Gate, "review")
+		}
+	}
+}
+
+// TestExecutionStatusAndHumanList_AgreeOnBareGateWithMultiplePRs pins the
+// agreement agent-teams-ssib.24 requires: execution-status's rollup and
+// human-list's queue must never disagree about whether a human is needed.
+// Mutate computePRReviews back to the old len(prs)==1 restriction and this
+// goes RED — computeExecutionStatus still reports REVIEWABLE (it reads
+// labels directly, not computePRReviews) while human-list renders "No
+// human-needed beads found." for the very same initiative.
+func TestExecutionStatusAndHumanList_AgreeOnBareGateWithMultiplePRs(t *testing.T) {
+	prOne := "https://github.com/erlloyd/pr-shepherd/pull/3"
+	prTwo := "https://github.com/mgt-insurance/midgard/pull/4632"
+	issue := bd.Issue{
+		ID:          "at-bare2pr",
+		Title:       "two PRs, one legacy bare gate",
+		Description: "worktree: /tmp/wt-at-bare2pr\npr: " + prOne + "\npr: " + prTwo + "\n",
+		Labels:      []string{"human", "gate:review"},
+		Status:      "open",
+	}
+
+	execStatus := computeExecutionStatus(issue.Labels, nil, initiative.Of(issue).Worktree)
+	rollupSaysGated := execStatus == "NEEDS-DECISION" || execStatus == "REVIEWABLE"
+	if !rollupSaysGated {
+		t.Fatalf("precondition: expected execution_status to report gated, got %q", execStatus)
+	}
+
+	raw, err := json.Marshal([]bd.Issue{issue})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	ctx := &cli.Context{
+		Home:   "/ws",
+		BD:     bd.NewClientWithExec("/ws", func(string, ...string) ([]byte, []byte, error) { return raw, nil, nil }),
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+	if err := (&humanListKong{}).Run(ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+	out := stdout.String()
+	queueSaysGated := !strings.Contains(out, "No human-needed beads found.")
+	if rollupSaysGated != queueSaysGated {
+		t.Errorf("execution_status (%q, gated=%v) disagrees with human-list (gated=%v); output: %q",
+			execStatus, rollupSaysGated, queueSaysGated, out)
+	}
+	if !strings.Contains(out, prOne) || !strings.Contains(out, prTwo) {
+		t.Errorf("expected both PRs visible in human-list (attribute-to-all), got: %q", out)
 	}
 }

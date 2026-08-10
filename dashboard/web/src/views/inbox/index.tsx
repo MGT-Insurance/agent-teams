@@ -61,10 +61,12 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           state: {item.state ?? "—"}
         </span>
         <span className="inbox-row__title">{item.title}</span>
-        {/* PR link whenever a URL is present — delivery is orthogonal to flavor. */}
-        {item.prUrl && (
+        {/* One link per PR — an initiative can have more than one open at once
+            (agent-teams-ssib.9); delivery is orthogonal to flavor. */}
+        {item.prUrls.map((url) => (
           <a
-            href={item.prUrl}
+            key={url}
+            href={url}
             target="_blank"
             rel="noreferrer"
             className="inbox-row__pr-link"
@@ -72,7 +74,7 @@ function InboxRow({ item, actionSlot }: InboxRowProps) {
           >
             view PR ↗
           </a>
-        )}
+        ))}
         {actionSlot && (
           <div className="row-action-slot">{actionSlot}</div>
         )}
@@ -183,7 +185,13 @@ export default function InboxView() {
       ) : (
         <ul className="inbox-list" aria-label="Inbox items">
           {sorted.map((item) => (
-            <li key={item.initiativeId} className="inbox-list__item">
+            // agent-teams-ssib.10: one initiative can now produce more than one
+            // row (one per gated PR) — initiativeId alone is no longer a unique
+            // key, so disambiguate with kind + the row's specific PR.
+            <li
+              key={`${item.initiativeId}:${item.kind}:${item.prUrls[0] ?? ""}`}
+              className="inbox-list__item"
+            >
               <InboxRow
                 item={item}
                 actionSlot={

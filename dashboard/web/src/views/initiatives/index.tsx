@@ -174,19 +174,24 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           value={onMachine ? "yes" : "no"}
           title={onMachine ? "Worktree exists on this machine" : "Worktree not on this machine"}
         />
-        {hasPr && initiative.prUrl ? (
-          <a
-            href={initiative.prUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="init-chip init-chip--on init-chip--pr init-chip--link"
-            onClick={handlePrLinkClick}
-            title={`Open PR: ${initiative.prUrl}`}
-            aria-label="open PR: yes"
-          >
-            <span className="init-chip__icon" aria-hidden="true">⎘</span>
-            <span className="init-chip__label">PR ↗</span>
-          </a>
+        {/* One chip per PR — an initiative can have more than one open at once
+            (agent-teams-ssib.9). */}
+        {hasPr && initiative.prs.length > 0 ? (
+          initiative.prs.map((url) => (
+            <a
+              key={url}
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="init-chip init-chip--on init-chip--pr init-chip--link"
+              onClick={handlePrLinkClick}
+              title={`Open PR: ${url}`}
+              aria-label="open PR: yes"
+            >
+              <span className="init-chip__icon" aria-hidden="true">⎘</span>
+              <span className="init-chip__label">PR ↗</span>
+            </a>
+          ))
         ) : (
           <SignalChip
             level={hasPr ? "on" : "off"}

@@ -65,7 +65,8 @@ function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative 
     branch: "init-1",
     team: "",
     mode: "",
-    prUrl: null,
+    prs: [],
+    prReviews: [],
     epic: null,
     // ParsedInitiative carries the CLI-parsed routing fields (agent-teams-ully.12).
     // The view reads the flattened members above, so an empty object is honest here.
@@ -323,11 +324,11 @@ describe("InitiativesView — signal chips", () => {
     expect(chip.classList.contains("init-chip--off")).toBe(true);
   });
 
-  it("renders an open-PR link when delivery is pr-open and prUrl is present", () => {
+  it("renders an open-PR link when delivery is pr-open and prs is non-empty", () => {
     setInitiatives([
       makeNode(
         { delivery: "pr-open" },
-        { id: "init-1", title: "Has PR", prUrl: "https://github.com/org/repo/pull/5" }
+        { id: "init-1", title: "Has PR", prs: ["https://github.com/org/repo/pull/5"] }
       ),
     ]);
     renderView();
@@ -340,12 +341,36 @@ describe("InitiativesView — signal chips", () => {
     setInitiatives([
       makeNode(
         { delivery: "pr-open" },
-        { id: "init-1", title: "Has PR", prUrl: "https://github.com/org/repo/pull/5" }
+        { id: "init-1", title: "Has PR", prs: ["https://github.com/org/repo/pull/5"] }
       ),
     ]);
     renderView();
     fireEvent.click(screen.getByRole("link", { name: /open pr/i }));
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  // agent-teams-ssib.9: an initiative can have more than one PR open at once —
+  // the row must render a chip for every one of them, not just the first.
+  it("renders a chip for every PR when the initiative has more than one open", () => {
+    setInitiatives([
+      makeNode(
+        { delivery: "pr-open" },
+        {
+          id: "init-1",
+          title: "Has two PRs",
+          prs: [
+            "https://github.com/erlloyd/pr-shepherd/pull/3",
+            "https://github.com/MGT-Insurance/midgard/pull/4632",
+          ],
+        }
+      ),
+    ]);
+    renderView();
+    const links = screen.getAllByRole("link", { name: /open pr/i });
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      "https://github.com/erlloyd/pr-shepherd/pull/3",
+      "https://github.com/MGT-Insurance/midgard/pull/4632",
+    ]);
   });
 
   it("session chip = green 'running' for an open initiative with a live session", () => {

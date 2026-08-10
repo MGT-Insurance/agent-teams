@@ -65,12 +65,29 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models ten fields. The live registry carries THIRTEEN canonical
-// keys: the ten modeled ones, plus at least pr-number, pr-repo, and pr-url —
+// [Fields] models eleven fields (AMENDED for agent-teams-ssib: "pr" joined
+// the multi-valued rail alongside "session" and "track-worktree" — see
+// [Fields.PRs] and [WithPR]). The live registry carries at least THIRTEEN
+// canonical keys beyond those eleven: pr-number, pr-repo, and pr-url —
 // written not by Go code but by an LLM following a skill's instructions,
 // which then parses those same keys back out of `ateam show`. A skill file
 // can therefore introduce a new canonical key without one line of Go
 // changing.
+//
+// "pr" and the pr-number/pr-repo/pr-url trio are NOT the same field wearing
+// two names — they describe different things for different initiative
+// kinds. pr-number/pr-repo/pr-url describe the single PR a review-pr
+// initiative is reviewing (plugins/agent-teams/skills/review-pr/SKILL.md).
+// "pr" describes the PR(s) a DRI initiative has opened (one initiative can
+// open more than one PR); it is unrelated to, and does not replace, the
+// pre-existing "pr:" line the dri skill writes into bd NOTES today
+// (plugins/agent-teams/skills/dri/SKILL.md — "record the structured pr:
+// field") — that Notes-based line is read by a free-text regex
+// (extractPrURL, internal/verbs/route_match.go), not by this package's
+// field-line rule, which scans Description only. Both happen to store the
+// same value shape (a full https GitHub PR URL) under the same key text
+// ("pr"), coincidentally — see docs/multi-pr-contract.md for the frozen
+// grammar and the empirical keystone behind it.
 //
 // Consequence: no design in this package may assume the typed [Fields]
 // struct enumerates everything storable. An unmodeled canonical key (a line
@@ -104,6 +121,7 @@
 //	    Standby  bool
 //	    Sessions []string
 //	    Tracks   []string
+//	    PRs      []string
 //	}
 //
 //	func Of(iss bd.Issue) Fields                        // READ SEAM (typed)
@@ -111,6 +129,7 @@
 //	func New(f Fields) (WritePlan, error)                // WRITE SEAM (new initiatives only — see item 4)
 //	func WithSession(iss bd.Issue, id string) (WritePlan, error)
 //	func WithTrack(iss bd.Issue, path string) (WritePlan, error)
+//	func WithPR(iss bd.Issue, url string) (WritePlan, error)
 //
 //	type WritePlan struct {
 //	    Description string

@@ -54,6 +54,35 @@ type fakeResp struct {
 	err    error
 }
 
+// showResp builds the fakeResp for a `bd show <id> --json` call — the
+// single-element-array shape bd.ShowIssue expects — carrying labels.
+func showResp(t *testing.T, id string, labels ...string) fakeResp {
+	t.Helper()
+	raw, err := json.Marshal([]bd.Issue{{ID: id, Labels: labels}})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return fakeResp{stdout: string(raw)}
+}
+
+// showRespWithPRs is showResp plus a "pr" rail line per prURL, so
+// initiative.ResolvedPRs(issue) resolves them — needed for any test whose
+// gate/clear-gate/handoff call uses --pr, since resolvePR (agent-teams-
+// ssib.25) now requires --pr to name one of the initiative's ACTUAL
+// resolved PRs and calls bd show to find out.
+func showRespWithPRs(t *testing.T, id string, prURLs []string, labels ...string) fakeResp {
+	t.Helper()
+	var desc strings.Builder
+	for _, pr := range prURLs {
+		desc.WriteString("pr: " + pr + "\n")
+	}
+	raw, err := json.Marshal([]bd.Issue{{ID: id, Description: desc.String(), Labels: labels}})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return fakeResp{stdout: string(raw)}
+}
+
 // makeTempFile writes content to a temp file and returns its path.
 func makeTempFile(t *testing.T, content string) string {
 	t.Helper()
@@ -471,6 +500,94 @@ func TestGate_StructuredAsk_SentinelFormat(t *testing.T) {
 	_ = capturedFile
 }
 
+// TestGate_StructuredAsk_PRTagsTheBlock confirms --pr inserts a "pr: <url>"
+// line as the first field inside the sentinel block, which human-list uses
+// to pair a per-PR row with its own ask rather than the initiative's latest
+// block system-wide (agent-teams-ssib.8 follow-up).
+func TestGate_StructuredAsk_PRTagsTheBlock(t *testing.T) {
+	const pr = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	var capturedContent string
+	showJSON := showRespWithPRs(t, "at-tagged", []string{pr}).stdout // resolvePR's bd show
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if len(stripped) > 0 && stripped[0] == "show" {
+			return []byte(showJSON), nil, nil
+		}
+		if len(stripped) > 0 && stripped[0] == "note" {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedContent = string(data)
+				}
+			}
+		}
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	if err := (&gateKong{
+		ID:             "at-tagged",
+		Decision:       "PR one ready?",
+		Recommendation: "yes",
+		Alternative:    "no",
+		Kind:           "review",
+		PR:             pr,
+	}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "<<<ateam-ask\npr: " + pr + "\ndecision: PR one ready?\nrecommendation: yes\nalternative: no\n>>>"
+	if capturedContent != want {
+		t.Errorf("sentinel block =\n%q\nwant:\n%q", capturedContent, want)
+	}
+}
+
+// TestGate_StructuredAsk_NoPR_UntaggedUnchanged confirms omitting --pr
+// leaves the sentinel block byte-for-byte as it was before this fix.
+func TestGate_StructuredAsk_NoPR_UntaggedUnchanged(t *testing.T) {
+	var capturedContent string
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedContent = string(data)
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	if err := (&gateKong{
+		ID:             "at-untagged",
+		Decision:       "Ship it?",
+		Recommendation: "yes",
+		Alternative:    "no",
+		Kind:           "review",
+	}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "<<<ateam-ask\ndecision: Ship it?\nrecommendation: yes\nalternative: no\n>>>"
+	if capturedContent != want {
+		t.Errorf("sentinel block =\n%q\nwant:\n%q", capturedContent, want)
+	}
+}
+
 func TestGate_StructuredAsk_WithoutContext(t *testing.T) {
 	var capturedContent string
 	idx := 0
@@ -870,56 +987,103 @@ func TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock(t *testing.T) {
 	}
 }
 
+// ── gate: --pr discriminator (docs/multi-pr-contract.md §3) ──────────────────
+
+// TestGate_PRScoped_EmitsPerPRLabel confirms that --pr produces the frozen
+// "<base>:<pr-url>" grammar for the gate label while "human" stays bare.
+func TestGate_PRScoped_EmitsPerPRLabel(t *testing.T) {
+	f := makeTempFile(t, "ready for review")
+	const pr = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-multi", []string{pr}), // resolvePR's bd show
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
+	err := (&gateKong{ID: "at-multi", File: f, Kind: "review", PR: pr}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-multi", "human"})
+	assertArgs(t, *calls, 3, []string{"label", "add", "at-multi", "gate:review:" + pr})
+}
+
+// TestGate_NoPR_StaysBare confirms the legacy, no-`--pr` path is byte-for-byte
+// unchanged (already pinned by TestGate_KindReview et al.; restated here next
+// to its --pr sibling for contrast).
+func TestGate_NoPR_StaysBare(t *testing.T) {
+	f := makeTempFile(t, "ready for review")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	err := (&gateKong{ID: "at-single", File: f, Kind: "review"}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-single", "gate:review"})
+}
+
 // ── clear-gate ────────────────────────────────────────────────────────────────
 
 func TestClearGate_WithFile(t *testing.T) {
-	// 5 calls: comment, label remove human, label remove gate:review,
-	// label remove gate:question, label remove external-review
+	// 6 calls: comment, show (to enumerate any per-PR labels — none here),
+	// label remove human, label remove gate:review, label remove
+	// gate:question, label remove external-review
 	f := makeTempFile(t, "response")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "ok"},
+		showResp(t, "at-3", "human", "gate:review"),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
 	err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls, got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 0, []string{"comment", "at-3", "--file=" + f})
+	assertArgs(t, *calls, 1, []string{"show", "at-3", "--json"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "human"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:review"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "gate:question"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
+}
+
+func TestClearGate_WithoutFile(t *testing.T) {
+	// 5 calls: show, label remove human, label remove gate:review, label
+	// remove gate:question, label remove external-review
+	ctx, calls := newCtx(t, []fakeResp{
+		showResp(t, "at-3", "human", "gate:review"),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
+	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(*calls) != 5 {
 		t.Fatalf("expected 5 bd calls, got %d", len(*calls))
 	}
-	assertArgs(t, *calls, 0, []string{"comment", "at-3", "--file=" + f})
+	assertArgs(t, *calls, 0, []string{"show", "at-3", "--json"})
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
 	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
 	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
 }
 
-func TestClearGate_WithoutFile(t *testing.T) {
-	// 4 calls: label remove human, label remove gate:review, label remove
-	// gate:question, label remove external-review
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
-	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(*calls) != 4 {
-		t.Fatalf("expected 4 bd calls, got %d", len(*calls))
-	}
-	assertArgs(t, *calls, 0, []string{"label", "remove", "at-3", "human"})
-	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "gate:review"})
-	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:question"})
-	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "external-review"})
-}
-
 func TestClearGate_EqualsForm(t *testing.T) {
 	f := makeTempFile(t, "response")
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{
+		{stdout: "ok"},
+		showResp(t, "at-3", "human", "gate:review"),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
 	err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertArgs(t, *calls, 0, []string{"comment", "at-3", "--file=" + f})
-	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
-	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
-	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 1, []string{"show", "at-3", "--json"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "human"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:review"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "gate:question"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
 }
 
 // TestClearGate_ExternalReviewAbsentIsNonFatal confirms that removing
@@ -927,12 +1091,85 @@ func TestClearGate_EqualsForm(t *testing.T) {
 // calls are on R, not H, per external_review.go §9) still succeeds, matching
 // how the three pre-existing removals already tolerate absence.
 func TestClearGate_ExternalReviewAbsentIsNonFatal(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: ""}})
+	ctx, calls := newCtx(t, []fakeResp{
+		showResp(t, "at-3", "human", "gate:review"),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: ""},
+	})
 	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
+}
+
+// TestClearGate_ShowIssueErrorFallsBackToBareFour confirms the fail-soft
+// path: when the label read fails, bare clear-gate still runs the
+// historical four-label sweep (no per-PR labels can be enumerated without a
+// read), rather than doing nothing or erroring out.
+func TestClearGate_ShowIssueErrorFallsBackToBareFour(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
+	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (show + the 4 bare removals), got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
+	if stderr := ctx.Stderr.(*bytes.Buffer).String(); !strings.Contains(stderr, "at-3") {
+		t.Errorf("expected stderr warning naming the id, got: %q", stderr)
+	}
+}
+
+// TestClearGate_Bare_SweepsPerPRLabelsToo is the load-bearing witness for
+// the second half of agent-teams-ssib.4's over-wipe fix (one level up from
+// clearOnePR's --pr-scoped half): a bare `clear-gate` (the DRI playbook's
+// documented close-out/resume/standby-release call, no --pr) on an
+// initiative with TWO PRs gated per-PR must leave NOTHING gate-related
+// behind — not the four bare labels, and not either PR's per-PR labels.
+// Without this, a per-PR label survives every bare clear-gate forever and a
+// CLOSED initiative keeps reporting REVIEWABLE/NEEDS-DECISION with no way
+// to dismiss it. This test must go RED if the sweep is reverted to
+// bare-only — verified by hand during implementation (reverting
+// clearBareLegacy to skip perPRGateLabels makes the 6-call assertion fail
+// with only 4 calls, since the two per-PR removals never happen).
+func TestClearGate_Bare_SweepsPerPRLabelsToo(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		showResp(t, "at-multi", "human",
+			"gate:review:"+prURLShepherd,
+			"gate:question:"+prURLMidgard,
+		),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, // the 4 bare removals
+		{stdout: "ok"}, {stdout: "ok"}, // the 2 per-PR removals found on the issue
+	})
+	err := (&clearGateKong{ID: "at-multi"}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 7 {
+		t.Fatalf("expected 7 bd calls (show + 4 bare + 2 per-PR), got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 0, []string{"show", "at-multi", "--json"})
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-multi", "human"})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-multi", "gate:review"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-multi", "gate:question"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-multi", "external-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-multi", "gate:question:" + prURLMidgard})
+
+	// The closed-initiative consequence, cheaply reachable: after this
+	// sweep, hasGateKind must report false for both bases — nothing gate-
+	// related remains to falsely report REVIEWABLE/NEEDS-DECISION.
+	remaining := []string{} // every label above was removed
+	if hasGateKind(remaining, "gate:review") || hasGateKind(remaining, "gate:question") {
+		t.Error("hasGateKind still true after a full bare sweep; the initiative would stay falsely gated")
+	}
 }
 
 func TestClearGate_MissingID(t *testing.T) {
@@ -952,6 +1189,219 @@ func TestClearGate_FileNotFound(t *testing.T) {
 	ctx, _ := newCtx(t, nil)
 	err := (&clearGateKong{ID: "at-3", File: "/no/such"}).Run(ctx)
 	assertUsageError(t, err, "file not found")
+}
+
+// ── clear-gate: --pr discriminator, conditional wipe (agent-teams-ssib.4) ────
+
+const (
+	prURLShepherd = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	prURLMidgard  = "https://github.com/MGT-Insurance/midgard/pull/4632"
+)
+
+// TestClearGate_PRScoped_LeavesOtherPRAndHumanIntact is the load-bearing
+// witness for agent-teams-ssib.4's over-wipe fix: two PRs on one initiative,
+// each gated independently; clearing ONE PR's gate must leave the OTHER
+// PR's gate label AND the shared "human" label untouched. This test must go
+// RED if clear-gate is reverted to its old unconditional four-label wipe —
+// verified by hand during implementation (mutate clearOnePR to call
+// clearBareLegacy instead; the 4th/5th assertions below fail because the
+// bare removal calls target unsuffixed label names the fake exec never
+// configured a response for, and the surviving-label assertion no longer
+// applies since the whole "human" is gone).
+func TestClearGate_PRScoped_LeavesOtherPRAndHumanIntact(t *testing.T) {
+	// After clearing shepherd#3, midgard#4632 is still gate:question-ed and
+	// "human" must survive because of it.
+	afterClear := bd.Issue{ID: "at-multi", Labels: []string{"human", "gate:question:" + prURLMidgard}}
+	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
+
+	ctx, calls := newCtx(t, []fakeResp{
+		// resolvePR's bd show — realistic pre-clear state: shepherd is
+		// review-gated, midgard is question-gated, both per-PR (not bare),
+		// so clearOnePR's bare-gate guard (ssib.30) must NOT fire here.
+		showRespWithPRs(t, "at-multi", []string{prURLShepherd, prURLMidgard}, "human", "gate:review:"+prURLShepherd, "gate:question:"+prURLMidgard),
+		{stdout: "ok"},                   // label remove gate:review:<shepherd>
+		{stdout: "ok"},                   // label remove gate:question:<shepherd>
+		{stdout: "ok"},                   // label remove external-review:<shepherd>
+		{stdout: string(afterClearJSON)}, // show <id> --json (post-removal check)
+	})
+
+	err := (&clearGateKong{ID: "at-multi", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (no \"human\" removal — midgard is still gated), got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-multi", "gate:question:" + prURLShepherd})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-multi", "external-review:" + prURLShepherd})
+	assertArgs(t, *calls, 4, []string{"show", "at-multi", "--json"})
+}
+
+// TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains confirms the other
+// half of the conditional: once the LAST gated PR is cleared, "human" is
+// removed too.
+func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
+	afterClear := bd.Issue{ID: "at-single", Labels: []string{"human"}}
+	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
+
+	ctx, calls := newCtx(t, []fakeResp{
+		// resolvePR's bd show — shepherd is per-PR review-gated, so the
+		// bare-gate guard (ssib.30) must not fire.
+		showRespWithPRs(t, "at-single", []string{prURLShepherd}, "human", "gate:review:"+prURLShepherd),
+		{stdout: "ok"},
+		{stdout: "ok"},
+		{stdout: "ok"},
+		{stdout: string(afterClearJSON)},
+		{stdout: "ok"}, // label remove human
+	})
+
+	err := (&clearGateKong{ID: "at-single", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (human removed — no PR remains gated), got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-single", "human"})
+}
+
+// TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace confirms the
+// fail-soft path: if the post-removal label read fails, "human" is left in
+// place rather than guessed at.
+func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		// resolvePR's bd show — shepherd is per-PR review-gated, so the
+		// bare-gate guard (ssib.30) must not fire.
+		showRespWithPRs(t, "at-multi", []string{prURLShepherd}, "human", "gate:review:"+prURLShepherd),
+		{stdout: "ok"},
+		{stdout: "ok"},
+		{stdout: "ok"},
+		{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")},
+	})
+
+	err := (&clearGateKong{ID: "at-multi", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (no human removal attempted on read failure), got %d: %v", len(*calls), *calls)
+	}
+	if stderr := ctx.Stderr.(*bytes.Buffer).String(); !strings.Contains(stderr, "at-multi") {
+		t.Errorf("expected stderr warning naming the id, got: %q", stderr)
+	}
+}
+
+// TestClearGate_PRScoped_RejectsWhenGateIsBare is the load-bearing witness
+// for agent-teams-ssib.30: reproduced live (team-lead) as `ateam clear-gate
+// <id> --pr <url>` printing three ✓ lines for labels that never existed and
+// changing nothing, on an initiative gated the OLD (bare) way. This PR has
+// no per-PR label of its own — only the bare "gate:review" — so clearOnePR
+// must refuse loudly instead of running three no-op removes that each print
+// a false success, and must say what actually works (bare clear-gate).
+func TestClearGate_PRScoped_RejectsWhenGateIsBare(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-bare2pr", []string{prURLShepherd, prURLMidgard}, "human", "gate:review"),
+	})
+
+	err := (&clearGateKong{ID: "at-bare2pr", PR: prURLShepherd}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected rejection for --pr against a bare (initiative-wide) gate, got nil")
+	}
+	if !strings.Contains(err.Error(), "initiative-wide") || !strings.Contains(err.Error(), "without --pr") {
+		t.Errorf("error = %q, want it to name the bare-gate reason and the working alternative", err.Error())
+	}
+	// Exactly the resolvePR show call — no label removal attempted at all,
+	// so no false ✓ is ever printed.
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd call (resolvePR's show only, no removals attempted), got %d: %v", len(*calls), *calls)
+	}
+}
+
+// TestClearGate_PRScoped_BareGateOnSinglePRInitiative_StillRejects confirms
+// the guard fires even on a single-PR initiative — a bare gate is
+// initiative-wide regardless of how many PRs are recorded; --pr is still the
+// wrong tool for clearing it.
+func TestClearGate_PRScoped_BareGateOnSinglePRInitiative_StillRejects(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-bare1pr", []string{prURLShepherd}, "human", "gate:question"),
+	})
+
+	err := (&clearGateKong{ID: "at-bare1pr", PR: prURLShepherd}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected rejection for --pr against a bare gate, got nil")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd call, got %d: %v", len(*calls), *calls)
+	}
+}
+
+// TestClearGate_PRScoped_OwnPerPRLabelOverridesBareGatePresence confirms the
+// guard's short-circuit: when this PR carries its OWN per-PR label, --pr
+// clears it normally even if the initiative ALSO still carries a bare gate
+// label (a mixed transitional state) — the bare-gate check must not block a
+// clear that has real per-PR work to do.
+func TestClearGate_PRScoped_OwnPerPRLabelOverridesBareGatePresence(t *testing.T) {
+	afterClear := bd.Issue{ID: "at-mixed", Labels: []string{"human", "gate:review"}}
+	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
+	ctx, calls := newCtx(t, []fakeResp{
+		// Both a bare "gate:review" AND shepherd's own per-PR "gate:review:<url>".
+		showRespWithPRs(t, "at-mixed", []string{prURLShepherd}, "human", "gate:review", "gate:review:"+prURLShepherd),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: string(afterClearJSON)},
+	})
+
+	err := (&clearGateKong{ID: "at-mixed", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (own per-PR label present, so the clear proceeds despite the bare gate), got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-mixed", "gate:review:" + prURLShepherd})
+}
+
+// TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp confirms the
+// guard is scoped to the bare-gate case specifically (per the bead's fix
+// direction) — a PR that simply isn't gated at all, with no bare gate
+// present either, is a harmless pre-existing no-op, not a rejection.
+func TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp(t *testing.T) {
+	afterClear := bd.Issue{ID: "at-ungated", Labels: []string{}}
+	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-ungated", []string{prURLShepherd}), // no labels at all
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: string(afterClearJSON)},
+	})
+
+	err := (&clearGateKong{ID: "at-ungated", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (proceeds as a no-op, no rejection; no gate remains so \"human\" is also removed), got %d: %v", len(*calls), *calls)
+	}
+}
+
+// TestClearGate_NoPR_StillUnconditional confirms the no-`--pr` path still
+// runs the original four-label unconditional wipe on an initiative with no
+// per-PR labels at all (nothing extra to sweep) — already pinned by
+// TestClearGate_WithoutFile; restated here next to its --pr sibling for
+// contrast. TestClearGate_Bare_SweepsPerPRLabelsToo covers the case where
+// per-PR labels DO exist.
+func TestClearGate_NoPR_StillUnconditional(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		showResp(t, "at-3", "human", "gate:review"),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
+	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls, got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
 }
 
 // ── learn ─────────────────────────────────────────────────────────────────────
@@ -1315,10 +1765,11 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 		{stdout: "ok"},            // gate: label add human
 		{stdout: "ok"},            // gate: label add gate:question
 		{stdout: "ok"},            // clear-gate: comment
-		{stdout: "ok"},            // clear-gate: label remove human
-		{stdout: "ok"},            // clear-gate: label remove gate:review
-		{stdout: "ok"},            // clear-gate: label remove gate:question
-		{stdout: "ok"},            // clear-gate: label remove external-review
+		showResp(t, "at-round1", "human", "gate:question"), // clear-gate: show (enumerate per-PR labels — none here)
+		{stdout: "ok"}, // clear-gate: label remove human
+		{stdout: "ok"}, // clear-gate: label remove gate:review
+		{stdout: "ok"}, // clear-gate: label remove gate:question
+		{stdout: "ok"}, // clear-gate: label remove external-review
 	}
 	execFn, calls := fakeExec(responses)
 	client := bd.NewClientWithExec(dir, execFn)
@@ -1345,8 +1796,8 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	}
 
 	// Verify call sequence
-	if len(*calls) != 9 {
-		t.Fatalf("expected 9 bd calls, got %d: %v", len(*calls), *calls)
+	if len(*calls) != 10 {
+		t.Fatalf("expected 10 bd calls, got %d: %v", len(*calls), *calls)
 	}
 	// call 0: create --json
 	if (*calls)[0].args[0] != "create" {
@@ -1363,14 +1814,16 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	assertArgs(t, *calls, 3, []string{"label", "add", "at-round1", "gate:question"})
 	// call 4: comment
 	assertArgs(t, *calls, 4, []string{"comment", "at-round1", "--file=" + responseFile})
-	// call 5: label remove human
-	assertArgs(t, *calls, 5, []string{"label", "remove", "at-round1", "human"})
-	// call 6: label remove gate:review
-	assertArgs(t, *calls, 6, []string{"label", "remove", "at-round1", "gate:review"})
-	// call 7: label remove gate:question
-	assertArgs(t, *calls, 7, []string{"label", "remove", "at-round1", "gate:question"})
-	// call 8: label remove external-review
-	assertArgs(t, *calls, 8, []string{"label", "remove", "at-round1", "external-review"})
+	// call 5: show (enumerate per-PR labels)
+	assertArgs(t, *calls, 5, []string{"show", "at-round1", "--json"})
+	// call 6: label remove human
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-round1", "human"})
+	// call 7: label remove gate:review
+	assertArgs(t, *calls, 7, []string{"label", "remove", "at-round1", "gate:review"})
+	// call 8: label remove gate:question
+	assertArgs(t, *calls, 8, []string{"label", "remove", "at-round1", "gate:question"})
+	// call 9: label remove external-review
+	assertArgs(t, *calls, 9, []string{"label", "remove", "at-round1", "external-review"})
 }
 
 // ── stdout forwarding ─────────────────────────────────────────────────────────
@@ -1430,6 +1883,7 @@ func TestClearGate_WithFile_ForwardsBothOutputs(t *testing.T) {
 	f := makeTempFile(t, "response")
 	ctx, _ := newCtx(t, []fakeResp{
 		{stdout: "✓ Comment added"},
+		showResp(t, "at-3", "human", "gate:review"),
 		{stdout: "✓ Removed label 'human'"},
 		{stdout: "✓ Removed label 'gate:review'"},
 		{stdout: "✓ Removed label 'gate:question'"},
@@ -1453,6 +1907,7 @@ func TestClearGate_WithFile_ForwardsBothOutputs(t *testing.T) {
 
 func TestClearGate_WithoutFile_ForwardsLabelOutput(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{
+		showResp(t, "at-3", "human", "gate:review"),
 		{stdout: "✓ Removed label 'human'"},
 		{stdout: "✓ Removed label 'gate:review'"},
 		{stdout: "✓ Removed label 'gate:question'"},

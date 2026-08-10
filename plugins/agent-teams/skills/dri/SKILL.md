@@ -107,14 +107,13 @@ This is the DRI's explicit "ready for you" bit — it makes the initiative *elig
 
 Opening a PR without this gate is incomplete; the initiative stays open until merged or a human explicitly closes it, so a later no-parameter /dri can resume it as an open match (close happens on a resume finding the PR merged, or explicit human direction).
 
-**MANDATORY — record the structured `pr:` field** right after opening the PR, before wind-down. The pr-shepherd match engine greps this exact line: one line, key `pr:`, full https GitHub PR URL, literal (not in a code block, not prefixed). Combine with the delivery note in one `ateam note` call:
+**MANDATORY — record the PR on the initiative's `pr` rail** right after opening the PR, before wind-down. The pr-shepherd match engine reads this rail to route events for the initiative:
 
 ```bash
-printf 'pr: https://github.com/<owner>/<repo>/pull/<n>\n' > /tmp/pr-field-note.txt
-ateam note <initiative-id> --file /tmp/pr-field-note.txt
+ateam pr add <initiative-id> https://github.com/<owner>/<repo>/pull/<n>
 ```
 
-Do NOT skip this step; without it the pr-shepherd cannot route events for this initiative.
+Do NOT skip this step; without it the pr-shepherd cannot route events for this initiative. If the DRI opens a **second or third PR** for this same initiative (multi-PR), call `ateam pr add` again for each one — the rail is multi-valued by design, not one-shot.
 
 ## Phase 6 — Wind-down
 

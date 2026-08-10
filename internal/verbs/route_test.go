@@ -831,6 +831,100 @@ func TestRoutePREventKong_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	}
 }
 
+// multiPRFieldIssue builds an issue whose "pr" rail holds one PR per entry in
+// prNumbers, under ownerRepo, for exercising the SECOND/THIRD rail entry
+// through the FULL route-pr-event dispatch (not just matchInitiativeFromIssues)
+// — proving a multi-PR rail routes via the real "matched -> mail send" branch
+// in route.go, not just that matchInitiativeFromIssues returns MatchPRField in
+// isolation. Its "branch:" field is deliberately "unrelated-branch" so tier-2
+// (MatchBranch) can never rescue a tier-1 miss — the tests using this must go
+// red under a first-match-only tier-1, not pass for the wrong reason via
+// branch fallback.
+func multiPRFieldIssue(t *testing.T, id, ownerRepo string, prNumbers []int) bd.Issue {
+	t.Helper()
+	var desc strings.Builder
+	fmt.Fprintf(&desc, "repo: %s\n", newEnabledClonePath(t))
+	fmt.Fprintf(&desc, "worktree: /tmp/wt-%s\n", id)
+	desc.WriteString("branch: unrelated-branch\n")
+	for _, n := range prNumbers {
+		fmt.Fprintf(&desc, "pr: https://github.com/%s/pull/%d\n", ownerRepo, n)
+	}
+	return bd.Issue{
+		ID:          id,
+		Title:       "Initiative " + id,
+		Description: desc.String(),
+		Status:      "open",
+	}
+}
+
+// TestRoutePREventKong_SecondPRRoutesViaSend_CIFailed rides the exact
+// non-review_requested default-branch silent-drop path (route.go's
+// `default: ... unowned ... skipping`, not the review_requested spawn path
+// that would mask a tier-1 miss): a ci_failed event naming the SECOND PR on
+// a two-PR initiative must still route via mail send. A first-match-only
+// tier-1 (pre-agent-teams-ssib.7) would read only PR #1, miss #2 entirely,
+// and this event would silently vanish into the default branch instead.
+func TestRoutePREventKong_SecondPRRoutesViaSend_CIFailed(t *testing.T) {
+	bodyFile := writeTempFile(t, "CI failed output")
+	issue := multiPRFieldIssue(t, "at-multi.1", "owner/myrepo", []int{1, 2})
+
+	ctx, stdout, _ := makeRouteCtx([]bd.Issue{issue})
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/myrepo",
+		PRNumber:   2, // the SECOND rail entry
+		HeadBranch: "feat-x",
+		Transition: TransitionCIFailed,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("expected 1 runner call (routed via mail send), got %d: %v (stdout: %s)", len(fr.calls), fr.calls, stdout.String())
+	}
+	if fr.calls[0][0] != "mail" || fr.calls[0][1] != "send" {
+		t.Errorf("expected mail send, got %v", fr.calls[0])
+	}
+	if fr.calls[0][2] != "at-multi.1" {
+		t.Errorf("expected send to at-multi.1, got %v", fr.calls[0])
+	}
+}
+
+// TestRoutePREventKong_ThirdPRRoutesViaSend_ChangesRequested is the sibling of
+// the above for the THIRD rail entry and the OTHER silent-drop transition
+// named in the acceptance bar (changes_requested, route.go's default branch).
+func TestRoutePREventKong_ThirdPRRoutesViaSend_ChangesRequested(t *testing.T) {
+	bodyFile := writeTempFile(t, "changes requested body")
+	issue := multiPRFieldIssue(t, "at-multi.2", "owner/myrepo", []int{1, 2, 3})
+
+	ctx, stdout, _ := makeRouteCtx([]bd.Issue{issue})
+	fr := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo:       "owner/myrepo",
+		PRNumber:   3, // the THIRD rail entry
+		HeadBranch: "feat-x",
+		Transition: TransitionChangesRequested,
+		BodyFile:   bodyFile,
+		runner:     fr.run,
+	}
+
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("expected 1 runner call (routed via mail send), got %d: %v (stdout: %s)", len(fr.calls), fr.calls, stdout.String())
+	}
+	if fr.calls[0][0] != "mail" || fr.calls[0][1] != "send" {
+		t.Errorf("expected mail send, got %v", fr.calls[0])
+	}
+	if fr.calls[0][2] != "at-multi.2" {
+		t.Errorf("expected send to at-multi.2, got %v", fr.calls[0])
+	}
+}
+
 // TestRoutePREventKong_UnownedCIFailedSkips verifies LOG-AND-SKIP for unowned PR.
 func TestRoutePREventKong_UnownedCIFailedSkips(t *testing.T) {
 	bodyFile := writeTempFile(t, "ci output")

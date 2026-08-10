@@ -1,6 +1,7 @@
 package initiative_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -442,6 +443,217 @@ func TestWithTrack_RejectsEdgeWhitespace(t *testing.T) {
 	}
 	if !strings.Contains(plan.Description, "track-worktree: /has interior space/ok") {
 		t.Errorf("track line missing from result:\n%s", plan.Description)
+	}
+}
+
+// TestWithPR_AppendsAndIsIdempotent is WithPR's core-path test, mirroring
+// WithTrack/WithSession: appends below the untouched existing description,
+// resolves back through Of, and a repeat call with the same url is a no-op
+// (agent-teams-ssib.6).
+func TestWithPR_AppendsAndIsIdempotent(t *testing.T) {
+	iss := bd.Issue{ID: "at-pr1", Description: "problem: p\nrepo: /r\n"}
+
+	plan, err := initiative.WithPR(iss, "https://github.com/erlloyd/pr-shepherd/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR: %v", err)
+	}
+	if !strings.HasPrefix(plan.Description, iss.Description) {
+		t.Fatalf("WithPR did not append below the untouched original description.\noriginal:\n%s\ngot:\n%s", iss.Description, plan.Description)
+	}
+	got := initiative.Of(bd.Issue{ID: "at-pr1", Description: plan.Description})
+	if len(got.PRs) != 1 || got.PRs[0] != "https://github.com/erlloyd/pr-shepherd/pull/3" {
+		t.Fatalf("PRs after WithPR = %v, want one entry", got.PRs)
+	}
+
+	// Idempotent: appending the same url again changes nothing.
+	iss2 := bd.Issue{ID: "at-pr1", Description: plan.Description}
+	plan2, err := initiative.WithPR(iss2, "https://github.com/erlloyd/pr-shepherd/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR (repeat): %v", err)
+	}
+	if plan2.Description != iss2.Description {
+		t.Errorf("WithPR repeat call was not a no-op:\nbefore:\n%s\nafter:\n%s", iss2.Description, plan2.Description)
+	}
+}
+
+// TestCanonicalPRURL_LowerCasesOwnerRepoAndForcesHTTPS is CanonicalPRURL's
+// core-path test (agent-teams-ssib.25): two spellings of one PR — http vs
+// https, differently-cased owner/repo — must canonicalize to the SAME
+// string, since this is the one function every rail-dedup, label-match, and
+// --pr resolution downstream relies on for identity.
+func TestCanonicalPRURL_LowerCasesOwnerRepoAndForcesHTTPS(t *testing.T) {
+	want := "https://github.com/mgt-insurance/midgard/pull/4632"
+	for _, in := range []string{
+		"https://github.com/mgt-insurance/midgard/pull/4632",
+		"https://github.com/MGT-Insurance/midgard/pull/4632",
+		"http://github.com/MGT-Insurance/Midgard/pull/4632",
+		"http://github.com/MGT-INSURANCE/MIDGARD/pull/4632",
+	} {
+		got, ok := initiative.CanonicalPRURL(in)
+		if !ok {
+			t.Fatalf("CanonicalPRURL(%q): ok = false, want true", in)
+		}
+		if got != want {
+			t.Errorf("CanonicalPRURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCanonicalPRURL_RejectsNonGitHubPRURL confirms ok is false for a string
+// that doesn't match PRURLRE at all, rather than silently mangling it.
+func TestCanonicalPRURL_RejectsNonGitHubPRURL(t *testing.T) {
+	for _, in := range []string{"", "not a url", "https://gitlab.com/a/b/merge_requests/3"} {
+		if _, ok := initiative.CanonicalPRURL(in); ok {
+			t.Errorf("CanonicalPRURL(%q): ok = true, want false", in)
+		}
+	}
+}
+
+// TestWithPR_DedupsAcrossSpellings is the load-bearing witness for
+// agent-teams-ssib.25's rail-dedup manifestation: two spellings of ONE PR
+// (http vs https, differently-cased owner/repo) must collapse to a SINGLE
+// rail entry, not create a second, unpairable one. Before this fix, WithPR
+// compared urls by exact byte equality (internal/initiative/initiative.go,
+// then lines 476-479), so this appended a second "pr:" line.
+func TestWithPR_DedupsAcrossSpellings(t *testing.T) {
+	iss := bd.Issue{ID: "at-canon1", Description: "problem: p\nrepo: /r\n"}
+
+	plan, err := initiative.WithPR(iss, "http://github.com/Owner/Repo/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR (first spelling): %v", err)
+	}
+	iss2 := bd.Issue{ID: "at-canon1", Description: plan.Description}
+
+	plan2, err := initiative.WithPR(iss2, "https://github.com/owner/repo/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR (second spelling): %v", err)
+	}
+	if plan2.Description != iss2.Description {
+		t.Errorf("second spelling of the same PR was not deduped:\nbefore:\n%s\nafter:\n%s", iss2.Description, plan2.Description)
+	}
+	got := initiative.Of(bd.Issue{ID: "at-canon1", Description: plan2.Description})
+	want := []string{"https://github.com/owner/repo/pull/3"}
+	if !reflect.DeepEqual(got.PRs, want) {
+		t.Fatalf("rail after two spellings = %v, want exactly one canonical entry %v", got.PRs, want)
+	}
+}
+
+// TestOf_MultiplePRsAccumulateInRegistrationOrder proves "pr" is multi-valued
+// (accumulates) rather than first-wins, and proves it the way the keystone
+// mandates: this test is a witness, not decoration. It genuinely fails if
+// "pr" is removed from multiValuedKeys (confirmed by hand during
+// implementation: reverting that one-line change turns this red, restoring
+// it turns this green again) — this is the discriminator that must survive
+// the at-d9ck two-repo case (agent-teams-ssib.6).
+func TestOf_MultiplePRsAccumulateInRegistrationOrder(t *testing.T) {
+	got := initiative.Of(bd.Issue{ID: "at-d9ck", Description: "repo: /r\n" +
+		"pr: https://github.com/erlloyd/pr-shepherd/pull/3\n" +
+		"pr: https://github.com/MGT-Insurance/midgard/pull/4632\n",
+	})
+	want := []string{
+		"https://github.com/erlloyd/pr-shepherd/pull/3",
+		"https://github.com/MGT-Insurance/midgard/pull/4632",
+	}
+	if !reflect.DeepEqual(got.PRs, want) {
+		t.Errorf("PRs = %v, want %v (registration order, both retained)", got.PRs, want)
+	}
+}
+
+// TestWithPR_RejectsEdgeWhitespace mirrors TestWithTrack_RejectsEdgeWhitespace:
+// an edge-whitespace url would never read back equal to what the caller
+// passed in (fieldLine right-trims and requires a non-whitespace first
+// value character), so WithPR's own idempotency check would never find it
+// and would keep re-appending it forever. Reject rather than silently trim.
+func TestWithPR_RejectsEdgeWhitespace(t *testing.T) {
+	iss := bd.Issue{ID: "at-pr2", Description: "problem: p\nrepo: /r\n"}
+
+	for _, url := range []string{" https://x/y", "https://x/y ", "\thttps://x/y", "https://x/y\t"} {
+		if _, err := initiative.WithPR(iss, url); err == nil {
+			t.Errorf("WithPR(%q): got nil error, want a rejection for edge whitespace", url)
+		}
+	}
+}
+
+// TestResolvedPRs_FallsBackToNotesOnlyPR is the exact case the DRI review
+// (team-lead, on top of agent-teams-ssib.6) demanded a witness for: 178 of
+// 549 registered initiatives recorded their PR by writing "pr: <url>" into
+// bd NOTES via the dri skill (plugins/agent-teams/skills/dri/SKILL.md) —
+// never into Description, so Of(iss).PRs is empty for every one of them.
+// Without this fallback, execution-status/list-json/route_match.go would
+// silently report zero PRs for all 178 the moment they start reading the
+// rail — worse than the bug this initiative set out to fix. ResolvedPRs
+// must still resolve the PR when it lives ONLY in Notes.
+func TestResolvedPRs_FallsBackToNotesOnlyPR(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-notesonly",
+		Description: "problem: p\nrepo: /r\n", // no "pr:" line at all
+		Notes:       "delivered, ready for review.\npr: https://github.com/erlloyd/pr-shepherd/pull/3\n",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/erlloyd/pr-shepherd/pull/3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (Notes-only PR) = %v, want %v", got, want)
+	}
+}
+
+// TestResolvedPRs_RailWinsWholesaleOverNotes proves the rail is never
+// unioned with the Notes/Description fallback: when the rail has ANY
+// entries, Notes is not consulted at all, even if Notes also carries a
+// (possibly stale, possibly different) "pr:" line.
+func TestResolvedPRs_RailWinsWholesaleOverNotes(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-railwins",
+		Description: "repo: /r\npr: https://github.com/erlloyd/pr-shepherd/pull/3\n",
+		Notes:       "pr: https://github.com/some/other/pull/999\n",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/erlloyd/pr-shepherd/pull/3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (rail present) = %v, want %v (rail only, Notes ignored)", got, want)
+	}
+}
+
+// TestResolvedPRs_FallsBackToDescriptionFreeTextWhenNotesEmpty mirrors the
+// pre-existing extractPrURL order (Notes checked first, then Description)
+// for the case where the PR URL sits in Description prose rather than as a
+// canonical "pr:" rail line — e.g. an old initiative whose PR link was
+// pasted into free text, not recorded via either mechanism.
+func TestResolvedPRs_FallsBackToDescriptionFreeTextWhenNotesEmpty(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-descfallback",
+		Description: "problem: p\nSee https://github.com/acme/widget/pull/12 for the PR.\n",
+		Notes:       "",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/acme/widget/pull/12"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (Description free-text fallback) = %v, want %v", got, want)
+	}
+}
+
+// TestResolvedPRs_CanonicalizesNotesFallback proves ResolvedPRs canonicalizes
+// its output regardless of source (agent-teams-ssib.25) — including the
+// free-text Notes fallback, not just the rail. A caller comparing this
+// against a canonically-written per-PR label (e.g. computePRReviews's
+// gateForPR) must never have to re-canonicalize or fuzzy-compare.
+func TestResolvedPRs_CanonicalizesNotesFallback(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-notesmixed",
+		Description: "problem: p\nrepo: /r\n",
+		Notes:       "pr: https://github.com/MGT-Insurance/midgard/pull/4632\n",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/mgt-insurance/midgard/pull/4632"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (mixed-case Notes fallback) = %v, want canonical %v", got, want)
+	}
+}
+
+// TestResolvedPRs_NilWhenNothingFound covers the no-PR-anywhere case.
+func TestResolvedPRs_NilWhenNothingFound(t *testing.T) {
+	iss := bd.Issue{ID: "at-nopr", Description: "problem: p\n", Notes: "no PR yet.\n"}
+	if got := initiative.ResolvedPRs(iss); got != nil {
+		t.Errorf("ResolvedPRs (nothing found) = %v, want nil", got)
 	}
 }
 

@@ -82,7 +82,7 @@ describe("snapshotReducer", () => {
           updatedAt: "2026-06-25T10:00:00Z",
           lastActivityAt: "2026-06-25T10:00:00Z",
           worktree: "/tmp/wt",
-          prUrl: null,
+          prUrls: [],
           onThisMachine: true,
           status: null,
           state: null,
