@@ -982,6 +982,118 @@ func TestHumanListStructuredAskPathUnchanged(t *testing.T) {
 	}
 }
 
+// ── human-list: multi-PR ask pairing (agent-teams-ssib.8 follow-up) ──────────
+
+// TestHumanListMultiPR_PairsAskWithItsOwnPR is the load-bearing witness for
+// the live-run bug team-lead found: two PRs gated independently via two
+// `gate --pr` calls, each carrying a DIFFERENT decision. Before this fix,
+// human-list paired EVERY per-PR row with the initiative's LATEST ask block
+// system-wide, so PR one's row rendered PR two's question. Each row must
+// carry its OWN decision now.
+//
+// Notes below are hand-constructed to mirror EXACTLY what gateKong.Run's
+// --pr path writes (kong_converted.go): a "pr: <url>" line as the first
+// field inside the sentinel block. Description carries the "pr" rail lines
+// (ateam pr add's write path) so initiative.ResolvedPRs resolves both PRs
+// from the rail, matching the real multi-PR shape.
+func TestHumanListMultiPR_PairsAskWithItsOwnPR(t *testing.T) {
+	const (
+		urlOne = "https://github.com/erlloyd/pr-shepherd/pull/3"
+		urlTwo = "https://github.com/MGT-Insurance/midgard/pull/4632"
+	)
+	notes := "<<<ateam-ask\n" +
+		"pr: " + urlOne + "\n" +
+		"decision: PR one ready?\n" +
+		"recommendation: yes\n" +
+		"alternative: no\n" +
+		">>>\n" +
+		"<<<ateam-ask\n" +
+		"pr: " + urlTwo + "\n" +
+		"decision: PR two ready?\n" +
+		"recommendation: yes\n" +
+		"alternative: no\n" +
+		">>>\n"
+	issues := []bd.Issue{
+		{
+			ID:          "loopws-xgq",
+			Title:       "loop closure: two PRs gated independently",
+			Description: "pr: " + urlOne + "\npr: " + urlTwo + "\n",
+			Labels:      []string{"human", "gate:review:" + urlOne, "gate:review:" + urlTwo},
+			Notes:       notes,
+		},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	rowOne, rowTwo := splitAtPRLine(t, got, urlOne, urlTwo)
+
+	if !strings.Contains(rowOne, "decision: PR one ready?") {
+		t.Errorf("row for %s missing its own decision, got: %q", urlOne, rowOne)
+	}
+	if strings.Contains(rowOne, "PR two ready?") {
+		t.Errorf("row for %s wrongly carries PR two's decision, got: %q", urlOne, rowOne)
+	}
+	if !strings.Contains(rowTwo, "decision: PR two ready?") {
+		t.Errorf("row for %s missing its own decision, got: %q", urlTwo, rowTwo)
+	}
+	if strings.Contains(rowTwo, "PR one ready?") {
+		t.Errorf("row for %s wrongly carries PR one's decision, got: %q", urlTwo, rowTwo)
+	}
+}
+
+// splitAtPRLine splits human-list output into the segment starting at
+// "pr: <urlOne>" up to (not including) "pr: <urlTwo>", and the segment from
+// "pr: <urlTwo>" to the end — i.e. each PR's own rendered row, so a test can
+// assert what appears under ONE row without the other row's content
+// leaking into the assertion by being present elsewhere in the full output.
+func splitAtPRLine(t *testing.T, got, urlOne, urlTwo string) (rowOne, rowTwo string) {
+	t.Helper()
+	idxOne := strings.Index(got, "pr: "+urlOne)
+	idxTwo := strings.Index(got, "pr: "+urlTwo)
+	if idxOne == -1 || idxTwo == -1 {
+		t.Fatalf("expected both pr: lines in output, got: %q", got)
+	}
+	if idxOne < idxTwo {
+		return got[idxOne:idxTwo], got[idxTwo:]
+	}
+	return got[idxOne:], got[idxTwo:idxOne]
+}
+
+// TestHumanListSinglePR_AskRenderingUnchanged pins that a single-resolved-PR
+// initiative's ask rendering is byte-for-byte what it was before this fix —
+// no ambiguity exists with only one PR, so the original "latest block"
+// lookup (extractLatestAsk) is still what renders, tag or no tag.
+func TestHumanListSinglePR_AskRenderingUnchanged(t *testing.T) {
+	const url = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	notes := "<<<ateam-ask\ndecision: Ship it?\nrecommendation: yes\nalternative: no\n>>>"
+	issues := []bd.Issue{
+		{
+			ID:          "at-single",
+			Title:       "single PR initiative",
+			Description: "pr: " + url + "\n",
+			Labels:      []string{"human", "gate:review:" + url},
+			Notes:       notes,
+		},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "decision: Ship it?") {
+		t.Errorf("expected the untagged block's decision to render for a single-PR initiative, got: %q", got)
+	}
+	if !strings.Contains(got, "pr: "+url) {
+		t.Errorf("expected the pr: line, got: %q", got)
+	}
+}
+
 // ── show ──────────────────────────────────────────────────────────────────────
 
 func TestShowMissingIDReturnsUsageError(t *testing.T) {
