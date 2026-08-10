@@ -679,12 +679,16 @@ func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
 				{Check: "role-types-available", Status: preflightPass},
 				{Check: "teammate-spawns", Status: preflightPass},
 				{Check: checkRoleProseInContextID, Status: preflightFail, Detail: observedToken}, // FAIL is the fail-closed placeholder; the verb overwrites it
+				{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 2 entries, 40 chars, hot 1 fresh 1]"},
 			}
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return buildPreflightEnvelope(t, false, "success", buildPreflightVerdictJSON(t, skillChecks), 0.10), nil
 		},
 		scanSidecars: func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 			return scanTeammateSidecarsForSession(root, sessionID)
+		},
+		learnings: func(string) (string, error) {
+			return "[learnings implementer: 2 entries, 40 chars, hot 1 fresh 1]\n", nil
 		},
 		sleep: noopSleep,
 	}
@@ -754,6 +758,7 @@ func TestParsePreflightVerdict_AllOwnedChecksPresent_Succeeds(t *testing.T) {
 		{Check: "role-types-available", Status: preflightPass},
 		{Check: "teammate-spawns", Status: preflightPass},
 		{Check: "role-prose-in-context", Status: preflightPass},
+		{Check: "learnings-loaded", Status: preflightPass},
 	})
 	if _, err := parsePreflightVerdict(verdictJSON); err != nil {
 		t.Fatalf("parsePreflightVerdict: %v, want nil", err)
@@ -940,6 +945,11 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 				{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available", Witness: "session agent type list"},
 				{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe", Witness: "live probe"},
 				{Check: checkRoleProseInContextID, Status: preflightFail, Detail: token},
+				// learnings-loaded carries the header the probe reported from its
+				// in-session `ateam learnings implementer`; the verb cross-checks
+				// its entry count (5) against the learnings func below, which
+				// reports the same 5 — a healthy match PASSes.
+				{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 5 entries, 999 chars, hot 3 fresh 2 — read in full]"},
 			}
 			verdictJSON := buildPreflightVerdictJSON(t, skillChecks)
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
@@ -947,6 +957,9 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 		},
 		scanSidecars: func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 			return scanTeammateSidecarsForSession(root, sessionID)
+		},
+		learnings: func(string) (string, error) {
+			return "[learnings implementer: 5 entries, 999 chars, hot 3 fresh 2 — read in full]\nimplementer:hot:x\nbody\n[learnings implementer: 5 entries, 999 chars, hot 3 fresh 2]\n", nil
 		},
 		sleep: noopSleep,
 	}
@@ -961,18 +974,19 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	if result.Fail != 0 || result.Skip != 0 {
 		t.Errorf("result = %+v, want fail=0 skip=0", result)
 	}
-	// role-model-attached and spawn-permission-mode are DELETED (agent-teams-
-	// 25s3.24, RETIRE UNPINNED) — a healthy run now carries exactly seven
-	// checks, all PASS: roles-payload-builds, probe-session-verdict, role-
-	// types-available, teammate-spawns, role-prose-in-context (now a real
-	// PASS via the token round trip), spawn-record-present, role-type-
-	// registered.
-	const wantPass = 7
+	// A healthy run now carries exactly EIGHT checks, all PASS: roles-payload-
+	// builds, probe-session-verdict, role-types-available, teammate-spawns,
+	// role-prose-in-context (real PASS via the token round trip), learnings-
+	// loaded (real PASS via the count cross-check), spawn-record-present, role-
+	// type-registered. (role-model-attached and spawn-permission-mode remain
+	// DELETED — agent-teams-25s3.24; learnings-loaded added by the memories
+	// check.)
+	const wantPass = 8
 	if result.Pass != wantPass {
 		t.Errorf("pass = %d, want %d", result.Pass, wantPass)
 	}
 	if len(result.Checks) != wantPass {
-		t.Errorf("len(checks) = %d, want %d (no UNPINNED rows survive)", len(result.Checks), wantPass)
+		t.Errorf("len(checks) = %d, want %d", len(result.Checks), wantPass)
 	}
 	if result.SessionID == "" {
 		t.Error("session_id is empty")
@@ -1234,5 +1248,98 @@ func TestPreflightStartProgress_JSONIsNoOp(t *testing.T) {
 
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Errorf("under --json, progress must be silent: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+// ── learnings-loaded (memories primed) ──────────────────────────────────────
+
+func TestPreflightLearningsCount(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		in    string
+		n     int
+		empty bool
+		ok    bool
+	}{
+		{"populated header", "[learnings implementer: 38 entries, 31747 chars, hot 21 fresh 17 — read in full]", 38, false, true},
+		{"one entry", "[learnings tester: 1 entries, 900 chars, hot 0 fresh 1]", 1, false, true},
+		{"empty sentinel", "[learnings nosuchrole: EMPTY]", 0, true, true},
+		{"no header", "I ran the command but here is some prose", 0, false, false},
+		{"header buried in extra text", "prefix\n[learnings implementer: 5 entries, 10 chars, hot 2 fresh 3]\nsuffix", 5, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, empty, ok := preflightLearningsCount(tc.in)
+			if n != tc.n || empty != tc.empty || ok != tc.ok {
+				t.Errorf("got (n=%d empty=%v ok=%v), want (n=%d empty=%v ok=%v)", n, empty, ok, tc.n, tc.empty, tc.ok)
+			}
+		})
+	}
+}
+
+func TestCheckLearningsLoadedResult(t *testing.T) {
+	const trueHdr = "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]\nbody\n"
+	for _, tc := range []struct {
+		name    string
+		probe   string
+		trueOut string
+		trueErr error
+		want    string
+	}{
+		{"match passes", "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]", trueHdr, nil, preflightPass},
+		{"count mismatch fails", "[learnings implementer: 4 entries, 80 chars, hot 2 fresh 2]", trueHdr, nil, preflightFail},
+		{"probe no answer fails", "PROBE-NO-ANSWER", trueHdr, nil, preflightFail},
+		{"probe empty-sentinel fails", "[learnings implementer: EMPTY]", trueHdr, nil, preflightFail},
+		{"store empty fails", "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]", "[learnings implementer: EMPTY]", nil, preflightFail},
+		{"store read error fails", "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]", "", errors.New("boom"), preflightFail},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkLearningsLoadedResult("implementer", tc.probe, tc.trueOut, tc.trueErr)
+			if got.Status != tc.want {
+				t.Errorf("status = %s, want %s (detail: %s)", got.Status, tc.want, got.Detail)
+			}
+			if got.Status == preflightFail && got.Remediation == "" {
+				t.Error("a FAIL learnings-loaded must carry a remediation")
+			}
+			if got.Status == preflightPass && got.Remediation != "" {
+				t.Errorf("a PASS must not carry a remediation, got %q", got.Remediation)
+			}
+		})
+	}
+}
+
+// TestPreflightOverrideLearningsCheck_CrossChecksAgainstStore proves the verb
+// re-reads the store and judges — a probe count that does NOT match ground
+// truth FAILs, so the check witnesses a real fetch rather than the probe's word.
+func TestPreflightOverrideLearningsCheck_CrossChecksAgainstStore(t *testing.T) {
+	storeFn := func(string) (string, error) {
+		return "[learnings implementer: 7 entries, 200 chars, hot 4 fresh 3]\n", nil
+	}
+	// probe claims 7 (truthful) -> PASS
+	checks := []preflightCheck{{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 7 entries, 1 chars, hot 0 fresh 7]"}}
+	out := preflightOverrideLearningsCheck(checks, "implementer", storeFn)
+	if out[0].Status != preflightPass {
+		t.Errorf("truthful count = %s, want PASS", out[0].Status)
+	}
+	// probe fabricates 99 (store has 7) -> FAIL
+	checks = []preflightCheck{{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 99 entries, 1 chars, hot 0 fresh 99]"}}
+	out = preflightOverrideLearningsCheck(checks, "implementer", storeFn)
+	if out[0].Status != preflightFail {
+		t.Errorf("fabricated count = %s, want FAIL — a count that doesn't match the store must not pass", out[0].Status)
+	}
+}
+
+// TestPreflightOverrideLearningsCheck_AbsentIsNoOp: on the standalone stop the
+// skill emits no learnings-loaded check; the override must not fabricate one
+// (and must not call the store func).
+func TestPreflightOverrideLearningsCheck_AbsentIsNoOp(t *testing.T) {
+	called := false
+	storeFn := func(string) (string, error) { called = true; return "", nil }
+	checks := []preflightCheck{{Check: "role-types-available", Status: preflightFail}}
+	out := preflightOverrideLearningsCheck(checks, "implementer", storeFn)
+	if len(out) != 1 || out[0].Check != "role-types-available" {
+		t.Errorf("no-op altered the checks: %+v", out)
+	}
+	if called {
+		t.Error("store func was called when there was no learnings-loaded check to judge")
 	}
 }

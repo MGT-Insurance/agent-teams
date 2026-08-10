@@ -201,6 +201,23 @@ const preflightBudgetAbortSubtype = "error_max_budget_usd"
 //     and fully overwritten by preflightOverrideTokenCheck below.
 const checkRoleProseInContextID = "role-prose-in-context"
 
+// checkLearningsLoadedID witnesses that a spawned teammate actually LOADED its
+// role learnings — the "memories primed" item from the founding ask. Like
+// role-prose-in-context it is skill-observed and verb-judged: the skill has
+// the probe run `ateam learnings <role>` in its own session and reports the
+// output verbatim in Detail; the verb (preflightOverrideLearningsCheck) reads
+// the same store independently and PASSes only when the probe's entry count
+// matches ground truth. A fabricated count cannot match the real one, so this
+// witnesses a real fetch rather than trusting the probe's word.
+const checkLearningsLoadedID = "learnings-loaded"
+
+// preflightProbedRoleName is the bare role name for `ateam learnings <role>`
+// — the probe spawns as the "agent-teams-implementer" agent type
+// (preflightProbedRoleKey), whose learnings live under the "implementer" role
+// key. Kept beside preflightProbedRoleKey so the two move together if the
+// probed role ever changes.
+const preflightProbedRoleName = "implementer"
+
 // preflightNoTokenSentinel and preflightProbeNoAnswerSentinel are the two
 // reserved values the skill's payload-shape contract requires in Detail
 // instead of an empty string (see the note above) — named here, not just
@@ -348,6 +365,125 @@ func checkRoleProseInContext(observed, token string) preflightCheck {
 	}
 }
 
+// preflightLearningsFunc returns the raw output of `ateam learnings <role>`
+// for the probed role — the ground truth the verb cross-checks the probe's
+// in-session report against. Injected so tests never shell out.
+type preflightLearningsFunc func(role string) (string, error)
+
+// productionPreflightLearnings shells out to THIS ateam binary's `learnings`
+// verb, so the ground-truth read hits exactly the store a spawned teammate's
+// own `ateam learnings` call would (same binary, same AGENT_TEAMS_HOME).
+func productionPreflightLearnings(role string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve self binary: %w", err)
+	}
+	var out bytes.Buffer
+	cmd := exec.Command(self, "learnings", role)
+	cmd.Stdout = &out
+	if runErr := cmd.Run(); runErr != nil {
+		return "", fmt.Errorf("ateam learnings %s: %w", role, runErr)
+	}
+	return out.String(), nil
+}
+
+// preflightLearningsCount parses the entry count from an `ateam learnings`
+// header line (internal/verbs/query.go). Returns (n, empty, ok):
+//
+//	"[learnings <role>: N entries, M chars, ...]" -> n=N, ok=true
+//	"[learnings <role>: EMPTY]"                    -> empty=true, ok=true
+//	anything without a recognizable header         -> ok=false
+func preflightLearningsCount(s string) (n int, empty bool, ok bool) {
+	if strings.Contains(s, ": EMPTY]") {
+		return 0, true, true
+	}
+	i := strings.Index(s, "[learnings ")
+	if i < 0 {
+		return 0, false, false
+	}
+	rest := s[i:]
+	colon := strings.Index(rest, ": ")
+	if colon < 0 {
+		return 0, false, false
+	}
+	after := rest[colon+2:]
+	sp := strings.Index(after, " entries")
+	if sp < 0 {
+		return 0, false, false
+	}
+	v, convErr := strconv.Atoi(strings.TrimSpace(after[:sp]))
+	if convErr != nil {
+		return 0, false, false
+	}
+	return v, false, true
+}
+
+// checkLearningsLoadedResult is the verb's final learnings-loaded verdict.
+// probeReported is the skill's verbatim report of what `ateam learnings
+// <role>` printed INSIDE the probe's own session; trueLearnings is this verb's
+// independent read of the same store. PASS iff the probe reached a populated
+// store AND its entry count matches ground truth — a fabricated or stale count
+// cannot match the real one, so this witnesses a real in-session fetch rather
+// than the probe's unverified word.
+func checkLearningsLoadedResult(role, probeReported, trueLearnings string, trueErr error) preflightCheck {
+	witness := fmt.Sprintf("probe's in-session `ateam learnings %s` output, cross-checked against the store's own entry count", role)
+	fail := func(detail, remediation string) preflightCheck {
+		return preflightCheck{Check: checkLearningsLoadedID, Status: preflightFail, Detail: detail, Witness: witness, Remediation: remediation}
+	}
+	if trueErr != nil {
+		return fail(fmt.Sprintf("could not read the learnings store to cross-check: %v", trueErr),
+			fmt.Sprintf("confirm `ateam learnings %s` runs on this machine, then re-run", role))
+	}
+	tn, tempty, tok := preflightLearningsCount(trueLearnings)
+	if !tok {
+		return fail("the store read produced no recognizable `[learnings ...]` header",
+			fmt.Sprintf("confirm `ateam learnings %s` output is well-formed, then re-run", role))
+	}
+	if tempty || tn == 0 {
+		return fail(fmt.Sprintf("the learnings store is empty for %s — nothing to prime", role),
+			fmt.Sprintf("record learnings for %s (`ateam learn %s <slug> --file ...`), or confirm the store has synced", role, role))
+	}
+	pn, pempty, pok := preflightLearningsCount(probeReported)
+	if !pok || pempty {
+		return fail(fmt.Sprintf("the probe did not load learnings in-session — store has %d entries, probe reported %q", tn, preflightOneLine(probeReported)),
+			"the spawned teammate could not fetch its learnings — confirm the global workspace is reachable from a probe session")
+	}
+	if pn != tn {
+		return fail(fmt.Sprintf("probe's learnings count (%d) does not match the store (%d) — the fetch may have failed or hit a different store", pn, tn),
+			"re-run; if it recurs, confirm the probe session resolves the same AGENT_TEAMS_HOME")
+	}
+	return preflightCheck{Check: checkLearningsLoadedID, Status: preflightPass,
+		Detail: fmt.Sprintf("probe loaded %d learnings entries in-session, matching the store", pn), Witness: witness}
+}
+
+// preflightOneLine collapses a multi-line probe report to a single truncated
+// line for a check Detail, so a verbose probe reply can't reflow the table.
+func preflightOneLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 80 {
+		s = s[:80] + "…"
+	}
+	return s
+}
+
+// preflightOverrideLearningsCheck replaces the skill's learnings-loaded entry
+// (raw probe report in Detail, placeholder Status) with the verb's own
+// cross-checked verdict. No-op when absent — legitimate only on the standalone
+// stop, which preflightMissingSkillChecks already guards for every other case.
+func preflightOverrideLearningsCheck(checks []preflightCheck, role string, learnings preflightLearningsFunc) []preflightCheck {
+	for i, c := range checks {
+		if c.Check == checkLearningsLoadedID {
+			trueOut, trueErr := learnings(role)
+			checks[i] = checkLearningsLoadedResult(role, c.Detail, trueOut, trueErr)
+			return checks
+		}
+	}
+	return checks
+}
+
 // preflightOverrideTokenCheck replaces the skill's role-prose-in-context
 // entry — which the payload shape above says carries only the probe's raw
 // observed reply, verbatim and untrimmed, in Detail, with a FAIL placeholder
@@ -453,6 +589,7 @@ type preflightKong struct {
 	buildAgentsPayload func() (string, error)   `kong:"-"`
 	launch             preflightLaunchFunc      `kong:"-"`
 	scanSidecars       preflightSidecarScanFunc `kong:"-"`
+	learnings          preflightLearningsFunc   `kong:"-"`
 	sleep              func(time.Duration)      `kong:"-"` // nil => time.Sleep
 }
 
@@ -489,6 +626,7 @@ func RegisterPreflightKong(p *cli.Parser) {
 		buildAgentsPayload: buildAgentsPayload,
 		launch:             productionPreflightLaunch,
 		scanSidecars:       productionScanTeammateSidecars,
+		learnings:          productionPreflightLearnings,
 		sleep:              time.Sleep,
 	})
 }
@@ -671,7 +809,9 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 			Detail:  fmt.Sprintf("probe session emitted %d check(s)", len(verdict.Checks)),
 			Witness: "probe session final message (--output-format json .result)",
 		})
-		checks = append(checks, preflightOverrideTokenCheck(verdict.Checks, token)...)
+		overridden := preflightOverrideTokenCheck(verdict.Checks, token)
+		overridden = preflightOverrideLearningsCheck(overridden, preflightProbedRoleName, c.learnings)
+		checks = append(checks, overridden...)
 	}
 
 	// Verb-owned sidecar checks run regardless of whether the skill's own
@@ -874,7 +1014,7 @@ func parsePreflightEnvelope(stdout string) (preflightEnvelope, error) {
 // TestParsePreflightVerdict_StandaloneStopAlone_DoesNotTripMissingCheck) —
 // must move too. Per contract addendum agent-teams-25s3.15 (A6): a stated
 // validity condition needs a fixture, or it is documentation.
-var preflightSkillOwnedChecks = []string{"role-types-available", "teammate-spawns", checkRoleProseInContextID}
+var preflightSkillOwnedChecks = []string{"role-types-available", "teammate-spawns", checkRoleProseInContextID, checkLearningsLoadedID}
 
 // preflightSkillStandaloneStopID is the one owned check whose FAIL means
 // the skill stopped BY DESIGN before spawning anything (agent-teams-25s3.4
