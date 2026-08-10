@@ -124,12 +124,12 @@ const preflightFixturePayload = `{"agent-teams-implementer":{"description":"impl
 
 // ── preflightSidecarChecks: the ACCEPTANCE fixture pair ─────────────────────
 //
-// REWRITTEN by the agent-teams-25s3.19/.20 amendment: under this verb's only
-// launch mode (claude -p), only spawn-record-present and role-type-
-// registered are real per-fixture predicates. role-model-attached and
-// spawn-permission-mode are unconditionally UNPINNED once a sidecar is
-// found — see TestPreflightSidecarChecks_UnpinnedRegardlessOfFixture below,
-// which proves that with BOTH the good and the bad fixture.
+// NARROWED by agent-teams-25s3.24 (RETIRE UNPINNED) from the earlier
+// agent-teams-25s3.19/.20 amendment's four checks to two: role-model-
+// attached and spawn-permission-mode, which were unconditionally UNPINNED
+// once a sidecar was found under this verb's only launch mode (claude -p),
+// are deleted rather than merely silenced. spawn-record-present and role-
+// type-registered are the two remaining real per-fixture predicates.
 
 func TestPreflightSidecarChecks_GoodFixture_SpawnRecordAndRoleTypePass(t *testing.T) {
 	home := t.TempDir()
@@ -141,8 +141,8 @@ func TestPreflightSidecarChecks_GoodFixture_SpawnRecordAndRoleTypePass(t *testin
 	}
 
 	checks := preflightSidecarChecks(scan, noopSleep, "sessGood", false)
-	if len(checks) != 4 {
-		t.Fatalf("len(checks) = %d, want 4", len(checks))
+	if len(checks) != 2 {
+		t.Fatalf("len(checks) = %d, want 2", len(checks))
 	}
 	byID := map[string]preflightCheck{}
 	for _, c := range checks {
@@ -190,44 +190,6 @@ func TestPreflightSidecarChecks_BadFixture_RoleTypeFailsWithRemediation(t *testi
 	}
 }
 
-// TestPreflightSidecarChecks_UnpinnedRegardlessOfFixture pins the
-// agent-teams-25s3.19/.20 amendment's core claim: role-model-attached and
-// spawn-permission-mode are UNPINNED unconditionally once a sidecar is
-// found, because a claude -p sidecar never carries those fields AT ALL —
-// not "carries them with a value that happens to fail". Demonstrated
-// against BOTH fixtures so a future reader can't mistake this for "happens
-// to be UNPINNED for the good fixture, coincidentally".
-func TestPreflightSidecarChecks_UnpinnedRegardlessOfFixture(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		fixture string
-	}{
-		{"good", preflightFixtureGoodSidecar},
-		{"bad", preflightFixtureBadSidecar},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			root := filepath.Join(home, ".claude", "projects")
-			putSpawnCheckSidecar(t, root, "proj", "sess", "preflight-probe", tc.fixture)
-
-			scan := func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
-				return scanTeammateSidecarsForSession(root, sessionID)
-			}
-			checks := preflightSidecarChecks(scan, noopSleep, "sess", false)
-			byID := map[string]preflightCheck{}
-			for _, c := range checks {
-				byID[c.Check] = c
-			}
-
-			for _, id := range []string{checkRoleModelAttached, checkSpawnPermissionMode} {
-				if got := byID[id].Status; got != preflightUnpinned {
-					t.Errorf("%s: status = %s, want UNPINNED", id, got)
-				}
-			}
-		})
-	}
-}
-
 // TestPreflightSidecarChecks_IgnoresOtherNamedSidecarsInSameSession proves
 // the rewritten name-based match actually discriminates: a session
 // containing another real named spawn (not the probe) must not be counted,
@@ -267,114 +229,58 @@ func TestPreflightSidecarChecks_IgnoresOtherNamedSidecarsInSameSession(t *testin
 	}
 }
 
-// ── preflightRoleModelCheck: KEPT, ROUTED AROUND, still directly tested ────
+// ── preflightProbedRolePresent ──────────────────────────────────────────
 //
-// agent-teams-25s3.19/.20: this predicate is correct and stays fully
-// tested in isolation even though preflightSidecarChecks no longer calls it
-// (see that function's and preflightRoleModelCheck's doc comments) — it
-// becomes reachable again the moment the launch mode changes.
-//
-// planner-at-6oxi's second-pass finding on the earlier 2026-08-06 amendment:
-// the runtime-read expected-model fix was correct but left the "must differ
-// from the probe session's own model" precondition as a doc comment, not
-// code. If roles/implementer.md's model ever becomes "opus" (the probe
-// session's own model), an UNATTACHED spawn silently inherits "opus" too —
-// sc.Model == expectedModel would PASS for the wrong reason. Fixtures below
-// are the regression guard; per agent-teams-25s3.15 (A1), both directions
-// must be demonstrated, not just documented.
-//
-// planner-at-6oxi's second-pass finding on the 2026-08-06 amendment: the
-// first fix (runtime-read expected model, family matching) was correct but
-// left the "must differ from the probe session's own model" precondition as
-// a doc comment, not code. If roles/implementer.md's model ever becomes
-// "opus" (the probe session's own model), an UNATTACHED spawn silently
-// inherits "opus" too — sc.Model == expectedModel would PASS for the wrong
-// reason. Both fixtures below are the regression guard; per agent-teams-
-// 25s3.15 (A1), both directions must be demonstrated, not just documented.
-
-// TestPreflightRoleModelCheck_SameFamilyAsProbeSession_Unpinned is the FALSE
-// GREEN guard: an expected model sharing the probe session's own family
-// must report UNPINNED, never PASS, however the sidecar's model reads.
-func TestPreflightRoleModelCheck_SameFamilyAsProbeSession_Unpinned(t *testing.T) {
-	sc := spawnCheckSidecarWithPath{Path: "sidecar.json", spawnCheckSidecar: spawnCheckSidecar{Model: preflightProbeSessionModel}}
-	got := preflightRoleModelCheck(sc, preflightProbeSessionModel, nil)
-	if got.Status != preflightUnpinned {
-		t.Fatalf("status = %s, want UNPINNED — the property is not witnessable when the role's expected model matches the probe session's own", got.Status)
-	}
-}
-
-// TestPreflightRoleModelCheck_NoExpectedModel_Unpinned is the FALSE RED
-// guard: a role declaring no discriminating model (frontmatter absent or
-// "inherit") is a property this check cannot witness, not a broken install
-// — UNPINNED, never FAIL.
-func TestPreflightRoleModelCheck_NoExpectedModel_Unpinned(t *testing.T) {
-	sc := spawnCheckSidecarWithPath{Path: "sidecar.json"} // Model absent too
-	got := preflightRoleModelCheck(sc, "", nil)
-	if got.Status != preflightUnpinned {
-		t.Fatalf("status = %s, want UNPINNED, not FAIL", got.Status)
-	}
-}
-
-// TestPreflightRoleModelCheck_AbsentModel_FailsWhenExpectationDiscriminates
-// proves the gate doesn't swallow a REAL absence: when the expected model
-// actually differs from the probe session's own, a missing sidecar model
-// field is still a hard FAIL (never observed on a teammate, 0/288 in the
-// census).
-func TestPreflightRoleModelCheck_AbsentModel_FailsWhenExpectationDiscriminates(t *testing.T) {
-	sc := spawnCheckSidecarWithPath{Path: "sidecar.json"} // Model absent
-	got := preflightRoleModelCheck(sc, "sonnet", nil)
-	if got.Status != preflightFail {
-		t.Fatalf("status = %s, want FAIL", got.Status)
-	}
-	if got.Remediation == "" {
-		t.Error("FAIL carries empty remediation")
-	}
-}
-
-// TestPreflightRoleModelCheck_ConcreteModelID_SameFamilyPasses pins the
-// first-pass 2026-08-06 AMENDMENT: a resolved concrete id (e.g.
-// "claude-sonnet-5") must PASS against an expected alias of "sonnet" — the
-// census showed 22 of 288 teammate sidecars already carry a concrete id
-// instead of the alias. Direct predicate test (this function is currently
-// unreachable from preflightSidecarChecks — see its doc comment — but stays
-// fully tested so it is ready the moment the launch mode changes).
-func TestPreflightRoleModelCheck_ConcreteModelID_SameFamilyPasses(t *testing.T) {
-	sc := spawnCheckSidecarWithPath{Path: "sidecar.json", spawnCheckSidecar: spawnCheckSidecar{Model: "claude-sonnet-5"}}
-	got := preflightRoleModelCheck(sc, "sonnet", nil)
-	if got.Status != preflightPass {
-		t.Errorf("status = %s, want PASS for a same-family concrete id (detail: %s)", got.Status, got.Detail)
-	}
-}
-
-func TestPreflightModelFamily(t *testing.T) {
-	cases := map[string]string{
-		"sonnet":          "sonnet",
-		"claude-sonnet-5": "sonnet",
-		"opus":            "opus",
-		"claude-opus-4-8": "opus",
-		"haiku":           "haiku",
-		"":                "",
-		"gpt-4":           "",
-	}
-	for in, want := range cases {
-		if got := preflightModelFamily(in); got != want {
-			t.Errorf("preflightModelFamily(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestPreflightExpectedProbeModel_ReadsFromAgentsPayload(t *testing.T) {
+// RENAMED AND SIMPLIFIED from preflightExpectedProbeModel by agent-teams-
+// 25s3.24 (RETIRE UNPINNED): the earlier version also returned the role's
+// declared model, read by role-model-attached's now-deleted precondition
+// gate (preflightRoleModelCheck, also deleted along with preflightModelFamily/
+// preflightModelFamilies/preflightProbeSessionModel). This is now a pure
+// presence check, still load-bearing for the pre-launch roles-payload-builds
+// guard: it must keep FAILing when the probed role is missing from the
+// resolved roles directory (verified end to end by
+// TestPreflightKong_ProbedRoleMissing_FailsRolesPayloadBuilds below).
+func TestPreflightProbedRolePresent_PayloadPresenceCheck(t *testing.T) {
 	payload := `{"agent-teams-implementer":{"description":"d","prompt":"p","model":"sonnet"},"agent-teams-planner":{"description":"d","prompt":"p","model":"opus"}}`
-	got, err := preflightExpectedProbeModel(payload)
-	if err != nil {
-		t.Fatalf("preflightExpectedProbeModel: %v", err)
-	}
-	if got != "sonnet" {
-		t.Errorf("got %q, want %q", got, "sonnet")
+	if err := preflightProbedRolePresent(payload); err != nil {
+		t.Fatalf("preflightProbedRolePresent: %v, want nil (the probed role is present)", err)
 	}
 
-	if _, err := preflightExpectedProbeModel(`{"agent-teams-planner":{"model":"opus"}}`); err == nil {
+	if err := preflightProbedRolePresent(`{"agent-teams-planner":{"model":"opus"}}`); err == nil {
 		t.Error("want an error when the payload has no agent-teams-implementer entry")
+	}
+}
+
+// TestPreflightKong_ProbedRoleMissing_FailsRolesPayloadBuilds is the live-
+// negative-control regression guard agent-teams-25s3.24 requires: with the
+// probed role absent from a built --agents payload, Run() must still FAIL
+// roles-payload-builds and never reach launch — the property this bead's
+// spec calls "the caller's behaviour must not change" even after
+// preflightExpectedProbeModel was renamed/simplified to
+// preflightProbedRolePresent.
+func TestPreflightKong_ProbedRoleMissing_FailsRolesPayloadBuilds(t *testing.T) {
+	ctx, stdout, _ := makePreflightCtx()
+	c := &preflightKong{
+		buildAgentsPayload: func() (string, error) {
+			return `{"agent-teams-planner":{"description":"d","prompt":"p","model":"opus"}}`, nil
+		},
+		launch: func(string, string, string, string, string) (string, error) {
+			t.Fatal("launch must not be called: the probed role is missing from the payload")
+			return "", nil
+		},
+		scanSidecars: func(string) ([]spawnCheckSidecarWithPath, error) {
+			t.Fatal("scanSidecars must not be called")
+			return nil, nil
+		},
+		sleep: noopSleep,
+	}
+	err := c.Run(ctx)
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("ExitCode = %d, want 1 — a FAIL was emitted, so a verdict WAS formed", code)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, checkRolesPayloadBuilds) || !strings.Contains(out, preflightFail) {
+		t.Errorf("stdout = %q, want roles-payload-builds FAIL", out)
 	}
 }
 
@@ -402,14 +308,14 @@ func TestPreflightSidecarChecks_NoSidecar_SpawnRecordFailsAndRestSkip(t *testing
 	if !strings.Contains(spawnRecord.Detail, "expected 1") {
 		t.Errorf("detail = %q, want it to report observed vs expected", spawnRecord.Detail)
 	}
-	for _, id := range []string{checkRoleTypeRegistered, checkRoleModelAttached, checkSpawnPermissionMode} {
+	for _, id := range []string{checkRoleTypeRegistered} {
 		if got := byID[id].Status; got != preflightSkip {
 			t.Errorf("%s: status = %s, want SKIP (no sidecar to inspect)", id, got)
 		}
 	}
 
 	// One root cause must produce exactly ONE red. The per-check assertions
-	// above are individually correct but collectively blind: a fifth check
+	// above are individually correct but collectively blind: a second check
 	// that also FAILs on this branch leaves every one of them green while
 	// the report degrades from naming a cause to shouting four of them.
 	// Verified by mutation — appending an extra FAIL to this branch alone
@@ -902,12 +808,12 @@ func TestPreflightKong_MalformedRoleFile_Exit1WithFail(t *testing.T) {
 	if !strings.Contains(out, checkRolesPayloadBuilds) || !strings.Contains(out, preflightFail) {
 		t.Errorf("stdout = %q, want roles-payload-builds FAIL", out)
 	}
-	for _, id := range []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleTypeRegistered, checkRoleModelAttached, checkSpawnPermissionMode} {
+	for _, id := range []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleTypeRegistered} {
 		if !strings.Contains(out, id) {
 			t.Errorf("stdout missing skipped check %s", id)
 		}
 	}
-	if !strings.Contains(out, "0 pass, 1 fail, 5 skip, 0 unpinned") {
+	if !strings.Contains(out, "0 pass, 1 fail, 3 skip") {
 		t.Errorf("stdout summary line missing/wrong: %q", out)
 	}
 }
@@ -978,10 +884,10 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 	if !strings.Contains(out, checkProbeSessionVerdict) {
 		t.Fatalf("stdout missing probe-session-verdict: %q", out)
 	}
-	// The verdict FAIL must not swallow the four verb-owned sidecar checks —
+	// The verdict FAIL must not swallow the two verb-owned sidecar checks —
 	// they read the harness's own record and are independent of whether the
 	// skill's JSON parsed.
-	for _, id := range []string{checkSpawnRecordPresent, checkRoleTypeRegistered, checkRoleModelAttached, checkSpawnPermissionMode} {
+	for _, id := range []string{checkSpawnRecordPresent, checkRoleTypeRegistered} {
 		if !strings.Contains(out, id) {
 			t.Errorf("stdout missing sidecar check %s even though the sidecar was healthy: %q", id, out)
 		}
@@ -1045,7 +951,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 		sleep: noopSleep,
 	}
 	if err := c.Run(ctx); err != nil {
-		t.Fatalf("Run: %v, want a clean exit (no FAIL — UNPINNED doesn't count as one)", err)
+		t.Fatalf("Run: %v, want a clean exit", err)
 	}
 
 	var result preflightResult
@@ -1055,26 +961,53 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	if result.Fail != 0 || result.Skip != 0 {
 		t.Errorf("result = %+v, want fail=0 skip=0", result)
 	}
-	// Under this verb's only launch mode (claude -p), role-model-attached and
-	// spawn-permission-mode are UNPINNED, not PASS (agent-teams-25s3.19/.20).
-	// role-types-available, teammate-spawns, role-prose-in-context (now a real
-	// PASS via the token round trip), roles-payload-builds, probe-session-
-	// verdict, spawn-record-present, role-type-registered.
+	// role-model-attached and spawn-permission-mode are DELETED (agent-teams-
+	// 25s3.24, RETIRE UNPINNED) — a healthy run now carries exactly seven
+	// checks, all PASS: roles-payload-builds, probe-session-verdict, role-
+	// types-available, teammate-spawns, role-prose-in-context (now a real
+	// PASS via the token round trip), spawn-record-present, role-type-
+	// registered.
 	const wantPass = 7
 	if result.Pass != wantPass {
 		t.Errorf("pass = %d, want %d", result.Pass, wantPass)
 	}
-	if result.Unpinned != 2 {
-		t.Errorf("unpinned = %d, want 2 (role-model-attached, spawn-permission-mode)", result.Unpinned)
+	if len(result.Checks) != wantPass {
+		t.Errorf("len(checks) = %d, want %d (no UNPINNED rows survive)", len(result.Checks), wantPass)
 	}
 	if result.SessionID == "" {
 		t.Error("session_id is empty")
+	}
+	if strings.Contains(stdout.String(), "unpinned") {
+		t.Errorf("stdout = %q, the `unpinned` field must be gone from the contract shape (agent-teams-25s3.24)", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "probe session cost") {
 		t.Error("--json stdout must be pure contract-shape JSON — the cost footer belongs on stderr")
 	}
 	if !strings.Contains(stderr.String(), "$0.3700") {
 		t.Errorf("stderr = %q, want the cost footer", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "What this cannot verify") {
+		t.Errorf("stderr = %q, want the limits footer (agent-teams-25s3.24)", stderr.String())
+	}
+}
+
+// TestPreflightLimitsNote_NamesLimitsWithoutNamingTransportVendor pins
+// contract artifact (8): the limits note must name what it cannot verify
+// (model, permission mode, the inbound transport leg) without naming the
+// concrete human-message transport's medium or vendor.
+func TestPreflightLimitsNote_NamesLimitsWithoutNamingTransportVendor(t *testing.T) {
+	for _, want := range []string{"model", "permission mode", "transport", "inbound"} {
+		if !strings.Contains(preflightLimitsNote, want) {
+			t.Errorf("preflightLimitsNote missing %q: %s", want, preflightLimitsNote)
+		}
+	}
+	for _, forbidden := range []string{"Slack", "email", "SMS", "iMessage"} {
+		if strings.Contains(preflightLimitsNote, forbidden) {
+			t.Errorf("preflightLimitsNote names a concrete transport medium/vendor (%q), forbidden by contract artifact (8): %s", forbidden, preflightLimitsNote)
+		}
+	}
+	if (&preflightKong{}).Help() != preflightLimitsNote {
+		t.Error("preflightKong.Help() must surface preflightLimitsNote verbatim so `ateam preflight --help` carries it")
 	}
 }
 
