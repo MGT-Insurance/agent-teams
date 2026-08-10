@@ -59,7 +59,7 @@ This prints the new issue id on stdout.
   Note: `bd search "<text>"` does NOT search description bodies, only titles — never use it as a fallback.
 
 - Phase changes and session starts: `ateam note <id> --file <file>`.
-- On delivery (PR opened): status note `delivered` with the PR URL, leave the initiative **OPEN** in `awaiting-merge`, AND record the structured `pr:` field (SKILL.md Phase 5 — required for pr-shepherd routing). Opened is not done — the initiative stays resumable until merged.
+- On delivery (PR opened): status note `delivered` with the PR URL, leave the initiative **OPEN** in `awaiting-merge`, AND record the PR on the `pr` rail via `ateam pr add` (SKILL.md Phase 5 — required for pr-shepherd routing). Opened is not done — the initiative stays resumable until merged.
 - Close: ONLY when the PR is merged or a human explicitly closes the initiative — `ateam close <id> --reason "merged: <PR URL>"` (or the human's reason). Never close on PR-open alone.
 - Reopen: `ateam reopen <id>` — when the human chooses to resume a closed (delivered) initiative surfaced by `resume-match-closed`.
 
