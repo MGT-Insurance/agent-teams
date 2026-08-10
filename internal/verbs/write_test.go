@@ -1215,7 +1215,10 @@ func TestClearGate_PRScoped_LeavesOtherPRAndHumanIntact(t *testing.T) {
 	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
 
 	ctx, calls := newCtx(t, []fakeResp{
-		showRespWithPRs(t, "at-multi", []string{prURLShepherd, prURLMidgard}), // resolvePR's bd show
+		// resolvePR's bd show — realistic pre-clear state: shepherd is
+		// review-gated, midgard is question-gated, both per-PR (not bare),
+		// so clearOnePR's bare-gate guard (ssib.30) must NOT fire here.
+		showRespWithPRs(t, "at-multi", []string{prURLShepherd, prURLMidgard}, "human", "gate:review:"+prURLShepherd, "gate:question:"+prURLMidgard),
 		{stdout: "ok"},                   // label remove gate:review:<shepherd>
 		{stdout: "ok"},                   // label remove gate:question:<shepherd>
 		{stdout: "ok"},                   // label remove external-review:<shepherd>
@@ -1243,7 +1246,9 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
 
 	ctx, calls := newCtx(t, []fakeResp{
-		showRespWithPRs(t, "at-single", []string{prURLShepherd}), // resolvePR's bd show
+		// resolvePR's bd show — shepherd is per-PR review-gated, so the
+		// bare-gate guard (ssib.30) must not fire.
+		showRespWithPRs(t, "at-single", []string{prURLShepherd}, "human", "gate:review:"+prURLShepherd),
 		{stdout: "ok"},
 		{stdout: "ok"},
 		{stdout: "ok"},
@@ -1266,7 +1271,9 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 // place rather than guessed at.
 func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
-		showRespWithPRs(t, "at-multi", []string{prURLShepherd}), // resolvePR's bd show
+		// resolvePR's bd show — shepherd is per-PR review-gated, so the
+		// bare-gate guard (ssib.30) must not fire.
+		showRespWithPRs(t, "at-multi", []string{prURLShepherd}, "human", "gate:review:"+prURLShepherd),
 		{stdout: "ok"},
 		{stdout: "ok"},
 		{stdout: "ok"},
@@ -1282,6 +1289,97 @@ func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
 	}
 	if stderr := ctx.Stderr.(*bytes.Buffer).String(); !strings.Contains(stderr, "at-multi") {
 		t.Errorf("expected stderr warning naming the id, got: %q", stderr)
+	}
+}
+
+// TestClearGate_PRScoped_RejectsWhenGateIsBare is the load-bearing witness
+// for agent-teams-ssib.30: reproduced live (team-lead) as `ateam clear-gate
+// <id> --pr <url>` printing three ✓ lines for labels that never existed and
+// changing nothing, on an initiative gated the OLD (bare) way. This PR has
+// no per-PR label of its own — only the bare "gate:review" — so clearOnePR
+// must refuse loudly instead of running three no-op removes that each print
+// a false success, and must say what actually works (bare clear-gate).
+func TestClearGate_PRScoped_RejectsWhenGateIsBare(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-bare2pr", []string{prURLShepherd, prURLMidgard}, "human", "gate:review"),
+	})
+
+	err := (&clearGateKong{ID: "at-bare2pr", PR: prURLShepherd}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected rejection for --pr against a bare (initiative-wide) gate, got nil")
+	}
+	if !strings.Contains(err.Error(), "initiative-wide") || !strings.Contains(err.Error(), "without --pr") {
+		t.Errorf("error = %q, want it to name the bare-gate reason and the working alternative", err.Error())
+	}
+	// Exactly the resolvePR show call — no label removal attempted at all,
+	// so no false ✓ is ever printed.
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd call (resolvePR's show only, no removals attempted), got %d: %v", len(*calls), *calls)
+	}
+}
+
+// TestClearGate_PRScoped_BareGateOnSinglePRInitiative_StillRejects confirms
+// the guard fires even on a single-PR initiative — a bare gate is
+// initiative-wide regardless of how many PRs are recorded; --pr is still the
+// wrong tool for clearing it.
+func TestClearGate_PRScoped_BareGateOnSinglePRInitiative_StillRejects(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-bare1pr", []string{prURLShepherd}, "human", "gate:question"),
+	})
+
+	err := (&clearGateKong{ID: "at-bare1pr", PR: prURLShepherd}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected rejection for --pr against a bare gate, got nil")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd call, got %d: %v", len(*calls), *calls)
+	}
+}
+
+// TestClearGate_PRScoped_OwnPerPRLabelOverridesBareGatePresence confirms the
+// guard's short-circuit: when this PR carries its OWN per-PR label, --pr
+// clears it normally even if the initiative ALSO still carries a bare gate
+// label (a mixed transitional state) — the bare-gate check must not block a
+// clear that has real per-PR work to do.
+func TestClearGate_PRScoped_OwnPerPRLabelOverridesBareGatePresence(t *testing.T) {
+	afterClear := bd.Issue{ID: "at-mixed", Labels: []string{"human", "gate:review"}}
+	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
+	ctx, calls := newCtx(t, []fakeResp{
+		// Both a bare "gate:review" AND shepherd's own per-PR "gate:review:<url>".
+		showRespWithPRs(t, "at-mixed", []string{prURLShepherd}, "human", "gate:review", "gate:review:"+prURLShepherd),
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: string(afterClearJSON)},
+	})
+
+	err := (&clearGateKong{ID: "at-mixed", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (own per-PR label present, so the clear proceeds despite the bare gate), got %d: %v", len(*calls), *calls)
+	}
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-mixed", "gate:review:" + prURLShepherd})
+}
+
+// TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp confirms the
+// guard is scoped to the bare-gate case specifically (per the bead's fix
+// direction) — a PR that simply isn't gated at all, with no bare gate
+// present either, is a harmless pre-existing no-op, not a rejection.
+func TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp(t *testing.T) {
+	afterClear := bd.Issue{ID: "at-ungated", Labels: []string{}}
+	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-ungated", []string{prURLShepherd}), // no labels at all
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: string(afterClearJSON)},
+	})
+
+	err := (&clearGateKong{ID: "at-ungated", PR: prURLShepherd}).Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (proceeds as a no-op, no rejection; no gate remains so \"human\" is also removed), got %d: %v", len(*calls), *calls)
 	}
 }
 

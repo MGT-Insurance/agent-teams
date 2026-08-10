@@ -48,7 +48,7 @@ func (c *handoffKong) Run(ctx *cli.Context) error {
 	// spelling the caller typed.
 	pr := c.PR
 	if pr != "" {
-		canon, err := resolvePR(ctx, "ateam handoff", c.ID, pr)
+		canon, _, err := resolvePR(ctx, "ateam handoff", c.ID, pr)
 		if err != nil {
 			return err
 		}
