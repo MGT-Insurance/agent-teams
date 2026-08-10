@@ -61,6 +61,7 @@ function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative 
     team: "",
     mode: "",
     prs: [],
+    prReviews: [],
     epic: null,
     // ParsedInitiative carries the CLI-parsed routing fields (agent-teams-ully.12).
     // The view reads the flattened members above, so an empty object is honest here.

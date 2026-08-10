@@ -105,6 +105,7 @@ const sampleDetail: DrillInDetail = {
   team: "default",
   mode: "auto",
   prs: ["https://github.com/org/repo/pull/42"],
+  prReviews: [],
   epic: null,
   // ParsedInitiative carries the CLI-parsed routing fields (agent-teams-ully.12).
   // The view reads the flattened members below, so an empty object is honest here.

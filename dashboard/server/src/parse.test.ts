@@ -18,12 +18,18 @@ import {
   deriveActivity,
   deriveAlert,
   deriveDelivery,
-  deriveExplicitGate,
+  rollupGate,
   deriveNeedsHuman,
   deriveSessionSignal,
   derivePhase,
 } from "./parse.js";
-import type { RawInitiative, SessionState, ParsedInitiative } from "@agent-teams/shared";
+import type {
+  RawInitiative,
+  SessionState,
+  ParsedInitiative,
+  PRReview,
+  ExplicitGateKind,
+} from "@agent-teams/shared";
 import { sessionKind } from "@agent-teams/shared";
 
 // ---- Fixtures ---------------------------------------------------------------
@@ -999,6 +1005,7 @@ describe("buildInbox — sessionId for detached/alive sessions (agent-teams-u9f2
       mode: "bg",
       prs: ["https://github.com/org/repo/pull/99"],
       labels: ["gate:review"],
+      prReviews: [{ pr: "https://github.com/org/repo/pull/99", gate: "review" }],
       epic: null,
       fields: {},
     };
@@ -1172,84 +1179,59 @@ describe("session taxonomy consistency (sessionKind vs deriveSessionSignal)", ()
   });
 });
 
-// ---- deriveExplicitGate (agent-teams-0rl) ------------------------------------
+// ---- rollupGate (agent-teams-ssib.10) ----------------------------------------
+//
+// Replaces deriveExplicitGate (agent-teams-0rl, agent-teams-p9dm.29): WITHIN-one-PR
+// precedence among gate labels (question > external > review) is now Go's job
+// (internal/verbs/status.go's gateForPR), already baked into each pr_reviews
+// entry's own `gate` value — nothing here re-derives it. rollupGate only asks
+// an EXISTENTIAL question ACROSS entries: does any PR carry this kind.
 
-describe("deriveExplicitGate", () => {
-  it("gate:review label -> 'review'", () => {
-    expect(deriveExplicitGate(["gate:review", "human"])).toBe("review");
+function pr(gate: PRReview["gate"], url = "https://github.com/org/repo/pull/1"): PRReview {
+  return { pr: url, gate };
+}
+
+describe("rollupGate", () => {
+  it("single PR with 'review' -> 'review'", () => {
+    expect(rollupGate([pr("review")])).toBe("review");
   });
 
-  it("gate:review alone -> 'review'", () => {
-    expect(deriveExplicitGate(["gate:review"])).toBe("review");
+  it("single PR with 'question' -> 'question'", () => {
+    expect(rollupGate([pr("question")])).toBe("question");
   });
 
-  it("gate:question label -> 'question'", () => {
-    expect(deriveExplicitGate(["gate:question", "human"])).toBe("question");
+  it("single PR with 'external' -> 'external'", () => {
+    expect(rollupGate([pr("external")])).toBe("external");
   });
 
-  it("gate:question alone -> 'question'", () => {
-    expect(deriveExplicitGate(["gate:question"])).toBe("question");
+  it("single PR with no gate ('') -> null", () => {
+    expect(rollupGate([pr("")])).toBeNull();
   });
 
-  it("human-only (no gate:*) -> 'question' (legacy gate)", () => {
-    expect(deriveExplicitGate(["human"])).toBe("question");
+  it("empty pr_reviews array -> null", () => {
+    expect(rollupGate([])).toBeNull();
   });
 
-  it("gate:review takes priority over gate:question", () => {
-    expect(deriveExplicitGate(["gate:review", "gate:question"])).toBe("review");
-  });
-
-  it("empty labels array -> null", () => {
-    expect(deriveExplicitGate([])).toBeNull();
-  });
-
-  it("undefined labels -> null (missing field resilience)", () => {
-    expect(deriveExplicitGate(undefined)).toBeNull();
-  });
-
-  it("unrelated labels -> null", () => {
-    expect(deriveExplicitGate(["some-other-label"])).toBeNull();
-  });
-});
-
-// ---- deriveExplicitGate: external-review (agent-teams-p9dm.29) --------------
-// "external-review" is Eric's declared "I've looked; it's on the team" state and
-// is ADDITIVE on top of human + gate:review (contract p9dm.22 §2). It must
-// suppress the review derivation, but never a live gate:question.
-
-describe("deriveExplicitGate — external-review label", () => {
-  it("external-review + human + gate:review -> 'external' (handed off, not awaiting Eric)", () => {
-    expect(deriveExplicitGate(["human", "gate:review", "external-review"])).toBe("external");
-  });
-
-  it("external-review + gate:review with no human -> 'external'", () => {
-    expect(deriveExplicitGate(["gate:review", "external-review"])).toBe("external");
-  });
-
-  it("external-review + human only -> 'external' (outranks the legacy human fallback)", () => {
-    expect(deriveExplicitGate(["human", "external-review"])).toBe("external");
-  });
-
-  it("external-review alone -> 'external'", () => {
-    expect(deriveExplicitGate(["external-review"])).toBe("external");
-  });
-
-  it("external-review + gate:question -> 'question' (a pending question still reaches Eric)", () => {
-    expect(deriveExplicitGate(["human", "gate:question", "external-review"])).toBe("question");
-  });
-
-  it("external-review + gate:review + gate:question -> 'question' (question outlives the handoff)", () => {
-    expect(deriveExplicitGate(["human", "gate:review", "gate:question", "external-review"])).toBe(
+  it("any 'question' across PRs wins over 'review' (matches status.go rule 1 before rule 3)", () => {
+    expect(rollupGate([pr("review", "https://github.com/o/r/pull/1"), pr("question", "https://github.com/o/r/pull/2")])).toBe(
       "question",
     );
   });
 
-  it("gate:review + human with NO external-review -> 'review' (no over-suppression)", () => {
-    expect(deriveExplicitGate(["human", "gate:review"])).toBe("review");
+  it("any 'review' across PRs wins over 'external' (a still-open review outranks a handed-off one)", () => {
+    expect(rollupGate([pr("external", "https://github.com/o/r/pull/1"), pr("review", "https://github.com/o/r/pull/2")])).toBe(
+      "review",
+    );
   });
 
-  it("a similarly-named label does not suppress the gate", () => {
-    expect(deriveExplicitGate(["human", "gate:review", "external-reviewer"])).toBe("review");
+  it("'external' wins when no PR is under review or question", () => {
+    expect(rollupGate([pr("external", "https://github.com/o/r/pull/1"), pr("", "https://github.com/o/r/pull/2")])).toBe(
+      "external",
+    );
+  });
+
+  it("all-empty gates -> null", () => {
+    expect(rollupGate([pr(""), pr("")])).toBeNull();
   });
 });
 
@@ -1460,6 +1442,7 @@ describe("attention state: spec-required scenarios", () => {
       team: `t-${id}`,
       mode: "bg",
       prs: haspr ? ["https://github.com/org/repo/pull/1"] : [],
+      prReviews: [],
       epic: null,
       fields: {},
     };
@@ -1568,12 +1551,16 @@ describe("attention state: spec-required scenarios", () => {
 // These verify the AUTHORITATIVE review signal derived from explicit gate labels.
 
 describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)", () => {
-  // Helper: make a ParsedInitiative with a specific worktree and optional labels.
+  // Helper: make a ParsedInitiative with a specific worktree and an optional
+  // per-PR gate (agent-teams-ssib.10: gate now comes from prReviews, not
+  // labels — a gate can only exist on a resolved PR, so `gate` set implies
+  // `haspr` true; the two are independent only when gate is undefined).
   function makeGateInit(
     id: string,
-    labels: string[] | undefined,
+    gate: ExplicitGateKind | undefined,
     haspr: boolean,
   ): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id,
       title: `Initiative ${id}`,
@@ -1591,8 +1578,8 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      labels,
-      prs: haspr ? ["https://github.com/org/repo/pull/1"] : [],
+      prs: haspr ? [prUrl] : [],
+      prReviews: haspr && gate ? [{ pr: prUrl, gate }] : [],
       epic: null,
       fields: {},
     };
@@ -1610,13 +1597,13 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
   }
 
   it("gate:review -> needsHuman='review' (AUTHORITATIVE)", () => {
-    const init = makeGateInit("r1", ["gate:review", "human"], true);
+    const init = makeGateInit("r1", "review", true);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe("review");
   });
 
   it("gate:review wins over working session -> needsHuman='review'", () => {
-    const init = makeGateInit("r2", ["gate:review", "human"], true);
+    const init = makeGateInit("r2", "review", true);
     const sess = makeSessionForId("r2", "busy", "working");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     expect(nodes[0]?.needsHuman).toBe("review");
@@ -1624,16 +1611,18 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
   });
 
   it("gate:question -> needsHuman='waiting'", () => {
-    const init = makeGateInit("q1", ["gate:question", "human"], false);
+    const init = makeGateInit("q1", "question", true);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe("waiting");
   });
 
-  it("human-only label (legacy gate) -> needsHuman='waiting'", () => {
-    const init = makeGateInit("h1", ["human"], false);
-    const nodes = buildInitiativeNodes([init], [], new Set());
-    expect(nodes[0]?.needsHuman).toBe("waiting");
-  });
+  // NOTE: the old "bare 'human' label with no gate:* -> treat as question"
+  // legacy fallback (deriveExplicitGate) has no Go-side equivalent in
+  // computePRReviews/gateForPR (internal/verbs/status.go) — flagged as
+  // agent-teams-ssib.27, not silently re-implemented here. The remaining
+  // legacy path for "human"-labeled-but-ungated initiatives is the
+  // humanGatedIds fallback (see "activity is needs-human when initiative is
+  // in humanGatedIds (legacy fallback)" above), which is unaffected by D2.
 
   it("delivered + ended + no gate -> needsHuman='generic' (NOT review)", () => {
     const init = makeGateInit("g1", undefined, true);
@@ -1643,23 +1632,97 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
   });
 
   it("gate:review initiative has delivery ring AND review badge (review item in inbox)", () => {
-    const init = makeGateInit("r3", ["gate:review", "human"], true);
+    const init = makeGateInit("r3", "review", true);
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.kind).toBe("review");
     expect(inbox[0]?.prUrls).toEqual(["https://github.com/org/repo/pull/1"]);
   });
 
-  it("labels=[]: tolerate empty array -> no gate", () => {
-    const init = makeGateInit("e1", [], false);
+  it("no PR and no gate -> no gate signal", () => {
+    const init = makeGateInit("e1", undefined, false);
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe(false);
   });
+});
 
-  it("labels=undefined: tolerate missing labels -> no gate", () => {
-    const init = makeGateInit("e2", undefined, false);
+// ---- buildInbox: per-PR gate rows (agent-teams-ssib.10) ----------------------
+//
+// The core of D2: a multi-PR initiative with different gates on different PRs
+// must surface EVERY gated PR as its own inbox row, not just the first —
+// exactly the silent-shadowing bug (agent-teams-ssib.2) this whole initiative
+// exists to fix, now on the dashboard side. Each row's kind/prUrls come
+// directly from ITS OWN pr_reviews entry — no cross-PR precedence.
+
+describe("buildInbox — per-PR gate rows (agent-teams-ssib.10)", () => {
+  const prA = "https://github.com/erlloyd/pr-shepherd/pull/3";
+  const prB = "https://github.com/MGT-Insurance/midgard/pull/4632";
+
+  function makeMultiPrInit(): ParsedInitiative {
+    return {
+      id: "multi-pr",
+      title: "Multi-PR initiative",
+      description: "worktree: /wt/multi-pr",
+      notes: "",
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      owner: "eric",
+      created_at: "2026-08-10T00:00:00Z",
+      updated_at: "2026-08-10T00:00:00Z",
+      problem: "",
+      repo: "/repo",
+      worktree: "/wt/multi-pr",
+      branch: "multi-pr",
+      team: "t-multi-pr",
+      mode: "bg",
+      prs: [prA, prB],
+      prReviews: [
+        { pr: prA, gate: "review" },
+        { pr: prB, gate: "question" },
+      ],
+      epic: null,
+      fields: {},
+    };
+  }
+
+  it("emits ONE row per gated PR, each with its own kind and prUrls", () => {
+    const nodes = buildInitiativeNodes([makeMultiPrInit()], [], new Set());
+    // Aggregate rollup: "question" wins over "review" (matches status.go rule 1).
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(2);
+
+    const reviewRow = inbox.find((i) => i.prUrls[0] === prA);
+    const waitingRow = inbox.find((i) => i.prUrls[0] === prB);
+    expect(reviewRow?.kind).toBe("review");
+    expect(reviewRow?.prUrls).toEqual([prA]);
+    expect(waitingRow?.kind).toBe("waiting");
+    expect(waitingRow?.prUrls).toEqual([prB]);
+  });
+
+  it("a PR with no gate ('') produces no row of its own", () => {
+    const init: ParsedInitiative = {
+      ...makeMultiPrInit(),
+      prReviews: [
+        { pr: prA, gate: "review" },
+        { pr: prB, gate: "" },
+      ],
+    };
     const nodes = buildInitiativeNodes([init], [], new Set());
-    expect(nodes[0]?.needsHuman).toBe(false);
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.prUrls).toEqual([prA]);
+  });
+
+  it("legacy fallback (humanGatedIds, no pr_reviews entries at all) still emits exactly one row with ALL prUrls", () => {
+    const init: ParsedInitiative = { ...makeMultiPrInit(), prReviews: [] };
+    const nodes = buildInitiativeNodes([init], [], new Set(["multi-pr"]));
+    expect(nodes[0]?.needsHuman).toBe("waiting");
+    const inbox = buildInbox(nodes);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.prUrls).toEqual([prA, prB]);
   });
 });
 
@@ -1670,11 +1733,16 @@ describe("buildInitiativeNodes — explicit gate:review label (agent-teams-0rl)"
 // legacy humanGatedIds fallback has to be suppressed too.
 
 describe("buildInitiativeNodes/buildInbox — external-review (agent-teams-p9dm.29)", () => {
+  // gate is the ALREADY-RESOLVED per-PR gate (agent-teams-ssib.10: WITHIN-PR
+  // label-combination precedence — e.g. "external-review wins over gate:review,
+  // but not over gate:question" — is Go's job now, internal/verbs/status.go's
+  // gateForPR; these fixtures start from its output, not from a raw label set).
   function makeInit(
     id: string,
-    labels: string[] | undefined,
+    gate: ExplicitGateKind | undefined,
     status: string = "open",
   ): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id,
       title: `Initiative ${id}`,
@@ -1693,14 +1761,14 @@ describe("buildInitiativeNodes/buildInbox — external-review (agent-teams-p9dm.
       team: `t-${id}`,
       mode: "bg",
       fields: {},
-      labels,
-      prs: ["https://github.com/org/repo/pull/1"],
+      prs: [prUrl],
+      prReviews: gate ? [{ pr: prUrl, gate }] : [],
       epic: null,
     };
   }
 
   it("handed off (human + gate:review + external-review) -> NOT in the needs-review inbox", () => {
-    const init = makeInit("x1", ["human", "gate:review", "external-review"]);
+    const init = makeInit("x1", "external");
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe(false);
     expect(nodes[0]?.activity).not.toBe("needs-human");
@@ -1710,28 +1778,28 @@ describe("buildInitiativeNodes/buildInbox — external-review (agent-teams-p9dm.
   it("handed off AND present in humanGatedIds -> still NOT in the inbox (legacy fallback suppressed)", () => {
     // Handed-off initiatives keep the "human" label, so `bd list --label human`
     // returns them; the fallback must not resurrect the gate.
-    const init = makeInit("x2", ["human", "gate:review", "external-review"]);
+    const init = makeInit("x2", "external");
     const nodes = buildInitiativeNodes([init], [], new Set(["x2"]));
     expect(nodes[0]?.needsHuman).toBe(false);
     expect(buildInbox(nodes)).toEqual([]);
   });
 
   it("handed off + gate:question -> in the inbox as 'waiting' (the question still needs Eric)", () => {
-    const init = makeInit("x3", ["human", "gate:review", "gate:question", "external-review"]);
+    const init = makeInit("x3", "question");
     const nodes = buildInitiativeNodes([init], [], new Set());
     expect(nodes[0]?.needsHuman).toBe("waiting");
     expect(buildInbox(nodes)[0]?.kind).toBe("waiting");
   });
 
   it("gate:review with NO external-review -> unchanged, still in the inbox as 'review'", () => {
-    const init = makeInit("x4", ["human", "gate:review"]);
+    const init = makeInit("x4", "review");
     const nodes = buildInitiativeNodes([init], [], new Set(["x4"]));
     expect(nodes[0]?.needsHuman).toBe("review");
     expect(buildInbox(nodes)[0]?.kind).toBe("review");
   });
 
   it("handed off + merged + worktree gone + alive session -> still 'reap' (merged wins)", () => {
-    const init = makeInit("x5", ["human", "gate:review", "external-review"], "closed");
+    const init = makeInit("x5", "external", "closed");
     const sess = {
       sessionId: "sess-x5",
       kind: "background" as const,
@@ -1825,12 +1893,14 @@ describe("extractLatestAsk", () => {
 // ---- buildInbox: updatedAt + nextAction (agent-teams-1saz) -------------------
 
 describe("buildInbox — updatedAt and nextAction", () => {
+  // gate is derived from `kind` (agent-teams-ssib.10: a gate now lives on a
+  // pr_reviews entry, not a raw label) — "generic" carries a PR but no gate.
   function makeInit(
     id: string,
     kind: "review" | "waiting" | "generic",
     notes = "",
-    labels?: string[],
   ): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id,
       title: `Initiative ${id}`,
@@ -1848,22 +1918,27 @@ describe("buildInbox — updatedAt and nextAction", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prs: kind === "generic" || kind === "review" ? ["https://github.com/org/repo/pull/1"] : [],
-      labels,
+      prs: [prUrl],
+      prReviews:
+        kind === "review"
+          ? [{ pr: prUrl, gate: "review" }]
+          : kind === "waiting"
+            ? [{ pr: prUrl, gate: "question" }]
+            : [],
       epic: null,
       fields: {},
     };
   }
 
   it("review item has updatedAt from initiative.updated_at", () => {
-    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const init = makeInit("rev", "review");
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
   });
 
   it("review item nextAction is the constant string", () => {
-    const init = makeInit("rev", "review", "", ["gate:review"]);
+    const init = makeInit("rev", "review");
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.nextAction).toBe("Review the PR and merge or send it back.");
@@ -1892,7 +1967,7 @@ describe("buildInbox — updatedAt and nextAction", () => {
       "decision: Should we use approach A or approach B?",
       ">>>",
     ].join("\n");
-    const init = { ...makeInit("w-ask", "waiting"), notes, labels: ["gate:question", "human"] };
+    const init = { ...makeInit("w-ask", "waiting"), notes };
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.nextAction).toBe("Should we use approach A or approach B?");
@@ -1901,7 +1976,7 @@ describe("buildInbox — updatedAt and nextAction", () => {
   it("waiting item: fallback is constant when no ask block present", () => {
     const notes =
       "Early note.\nThis is the latest entry. It has more text after the period.";
-    const init = { ...makeInit("w-fb", "waiting"), notes, labels: ["human"] };
+    const init = { ...makeInit("w-fb", "waiting"), notes };
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
@@ -1909,14 +1984,14 @@ describe("buildInbox — updatedAt and nextAction", () => {
 
   it("waiting item: fallback is constant even when notes are very long (no ask block)", () => {
     const longLine = "A".repeat(200);
-    const init = { ...makeInit("w-long", "waiting"), notes: longLine, labels: ["human"] };
+    const init = { ...makeInit("w-long", "waiting"), notes: longLine };
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.nextAction).toBe("Look at the session for more info.");
   });
 
   it("waiting item has updatedAt from initiative.updated_at", () => {
-    const init = { ...makeInit("w-ts", "waiting"), labels: ["human"] };
+    const init = makeInit("w-ts", "waiting");
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.updatedAt).toBe("2026-06-25T12:00:00Z");
@@ -1945,7 +2020,7 @@ describe("buildInbox — lastActivityAt (session-transition-aware recency)", () 
       team: `t-${id}`,
       mode: "bg",
       prs: ["https://github.com/org/repo/pull/1"],
-      labels: ["gate:review"],
+      prReviews: [{ pr: "https://github.com/org/repo/pull/1", gate: "review" }],
       epic: null,
       fields: {},
     };
@@ -2021,6 +2096,7 @@ describe("buildInbox — notes fallback skips ask-sentinel blocks", () => {
       team: "t-chk",
       mode: "bg",
       prs: [],
+      prReviews: [],
       epic: null,
       fields: {},
     };
@@ -2066,7 +2142,11 @@ describe("buildInbox — notes fallback skips ask-sentinel blocks", () => {
 // ---- buildInbox: recommendation/alternative passthrough (agent-teams-oc3p) ----
 
 describe("buildInbox — recommendation and alternative", () => {
+  // agent-teams-ssib.10: a gate lives on a pr_reviews entry now, so a "waiting"
+  // fixture needs a real PR to attach the "question" gate to (there is no
+  // bare-human-with-no-PR fallback anymore — see agent-teams-ssib.27).
   function makeWaitingInit(notes: string): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id: "w-rec",
       title: "Rec test",
@@ -2084,8 +2164,8 @@ describe("buildInbox — recommendation and alternative", () => {
       branch: "w-rec",
       team: "t-w-rec",
       mode: "bg",
-      prs: [],
-      labels: ["human"],
+      prs: [prUrl],
+      prReviews: [{ pr: prUrl, gate: "question" }],
       epic: null,
       fields: {},
     };
@@ -2134,7 +2214,7 @@ describe("buildInbox — recommendation and alternative", () => {
       team: "t-rv",
       mode: "bg",
       prs: ["https://github.com/org/repo/pull/1"],
-      labels: ["gate:review"],
+      prReviews: [{ pr: "https://github.com/org/repo/pull/1", gate: "review" }],
       epic: null,
       fields: {},
     };
@@ -2168,6 +2248,7 @@ describe("buildInbox — onThisMachine", () => {
       team: `t-${id}`,
       mode: "bg",
       prs: [],
+      prReviews: [],
       labels: ["human"],
       epic: null,
       fields: {},
@@ -2305,6 +2386,7 @@ describe("buildInitiativeNodes — worktreeExists (at-gvv)", () => {
       team: `t-${id}`,
       mode: "bg",
       prs: [],
+      prReviews: [],
       epic: null,
       fields: {},
     };
@@ -2376,6 +2458,7 @@ describe("buildInbox — reap flavor (agent-teams-d10b.2)", () => {
       team: `t-${id}`,
       mode: "bg",
       prs: [],
+      prReviews: [],
       epic: null,
       fields: {},
     };
@@ -2467,6 +2550,7 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
       team: `t-${id}`,
       mode: "bg",
       prs: [],
+      prReviews: [],
       epic: null,
       fields: {},
     };
@@ -2508,7 +2592,12 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
   });
 
   it("gate:question + session also blocked → kind='waiting' (gate wins; gate checked first)", () => {
-    const init: ParsedInitiative = { ...makeInit("chk-q"), labels: ["gate:question", "human"] };
+    const prUrl = "https://github.com/org/repo/pull/1";
+    const init: ParsedInitiative = {
+      ...makeInit("chk-q"),
+      prs: [prUrl],
+      prReviews: [{ pr: prUrl, gate: "question" }],
+    };
     const sess = makeSession("chk-q", "waiting", "blocked");
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
@@ -2516,7 +2605,12 @@ describe("buildInbox — check flavor (agent-teams-ja9c)", () => {
   });
 
   it("gate:question without blocked session → kind='waiting' (authoritative declared ask)", () => {
-    const init: ParsedInitiative = { ...makeInit("chk-q2"), labels: ["gate:question"] };
+    const prUrl = "https://github.com/org/repo/pull/1";
+    const init: ParsedInitiative = {
+      ...makeInit("chk-q2"),
+      prs: [prUrl],
+      prReviews: [{ pr: prUrl, gate: "question" }],
+    };
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.kind).toBe("waiting");
@@ -2617,7 +2711,7 @@ describe("deriveAlert", () => {
 // the gate, and vice versa). Only "reap" suppresses the alert (see reap-flavor tests).
 
 describe("buildInbox — merge semantics: gate row also carrying an alert (agent-teams-rybk)", () => {
-  function makeInit(id: string, labels: string[]): ParsedInitiative {
+  function makeInit(id: string): ParsedInitiative {
     return {
       id,
       title: `Initiative ${id}`,
@@ -2636,16 +2730,18 @@ describe("buildInbox — merge semantics: gate row also carrying an alert (agent
       team: `t-${id}`,
       mode: "bg",
       prs: [],
-      labels,
+      prReviews: [],
       epic: null,
       fields: {},
     };
   }
 
   it("a declared-ask (waiting) row with no matched session, worktree on this machine, keeps kind='waiting' AND carries the stalled alert", () => {
-    const init = makeInit("merge-1", ["human"]);
+    const init = makeInit("merge-1");
+    // No pr_reviews entry — falls back to the humanGatedIds legacy path
+    // (bd list --label human, agent-teams-ssib.27) for the "question" gate.
     // existsFn=()=>true: worktree present on this machine, but no session matched -> stalled.
-    const nodes = buildInitiativeNodes([init], [], new Set(), () => true);
+    const nodes = buildInitiativeNodes([init], [], new Set(["merge-1"]), () => true);
     expect(nodes[0]?.needsHuman).toBe("waiting");
     expect(nodes[0]?.alert?.level).toBe("urgent");
 
@@ -2802,6 +2898,7 @@ describe("extractLatestAsk — recommendation/alternative edge cases (oc3p)", ()
 
 describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => {
   function makeWaitingInitWithNotes(notes: string): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id: "cap-test",
       title: "Cap test",
@@ -2819,8 +2916,8 @@ describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => 
       branch: "cap-test",
       team: "t-cap-test",
       mode: "bg",
-      prs: [],
-      labels: ["human"],
+      prs: [prUrl],
+      prReviews: [{ pr: prUrl, gate: "question" }],
       epic: null,
       fields: {},
     };
@@ -2875,7 +2972,10 @@ describe("buildInbox — recommendation/alternative 120-char cap (oc3p)", () => 
 // ---- buildInbox: raw status/state/waitingFor pass-through (agent-teams-ni2y.2) ----
 
 describe("buildInbox — raw status/state/waitingFor pass-through", () => {
-  function makeInit(id: string, labels?: string[]): ParsedInitiative {
+  // gate is only what's needed to get SOME row into the inbox — these tests
+  // assert the raw session passthrough, not the gate kind itself.
+  function makeInit(id: string, gate?: ExplicitGateKind): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id,
       title: `Initiative ${id}`,
@@ -2893,15 +2993,15 @@ describe("buildInbox — raw status/state/waitingFor pass-through", () => {
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prs: [],
-      labels,
+      prs: gate ? [prUrl] : [],
+      prReviews: gate ? [{ pr: prUrl, gate }] : [],
       epic: null,
       fields: {},
     };
   }
 
   it("passes through raw session status/state/waitingFor verbatim (not collapsed into kind)", () => {
-    const init = makeInit("pt-1", ["human"]);
+    const init = makeInit("pt-1", "question");
     const sess: SessionState = {
       sessionId: "sess-pt-1",
       kind: "background",
@@ -2919,7 +3019,7 @@ describe("buildInbox — raw status/state/waitingFor pass-through", () => {
   });
 
   it("status/state are null and waitingFor is absent when no session matched", () => {
-    const init = makeInit("pt-2", ["gate:review"]);
+    const init = makeInit("pt-2", "review");
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.status).toBeNull();
@@ -2932,6 +3032,7 @@ describe("buildInbox — raw status/state/waitingFor pass-through", () => {
 
 describe("buildInbox — waiting item context from ask block", () => {
   function makeWaitingInit(notes: string): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id: "ctx-test",
       title: "Context test",
@@ -2949,8 +3050,8 @@ describe("buildInbox — waiting item context from ask block", () => {
       branch: "ctx-test",
       team: "t-ctx-test",
       mode: "bg",
-      prs: [],
-      labels: ["human"],
+      prs: [prUrl],
+      prReviews: [{ pr: prUrl, gate: "question" }],
       epic: null,
       fields: {},
     };
@@ -2986,7 +3087,8 @@ describe("buildInbox — waiting item context from ask block", () => {
 // covered by the "updatedAt and nextAction" and "check flavor" describe blocks above.
 
 describe("buildInbox — notes-block nextAction fallback for check/generic/review", () => {
-  function makeInit(id: string, notes: string, labels?: string[]): ParsedInitiative {
+  function makeInit(id: string, notes: string, gate?: ExplicitGateKind): ParsedInitiative {
+    const prUrl = "https://github.com/org/repo/pull/1";
     return {
       id,
       title: `Initiative ${id}`,
@@ -3004,8 +3106,8 @@ describe("buildInbox — notes-block nextAction fallback for check/generic/revie
       branch: id,
       team: `t-${id}`,
       mode: "bg",
-      prs: ["https://github.com/org/repo/pull/1"],
-      labels,
+      prs: [prUrl],
+      prReviews: gate ? [{ pr: prUrl, gate }] : [],
       epic: null,
       fields: {},
     };
@@ -3014,7 +3116,7 @@ describe("buildInbox — notes-block nextAction fallback for check/generic/revie
   it("review item nextAction falls back to the last notes block when present", () => {
     const notes =
       "session 1, 2026-06-30 — investigating flaky test.\nsession 2, 2026-07-01 — fix landed, needs review of the retry logic.";
-    const init = makeInit("rev-fb", notes, ["gate:review"]);
+    const init = makeInit("rev-fb", notes, "review");
     const nodes = buildInitiativeNodes([init], [], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.nextAction).toBe("session 2, 2026-07-01 — fix landed, needs review of the retry logic.");

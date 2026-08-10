@@ -9,6 +9,7 @@ export type {
   DeliveryStatus,
   NeedsHumanFlavor,
   ExplicitGateKind,
+  PRReview,
   Alert,
   InitiativeNode,
   InboxItem,

@@ -60,6 +60,13 @@ export interface RawInitiative {
   // grow this key; a real `ateam list-json` payload always includes it, possibly
   // as `[]`.
   prs?: string[];
+  // The Go-computed per-PR gate array (docs/multi-pr-contract.md §5) — a
+  // second sibling of `fields`, mutable (recomputed from the current label
+  // set on every call, unlike the append-only `fields` rail). One entry per
+  // PR in the resolved list above, in the same order. Optional here for the
+  // same reason `prs` is: a real `ateam list-json` payload always includes
+  // it, possibly as `[]`; hand-built RawInitiative test literals need not.
+  pr_reviews?: PRReview[];
 }
 
 // Explicit gate kind derived from labels:
@@ -67,10 +74,21 @@ export interface RawInitiative {
 //   "question" -> "gate:question" or "human"-only label (agent asking a question)
 //   "external" -> "external-review" label present: Eric has DECLARED he is done
 //                 looking and the PR is with other humans. The one gate kind that
-//                 is NOT an ask — it is authoritatively NOT in his queue. See
-//                 deriveExplicitGate in server/src/parse.ts.
+//                 is NOT an ask — it is authoritatively NOT in his queue.
 //   none       -> no gate label present
 export type ExplicitGateKind = "review" | "question" | "external";
+
+// One entry in the Go-computed per-PR gate array (docs/multi-pr-contract.md
+// §5): which gate kind (if any) a specific resolved PR currently carries.
+// `gate` is "" — not null, not omitted — when that PR carries no per-PR gate
+// label, so every element has the same shape (agent-teams-ssib.10: this is
+// the third divergent implementation of gate-kind precedence deleted in favor
+// of reading Go's already-resolved value; see the deleted deriveExplicitGate
+// in server/src/parse.ts's history for the old label-scanning approach).
+export interface PRReview {
+  pr: string;
+  gate: ExplicitGateKind | "";
+}
 
 // RawInitiative plus fields parsed out of description text, and the resolved
 // PR list (agent-teams-ssib.9: replaces the old single `prUrl`, which came
@@ -86,6 +104,9 @@ export interface ParsedInitiative extends RawInitiative {
   // The initiative's resolved PR URLs, in registration order. [] when it has
   // none — never used as a truthiness check for "has a PR"; check .length.
   prs: string[];
+  // The per-PR gate array, verbatim from raw.pr_reviews (agent-teams-ssib.10).
+  // [] when raw.pr_reviews is absent (ad-hoc/older callers) or empty.
+  prReviews: PRReview[];
   // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
   // Absent for legacy initiatives registered before at-e3m. Dashboard uses
   // this to filter the drill-in work-bead list to just this initiative's subtree.
