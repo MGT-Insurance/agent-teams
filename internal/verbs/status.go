@@ -13,20 +13,26 @@ package verbs
 //	    "labels":         ["human","gate:review"],
 //	    "execution_status": "REVIEWABLE",   // see STATUS COMPUTATION below
 //	    "ask":            { "decision": "...", ... } // null when no sentinel block
-//	    "pr":             "https://..."    // first GitHub PR URL in notes, or ""
+//	    "prs":            ["https://..."]  // initiative.ResolvedPRs(iss); [] when none
+//	    "pr_reviews":     [{"pr":"https://...","gate":"review"}] // see computePRReviews
 //	  },
 //	  ...
 //	]
 //
 // STATUS COMPUTATION (first-match wins, per contract agent-teams-j9s §1 as
-// amended by the at-jno7 contract, external_review.go §7):
-//  1. NEEDS-DECISION  — labels contain "human" AND "gate:question"
+// amended by the at-jno7 contract, external_review.go §7, and per-PR-aware
+// per docs/multi-pr-contract.md §6 — see computeExecutionStatus's own doc
+// comment for how a multi-PR disagreement rolls up into this one string):
+//  1. NEEDS-DECISION  — labels contain "human" AND a "gate:question" of ANY
+//                       PR (bare or per-PR suffixed)
 //  2. IN-PROGRESS     — the joined session is ACTIVELY WORKING
 //                       (overrides any review gate)
-//  3. labels contain "human" AND "gate:review" AND NOT actively working;
-//     within rule 3, first match wins:
-//     a. AWAITING-EXTERNAL-REVIEW — "external-review" label present
-//     b. REVIEWABLE               — otherwise
+//  3. labels contain "human" AND a "gate:review" of ANY PR AND NOT actively
+//     working; within rule 3, first match wins:
+//     a. AWAITING-EXTERNAL-REVIEW — EVERY review-gated PR also carries its
+//        OWN "external-review" declaration
+//     b. REVIEWABLE               — otherwise (at least one review-gated PR
+//        has NOT been handed off — the case a human actually hits)
 //  4. IN-PROGRESS     — everything else (open, no gate, or between gates)
 //
 // "ACTIVELY WORKING" = a live session whose cwd matches the initiative's
@@ -39,6 +45,7 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -63,12 +70,15 @@ func RegisterStatusKong(p *cli.Parser) {
 //	  "labels":           ["human","gate:review"],
 //	  "execution_status": "REVIEWABLE",
 //	  "ask":              { "decision": "...", "recommendation": "...", "alternative": "...", "context": "..." },
-//	  "pr":               "https://github.com/..."   // empty string when absent
+//	  "prs":              ["https://github.com/..."],  // [] when none — never omitted, never null
+//	  "pr_reviews":       [{"pr": "https://...", "gate": "review"}]  // [] when none
 //	}
 //
 // ask is null when no structured ateam-ask block is present in notes.
-// pr is the first GitHub PR URL found in notes, or "".
-// The raw notes field is intentionally omitted — consumers use ask and pr.
+// prs is sourced from initiative.ResolvedPRs(iss) — docs/multi-pr-contract.md
+// §2a — never Of(iss).PRs directly and never its own Notes/Description scan.
+// The raw notes field is intentionally omitted — consumers use ask, prs, and
+// pr_reviews.
 type initiativeStatus struct {
 	ID              string        `json:"id"`
 	Title           string        `json:"title"`
@@ -76,7 +86,17 @@ type initiativeStatus struct {
 	Labels          []string      `json:"labels"`
 	ExecutionStatus string        `json:"execution_status"`
 	Ask             *askBlockJSON `json:"ask"`
-	PR              string        `json:"pr"`
+	PRs             []string      `json:"prs"`
+	PRReviews       []PRReview    `json:"pr_reviews"`
+}
+
+// PRReview is one entry in the Go-computed per-PR review array
+// (docs/multi-pr-contract.md §5) — emitted on both `execution-status` and
+// `ateam list-json`. Gate is one of "review", "question", "external", or ""
+// (never omitted or null) when the PR carries no gate label at all.
+type PRReview struct {
+	PR   string `json:"pr"`
+	Gate string `json:"gate"`
 }
 
 // askBlockJSON is the JSON-serialisable form of an askBlock.
@@ -91,19 +111,36 @@ type askBlockJSON struct {
 // its labels, the current live sessions, and its worktree path.
 //
 // Evaluation order (first match wins):
-//  1. NEEDS-DECISION  — "human" + "gate:question" present in labels
+//  1. NEEDS-DECISION  — "human" + a "gate:question" of ANY PR present in labels
 //  2. IN-PROGRESS     — session actively working (overrides gate:review)
-//  3. "human" + "gate:review" + NOT actively working; see the sub-cascade below
+//  3. "human" + a "gate:review" of ANY PR + NOT actively working; see the
+//     sub-cascade below
 //  4. IN-PROGRESS     — everything else
 //
 // Only rule 3's body knows about the declared label, so an un-gated
 // initiative sees zero behaviour change from it — including one carrying
 // externalReviewLabel with no review gate, which stays inert (external_
 // review.go §9's U/Q -> H row).
+//
+// MULTI-PR ROLLUP (docs/multi-pr-contract.md §6 — Track G's call, not frozen
+// by the contract beyond "stays a single string"): execution_status is one
+// value for the whole initiative, but a PR can now carry its OWN gate and
+// its OWN handoff declaration (§3). Rules 1 and 2 treat "does ANY PR have
+// this gate" as the question — a question on ONE PR is exactly as urgent as
+// a question on the only PR, so NEEDS-DECISION wins even if a second PR is
+// merely review-gated. Rule 3a is the one place PRs can genuinely disagree:
+// PR A handed off, PR B still awaiting review. AWAITING-EXTERNAL-REVIEW
+// claims "nothing here needs you" — that is only true when EVERY
+// review-gated PR has ITS OWN matching handoff declaration (paired by PR,
+// not "a handoff exists somewhere on this initiative"). If even one
+// review-gated PR lacks its own handoff, the initiative reports REVIEWABLE:
+// that is the case a human actually hits, and REVIEWABLE is the state that
+// gets looked at, so disagreement resolves toward the state that demands
+// attention rather than the one that suppresses it.
 func computeExecutionStatus(labels []string, sessions []agentSession, worktree string) string {
 	hasHuman := hasLabel(labels, "human")
-	hasQuestion := hasLabel(labels, "gate:question")
-	hasReview := hasLabel(labels, "gate:review")
+	hasQuestion := hasGateKind(labels, "gate:question")
+	hasReview := hasGateKind(labels, "gate:review")
 
 	// Rule 1: NEEDS-DECISION
 	if hasHuman && hasQuestion {
@@ -117,8 +154,20 @@ func computeExecutionStatus(labels []string, sessions []agentSession, worktree s
 
 	// Rule 3: review-gated (external_review.go §7), first match wins.
 	if hasHuman && hasReview {
-		// Declared by Eric via `ateam handoff`, never derived (§0).
-		if hasLabel(labels, externalReviewLabel) {
+		// Pair each review-gated PR (bare "" id, or a per-PR URL suffix)
+		// with ITS OWN handoff declaration — declared by Eric via
+		// `ateam handoff`, never derived (§0). AWAITING-EXTERNAL-REVIEW
+		// only when every review id has a matching handoff id.
+		reviewIDs := gateIDs(labels, "gate:review")
+		handoffIDs := gateIDs(labels, externalReviewLabel)
+		allHandedOff := true
+		for id := range reviewIDs {
+			if !handoffIDs[id] {
+				allHandedOff = false
+				break
+			}
+		}
+		if allHandedOff {
 			return StatusAwaitingExternalReview
 		}
 		return "REVIEWABLE"
@@ -136,6 +185,87 @@ func hasLabel(labels []string, label string) bool {
 		}
 	}
 	return false
+}
+
+// hasGateKind reports whether labels contain base ("gate:review",
+// "gate:question", or externalReviewLabel) in either its bare,
+// initiative-scoped form or ANY per-PR "<base>:<url>" suffixed form
+// (docs/multi-pr-contract.md §3). A multi-PR initiative gates per PR, so a
+// caller that only checked the bare label would go blind to every gate the
+// moment a second PR is opened.
+func hasGateKind(labels []string, base string) bool {
+	prefix := base + ":"
+	for _, l := range labels {
+		if l == base || strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// gateIDs returns the set of PR discriminators that carry base as a label —
+// "" for the bare, initiative-scoped form, or the PR URL suffix for a
+// per-PR "<base>:<url>" label (docs/multi-pr-contract.md §3). Used to pair a
+// review gate with its OWN handoff declaration rather than any handoff
+// anywhere on the initiative (computeExecutionStatus rule 3).
+func gateIDs(labels []string, base string) map[string]bool {
+	ids := make(map[string]bool)
+	prefix := base + ":"
+	for _, l := range labels {
+		switch {
+		case l == base:
+			ids[""] = true
+		case strings.HasPrefix(l, prefix):
+			ids[strings.TrimPrefix(l, prefix)] = true
+		}
+	}
+	return ids
+}
+
+// computePRReviews returns one PRReview per PR in prs (the initiative's
+// RESOLVED PR list — initiative.ResolvedPRs, never the raw rail alone, see
+// docs/multi-pr-contract.md §2a), each Gate computed from labels.
+//
+// Precedence when a PR carries more than one gate label is inherited
+// verbatim from the dashboard's deriveExplicitGate
+// (dashboard/server/src/parse.ts:212), unchanged: "question" outranks both
+// "external" and "review"; "external" outranks "review".
+//
+// Bare, un-suffixed gate labels (predating this bead's --pr discriminator,
+// docs/multi-pr-contract.md §3) are attributed to the one resolved PR only
+// when the initiative has EXACTLY one — with two or more PRs a bare label
+// can't be attributed to either without guessing, so it contributes nothing
+// here (it still counts toward the initiative-scoped execution_status
+// rollup above, which is label-text-based and needs no PR attribution).
+func computePRReviews(labels []string, prs []string) []PRReview {
+	reviews := make([]PRReview, 0, len(prs))
+	allowBareFallback := len(prs) == 1
+	for _, pr := range prs {
+		reviews = append(reviews, PRReview{PR: pr, Gate: gateForPR(labels, pr, allowBareFallback)})
+	}
+	return reviews
+}
+
+// gateForPR computes the gate kind for one PR: "question", "external",
+// "review", or "" — checking the per-PR suffixed label first and, when
+// allowBareFallback is set, falling back to the bare label of the same base.
+func gateForPR(labels []string, pr string, allowBareFallback bool) string {
+	matches := func(base string) bool {
+		if hasLabel(labels, base+":"+pr) {
+			return true
+		}
+		return allowBareFallback && hasLabel(labels, base)
+	}
+	switch {
+	case matches("gate:question"):
+		return "question"
+	case matches(externalReviewLabel):
+		return "external"
+	case matches("gate:review"):
+		return "review"
+	default:
+		return ""
+	}
 }
 
 // ── native kong struct ────────────────────────────────────────────────────────
@@ -180,6 +310,14 @@ func (c *executionStatusKong) Run(ctx *cli.Context) error {
 			}
 		}
 
+		// prs is the RESOLVED list (docs/multi-pr-contract.md §2a) — never
+		// Of(iss).PRs directly and never its own Notes/Description scan.
+		// nil becomes [] so the field is never emitted as null.
+		prs := initiative.ResolvedPRs(iss)
+		if prs == nil {
+			prs = []string{}
+		}
+
 		out = append(out, initiativeStatus{
 			ID:              iss.ID,
 			Title:           iss.Title,
@@ -187,7 +325,8 @@ func (c *executionStatusKong) Run(ctx *cli.Context) error {
 			Labels:          iss.Labels,
 			ExecutionStatus: execStatus,
 			Ask:             ask,
-			PR:              extractPrURL(iss.Notes),
+			PRs:             prs,
+			PRReviews:       computePRReviews(iss.Labels, prs),
 		})
 	}
 

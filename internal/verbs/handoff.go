@@ -15,47 +15,62 @@ import (
 //
 //	ateam handoff <id>            // declare: the human has looked; it's on the team
 //	ateam handoff <id> --clear    // undo: the human has re-opened the question
+//	ateam handoff <id> --pr <url> // scope the declaration to one PR (docs/multi-pr-contract.md §3)
 type handoffKong struct {
 	ID    string `arg:"" name:"id" help:"Initiative ID."`
 	Clear bool   `name:"clear" help:"Undo the declaration; the question is the human's again."`
+
+	// PR scopes the handoff to one PR: the emitted label becomes
+	// "external-review:<pr>" instead of the bare, initiative-scoped
+	// "external-review" (docs/multi-pr-contract.md §3). Omitted (legacy,
+	// unchanged): bare form.
+	PR string `name:"pr" help:"Full PR URL to scope the handoff to one PR; omitted uses the bare, initiative-scoped label (legacy)."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
-// Adds or removes exactly externalReviewLabel via `bd label add|remove` —
-// the same mechanism gateKong/clearGateKong already use for "human" and
-// "gate:*" (kong_converted.go). No other label is touched: "human" and
-// "gate:review" are deliberately left in place (external_review.go §2).
-// `bd label add`/`remove` on an already-(ab)sent label is a no-op, so both
-// directions are idempotent.
+// Adds or removes exactly one externalReviewLabel-based label (bare, or
+// "<label>:<pr>" when --pr is given) via `bd label add|remove` — the same
+// mechanism gateKong/clearGateKong already use for "human" and "gate:*"
+// (kong_converted.go). No other label is touched: "human" and "gate:review"
+// (or their per-PR forms) are deliberately left in place (external_review.go
+// §2). `bd label add`/`remove` on an already-(ab)sent label is a no-op, so
+// both directions are idempotent.
 func (c *handoffKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam handoff: no context")
 	}
 
+	label := externalReviewLabel
+	reviewLabel := "gate:review"
+	if c.PR != "" {
+		label += ":" + c.PR
+		reviewLabel += ":" + c.PR
+	}
+
 	if c.Clear {
-		out, err := ctx.BD.Run("label", "remove", c.ID, externalReviewLabel)
+		out, err := ctx.BD.Run("label", "remove", c.ID, label)
 		if out != "" {
 			fmt.Fprintln(ctx.Stdout, out)
 		}
 		return err
 	}
 
-	// Read labels first so a missing gate:review can be warned about
-	// (external_review.go §3, §9's U/Q -> H row) without blocking the
-	// declaration — Eric's fact is recorded either way. The lookup feeds only
-	// the warning, and nothing else in the system can reconstruct the
-	// declaration, so a bd failure degrades the warning rather than dropping
-	// the fact (agent-teams-p9dm.42).
+	// Read labels first so a missing gate:review (or its per-PR form) can be
+	// warned about (external_review.go §3, §9's U/Q -> H row) without
+	// blocking the declaration — Eric's fact is recorded either way. The
+	// lookup feeds only the warning, and nothing else in the system can
+	// reconstruct the declaration, so a bd failure degrades the warning
+	// rather than dropping the fact (agent-teams-p9dm.42).
 	issue, err := bd.ShowIssue(ctx.BD, c.ID)
 	switch {
 	case err != nil:
 		fmt.Fprintf(ctx.Stderr, "ateam handoff: warning: could not read labels for %s (%v) — declaring anyway\n", c.ID, err)
-	case !hasLabel(issue.Labels, "gate:review"):
-		fmt.Fprintf(ctx.Stderr, "ateam handoff: warning: %s has no gate:review label — the reported status will not change until a review gate exists\n", c.ID)
+	case !hasLabel(issue.Labels, reviewLabel):
+		fmt.Fprintf(ctx.Stderr, "ateam handoff: warning: %s has no %s label — the reported status will not change until a review gate exists\n", c.ID, reviewLabel)
 	}
 
-	out, err := ctx.BD.Run("label", "add", c.ID, externalReviewLabel)
+	out, err := ctx.BD.Run("label", "add", c.ID, label)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}

@@ -220,6 +220,13 @@ type gateKong struct {
 	// Kind applies to both forms.
 	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`
 
+	// PR scopes the gate to one PR, per the frozen grammar
+	// "<base>:<pr-url>" (docs/multi-pr-contract.md §3): the emitted label
+	// becomes "gate:<kind>:<pr>" instead of the bare, initiative-scoped
+	// "gate:<kind>". Omitted (legacy, unchanged): bare form. "human" is
+	// unaffected either way — it stays bare and initiative-scoped by design.
+	PR string `name:"pr" help:"Full PR URL to scope the gate to one PR (per-PR label); omitted sets the bare, initiative-scoped gate (legacy)."`
+
 	// notify is called after labels are set to route the ask to the Steward
 	// (see notifyToSteward, steward_route.go). Best-effort: a failure warns
 	// to stderr but does not fail the gate. nil means skip (zero-value
@@ -317,7 +324,11 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	if runErr != nil {
 		return runErr
 	}
-	out, runErr = ctx.BD.Run("label", "add", c.ID, "gate:"+c.Kind)
+	gateLabel := "gate:" + c.Kind
+	if c.PR != "" {
+		gateLabel += ":" + c.PR
+	}
+	out, runErr = ctx.BD.Run("label", "add", c.ID, gateLabel)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -370,10 +381,21 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 // ── clear-gate ────────────────────────────────────────────────────────────────
 
 // clearGateKong is the kong-converted form of clear-gate.
-// Takes a positional <id> and an optional --file flag.
+// Takes a positional <id>, an optional --file flag, and an optional --pr
+// discriminator (docs/multi-pr-contract.md §3).
 type clearGateKong struct {
 	ID   string `arg:"" name:"id"  help:"Initiative ID."`
 	File string `name:"file"       help:"Path to response file (optional)."`
+
+	// PR scopes the clear to ONE PR's gate/handoff labels, fixing
+	// agent-teams-ssib.4's over-wipe: without --pr, clearing one PR's gate
+	// used to unconditionally strip every other PR's gate and handoff too.
+	// Omitted: the whole-initiative reset — every gate/handoff label this
+	// initiative carries, bare AND per-PR, is removed. external_review.go
+	// §9's H -> U / R -> U transitions still get exactly the unconditional
+	// clear they depend on; --pr is surgical (one PR only), bare is total
+	// (every PR).
+	PR string `name:"pr" help:"Full PR URL to scope the clear to one PR's gate; omitted clears every gate/handoff label on the initiative, bare and per-PR (unconditional)."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -393,36 +415,121 @@ func (c *clearGateKong) Run(ctx *cli.Context) error {
 			return err
 		}
 	}
+
+	if c.PR == "" {
+		return c.clearBareLegacy(ctx)
+	}
+	return c.clearOnePR(ctx)
+}
+
+// clearBareLegacy is the unconditional whole-initiative reset for the
+// no-`--pr` call — external_review.go §9's H -> U / R -> U transitions
+// depend on the four bare labels going away unconditionally, and that part
+// is preserved byte-for-byte.
+//
+// It ALSO sweeps every per-PR-suffixed gate/handoff label the initiative
+// carries ("gate:review:<url>", "gate:question:<url>",
+// "external-review:<url>"), not just the four bare ones. Bare clear-gate is
+// the DRI playbook's documented "I am done with this initiative" call
+// (resume, standby-release, and the Phase 5 close-out immediately before
+// `ateam close`) — its callers assume it clears EVERYTHING gate-related. A
+// --pr gate widens what "everything" contains, so a bare clear must widen
+// its sweep to match: otherwise a per-PR label survives every bare
+// clear-gate forever, and a CLOSED initiative keeps reporting REVIEWABLE /
+// NEEDS-DECISION with no way to dismiss it (agent-teams-ssib.4, one level
+// up from the --pr-scoped half clearOnePR fixes). --pr stays surgical (one
+// PR only); bare stays total (every PR on the initiative).
+//
+// Reading current labels first (to find the per-PR ones — their PR URLs
+// aren't otherwise knowable) is best-effort: if the read fails, this falls
+// back to the historical four-bare-label sweep alone, which is still
+// correct for the common case of an initiative that never used --pr.
+func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
+	var extra []string
+	if issue, err := bd.ShowIssue(ctx.BD, c.ID); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam clear-gate: warning: could not read labels for %s (%v) — clearing bare labels only\n", c.ID, err)
+	} else {
+		extra = perPRGateLabels(issue.Labels)
+	}
+
+	labels := append([]string{"human", "gate:review", "gate:question", externalReviewLabel}, extra...)
+	for _, label := range labels {
+		out, err := ctx.BD.Run("label", "remove", c.ID, label)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// perPRGateLabels returns every label in labels that is a per-PR-suffixed
+// gate or handoff label ("gate:review:<url>", "gate:question:<url>",
+// "external-review:<url>"), in their original order. The three BARE bases
+// are handled separately by clearBareLegacy's always-attempted four-label
+// removal, so this only needs to find the per-PR additions a --pr gate call
+// may have left behind.
+func perPRGateLabels(labels []string) []string {
+	var found []string
+	for _, l := range labels {
+		for _, base := range []string{"gate:review:", "gate:question:", externalReviewLabel + ":"} {
+			if strings.HasPrefix(l, base) {
+				found = append(found, l)
+				break
+			}
+		}
+	}
+	return found
+}
+
+// clearOnePR clears ONLY c.PR's per-PR gate and handoff labels, leaving
+// every other PR's gate and handoff declaration untouched (fixes
+// agent-teams-ssib.4's over-wipe). The shared, bare "human" label — which
+// stays initiative-scoped by design (docs/multi-pr-contract.md §3) — is
+// removed only once NO PR on the initiative remains gated; while any other
+// PR is still gated, "human" stays.
+func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
+	for _, base := range []string{"gate:review", "gate:question", externalReviewLabel} {
+		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+c.PR)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	issue, err := bd.ShowIssue(ctx.BD, c.ID)
+	if err != nil {
+		// Can't verify whether another PR is still gated without reading
+		// current labels — fail soft by leaving "human" in place. A stray
+		// "human" label is a false-positive nag; wrongly stripping it while
+		// another PR is still gated silently drops that PR's ask, which is
+		// worse.
+		fmt.Fprintf(ctx.Stderr, "ateam clear-gate: warning: could not read labels for %s (%v) — leaving \"human\" label as-is\n", c.ID, err)
+		return nil
+	}
+	if anyGateLabelRemains(issue.Labels) {
+		return nil
+	}
 	out, err := ctx.BD.Run("label", "remove", c.ID, "human")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	if err != nil {
-		return err
-	}
-	out, err = ctx.BD.Run("label", "remove", c.ID, "gate:review")
-	if out != "" {
-		fmt.Fprintln(ctx.Stdout, out)
-	}
-	if err != nil {
-		return err
-	}
-	out, err = ctx.BD.Run("label", "remove", c.ID, "gate:question")
-	if out != "" {
-		fmt.Fprintln(ctx.Stdout, out)
-	}
-	if err != nil {
-		return err
-	}
-	// H -> U (external_review.go §9): a handed-off initiative resuming work
-	// must not leave externalReviewLabel stranded, or it silently re-parks
-	// the initiative the next time a review gate is raised. Removal of an
-	// absent label is a no-op, same as the three removals above.
-	out, err = ctx.BD.Run("label", "remove", c.ID, externalReviewLabel)
-	if out != "" {
-		fmt.Fprintln(ctx.Stdout, out)
-	}
 	return err
+}
+
+// anyGateLabelRemains reports whether labels still contain a review or
+// question gate for any PR — bare, legacy form, or per-PR "<base>:<url>"
+// suffixed form (docs/multi-pr-contract.md §3). Used by clear-gate to decide
+// whether the shared "human" label is safe to remove once one PR's gate is
+// cleared. external-review is deliberately excluded: it is additive on top
+// of a review gate (external_review.go §2), never a gate on its own, so it
+// carries no signal here.
+func anyGateLabelRemains(labels []string) bool {
+	return hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:question")
 }
 
 // ── learn ─────────────────────────────────────────────────────────────────────

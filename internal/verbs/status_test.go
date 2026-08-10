@@ -577,10 +577,13 @@ func TestExecutionStatusCmd_Run_MultipleInitiatives(t *testing.T) {
 		t.Errorf("at-001: expected nil ask for bare notes (no sentinel block), got %+v", byID["at-001"].Ask)
 	}
 
-	// Verify pr field is empty when notes contain no PR URL.
+	// Verify prs is empty (never null) when notes contain no PR URL.
 	for _, id := range []string{"at-001", "at-002", "at-003", "at-004"} {
-		if byID[id].PR != "" {
-			t.Errorf("%s: expected empty pr, got %q", id, byID[id].PR)
+		if len(byID[id].PRs) != 0 {
+			t.Errorf("%s: expected empty prs, got %v", id, byID[id].PRs)
+		}
+		if len(byID[id].PRReviews) != 0 {
+			t.Errorf("%s: expected empty pr_reviews, got %v", id, byID[id].PRReviews)
 		}
 	}
 	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
@@ -641,8 +644,11 @@ func TestExecutionStatusCmd_Run_AskAndPRFields(t *testing.T) {
 	if r.ExecutionStatus != "NEEDS-DECISION" {
 		t.Errorf("execution_status = %q, want NEEDS-DECISION", r.ExecutionStatus)
 	}
-	if r.PR != prURL {
-		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	if len(r.PRs) != 1 || r.PRs[0] != prURL {
+		t.Errorf("prs = %v, want [%q]", r.PRs, prURL)
+	}
+	if len(r.PRReviews) != 1 || r.PRReviews[0].PR != prURL || r.PRReviews[0].Gate != "question" {
+		t.Errorf("pr_reviews = %v, want [{%q question}]", r.PRReviews, prURL)
 	}
 	if r.Ask == nil {
 		t.Fatal("ask is nil, expected structured block")
@@ -708,8 +714,8 @@ func TestExecutionStatusCmd_Run_NilAskWhenNoBlock(t *testing.T) {
 	if r.Ask != nil {
 		t.Errorf("ask = %+v, want nil (no sentinel block)", r.Ask)
 	}
-	if r.PR != prURL {
-		t.Errorf("pr = %q, want %q", r.PR, prURL)
+	if len(r.PRs) != 1 || r.PRs[0] != prURL {
+		t.Errorf("prs = %v, want [%q]", r.PRs, prURL)
 	}
 	if r.ExecutionStatus != "REVIEWABLE" {
 		t.Errorf("execution_status = %q, want REVIEWABLE", r.ExecutionStatus)
