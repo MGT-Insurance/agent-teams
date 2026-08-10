@@ -70,6 +70,24 @@ func TestJSONFieldsMultiValuedKeysAreArraysUnderTheirLineKey(t *testing.T) {
 	}
 }
 
+// TestJSONFieldsPRsEmitAsArray proves "pr" joined the multi-valued keys on
+// the WIRE projection too (not just Of's typed one) — the discriminator that
+// must survive the at-d9ck two-repo case (agent-teams-ssib.6).
+func TestJSONFieldsPRsEmitAsArray(t *testing.T) {
+	got := initiative.JSONFields(issue(
+		"repo: /r\n" +
+			"pr: https://github.com/erlloyd/pr-shepherd/pull/3\n" +
+			"pr: https://github.com/MGT-Insurance/midgard/pull/4632\n",
+	))
+	want := []string{
+		"https://github.com/erlloyd/pr-shepherd/pull/3",
+		"https://github.com/MGT-Insurance/midgard/pull/4632",
+	}
+	if !reflect.DeepEqual(got["pr"], want) {
+		t.Errorf(`JSONFields["pr"] = %#v, want %#v (registration order, both retained)`, got["pr"], want)
+	}
+}
+
 // A single session still marshals as a one-element array, not a bare string.
 func TestJSONFieldsSingleSessionMarshalsAsArray(t *testing.T) {
 	raw, err := json.Marshal(initiative.JSONFields(issue("repo: /r\nsession: only-one\n")))

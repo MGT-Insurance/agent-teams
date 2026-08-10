@@ -1,6 +1,7 @@
 package initiative_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -442,6 +443,72 @@ func TestWithTrack_RejectsEdgeWhitespace(t *testing.T) {
 	}
 	if !strings.Contains(plan.Description, "track-worktree: /has interior space/ok") {
 		t.Errorf("track line missing from result:\n%s", plan.Description)
+	}
+}
+
+// TestWithPR_AppendsAndIsIdempotent is WithPR's core-path test, mirroring
+// WithTrack/WithSession: appends below the untouched existing description,
+// resolves back through Of, and a repeat call with the same url is a no-op
+// (agent-teams-ssib.6).
+func TestWithPR_AppendsAndIsIdempotent(t *testing.T) {
+	iss := bd.Issue{ID: "at-pr1", Description: "problem: p\nrepo: /r\n"}
+
+	plan, err := initiative.WithPR(iss, "https://github.com/erlloyd/pr-shepherd/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR: %v", err)
+	}
+	if !strings.HasPrefix(plan.Description, iss.Description) {
+		t.Fatalf("WithPR did not append below the untouched original description.\noriginal:\n%s\ngot:\n%s", iss.Description, plan.Description)
+	}
+	got := initiative.Of(bd.Issue{ID: "at-pr1", Description: plan.Description})
+	if len(got.PRs) != 1 || got.PRs[0] != "https://github.com/erlloyd/pr-shepherd/pull/3" {
+		t.Fatalf("PRs after WithPR = %v, want one entry", got.PRs)
+	}
+
+	// Idempotent: appending the same url again changes nothing.
+	iss2 := bd.Issue{ID: "at-pr1", Description: plan.Description}
+	plan2, err := initiative.WithPR(iss2, "https://github.com/erlloyd/pr-shepherd/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR (repeat): %v", err)
+	}
+	if plan2.Description != iss2.Description {
+		t.Errorf("WithPR repeat call was not a no-op:\nbefore:\n%s\nafter:\n%s", iss2.Description, plan2.Description)
+	}
+}
+
+// TestOf_MultiplePRsAccumulateInRegistrationOrder proves "pr" is multi-valued
+// (accumulates) rather than first-wins, and proves it the way the keystone
+// mandates: this test is a witness, not decoration. It genuinely fails if
+// "pr" is removed from multiValuedKeys (confirmed by hand during
+// implementation: reverting that one-line change turns this red, restoring
+// it turns this green again) — this is the discriminator that must survive
+// the at-d9ck two-repo case (agent-teams-ssib.6).
+func TestOf_MultiplePRsAccumulateInRegistrationOrder(t *testing.T) {
+	got := initiative.Of(bd.Issue{ID: "at-d9ck", Description: "repo: /r\n" +
+		"pr: https://github.com/erlloyd/pr-shepherd/pull/3\n" +
+		"pr: https://github.com/MGT-Insurance/midgard/pull/4632\n",
+	})
+	want := []string{
+		"https://github.com/erlloyd/pr-shepherd/pull/3",
+		"https://github.com/MGT-Insurance/midgard/pull/4632",
+	}
+	if !reflect.DeepEqual(got.PRs, want) {
+		t.Errorf("PRs = %v, want %v (registration order, both retained)", got.PRs, want)
+	}
+}
+
+// TestWithPR_RejectsEdgeWhitespace mirrors TestWithTrack_RejectsEdgeWhitespace:
+// an edge-whitespace url would never read back equal to what the caller
+// passed in (fieldLine right-trims and requires a non-whitespace first
+// value character), so WithPR's own idempotency check would never find it
+// and would keep re-appending it forever. Reject rather than silently trim.
+func TestWithPR_RejectsEdgeWhitespace(t *testing.T) {
+	iss := bd.Issue{ID: "at-pr2", Description: "problem: p\nrepo: /r\n"}
+
+	for _, url := range []string{" https://x/y", "https://x/y ", "\thttps://x/y", "https://x/y\t"} {
+		if _, err := initiative.WithPR(iss, url); err == nil {
+			t.Errorf("WithPR(%q): got nil error, want a rejection for edge whitespace", url)
+		}
 	}
 }
 

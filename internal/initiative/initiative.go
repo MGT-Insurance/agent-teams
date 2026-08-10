@@ -19,6 +19,15 @@ type Fields struct {
 	Standby                                           bool
 	Sessions                                          []string
 	Tracks                                            []string
+	// PRs is every "pr: <url>" line's value, in registration order — the
+	// GitHub PR URLs a DRI has opened for this initiative. Multi-valued
+	// because one initiative can open more than one PR (agent-teams-ssib).
+	// Distinct from the review-pr initiative kind's unmodeled pr-number /
+	// pr-repo / pr-url trio (frozen item 3): those describe the single PR a
+	// REVIEW initiative is reviewing; PRs describes the PR(s) a DRI
+	// initiative has opened. Same URL shape, different key, different
+	// initiative kind — no collision.
+	PRs []string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -39,16 +48,16 @@ type Collision struct {
 }
 
 // singleValuedKeys lists every canonical key backed by a single-valued
-// Fields member (i.e. excluding the multi-valued "session" and
-// "track-worktree" keys). New does not iterate this slice — it writes each
-// field individually in its own fixed order — so this is a set, not an
-// ordering claim.
+// Fields member (i.e. excluding the multi-valued "session",
+// "track-worktree", and "pr" keys). New does not iterate this slice — it
+// writes each field individually in its own fixed order — so this is a set,
+// not an ordering claim.
 var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "standby", "epic"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
 // single-valued.
-var multiValuedKeys = []string{"session", "track-worktree"}
+var multiValuedKeys = []string{"session", "track-worktree", "pr"}
 
 // multiValued reports whether key accumulates instead of first-wins.
 func multiValued(key string) bool {
@@ -162,13 +171,13 @@ func first(lines map[string][]string, key string) string {
 
 // Of parses iss's routing fields per the frozen rule. Single-valued keys
 // (problem, repo, worktree, branch, team, mode, epic, standby) are
-// first-occurrence-wins; the multi-valued session and track-worktree keys
-// accumulate into Sessions and Tracks in registration order.
+// first-occurrence-wins; the multi-valued session, track-worktree, and pr
+// keys accumulate into Sessions, Tracks, and PRs in registration order.
 //
-// Of is the TYPED projection of all, and models ten keys only — an initiative
-// carrying an unmodeled canonical key (e.g. pr-url) has no Fields member to
-// hold it, so a caller that needs every stored key wants JSONFields instead
-// (package doc comment, frozen item 3).
+// Of is the TYPED projection of all, and models eleven keys only — an
+// initiative carrying an unmodeled canonical key (e.g. pr-url) has no Fields
+// member to hold it, so a caller that needs every stored key wants
+// JSONFields instead (package doc comment, frozen item 3).
 //
 // Of takes the whole bd.Issue, not iss.Description, so that a future labels
 // backend can read iss.Labels instead without changing this signature or any
@@ -186,6 +195,7 @@ func Of(iss bd.Issue) Fields {
 		Standby:  first(lines, "standby") == "true",
 		Sessions: lines["session"],
 		Tracks:   lines["track-worktree"],
+		PRs:      lines["pr"],
 	}
 }
 
@@ -253,6 +263,7 @@ func New(f Fields) (WritePlan, error) {
 		{"epic", []string{f.Epic}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
+		{"pr", f.PRs},
 	}
 	for _, fv := range fields {
 		for _, v := range fv.values {
@@ -287,6 +298,9 @@ func New(f Fields) (WritePlan, error) {
 	}
 	for _, t := range f.Tracks {
 		write("track-worktree", t)
+	}
+	for _, u := range f.PRs {
+		write("pr", u)
 	}
 	return WritePlan{Description: b.String()}, nil
 }
@@ -371,6 +385,42 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 		}
 	}
 	return WritePlan{Description: appendLine(iss.Description, "track-worktree", path)}, nil
+}
+
+// WithPR returns the WritePlan that registers url as a pr of iss by
+// appending a "pr: <url>" line below iss's entire current description. It is
+// idempotent: if url is already registered on iss, the returned
+// WritePlan.Description is iss.Description, unchanged.
+//
+// url must be non-empty and have no leading/trailing whitespace or line
+// break, for the identical structural reason WithTrack rejects them on path
+// (frozen matching rule: fieldLine right-trims a value on read and requires
+// a non-whitespace first character, so an edge-whitespace or multi-line
+// value would never read back equal to what the caller passed in, and this
+// function's own idempotency check — Of(iss).PRs — would then never find it
+// and would keep re-appending it forever).
+//
+// WithPR does not validate that url is a well-formed GitHub PR URL — that is
+// the frozen grammar's job (docs/multi-pr-contract.md), enforced by callers
+// (the ateam pr add verb) that have a reason to reject a malformed value.
+// This writer, like WithSession and WithTrack, only enforces the structural
+// constraints the field-line rule itself imposes.
+func WithPR(iss bd.Issue, url string) (WritePlan, error) {
+	if url == "" {
+		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not be empty")
+	}
+	if strings.ContainsAny(url, "\r\n") {
+		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not contain a line break: %q", url)
+	}
+	if hasEdgeWhitespace(url) {
+		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not have leading or trailing whitespace: %q", url)
+	}
+	for _, existing := range Of(iss).PRs {
+		if existing == url {
+			return WritePlan{Description: iss.Description}, nil
+		}
+	}
+	return WritePlan{Description: appendLine(iss.Description, "pr", url)}, nil
 }
 
 // singleValued returns the set of single-valued canonical keys f currently
