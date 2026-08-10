@@ -274,10 +274,10 @@ structured `pr:` field", into bd Notes) is **deprecated** on the rail: it
 still works exactly as it does today (Notes-based, read via the
 `ResolvedPRs` fallback above), but it is no longer how a NEW initiative's PR
 should be recorded once `ateam pr add` exists. Migrating the `dri` skill
-itself onto `ateam pr add` is loop-closing work the DRI is filing and wiring
-ahead of the release track (ssib.11) — not this contract's job to implement,
-only to name the sanctioned/deprecated boundary so nobody builds a third way
-to record a PR.
+itself onto `ateam pr add` is loop-closing work filed as its own bead,
+**agent-teams-ssib.18**, wired ahead of the release track (ssib.11) — not
+this contract's job to implement, only to name the sanctioned/deprecated
+boundary so nobody builds a third way to record a PR.
 
 ## 3. The per-PR gate label grammar (collision-safe, repo-inclusive)
 
