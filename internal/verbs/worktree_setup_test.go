@@ -227,8 +227,8 @@ func TestWorktreeSetup_ScriptFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-nil error when hook script exits nonzero, got nil")
 	}
-	// A plain wrapped error, not a *cli.UsageError — must land on exit 1,
-	// distinct from the usage-error path's exit 2.
+	// A *cli.SilentError with Code 1 — must land on exit 1, distinct from the
+	// usage-error path's exit 2, and silent so main does not double-print.
 	if code := cli.ExitCode(err); code != 1 {
 		t.Errorf("expected exit 1, got %d", code)
 	}

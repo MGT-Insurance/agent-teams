@@ -102,7 +102,11 @@ func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
 			exitCode = exitErr.ExitCode()
 		}
 		loudHookWarning(ctx.Stderr, scriptPath, exitCode, runErr.Error())
-		return fmt.Errorf("worktree-setup: hook script %s failed: %w", scriptPath, runErr)
+		// loudHookWarning already wrote the failure detail; return a SilentError
+		// so main does not print a second, near-duplicate line. Exit 1 marks the
+		// worktree as possibly-not-provisioned without colliding with the usage
+		// (2) / dep (3) / workspace (4) exit codes.
+		return &cli.SilentError{Code: 1}
 	}
 	return nil
 }
