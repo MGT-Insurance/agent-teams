@@ -476,6 +476,68 @@ func TestWithPR_AppendsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestCanonicalPRURL_LowerCasesOwnerRepoAndForcesHTTPS is CanonicalPRURL's
+// core-path test (agent-teams-ssib.25): two spellings of one PR — http vs
+// https, differently-cased owner/repo — must canonicalize to the SAME
+// string, since this is the one function every rail-dedup, label-match, and
+// --pr resolution downstream relies on for identity.
+func TestCanonicalPRURL_LowerCasesOwnerRepoAndForcesHTTPS(t *testing.T) {
+	want := "https://github.com/mgt-insurance/midgard/pull/4632"
+	for _, in := range []string{
+		"https://github.com/mgt-insurance/midgard/pull/4632",
+		"https://github.com/MGT-Insurance/midgard/pull/4632",
+		"http://github.com/MGT-Insurance/Midgard/pull/4632",
+		"http://github.com/MGT-INSURANCE/MIDGARD/pull/4632",
+	} {
+		got, ok := initiative.CanonicalPRURL(in)
+		if !ok {
+			t.Fatalf("CanonicalPRURL(%q): ok = false, want true", in)
+		}
+		if got != want {
+			t.Errorf("CanonicalPRURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCanonicalPRURL_RejectsNonGitHubPRURL confirms ok is false for a string
+// that doesn't match PRURLRE at all, rather than silently mangling it.
+func TestCanonicalPRURL_RejectsNonGitHubPRURL(t *testing.T) {
+	for _, in := range []string{"", "not a url", "https://gitlab.com/a/b/merge_requests/3"} {
+		if _, ok := initiative.CanonicalPRURL(in); ok {
+			t.Errorf("CanonicalPRURL(%q): ok = true, want false", in)
+		}
+	}
+}
+
+// TestWithPR_DedupsAcrossSpellings is the load-bearing witness for
+// agent-teams-ssib.25's rail-dedup manifestation: two spellings of ONE PR
+// (http vs https, differently-cased owner/repo) must collapse to a SINGLE
+// rail entry, not create a second, unpairable one. Before this fix, WithPR
+// compared urls by exact byte equality (internal/initiative/initiative.go,
+// then lines 476-479), so this appended a second "pr:" line.
+func TestWithPR_DedupsAcrossSpellings(t *testing.T) {
+	iss := bd.Issue{ID: "at-canon1", Description: "problem: p\nrepo: /r\n"}
+
+	plan, err := initiative.WithPR(iss, "http://github.com/Owner/Repo/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR (first spelling): %v", err)
+	}
+	iss2 := bd.Issue{ID: "at-canon1", Description: plan.Description}
+
+	plan2, err := initiative.WithPR(iss2, "https://github.com/owner/repo/pull/3")
+	if err != nil {
+		t.Fatalf("WithPR (second spelling): %v", err)
+	}
+	if plan2.Description != iss2.Description {
+		t.Errorf("second spelling of the same PR was not deduped:\nbefore:\n%s\nafter:\n%s", iss2.Description, plan2.Description)
+	}
+	got := initiative.Of(bd.Issue{ID: "at-canon1", Description: plan2.Description})
+	want := []string{"https://github.com/owner/repo/pull/3"}
+	if !reflect.DeepEqual(got.PRs, want) {
+		t.Fatalf("rail after two spellings = %v, want exactly one canonical entry %v", got.PRs, want)
+	}
+}
+
 // TestOf_MultiplePRsAccumulateInRegistrationOrder proves "pr" is multi-valued
 // (accumulates) rather than first-wins, and proves it the way the keystone
 // mandates: this test is a witness, not decoration. It genuinely fails if
@@ -566,6 +628,24 @@ func TestResolvedPRs_FallsBackToDescriptionFreeTextWhenNotesEmpty(t *testing.T) 
 	want := []string{"https://github.com/acme/widget/pull/12"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ResolvedPRs (Description free-text fallback) = %v, want %v", got, want)
+	}
+}
+
+// TestResolvedPRs_CanonicalizesNotesFallback proves ResolvedPRs canonicalizes
+// its output regardless of source (agent-teams-ssib.25) — including the
+// free-text Notes fallback, not just the rail. A caller comparing this
+// against a canonically-written per-PR label (e.g. computePRReviews's
+// gateForPR) must never have to re-canonicalize or fuzzy-compare.
+func TestResolvedPRs_CanonicalizesNotesFallback(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-notesmixed",
+		Description: "problem: p\nrepo: /r\n",
+		Notes:       "pr: https://github.com/MGT-Insurance/midgard/pull/4632\n",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/mgt-insurance/midgard/pull/4632"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (mixed-case Notes fallback) = %v, want canonical %v", got, want)
 	}
 }
 

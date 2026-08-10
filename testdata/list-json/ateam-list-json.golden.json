@@ -135,13 +135,13 @@
     "owner": "erlloyd@gmail.com",
     "pr_reviews": [
       {
-        "pr": "https://github.com/MGT-Insurance/midgard/pull/4567",
+        "pr": "https://github.com/mgt-insurance/midgard/pull/4567",
         "gate": ""
       }
     ],
     "priority": 2,
     "prs": [
-      "https://github.com/MGT-Insurance/midgard/pull/4567"
+      "https://github.com/mgt-insurance/midgard/pull/4567"
     ],
     "status": "closed",
     "title": "Review PR #4567 (MGT-Insurance/midgard)",

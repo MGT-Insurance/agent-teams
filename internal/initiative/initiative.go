@@ -402,6 +402,30 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 // precedence" — this consolidation was that section's flagged follow-up).
 var PRURLRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
 
+// CanonicalPRURL returns the canonical identity form of a GitHub PR URL —
+// forced https scheme, lower-cased owner/repo, the number verbatim — or ok
+// == false when url doesn't match PRURLRE at all.
+//
+// This is the ONE canonicalization point (agent-teams-ssib.25): two
+// spellings of the same PR (http vs https, differently-cased owner/repo)
+// must become byte-identical before they are ever compared, stored on the
+// "pr" rail, or embedded in a per-PR label — otherwise the rail dedups by
+// exact string match and stores both, and a gate label written with one
+// spelling can never be paired with a handoff label written with the other,
+// producing a PR that can never reach rest. ResolvedPRs (read side) and
+// WithPR (write side) both canonicalize through this function so every
+// caller downstream — status.go's gateForPR, query.go's per-PR ask
+// tagging, the --pr resolver gate/clear-gate/handoff share — can compare
+// PR-identity strings with plain "==" and get the right answer, instead of
+// each writing its own case/scheme-insensitive comparator.
+func CanonicalPRURL(url string) (string, bool) {
+	m := PRURLRE.FindStringSubmatch(url)
+	if m == nil {
+		return "", false
+	}
+	return "https://github.com/" + strings.ToLower(m[1]) + "/" + strings.ToLower(m[2]) + "/pull/" + m[3], true
+}
+
 // extractPRURLFallback returns the first GitHub PR URL found in text, or ""
 // — the free-text scan every initiative's PR was recorded through before
 // the "pr" rail existed (and still is, via the dri skill's Notes-based
@@ -432,17 +456,34 @@ func extractPRURLFallback(text string) string {
 // them. (Of(iss).PRs itself stays a pure rail projection — unchanged — for
 // callers that specifically want the rail's own state, e.g. list-json's
 // "fields.pr" key.)
+//
+// Every returned URL is canonicalized (CanonicalPRURL, agent-teams-ssib.25)
+// regardless of which source it came from — the rail, Notes, or
+// Description — so a caller never has to re-canonicalize or fuzzy-compare
+// what this function hands back; a value that doesn't parse as a GitHub PR
+// URL at all is returned verbatim (can only happen for a rail entry written
+// before this fix shipped, or a caller misusing WithPR directly).
 func ResolvedPRs(iss bd.Issue) []string {
-	if rail := Of(iss).PRs; len(rail) > 0 {
-		return rail
+	var raw []string
+	switch {
+	case len(Of(iss).PRs) > 0:
+		raw = Of(iss).PRs
+	case extractPRURLFallback(iss.Notes) != "":
+		raw = []string{extractPRURLFallback(iss.Notes)}
+	case extractPRURLFallback(iss.Description) != "":
+		raw = []string{extractPRURLFallback(iss.Description)}
+	default:
+		return nil
 	}
-	if url := extractPRURLFallback(iss.Notes); url != "" {
-		return []string{url}
+	out := make([]string, len(raw))
+	for i, url := range raw {
+		if canon, ok := CanonicalPRURL(url); ok {
+			out[i] = canon
+		} else {
+			out[i] = url
+		}
 	}
-	if url := extractPRURLFallback(iss.Description); url != "" {
-		return []string{url}
-	}
-	return nil
+	return out
 }
 
 // WithPR returns the WritePlan that registers url as a pr of iss by
@@ -463,6 +504,13 @@ func ResolvedPRs(iss bd.Issue) []string {
 // (the ateam pr add verb) that have a reason to reject a malformed value.
 // This writer, like WithSession and WithTrack, only enforces the structural
 // constraints the field-line rule itself imposes.
+//
+// url is canonicalized (CanonicalPRURL, agent-teams-ssib.25) before both the
+// idempotency check and storage, so two spellings of one PR (http vs https,
+// differently-cased owner/repo) collapse to a single rail entry instead of
+// appending a second, unpairable one. A url that doesn't parse as a GitHub
+// PR URL at all is compared and stored verbatim, unchanged from before this
+// fix — WithPR still does not enforce the URL shape.
 func WithPR(iss bd.Issue, url string) (WritePlan, error) {
 	if url == "" {
 		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not be empty")
@@ -473,12 +521,20 @@ func WithPR(iss bd.Issue, url string) (WritePlan, error) {
 	if hasEdgeWhitespace(url) {
 		return WritePlan{}, fmt.Errorf("initiative.WithPR: url must not have leading or trailing whitespace: %q", url)
 	}
+	stored := url
+	if canon, ok := CanonicalPRURL(url); ok {
+		stored = canon
+	}
 	for _, existing := range Of(iss).PRs {
-		if existing == url {
+		existingCanon := existing
+		if canon, ok := CanonicalPRURL(existing); ok {
+			existingCanon = canon
+		}
+		if existingCanon == stored {
 			return WritePlan{Description: iss.Description}, nil
 		}
 	}
-	return WritePlan{Description: appendLine(iss.Description, "pr", url)}, nil
+	return WritePlan{Description: appendLine(iss.Description, "pr", stored)}, nil
 }
 
 // singleValued returns the set of single-valued canonical keys f currently

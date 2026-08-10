@@ -130,6 +130,64 @@ func TestHandoff_LabelAddErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestGateHandoffPairAcrossDifferentSpellings is the end-to-end witness for
+// the third confirmed manifestation of agent-teams-ssib.25: before this fix,
+// a PR gated via `ateam gate --pr <spelling A>` and handed off via `ateam
+// handoff --pr <spelling B>` (different scheme/case, the SAME real PR) could
+// NEVER reach rest — computeExecutionStatus pairs a review gate with its
+// handoff by exact discriminator string, so two byte-different spellings of
+// one PR produced two different discriminators that could never match, and
+// a correctly-run `ateam handoff` could never clear the REVIEWABLE state.
+// Both --pr flags here resolve through the SAME initiative.CanonicalPRURL,
+// so the labels end up byte-identical and pair despite the different input
+// spellings.
+func TestGateHandoffPairAcrossDifferentSpellings(t *testing.T) {
+	issue := bd.Issue{
+		ID:          "at-pair",
+		Description: "pr: https://github.com/Owner/Repo/pull/9\n",
+	}
+	f := &fakeBD{runFn: func(args ...string) (string, error) {
+		switch args[0] {
+		case "show":
+			return issueJSON(issue), nil
+		case "label":
+			if len(args) < 4 {
+				return "", nil
+			}
+			switch args[1] {
+			case "add":
+				issue.Labels = append(issue.Labels, args[3])
+			case "remove":
+				var kept []string
+				for _, l := range issue.Labels {
+					if l != args[3] {
+						kept = append(kept, l)
+					}
+				}
+				issue.Labels = kept
+			}
+		}
+		return "", nil
+	}}
+	ctx, _, _ := makeCtx(f, t.TempDir())
+
+	gateFile := makeTempFile(t, "ready for review")
+	gateSpelling := "http://github.com/owner/REPO/pull/9"
+	if err := (&gateKong{ID: "at-pair", File: gateFile, Kind: "review", PR: gateSpelling}).Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+
+	handoffSpelling := "https://github.com/OWNER/repo/pull/9"
+	if err := (&handoffKong{ID: "at-pair", PR: handoffSpelling}).Run(ctx); err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+
+	got := computeExecutionStatus(issue.Labels, nil, "")
+	if got != StatusAwaitingExternalReview {
+		t.Fatalf("execution status = %q, want %q (labels: %v)", got, StatusAwaitingExternalReview, issue.Labels)
+	}
+}
+
 func TestHandoff_MissingID(t *testing.T) {
 	// ID is a required positional; enforced at parse time.
 	p, err := cli.NewParser()

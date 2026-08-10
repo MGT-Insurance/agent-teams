@@ -65,6 +65,24 @@ func showResp(t *testing.T, id string, labels ...string) fakeResp {
 	return fakeResp{stdout: string(raw)}
 }
 
+// showRespWithPRs is showResp plus a "pr" rail line per prURL, so
+// initiative.ResolvedPRs(issue) resolves them — needed for any test whose
+// gate/clear-gate/handoff call uses --pr, since resolvePR (agent-teams-
+// ssib.25) now requires --pr to name one of the initiative's ACTUAL
+// resolved PRs and calls bd show to find out.
+func showRespWithPRs(t *testing.T, id string, prURLs []string, labels ...string) fakeResp {
+	t.Helper()
+	var desc strings.Builder
+	for _, pr := range prURLs {
+		desc.WriteString("pr: " + pr + "\n")
+	}
+	raw, err := json.Marshal([]bd.Issue{{ID: id, Description: desc.String(), Labels: labels}})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return fakeResp{stdout: string(raw)}
+}
+
 // makeTempFile writes content to a temp file and returns its path.
 func makeTempFile(t *testing.T, content string) string {
 	t.Helper()
@@ -489,13 +507,16 @@ func TestGate_StructuredAsk_SentinelFormat(t *testing.T) {
 func TestGate_StructuredAsk_PRTagsTheBlock(t *testing.T) {
 	const pr = "https://github.com/erlloyd/pr-shepherd/pull/3"
 	var capturedContent string
-	idx := 0
+	showJSON := showRespWithPRs(t, "at-tagged", []string{pr}).stdout // resolvePR's bd show
 	execFn := func(name string, args ...string) ([]byte, []byte, error) {
 		stripped := args
 		if len(args) >= 2 && args[0] == "-C" {
 			stripped = args[2:]
 		}
-		if idx == 0 {
+		if len(stripped) > 0 && stripped[0] == "show" {
+			return []byte(showJSON), nil, nil
+		}
+		if len(stripped) > 0 && stripped[0] == "note" {
 			for _, a := range stripped {
 				if strings.HasPrefix(a, "--file=") {
 					data, _ := os.ReadFile(a[len("--file="):])
@@ -503,7 +524,6 @@ func TestGate_StructuredAsk_PRTagsTheBlock(t *testing.T) {
 				}
 			}
 		}
-		idx++
 		return []byte("ok"), nil, nil
 	}
 	client := bd.NewClientWithExec(t.TempDir(), execFn)
@@ -974,13 +994,16 @@ func TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock(t *testing.T) {
 func TestGate_PRScoped_EmitsPerPRLabel(t *testing.T) {
 	f := makeTempFile(t, "ready for review")
 	const pr = "https://github.com/erlloyd/pr-shepherd/pull/3"
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-multi", []string{pr}), // resolvePR's bd show
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
 	err := (&gateKong{ID: "at-multi", File: f, Kind: "review", PR: pr}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 1, []string{"label", "add", "at-multi", "human"})
-	assertArgs(t, *calls, 2, []string{"label", "add", "at-multi", "gate:review:" + pr})
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-multi", "human"})
+	assertArgs(t, *calls, 3, []string{"label", "add", "at-multi", "gate:review:" + pr})
 }
 
 // TestGate_NoPR_StaysBare confirms the legacy, no-`--pr` path is byte-for-byte
@@ -1192,23 +1215,24 @@ func TestClearGate_PRScoped_LeavesOtherPRAndHumanIntact(t *testing.T) {
 	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
 
 	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-multi", []string{prURLShepherd, prURLMidgard}), // resolvePR's bd show
 		{stdout: "ok"},                   // label remove gate:review:<shepherd>
 		{stdout: "ok"},                   // label remove gate:question:<shepherd>
 		{stdout: "ok"},                   // label remove external-review:<shepherd>
-		{stdout: string(afterClearJSON)}, // show <id> --json
+		{stdout: string(afterClearJSON)}, // show <id> --json (post-removal check)
 	})
 
 	err := (&clearGateKong{ID: "at-multi", PR: prURLShepherd}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 4 {
-		t.Fatalf("expected 4 bd calls (no \"human\" removal — midgard is still gated), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (no \"human\" removal — midgard is still gated), got %d: %v", len(*calls), *calls)
 	}
-	assertArgs(t, *calls, 0, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
-	assertArgs(t, *calls, 1, []string{"label", "remove", "at-multi", "gate:question:" + prURLShepherd})
-	assertArgs(t, *calls, 2, []string{"label", "remove", "at-multi", "external-review:" + prURLShepherd})
-	assertArgs(t, *calls, 3, []string{"show", "at-multi", "--json"})
+	assertArgs(t, *calls, 1, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
+	assertArgs(t, *calls, 2, []string{"label", "remove", "at-multi", "gate:question:" + prURLShepherd})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-multi", "external-review:" + prURLShepherd})
+	assertArgs(t, *calls, 4, []string{"show", "at-multi", "--json"})
 }
 
 // TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains confirms the other
@@ -1219,6 +1243,7 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
 
 	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-single", []string{prURLShepherd}), // resolvePR's bd show
 		{stdout: "ok"},
 		{stdout: "ok"},
 		{stdout: "ok"},
@@ -1230,10 +1255,10 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls (human removed — no PR remains gated), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (human removed — no PR remains gated), got %d: %v", len(*calls), *calls)
 	}
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-single", "human"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-single", "human"})
 }
 
 // TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace confirms the
@@ -1241,6 +1266,7 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 // place rather than guessed at.
 func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-multi", []string{prURLShepherd}), // resolvePR's bd show
 		{stdout: "ok"},
 		{stdout: "ok"},
 		{stdout: "ok"},
@@ -1251,8 +1277,8 @@ func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 4 {
-		t.Fatalf("expected 4 bd calls (no human removal attempted on read failure), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 5 {
+		t.Fatalf("expected 5 bd calls (no human removal attempted on read failure), got %d: %v", len(*calls), *calls)
 	}
 	if stderr := ctx.Stderr.(*bytes.Buffer).String(); !strings.Contains(stderr, "at-multi") {
 		t.Errorf("expected stderr warning naming the id, got: %q", stderr)

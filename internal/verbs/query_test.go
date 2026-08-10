@@ -995,11 +995,15 @@ func TestHumanListStructuredAskPathUnchanged(t *testing.T) {
 // --pr path writes (kong_converted.go): a "pr: <url>" line as the first
 // field inside the sentinel block. Description carries the "pr" rail lines
 // (ateam pr add's write path) so initiative.ResolvedPRs resolves both PRs
-// from the rail, matching the real multi-PR shape.
+// from the rail, matching the real multi-PR shape. urlTwo is already in
+// CANONICAL form (agent-teams-ssib.25) — every real gate label and rail
+// entry is, since resolvePR/WithPR canonicalize before writing; a
+// mixed-case owner here would silently desync from ResolvedPRs' canonical
+// output and defeat the very pairing this test exists to check.
 func TestHumanListMultiPR_PairsAskWithItsOwnPR(t *testing.T) {
 	const (
 		urlOne = "https://github.com/erlloyd/pr-shepherd/pull/3"
-		urlTwo = "https://github.com/MGT-Insurance/midgard/pull/4632"
+		urlTwo = "https://github.com/mgt-insurance/midgard/pull/4632"
 	)
 	notes := "<<<ateam-ask\n" +
 		"pr: " + urlOne + "\n" +
