@@ -102,6 +102,7 @@ func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
 			exitCode = exitErr.ExitCode()
 		}
 		loudHookWarning(ctx.Stderr, scriptPath, exitCode, runErr.Error())
+		return fmt.Errorf("worktree-setup: hook script %s failed: %w", scriptPath, runErr)
 	}
 	return nil
 }
@@ -111,14 +112,14 @@ func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
 func loudHookWarning(w interface{ Write([]byte) (int, error) }, scriptPath string, exitCode int, detail string) {
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "╔══════════════════════════════════════════════════════╗")
-	fmt.Fprintln(w, "║  WARNING: worktree-setup hook failed (non-fatal)     ║")
+	fmt.Fprintln(w, "║  WARNING: worktree-setup hook reported failure       ║")
 	fmt.Fprintln(w, "╚══════════════════════════════════════════════════════╝")
 	fmt.Fprintf(w, "  script: %s\n", scriptPath)
 	if exitCode >= 0 {
 		fmt.Fprintf(w, "  exit code: %d\n", exitCode)
 	}
 	fmt.Fprintf(w, "  detail: %s\n", detail)
-	fmt.Fprintln(w, "  The worktree was still created. Run the setup script")
-	fmt.Fprintln(w, "  manually or re-run 'ateam worktree-setup' to retry.")
+	fmt.Fprintln(w, "  The worktree may not be fully provisioned. Run the setup")
+	fmt.Fprintln(w, "  script manually or re-run 'ateam worktree-setup' to retry.")
 	fmt.Fprintln(w, "")
 }

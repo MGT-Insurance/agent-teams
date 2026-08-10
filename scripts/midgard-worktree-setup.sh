@@ -77,4 +77,31 @@ for rel in "${LOCAL_ENV_FILES[@]}"; do
   fi
 done
 
+# 4. Verify the env files this run was responsible for producing actually
+#    landed. A deferred/failed vercel pull (step 2) or a missing source file
+#    (step 3) must not be reported as success.
+missing=()
+for rel in "${LOCAL_ENV_FILES[@]}"; do
+  if [ -f "$SRC/$rel" ] && [ ! -s "$WT/$rel" ]; then
+    missing+=("$rel")
+  fi
+done
+if [ -d "$SRC/.vercel" ] && [ ! -s "$WT/apps/shadowfax/.env.local" ]; then
+  missing+=("apps/shadowfax/.env.local")
+fi
+
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo ""
+  echo "✗ worktree NOT provisioned: expected env file(s) missing or empty:"
+  for rel in "${missing[@]}"; do
+    if [ -f "$WT/$rel" ]; then
+      echo "  - $rel (empty)"
+    else
+      echo "  - $rel (missing)"
+    fi
+  done
+  echo "run 'pnpm install && pnpm env:pull' in $WT, then re-run 'ateam worktree-setup'."
+  exit 1
+fi
+
 echo "✓ worktree setup complete: $WT"
