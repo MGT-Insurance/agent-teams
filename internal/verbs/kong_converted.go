@@ -390,11 +390,12 @@ type clearGateKong struct {
 	// PR scopes the clear to ONE PR's gate/handoff labels, fixing
 	// agent-teams-ssib.4's over-wipe: without --pr, clearing one PR's gate
 	// used to unconditionally strip every other PR's gate and handoff too.
-	// Omitted (legacy, unchanged): the original whole-initiative reset —
-	// external_review.go §9's H -> U / R -> U transitions rely on this exact
-	// unconditional behavior, so it is preserved byte-for-byte when --pr is
-	// not given.
-	PR string `name:"pr" help:"Full PR URL to scope the clear to one PR's gate; omitted clears the bare, initiative-scoped gate (legacy, unconditional)."`
+	// Omitted: the whole-initiative reset — every gate/handoff label this
+	// initiative carries, bare AND per-PR, is removed. external_review.go
+	// §9's H -> U / R -> U transitions still get exactly the unconditional
+	// clear they depend on; --pr is surgical (one PR only), bare is total
+	// (every PR).
+	PR string `name:"pr" help:"Full PR URL to scope the clear to one PR's gate; omitted clears every gate/handoff label on the initiative, bare and per-PR (unconditional)."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -421,16 +422,38 @@ func (c *clearGateKong) Run(ctx *cli.Context) error {
 	return c.clearOnePR(ctx)
 }
 
-// clearBareLegacy is the original, unconditional whole-initiative reset,
-// preserved byte-for-byte for the no-`--pr` call — external_review.go §9's
-// H -> U / R -> U transitions depend on exactly this behavior, and
-// docs/multi-pr-contract.md does not touch the no-`--pr` path.
+// clearBareLegacy is the unconditional whole-initiative reset for the
+// no-`--pr` call — external_review.go §9's H -> U / R -> U transitions
+// depend on the four bare labels going away unconditionally, and that part
+// is preserved byte-for-byte.
+//
+// It ALSO sweeps every per-PR-suffixed gate/handoff label the initiative
+// carries ("gate:review:<url>", "gate:question:<url>",
+// "external-review:<url>"), not just the four bare ones. Bare clear-gate is
+// the DRI playbook's documented "I am done with this initiative" call
+// (resume, standby-release, and the Phase 5 close-out immediately before
+// `ateam close`) — its callers assume it clears EVERYTHING gate-related. A
+// --pr gate widens what "everything" contains, so a bare clear must widen
+// its sweep to match: otherwise a per-PR label survives every bare
+// clear-gate forever, and a CLOSED initiative keeps reporting REVIEWABLE /
+// NEEDS-DECISION with no way to dismiss it (agent-teams-ssib.4, one level
+// up from the --pr-scoped half clearOnePR fixes). --pr stays surgical (one
+// PR only); bare stays total (every PR on the initiative).
+//
+// Reading current labels first (to find the per-PR ones — their PR URLs
+// aren't otherwise knowable) is best-effort: if the read fails, this falls
+// back to the historical four-bare-label sweep alone, which is still
+// correct for the common case of an initiative that never used --pr.
 func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
-	// H -> U (external_review.go §9): a handed-off initiative resuming work
-	// must not leave externalReviewLabel stranded, or it silently re-parks
-	// the initiative the next time a review gate is raised. Removal of an
-	// absent label is a no-op, same as the other three removals.
-	for _, label := range []string{"human", "gate:review", "gate:question", externalReviewLabel} {
+	var extra []string
+	if issue, err := bd.ShowIssue(ctx.BD, c.ID); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam clear-gate: warning: could not read labels for %s (%v) — clearing bare labels only\n", c.ID, err)
+	} else {
+		extra = perPRGateLabels(issue.Labels)
+	}
+
+	labels := append([]string{"human", "gate:review", "gate:question", externalReviewLabel}, extra...)
+	for _, label := range labels {
 		out, err := ctx.BD.Run("label", "remove", c.ID, label)
 		if out != "" {
 			fmt.Fprintln(ctx.Stdout, out)
@@ -440,6 +463,25 @@ func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
 		}
 	}
 	return nil
+}
+
+// perPRGateLabels returns every label in labels that is a per-PR-suffixed
+// gate or handoff label ("gate:review:<url>", "gate:question:<url>",
+// "external-review:<url>"), in their original order. The three BARE bases
+// are handled separately by clearBareLegacy's always-attempted four-label
+// removal, so this only needs to find the per-PR additions a --pr gate call
+// may have left behind.
+func perPRGateLabels(labels []string) []string {
+	var found []string
+	for _, l := range labels {
+		for _, base := range []string{"gate:review:", "gate:question:", externalReviewLabel + ":"} {
+			if strings.HasPrefix(l, base) {
+				found = append(found, l)
+				break
+			}
+		}
+	}
+	return found
 }
 
 // clearOnePR clears ONLY c.PR's per-PR gate and handoff labels, leaving
