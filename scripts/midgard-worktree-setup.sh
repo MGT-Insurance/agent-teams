@@ -11,8 +11,8 @@ set -euo pipefail
 #   3. copying the local-only env files Vercel does NOT own (socotra creds, etc.)
 #
 # Secrets are moved by opaque `cp`/`vercel env pull` only — no env contents are
-# ever printed. Worktree must already have deps installed (`pnpm install`) for
-# step 2's `turbo run env:pull` to resolve.
+# ever printed. If the worktree has no node_modules, step 2 runs `pnpm install`
+# itself before pulling, so a fresh worktree comes out bootable in one command.
 #
 # Usage: midgard-worktree-setup.sh <worktree-path> [source-checkout]
 #   source-checkout defaults to the main checkout behind the worktree's git dir.
@@ -40,7 +40,19 @@ else
 fi
 
 # 2. Pull Vercel-backed env (regenerates e.g. apps/shadowfax/.env.local).
-if [ -d "$WT/.vercel" ] && [ -d "$WT/node_modules" ]; then
+#    node_modules is required for `pnpm env:pull` to resolve — install it
+#    ourselves when absent, so a fresh worktree comes out bootable.
+if [ -d "$WT/.vercel" ]; then
+  if [ ! -d "$WT/node_modules" ]; then
+    echo "→ installing dependencies (pnpm install)…"
+    if ( cd "$WT" && pnpm install ); then
+      echo "✓ dependencies installed"
+    else
+      echo "✗ pnpm install failed — cannot pull vercel env" >&2
+      exit 1
+    fi
+  fi
+
   _env_pull_err="/tmp/midgard-setup-env-pull-$$.err"
   if ( cd "$WT" && pnpm env:pull ) 2>"$_env_pull_err"; then
     echo "✓ pulled vercel env"
@@ -56,8 +68,6 @@ if [ -d "$WT/.vercel" ] && [ -d "$WT/node_modules" ]; then
     exit "$_exit"
   fi
   rm -f "$_env_pull_err"
-elif [ -d "$WT/.vercel" ]; then
-  echo "⚠ worktree has no node_modules — run 'pnpm install' then 'pnpm env:pull' for vercel-backed env"
 fi
 
 # 3. Copy local-only env files NOT covered by env:pull.

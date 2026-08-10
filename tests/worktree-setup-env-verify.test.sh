@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
-# worktree-setup-env-verify.test.sh — coverage for the env-verification pass
-# added to scripts/midgard-worktree-setup.sh (agent-teams-xtac.1).
+# worktree-setup-env-verify.test.sh — coverage for scripts/midgard-worktree-setup.sh
+# (agent-teams-xtac.1: the env-verification safety net; agent-teams-xtac.2: the
+# script now runs `pnpm install` itself when node_modules is absent, before
+# pulling).
+#
+# The synthetic source checkouts below have no real pnpm workspace, so a real
+# `pnpm install`/`pnpm env:pull` can't run here. A fake `pnpm` stub is placed on
+# PATH to exercise the script's control flow (did it call install? did it fall
+# through to pull? did it surface failures correctly?) — this does NOT exercise
+# a real install or a real vercel pull.
 #
 # Drives the real script against a synthetic source checkout + real git
-# worktree (no midgard, no vercel CLI). Proves the "did the expected env
-# files actually land" predicate both ways:
-#   RED:   a required file is missing/empty -> no "complete" line, a clear
-#          not-provisioned verdict naming the file, nonzero exit.
-#   GREEN: all required files present and non-empty -> "complete", exit 0.
+# worktree (no midgard, no vercel CLI). Proves:
+#   - a fresh worktree gets `pnpm install` run for it, then pulls, and reports
+#     "complete" (GREEN);
+#   - an install failure fails loudly, before any pull is attempted (RED);
+#   - install+pull "succeeding" with no file actually landing still trips the
+#     landed-file safety net (RED);
+#   - exclusions (file absent in source; no .vercel at all) are unaffected.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,6 +28,42 @@ pass() { echo "PASS $*"; PASS=$((PASS+1)); }
 fail() { echo "FAIL $*"; FAIL=$((FAIL+1)); }
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+
+# ── fake pnpm on PATH ─────────────────────────────────────────────────────────
+# Dispatches on $1: `install` mkdir's node_modules (or fails, per
+# FAKE_PNPM_INSTALL=fail); `env:pull` writes a non-empty .env.local (or writes
+# nothing, per FAKE_PNPM_PULL=empty). Never echoes any env content it wasn't
+# told to write literally.
+FAKEBIN="$T/fakebin"
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/pnpm" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  install)
+    if [ "${FAKE_PNPM_INSTALL:-ok}" = "fail" ]; then
+      echo "fake pnpm install: forced failure" >&2
+      exit 1
+    fi
+    mkdir -p "$PWD/node_modules"
+    exit 0
+    ;;
+  env:pull)
+    if [ "${FAKE_PNPM_PULL:-ok}" = "empty" ]; then
+      exit 0
+    fi
+    mkdir -p "$PWD/apps/shadowfax"
+    echo "PULLED=1" > "$PWD/apps/shadowfax/.env.local"
+    exit 0
+    ;;
+  *)
+    echo "fake pnpm: unknown command $1" >&2
+    exit 1
+    ;;
+esac
+STUB
+chmod +x "$FAKEBIN/pnpm"
+export PATH="$FAKEBIN:$PATH"
 
 # ── synthetic source checkout ────────────────────────────────────────────────
 SRC="$T/src"
@@ -49,90 +95,94 @@ run_script() {
   set -e
 }
 
-# ── RED: fresh worktree, no node_modules, no apps/shadowfax/.env.local ──────
+# ── 1. GREEN: fresh worktree, fake pnpm installs then pulls successfully ────
 WT1="$T/wt1"
 git -C "$SRC" worktree add -q "$WT1" -b wt1 >/dev/null
 
+export FAKE_PNPM_INSTALL=ok FAKE_PNPM_PULL=ok
 run_script "$WT1"
+unset FAKE_PNPM_INSTALL FAKE_PNPM_PULL
 
+if echo "$OUT" | grep -q "installing dependencies"; then
+  pass "1 (fresh install+pull): install line shown"
+else
+  fail "1 (fresh install+pull): expected install line, got: $OUT"
+fi
+if echo "$OUT" | grep -q "pulled vercel env"; then
+  pass "1 (fresh install+pull): pull succeeded"
+else
+  fail "1 (fresh install+pull): expected pull-succeeded line, got: $OUT"
+fi
 if echo "$OUT" | grep -q "worktree setup complete"; then
-  fail "RED (fresh): expected no 'complete' line, got: $OUT"
+  pass "1 (fresh install+pull): 'complete' line printed"
 else
-  pass "RED (fresh): no 'complete' line printed"
-fi
-if echo "$OUT" | grep -q "NOT provisioned" && echo "$OUT" | grep -q "apps/shadowfax/.env.local"; then
-  pass "RED (fresh): not-provisioned verdict names apps/shadowfax/.env.local"
-else
-  fail "RED (fresh): expected not-provisioned verdict naming apps/shadowfax/.env.local, got: $OUT"
-fi
-if [ "$RC" -ne 0 ]; then
-  pass "RED (fresh): exit code nonzero ($RC)"
-else
-  fail "RED (fresh): expected nonzero exit, got 0"
-fi
-
-# ── RED: 0-byte apps/shadowfax/.env.local is treated as missing ─────────────
-WT2="$T/wt2"
-git -C "$SRC" worktree add -q "$WT2" -b wt2 >/dev/null
-mkdir -p "$WT2/apps/shadowfax"
-: > "$WT2/apps/shadowfax/.env.local"
-
-run_script "$WT2"
-
-if echo "$OUT" | grep -q "worktree setup complete"; then
-  fail "RED (0-byte): expected no 'complete' line, got: $OUT"
-else
-  pass "RED (0-byte): no 'complete' line printed"
-fi
-if echo "$OUT" | grep -q "apps/shadowfax/.env.local"; then
-  pass "RED (0-byte): verdict names apps/shadowfax/.env.local"
-else
-  fail "RED (0-byte): expected verdict to name apps/shadowfax/.env.local, got: $OUT"
-fi
-if [ "$RC" -ne 0 ]; then
-  pass "RED (0-byte): exit code nonzero ($RC)"
-else
-  fail "RED (0-byte): expected nonzero exit, got 0"
-fi
-
-# ── GREEN: apps/shadowfax/.env.local pre-placed non-empty (simulated pull) ──
-WT3="$T/wt3"
-git -C "$SRC" worktree add -q "$WT3" -b wt3 >/dev/null
-mkdir -p "$WT3/apps/shadowfax"
-echo "PULLED=1" > "$WT3/apps/shadowfax/.env.local"
-
-run_script "$WT3"
-
-if echo "$OUT" | grep -q "worktree setup complete"; then
-  pass "GREEN: 'complete' line printed"
-else
-  fail "GREEN: expected 'complete' line, got: $OUT"
+  fail "1 (fresh install+pull): expected 'complete' line, got: $OUT"
 fi
 if [ "$RC" -eq 0 ]; then
-  pass "GREEN: exit code 0"
+  pass "1 (fresh install+pull): exit code 0"
 else
-  fail "GREEN: expected exit 0, got $RC"
+  fail "1 (fresh install+pull): expected exit 0, got $RC"
 fi
-# Copied LOCAL_ENV_FILES land alongside the pre-placed pull output.
-for rel in apps/shadowfax/.env.development.local packages/socotra-config/.env.local packages/ngrok/.env.local; do
-  if [ -s "$WT3/$rel" ]; then
-    pass "GREEN: $rel copied"
-  else
-    fail "GREEN: expected $rel to be copied and non-empty"
-  fi
-done
+GREEN_OUT="$OUT"
 
-# ── secrets discipline: never print env file contents ────────────────────────
-if echo "$OUT" | grep -qE "PULLED=1|DEV=1|X=1|Y=1"; then
-  fail "output leaked env file contents"
+# ── 2. RED: fresh worktree, fake pnpm install fails ──────────────────────────
+WT2="$T/wt2"
+git -C "$SRC" worktree add -q "$WT2" -b wt2 >/dev/null
+
+export FAKE_PNPM_INSTALL=fail
+run_script "$WT2"
+unset FAKE_PNPM_INSTALL
+
+if echo "$OUT" | grep -q "pnpm install failed"; then
+  pass "2 (install fails): install-failed message shown"
 else
-  pass "no env file contents in output"
+  fail "2 (install fails): expected install-failed message, got: $OUT"
+fi
+if echo "$OUT" | grep -q "worktree setup complete"; then
+  fail "2 (install fails): expected no 'complete' line, got: $OUT"
+else
+  pass "2 (install fails): no 'complete' line printed"
+fi
+if echo "$OUT" | grep -q "pulled vercel env"; then
+  fail "2 (install fails): pull must not have been attempted, got: $OUT"
+else
+  pass "2 (install fails): pull was not attempted"
+fi
+if [ "$RC" -ne 0 ]; then
+  pass "2 (install fails): exit code nonzero ($RC)"
+else
+  fail "2 (install fails): expected nonzero exit, got 0"
 fi
 
-# ── exclusion: a LOCAL_ENV_FILES entry ABSENT from source is not required ─────
-# We can't copy what source never had, so its absence must NOT flag the worktree
-# as not-provisioned. Source has .vercel + two of three local files (ngrok
-# missing); worktree gets a valid pulled file. Expect success.
+# ── 3. RED: install+pull "succeed" but env:pull produces no file ────────────
+# The landed-file safety net (step 4) must still catch this.
+WT3="$T/wt3"
+git -C "$SRC" worktree add -q "$WT3" -b wt3 >/dev/null
+
+export FAKE_PNPM_INSTALL=ok FAKE_PNPM_PULL=empty
+run_script "$WT3"
+unset FAKE_PNPM_INSTALL FAKE_PNPM_PULL
+
+if echo "$OUT" | grep -q "worktree setup complete"; then
+  fail "3 (empty pull): expected no 'complete' line, got: $OUT"
+else
+  pass "3 (empty pull): no 'complete' line printed"
+fi
+if echo "$OUT" | grep -q "NOT provisioned" && echo "$OUT" | grep -q "apps/shadowfax/.env.local"; then
+  pass "3 (empty pull): not-provisioned verdict names apps/shadowfax/.env.local"
+else
+  fail "3 (empty pull): expected not-provisioned verdict naming apps/shadowfax/.env.local, got: $OUT"
+fi
+if [ "$RC" -ne 0 ]; then
+  pass "3 (empty pull): exit code nonzero ($RC)"
+else
+  fail "3 (empty pull): expected nonzero exit, got 0"
+fi
+
+# ── 4a. exclusion: a LOCAL_ENV_FILES entry ABSENT from source is not required ─
+# We can't copy what source never had, so its absence must NOT flag the
+# worktree as not-provisioned. Source has .vercel + two of three local files
+# (ngrok missing); fake pnpm installs + pulls successfully.
 SRC2="$T/src2"
 mkdir -p "$SRC2"
 git -C "$SRC2" init -q
@@ -148,29 +198,31 @@ mkdir -p "$SRC2/packages/socotra-config"; echo "X=1" > "$SRC2/packages/socotra-c
 
 WT4="$T/wt4"
 git -C "$SRC2" worktree add -q "$WT4" -b wt4 >/dev/null
-mkdir -p "$WT4/apps/shadowfax"; echo "PULLED=1" > "$WT4/apps/shadowfax/.env.local"
 
+export FAKE_PNPM_INSTALL=ok FAKE_PNPM_PULL=ok
 run_script "$WT4"
+unset FAKE_PNPM_INSTALL FAKE_PNPM_PULL
 
 if echo "$OUT" | grep -q "worktree setup complete"; then
-  pass "exclusion(source-missing): reports complete"
+  pass "4a (source-missing file): reports complete"
 else
-  fail "exclusion(source-missing): expected complete, got: $OUT"
+  fail "4a (source-missing file): expected complete, got: $OUT"
 fi
 if [ "$RC" -eq 0 ]; then
-  pass "exclusion(source-missing): exit 0"
+  pass "4a (source-missing file): exit 0"
 else
-  fail "exclusion(source-missing): expected exit 0, got $RC"
+  fail "4a (source-missing file): expected exit 0, got $RC"
 fi
 if echo "$OUT" | grep -q "NOT provisioned"; then
-  fail "exclusion(source-missing): must NOT flag the source-absent ngrok file, got: $OUT"
+  fail "4a (source-missing file): must NOT flag the source-absent ngrok file, got: $OUT"
 else
-  pass "exclusion(source-missing): a file missing in source is not required"
+  pass "4a (source-missing file): a file missing in source is not required"
 fi
 
-# ── exclusion: source WITHOUT .vercel does not require the pulled file ─────────
-# No .vercel in source → no vercel-backed env is expected, so a missing
-# apps/shadowfax/.env.local must NOT flag the worktree. All local files present.
+# ── 4b. exclusion: source WITHOUT .vercel — no install attempted, no pull ───
+# No .vercel in source → no vercel-backed env is expected, so no install and
+# no pull should be attempted, and a missing apps/shadowfax/.env.local must
+# NOT flag the worktree. All local files present.
 SRC3="$T/src3"
 mkdir -p "$SRC3"
 git -C "$SRC3" init -q
@@ -189,19 +241,31 @@ git -C "$SRC3" worktree add -q "$WT5" -b wt5 >/dev/null
 run_script "$WT5"
 
 if echo "$OUT" | grep -q "worktree setup complete"; then
-  pass "exclusion(no-.vercel): reports complete"
+  pass "4b (no-.vercel): reports complete"
 else
-  fail "exclusion(no-.vercel): expected complete, got: $OUT"
+  fail "4b (no-.vercel): expected complete, got: $OUT"
 fi
 if [ "$RC" -eq 0 ]; then
-  pass "exclusion(no-.vercel): exit 0"
+  pass "4b (no-.vercel): exit 0"
 else
-  fail "exclusion(no-.vercel): expected exit 0, got $RC"
+  fail "4b (no-.vercel): expected exit 0, got $RC"
 fi
 if echo "$OUT" | grep -q "NOT provisioned"; then
-  fail "exclusion(no-.vercel): must NOT require the pulled file when source has no .vercel, got: $OUT"
+  fail "4b (no-.vercel): must NOT require the pulled file when source has no .vercel, got: $OUT"
 else
-  pass "exclusion(no-.vercel): the vercel-pulled file is not required without .vercel"
+  pass "4b (no-.vercel): the vercel-pulled file is not required without .vercel"
+fi
+if echo "$OUT" | grep -q "installing dependencies"; then
+  fail "4b (no-.vercel): no install should have been attempted, got: $OUT"
+else
+  pass "4b (no-.vercel): no install attempted"
+fi
+
+# ── 5. secrets discipline: never print env file contents ────────────────────
+if echo "$GREEN_OUT" | grep -qE "PULLED=1|DEV=1|X=1|Y=1"; then
+  fail "output leaked env file contents"
+else
+  pass "no env file contents in output"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
