@@ -214,3 +214,40 @@ func TestRolesKongNilCtx(t *testing.T) {
 		t.Error("expected error for nil ctx")
 	}
 }
+
+// ── gateKind ──────────────────────────────────────────────────────────────────
+
+// TestGateKind covers agent-teams-ssib.32: gateKind must recognize the
+// per-PR suffixed "gate:review:<pr-url>" form (docs/multi-pr-contract.md
+// §3), not just the bare "gate:review" label, while preserving its existing
+// bare-label and question-only behavior.
+func TestGateKind(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+		want   string
+	}{
+		{
+			name:   "bare gate:review yields REVIEW",
+			labels: []string{"human", "gate:review"},
+			want:   "REVIEW",
+		},
+		{
+			name:   "per-PR suffixed gate:review yields REVIEW",
+			labels: []string{"human", "gate:review:https://github.com/acme/widget/pull/9"},
+			want:   "REVIEW",
+		},
+		{
+			name:   "question-only yields QUESTION",
+			labels: []string{"human", "gate:question"},
+			want:   "QUESTION",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gateKind(tt.labels); got != tt.want {
+				t.Errorf("gateKind(%v) = %q, want %q", tt.labels, got, tt.want)
+			}
+		})
+	}
+}

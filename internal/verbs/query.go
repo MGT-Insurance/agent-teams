@@ -564,13 +564,12 @@ func renderAsk(b askBlock) string {
 
 // gateKind derives the gate kind from a bead's labels using the kind-resolution
 // rule from contract agent-teams-04c:
-//   - contains "gate:review"  => "REVIEW"
+//   - contains "gate:review" (bare or any per-PR "gate:review:<url>" suffixed
+//     form, per hasGateKind/status.go) => "REVIEW"
 //   - else (human present, or gate:question, or backward-compat) => "QUESTION"
 func gateKind(labels []string) string {
-	for _, l := range labels {
-		if l == "gate:review" {
-			return "REVIEW"
-		}
+	if hasGateKind(labels, "gate:review") {
+		return "REVIEW"
 	}
 	return "QUESTION"
 }

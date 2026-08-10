@@ -139,6 +139,35 @@ func TestNotifyToSteward_ReviewKind_BuildsEnvelopeAndRoutesToSteward(t *testing.
 	}
 }
 
+// TestNotifyToSteward_PerPRReviewLabel_YieldsReviewKind is the regression
+// test for agent-teams-ssib.32: a per-PR "gate:review:<pr-url>" label (the
+// form written once a PR is resolved, docs/multi-pr-contract.md §3) must
+// still produce StewardGateKindReview. Before the fix, gateKind's bare-only
+// comparison fell through to StewardGateKindQuestion here, misrouting the
+// Steward-facing notification for every multi-PR review gate.
+func TestNotifyToSteward_PerPRReviewLabel_YieldsReviewKind(t *testing.T) {
+	initiativeID := "at-x13"
+	fbd := &stewardRouteFakeBD{
+		initiativeID: initiativeID,
+		issueLabels:  []string{"human", "gate:review:https://github.com/acme/widget/pull/9"},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
+
+	askFile := makeTempFile(t, "Should we ship the release?")
+	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
+		t.Fatalf("notifyToSteward: unexpected error: %v", err)
+	}
+
+	env, ok := ParseStewardGateEnvelope(fbd.createBody)
+	if !ok {
+		t.Fatalf("message body is not a well-formed steward-gate envelope:\n%s", fbd.createBody)
+	}
+	if env.Kind != StewardGateKindReview {
+		t.Errorf("envelope Kind = %q, want %q (per-PR review label misrouted)", env.Kind, StewardGateKindReview)
+	}
+}
+
 func TestNotifyToSteward_NoReviewLabel_DefaultsToQuestionKind(t *testing.T) {
 	initiativeID := "at-x10"
 	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:question"}}
