@@ -165,6 +165,120 @@ verb), not baked into the low-level writer, mirroring how `WithSession`
 doesn't validate a session id looks like a real session and `WithTrack`
 doesn't validate a path exists.
 
+## 2a. Read precedence — PERMANENT, not transitional (team-lead amendment)
+
+**This is a blocking regression fix, not a nice-to-have.** A census across
+549 registered initiatives at review time found `pr:` in a Description line
+**0 times** and in bd Notes **178 times** — the `dri` skill has only ever
+written the PR to Notes (§2), never to Description, so `Of(iss).PRs` is
+empty for every one of those 178 today, and stays empty for every *new*
+initiative until the skill itself is migrated onto `ateam pr add` (§2b — a
+separate, gating bead, not this contract's job to implement). Any consumer
+that starts reading `Of(iss).PRs` as "the" PR source the moment this ships —
+without a fallback — silently regresses all 178 (and every initiative
+created before the skill migration lands) to zero PRs: gone from
+execution-status, gone from the dashboard, and gone from PR-event routing.
+That is worse than the bug this initiative exists to fix, and it is NOT a
+one-time migration gap — Eric's ruling repairs only the one still-open
+multi-PR initiative (at-d9ck) onto the rail and deliberately leaves the rest
+on Notes, so this fallback is load-bearing forever, not until some cutover
+date.
+
+**Frozen rule — `ResolvedPRs(iss bd.Issue) []string`**
+(`internal/initiative/initiative.go`):
+
+```
+1. rail := Of(iss).PRs
+2. if len(rail) > 0: return rail                      — WHOLESALE, no union
+3. else if a PR URL is found in iss.Notes:             return [that URL]
+4. else if a PR URL is found in iss.Description:       return [that URL]
+5. else:                                                return nil
+```
+
+The rail and the free-text fallback are **never unioned** — mixing a rail
+entry with a Notes-scanned entry would risk duplicates (the same PR
+recorded both ways) and an ordering nobody could reconstruct later. Steps 3
+and 4 mirror the pre-existing `extractPrURL(Notes)` then `extractPrURL
+(Description)` order (`internal/verbs/route_match.go`) byte-for-byte, so an
+initiative's resolved PR does not change out from under `matchInitiative`
+the moment this ships alongside it.
+
+**Every consumer of "what PR(s) does this initiative have" MUST call
+`ResolvedPRs`, never `Of(iss).PRs` directly and never its own free-text
+scan.** `Of(iss).PRs` stays a pure, unchanged rail projection — correct for
+a caller that specifically wants the rail's own state (e.g. `fields.pr[]`
+on list-json, §4, which stays rail-only by design: it is a mechanical
+projection of Description lines, and mixing in a semantic fallback there
+would break the "every JSONFields key is a verbatim projection, nothing
+inferred" property every other key relies on).
+
+Known call sites that need this, beyond what this contract's own FILES
+cover (flagged here, not fixed here — those files belong to other tracks):
+
+- **`internal/verbs/status.go:190`** (Track G, ssib.8) — `PRs []string` in
+  the reshaped `initiativeStatus` (§6) must source from
+  `initiative.ResolvedPRs(iss)`, not `Of(iss).PRs` and not its own
+  `extractPrURL(iss.Notes)` call. This is the exact call site the DRI
+  flagged as needing the same treatment.
+- **`internal/verbs/route_match.go`** (Track P, ssib.7) — **this one is more
+  urgent than status.go, not less**: ssib.7's own bead text calls this file
+  PRODUCTION-CRITICAL, live on another machine, and its stated fix
+  ("iterate ALL `pr` values") only mentions the rail. If `matchInitiative`
+  iterates `Of(iss).PRs` alone with no fallback, tier-1 PR-field matching
+  goes dark for every initiative that hasn't called `ateam pr add` yet —
+  which, until the skill migration (§2b) ships, is **all of them**, not just
+  the 178 already on file. Track P must iterate `initiative.ResolvedPRs(iss)`
+  instead, or ship the skill migration first — either order works, but
+  shipping ssib.7's rail-only iteration alone, before one of those two, would
+  take down live PR-event routing entirely rather than fix it.
+- **`ateam list-json`** (Track G, `query.go`) — since `fields.pr[]` stays
+  rail-only (above), the dashboard (Track D1, ssib.9) needs a *resolved*
+  value to read instead. **Amendment to what §4 previously told D1**: add a
+  `prs` sibling key to each list-json element (parallel to `pr_reviews`,
+  §5), sourced from `initiative.ResolvedPRs(iss)`. D1 renders its PR list
+  from this `prs` key, not from `fields.pr[]` — the latter is for a caller
+  that specifically wants the raw rail (e.g. debugging), and reading it
+  alone for the dashboard's main render would reproduce this exact
+  regression on the dashboard side, contradicting ssib.9's own "no regex,
+  structural read only" acceptance bar by silently going empty instead of
+  silently reading free text.
+
+**Witnessed test** (`internal/initiative/initiative_test.go`,
+`TestResolvedPRs_FallsBackToNotesOnlyPR`): an initiative with `pr:` present
+ONLY in Notes (no rail line at all) still resolves its PR. Confirmed as a
+real witness, not decoration, by mutating `ResolvedPRs` to `return
+Of(iss).PRs` (dropping the fallback entirely) — both this test and
+`TestResolvedPRs_FallsBackToDescriptionFreeTextWhenNotesEmpty` went RED with
+the expected `= [], want [...]` message; restoring the fallback turned both
+green again. `TestResolvedPRs_RailWinsWholesaleOverNotes` proves the
+no-union half: a rail entry plus a *different* Notes `pr:` line resolves to
+the rail entry alone.
+
+**Duplication flagged, not hidden.** `ResolvedPRs`'s free-text step needs
+the same URL-matching regex `route_match.go`'s `prURLRE` already defines.
+Importing it isn't possible without a package cycle (`internal/verbs`
+already imports `internal/initiative`), so `initiative.go` carries its own
+copy (`prURLFallbackRE`), commented as a known, flagged duplicate. The
+correct long-term fix — pointing `route_match.go`'s tier-1 matching at
+`ResolvedPRs` and deleting its own `extractPrURL`/`prURLRE`/`parsePrURL` —
+touches a file this bead's FILES list does not include and Track P owns;
+recorded here so Track P sees it before re-deriving the same rule a third
+time (Go route_match.go, TS `parse.ts`, and now this copy).
+
+## 2b. The DRI skill's write path — sanctioned vs. deprecated
+
+`ateam pr add` (verb, Track P/ssib.7) calling `WithPR` (§2) is the
+**sanctioned write path** onto the `pr` rail going forward. Writing a `pr:`
+line via `ateam note` (the `dri` skill's current step, §2 — "record the
+structured `pr:` field", into bd Notes) is **deprecated** on the rail: it
+still works exactly as it does today (Notes-based, read via the
+`ResolvedPRs` fallback above), but it is no longer how a NEW initiative's PR
+should be recorded once `ateam pr add` exists. Migrating the `dri` skill
+itself onto `ateam pr add` is loop-closing work the DRI is filing and wiring
+ahead of the release track (ssib.11) — not this contract's job to implement,
+only to name the sanctioned/deprecated boundary so nobody builds a third way
+to record a PR.
+
 ## 3. The per-PR gate label grammar (collision-safe, repo-inclusive)
 
 Today's gate mechanism (`internal/verbs/status.go`, `query.go`) is
@@ -229,6 +343,14 @@ Single-PR initiative: `"pr": ["https://github.com/acme/widget/pull/12"]` —
 still an array, length 1. No PRs opened yet: `"pr"` key absent from `fields`
 entirely (not `"pr": []`).
 
+**This key is rail-only, by design, and that is not enough on its own for a
+consumer that wants "does this initiative have a PR" — see §2a.** Until the
+`dri` skill migrates onto `ateam pr add`, `fields.pr` is absent for nearly
+every initiative in the registry (178/549 measured, all on Notes instead —
+§2a). A consumer needing the resolved answer reads the new `prs` sibling key
+(§2a, §5) instead, sourced from `ResolvedPRs`; `fields.pr[]` remains for a
+caller that specifically wants the raw rail state.
+
 ## 5. Wire shape — the Go-computed per-PR review array (second wire element)
 
 Mutable review state (which PR is gated, at what kind) cannot ride the
@@ -243,8 +365,18 @@ at this level: `execution_status`, `issue_id`, `dependency_count` — `fields`
 itself is the one exception, being a single word with no case choice to
 make).
 
-**Element shape**, one entry per PR present in `fields.pr[]` /
-`Fields.PRs`:
+**A second sibling key, `prs`, joins it on list-json** (amendment, §2a): the
+*resolved* PR list (`initiative.ResolvedPRs(iss)`), snake_case-free since it
+has no internal word boundary needing one, matching `execution-status`'s
+existing `PRs []string \`json:"prs"\`` naming (§6) for the same concept on
+both endpoints. `fields.pr[]` (§4) stays the raw, rail-only projection;
+`prs` is what a consumer actually renders.
+
+**Element shape**, one entry per PR present in the *resolved* list
+(`ResolvedPRs` / the `prs` sibling key, §2a) — not `fields.pr[]` /
+`Fields.PRs` directly, for the same reason `prs` exists: computing
+`pr_reviews` off the raw rail alone would omit every PR recorded only in
+Notes, exactly the regression §2a exists to prevent.
 
 ```json
 {
@@ -299,8 +431,8 @@ present, possibly empty).
 from `extractPrURL(iss.Notes)` — the free-text scan) is REPLACED by:
 
 ```go
-PRs       []string   `json:"prs"`        // from initiative.Of(iss).PRs — the rail, not a Notes regex-scan
-PRReviews []PRReview `json:"pr_reviews"` // see §5
+PRs       []string   `json:"prs"`        // from initiative.ResolvedPRs(iss) — §2a; NOT Of(iss).PRs and NOT its own Notes regex-scan
+PRReviews []PRReview `json:"pr_reviews"` // see §5, computed over the same resolved list
 ```
 
 ```go

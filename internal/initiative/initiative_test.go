@@ -512,6 +512,71 @@ func TestWithPR_RejectsEdgeWhitespace(t *testing.T) {
 	}
 }
 
+// TestResolvedPRs_FallsBackToNotesOnlyPR is the exact case the DRI review
+// (team-lead, on top of agent-teams-ssib.6) demanded a witness for: 178 of
+// 549 registered initiatives recorded their PR by writing "pr: <url>" into
+// bd NOTES via the dri skill (plugins/agent-teams/skills/dri/SKILL.md) —
+// never into Description, so Of(iss).PRs is empty for every one of them.
+// Without this fallback, execution-status/list-json/route_match.go would
+// silently report zero PRs for all 178 the moment they start reading the
+// rail — worse than the bug this initiative set out to fix. ResolvedPRs
+// must still resolve the PR when it lives ONLY in Notes.
+func TestResolvedPRs_FallsBackToNotesOnlyPR(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-notesonly",
+		Description: "problem: p\nrepo: /r\n", // no "pr:" line at all
+		Notes:       "delivered, ready for review.\npr: https://github.com/erlloyd/pr-shepherd/pull/3\n",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/erlloyd/pr-shepherd/pull/3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (Notes-only PR) = %v, want %v", got, want)
+	}
+}
+
+// TestResolvedPRs_RailWinsWholesaleOverNotes proves the rail is never
+// unioned with the Notes/Description fallback: when the rail has ANY
+// entries, Notes is not consulted at all, even if Notes also carries a
+// (possibly stale, possibly different) "pr:" line.
+func TestResolvedPRs_RailWinsWholesaleOverNotes(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-railwins",
+		Description: "repo: /r\npr: https://github.com/erlloyd/pr-shepherd/pull/3\n",
+		Notes:       "pr: https://github.com/some/other/pull/999\n",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/erlloyd/pr-shepherd/pull/3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (rail present) = %v, want %v (rail only, Notes ignored)", got, want)
+	}
+}
+
+// TestResolvedPRs_FallsBackToDescriptionFreeTextWhenNotesEmpty mirrors the
+// pre-existing extractPrURL order (Notes checked first, then Description)
+// for the case where the PR URL sits in Description prose rather than as a
+// canonical "pr:" rail line — e.g. an old initiative whose PR link was
+// pasted into free text, not recorded via either mechanism.
+func TestResolvedPRs_FallsBackToDescriptionFreeTextWhenNotesEmpty(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-descfallback",
+		Description: "problem: p\nSee https://github.com/acme/widget/pull/12 for the PR.\n",
+		Notes:       "",
+	}
+	got := initiative.ResolvedPRs(iss)
+	want := []string{"https://github.com/acme/widget/pull/12"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResolvedPRs (Description free-text fallback) = %v, want %v", got, want)
+	}
+}
+
+// TestResolvedPRs_NilWhenNothingFound covers the no-PR-anywhere case.
+func TestResolvedPRs_NilWhenNothingFound(t *testing.T) {
+	iss := bd.Issue{ID: "at-nopr", Description: "problem: p\n", Notes: "no PR yet.\n"}
+	if got := initiative.ResolvedPRs(iss); got != nil {
+		t.Errorf("ResolvedPRs (nothing found) = %v, want nil", got)
+	}
+}
+
 // TestNew_ComposesHeaderInFixedOrder is New's core-path test: given a
 // populated Fields, the composed description has one "key: value" line per
 // non-empty field, each line individually resolvable via Of.

@@ -387,6 +387,58 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 	return WritePlan{Description: appendLine(iss.Description, "track-worktree", path)}, nil
 }
 
+// prURLFallbackRE mirrors internal/verbs/route_match.go's prURLRE
+// byte-for-byte. Duplicated here rather than imported: internal/verbs
+// already imports internal/initiative, so importing back would cycle.
+// THIS IS A KNOWN, FLAGGED DUPLICATE (docs/multi-pr-contract.md, "read
+// precedence") — whoever next touches route_match.go should point its
+// tier-1 matching at [ResolvedPRs] instead of keeping its own copy of this
+// pattern, so the rule has one implementation again, not two.
+var prURLFallbackRE = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)`)
+
+// extractPRURLFallback returns the first GitHub PR URL found in text, or ""
+// — the free-text scan every initiative's PR was recorded through before
+// the "pr" rail existed (and still is, via the dri skill's Notes-based
+// "pr:" line — see [ResolvedPRs]).
+func extractPRURLFallback(text string) string {
+	return prURLFallbackRE.FindString(text)
+}
+
+// ResolvedPRs returns iss's PR URLs per the frozen, PERMANENT read
+// precedence (docs/multi-pr-contract.md, "read precedence"): the "pr" rail
+// (Of(iss).PRs) wins WHOLESALE when non-empty; only when the rail is
+// completely empty does this fall back to a single URL extracted from free
+// text — Notes first, then Description, matching the pre-existing
+// extractPrURL order (internal/verbs/route_match.go). The two sources are
+// NEVER unioned — mixing a rail entry with a free-text-scanned one risks
+// duplicates and an undefined ordering that nobody could reconstruct later.
+//
+// This is permanent, not transitional. A repo-wide census at the time this
+// was written found "pr:" in a Description line 0 times and in Notes 178
+// times across 549 registered initiatives — the DRI skill has always
+// written the PR to Notes, never to Description, and Eric's ruling repairs
+// only the one still-open multi-PR initiative onto the rail, leaving the
+// rest on Notes indefinitely. Every reader of "what PR(s) does this
+// initiative have" — execution-status, list-json's resolved sibling key,
+// and route_match.go's tier-1 matching — MUST call ResolvedPRs, not
+// Of(iss).PRs directly: reading the rail alone silently returns zero PRs
+// for every initiative that has never called WithPR, which today is all of
+// them. (Of(iss).PRs itself stays a pure rail projection — unchanged — for
+// callers that specifically want the rail's own state, e.g. list-json's
+// "fields.pr" key.)
+func ResolvedPRs(iss bd.Issue) []string {
+	if rail := Of(iss).PRs; len(rail) > 0 {
+		return rail
+	}
+	if url := extractPRURLFallback(iss.Notes); url != "" {
+		return []string{url}
+	}
+	if url := extractPRURLFallback(iss.Description); url != "" {
+		return []string{url}
+	}
+	return nil
+}
+
 // WithPR returns the WritePlan that registers url as a pr of iss by
 // appending a "pr: <url>" line below iss's entire current description. It is
 // idempotent: if url is already registered on iss, the returned
