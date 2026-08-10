@@ -482,6 +482,92 @@ func TestGate_StructuredAsk_SentinelFormat(t *testing.T) {
 	_ = capturedFile
 }
 
+// TestGate_StructuredAsk_PRTagsTheBlock confirms --pr inserts a "pr: <url>"
+// line as the first field inside the sentinel block, which human-list uses
+// to pair a per-PR row with its own ask rather than the initiative's latest
+// block system-wide (agent-teams-ssib.8 follow-up).
+func TestGate_StructuredAsk_PRTagsTheBlock(t *testing.T) {
+	const pr = "https://github.com/erlloyd/pr-shepherd/pull/3"
+	var capturedContent string
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedContent = string(data)
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	if err := (&gateKong{
+		ID:             "at-tagged",
+		Decision:       "PR one ready?",
+		Recommendation: "yes",
+		Alternative:    "no",
+		Kind:           "review",
+		PR:             pr,
+	}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "<<<ateam-ask\npr: " + pr + "\ndecision: PR one ready?\nrecommendation: yes\nalternative: no\n>>>"
+	if capturedContent != want {
+		t.Errorf("sentinel block =\n%q\nwant:\n%q", capturedContent, want)
+	}
+}
+
+// TestGate_StructuredAsk_NoPR_UntaggedUnchanged confirms omitting --pr
+// leaves the sentinel block byte-for-byte as it was before this fix.
+func TestGate_StructuredAsk_NoPR_UntaggedUnchanged(t *testing.T) {
+	var capturedContent string
+	idx := 0
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		if idx == 0 {
+			for _, a := range stripped {
+				if strings.HasPrefix(a, "--file=") {
+					data, _ := os.ReadFile(a[len("--file="):])
+					capturedContent = string(data)
+				}
+			}
+		}
+		idx++
+		return []byte("ok"), nil, nil
+	}
+	client := bd.NewClientWithExec(t.TempDir(), execFn)
+	var stdout, stderr bytes.Buffer
+	ctx := &cli.Context{Home: t.TempDir(), BD: client, Stdout: &stdout, Stderr: &stderr}
+
+	if err := (&gateKong{
+		ID:             "at-untagged",
+		Decision:       "Ship it?",
+		Recommendation: "yes",
+		Alternative:    "no",
+		Kind:           "review",
+	}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "<<<ateam-ask\ndecision: Ship it?\nrecommendation: yes\nalternative: no\n>>>"
+	if capturedContent != want {
+		t.Errorf("sentinel block =\n%q\nwant:\n%q", capturedContent, want)
+	}
+}
+
 func TestGate_StructuredAsk_WithoutContext(t *testing.T) {
 	var capturedContent string
 	idx := 0

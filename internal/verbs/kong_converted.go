@@ -295,6 +295,18 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		if buildErr != nil {
 			return buildErr
 		}
+		if c.PR != "" {
+			// Tag the block with the PR it's about, so human-list can pair
+			// each per-PR row with the block that's actually about IT,
+			// instead of always showing the initiative's latest ask
+			// regardless of which PR it was for — a bare gate never sets
+			// this, so a single-PR (or no-PR) initiative's ask blocks are
+			// never tagged and human-list's fallback for that case (the
+			// latest block, tag or no tag) is unaffected. buildAskBlock's
+			// output always starts with this exact literal, so this is a
+			// safe one-shot insertion, not a fragile string scan.
+			block = strings.Replace(block, "<<<ateam-ask\n", "<<<ateam-ask\npr: "+c.PR+"\n", 1)
+		}
 		tmp, tmpErr := os.CreateTemp("", "ateam-gate-ask-*")
 		if tmpErr != nil {
 			return fmt.Errorf("ateam gate: create temp file: %w", tmpErr)
