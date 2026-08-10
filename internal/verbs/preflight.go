@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -622,7 +623,15 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 
 	sessionID := newPreflightSessionID()
 
+	// Progress on stderr (never stdout, so --json stays exactly contract
+	// shape). The probe is a live `claude -p` session that takes ~1 minute
+	// and spends real API budget; before this the verb printed nothing for
+	// that whole window, which is indistinguishable from a hang — a real run
+	// looked locked up (reported 2026-08-10). stopProgress halts the
+	// heartbeat and waits for its goroutine before any later write.
+	stopProgress := preflightStartProgress(ctx, c.JSON, sessionID)
 	stdout, err := launch(sessionID, tokenizedAgentsJSON, skill, c.MaxBudgetUSD, c.PluginDir)
+	stopProgress()
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam preflight: could not launch the probe session: %v\n", err)
 		return cli.Silent(2)
@@ -989,6 +998,43 @@ func newPreflightSessionID() string {
 // flag leaves the argv byte-identical to before this seam existed — a stray
 // --plugin-dir in an ordinary run would silently change which plugin tree
 // (and therefore which skill) the probe loads.
+// preflightStartProgress prints a launch notice and then a periodic elapsed
+// heartbeat to stderr while the blocking probe session runs, and returns a
+// stop function that halts the heartbeat and WAITS for its goroutine to exit
+// before the caller writes anything else — so a heartbeat line can never
+// interleave with the verdict or the cost/limits footers. It is a no-op when
+// asJSON: machine consumers read stdout and get nothing extra. Everything it
+// writes goes to stderr, so --json stdout stays exactly contract shape (4).
+func preflightStartProgress(ctx *cli.Context, asJSON bool, sessionID string) func() {
+	if asJSON {
+		return func() {}
+	}
+	fmt.Fprintf(ctx.Stderr, "ateam preflight: launching a probe session (%s) — spawns a real teammate, takes ~1 min and spends real API budget...\n", sessionID)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		const tick = 15 * time.Second
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		elapsed := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				elapsed += int(tick / time.Second)
+				fmt.Fprintf(ctx.Stderr, "ateam preflight: still working — probe session running (%ds)...\n", elapsed)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		wg.Wait()
+	}
+}
+
 func preflightLaunchArgs(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) []string {
 	args := []string{
 		"-p",

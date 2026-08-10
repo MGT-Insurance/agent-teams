@@ -1200,3 +1200,39 @@ func TestPreflightProbeSpawnNameMatchesSkill(t *testing.T) {
 		t.Errorf("SKILL.md never references %q as a delimited bare name — the shutdown step must name the same probe, or a rename that updates the spawn but not the shutdown leaves the probe running", preflightProbeSpawnName)
 	}
 }
+
+// TestPreflightStartProgress_WritesToStderrNotStdout pins the progress fix
+// (a live run printed nothing for ~1 min and looked hung, 2026-08-10): the
+// launch notice goes to STDERR so --json stdout stays pure, and the whole
+// thing is a no-op under --json.
+func TestPreflightStartProgress_WritesToStderrNotStdout(t *testing.T) {
+	var stdout, stderr strings.Builder
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+
+	stop := preflightStartProgress(ctx, false, "sess-abc")
+	stop() // stops the heartbeat immediately; the launch notice already printed
+
+	if stdout.Len() != 0 {
+		t.Errorf("progress wrote to STDOUT %q — must be stderr-only so --json stays pure", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "sess-abc") {
+		t.Errorf("stderr = %q, want the launch notice naming the session id", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "spawns a real teammate") {
+		t.Errorf("stderr = %q, want it to say what is happening", stderr.String())
+	}
+}
+
+// TestPreflightStartProgress_JSONIsNoOp: under --json, nothing is printed on
+// either stream — machine consumers get exactly the JSON on stdout.
+func TestPreflightStartProgress_JSONIsNoOp(t *testing.T) {
+	var stdout, stderr strings.Builder
+	ctx := &cli.Context{Stdout: &stdout, Stderr: &stderr}
+
+	stop := preflightStartProgress(ctx, true, "sess-abc")
+	stop()
+
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("under --json, progress must be silent: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
