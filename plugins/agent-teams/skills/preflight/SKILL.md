@@ -16,7 +16,7 @@ Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check
 | `role-types-available` | `agent-teams-implementer` is a spawnable agent type in this session |
 | `teammate-spawns` | the Agent tool call actually returns a response from the probe |
 | `role-prose-in-context` | the probe echoes back a one-time token the launching verb planted in its assembled prompt — proof the prompt it actually received carried the role's instructions, not just that some agent replied; see Step 3 |
-| `learnings-loaded` | the probe runs `ateam learnings implementer` in its own session and reports the result; the verb cross-checks the entry count against the store's own, so it witnesses a real in-session fetch rather than the probe's word; see Step 3b |
+| `learnings-loaded` | the probe echoes back a one-time token the verb planted in the learnings store — proof it loaded its learnings in-session, not just that the store has content; works on a fresh machine; see Step 3b |
 
 ## Step 1 — role types available
 
@@ -82,13 +82,15 @@ Then continue to Step 4 regardless of what Step 3 held — nothing about Step 4 
 
 ## Step 3b — learnings-loaded
 
-Witnesses that a spawned teammate actually LOADS its role learnings (the "memories primed" item). Learnings are not injected by any hook — a role loads them only by running `ateam learnings <role>` itself, so the honest witness is a real teammate doing exactly that inside its own session. Ask `preflight-probe` (the same teammate, via `SendMessage`) and wait for its reply:
+Witnesses that a spawned teammate actually LOADS its role learnings (the "memories primed" item). Learnings are not injected by any hook — a role loads them only by running `ateam learnings <role>` itself. So, exactly like the role-prose token probe, the VERB planted a one-time token in the learnings store BEFORE launch: a disposable sentinel learning carrying a line `PREFLIGHT-LEARNINGS-TOKEN: <value>`. This skill never learns that value; ground truth lives only in the verb, which planted it and will remove it. A real teammate that loads its learnings will have that token in front of it; one that doesn't, won't — and it can't be inferred, because it's random. This works even on a fresh machine with no real learnings, because the thing being loaded is the planted token.
 
-> Run this exact command in your shell: `ateam learnings implementer`. Then reply with only the single line of its output that begins with `[learnings implementer:` — verbatim, nothing else. If no such line appears, reply exactly PROBE-NO-ANSWER.
+Ask `preflight-probe` (the same teammate, via `SendMessage`) and wait for its reply:
 
-Hold this check object for Step 5 — nothing is printed here. As with role-prose, `status` is a FAIL placeholder the VERB overwrites: the verb independently re-reads the same store and PASSes only when the probe's reported entry count matches ground truth — a number this skill never has, and a fabricated one cannot match. Fail-closed for the same reason.
+> Run this exact command in your shell: `ateam learnings implementer`. Its output contains a line `PREFLIGHT-LEARNINGS-TOKEN: <value>`. Reply with only that value, nothing else. If no such line appears, reply exactly NO-TOKEN.
 
-- Probe replies with a `[learnings implementer: …]` line: hold `{"check":"learnings-loaded","status":"FAIL","detail":"<the line, EXACTLY as received>","witness":"live probe","remediation":""}`.
+Hold this check object for Step 5 — nothing is printed here. As with role-prose, `status` is a FAIL placeholder the VERB overwrites: the verb PASSes only when `detail` equals the token it planted — a value this skill never has, so it can't compute the verdict and a fabricated one can't match. Fail-closed for the same reason.
+
+- Probe replies with any content: hold `{"check":"learnings-loaded","status":"FAIL","detail":"<the reply, EXACTLY as received — no trimming, no judging>","witness":"live probe","remediation":""}`.
 - The `SendMessage` errors, or no reply arrives (including the case where Step 2's spawn already FAILed and there is no probe to ask): `detail` is the literal reserved string `"PROBE-NO-ANSWER"`.
 
 `detail` must never be empty and this check must never be omitted. Then continue to Step 4 regardless of the outcome.

@@ -12,10 +12,12 @@
 // it owns exactly four things: launching the probe session, minting and
 // passing the session id, reading what the harness recorded about that
 // session AFTER the child process exits, and exit codes/rendering. Each of
-// the four checks implemented directly in this file carries a
-// REASON-POST-EXIT or REASON-NO-SESSION justification at its predicate
-// (contract artifact (1)(c)) — this is a CLOSED list; do not add a fifth
-// here without a stated reason and a note on the contract bead.
+// the FIVE verb-owned checks carries a REASON-POST-EXIT or REASON-NO-SESSION
+// justification at its predicate (contract artifact (1)(c)) — a CLOSED list;
+// do not add a sixth without a stated reason and a note on the contract bead.
+// (learnings-wired was added with its REASON-NO-SESSION stated when the
+// memories check landed; learnings-loaded, like role-prose-in-context, is
+// skill-emitted and verb-judged, not one of the five.)
 //
 // UNPINNED RETIRED (agent-teams-25s3.24, Eric ruling 2026-08-10): the status
 // vocabulary is PASS/FAIL/SKIP, three tokens, not four. role-model-attached
@@ -78,6 +80,10 @@ const (
 	// REASON-NO-SESSION: runs before launch; its own failure IS "no session
 	// can be launched" (contract artifact (1)(c)).
 	checkRolesPayloadBuilds = "roles-payload-builds"
+	// REASON-NO-SESSION: reads the role files directly — the per-role learnings
+	// self-fetch wiring is a static property of the files, so checking all five
+	// roles costs nothing and needs no spawn (agent-teams-25s3, memories check).
+	checkLearningsWiredID = "learnings-wired"
 	// REASON-POST-EXIT: a session that fails to emit a verdict cannot
 	// report that fact from inside itself.
 	checkProbeSessionVerdict = "probe-session-verdict"
@@ -365,95 +371,93 @@ func checkRoleProseInContext(observed, token string) preflightCheck {
 	}
 }
 
-// preflightLearningsFunc returns the raw output of `ateam learnings <role>`
-// for the probed role — the ground truth the verb cross-checks the probe's
-// in-session report against. Injected so tests never shell out.
-type preflightLearningsFunc func(role string) (string, error)
+// preflightLearningsSentinelSlug is the FIXED fresh-tier slug the verb plants
+// a disposable sentinel learning under before launch and removes after. Fixed
+// (not random) so cleanup is deterministic — there is only ever one key to
+// forget, and a run hard-killed before its deferred forget leaves exactly one
+// stale entry that the next run overwrites and removes. The TOKEN inside it is
+// fresh every run, so a stale sentinel can never make a later run pass.
+const preflightLearningsSentinelSlug = "fresh:preflight-sentinel"
 
-// productionPreflightLearnings shells out to THIS ateam binary's `learnings`
-// verb, so the ground-truth read hits exactly the store a spawned teammate's
-// own `ateam learnings` call would (same binary, same AGENT_TEAMS_HOME).
-func productionPreflightLearnings(role string) (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve self binary: %w", err)
-	}
-	var out bytes.Buffer
-	cmd := exec.Command(self, "learnings", role)
-	cmd.Stdout = &out
-	if runErr := cmd.Run(); runErr != nil {
-		return "", fmt.Errorf("ateam learnings %s: %w", role, runErr)
-	}
-	return out.String(), nil
+// preflightSentinelBody renders the disposable learning carrying token. It is
+// well under the 900-byte fresh-tier cap and labelled so a human or teammate
+// who sees it mid-run knows it is throwaway.
+func preflightSentinelBody(token string) string {
+	return fmt.Sprintf("RULE: Preflight sentinel — a disposable check learning, auto-removed at the end of every `ateam preflight` run; ignore it.\nPREFLIGHT-LEARNINGS-TOKEN: %s\nAPPLY: if asked for the preflight learnings token, reply with that value. (agent-teams-25s3)\n", token)
 }
 
-// preflightLearningsCount parses the entry count from an `ateam learnings`
-// header line (internal/verbs/query.go). Returns (n, empty, ok):
-//
-//	"[learnings <role>: N entries, M chars, ...]" -> n=N, ok=true
-//	"[learnings <role>: EMPTY]"                    -> empty=true, ok=true
-//	anything without a recognizable header         -> ok=false
-func preflightLearningsCount(s string) (n int, empty bool, ok bool) {
-	if strings.Contains(s, ": EMPTY]") {
-		return 0, true, true
+// preflightPlantFunc plants the sentinel learning for role carrying token;
+// preflightForgetFunc removes it. Injected so tests never touch the real
+// store. In production both shell out to THIS ateam binary's learn/forget
+// verbs (the only sanctioned interface to role memories — never raw bd).
+type preflightPlantFunc func(role, token string) error
+type preflightForgetFunc func(role string) error
+
+// productionPreflightPlant writes body to a temp file and runs
+// `ateam learn <role> fresh:preflight-sentinel --file <tmp>` on THIS binary,
+// so the probe session (which inherits the same AGENT_TEAMS_HOME) reads the
+// same store it lands in.
+func productionPreflightPlant(role, token string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve self binary: %w", err)
 	}
-	i := strings.Index(s, "[learnings ")
-	if i < 0 {
-		return 0, false, false
+	f, err := os.CreateTemp("", "preflight-sentinel-*.txt")
+	if err != nil {
+		return fmt.Errorf("temp file: %w", err)
 	}
-	rest := s[i:]
-	colon := strings.Index(rest, ": ")
-	if colon < 0 {
-		return 0, false, false
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(preflightSentinelBody(token)); err != nil {
+		f.Close()
+		return fmt.Errorf("write sentinel: %w", err)
 	}
-	after := rest[colon+2:]
-	sp := strings.Index(after, " entries")
-	if sp < 0 {
-		return 0, false, false
+	f.Close()
+	cmd := exec.Command(self, "learn", role, preflightLearningsSentinelSlug, "--file", f.Name())
+	if out, runErr := cmd.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("ateam learn: %w (%s)", runErr, strings.TrimSpace(string(out)))
 	}
-	v, convErr := strconv.Atoi(strings.TrimSpace(after[:sp]))
-	if convErr != nil {
-		return 0, false, false
+	return nil
+}
+
+// productionPreflightForget removes the sentinel. Idempotent enough for a
+// deferred cleanup: a forget of an absent key is not treated as fatal (the
+// point of the defer is that the store never keeps the sentinel).
+func productionPreflightForget(role string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
 	}
-	return v, false, true
+	return exec.Command(self, "forget", role, preflightLearningsSentinelSlug).Run()
 }
 
 // checkLearningsLoadedResult is the verb's final learnings-loaded verdict.
-// probeReported is the skill's verbatim report of what `ateam learnings
-// <role>` printed INSIDE the probe's own session; trueLearnings is this verb's
-// independent read of the same store. PASS iff the probe reached a populated
-// store AND its entry count matches ground truth — a fabricated or stale count
-// cannot match the real one, so this witnesses a real in-session fetch rather
-// than the probe's unverified word.
-func checkLearningsLoadedResult(role, probeReported, trueLearnings string, trueErr error) preflightCheck {
-	witness := fmt.Sprintf("probe's in-session `ateam learnings %s` output, cross-checked against the store's own entry count", role)
+// The verb planted a fresh sentinel learning carrying token; the probe loaded
+// its learnings IN ITS OWN SESSION and reported the token it found there
+// (probeReported). PASS iff probeReported == token — proof the load path works
+// end to end (store write → the probe's own `ateam learnings` → its context),
+// independent of whether the machine has any real learnings yet, so it is
+// correct on a fresh machine. plantErr, if set, means the sentinel never
+// landed, so nothing could have been loaded.
+func checkLearningsLoadedResult(probeReported, token string, plantErr error) preflightCheck {
+	witness := "probe echoes back a one-time token the verb planted in the learnings store, then loaded via its own `ateam learnings` call"
 	fail := func(detail, remediation string) preflightCheck {
 		return preflightCheck{Check: checkLearningsLoadedID, Status: preflightFail, Detail: detail, Witness: witness, Remediation: remediation}
 	}
-	if trueErr != nil {
-		return fail(fmt.Sprintf("could not read the learnings store to cross-check: %v", trueErr),
-			fmt.Sprintf("confirm `ateam learnings %s` runs on this machine, then re-run", role))
+	if plantErr != nil {
+		return fail(fmt.Sprintf("could not plant the sentinel learning to test the load: %v", plantErr),
+			"confirm `ateam learn implementer fresh:preflight-sentinel --file ...` works on this machine, then re-run")
 	}
-	tn, tempty, tok := preflightLearningsCount(trueLearnings)
-	if !tok {
-		return fail("the store read produced no recognizable `[learnings ...]` header",
-			fmt.Sprintf("confirm `ateam learnings %s` output is well-formed, then re-run", role))
+	switch strings.TrimSpace(probeReported) {
+	case token:
+		return preflightCheck{Check: checkLearningsLoadedID, Status: preflightPass,
+			Detail: "probe loaded the planted sentinel from its own learnings — the load path works", Witness: witness}
+	case preflightProbeNoAnswerSentinel:
+		return fail("the probe never answered the learnings question (spawn or comms failure)",
+			"the spawned teammate did not reply — re-run; if it recurs, check teammate messaging")
+	default:
+		return fail(fmt.Sprintf("probe did not load the planted sentinel — reported %q, not the token", preflightOneLine(probeReported)),
+			"the spawned teammate could not load its learnings in-session — confirm the global workspace is reachable and `ateam learnings implementer` works from a probe session")
 	}
-	if tempty || tn == 0 {
-		return fail(fmt.Sprintf("the learnings store is empty for %s — nothing to prime", role),
-			fmt.Sprintf("record learnings for %s (`ateam learn %s <slug> --file ...`), or confirm the store has synced", role, role))
-	}
-	pn, pempty, pok := preflightLearningsCount(probeReported)
-	if !pok || pempty {
-		return fail(fmt.Sprintf("the probe did not load learnings in-session — store has %d entries, probe reported %q", tn, preflightOneLine(probeReported)),
-			"the spawned teammate could not fetch its learnings — confirm the global workspace is reachable from a probe session")
-	}
-	if pn != tn {
-		return fail(fmt.Sprintf("probe's learnings count (%d) does not match the store (%d) — the fetch may have failed or hit a different store", pn, tn),
-			"re-run; if it recurs, confirm the probe session resolves the same AGENT_TEAMS_HOME")
-	}
-	return preflightCheck{Check: checkLearningsLoadedID, Status: preflightPass,
-		Detail: fmt.Sprintf("probe loaded %d learnings entries in-session, matching the store", pn), Witness: witness}
 }
 
 // preflightOneLine collapses a multi-line probe report to a single truncated
@@ -471,18 +475,68 @@ func preflightOneLine(s string) string {
 
 // preflightOverrideLearningsCheck replaces the skill's learnings-loaded entry
 // (raw probe report in Detail, placeholder Status) with the verb's own
-// cross-checked verdict. No-op when absent — legitimate only on the standalone
+// token comparison. No-op when absent — legitimate only on the standalone
 // stop, which preflightMissingSkillChecks already guards for every other case.
-func preflightOverrideLearningsCheck(checks []preflightCheck, role string, learnings preflightLearningsFunc) []preflightCheck {
+func preflightOverrideLearningsCheck(checks []preflightCheck, token string, plantErr error) []preflightCheck {
 	for i, c := range checks {
 		if c.Check == checkLearningsLoadedID {
-			trueOut, trueErr := learnings(role)
-			checks[i] = checkLearningsLoadedResult(role, c.Detail, trueOut, trueErr)
+			checks[i] = checkLearningsLoadedResult(c.Detail, token, plantErr)
 			return checks
 		}
 	}
 	return checks
 }
+
+// preflightRoleFiles are the five role definitions whose step-1 instruction is
+// what actually loads learnings (no hook injects them). preflightCheckLearningsWired
+// verifies each still contains its `ateam learnings <role>` self-fetch — the
+// per-role trigger, checkable for free without spawning one agent per role.
+var preflightRoleFiles = []string{"implementer", "planner", "investigator", "tester", "reviewer"}
+
+// preflightCheckLearningsWired is a REASON-NO-SESSION verb check: reads each
+// role file under rolesDir and FAILs if any lacks its `ateam learnings <role>`
+// step-1 fetch — the instruction without which that role loads nothing. This
+// is the cheap per-role coverage; only implementer is exercised by a live
+// probe (learnings-loaded), the other four are covered by this wiring check.
+func preflightCheckLearningsWired(rolesDir string) preflightCheck {
+	witness := "each roles/*.md step-1 `ateam learnings <role>` self-fetch instruction"
+	var missing []string
+	for _, role := range preflightRoleFiles {
+		b, err := os.ReadFile(filepath.Join(rolesDir, role+".md"))
+		if err != nil {
+			missing = append(missing, role+" (unreadable)")
+			continue
+		}
+		if !strings.Contains(string(b), "ateam learnings "+role) {
+			missing = append(missing, role)
+		}
+	}
+	if len(missing) > 0 {
+		return preflightCheck{Check: checkLearningsWiredID, Status: preflightFail,
+			Detail:      "role file(s) missing their `ateam learnings <role>` step-1 fetch: " + strings.Join(missing, ", "),
+			Witness:     witness,
+			Remediation: "restore the step-1 learnings self-fetch in the named role file(s) — without it that role loads no learnings on spawn"}
+	}
+	return preflightCheck{Check: checkLearningsWiredID, Status: preflightPass,
+		Detail: fmt.Sprintf("all %d role files carry their learnings self-fetch", len(preflightRoleFiles)), Witness: witness}
+}
+
+// productionPreflightLearningsWired is the default learningsWired: it resolves
+// the plugin roles directory and checks every role file's step-1 fetch. If the
+// roles dir can't be resolved it reports FAIL naming that — the wiring is
+// genuinely unknowable then.
+func productionPreflightLearningsWired() preflightCheck {
+	dir, err := resolveRolesDir()
+	if err != nil {
+		return preflightCheck{Check: checkLearningsWiredID, Status: preflightFail,
+			Detail:      "could not resolve the roles directory to check learnings wiring: " + err.Error(),
+			Witness:     "plugins/agent-teams/roles/*.md",
+			Remediation: "confirm the plugin roles directory resolves (see roles-payload-builds), then re-run"}
+	}
+	return preflightCheckLearningsWired(dir)
+}
+
+// preflightOverrideTokenCheck replaces the skill's role-prose-in-context
 
 // preflightOverrideTokenCheck replaces the skill's role-prose-in-context
 // entry — which the payload shape above says carries only the probe's raw
@@ -589,7 +643,9 @@ type preflightKong struct {
 	buildAgentsPayload func() (string, error)   `kong:"-"`
 	launch             preflightLaunchFunc      `kong:"-"`
 	scanSidecars       preflightSidecarScanFunc `kong:"-"`
-	learnings          preflightLearningsFunc   `kong:"-"`
+	plantSentinel      preflightPlantFunc       `kong:"-"`
+	forgetSentinel     preflightForgetFunc      `kong:"-"`
+	learningsWired     func() preflightCheck    `kong:"-"`
 	sleep              func(time.Duration)      `kong:"-"` // nil => time.Sleep
 }
 
@@ -626,7 +682,9 @@ func RegisterPreflightKong(p *cli.Parser) {
 		buildAgentsPayload: buildAgentsPayload,
 		launch:             productionPreflightLaunch,
 		scanSidecars:       productionScanTeammateSidecars,
-		learnings:          productionPreflightLearnings,
+		plantSentinel:      productionPreflightPlant,
+		forgetSentinel:     productionPreflightForget,
+		learningsWired:     productionPreflightLearningsWired,
 		sleep:              time.Sleep,
 	})
 }
@@ -761,6 +819,22 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 
 	sessionID := newPreflightSessionID()
 
+	// Plant a fresh disposable sentinel learning for the probed role BEFORE
+	// launch, so the probe's own `ateam learnings implementer` inside its
+	// session picks it up. The deferred forget runs on EVERY return path —
+	// normal, error, budget abort, panic — so the store never keeps it; a
+	// hard-kill leaves one fixed-key entry the next run overwrites. Works on a
+	// fresh machine with no real learnings, because the thing being loaded is
+	// the token we just planted (agent-teams-25s3, memories check).
+	learningsToken := mintPreflightToken()
+	var plantErr error
+	if c.plantSentinel != nil {
+		plantErr = c.plantSentinel(preflightProbedRoleName, learningsToken)
+	}
+	if c.forgetSentinel != nil {
+		defer func() { _ = c.forgetSentinel(preflightProbedRoleName) }()
+	}
+
 	// Progress on stderr (never stdout, so --json stays exactly contract
 	// shape). The probe is a live `claude -p` session that takes ~1 minute
 	// and spends real API budget; before this the verb printed nothing for
@@ -793,6 +867,14 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 		Witness: "plugins/agent-teams/roles/*.md",
 	}}
 
+	// learnings-wired (REASON-NO-SESSION): every role loads learnings only via
+	// its own step-1 `ateam learnings <role>` fetch — this checks all five role
+	// files carry it, the cheap per-role coverage the live probe (implementer
+	// only) does not give.
+	if c.learningsWired != nil {
+		checks = append(checks, c.learningsWired())
+	}
+
 	verdict, verdictErr := parsePreflightVerdict(envelope.Result)
 	if verdictErr != nil {
 		checks = append(checks, preflightCheck{
@@ -810,7 +892,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 			Witness: "probe session final message (--output-format json .result)",
 		})
 		overridden := preflightOverrideTokenCheck(verdict.Checks, token)
-		overridden = preflightOverrideLearningsCheck(overridden, preflightProbedRoleName, c.learnings)
+		overridden = preflightOverrideLearningsCheck(overridden, learningsToken, plantErr)
 		checks = append(checks, overridden...)
 	}
 

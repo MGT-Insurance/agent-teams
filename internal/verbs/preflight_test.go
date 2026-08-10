@@ -666,6 +666,7 @@ func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
 	root := filepath.Join(home, ".claude", "projects")
 
 	var observedToken string
+	var plantedTok string
 	ctx, _, _ := makePreflightCtx()
 	c := &preflightKong{
 		JSON:               true,
@@ -679,7 +680,7 @@ func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
 				{Check: "role-types-available", Status: preflightPass},
 				{Check: "teammate-spawns", Status: preflightPass},
 				{Check: checkRoleProseInContextID, Status: preflightFail, Detail: observedToken}, // FAIL is the fail-closed placeholder; the verb overwrites it
-				{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 2 entries, 40 chars, hot 1 fresh 1]"},
+				{Check: checkLearningsLoadedID, Status: preflightFail, Detail: plantedTok},
 			}
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
 			return buildPreflightEnvelope(t, false, "success", buildPreflightVerdictJSON(t, skillChecks), 0.10), nil
@@ -687,8 +688,10 @@ func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
 		scanSidecars: func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 			return scanTeammateSidecarsForSession(root, sessionID)
 		},
-		learnings: func(string) (string, error) {
-			return "[learnings implementer: 2 entries, 40 chars, hot 1 fresh 1]\n", nil
+		plantSentinel:  func(_, tok string) error { plantedTok = tok; return nil },
+		forgetSentinel: func(string) error { return nil },
+		learningsWired: func() preflightCheck {
+			return preflightCheck{Check: checkLearningsWiredID, Status: preflightPass, Detail: "all role files wired"}
 		},
 		sleep: noopSleep,
 	}
@@ -923,6 +926,7 @@ func TestPreflightKong_ProbeVerdictParseFailure_StillRunsSidecarChecksExit1(t *t
 // not by re-reading. If you edit this comment, re-run that mutation; proximity to
 // the code makes a claim more likely READ, not more likely RIGHT.
 func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
+	var plantedTok2 string
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude", "projects")
 
@@ -949,7 +953,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 				// in-session `ateam learnings implementer`; the verb cross-checks
 				// its entry count (5) against the learnings func below, which
 				// reports the same 5 — a healthy match PASSes.
-				{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 5 entries, 999 chars, hot 3 fresh 2 — read in full]"},
+				{Check: checkLearningsLoadedID, Status: preflightFail, Detail: plantedTok2},
 			}
 			verdictJSON := buildPreflightVerdictJSON(t, skillChecks)
 			putSpawnCheckSidecar(t, root, "proj", sessionID, "preflight-probe", preflightFixtureGoodSidecar)
@@ -958,8 +962,10 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 		scanSidecars: func(sessionID string) ([]spawnCheckSidecarWithPath, error) {
 			return scanTeammateSidecarsForSession(root, sessionID)
 		},
-		learnings: func(string) (string, error) {
-			return "[learnings implementer: 5 entries, 999 chars, hot 3 fresh 2 — read in full]\nimplementer:hot:x\nbody\n[learnings implementer: 5 entries, 999 chars, hot 3 fresh 2]\n", nil
+		plantSentinel:  func(_, tok string) error { plantedTok2 = tok; return nil },
+		forgetSentinel: func(string) error { return nil },
+		learningsWired: func() preflightCheck {
+			return preflightCheck{Check: checkLearningsWiredID, Status: preflightPass, Detail: "all role files wired"}
 		},
 		sleep: noopSleep,
 	}
@@ -981,7 +987,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 	// type-registered. (role-model-attached and spawn-permission-mode remain
 	// DELETED — agent-teams-25s3.24; learnings-loaded added by the memories
 	// check.)
-	const wantPass = 8
+	const wantPass = 9
 	if result.Pass != wantPass {
 		t.Errorf("pass = %d, want %d", result.Pass, wantPass)
 	}
@@ -1251,95 +1257,79 @@ func TestPreflightStartProgress_JSONIsNoOp(t *testing.T) {
 	}
 }
 
-// ── learnings-loaded (memories primed) ──────────────────────────────────────
-
-func TestPreflightLearningsCount(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		in    string
-		n     int
-		empty bool
-		ok    bool
-	}{
-		{"populated header", "[learnings implementer: 38 entries, 31747 chars, hot 21 fresh 17 — read in full]", 38, false, true},
-		{"one entry", "[learnings tester: 1 entries, 900 chars, hot 0 fresh 1]", 1, false, true},
-		{"empty sentinel", "[learnings nosuchrole: EMPTY]", 0, true, true},
-		{"no header", "I ran the command but here is some prose", 0, false, false},
-		{"header buried in extra text", "prefix\n[learnings implementer: 5 entries, 10 chars, hot 2 fresh 3]\nsuffix", 5, false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			n, empty, ok := preflightLearningsCount(tc.in)
-			if n != tc.n || empty != tc.empty || ok != tc.ok {
-				t.Errorf("got (n=%d empty=%v ok=%v), want (n=%d empty=%v ok=%v)", n, empty, ok, tc.n, tc.empty, tc.ok)
-			}
-		})
-	}
-}
+// ── learnings-loaded (memories primed) + learnings-wired ────────────────────
 
 func TestCheckLearningsLoadedResult(t *testing.T) {
-	const trueHdr = "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]\nbody\n"
+	const tok = "abc123"
 	for _, tc := range []struct {
-		name    string
-		probe   string
-		trueOut string
-		trueErr error
-		want    string
+		name     string
+		probe    string
+		token    string
+		plantErr error
+		want     string
 	}{
-		{"match passes", "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]", trueHdr, nil, preflightPass},
-		{"count mismatch fails", "[learnings implementer: 4 entries, 80 chars, hot 2 fresh 2]", trueHdr, nil, preflightFail},
-		{"probe no answer fails", "PROBE-NO-ANSWER", trueHdr, nil, preflightFail},
-		{"probe empty-sentinel fails", "[learnings implementer: EMPTY]", trueHdr, nil, preflightFail},
-		{"store empty fails", "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]", "[learnings implementer: EMPTY]", nil, preflightFail},
-		{"store read error fails", "[learnings implementer: 5 entries, 100 chars, hot 3 fresh 2]", "", errors.New("boom"), preflightFail},
+		{"echoed token passes", tok, tok, nil, preflightPass},
+		{"echoed with whitespace passes", "  abc123\n", tok, nil, preflightPass},
+		{"wrong value fails", "def456", tok, nil, preflightFail},
+		{"no-answer sentinel fails", preflightProbeNoAnswerSentinel, tok, nil, preflightFail},
+		{"plant error fails", tok, tok, errors.New("learn boom"), preflightFail},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := checkLearningsLoadedResult("implementer", tc.probe, tc.trueOut, tc.trueErr)
+			got := checkLearningsLoadedResult(tc.probe, tc.token, tc.plantErr)
 			if got.Status != tc.want {
 				t.Errorf("status = %s, want %s (detail: %s)", got.Status, tc.want, got.Detail)
 			}
 			if got.Status == preflightFail && got.Remediation == "" {
 				t.Error("a FAIL learnings-loaded must carry a remediation")
 			}
-			if got.Status == preflightPass && got.Remediation != "" {
-				t.Errorf("a PASS must not carry a remediation, got %q", got.Remediation)
-			}
 		})
 	}
 }
 
-// TestPreflightOverrideLearningsCheck_CrossChecksAgainstStore proves the verb
-// re-reads the store and judges — a probe count that does NOT match ground
-// truth FAILs, so the check witnesses a real fetch rather than the probe's word.
-func TestPreflightOverrideLearningsCheck_CrossChecksAgainstStore(t *testing.T) {
-	storeFn := func(string) (string, error) {
-		return "[learnings implementer: 7 entries, 200 chars, hot 4 fresh 3]\n", nil
+// TestPreflightOverrideLearningsCheck_TokenRoundTrip proves the verb compares
+// the probe's report against the planted token — a probe that did NOT echo the
+// exact token FAILs, so this witnesses a real load rather than the probe's word.
+func TestPreflightOverrideLearningsCheck_TokenRoundTrip(t *testing.T) {
+	checks := []preflightCheck{{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "the-real-token"}}
+	if out := preflightOverrideLearningsCheck(checks, "the-real-token", nil); out[0].Status != preflightPass {
+		t.Errorf("matching token = %s, want PASS", out[0].Status)
 	}
-	// probe claims 7 (truthful) -> PASS
-	checks := []preflightCheck{{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 7 entries, 1 chars, hot 0 fresh 7]"}}
-	out := preflightOverrideLearningsCheck(checks, "implementer", storeFn)
-	if out[0].Status != preflightPass {
-		t.Errorf("truthful count = %s, want PASS", out[0].Status)
-	}
-	// probe fabricates 99 (store has 7) -> FAIL
-	checks = []preflightCheck{{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "[learnings implementer: 99 entries, 1 chars, hot 0 fresh 99]"}}
-	out = preflightOverrideLearningsCheck(checks, "implementer", storeFn)
-	if out[0].Status != preflightFail {
-		t.Errorf("fabricated count = %s, want FAIL — a count that doesn't match the store must not pass", out[0].Status)
+	checks = []preflightCheck{{Check: checkLearningsLoadedID, Status: preflightFail, Detail: "something-else"}}
+	if out := preflightOverrideLearningsCheck(checks, "the-real-token", nil); out[0].Status != preflightFail {
+		t.Errorf("non-matching token = %s, want FAIL — a probe that didn't load the sentinel must not pass", out[0].Status)
 	}
 }
 
-// TestPreflightOverrideLearningsCheck_AbsentIsNoOp: on the standalone stop the
-// skill emits no learnings-loaded check; the override must not fabricate one
-// (and must not call the store func).
 func TestPreflightOverrideLearningsCheck_AbsentIsNoOp(t *testing.T) {
-	called := false
-	storeFn := func(string) (string, error) { called = true; return "", nil }
 	checks := []preflightCheck{{Check: "role-types-available", Status: preflightFail}}
-	out := preflightOverrideLearningsCheck(checks, "implementer", storeFn)
+	out := preflightOverrideLearningsCheck(checks, "tok", nil)
 	if len(out) != 1 || out[0].Check != "role-types-available" {
 		t.Errorf("no-op altered the checks: %+v", out)
 	}
-	if called {
-		t.Error("store func was called when there was no learnings-loaded check to judge")
+}
+
+// TestPreflightCheckLearningsWired proves the per-role wiring check: PASS when
+// every role file carries its `ateam learnings <role>` fetch, FAIL naming any
+// that drops it.
+func TestPreflightCheckLearningsWired(t *testing.T) {
+	dir := t.TempDir()
+	for _, r := range preflightRoleFiles {
+		if err := os.WriteFile(filepath.Join(dir, r+".md"), []byte("step 1: run `ateam learnings "+r+"` first\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := preflightCheckLearningsWired(dir); got.Status != preflightPass {
+		t.Errorf("all wired = %s, want PASS (%s)", got.Status, got.Detail)
+	}
+	// drop tester's fetch
+	if err := os.WriteFile(filepath.Join(dir, "tester.md"), []byte("no fetch here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := preflightCheckLearningsWired(dir)
+	if got.Status != preflightFail {
+		t.Fatalf("missing fetch = %s, want FAIL", got.Status)
+	}
+	if !strings.Contains(got.Detail, "tester") {
+		t.Errorf("detail %q should name the role that dropped its fetch", got.Detail)
 	}
 }
