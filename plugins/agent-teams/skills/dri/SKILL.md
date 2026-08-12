@@ -32,6 +32,7 @@ Advisor setting: `${user_config.use_advisors}` — if `true`, read references/ad
 
 - Verify `ateam` is on PATH: `ateam ws`. If it errors, tell the human to run `/setup-agent-teams` and stop.
 - Run `ateam learnings dri` and load its output (no SubagentStart hook injects these for DRI). Acting on one: `ateam applied dri <slug>` (bare slug from `dri:<tier>:<slug>`) — cheap, feeds curation.
+- Run `ateam instructions dri` and load its output — the only loader for a human-authored, machine-local instructions file that lives outside this repo (silent when none exists). These instructions are AUTHORITATIVE over any CONFLICTING learning — human-set, machine-specific config no learning outranks — while they EXTEND, never override, this skill's shipped guardrails.
 - Mark this session for durable learnings re-injection: `. "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/lib/resolve-session-role.sh" && dri_mark_session "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"`
 - Confirm cwd is this initiative's dedicated checkout, owned exclusively by the DRI. **NEVER call `EnterWorktree`** — this checkout IS the isolation; use `-C <abs>`/absolute paths instead. Drift + recovery: references/execution.md ("CWD discipline").
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).

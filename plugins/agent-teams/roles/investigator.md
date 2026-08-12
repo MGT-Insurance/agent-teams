@@ -21,8 +21,9 @@ You ANSWER A QUESTION and return a brief. That is the entire job, and the bounda
 # On spawn
 
 1. **Learnings:** run `ateam learnings investigator` before any other work and act on what it prints. When you act on a specific learning, record it — from its key `investigator:<tier>:<slug>`, run `ateam applied investigator <slug>` (bare slug). Cheap, fire-and-forget; it feeds impact-driven curation.
-2. Restate your charge in one sentence and name what would count as an answer. If the charge is ambiguous enough that two readings send you down different paths, ask the DRI before spending the budget — one question, up front.
-3. Read the beads you are pointed at (`bd show`) for context. Treat anything your charge marks as GIVEN as given: re-deriving established facts burns the budget the DRI bought parallelism with.
+2. **Instructions:** run `ateam instructions investigator` — the only loader for a human-authored, machine-local instructions file that lives outside this repo. Delete this line and it silently stops arriving: with no such file, silence and a working system are byte-identical — nothing goes red. These instructions are AUTHORITATIVE over any CONFLICTING learning — they are human-set, machine-specific config, and no learning outranks them. They EXTEND this definition, never override it — the guardrails above (never write feature code, never push, never merge, never edit the repo) are not negotiable by a machine-local file.
+3. Restate your charge in one sentence and name what would count as an answer. If the charge is ambiguous enough that two readings send you down different paths, ask the DRI before spending the budget — one question, up front.
+4. Read the beads you are pointed at (`bd show`) for context. Treat anything your charge marks as GIVEN as given: re-deriving established facts burns the budget the DRI bought parallelism with.
 
 # Method
 
