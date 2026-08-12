@@ -92,11 +92,45 @@ assert_deny "case5b-body-at-relative-subdir" \
 assert_deny "case5c-body-at-lone-file-extension" \
   'gh api repos/acme/widgets/pulls/12/reviews --method POST -f event=COMMENT -f body=@review.md'
 
+# Case 5d: a quoted lone bare path via --body must still deny (regression
+# guard for the whole-token bare_path_re fix below — anchoring the whole
+# value must not accidentally stop matching the exact lone-path shape).
+assert_deny "case5d-quoted-lone-path-still-denies" \
+  'gh pr review 12 --body "/Users/x/notes.md"'
+
+# Case 5e: shell ANSI-C ($'...') quoting is transparent to the shell — gh
+# sees the identical argument as the unquoted @path form — but our
+# extraction reads source text, so the $'...' wrapper must be stripped
+# before evaluating, or this slips past as an opaque "$..." token.
+assert_deny "case5e-ansi-c-quoted-at-path" \
+  $'gh api repos/acme/widgets/pulls/12/reviews --method POST -f event=COMMENT -f body=$\'@/tmp/foo.md\''
+
+# Case 5f: same ANSI-C-quoting bypass, this time wrapping a bare path with no
+# @ prefix.
+assert_deny "case5f-ansi-c-quoted-bare-path" \
+  $'gh api repos/acme/widgets/pulls/12/reviews --method POST -f event=COMMENT -f body=$\'/Users/x/notes.md\''
+
 # ---- Allow cases (KNOWN-GOOD) ------------------------------------------------
 
 # Case 6: a real, self-contained prose review body.
 assert_allow "case6-real-prose-body" \
   'gh api repos/acme/widgets/pulls/12/reviews --method POST -f event=COMMENT -f "body=Great work, please rename the variable to camelCase and add a test."'
+
+# Case 6b: prose that merely OPENS with a path-shaped token must pass — the
+# bare-path rule denies only a value that IS a path in its entirety, not one
+# that starts like one. False positive caught live before this guard shipped.
+assert_allow "case6b-prose-opens-with-absolute-path" \
+  'gh pr review 12 --body "/internal/v1/quotes endpoint now returns 200, LGTM"'
+
+# Case 6c: same false-positive shape with a "./"-relative path opener.
+assert_allow "case6c-prose-opens-with-relative-path" \
+  'gh pr review 12 --body "./scripts/build-binaries.sh is stale, please rerun it"'
+
+# Case 6d: same shape again via a typed (-F) field — the whole-token fix
+# must apply there too, since is_deny_value's bare-path branch is shared by
+# both raw and typed values.
+assert_allow "case6d-prose-opens-with-path-typed-field" \
+  'gh api repos/acme/widgets/pulls/12/reviews --method POST -F body="/api/foo returns 200 now, looks correct"'
 
 # Case 7: --body-file posts the file's CONTENTS — the sanctioned idiom.
 assert_allow "case7-body-file" \

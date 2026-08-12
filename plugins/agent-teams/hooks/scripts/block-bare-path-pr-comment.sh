@@ -32,8 +32,10 @@
 #     (a) a raw-field/direct value (-f body=…, --raw-field body=…, --body …,
 #         or comments[][body]=… under -f/--raw-field) that STARTS WITH @
 #         (gh passes this verbatim — the literal-path footgun); OR
-#     (b) any body value (regardless of flag) that IS a bare path token with
-#         no surrounding prose: ^(/|\./|\.\./|~/|file://)…
+#     (b) any body value (regardless of flag) that IS, in its ENTIRETY, a
+#         single whitespace-free bare path token with no surrounding prose:
+#         ^(/|\./|\.\./|~/|file://)[^[:space:]]*$ — anchored at both ends, so
+#         prose that merely OPENS with a path-shaped word still passes.
 #   EXCEPT: a typed-field value (-F/--field) starting with @ is the
 #   sanctioned file-read form and always passes, even if what follows @ is a
 #   plain path — that's the whole point of -F.
@@ -122,7 +124,36 @@ match_direct_body() {
   return 1
 }
 
-bare_path_re='^(/|\./|\.\./|~/|file://)'
+# Whole-token, both-ends-anchored: a bare path is the ENTIRE value with no
+# internal whitespace, not merely a value that starts with a path marker.
+# Anchoring only at the start would deny real prose that opens with a path
+# ("/internal/v1/quotes endpoint now returns 200, LGTM") — a false positive
+# caught live before this guard shipped.
+bare_path_re='^(/|\./|\.\./|~/|file://)[^[:space:]]*$'
+
+# Shell ANSI-C / $-quoting ($'...' or $"...") is transparent to the shell —
+# `-f body=$'@/tmp/x.md'` and `-f body=@/tmp/x.md` are the same argument once
+# the shell parses them — but our extraction reads the SOURCE TEXT, so the
+# $'...' wrapper survives into the captured value unless stripped explicitly.
+# Without this, a $'...'-wrapped bare path or @path slips past every check
+# above and below, since "$'@/tmp/x.md'" itself matches neither the @-prefix
+# check (it starts with "$", not "@") nor the bare-path regex (starts with
+# "$", not "/"). Unwrap before evaluating.
+dollar_squote_re='^\$'\''(.*)'\''$'
+dollar_dquote_re='^\$"(.*)"$'
+
+unwrap_dollar_quote() {
+  local val="$1"
+  if [[ "$val" =~ $dollar_squote_re ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$val" =~ $dollar_dquote_re ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  printf '%s' "$val"
+}
 
 # is_deny_value VALUE IS_TYPED: 0 if VALUE is a non-self-contained body per
 # the predicate above, 1 (pass) otherwise. IS_TYPED="typed" means the value
@@ -146,7 +177,7 @@ is_deny_value() {
   if [[ "$value" == @* ]]; then
     [ "$is_typed" = "typed" ] && return 1
     local rest="${value#@}"
-    [[ "$rest" =~ ^(/|\./|\.\./|~/|file://) ]] && return 0
+    [[ "$rest" =~ ^(/|\./|\.\./|~/|file://)[^[:space:]]*$ ]] && return 0
     [ "$value" = "@-" ] && return 0
     if [[ "$value" != *[[:space:]]* ]]; then
       if [[ "$rest" == */* ]] || [[ "$rest" =~ \.[A-Za-z0-9]+$ ]]; then
@@ -162,15 +193,18 @@ is_deny_value() {
 deny=1
 v=""
 if v=$(match_kv '-f|--raw-field' "$KEY_RE"); then
+  v=$(unwrap_dollar_quote "$v")
   is_deny_value "$v" raw && deny=0
 fi
 if [ "$deny" -ne 0 ]; then
   if v=$(match_kv '-F|--field' "$KEY_RE"); then
+    v=$(unwrap_dollar_quote "$v")
     is_deny_value "$v" typed && deny=0
   fi
 fi
 if [ "$deny" -ne 0 ]; then
   if v=$(match_direct_body); then
+    v=$(unwrap_dollar_quote "$v")
     is_deny_value "$v" raw && deny=0
   fi
 fi
