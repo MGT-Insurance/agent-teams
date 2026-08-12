@@ -118,7 +118,7 @@ Capture the full output. If the diff is empty or the command fails, stop and not
 
 ### 7. Spawn the reviewer subagent
 
-Spawn one `agent-teams-reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The reviewer pulls its own prior-review learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md`. The SubagentStart hook cannot do this for it: SubagentStart stdout is never rendered into a spawned agent's context at any size, so a payload written there would reach nobody. The hook only runs `ateam pull`, so that self-fetch reads current data.
+Spawn one `agent-teams-reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The reviewer pulls its own prior-review learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md` — run BARE, never piped through `| head` or `| tail` (that silently drops the fresh-tier tail). The SubagentStart hook cannot do this for it: SubagentStart stdout is never rendered into a spawned agent's context at any size, so a payload written there would reach nobody. The hook only runs `ateam pull`, so that self-fetch reads current data.
 
 Include in the reviewer's prompt:
 
@@ -138,6 +138,8 @@ If no SendMessage arrives within a reasonable time, note the timeout in the init
 ### 9. Post the review to GitHub
 
 Post the review using the GitHub API. Build the inline comments from the reviewer's findings (one comment per finding at the reported `file:line`).
+
+**If the body is long or multiline, don't fight the shell quoting — write it to a temp file and post its CONTENTS**, not its path: `gh pr review <pr-number> --body-file <file>`, or `gh api …/reviews -F body=@<file>` / `-F body=@-` (stdin). **Never** `-f body=@<file>`, `--raw-field body=@<file>`, or `--body @<file>` — those flags treat the value as a literal string, so gh posts the path text itself, not the file's contents (this is exactly how midgard #5203 shipped a review whose entire body was a local file path). A PreToolUse guard now denies a bare-path/`@path` review or comment body outright, so a slip here fails loudly instead of posting silently.
 
 **The two lens conclusions always go in the body, unconditionally.** The reviewer always reports a parity/overlap enumeration and an after-the-fact-identifiability answer as their own section, separate from its findings list, even when the answer is "none" (reviewer-prompt.md). Treat them like the `question`-labelled findings below: no severity prefix, posted verbatim. This applies in every branch below — no-findings or findings — never drop or summarize them while condensing the rest into the one-sentence summary; a reported "checked, nothing found" is what makes the check falsifiable later.
 
