@@ -80,6 +80,18 @@ assert_deny "case4-pr-comment-body-bare-path" \
 assert_deny "case5-comments-body-raw-field-at" \
   'gh api repos/acme/widgets/pulls/12/comments --method POST -f "comments[][body]=@/tmp/f.txt"'
 
+# Case 5b: "@" + a relative path with a directory separator, no leading
+# path-marker char and no ".", still a file reference (single whitespace-free
+# token containing "/").
+assert_deny "case5b-body-at-relative-subdir" \
+  'gh pr review 12 --body @sub/dir/review.md'
+
+# Case 5c: "@" + a lone filename with an extension, no directory separator —
+# still a single-token file reference, not a mention (mentions don't end in
+# a file extension).
+assert_deny "case5c-body-at-lone-file-extension" \
+  'gh api repos/acme/widgets/pulls/12/reviews --method POST -f event=COMMENT -f body=@review.md'
+
 # ---- Allow cases (KNOWN-GOOD) ------------------------------------------------
 
 # Case 6: a real, self-contained prose review body.
@@ -102,6 +114,24 @@ assert_allow "case9-typed-field-comments-body-at-file" \
 # alone.
 assert_allow "case10-short-legit-comment" \
   'gh pr comment 12 --body "Nit: rename to fooBar"'
+
+# Case 10b: a real review reply that OPENS with a GitHub @mention followed by
+# prose. This is the corrected-predicate case: jbarneson replied exactly this
+# shape on midgard #5203 ("@matt-evanoff Considered, declining. See the
+# code."), and an earlier draft of this guard's predicate false-positived on
+# it (any raw @-prefixed value denied, no mention carve-out). A mention has
+# whitespace after the handle — a file reference never does.
+assert_allow "case10b-mention-then-prose-raw-field" \
+  'gh api repos/acme/widgets/pulls/12/reviews --method POST -f event=COMMENT -f "body=@matt-evanoff Considered, declining."'
+
+# Case 10c: same shape via gh pr review's direct --body flag.
+assert_allow "case10c-mention-then-prose-direct-body" \
+  'gh pr review 12 --body "@erlloyd please take a look"'
+
+# Case 10d: a LONE @mention with no trailing prose at all — still not a file
+# reference (no path marker, no "/", no file extension).
+assert_allow "case10d-lone-mention" \
+  'gh pr review 12 --body "@erlloyd"'
 
 # Case 11: a non-gh Bash command is entirely out of scope.
 assert_allow "case11-non-gh-command" \

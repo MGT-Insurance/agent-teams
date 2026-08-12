@@ -126,13 +126,34 @@ bare_path_re='^(/|\./|\.\./|~/|file://)'
 
 # is_deny_value VALUE IS_TYPED: 0 if VALUE is a non-self-contained body per
 # the predicate above, 1 (pass) otherwise. IS_TYPED="typed" means the value
-# arrived via -F/--field, where a leading @ is the sanctioned file-read form.
+# arrived via -F/--field, where a leading @ is the sanctioned file-read form
+# (always allowed, whatever follows the @).
+#
+# For a raw-field/--body value starting with @, a leading @ alone is NOT
+# enough to deny: a real review reply routinely opens with a GitHub @mention
+# ("@matt-evanoff Considered, declining." — this is how jbarneson replied on
+# midgard #5203 itself). Deny only when what follows @ is actually a file
+# reference:
+#   1. a path marker right after the @ (/, ./, ../, ~/, file://); OR
+#   2. the value is exactly "@-" (stdin marker); OR
+#   3. the value has no whitespace anywhere AND (contains "/" OR ends in a
+#      file extension like .md/.txt) — a single-token @path/@file.ext.
+# A bare "@handle" or "@handle" followed by prose (i.e. it has whitespace)
+# is a mention, not a path, and passes.
 is_deny_value() {
   local value="$1" is_typed="$2"
   [ -n "$value" ] || return 1
   if [[ "$value" == @* ]]; then
     [ "$is_typed" = "typed" ] && return 1
-    return 0
+    local rest="${value#@}"
+    [[ "$rest" =~ ^(/|\./|\.\./|~/|file://) ]] && return 0
+    [ "$value" = "@-" ] && return 0
+    if [[ "$value" != *[[:space:]]* ]]; then
+      if [[ "$rest" == */* ]] || [[ "$rest" =~ \.[A-Za-z0-9]+$ ]]; then
+        return 0
+      fi
+    fi
+    return 1
   fi
   [[ "$value" =~ $bare_path_re ]] && return 0
   return 1
