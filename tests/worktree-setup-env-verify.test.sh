@@ -52,6 +52,14 @@ case "$1" in
     if [ "${FAKE_PNPM_PULL:-ok}" = "empty" ]; then
       exit 0
     fi
+    if [ "${FAKE_PNPM_PULL:-ok}" = "partial" ]; then
+      # Simulates the turbo fan-out bug: shadowfax pulls fine, but an
+      # unlinked app (e.g. ocean) fails, failing the whole turbo task.
+      mkdir -p "$PWD/apps/shadowfax"
+      echo "PULLED=1" > "$PWD/apps/shadowfax/.env.local"
+      echo "fake pnpm env:pull: ocean not linked to a vercel project" >&2
+      exit 1
+    fi
     mkdir -p "$PWD/apps/shadowfax"
     echo "PULLED=1" > "$PWD/apps/shadowfax/.env.local"
     exit 0
@@ -259,6 +267,42 @@ if echo "$OUT" | grep -q "installing dependencies"; then
   fail "4b (no-.vercel): no install should have been attempted, got: $OUT"
 else
   pass "4b (no-.vercel): no install attempted"
+fi
+
+# ── 4c: env:pull partially fails (unlinked app in the turbo fan-out) but ────
+# shadowfax itself pulled fine — the local-file copy (step 3) must still run,
+# and the run must still be reported as complete (agent-teams-399x.1).
+WT6="$T/wt6"
+git -C "$SRC" worktree add -q "$WT6" -b wt6 >/dev/null
+
+export FAKE_PNPM_INSTALL=ok FAKE_PNPM_PULL=partial
+run_script "$WT6"
+unset FAKE_PNPM_INSTALL FAKE_PNPM_PULL
+
+if [ -f "$WT6/apps/shadowfax/.env.development.local" ]; then
+  pass "4c (partial pull): local env file still copied"
+else
+  fail "4c (partial pull): expected apps/shadowfax/.env.development.local to land, got: $OUT"
+fi
+if echo "$OUT" | grep -q "worktree setup complete"; then
+  pass "4c (partial pull): 'complete' line printed"
+else
+  fail "4c (partial pull): expected 'complete' line, got: $OUT"
+fi
+if echo "$OUT" | grep -q "NOT provisioned"; then
+  fail "4c (partial pull): must NOT report not-provisioned, got: $OUT"
+else
+  pass "4c (partial pull): no not-provisioned verdict"
+fi
+if [ "$RC" -eq 0 ]; then
+  pass "4c (partial pull): exit code 0"
+else
+  fail "4c (partial pull): expected exit 0, got $RC"
+fi
+if echo "$OUT" | grep -q "⚠" && echo "$OUT" | grep -q "env:pull"; then
+  pass "4c (partial pull): env:pull warning surfaced"
+else
+  fail "4c (partial pull): expected an env:pull warning, got: $OUT"
 fi
 
 # ── 5. secrets discipline: never print env file contents ────────────────────

@@ -7,7 +7,10 @@ set -euo pipefail
 # creds-dependent tooling (e.g. socotra-config's pre-commit validate.sh, which
 # POSTs to the Socotra API) hard-fails. This restores that wiring by:
 #   1. copying the repo-level Vercel link (.vercel/ — project/org IDs, not secrets)
-#   2. pulling Vercel-backed env (`pnpm env:pull`; today only shadowfax implements it)
+#   2. pulling Vercel-backed env (`pnpm env:pull` — a turbo fan-out across every
+#      app that defines an env:pull script; only apps linked in .vercel/repo.json
+#      actually resolve, so an unlinked app's failure is tolerated here — step 4
+#      verifies the files that must land)
 #   3. copying the local-only env files Vercel does NOT own (socotra creds, etc.)
 #
 # Secrets are moved by opaque `cp`/`vercel env pull` only — no env contents are
@@ -58,14 +61,16 @@ if [ -d "$WT/.vercel" ]; then
     echo "✓ pulled vercel env"
   else
     _exit=$?
-    # Surface a clear message for the most common failure: missing auth.
+    # env:pull is a turbo fan-out across every app defining the script; an app
+    # not linked in .vercel/repo.json (e.g. ocean) fails here even though
+    # shadowfax pulled fine. Warn and continue rather than exit — step 4 below
+    # verifies apps/shadowfax/.env.local actually landed, so a genuine failure
+    # (shadowfax itself, or missing vercel auth) still fails loudly there.
     if grep -qiE "no (existing )?credentials|not logged in|please run.*login|vercel login|VERCEL_TOKEN" "$_env_pull_err" 2>/dev/null; then
-      echo "✗ env:pull failed: vercel auth missing — run \`vercel login\` or set VERCEL_TOKEN" >&2
+      echo "⚠ env:pull reported vercel auth missing (exit $_exit) — continuing; run \`vercel login\` or set VERCEL_TOKEN if step 4 fails" >&2
     else
-      echo "✗ env:pull failed (exit $_exit) — see output above for details" >&2
+      echo "⚠ env:pull failed (exit $_exit) — continuing; see output above for details" >&2
     fi
-    rm -f "$_env_pull_err"
-    exit "$_exit"
   fi
   rm -f "$_env_pull_err"
 fi
