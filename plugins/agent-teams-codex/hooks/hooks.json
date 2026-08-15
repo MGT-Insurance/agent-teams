@@ -1,0 +1,42 @@
+{
+  "description": "Tie Codex threads to initiatives and surface durable agent-teams mail.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook session-start",
+            "timeout": 15,
+            "statusMessage": "Checking agent-teams session and mail",
+            "additionalContextLimit": 1000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook user-prompt-submit",
+            "timeout": 15,
+            "additionalContextLimit": 1000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -43,8 +43,18 @@ description: Install and verify agent-teams for Codex, including the standalone 
 5. Verify all four files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
    `agent-teams-planner.toml`, `agent-teams-implementer.toml`,
    `agent-teams-tester.toml`, and `agent-teams-reviewer.toml`.
-6. Tell the human to start a new Codex session. Custom agent discovery and
-   plugin skill discovery occur at the session boundary.
+6. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
+   Trust its current `SessionStart`, `UserPromptSubmit`, and `Stop` command-hook
+   definitions if they are marked for review. Do not claim mail wake is ready
+   while the source is skipped, disabled, or awaiting trust. Codex reports a
+   changed hook hash at startup and in `/hooks`; after every plugin hook update,
+   review the new definition rather than bypassing trust permanently.
+7. Tell the human to start a new Codex session. Custom agent, skill, and trusted
+   hook discovery occur at the session boundary. Because these hooks are
+   plugin-scoped, an untrusted project does not hide them; project-scoped
+   `.codex` components still require project trust and must be diagnosed
+   separately.
 
 Report the workspace path, Codex compatibility/version, each installed or
-up-to-date definition, and whether a new session is still required.
+up-to-date definition, hook enabled/trusted status, and whether a new session
+is still required.
