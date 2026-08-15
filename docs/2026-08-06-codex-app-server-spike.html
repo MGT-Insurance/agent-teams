@@ -156,7 +156,7 @@
       <p>The first Codex slice therefore requires standalone Codex. Shared setup/audit logic must report Codex absent, Codex present in an incompatible layout, or compatible standalone Codex. General setup warns when optional Codex is incompatible; explicitly selecting the Codex runtime fails with an actionable installer message. The Claude setup skill and future Codex setup skill must invoke that same check.</p>
 
       <h2>PR #160 consequence</h2>
-      <p>Preserve runtime metadata, thread binding, Claude fallback, adapter boundaries, and fake-backed selection tests. Replace the Codex per-turn <code>runtime-worker</code> with an app-server client plus daemon manager. Amend the frozen runtime contract before starting the mail-wake implementation.</p>
+      <p>PR #160 now preserves runtime metadata, thread binding, Claude fallback, and adapter boundaries while replacing the Codex per-turn <code>runtime-worker</code> with the managed-daemon app-server client. The mail coordinator builds its delivery lock and durable reconciliation on that client rather than process ownership.</p>
 
       <h2>Remaining operational verification</h2>
       <p>The daemon deployment gate is settled. Logout/reboot and CLI-upgrade behavior remains a compatibility check, not a blocker for replacing the per-turn worker contract. Every delivery attempts an idempotent daemon start, so mail wake does not depend on login-time bootstrap.</p>

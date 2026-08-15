@@ -45,7 +45,7 @@ func RegisterDispatchKong(p *cli.Parser) {
 		launchRaw:    rawLaunchBGSession,
 		runtimeStart: startRuntimeWorker,
 	})
-	p.AddHiddenVerb("runtime-worker", "Internal detached runtime worker.", &runtimeWorkerKong{})
+	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
 }
 
 // ---- new-initiative (kong) --------------------------------------------------

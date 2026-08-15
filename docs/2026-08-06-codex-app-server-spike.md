@@ -19,10 +19,10 @@ process lifetime, active turns, interruption, thread persistence, and steering.
 `ateam` still owns an idempotent daemon-start health check, a short-lived
 per-initiative delivery lock, Beads-backed mail truth, and crash reconciliation.
 
-Do not begin `agent-teams-bhe0.4` against the current `codex exec` worker
-contract. Amend the contract and PR #160 first. Keep the existing runtime
-metadata, thread binding, and adapter seam; replace the Codex per-turn worker
-implementation with an app-server client and daemon manager.
+PR #160 now preserves the existing runtime metadata, thread binding, and
+adapter seam while replacing the Codex per-turn worker with the managed-daemon
+app-server client. `agent-teams-bhe0.4` builds its delivery lock and durable
+mail reconciliation on that client rather than on process ownership.
 
 ## Why this changes the architecture
 

@@ -1,5 +1,5 @@
 // Package sessionruntime defines the runtime-scoped session identity and the
-// narrow adapter seam used by dispatch, resume, and the worker supervisor.
+// narrow adapter seam used by dispatch, resume, and delivery coordination.
 package sessionruntime
 
 import (
@@ -24,8 +24,7 @@ type SessionRef struct {
 	ID      string
 }
 
-// Request is the runtime-neutral input for one foreground worker process.
-// The caller owns backgrounding and full-lifetime serialization.
+// Request is the runtime-neutral input for one runtime turn request.
 type Request struct {
 	InitiativeID string
 	Worktree     string
@@ -38,9 +37,9 @@ type Request struct {
 // SessionSink durably binds a newly observed session to its initiative.
 type SessionSink func(SessionRef) error
 
-// Adapter runs one runtime worker to completion. Launch and Resume are
-// intentionally blocking: the detached ateam worker process (and, later, the
-// mail supervisor) must remain alive for the complete runtime process.
+// Adapter submits one runtime turn. Claude remains process-oriented outside
+// this interface. Codex returns after app-server accepts the turn; its managed
+// daemon owns the turn independently of the client connection.
 type Adapter interface {
 	Kind() Kind
 	Launch(context.Context, Request, SessionSink) error
@@ -105,9 +104,4 @@ func AssertStored(stored, asserted string) (Kind, error) {
 // launches and resumes. Worker state and locks use sibling paths in Phase 2.
 func EventLogPath(home, initiativeID string) string {
 	return filepath.Join(home, "runtimes", string(Codex), initiativeID+".jsonl")
-}
-
-// WorkerLogPath captures failures from the detached ateam worker itself.
-func WorkerLogPath(home, initiativeID string) string {
-	return filepath.Join(home, "runtimes", string(Codex), initiativeID+".worker.log")
 }

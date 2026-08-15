@@ -1,11 +1,11 @@
-# Runtime-neutral session and worker contract
+# Runtime-neutral session and delivery contract
 
 - **Initiative:** `agent-teams-bhe0`
 - **Contract bead:** `agent-teams-bhe0.2`
 - **Status:** amended 2026-08-06 for the managed app-server architecture
 
-This document is the shared contract for the runtime adapter, Codex worker,
-mail wake supervisor, lifecycle hooks, and Codex role definitions. The
+This document is the shared contract for the runtime adapter, Codex delivery
+coordinator, lifecycle hooks, and Codex role definitions. The
 downstream implementation beads may refine private implementation details, but
 must not silently change the behavior or public types frozen here.
 
@@ -17,8 +17,7 @@ scheduler or persistent Codex role-agent threads.
 
 The live lifecycle spikes invalidated the original assumption that Codex needs
 one detached `codex exec` child plus a long-lived `ateam` supervisor for every
-turn. Sections 3 through 7 and the conformance tests below must be read with
-this amendment; where old worker-process language conflicts, this section wins.
+turn. This document now states the replacement contract directly.
 
 The selected deployment contract is:
 
@@ -183,31 +182,31 @@ type Adapter interface {
 }
 ```
 
-Original interface semantics (superseded for Codex by section 0):
+Interface semantics:
 
-- `Launch` and `Resume` block for the complete runtime-process lifetime. A
-  detached `ateam runtime-worker` owns that blocking call, so public dispatch
-  remains asynchronous without orphaning the JSONL reader. The mail
-  supervisor extends this same process boundary with locking and post-exit
-  reconciliation.
+- Codex `Launch` and `Resume` return after app-server accepts the turn. The
+  managed daemon owns the complete turn lifetime; disconnecting the adapter
+  client does not stop the turn.
 - `SessionSink` may be called zero or one time. The Codex adapter must call it
-  once for a new thread and must verify the resumed event identifies the
-  requested thread. The legacy Claude path may continue binding through its
-  session hook.
-- An adapter owns command construction, runtime event parsing, and
-  event output. Verbs and skills must not assemble `claude` or `codex` command
-  lines themselves.
+  once after `thread/start` and before `turn/start`, so a binding failure does
+  not leave an active unrouteable turn. Resume verifies both
+  `thread/resume` and `thread/read` identify the requested thread.
+- The adapter owns managed-daemon start, app-server initialization, protocol
+  parsing, and event output. Verbs and skills must not assemble Codex daemon
+  commands or JSON-RPC messages themselves.
+- Resume inspects current thread state. It uses `turn/steer` with the actual
+  in-progress turn id when active, and `turn/start` only when no in-progress
+  turn exists. An active thread with no identifiable active turn fails closed.
 - Status, stop, and monitoring are coordinator/app-server concerns layered over
   the adapter. Stopping a Codex turn does not archive or delete its durable
   thread.
-- Tests inject an adapter registry and fake executables. Paid live Codex runs
-  are feasibility probes, not unit or integration test dependencies.
+- Tests inject daemon and app-server seams. Paid live Codex runs remain behind
+  the explicit `ATEAM_LIVE_CODEX=1` guard and are never ordinary build gates.
 
-The Codex adapter boundary must instead expose the semantic operations needed
-by the coordinator: ensure daemon, start/resume/read/list a thread,
-start/steer/interrupt a turn, and observe completion. Public dispatch, resume,
-mail, and hook paths request coordination; they do not construct app-server
-requests or choose active-versus-idle delivery themselves.
+The delivery-coordinator implementation may extend the internal app-server
+client with list, interrupt, and completion observation. Public dispatch,
+resume, mail, and hook paths request coordination; they do not construct
+app-server requests themselves.
 
 ## 4. Machine-local delivery state
 

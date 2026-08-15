@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
@@ -25,9 +25,11 @@ type runtimeStartRequest struct {
 
 type runtimeStartFunc func(*cli.Context, runtimeStartRequest) error
 
-// runtimeWorkerKong is the detached process owner for one Codex turn. Phase 2
-// extends this boundary with locking and post-exit mail reconciliation; the
-// adapter already remains owned for the full Codex process lifetime.
+const codexSubmitTimeout = 30 * time.Second
+
+// runtimeWorkerKong is the internal Codex turn submitter retained as a hidden
+// compatibility entry point. The managed app-server, not this command, owns
+// the turn after acceptance.
 type runtimeWorkerKong struct {
 	Runtime      string `name:"runtime" required:"" hidden:""`
 	InitiativeID string `name:"initiative" required:"" hidden:""`
@@ -48,7 +50,7 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam runtime-worker: %w", err)
 	}
 	if kind != sessionruntime.Codex {
-		return fmt.Errorf("ateam runtime-worker: runtime %q is not supported by the detached worker", kind)
+		return fmt.Errorf("ateam runtime-worker: runtime %q is not supported by the app-server submitter", kind)
 	}
 
 	adapter := c.codex
@@ -75,6 +77,8 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 	}
 	workerCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	workerCtx, timeoutCancel := context.WithTimeout(workerCtx, codexSubmitTimeout)
+	defer timeoutCancel()
 	if c.ResumeID != "" {
 		return adapter.Resume(workerCtx, req, sessionruntime.SessionRef{Runtime: kind, ID: c.ResumeID})
 	}
@@ -83,59 +87,29 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 	})
 }
 
-// startRuntimeWorker starts a detached ateam process. That process blocks for
-// the complete Codex child lifetime, so dispatch itself can remain a quick
-// background operation without orphaning a pipe reader or JSON event parser.
+// startRuntimeWorker submits directly to the managed app-server. The name is
+// retained while callers move to the delivery-coordinator vocabulary; unlike
+// the former implementation it creates no detached ateam process.
 func startRuntimeWorker(ctx *cli.Context, req runtimeStartRequest) error {
 	if req.Runtime != sessionruntime.Codex {
 		return fmt.Errorf("runtime worker: unsupported runtime %q", req.Runtime)
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("runtime worker: resolve ateam executable: %w", err)
-	}
-	workerLog := sessionruntime.WorkerLogPath(ctx.Home, req.InitiativeID)
-	if err := os.MkdirAll(filepath.Dir(workerLog), 0o700); err != nil {
-		return fmt.Errorf("runtime worker: create runtime directory: %w", err)
-	}
-	logFile, err := os.OpenFile(workerLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("runtime worker: open worker log: %w", err)
-	}
-	defer logFile.Close()
-
-	args := []string{
-		"runtime-worker",
-		"--runtime", string(req.Runtime),
-		"--initiative", req.InitiativeID,
-		"--worktree", req.Worktree,
-		"--prompt", req.Prompt,
-	}
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-	}
-	if req.ResumeID != "" {
-		args = append(args, "--resume-id", req.ResumeID)
-	}
-	cmd := exec.Command(executable, args...)
-	cmd.Dir = req.Worktree
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("runtime worker: start: %w", err)
-	}
-	return cmd.Process.Release()
+	return (&runtimeWorkerKong{
+		Runtime:      string(req.Runtime),
+		InitiativeID: req.InitiativeID,
+		Worktree:     req.Worktree,
+		Prompt:       req.Prompt,
+		Model:        req.Model,
+		ResumeID:     req.ResumeID,
+	}).Run(ctx)
 }
 
 func printCodexControls(w io.Writer, home, initiativeID, sessionID string) {
 	fmt.Fprintln(w, "\nWatch and control:")
 	fmt.Fprintf(w, "  tail -f %s  # runtime events\n", sessionruntime.EventLogPath(home, initiativeID))
-	fmt.Fprintf(w, "  tail -f %s  # worker diagnostics\n", sessionruntime.WorkerLogPath(home, initiativeID))
 	if sessionID != "" {
 		fmt.Fprintf(w, "  codex resume %s  # open the durable thread interactively\n", sessionID)
 	} else {
-		fmt.Fprintln(w, "  ateam show "+initiativeID+"  # thread id appears as session: after startup")
+		fmt.Fprintln(w, "  ateam show "+initiativeID+"  # inspect the bound session: thread id")
 	}
 }
