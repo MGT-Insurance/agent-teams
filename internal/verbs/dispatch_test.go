@@ -224,7 +224,7 @@ func TestDispatch_CodexPersistsRuntimeAndStartsWorker(t *testing.T) {
 	if !strings.Contains(body, "runtime: codex\n") {
 		t.Fatalf("initiative body missing runtime: codex:\n%s", body)
 	}
-	if started.Runtime != sessionruntime.Codex || started.InitiativeID != "at-codex1" || started.Prompt != "/dri at-codex1" || started.Model != "gpt-test" {
+	if started.Runtime != sessionruntime.Codex || started.InitiativeID != "at-codex1" || started.Prompt != codexDRIPrompt("at-codex1") || started.Model != "gpt-test" {
 		t.Fatalf("runtime start = %+v", started)
 	}
 	if !strings.Contains(stdout.String(), sessionruntime.EventLogPath(home, "at-codex1")) || strings.Contains(stdout.String(), "claude attach") {

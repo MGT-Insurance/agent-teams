@@ -277,7 +277,7 @@ func TestResume_CodexUsesLastSessionAndRuntimeControls(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if started.Runtime != sessionruntime.Codex || started.ResumeID != "active-thread" || started.Prompt != "/dri at-codex-resume" {
+	if started.Runtime != sessionruntime.Codex || started.ResumeID != "active-thread" || started.Prompt != codexDRIPrompt("at-codex-resume") {
 		t.Fatalf("runtime start = %+v", started)
 	}
 	if !strings.Contains(stdout.String(), "codex resume active-thread") || strings.Contains(stdout.String(), "claude attach") {

@@ -160,6 +160,15 @@ type dispatchKong struct {
 	prTitle prTitleFunc `kong:"-"`
 }
 
+// codexDRIPrompt names the installed skill explicitly. Codex exposes plugin
+// skills with a plugin-name prefix, so a bare "/dri" prompt depends on fuzzy
+// trigger matching and can collide with another plugin. This prompt gives the
+// model an unambiguous trigger while keeping the initiative id as durable
+// input rather than conversation context.
+func codexDRIPrompt(initiativeID string) string {
+	return "Use the agent-teams-codex:dri skill to drive initiative " + initiativeID + "."
+}
+
 // transportEnabledFunc is the function type for checking whether a usable
 // transport is configured (transport.Enabled). Injected so tests can
 // substitute a fake without touching real transport config/env.
@@ -380,7 +389,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		if runtimeKind == sessionruntime.Codex {
 			prompt := c.LaunchPrompt
 			if prompt == "" {
-				prompt = "/dri " + issue.ID
+				prompt = codexDRIPrompt(issue.ID)
 			} else {
 				prompt = strings.ReplaceAll(prompt, "{id}", issue.ID)
 			}
@@ -598,7 +607,7 @@ func defaultPRTitle(ownerRepo string, prNumber int) (string, error) {
 // from treating them as flags.
 type resumeKong struct {
 	ID           string `arg:"" name:"id" optional:"" help:"Initiative ID to resume."`
-	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: /dri <id>)."`
+	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: the runtime's DRI skill with <id>)."`
 	Model        string `name:"model" help:"Model for a --launch-prompt session (Claude default: claude-opus-4-8; Codex default: user config). Requires --launch-prompt."`
 	Runtime      string `name:"runtime" help:"Assert the initiative runtime (claude or codex)."`
 
@@ -673,7 +682,7 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		codexSession = f.Sessions[len(f.Sessions)-1]
 		prompt := c.LaunchPrompt
 		if prompt == "" {
-			prompt = "/dri " + c.ID
+			prompt = codexDRIPrompt(c.ID)
 		}
 		start := c.runtimeStart
 		if start == nil {
