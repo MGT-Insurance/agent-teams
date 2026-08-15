@@ -85,6 +85,12 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 			if params["cwd"] != "/worktree" || params["model"] != "gpt-test" {
 				t.Fatalf("thread/start params = %#v", params)
 			}
+			config := params["config"].(map[string]any)
+			policy := config["shell_environment_policy"].(map[string]any)
+			set := policy["set"].(map[string]any)
+			if set["AGENT_TEAMS_HOME"] != "/workspace" {
+				t.Fatalf("thread/start config = %#v", config)
+			}
 			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": "idle"}}}, nil
 		case "turn/start":
 			if params["threadId"] != "thread-123" || params["cwd"] != "/worktree" || params["model"] != "gpt-test" {
@@ -101,10 +107,11 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 	}}
 	var bound SessionRef
 	err := testAdapter(server).Launch(context.Background(), Request{
-		InitiativeID: "at-1",
-		Worktree:     "/worktree",
-		Prompt:       "$dri at-1",
-		Model:        "gpt-test",
+		InitiativeID:   "at-1",
+		AgentTeamsHome: "/workspace",
+		Worktree:       "/worktree",
+		Prompt:         "$dri at-1",
+		Model:          "gpt-test",
 	}, func(ref SessionRef) error {
 		bound = ref
 		if len(server.calls) != 2 || server.calls[1].Method != "thread/start" {
@@ -132,14 +139,21 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 func TestCodexAdapterResumeStartsIdleThread(t *testing.T) {
 	server := resumeServer(t, "idle", nil)
 	err := testAdapter(server).Resume(context.Background(), Request{
-		Worktree: "/worktree",
-		Prompt:   "wake",
+		AgentTeamsHome: "/workspace",
+		Worktree:       "/worktree",
+		Prompt:         "wake",
 	}, SessionRef{Runtime: Codex, ID: "thread-123"})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/read,turn/start" {
 		t.Fatalf("calls = %s", got)
+	}
+	config := server.calls[1].Params["config"].(map[string]any)
+	policy := config["shell_environment_policy"].(map[string]any)
+	set := policy["set"].(map[string]any)
+	if set["AGENT_TEAMS_HOME"] != "/workspace" {
+		t.Fatalf("thread/resume config = %#v", config)
 	}
 }
 

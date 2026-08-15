@@ -66,6 +66,9 @@ func (a CodexAdapter) Launch(ctx context.Context, req Request, sink SessionSink)
 		"sandbox":        "danger-full-access",
 		"serviceName":    appServerServiceName,
 	}
+	if req.AgentTeamsHome != "" {
+		params["config"] = codexThreadConfig(req.AgentTeamsHome)
+	}
 	if req.Model != "" {
 		params["model"] = req.Model
 	}
@@ -103,6 +106,12 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 	defer client.Close()
 
 	resumeParams := map[string]any{"threadId": session.ID}
+	if req.AgentTeamsHome != "" {
+		// Re-apply the sticky override on every resume. Besides making the
+		// contract explicit, this repairs threads first created by an older
+		// ateam that relied on the managed daemon's process environment.
+		resumeParams["config"] = codexThreadConfig(req.AgentTeamsHome)
+	}
 	if req.Model != "" {
 		resumeParams["model"] = req.Model
 	}
@@ -142,6 +151,14 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 		return fmt.Errorf("codex resume: %w", err)
 	}
 	return nil
+}
+
+func codexThreadConfig(agentTeamsHome string) map[string]any {
+	return map[string]any{
+		"shell_environment_policy": map[string]any{
+			"set": map[string]string{"AGENT_TEAMS_HOME": agentTeamsHome},
+		},
+	}
 }
 
 func validateCodexRequest(req Request) error {

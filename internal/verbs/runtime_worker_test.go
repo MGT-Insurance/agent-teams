@@ -55,7 +55,7 @@ func TestRuntimeWorkerLaunchDurablyTiesCodexThread(t *testing.T) {
 	home := t.TempDir()
 	ctx, _, _ := makeCtx(fbd, home)
 	adapter := fakeRuntimeAdapter{launchFn: func(req sessionruntime.Request, sink sessionruntime.SessionSink) error {
-		if req.InitiativeID != "at-worker1" || req.Prompt != "$dri at-worker1" {
+		if req.InitiativeID != "at-worker1" || req.Prompt != "$dri at-worker1" || req.AgentTeamsHome != home {
 			t.Fatalf("request = %+v", req)
 		}
 		return sink(sessionruntime.SessionRef{Runtime: sessionruntime.Codex, ID: "thread-xyz"})

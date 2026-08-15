@@ -27,11 +27,15 @@ type SessionRef struct {
 // Request is the runtime-neutral input for one runtime turn request.
 type Request struct {
 	InitiativeID string
-	Worktree     string
-	Prompt       string
-	Model        string
-	Events       io.Writer
-	Stderr       io.Writer
+	// AgentTeamsHome is the resolved global workspace for this initiative.
+	// Managed Codex threads outlive the submitting ateam process, so this value
+	// must be made sticky on the thread instead of relying on daemon process env.
+	AgentTeamsHome string
+	Worktree       string
+	Prompt         string
+	Model          string
+	Events         io.Writer
+	Stderr         io.Writer
 }
 
 // SessionSink durably binds a newly observed session to its initiative.

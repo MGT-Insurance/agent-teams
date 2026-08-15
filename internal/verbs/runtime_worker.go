@@ -68,12 +68,13 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 	defer events.Close()
 
 	req := sessionruntime.Request{
-		InitiativeID: c.InitiativeID,
-		Worktree:     c.Worktree,
-		Prompt:       c.Prompt,
-		Model:        c.Model,
-		Events:       events,
-		Stderr:       ctx.Stderr,
+		InitiativeID:   c.InitiativeID,
+		AgentTeamsHome: ctx.Home,
+		Worktree:       c.Worktree,
+		Prompt:         c.Prompt,
+		Model:          c.Model,
+		Events:         events,
+		Stderr:         ctx.Stderr,
 	}
 	workerCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
