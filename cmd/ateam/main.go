@@ -80,7 +80,7 @@ func run(args []string) int {
 	// Runtime compatibility is needed by setup before the Beads workspace (or
 	// even bd itself) exists. It is deliberately the only parsed verb allowed
 	// through this pre-initialization path.
-	if len(args) >= 2 && args[0] == "runtime" && args[1] == "check" {
+	if len(args) >= 2 && ((args[0] == "runtime" && args[1] == "check") || (args[0] == "setup" && args[1] == "codex")) {
 		cliCtx := &cli.Context{Home: home, Stdout: stdout, Stderr: stderr}
 		kctx.Bind(cliCtx)
 		runErr := kctx.Run(cliCtx)

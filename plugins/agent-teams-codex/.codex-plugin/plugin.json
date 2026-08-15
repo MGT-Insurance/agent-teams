@@ -1,0 +1,34 @@
+{
+  "name": "agent-teams-codex",
+  "version": "0.1.0+codex.20260815170516",
+  "description": "Codex-native DRI orchestration, role agents, durable Beads mail, and agent-teams setup.",
+  "author": {
+    "name": "Eric Lloyd",
+    "email": "erlloyd@gmail.com",
+    "url": "https://github.com/MGT-Insurance/agent-teams"
+  },
+  "repository": "https://github.com/MGT-Insurance/agent-teams",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "codex",
+    "orchestration",
+    "beads"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Teams Codex",
+    "shortDescription": "DRI-led software delivery with durable mail.",
+    "longDescription": "Run agent-teams initiatives in Codex with specialized planner, implementer, tester, and reviewer agents backed by Beads and durable cross-session mail.",
+    "developerName": "Eric Lloyd",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Set up agent-teams for Codex on this machine.",
+      "Run this initiative using the agent-teams DRI workflow."
+    ]
+  }
+}
