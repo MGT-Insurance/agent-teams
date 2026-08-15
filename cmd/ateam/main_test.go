@@ -71,3 +71,12 @@ func TestRunVerbHelpFlagPreInit(t *testing.T) {
 		t.Errorf("run([reopen --help]) uninitialised = %d, want 0", code)
 	}
 }
+
+func TestRunRuntimeCheckPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	code := run([]string{"runtime", "check", "codex"})
+	if code != 1 {
+		t.Errorf("run([runtime check codex]) with Codex absent = %d, want compatibility failure 1", code)
+	}
+}

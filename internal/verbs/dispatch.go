@@ -39,11 +39,13 @@ func RegisterDispatchKong(p *cli.Parser) {
 		labelAdd:         defaultLabelAdd,
 		prTitle:          defaultPRTitle,
 		runtimeStart:     startRuntimeWorker,
+		codexCheck:       sessionruntime.RequireCompatibleCodex,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
 		launch:       launchBGSession,
 		launchRaw:    rawLaunchBGSession,
 		runtimeStart: startRuntimeWorker,
+		codexCheck:   sessionruntime.RequireCompatibleCodex,
 	})
 	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
 }
@@ -133,11 +135,12 @@ type dispatchKong struct {
 	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
 	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto (default: $ATEAM_RUNTIME, then claude)."`
 
-	git          gitRunner        `kong:"-"`
-	launch       launchFunc       `kong:"-"`
-	createEpic   epicCreatorFunc  `kong:"-"`
-	launchRaw    rawLaunchFunc    `kong:"-"`
-	runtimeStart runtimeStartFunc `kong:"-"`
+	git          gitRunner                           `kong:"-"`
+	launch       launchFunc                          `kong:"-"`
+	createEpic   epicCreatorFunc                     `kong:"-"`
+	launchRaw    rawLaunchFunc                       `kong:"-"`
+	runtimeStart runtimeStartFunc                    `kong:"-"`
+	codexCheck   func(context.Context, string) error `kong:"-"`
 
 	// transportFor, transportEnabled, and labelAdd back the eager Telegram
 	// (or configured transport) topic creation below. Injected at
@@ -187,6 +190,11 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	}
 	if runtimeKind == sessionruntime.Codex && c.Advisor != "" {
 		return cli.Usagef("dispatch: --advisor is only supported by the Claude runtime")
+	}
+	if runtimeKind == sessionruntime.Codex && c.codexCheck != nil {
+		if err := c.codexCheck(context.Background(), ""); err != nil {
+			return fmt.Errorf("dispatch: Codex runtime unavailable: %w", err)
+		}
 	}
 
 	// 1. Resolve repo root.
@@ -594,9 +602,10 @@ type resumeKong struct {
 	Model        string `name:"model" help:"Model for a --launch-prompt session (Claude default: claude-opus-4-8; Codex default: user config). Requires --launch-prompt."`
 	Runtime      string `name:"runtime" help:"Assert the initiative runtime (claude or codex)."`
 
-	launch       launchFunc       `kong:"-"`
-	launchRaw    rawLaunchFunc    `kong:"-"`
-	runtimeStart runtimeStartFunc `kong:"-"`
+	launch       launchFunc                          `kong:"-"`
+	launchRaw    rawLaunchFunc                       `kong:"-"`
+	runtimeStart runtimeStartFunc                    `kong:"-"`
+	codexCheck   func(context.Context, string) error `kong:"-"`
 }
 
 // Validate checks that the required ID arg is non-empty.
@@ -631,6 +640,11 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	runtimeKind, err := sessionruntime.AssertStored(f.Runtime, c.Runtime)
 	if err != nil {
 		return cli.Usagef("ateam resume: %v", err)
+	}
+	if runtimeKind == sessionruntime.Codex && c.codexCheck != nil {
+		if err := c.codexCheck(context.Background(), ""); err != nil {
+			return fmt.Errorf("ateam resume: Codex runtime unavailable: %w", err)
+		}
 	}
 	dir := f.Worktree
 	if dir == "" {

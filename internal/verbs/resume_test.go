@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -309,6 +310,29 @@ func TestResume_RuntimeFailures(t *testing.T) {
 				t.Fatalf("err=%v stderr=%q want %q", err, stderr.String(), tt.want)
 			}
 		})
+	}
+}
+
+func TestResumeCodexCompatibilityFailurePreventsLaunch(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{runFn: func(...string) (string, error) {
+		raw, _ := json.Marshal([]bd.Issue{{ID: "at-r", Status: "open", Description: "worktree: " + dir + "\nruntime: codex\nsession: thread-1\n"}})
+		return string(raw), nil
+	}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-r",
+		codexCheck: func(context.Context, string) error {
+			return fmt.Errorf("official standalone installer required")
+		},
+		runtimeStart: func(*cli.Context, runtimeStartRequest) error {
+			t.Fatal("runtime launched")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "official standalone") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

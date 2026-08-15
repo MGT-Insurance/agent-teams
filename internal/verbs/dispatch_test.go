@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -261,6 +262,24 @@ func TestDispatch_RuntimeResolutionAndValidation(t *testing.T) {
 		err := cmd.Run(&cli.Context{})
 		if err == nil || cli.ExitCode(err) != 2 || added {
 			t.Fatalf("err=%v added=%v", err, added)
+		}
+	})
+	t.Run("incompatible Codex fails before repo mutation", func(t *testing.T) {
+		gitCalled := false
+		cmd := &dispatchKong{
+			Problem: "codex",
+			Runtime: "codex",
+			codexCheck: func(context.Context, string) error {
+				return fmt.Errorf("official standalone installer required")
+			},
+			git: &fakeGit{repoRootFn: func(string) (string, error) {
+				gitCalled = true
+				return "", nil
+			}},
+		}
+		err := cmd.Run(&cli.Context{})
+		if err == nil || !strings.Contains(err.Error(), "official standalone") || gitCalled {
+			t.Fatalf("err=%v gitCalled=%v", err, gitCalled)
 		}
 	})
 }

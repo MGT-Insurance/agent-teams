@@ -1,6 +1,6 @@
 ---
 name: setup-agent-teams
-description: One-time machine setup for the agent-teams framework. Verifies beads is installed, creates or clones the global agent-teams workspace (role learnings + initiative registry), configures its git remote for cross-machine sync, installs the ateam launcher, and smoke-tests the loop. Use on a new machine, or when /dri reports the workspace is missing.
+description: One-time machine setup for the agent-teams framework. Verifies beads and optional Codex compatibility, creates or clones the global agent-teams workspace (role learnings + initiative registry), configures its git remote for cross-machine sync, installs the ateam launcher, and smoke-tests the loop. Use on a new machine, or when /dri reports the workspace is missing.
 ---
 
 Set up this machine for agent-teams. Work through these steps in order, reporting each result.
@@ -207,6 +207,24 @@ ateam steward init
 
 Expected: prints `installed: <path>/.beads/PRIME.md` on first run (or nothing about PRIME.md if it's already installed and unchanged — self-healing is silent), followed by the Steward session directory path. Safe to re-run: it never overwrites a human-edited or unrecognized PRIME.md.
 
+### 5f. Check optional Codex compatibility
+
+Run the shared runtime check; do not infer compatibility from `codex --version`
+or the executable path:
+
+```bash
+ateam runtime check codex --optional
+```
+
+- `compatible standalone installation` means Codex dispatch is ready.
+- `absent` is informational; continue Claude setup normally.
+- `incompatible installation` is a warning; continue Claude setup, but tell the
+  human Codex initiatives require reinstalling Codex with the official
+  standalone installer.
+
+If the human intends to use Codex now, rerun without `--optional`; do not claim
+Codex is ready unless `ateam runtime check codex` exits zero.
+
 ### Allowlist `ateam`
 
 Add the following entry to the `permissions.allow` array in `~/.claude/settings.json` so workspace operations do not prompt:
@@ -386,4 +404,4 @@ If Probe A is not denied, the plugin hooks are not loading — confirm the plugi
 
 ## 11. Report
 
-Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, hook-verify results, and that `/dri` is ready to use.
+Confirm to the human: workspace path, remote URL, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` set, Codex compatibility (`compatible`, `absent`, or `incompatible`), the interactive-DRI permission profile (`Bash(ateam:*)` allowlist, scoped git allowlist, and worktree-root `additionalDirectories` — each applied or skipped), smoke-test results, hook-verify results, and that `/dri` is ready to use.
