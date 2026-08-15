@@ -312,9 +312,9 @@ Shared agent-teams domain
                   tie-session / stop
                   |                 |
           Claude adapter       Codex adapter
-          claude --bg          codex exec
-          claude respawn       codex exec resume
-          asyncRewake hook     Stop hook + supervisor
+          claude --bg          managed app-server
+          claude respawn       turn/start | turn/steer
+          asyncRewake hook     delivery coordinator
 ```
 
 Introduce only the runtime seams required by dispatch, session identity, mail,
@@ -382,8 +382,9 @@ Work:
 - Extract a narrow runtime interface for launch, resume/wake, status, stop, and
   monitoring instructions.
 - Retain the current Claude implementation behind the Claude adapter.
-- Add a Codex adapter that launches `codex exec --json`, captures its thread
-  ID, and records it through a runtime-neutral session tie.
+- Add a Codex app-server client that idempotently starts the standalone managed
+  daemon, starts or resumes a thread, and records its thread ID through a
+  runtime-neutral session tie.
 - Accept Claude and Codex session IDs at the adapter boundary rather than
   treating `CLAUDE_CODE_SESSION_ID` as the domain identity.
 - Test with fake `claude` and `codex` executables. Never use the paid eval
@@ -397,13 +398,13 @@ Mail remains Beads-backed. Only the waking mechanism is runtime-specific.
 
 1. `ateam mail send` creates the message bead.
 2. It creates or reconciles the initiative doorbell.
-3. If a Codex turn is active, it leaves the doorbell pending.
-4. The Codex `Stop` hook sees the pending doorbell and requests a continuation
-   whose instruction is to run `ateam mail inbox`.
-5. If the thread is idle, `ateam` starts
-   `codex exec resume <thread-id> <mail-prompt>`.
-6. A small supervisor owns the resumed worker and checks the doorbell again
-   after process exit, closing the mail-during-shutdown race.
+3. A short-lived delivery coordinator calls the idempotent managed-daemon
+   start operation and acquires the initiative delivery lock.
+4. It reads the target thread and uses `turn/steer` when active.
+5. If the thread is idle or not loaded, it resumes the thread and uses
+   `turn/start`.
+6. It reconciles unread mail and the doorbell after completion or reconnect;
+   the Codex daemon, not the coordinator, owns the model turn lifetime.
 
 Machine-local, reconstructible runtime state may live at:
 
@@ -411,8 +412,8 @@ Machine-local, reconstructible runtime state may live at:
 ~/.agent-teams/runtimes/codex/<initiative-id>.json
 ```
 
-It may contain the Codex thread ID, active worker PID, last transition, and
-runtime version. Initiative and message truth remain in Beads.
+It may contain the Codex thread ID, active turn ID, last delivery transition,
+and runtime version. Initiative and message truth remain in Beads.
 
 ### Invariants
 
@@ -423,7 +424,8 @@ runtime version. Initiative and message truth remain in Beads.
   all currently unread mail.
 - Repair a missing doorbell whenever unread message beads exist.
 - Treat a stale doorbell as harmless and self-reconciling.
-- Hold a per-initiative lock while starting or running a wake worker.
+- Hold a per-initiative lock while inspecting state and selecting/delivering a
+  wake operation; do not hold it as a proxy for the daemon's turn lifetime.
 - Deliver mail that arrives while the worker is active, stopping, starting,
   or crashing.
 - Route relay- and Telegram-originated messages through the same path.
@@ -433,7 +435,7 @@ runtime version. Initiative and message truth remain in Beads.
 - Mail while idle wakes the same Codex thread.
 - Mail while busy is consumed before dormancy.
 - Two rapid messages cause one wake and both are read.
-- A worker crash leaves unread mail retriable.
+- A client or daemon crash leaves unread mail retriable.
 - Duplicate wake attempts never create parallel turns for one initiative.
 
 ## Phase 3 — Codex role definitions
@@ -566,7 +568,7 @@ Every work bead belongs under `agent-teams-bhe0`:
 2. `agent-teams-bhe0.2` — define the runtime-neutral session and worker-lock
    contract;
 3. `agent-teams-bhe0.3` — implement the Codex dispatch and resume adapter;
-4. `agent-teams-bhe0.4` — implement the Codex mail/wake supervisor;
+4. `agent-teams-bhe0.4` — implement the Codex mail delivery coordinator;
 5. `agent-teams-bhe0.5` — implement Codex lifecycle hooks;
 6. `agent-teams-bhe0.6` — define and install Codex custom role agents;
 7. `agent-teams-bhe0.7` — implement the Codex `dri` vertical slice;
@@ -790,12 +792,12 @@ The spike proved that app-server provides the better turn-ownership boundary:
    same thread resumes idle and accepts a recovery turn; and
 6. graceful shutdown drains active work.
 
-The revised direction is app-server plus a small daemon-health supervisor, not
-a detached `codex exec` worker per turn. An ateam-owned initiative delivery
-lock is still required: `turn/start` while active was accepted but folded into
-the existing turn under a surprising response ID, and transient
-`thread/read` snapshots were not strong enough to serve as mail
-acknowledgments.
+The revised direction is the managed app-server plus a short-lived delivery
+coordinator, not a detached `codex exec` worker per turn or an ateam-owned
+supervisor. An ateam-owned initiative delivery lock is still required:
+`turn/start` while active was accepted but folded into the existing turn under
+a surprising response ID, and transient `thread/read` snapshots were not
+strong enough to serve as mail acknowledgments.
 
 Before reshaping PR #160, settle the daemon deployment contract. On the tested
 npm/mise installation, `codex app-server daemon start` required OpenAI's

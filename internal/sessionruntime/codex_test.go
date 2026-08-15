@@ -164,6 +164,48 @@ func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterEnsuresDaemonAndReconnectsForEveryDelivery(t *testing.T) {
+	servers := []*fakeAppServer{
+		resumeServer(t, "idle", nil),
+		resumeServer(t, "idle", nil),
+	}
+	ensureCalls := 0
+	dialCalls := 0
+	adapter := CodexAdapter{
+		ensureDaemon: func(context.Context, string) (ManagedDaemonInfo, error) {
+			ensureCalls++
+			status := "alreadyRunning"
+			if ensureCalls == 2 {
+				// The second short-lived delivery observes that Codex had to
+				// restart its managed daemon. The adapter uses the same path.
+				status = "started"
+			}
+			return ManagedDaemonInfo{Status: status, ManagedCodexPath: "/standalone/codex", SocketPath: "/socket"}, nil
+		},
+		dial: func(context.Context, string, io.Writer) (appServerRPC, error) {
+			server := servers[dialCalls]
+			dialCalls++
+			return server, nil
+		},
+	}
+	request := Request{Worktree: "/worktree", Prompt: "mail"}
+	ref := SessionRef{Runtime: Codex, ID: "thread-123"}
+	if err := adapter.Resume(context.Background(), request, ref); err != nil {
+		t.Fatalf("first delivery: %v", err)
+	}
+	if err := adapter.Resume(context.Background(), request, ref); err != nil {
+		t.Fatalf("delivery after daemon restart: %v", err)
+	}
+	if ensureCalls != 2 || dialCalls != 2 {
+		t.Fatalf("ensure calls = %d, dial calls = %d; want 2 each", ensureCalls, dialCalls)
+	}
+	for i, server := range servers {
+		if !server.closed {
+			t.Fatalf("client %d was not closed", i)
+		}
+	}
+}
+
 func TestCodexAdapterFailures(t *testing.T) {
 	t.Run("bind failure prevents turn", func(t *testing.T) {
 		server := &fakeAppServer{handle: func(method string, _ map[string]any) (any, error) {

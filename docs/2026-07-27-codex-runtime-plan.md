@@ -296,7 +296,7 @@ Every work bead belongs under `agent-teams-bhe0`:
 2. `agent-teams-bhe0.2` — define the runtime-neutral session and worker-lock
    contract;
 3. `agent-teams-bhe0.3` — implement the Codex dispatch and resume adapter;
-4. `agent-teams-bhe0.4` — implement the Codex mail/wake supervisor;
+4. `agent-teams-bhe0.4` — implement the Codex mail delivery coordinator;
 5. `agent-teams-bhe0.5` — implement Codex lifecycle hooks;
 6. `agent-teams-bhe0.6` — define and install Codex custom role agents;
 7. `agent-teams-bhe0.7` — implement the Codex `dri` vertical slice;
@@ -520,12 +520,12 @@ The spike proved that app-server provides the better turn-ownership boundary:
    same thread resumes idle and accepts a recovery turn; and
 6. graceful shutdown drains active work.
 
-The revised direction is app-server plus a small daemon-health supervisor, not
-a detached `codex exec` worker per turn. An ateam-owned initiative delivery
-lock is still required: `turn/start` while active was accepted but folded into
-the existing turn under a surprising response ID, and transient
-`thread/read` snapshots were not strong enough to serve as mail
-acknowledgments.
+The revised direction is the managed app-server plus a short-lived delivery
+coordinator, not a detached `codex exec` worker per turn or an ateam-owned
+supervisor. An ateam-owned initiative delivery lock is still required:
+`turn/start` while active was accepted but folded into the existing turn under
+a surprising response ID, and transient `thread/read` snapshots were not
+strong enough to serve as mail acknowledgments.
 
 Before reshaping PR #160, settle the daemon deployment contract. On the tested
 npm/mise installation, `codex app-server daemon start` required OpenAI's

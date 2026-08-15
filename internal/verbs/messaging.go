@@ -3,6 +3,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
+	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 )
 
 // ── sendKong ──────────────────────────────────────────────────────────────────
@@ -32,6 +34,7 @@ type sendKong struct {
 
 	agentsFunc     agentsJSONFunc       `kong:"-"`
 	resumeFunc     resumeInitiativeFunc `kong:"-"`
+	codexWake      codexWakeFunc        `kong:"-"`
 	sleeper        sleeperFunc          `kong:"-"`
 	doorbellExists doorbellExistsFunc   `kong:"-"`
 	respawnFunc    respawnFunc          `kong:"-"`
@@ -115,6 +118,30 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		_ = os.Remove(doorbellPath)
 		fmt.Fprintf(ctx.Stdout, "note: recipient %s's repo is disabled (%s); message queued, not waking\n",
 			c.RecipientID, repoconfig.FileName)
+		return nil
+	}
+
+	fields := initiative.Of(recipIssue)
+	runtimeKind, runtimeErr := sessionruntime.ResolveStored(fields.Runtime)
+	if runtimeErr != nil {
+		fmt.Fprintf(ctx.Stdout, "warning: recipient runtime is invalid (%v); message %s remains queued\n", runtimeErr, issue.ID)
+		return nil
+	}
+	if runtimeKind == sessionruntime.Codex {
+		wake := c.codexWake
+		if wake == nil {
+			wake = defaultCodexWake
+		}
+		err := wake(ctx, recipIssue)
+		if errors.Is(err, errCodexDeliveryBusy) {
+			fmt.Fprintln(ctx.Stdout, "Codex delivery already in progress; durable mail and doorbell remain pending")
+			return nil
+		}
+		if err != nil {
+			fmt.Fprintf(ctx.Stdout, "warning: Codex wake failed (%v); message %s remains queued\n", err, issue.ID)
+			return nil
+		}
+		fmt.Fprintln(ctx.Stdout, "Codex thread accepted the mail wake request")
 		return nil
 	}
 
@@ -207,7 +234,7 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam inbox: getwd: %w", err)
 	}
 
-	myID, err := resolveInboxRecipient(ctx, cwd)
+	myID, codexRecipient, err := resolveInboxRecipientRuntime(ctx, cwd)
 	if err != nil {
 		return nil
 	}
@@ -223,19 +250,10 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 		}
 	}
 
-	var messages []bd.Issue
-	if err := ctx.BD.RunJSON(&messages,
-		"list",
-		"--include-infra",
-		"--assignee="+myID,
-		"--exclude-label=read",
-		"--status=open",
-		"--json",
-	); err != nil {
+	messages, err := queryUnreadMessages(ctx, myID)
+	if err != nil {
 		return fmt.Errorf("ateam inbox: query: %w", err)
 	}
-
-	messages = filterMessageType(messages)
 
 	if c.Peek {
 		if len(messages) == 0 {
@@ -248,6 +266,9 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 
 	if len(messages) == 0 {
 		fmt.Fprintln(ctx.Stdout, "no unread mail")
+		if codexRecipient {
+			reconcileCodexInboxDoorbell(ctx, myID)
+		}
 		return nil
 	}
 
@@ -267,8 +288,26 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 			fmt.Fprintf(ctx.Stderr, "ateam inbox: mark read %s: %v\n", msg.ID, err)
 		}
 	}
+	if codexRecipient {
+		reconcileCodexInboxDoorbell(ctx, myID)
+	}
 
 	return nil
+}
+
+func queryUnreadMessages(ctx *cli.Context, recipientID string) ([]bd.Issue, error) {
+	var messages []bd.Issue
+	if err := ctx.BD.RunJSON(&messages,
+		"list",
+		"--include-infra",
+		"--assignee="+recipientID,
+		"--exclude-label=read",
+		"--status=open",
+		"--json",
+	); err != nil {
+		return nil, err
+	}
+	return filterMessageType(messages), nil
 }
 
 // ── send ──────────────────────────────────────────────────────────────────────
@@ -479,14 +518,22 @@ func recipientWorktree(ctx *cli.Context, id string) (bd.Issue, string, error) {
 // registered initiatives are ancestors of cwd, the most specific (longest)
 // worktree path wins. Returns the initiative id or an error if none matches.
 func resolveMyInitiative(ctx *cli.Context, cwd string) (string, error) {
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+	issue, err := resolveMyInitiativeIssue(ctx, cwd)
+	if err != nil {
 		return "", err
 	}
-	if match := matchByWorktreeOrAncestor(issues, cwd); match != nil {
-		return match.ID, nil
+	return issue.ID, nil
+}
+
+func resolveMyInitiativeIssue(ctx *cli.Context, cwd string) (bd.Issue, error) {
+	var issues []bd.Issue
+	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+		return bd.Issue{}, err
 	}
-	return "", fmt.Errorf("no initiative registered for worktree: %s", cwd)
+	if match := matchByWorktreeOrAncestor(issues, cwd); match != nil {
+		return *match, nil
+	}
+	return bd.Issue{}, fmt.Errorf("no initiative registered for worktree: %s", cwd)
 }
 
 // isStewardSession reports whether cwd is the Steward's own session
@@ -510,10 +557,23 @@ func isStewardSession(ctx *cli.Context, cwd string) bool {
 // (isStewardSession), otherwise the open initiative whose worktree: line
 // matches cwd (resolveMyInitiative, unchanged for every non-Steward caller).
 func resolveInboxRecipient(ctx *cli.Context, cwd string) (string, error) {
+	id, _, err := resolveInboxRecipientRuntime(ctx, cwd)
+	return id, err
+}
+
+// resolveInboxRecipientRuntime returns whether the resolved recipient is a
+// Codex initiative. Legacy or invalid runtime metadata still permits inbox
+// consumption; it simply does not opt into the Codex doorbell contract.
+func resolveInboxRecipientRuntime(ctx *cli.Context, cwd string) (string, bool, error) {
 	if isStewardSession(ctx, cwd) {
-		return StewardHandle, nil
+		return StewardHandle, false, nil
 	}
-	return resolveMyInitiative(ctx, cwd)
+	issue, err := resolveMyInitiativeIssue(ctx, cwd)
+	if err != nil {
+		return "", false, err
+	}
+	runtimeKind, runtimeErr := sessionruntime.ResolveStored(initiative.Of(issue).Runtime)
+	return issue.ID, runtimeErr == nil && runtimeKind == sessionruntime.Codex, nil
 }
 
 // sessionIDEnvVar is the env var Claude Code exports into every session's

@@ -72,6 +72,7 @@ func RegisterMailKong(p *cli.Parser) {
 		Send: sendKong{
 			agentsFunc:     defaultAgentsJSONAll,
 			resumeFunc:     defaultResume,
+			codexWake:      defaultCodexWake,
 			sleeper:        defaultSleeper,
 			doorbellExists: defaultDoorbellExists,
 			respawnFunc:    defaultRespawn,
@@ -82,6 +83,7 @@ func RegisterMailKong(p *cli.Parser) {
 		sendKong: sendKong{
 			agentsFunc:     defaultAgentsJSONAll,
 			resumeFunc:     defaultResume,
+			codexWake:      defaultCodexWake,
 			sleeper:        defaultSleeper,
 			doorbellExists: defaultDoorbellExists,
 			respawnFunc:    defaultRespawn,

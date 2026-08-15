@@ -320,6 +320,12 @@ or completed. It is cleared or reconciled only after `ateam mail inbox` successf
 consumes all mail that was unread for that initiative. If unread messages
 remain, a missing doorbell is repaired.
 
+Codex inbox reconciliation acquires the same initiative delivery lock, removes
+the old wake edge, then takes a fresh unread-mail snapshot. It re-arms the
+doorbell if unread mail remains or the snapshot fails. This remove-before-query
+ordering ensures a concurrent sender that touches a new wake edge after the
+snapshot cannot have that edge erased by the drain.
+
 Consequences:
 
 - mail during daemon or client transitions stays pending;
