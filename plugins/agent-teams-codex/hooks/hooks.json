@@ -7,6 +7,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/ensure-ateam-link.sh\"",
+            "timeout": 5,
+            "statusMessage": "Selecting the active agent-teams CLI"
+          },
+          {
+            "type": "command",
             "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook session-start",
             "timeout": 15,
             "statusMessage": "Checking agent-teams session and mail",

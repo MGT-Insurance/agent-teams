@@ -5,8 +5,10 @@ description: Install and verify agent-teams for Codex, including the standalone 
 
 # Set up agent-teams for Codex
 
-1. Verify `ateam` is available with `command -v ateam`. If absent, resolve this
-   installed plugin's bundled wrapper from Codex's own plugin inventory:
+1. Resolve this installed plugin's bundled wrapper from Codex's own plugin
+   inventory and pin bare `ateam` to this active install. Do this even when
+   `command -v ateam` succeeds; another harness or an older plugin version may
+   own that symlink:
 
    ```bash
    PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"
@@ -17,9 +19,10 @@ description: Install and verify agent-teams for Codex, including the standalone 
    ```
 
    If inventory lookup or the executable check fails, stop and report the
-   plugin installation problem. Do not substitute raw `bd` commands. If
-   `~/.local/bin` is not on PATH, tell the human to add it and use the absolute
-   `~/.local/bin/ateam` path for the remaining checks in this run.
+   plugin installation problem. Do not substitute raw `bd` commands. The
+   trusted SessionStart hook repeats this link repair on every Codex session.
+   If `~/.local/bin` is not on PATH, tell the human to add it and use the
+   absolute `~/.local/bin/ateam` path for the remaining checks in this run.
 2. Run `ateam ws` and report the workspace path. If the workspace is not
    initialized, use the workspace create/clone procedure from the agent-teams
    repository before continuing.
