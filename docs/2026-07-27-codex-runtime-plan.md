@@ -549,3 +549,51 @@ Shared setup/audit logic must report Codex absent, incompatible non-standalone
 Codex, or compatible standalone Codex. General setup warns for the optional
 incompatible case; explicitly selecting the Codex runtime fails with an
 actionable standalone-installer message.
+
+### Phase 0.7 addendum — loop-closing vertical slice passed
+
+The first Codex-native DRI slice passed a paid, live, isolated smoke on
+2026-08-15.
+
+The installed plugin now carries:
+
+- `agent-teams-codex:dri`, a Beads-reconstructable DRI workflow built around
+  bounded custom-role children rather than persistent Claude teammates;
+- `agent-teams-codex:dispatch-dri`, which mechanically calls
+  `ateam dispatch --runtime codex`;
+- planner, implementer, tester, and reviewer custom agent definitions;
+- SessionStart, UserPromptSubmit, and Stop mail hooks; and
+- the shared local-main close-out helper required by `ateam close`.
+
+Codex dispatch and resume explicitly name the installed namespaced DRI skill
+instead of relying on fuzzy interpretation of a bare `/dri` prompt.
+
+The live smoke created a disposable repository, project Beads database, and
+global workspace, then dispatched initiative `at-p74` through the managed
+app-server. The DRI:
+
+1. reconstructed the initiative and root epic from Beads;
+2. delegated planning to `agent-teams-planner`;
+3. created an isolated implementation track and delegated it to
+   `agent-teams-implementer`;
+4. integrated commit `6907bee`;
+5. delegated independent live verification to `agent-teams-tester`;
+6. raised the exact `Smoke mail checkpoint` QUESTION gate and ended its turn;
+7. received durable mail `at-wisp-yq8`, which started a second turn in the
+   same thread `01a00678-23d3-7253-9600-dcb168ccdd06`;
+8. ran `ateam mail inbox`, cleared the gate, removed its track, and closed the
+   project epic plus initiative.
+
+The run also exposed a managed-daemon environment boundary: a custom
+`AGENT_TEAMS_HOME` set on the short-lived dispatcher is not inherited from
+the already-running daemon process. The adapter now writes the resolved
+workspace into Codex's sticky `shell_environment_policy.set` config on both
+`thread/start` and `thread/resume`. The isolated DRI and all of its custom
+children then resolved the correct workspace without prompt-level workarounds.
+Reapplying the config on resume also repairs threads created by an older ateam
+version.
+
+This closes the first loop: managed dispatch, role delegation, durable state,
+turn stop, mail wake, same-thread continuation, live verification, and
+terminal cleanup all worked together. PR review and merge behavior remains the
+normal next validation surface after PR #160 lands.
