@@ -15,10 +15,10 @@ import (
 // see the package doc comment, frozen item 3: an unmodeled key (e.g.
 // pr-number) is legitimate data this struct simply has no member for.
 type Fields struct {
-	Problem, Repo, Worktree, Branch, Team, Mode, Epic string
-	Standby                                           bool
-	Sessions                                          []string
-	Tracks                                            []string
+	Problem, Repo, Worktree, Branch, Team, Mode, Runtime, Epic string
+	Standby                                                    bool
+	Sessions                                                   []string
+	Tracks                                                     []string
 	// PRs is every "pr: <url>" line's value, in registration order — the
 	// GitHub PR URLs a DRI has opened for this initiative. Multi-valued
 	// because one initiative can open more than one PR (agent-teams-ssib).
@@ -52,7 +52,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "standby", "epic"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -170,11 +170,11 @@ func first(lines map[string][]string, key string) string {
 }
 
 // Of parses iss's routing fields per the frozen rule. Single-valued keys
-// (problem, repo, worktree, branch, team, mode, epic, standby) are
+// (problem, repo, worktree, branch, team, mode, runtime, epic, standby) are
 // first-occurrence-wins; the multi-valued session, track-worktree, and pr
 // keys accumulate into Sessions, Tracks, and PRs in registration order.
 //
-// Of is the TYPED projection of all, and models eleven keys only — an
+// Of is the TYPED projection of all, and models twelve keys only — an
 // initiative carrying an unmodeled canonical key (e.g. pr-url) has no Fields
 // member to hold it, so a caller that needs every stored key wants
 // JSONFields instead (package doc comment, frozen item 3).
@@ -191,6 +191,7 @@ func Of(iss bd.Issue) Fields {
 		Branch:   first(lines, "branch"),
 		Team:     first(lines, "team"),
 		Mode:     first(lines, "mode"),
+		Runtime:  first(lines, "runtime"),
 		Epic:     first(lines, "epic"),
 		Standby:  first(lines, "standby") == "true",
 		Sessions: lines["session"],
@@ -260,6 +261,7 @@ func New(f Fields) (WritePlan, error) {
 		{"branch", []string{f.Branch}},
 		{"team", []string{f.Team}},
 		{"mode", []string{f.Mode}},
+		{"runtime", []string{f.Runtime}},
 		{"epic", []string{f.Epic}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
@@ -292,6 +294,7 @@ func New(f Fields) (WritePlan, error) {
 	if f.Standby {
 		write("standby", "true")
 	}
+	write("runtime", f.Runtime)
 	write("epic", f.Epic)
 	for _, s := range f.Sessions {
 		write("session", s)
@@ -552,6 +555,7 @@ func (f Fields) singleValued() map[string]bool {
 	mark("branch", f.Branch)
 	mark("team", f.Team)
 	mark("mode", f.Mode)
+	mark("runtime", f.Runtime)
 	mark("epic", f.Epic)
 	if f.Standby {
 		set["standby"] = true

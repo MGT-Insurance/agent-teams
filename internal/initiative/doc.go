@@ -65,10 +65,10 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models eleven fields (AMENDED for agent-teams-ssib: "pr" joined
+// [Fields] models twelve fields (AMENDED for agent-teams-ssib: "pr" joined
 // the multi-valued rail alongside "session" and "track-worktree" — see
 // [Fields.PRs] and [WithPR]). The live registry carries at least THIRTEEN
-// canonical keys beyond those eleven: pr-number, pr-repo, and pr-url —
+// canonical keys beyond those twelve: pr-number, pr-repo, and pr-url —
 // written not by Go code but by an LLM following a skill's instructions,
 // which then parses those same keys back out of `ateam show`. A skill file
 // can therefore introduce a new canonical key without one line of Go
@@ -111,13 +111,13 @@
 //   - A future migration off this description format (e.g. to bd labels)
 //     must carry every canonical key found in the raw text, not merely the
 //     ones that happen to have a Fields member. A migration that moves only
-//     the ten modeled fields drops unmodeled keys (e.g. the pr-* trio) on
+//     the twelve modeled fields drops unmodeled keys (e.g. the pr-* trio) on
 //     the floor.
 //
 // # Package surface
 //
 //	type Fields struct {
-//	    Problem, Repo, Worktree, Branch, Team, Mode, Epic string
+//	    Problem, Repo, Worktree, Branch, Team, Mode, Runtime, Epic string
 //	    Standby  bool
 //	    Sessions []string
 //	    Tracks   []string
@@ -164,7 +164,7 @@
 // (agent-teams-ully.12). `ateam list-json` calls it and attaches the result to
 // every element as a "fields" object; the dashboard reads that object.
 //
-// [JSONFields] is deliberately NOT a projection of the ten [Fields] members.
+// [JSONFields] is deliberately NOT a projection of the twelve [Fields] members.
 // Doing that would drop every unmodeled canonical key at a read seam, which
 // item 3 forbids. Instead it emits the canonical LINE key verbatim for every
 // matched line, so the wire shape does not depend on which keys Go models: the

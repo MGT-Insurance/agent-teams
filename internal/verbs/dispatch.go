@@ -20,6 +20,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
+	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
@@ -37,11 +38,16 @@ func RegisterDispatchKong(p *cli.Parser) {
 		transportEnabled: transport.Enabled,
 		labelAdd:         defaultLabelAdd,
 		prTitle:          defaultPRTitle,
+		runtimeStart:     startRuntimeWorker,
+		codexCheck:       sessionruntime.RequireCompatibleCodex,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
-		launch:    launchBGSession,
-		launchRaw: rawLaunchBGSession,
+		launch:       launchBGSession,
+		launchRaw:    rawLaunchBGSession,
+		runtimeStart: startRuntimeWorker,
+		codexCheck:   sessionruntime.RequireCompatibleCodex,
 	})
+	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
 }
 
 // ---- new-initiative (kong) --------------------------------------------------
@@ -120,18 +126,21 @@ type dispatchKong struct {
 	Slug         string `name:"slug"          help:"Kebab-case slug (default: derived from --problem)."`
 	BodyFile     string `name:"body-file"     help:"Path to file whose content is appended to the initiative body after schema lines."`
 	IDOnly       bool   `name:"id-only"       help:"Print only the initiative id."`
-	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch claude bg session."`
+	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch a background agent session."`
 	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
-	Model        string `name:"model"         help:"Model override for bg session (default: claude-opus-4-8)."`
+	Model        string `name:"model"         help:"Model override for the background session (Claude default: claude-opus-4-8; Codex default: user config)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
 	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
+	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto (default: $ATEAM_RUNTIME, then claude)."`
 
-	git        gitRunner       `kong:"-"`
-	launch     launchFunc      `kong:"-"`
-	createEpic epicCreatorFunc `kong:"-"`
-	launchRaw  rawLaunchFunc   `kong:"-"`
+	git          gitRunner                           `kong:"-"`
+	launch       launchFunc                          `kong:"-"`
+	createEpic   epicCreatorFunc                     `kong:"-"`
+	launchRaw    rawLaunchFunc                       `kong:"-"`
+	runtimeStart runtimeStartFunc                    `kong:"-"`
+	codexCheck   func(context.Context, string) error `kong:"-"`
 
 	// transportFor, transportEnabled, and labelAdd back the eager Telegram
 	// (or configured transport) topic creation below. Injected at
@@ -149,6 +158,15 @@ type dispatchKong struct {
 	// its title segment, which is the same fail-soft outcome as a failed
 	// fetch.
 	prTitle prTitleFunc `kong:"-"`
+}
+
+// codexDRIPrompt names the installed skill explicitly. Codex exposes plugin
+// skills with a plugin-name prefix, so a bare "/dri" prompt depends on fuzzy
+// trigger matching and can collide with another plugin. This prompt gives the
+// model an unambiguous trigger while keeping the initiative id as durable
+// input rather than conversation context.
+func codexDRIPrompt(initiativeID string) string {
+	return "Use the agent-teams-codex:dri skill to drive initiative " + initiativeID + "."
 }
 
 // transportEnabledFunc is the function type for checking whether a usable
@@ -174,6 +192,18 @@ func (c *dispatchKong) Validate() error {
 func (c *dispatchKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam dispatch: not implemented")
+	}
+	runtimeKind, err := sessionruntime.ResolveNew(c.Runtime, os.Getenv("ATEAM_RUNTIME"))
+	if err != nil {
+		return cli.Usagef("dispatch: %v", err)
+	}
+	if runtimeKind == sessionruntime.Codex && c.Advisor != "" {
+		return cli.Usagef("dispatch: --advisor is only supported by the Claude runtime")
+	}
+	if runtimeKind == sessionruntime.Codex && c.codexCheck != nil {
+		if err := c.codexCheck(context.Background(), ""); err != nil {
+			return fmt.Errorf("dispatch: Codex runtime unavailable: %w", err)
+		}
 	}
 
 	// 1. Resolve repo root.
@@ -254,6 +284,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		Branch:   resolvedSlug,
 		Team:     team,
 		Mode:     "bg",
+		Runtime:  string(runtimeKind),
 		Standby:  c.Standby,
 	}
 
@@ -355,7 +386,27 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 
 	// 8. Launch background DRI unless --no-launch.
 	if !c.NoLaunch {
-		if c.LaunchPrompt != "" {
+		if runtimeKind == sessionruntime.Codex {
+			prompt := c.LaunchPrompt
+			if prompt == "" {
+				prompt = codexDRIPrompt(issue.ID)
+			} else {
+				prompt = strings.ReplaceAll(prompt, "{id}", issue.ID)
+			}
+			start := c.runtimeStart
+			if start == nil {
+				start = startRuntimeWorker
+			}
+			if err := start(ctx, runtimeStartRequest{
+				Runtime:      runtimeKind,
+				InitiativeID: issue.ID,
+				Worktree:     wtPath,
+				Prompt:       prompt,
+				Model:        c.Model,
+			}); err != nil {
+				return fmt.Errorf("dispatch: launch: %w", err)
+			}
+		} else if c.LaunchPrompt != "" {
 			// Custom prompt path: substitute {id} and bypass c.launch (which
 			// would prepend /dri).
 			prompt := strings.ReplaceAll(c.LaunchPrompt, "{id}", issue.ID)
@@ -388,7 +439,11 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	fmt.Fprintf(ctx.Stdout, "team: %s\n", team)
 	if !c.NoLaunch {
 		fmt.Fprintf(ctx.Stdout, "\nBackground session launched: %s\n", sessionName)
-		printWatchControl(ctx.Stdout, sessionName)
+		if runtimeKind == sessionruntime.Codex {
+			printCodexControls(ctx.Stdout, ctx.Home, issue.ID, "")
+		} else {
+			printWatchControl(ctx.Stdout, sessionName)
+		}
 	}
 	return nil
 }
@@ -552,11 +607,14 @@ func defaultPRTitle(ownerRepo string, prNumber int) (string, error) {
 // from treating them as flags.
 type resumeKong struct {
 	ID           string `arg:"" name:"id" optional:"" help:"Initiative ID to resume."`
-	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: /dri <id>)."`
-	Model        string `name:"model" help:"Model for a --launch-prompt session (default: claude-opus-4-8). Requires --launch-prompt."`
+	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: the runtime's DRI skill with <id>)."`
+	Model        string `name:"model" help:"Model for a --launch-prompt session (Claude default: claude-opus-4-8; Codex default: user config). Requires --launch-prompt."`
+	Runtime      string `name:"runtime" help:"Assert the initiative runtime (claude or codex)."`
 
-	launch    launchFunc    `kong:"-"`
-	launchRaw rawLaunchFunc `kong:"-"`
+	launch       launchFunc                          `kong:"-"`
+	launchRaw    rawLaunchFunc                       `kong:"-"`
+	runtimeStart runtimeStartFunc                    `kong:"-"`
+	codexCheck   func(context.Context, string) error `kong:"-"`
 }
 
 // Validate checks that the required ID arg is non-empty.
@@ -588,6 +646,15 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	}
 
 	f := initiative.Of(issue)
+	runtimeKind, err := sessionruntime.AssertStored(f.Runtime, c.Runtime)
+	if err != nil {
+		return cli.Usagef("ateam resume: %v", err)
+	}
+	if runtimeKind == sessionruntime.Codex && c.codexCheck != nil {
+		if err := c.codexCheck(context.Background(), ""); err != nil {
+			return fmt.Errorf("ateam resume: Codex runtime unavailable: %w", err)
+		}
+	}
 	dir := f.Worktree
 	if dir == "" {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no worktree: line in its description\n", c.ID)
@@ -606,7 +673,30 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	}
 
 	var launchErr error
-	if c.LaunchPrompt != "" {
+	var codexSession string
+	if runtimeKind == sessionruntime.Codex {
+		if len(f.Sessions) == 0 {
+			fmt.Fprintf(ctx.Stderr, "ateam resume: Codex initiative %s has no session: thread id yet\n", c.ID)
+			return cli.Silent(1)
+		}
+		codexSession = f.Sessions[len(f.Sessions)-1]
+		prompt := c.LaunchPrompt
+		if prompt == "" {
+			prompt = codexDRIPrompt(c.ID)
+		}
+		start := c.runtimeStart
+		if start == nil {
+			start = startRuntimeWorker
+		}
+		launchErr = start(ctx, runtimeStartRequest{
+			Runtime:      runtimeKind,
+			InitiativeID: c.ID,
+			Worktree:     dir,
+			Prompt:       prompt,
+			Model:        c.Model,
+			ResumeID:     codexSession,
+		})
+	} else if c.LaunchPrompt != "" {
 		launchErr = c.launchRaw(ctx, dir, c.LaunchPrompt, c.Model, "", "dri", c.ID)
 	} else {
 		launchErr = c.launch(ctx, dir, c.ID, "dri", c.ID)
@@ -619,7 +709,11 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	fmt.Fprintf(ctx.Stdout, "initiative_id: %s\n", c.ID)
 	fmt.Fprintf(ctx.Stdout, "worktree: %s\n", dir)
 	fmt.Fprintf(ctx.Stdout, "\nBackground session launched: %s\n", sessionName)
-	printWatchControl(ctx.Stdout, sessionName)
+	if runtimeKind == sessionruntime.Codex {
+		printCodexControls(ctx.Stdout, ctx.Home, c.ID, codexSession)
+	} else {
+		printWatchControl(ctx.Stdout, sessionName)
+	}
 	return nil
 }
 

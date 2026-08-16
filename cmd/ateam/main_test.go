@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -69,5 +71,35 @@ func TestRunVerbHelpFlagPreInit(t *testing.T) {
 	code := run([]string{"reopen", "--help"})
 	if code != 0 {
 		t.Errorf("run([reopen --help]) uninitialised = %d, want 0", code)
+	}
+}
+
+func TestRunRuntimeCheckPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	code := run([]string{"runtime", "check", "codex"})
+	if code != 1 {
+		t.Errorf("run([runtime check codex]) with Codex absent = %d, want compatibility failure 1", code)
+	}
+}
+
+func TestRunSetupCodexPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	binDir := t.TempDir()
+	codex := filepath.Join(binDir, "codex")
+	body := "#!/bin/sh\nset -eu\nprintf '%s\\n' '{\"status\":\"stopped\",\"managedCodexPath\":\"/standalone/codex\",\"managedCodexVersion\":\"0.146.1\",\"cliVersion\":\"0.146.1\"}'\n"
+	if err := os.WriteFile(codex, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	if code := run([]string{"setup", "codex"}); code != 0 {
+		t.Fatalf("run([setup codex]) with no bd or workspace = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "agents", "agent-teams-planner.toml")); err != nil {
+		t.Fatalf("setup codex did not install agent definitions: %v", err)
 	}
 }

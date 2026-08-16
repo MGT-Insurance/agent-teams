@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Codex app-server lifecycle spike · agent-teams</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef3f1;
+      --paper: #fffefa;
+      --ink: #15241f;
+      --muted: #64716c;
+      --line: #d7e0dc;
+      --accent: #087f73;
+      --soft: #dff3ed;
+      --warn: #fff0cc;
+      --danger: #fde4df;
+      --code: #10231f;
+      --code-ink: #d9f4eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 10% 0, rgba(8,127,115,.13), transparent 30rem), var(--bg);
+      color: var(--ink);
+      font: 16px/1.65 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--accent); text-underline-offset: .18em; }
+    .page { width: min(1080px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 5rem; }
+    header, main {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--paper);
+      box-shadow: 0 18px 55px rgba(28,51,43,.08);
+    }
+    header { padding: clamp(1.5rem, 5vw, 4rem); }
+    main { margin-top: 1rem; padding: clamp(1.3rem, 4vw, 3.2rem); }
+    .eyebrow { color: var(--accent); font-size: .78rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    h1 { margin: .45rem 0 .8rem; font-size: clamp(2.3rem, 7vw, 5rem); line-height: .98; letter-spacing: -.055em; }
+    h2 { margin: 3rem 0 1rem; padding-top: .8rem; border-top: 1px solid var(--line); font-size: 1.8rem; }
+    h3 { margin: 1.8rem 0 .6rem; color: #155f57; }
+    p { margin: .75rem 0; }
+    .meta { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.2rem; }
+    .pill { padding: .28rem .7rem; border-radius: 999px; background: var(--soft); color: #075e56; font-size: .78rem; font-weight: 750; }
+    .decision, .warning { margin: 1.25rem 0; padding: 1rem 1.1rem; border-left: 5px solid var(--accent); border-radius: 10px; background: var(--soft); }
+    .warning { border-left-color: #b57700; background: var(--warn); }
+    pre { overflow: auto; padding: 1.1rem; border-radius: 12px; background: var(--code); color: var(--code-ink); }
+    code { font: .9em/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    :not(pre) > code { padding: .1em .32em; border: 1px solid var(--line); border-radius: 5px; background: #edf3ef; color: #24433b; }
+    table { width: 100%; margin: 1rem 0; border-collapse: collapse; font-size: .94rem; }
+    th, td { padding: .7rem .75rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #edf5f2; }
+    ul, ol { padding-left: 1.35rem; }
+    li { margin: .35rem 0; }
+    footer { padding: 1.2rem .2rem; color: var(--muted); font-size: .85rem; }
+    @media (max-width: 760px) {
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+      tr { margin: .8rem 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+      td { border: 0; border-bottom: 1px solid var(--line); }
+      td:last-child { border-bottom: 0; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { color-scheme: dark; --bg:#0d1714; --paper:#14211d; --ink:#e5f0ec; --muted:#a4b3ad; --line:#31443d; --soft:#173f38; --warn:#493715; --code:#08110e; }
+      th { background:#1a2e28; }
+      :not(pre) > code { background:#1b2f29; color:#d9f4eb; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="eyebrow">Feasibility spike · agent-teams-bhe0.10</div>
+      <h1>Codex app-server lifecycle</h1>
+      <p>What survives when the client, launcher, or native Codex server dies—and what that means for mail wake-up.</p>
+      <div class="meta">
+        <span class="pill">GO for app-server</span>
+        <span class="pill">Codex 0.145.0 + 0.146.1</span>
+        <span class="pill">2026-08-06</span>
+        <span class="pill">PR #160</span>
+      </div>
+    </header>
+
+    <main>
+      <div class="decision">
+        <strong>Decision:</strong> require standalone Codex and use its managed app-server daemon. Codex owns the durable daemon; ateam owns short-lived, locked mail delivery and crash reconciliation. Remove detached per-turn <code>codex exec</code> workers from the design.
+      </div>
+
+      <p><a href="./2026-08-06-codex-app-server-spike.md">Markdown source</a> · <a href="../scripts/spike-codex-app-server.mjs">Transient-server harness</a> · <a href="../scripts/spike-codex-managed-daemon.mjs">Managed-daemon harness</a> · <a href="./2026-07-27-codex-runtime-plan.html">Runtime roadmap</a></p>
+      <p>The protocol baseline comes from OpenAI's <a href="https://developers.openai.com/codex/app-server/">Codex app-server reference</a>. The results below are live observations, not behavior inferred from the documentation.</p>
+
+      <h2>Result in one picture</h2>
+      <pre><code>durable Beads mail + doorbell
+              │
+       ateam delivery lock
+              │
+      app-server client
+       ╱             ╲
+ active thread      idle/notLoaded
+ turn/steer         resume + turn/start
+       ╲             ╱
+        app-server daemon
+              │
+       persisted Codex thread</code></pre>
+
+      <p>There is no long-lived ateam supervisor in this design. Each delivery attempt idempotently ensures the managed daemon is running, connects, and reconciles the target thread under a short-lived delivery lock. If that client disappears, the turn continues. If the daemon dies, the next attempt restarts it; the old turn becomes interrupted and the same thread accepts a recovery turn.</p>
+
+      <h2>Measured lifecycle matrix</h2>
+      <p>The checked-in harness requires <code>--run-live</code> because it creates real Codex turns and consumes model usage.</p>
+      <table>
+        <thead><tr><th>Experiment</th><th>Observed result</th><th>Design consequence</th></tr></thead>
+        <tbody>
+          <tr><td>Client disconnect</td><td>Turn remained active and completed after another client connected.</td><td>The client is not the turn owner.</td></tr>
+          <tr><td>Active mail</td><td><code>turn/steer</code> placed the nonce in the active turn and final answer.</td><td>Use steer with the actual active turn ID.</td></tr>
+          <tr><td>Idle mail</td><td><code>turn/start</code> completed a new turn under the same thread ID.</td><td>Resume if needed, then start a turn.</td></tr>
+          <tr><td>Second start while active</td><td>Accepted, but folded into the existing turn; the returned new ID was not a distinct persisted turn.</td><td>App-server serializes model work, but this response is not a safe delivery acknowledgment.</td></tr>
+          <tr><td>Explicit interrupt</td><td>Turn became durably <code>interrupted</code>.</td><td>Native implementation for runtime stop.</td></tr>
+          <tr><td>Graceful server stop</td><td><code>SIGTERM</code> drained the active turn, then exited zero.</td><td>Normal shutdown need not orphan work.</td></tr>
+          <tr><td>Launcher killed</td><td>Native PID survived; reconnect, status, steering, and completion all worked.</td><td>A dead launcher/supervisor does not strand a live Codex session.</td></tr>
+          <tr><td>Native server killed</td><td>After restart, old turn was interrupted; thread resumed idle; recovery turn completed.</td><td>Daemon restart + durable-mail replay closes the crash case.</td></tr>
+          <tr><td>List after restart</td><td>Thread remained discoverable with cwd, git data, path, CLI version, and status.</td><td>No process-table scan is needed for thread discovery.</td></tr>
+          <tr><td>Official daemon start</td><td>The fixed standalone binary detached under parent PID 1; a second start returned <code>alreadyRunning</code>.</td><td>Codex, not ateam, can own the durable daemon.</td></tr>
+          <tr><td>Managed graceful stop</td><td>Stop waited about 10.7 seconds for the active turn; restart read it completed.</td><td>The supported stop operation drains work.</td></tr>
+          <tr><td>Managed daemon killed</td><td>Restart read the old turn as interrupted; resume returned idle; a recovery turn completed.</td><td>Daemon restart plus unread-mail replay is sufficient.</td></tr>
+        </tbody>
+      </table>
+
+      <h2>The supervisor question</h2>
+      <p>The spike separated three processes:</p>
+      <ol>
+        <li>the JSON-RPC client, such as <code>ateam</code>;</li>
+        <li>the CLI launcher process; and</li>
+        <li>the native app-server process that owns threads and turns.</li>
+      </ol>
+      <p>Killing launcher PID <code>3879</code> left native PID <code>3880</code> alive. A fresh client read the active turn and delivered <code>MAIL_AFTER_LAUNCHER_DEATH_83b0ca</code>. This directly answers the original concern: losing the supervising launcher is recoverable while Codex remains alive.</p>
+      <p>Killing native PID <code>3880</code> is different. The restarted server read the old turn as interrupted, resumed the same thread idle, and completed a new recovery turn. The managed-daemon follow-up reproduced this through the official lifecycle: PID <code>37709</code> detached under PID 1, graceful stop drained a turn, and hard-killing restarted PID <code>41280</code> was recoverable. What remains is a delivery coordinator, not an always-running supervisor.</p>
+
+      <h2>What ateam must still own</h2>
+      <ul>
+        <li>A per-initiative delivery lock around state inspection and wake selection.</li>
+        <li>Beads messages and the doorbell as durable truth.</li>
+        <li><code>turn/steer(expectedTurnId=…)</code> for active delivery.</li>
+        <li><code>thread/resume</code> plus <code>turn/start</code> for idle or unloaded delivery.</li>
+        <li>Idempotent daemon start and post-crash reconciliation.</li>
+        <li>Doorbell clearing only after <code>ateam mail inbox</code> consumes unread mail.</li>
+      </ul>
+
+      <div class="warning">
+        <strong>Status caveat:</strong> during development, <code>thread/read</code> briefly synthesized a just-started turn as interrupted with no completion timestamp, although its rollout then recorded normal completion. Production code must not clear mail from status alone. Prefer <code>turn/completed</code> events and require durable completion metadata during reconnect polling.
+      </div>
+
+      <h2>Installation contract</h2>
+      <p><code>codex app-server daemon start</code> refused the npm/mise Codex 0.145.0 installation. Standalone Codex 0.146.1 exposed the fixed managed binary at <code>~/.codex/packages/standalone/current/codex</code> and passed the full daemon lifecycle spike.</p>
+      <p>The first Codex slice therefore requires standalone Codex. Shared setup/audit logic must report Codex absent, Codex present in an incompatible layout, or compatible standalone Codex. General setup warns when optional Codex is incompatible; explicitly selecting the Codex runtime fails with an actionable installer message. The Claude setup skill and future Codex setup skill must invoke that same check.</p>
+
+      <h2>PR #160 consequence</h2>
+      <p>PR #160 now preserves runtime metadata, thread binding, Claude fallback, and adapter boundaries while replacing the Codex per-turn <code>runtime-worker</code> with the managed-daemon app-server client. The mail coordinator builds its delivery lock and durable reconciliation on that client rather than process ownership.</p>
+
+      <h2>Remaining operational verification</h2>
+      <p>The daemon deployment gate is settled. Logout/reboot and CLI-upgrade behavior remains a compatibility check, not a blocker for replacing the per-turn worker contract. Every delivery attempts an idempotent daemon start, so mail wake does not depend on login-time bootstrap.</p>
+    </main>
+    <footer>Generated from live local experiments. Durable initiative and mail truth remain in Beads.</footer>
+  </div>
+</body>
+</html>

@@ -77,6 +77,22 @@ func run(args []string) int {
 		return 2
 	}
 
+	// Runtime compatibility is needed by setup before the Beads workspace (or
+	// even bd itself) exists. It is deliberately the only parsed verb allowed
+	// through this pre-initialization path.
+	if len(args) >= 2 && ((args[0] == "runtime" && args[1] == "check") || (args[0] == "setup" && args[1] == "codex")) {
+		cliCtx := &cli.Context{Home: home, Stdout: stdout, Stderr: stderr}
+		kctx.Bind(cliCtx)
+		runErr := kctx.Run(cliCtx)
+		if runErr != nil {
+			var silent *cli.SilentError
+			if !errors.As(runErr, &silent) {
+				fmt.Fprintln(stderr, runErr.Error())
+			}
+		}
+		return cli.ExitCode(runErr)
+	}
+
 	// Guard: bd must be in PATH before any verb (mirrors bash line 17).
 	if _, err := exec.LookPath("bd"); err != nil {
 		fmt.Fprintln(stderr, "ateam: 'bd' not found in PATH")

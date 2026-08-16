@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -894,6 +895,79 @@ func TestSendKong_BusySession_NoOp(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "doorbell will be picked up when its turn ends") {
 		t.Errorf("stdout missing busy no-op notice: %s", stdout.String())
+	}
+}
+
+func TestSendKong_CodexRoutesDirectlyToDeliveryCoordinator(t *testing.T) {
+	sf := newSendFixture(t)
+	var wakeCalled bool
+	cmd := &sendKong{
+		RecipientID: "at-codex",
+		File:        sf.file,
+		Sender:      "test-sender",
+		agentsFunc: func() ([]agentSession, error) {
+			t.Fatal("Codex delivery must not query claude agents")
+			return nil, nil
+		},
+		codexWake: func(_ *cli.Context, issue bd.Issue) error {
+			wakeCalled = true
+			if issue.ID != "at-codex" {
+				t.Fatalf("wake issue=%+v", issue)
+			}
+			return nil
+		},
+	}
+	fbd := sf.fakeBD("at-codex", "at-msg")
+	fbd.runFn = func(args ...string) (string, error) {
+		issues := []bd.Issue{{ID: "at-codex", Description: "runtime: codex\nworktree: " + sf.recipientWt + "\nsession: thread-1\n"}}
+		raw, _ := json.Marshal(issues)
+		return string(raw), nil
+	}
+	ctx, stdout, _ := makeCtx(fbd, sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !wakeCalled {
+		t.Fatal("Codex wake was not called")
+	}
+	if !strings.Contains(stdout.String(), "Codex thread accepted") {
+		t.Fatalf("stdout = %s", stdout.String())
+	}
+}
+
+func TestSendKong_CodexBusyOrFailedWakeLeavesMailQueued(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "busy", err: errCodexDeliveryBusy, want: "delivery already in progress"},
+		{name: "failed", err: errors.New("daemon unavailable"), want: "message at-msg remains queued"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sf := newSendFixture(t)
+			cmd := &sendKong{
+				RecipientID: "at-codex",
+				File:        sf.file,
+				codexWake:   func(*cli.Context, bd.Issue) error { return tc.err },
+			}
+			fbd := sf.fakeBD("at-codex", "at-msg")
+			fbd.runFn = func(args ...string) (string, error) {
+				issues := []bd.Issue{{ID: "at-codex", Description: "runtime: codex\nworktree: " + sf.recipientWt + "\nsession: thread-1\n"}}
+				raw, _ := json.Marshal(issues)
+				return string(raw), nil
+			}
+			ctx, stdout, _ := makeCtx(fbd, sf.home)
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Fatalf("stdout = %s", stdout.String())
+			}
+			if _, err := os.Stat(filepath.Join(sf.home, "mailbox", "at-codex.wake")); err != nil {
+				t.Fatalf("doorbell missing: %v", err)
+			}
+		})
 	}
 }
 

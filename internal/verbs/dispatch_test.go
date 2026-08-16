@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
+	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -115,12 +117,16 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 	expectedWt := filepath.Join(wtRoot, expectedSlug)
 
 	var capturedBodyFile string
+	var capturedBody string
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
 			// Find the --body-file arg and record it.
 			for _, a := range args {
 				if strings.HasPrefix(a, "--body-file=") {
 					capturedBodyFile = strings.TrimPrefix(a, "--body-file=")
+					if data, err := os.ReadFile(capturedBodyFile); err == nil {
+						capturedBody = string(data)
+					}
 				}
 			}
 			// Populate the issue by unmarshalling JSON into *bd.Issue.
@@ -171,6 +177,111 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 			t.Errorf("body file missing 'worktree: %s':\n%s", expectedWt, string(body))
 		}
 	}
+	if !strings.Contains(capturedBody, "runtime: claude\n") {
+		t.Errorf("new dispatch must persist its concrete default runtime:\n%s", capturedBody)
+	}
+}
+
+func TestDispatch_CodexPersistsRuntimeAndStartsWorker(t *testing.T) {
+	repoDir := newEnabledRepoDir(t)
+	home := t.TempDir()
+	var body string
+	fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--body-file=") {
+				data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+				if err != nil {
+					return err
+				}
+				body = string(data)
+			}
+		}
+		if issue, ok := dst.(*bd.Issue); ok {
+			issue.ID = "at-codex1"
+		}
+		return nil
+	}}
+	var started runtimeStartRequest
+	ctx, stdout, _ := makeCtx(fbd, home)
+	cmd := &dispatchKong{
+		Problem: "Codex work",
+		Repo:    repoDir,
+		Runtime: "codex",
+		Model:   "gpt-test",
+		git:     &fakeGit{repoRootFn: func(string) (string, error) { return repoDir, nil }},
+		launch: func(*cli.Context, string, string, string, string) error {
+			t.Fatal("Claude launcher called for Codex runtime")
+			return nil
+		},
+		runtimeStart: func(_ *cli.Context, req runtimeStartRequest) error {
+			started = req
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(body, "runtime: codex\n") {
+		t.Fatalf("initiative body missing runtime: codex:\n%s", body)
+	}
+	if started.Runtime != sessionruntime.Codex || started.InitiativeID != "at-codex1" || started.Prompt != codexDRIPrompt("at-codex1") || started.Model != "gpt-test" {
+		t.Fatalf("runtime start = %+v", started)
+	}
+	if !strings.Contains(stdout.String(), sessionruntime.EventLogPath(home, "at-codex1")) || strings.Contains(stdout.String(), "claude attach") {
+		t.Fatalf("monitoring output is not Codex-specific:\n%s", stdout.String())
+	}
+}
+
+func TestDispatch_RuntimeResolutionAndValidation(t *testing.T) {
+	t.Run("machine default is persisted without launch", func(t *testing.T) {
+		t.Setenv("ATEAM_RUNTIME", "codex")
+		repoDir := newEnabledRepoDir(t)
+		var body string
+		fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+			for _, arg := range args {
+				if strings.HasPrefix(arg, "--body-file=") {
+					data, _ := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+					body = string(data)
+				}
+			}
+			dst.(*bd.Issue).ID = "at-auto1"
+			return nil
+		}}
+		ctx, _, _ := makeCtx(fbd, t.TempDir())
+		cmd := &dispatchKong{Problem: "auto", Repo: repoDir, NoLaunch: true, git: &fakeGit{repoRootFn: func(string) (string, error) { return repoDir, nil }}}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(body, "runtime: codex\n") {
+			t.Fatalf("body = %s", body)
+		}
+	})
+	t.Run("unknown runtime fails before worktree", func(t *testing.T) {
+		added := false
+		cmd := &dispatchKong{Problem: "bad", Runtime: "other", git: &fakeGit{addWorktreeFn: func(string, string, string, string) error { added = true; return nil }}}
+		err := cmd.Run(&cli.Context{})
+		if err == nil || cli.ExitCode(err) != 2 || added {
+			t.Fatalf("err=%v added=%v", err, added)
+		}
+	})
+	t.Run("incompatible Codex fails before repo mutation", func(t *testing.T) {
+		gitCalled := false
+		cmd := &dispatchKong{
+			Problem: "codex",
+			Runtime: "codex",
+			codexCheck: func(context.Context, string) error {
+				return fmt.Errorf("official standalone installer required")
+			},
+			git: &fakeGit{repoRootFn: func(string) (string, error) {
+				gitCalled = true
+				return "", nil
+			}},
+		}
+		err := cmd.Run(&cli.Context{})
+		if err == nil || !strings.Contains(err.Error(), "official standalone") || gitCalled {
+			t.Fatalf("err=%v gitCalled=%v", err, gitCalled)
+		}
+	})
 }
 
 // ---- dispatch: not a repo --------------------------------------------------
