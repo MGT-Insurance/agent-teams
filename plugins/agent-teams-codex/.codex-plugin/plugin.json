@@ -1,6 +1,6 @@
 {
   "name": "agent-teams-codex",
-  "version": "0.1.0+codex.20260816214211",
+  "version": "0.52.0+codex.20260816214526",
   "description": "Codex-native DRI orchestration, role agents, durable Beads mail, and agent-teams setup.",
   "author": {
     "name": "Eric Lloyd",
