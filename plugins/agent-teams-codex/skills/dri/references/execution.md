@@ -41,4 +41,3 @@ implementers.
 
 After every integration ring, run the composed branch's full verification.
 Loop closure requires both integrated code and observable end-to-end behavior.
-

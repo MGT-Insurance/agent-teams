@@ -14,4 +14,3 @@
    on merge clear its gate before closing it.
 9. End the turn. Do not stop the managed app-server daemon or delete the Codex
    thread.
-

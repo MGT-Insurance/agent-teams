@@ -32,4 +32,3 @@ A design pivot always gets a QUESTION gate at divergence. Include mechanism
 evidence, the recommended design, and the literal implementation of the
 original framing. Previous approval or a previous gate skip does not approve a
 new mechanism.
-
