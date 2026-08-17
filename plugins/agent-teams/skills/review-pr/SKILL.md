@@ -201,12 +201,18 @@ ends up empty, the merged close step falls back to `<pr-url>`.
 
 If the `gh api` call fails (e.g. a file:line reference does not correspond to a diff hunk), retry without the failing inline comment(s) and add their content to the review body instead (capturing `REVIEW_URL` from the retry the same way), then note the fallback in the initiative.
 
-**Re-review mode:** findings reported `not addressed` are the substantive
-findings — post them (inline where the line is in the diff, body otherwise)
-with event=`COMMENT` and a body like "Re-review: N of M prior findings
-addressed." If ALL prior findings are addressed, this is the no-findings
-case above (APPROVE unless self-review) with body "Re-review: all M prior
-findings addressed." Capture `REVIEW_URL` the same way in both cases.
+**Re-review mode:** findings reported `not addressed` are the only ones
+that force event=`COMMENT` — post them (inline where the line is in the
+diff, body otherwise) with a body like "Re-review: N of M prior findings
+addressed" (N counts `addressed` and `out of scope` together). Findings
+reported `out of scope` count as addressed for this gate — resolving them
+is legitimately not this PR's job — but restate each one in the review
+body (its reason and file:line) so it stays visible for whichever future
+PR owns it; they post in the body only, never as an inline comment. If
+every prior finding is either `addressed` or `out of scope`, this is the
+no-findings case above (APPROVE unless self-review) with body "Re-review:
+all M prior findings addressed" followed by the restated out-of-scope
+findings, if any. Capture `REVIEW_URL` the same way in both cases.
 
 ### 10. Record the outcome and close the initiative
 
