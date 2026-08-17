@@ -32,7 +32,11 @@ Replace the review instructions above with:
 - Verify each prior finding against the current diff: `addressed` means the
   code now handles it, or the author's stated reasoning is verified correct
   against the code — the author's word alone is a claim, not evidence, and
-  never suffices. Otherwise `not addressed`. Do NOT raise new findings —
-  this is a scoped re-review of previously raised items only.
+  never suffices. `out of scope` means the finding is real but fixing it is
+  legitimately not this PR's job — it belongs to another PR (e.g. whichever
+  future PR wires up a caller), not a miss in this one. Otherwise `not
+  addressed`. Do NOT raise new findings — this is a scoped re-review of
+  previously raised items only.
 - Report back via SendMessage one line per prior finding: `addressed` /
-  `not addressed`, with a one-sentence reason each.
+  `out of scope` / `not addressed`, with a one-sentence reason each — for
+  `out of scope`, the reason must say which future PR or work owns it.
