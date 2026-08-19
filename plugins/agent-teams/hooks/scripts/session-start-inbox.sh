@@ -36,7 +36,15 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 # cross-open-initiative conflict warning on stderr is deliberately loud
 # (Eric: "error/warn path, not a silent second tie") — route any non-empty
 # output through the structured hook log instead of a bare redirect.
-tie_session_out=$("$ATEAM" tie-session --session-id "$HOOK_SESSION_ID" 2>&1) || true
+#
+# When the launcher published ATEAM_INITIATIVE (dispatch.go:748-751,
+# bgSessionSettingsJSON at :809-814 — reaches a claimed bg-spare via
+# --settings even when cmd.Env doesn't), pass it as the positional
+# initiative-id so the tie doesn't depend on cwd resolution (agent-teams-
+# rjh1.2 — BUG 2: a claimed spare's cwd can lag the worktree at hook time).
+# Omit-when-empty expansion preserves today's cwd-resolution behavior for
+# generic (unclaimed) spares.
+tie_session_out=$("$ATEAM" tie-session ${ATEAM_INITIATIVE:+"$ATEAM_INITIATIVE"} --session-id "$HOOK_SESSION_ID" 2>&1) || true
 if [ -n "$tie_session_out" ]; then
   hook_log_note "note" "tie-session: ${tie_session_out}"
 fi
