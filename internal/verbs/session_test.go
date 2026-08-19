@@ -354,3 +354,54 @@ func TestMatchSessionsForInitiative_LegacyNoMatch(t *testing.T) {
 		t.Errorf("matchSessionsForInitiative: got %v, want nil", got)
 	}
 }
+
+// TestMatchSessionsForInitiative_AllDeadFallsBackToWorktreeByName covers
+// agent-teams-rjh1.1: an initiative whose every recorded session: id is dead
+// must still find a LIVE session running in its worktree under an
+// UNRECORDED id, matched by Name == filepath.Base(worktree) (the background
+// session path).
+func TestMatchSessionsForInitiative_AllDeadFallsBackToWorktreeByName(t *testing.T) {
+	pidLive := 42
+	iss := bd.Issue{Description: "session: sess-dead\nworktree: /repo-root/at-x\n"}
+	sessions := []agentSession{
+		{SessionID: "sess-dead", PID: nil},
+		{SessionID: "sess-unrecorded", Name: "at-x", PID: &pidLive},
+	}
+	got := matchSessionsForInitiative(sessions, iss)
+	if len(got) != 1 || got[0].SessionID != "sess-unrecorded" {
+		t.Errorf("matchSessionsForInitiative: got %v, want the live unrecorded worktree session", got)
+	}
+}
+
+// TestMatchSessionsForInitiative_AllDeadFallsBackToWorktreeByCWD covers the
+// interactive-session variant of the same fallback: no Name, matched by CWD
+// instead.
+func TestMatchSessionsForInitiative_AllDeadFallsBackToWorktreeByCWD(t *testing.T) {
+	pidLive := 43
+	iss := bd.Issue{Description: "session: sess-dead\nworktree: /repo-root/at-x\n"}
+	sessions := []agentSession{
+		{SessionID: "sess-dead", PID: nil},
+		{SessionID: "sess-unrecorded", CWD: "/repo-root/at-x", PID: &pidLive},
+	}
+	got := matchSessionsForInitiative(sessions, iss)
+	if len(got) != 1 || got[0].SessionID != "sess-unrecorded" {
+		t.Errorf("matchSessionsForInitiative: got %v, want the live unrecorded worktree session", got)
+	}
+}
+
+// TestMatchSessionsForInitiative_AllDeadNoWorktreeStaysNil verifies the
+// f.Worktree != "" guard: an initiative with only session: lines and no
+// worktree field, whose recorded ids are all dead, must return nil rather
+// than spuriously falling back (matchSessionByWorktree("") would otherwise
+// resolve to "." and match any session with an empty CWD).
+func TestMatchSessionsForInitiative_AllDeadNoWorktreeStaysNil(t *testing.T) {
+	iss := bd.Issue{Description: "session: sess-dead\n"}
+	sessions := []agentSession{
+		{SessionID: "sess-dead", PID: nil},
+		{SessionID: "sess-other", PID: nil},
+	}
+	got := matchSessionsForInitiative(sessions, iss)
+	if got != nil {
+		t.Errorf("matchSessionsForInitiative: got %v, want nil (no worktree field, guard must not fire)", got)
+	}
+}
