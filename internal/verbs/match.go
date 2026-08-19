@@ -159,6 +159,16 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 // (matchSessionByWorktree) wrapped to a 0-or-1-element slice, so legacy
 // routing/classification is unchanged byte-for-byte (agent-teams-zalv.1 §2,
 // §5).
+//
+// When iss HAS session: lines but every recorded id resolves to zero live
+// sessions (all dead, or none present in the snapshot at all), this also
+// falls back to matchSessionByWorktree — GUARDED on f.Worktree != "" — so a
+// live session running in the initiative's worktree under an unrecorded id
+// is still found instead of silently reporting the initiative as sessionless
+// (agent-teams-rjh1.1). The guard is load-bearing: matchSessionByWorktree("")
+// resolves to "." via canonicalPath and would spuriously match any session
+// with an empty CWD, so the fallback never fires for an initiative with no
+// worktree field.
 func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSession {
 	f := initiative.Of(iss)
 	ids := f.Sessions
@@ -180,6 +190,12 @@ func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSe
 		if s, ok := byID[id]; ok && s.PID != nil {
 			out = append(out, *s)
 		}
+	}
+	if len(out) == 0 && f.Worktree != "" {
+		if s := matchSessionByWorktree(sessions, f.Worktree); s != nil {
+			return []agentSession{*s}
+		}
+		return nil
 	}
 	return out
 }
