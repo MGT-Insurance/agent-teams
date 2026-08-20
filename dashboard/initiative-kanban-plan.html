@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Initiative Kanban — high-level plan gate</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #eef3f8;
+      --muted: #98a7b7;
+      --faint: #667688;
+      --canvas: #081018;
+      --surface: #101b26;
+      --surface-2: #152332;
+      --line: #26384a;
+      --blue: #62a8ff;
+      --cyan: #55d6d0;
+      --green: #69d59b;
+      --amber: #f2b862;
+      --red: #ff7a86;
+      --violet: #b9a0ff;
+      --radius: 18px;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .32);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 85% -8%, rgba(98,168,255,.16), transparent 33rem),
+        radial-gradient(circle at -12% 24%, rgba(85,214,208,.10), transparent 29rem),
+        var(--canvas);
+      font: 15px/1.55 var(--sans);
+    }
+    a { color: var(--blue); }
+    code { font-family: var(--mono); font-size: .92em; }
+    .page { width: min(1500px, calc(100% - 40px)); margin: 0 auto; padding: 26px 0 80px; }
+    .eyebrow {
+      color: var(--cyan);
+      font: 700 11px/1.2 var(--mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 920px; margin-bottom: 18px; font-size: clamp(38px, 6vw, 74px); line-height: .98; letter-spacing: -.055em; }
+    h2 { margin-bottom: 22px; font-size: clamp(25px, 3vw, 38px); line-height: 1.08; letter-spacing: -.035em; }
+    h3 { margin-bottom: 9px; font-size: 16px; }
+    .lede { max-width: 810px; color: #bac7d4; font-size: 18px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 56px; }
+    .brand { display: flex; align-items: center; gap: 11px; font: 700 12px var(--mono); color: var(--muted); }
+    .brand-mark { width: 27px; height: 27px; border: 1px solid #3a5067; border-radius: 8px; background: linear-gradient(135deg, #29496c, #102131); box-shadow: inset 0 0 0 4px #132332; }
+    .topmeta { color: var(--faint); font: 11px var(--mono); }
+    .hero { padding: 28px 0 24px; }
+    .gate {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(280px, .8fr);
+      gap: 28px;
+      margin: 38px 0 26px;
+      padding: 30px;
+      border: 1px solid rgba(98,168,255,.42);
+      border-radius: var(--radius);
+      background: linear-gradient(140deg, rgba(98,168,255,.12), rgba(16,27,38,.92) 42%);
+      box-shadow: var(--shadow);
+    }
+    .gate h2 { max-width: 800px; margin: 8px 0 14px; font-size: clamp(25px, 3.5vw, 45px); }
+    .gate p { color: #c0ccd8; }
+    .decision { align-self: stretch; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: rgba(7,15,22,.58); }
+    .decision strong { display: block; margin: 9px 0 11px; font-size: 20px; }
+    .decision ul { margin: 0; padding-left: 19px; color: var(--muted); }
+    .recommend { display: inline-flex; margin-top: 17px; padding: 8px 11px; border-radius: 999px; color: #d8fff0; background: rgba(105,213,155,.13); border: 1px solid rgba(105,213,155,.34); font: 700 11px var(--mono); }
+    .scope-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0 68px; }
+    .scope-strip div { min-height: 95px; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: rgba(16,27,38,.76); }
+    .scope-strip b { display: block; margin-bottom: 6px; color: var(--ink); font-size: 13px; }
+    .scope-strip span { color: var(--muted); font-size: 12px; }
+    section { scroll-margin-top: 20px; margin-top: 76px; }
+    .section-intro { max-width: 790px; margin-bottom: 28px; color: var(--muted); }
+    .board-shell { padding: 14px; border: 1px solid var(--line); border-radius: 20px; background: #0c151f; box-shadow: var(--shadow); overflow-x: auto; }
+    .board { display: grid; grid-template-columns: repeat(5, minmax(215px, 1fr)); gap: 12px; min-width: 1150px; }
+    .column { min-height: 480px; padding: 12px; border: 1px solid #213447; border-radius: 14px; background: #101b26; }
+    .column-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; padding: 3px 2px 11px; border-bottom: 1px solid var(--line); }
+    .column-name { display: flex; align-items: center; gap: 8px; font: 750 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+    .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--blue); box-shadow: 0 0 15px currentColor; }
+    .planned .dot { color: var(--faint); background: var(--faint); }
+    .active .dot { color: var(--blue); background: var(--blue); }
+    .review .dot { color: var(--violet); background: var(--violet); }
+    .blocked .dot { color: var(--red); background: var(--red); }
+    .done .dot { color: var(--green); background: var(--green); }
+    .count { min-width: 23px; padding: 2px 7px; text-align: center; border-radius: 999px; color: var(--muted); background: #0a131c; font: 11px var(--mono); }
+    .card { margin-bottom: 10px; padding: 13px; border: 1px solid #2a3d50; border-radius: 11px; background: linear-gradient(160deg, #172535, #121e2a); box-shadow: 0 7px 18px rgba(0,0,0,.16); }
+    .card.pr { border-left: 3px solid var(--violet); }
+    .card.block { border-left: 3px solid var(--red); }
+    .card.done-card { opacity: .72; border-left: 3px solid var(--green); }
+    .card-type { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 9px; color: var(--faint); font: 700 9px var(--mono); letter-spacing: .10em; text-transform: uppercase; }
+    .card h3 { margin-bottom: 8px; font-size: 13px; line-height: 1.35; }
+    .card-id { margin-bottom: 10px; color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
+    .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .chip { padding: 3px 6px; border: 1px solid #34495e; border-radius: 5px; color: #aebccc; background: #0c1620; font: 9px var(--mono); }
+    .chip.blue { color: #b9daff; border-color: rgba(98,168,255,.42); }
+    .chip.violet { color: #d6caff; border-color: rgba(185,160,255,.45); }
+    .chip.red { color: #ffc1c7; border-color: rgba(255,122,134,.45); }
+    .chip.green { color: #bff4d7; border-color: rgba(105,213,155,.45); }
+    .annotation { margin-top: 13px; color: var(--faint); font-size: 11px; text-align: center; }
+    .grid-2, .grid-3 { display: grid; gap: 15px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .panel { padding: 21px; border: 1px solid var(--line); border-radius: 14px; background: rgba(16,27,38,.78); }
+    .panel p:last-child { margin-bottom: 0; }
+    .panel p, .panel li { color: var(--muted); }
+    .panel ul { margin: 10px 0 0; padding-left: 18px; }
+    .number { display: inline-grid; place-items: center; width: 29px; height: 29px; margin-bottom: 14px; border: 1px solid #35506b; border-radius: 9px; color: var(--blue); font: 800 11px var(--mono); background: #0c1721; }
+    .transitions { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: rgba(16,27,38,.7); }
+    .transitions th, .transitions td { padding: 13px 15px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .transitions th { color: #c7d4df; background: #12202d; font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .transitions td { color: var(--muted); font-size: 13px; }
+    .transitions tr:last-child td { border-bottom: 0; }
+    .state { font: 700 10px var(--mono); text-transform: uppercase; }
+    .flow { display: grid; grid-template-columns: 1fr 55px 1fr 55px 1fr 55px 1fr; align-items: stretch; gap: 0; margin-top: 24px; }
+    .step { min-height: 170px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: rgba(16,27,38,.8); }
+    .step b { display: block; margin-bottom: 8px; }
+    .step span { color: var(--muted); font-size: 12px; }
+    .arrow { display: grid; place-items: center; color: var(--faint); font-size: 22px; }
+    .branch { margin-top: 12px; color: var(--cyan); font: 10px var(--mono); }
+    .ownership { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .owner { display: grid; grid-template-columns: 110px 1fr; gap: 15px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: rgba(16,27,38,.72); }
+    .owner b { color: var(--blue); font: 700 11px var(--mono); }
+    .owner span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .evidence { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .evidence-item { padding: 17px; border-left: 2px solid #35516d; background: rgba(16,27,38,.68); }
+    .evidence-item b { display: block; margin-bottom: 5px; font-size: 13px; }
+    .evidence-item span { color: var(--muted); font-size: 12px; }
+    .tests { counter-reset: test; }
+    .test { position: relative; padding: 16px 16px 16px 52px; border-bottom: 1px solid var(--line); }
+    .test::before { counter-increment: test; content: counter(test); position: absolute; left: 10px; top: 16px; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: var(--cyan); border: 1px solid #2a4a5b; font: 700 10px var(--mono); }
+    .test:last-child { border-bottom: 0; }
+    .test b { display: block; margin-bottom: 3px; }
+    .test span { color: var(--muted); font-size: 12px; }
+    .autonomy { padding: 27px; border: 1px solid rgba(85,214,208,.38); border-radius: 16px; background: linear-gradient(145deg, rgba(85,214,208,.08), rgba(16,27,38,.82)); }
+    .autonomy ul { columns: 2; gap: 36px; margin: 0; padding-left: 19px; color: var(--muted); }
+    .autonomy li { break-inside: avoid; margin-bottom: 8px; }
+    .footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--faint); font: 10px var(--mono); }
+    .mobile-note { display: none; }
+    @media (max-width: 900px) {
+      .gate, .grid-3, .grid-2, .ownership, .evidence { grid-template-columns: 1fr; }
+      .scope-strip { grid-template-columns: repeat(2, 1fr); }
+      .flow { grid-template-columns: 1fr; gap: 9px; }
+      .arrow { transform: rotate(90deg); height: 32px; }
+      .autonomy ul { columns: 1; }
+    }
+    @media (max-width: 600px) {
+      .page { width: min(100% - 24px, 1500px); padding-top: 15px; }
+      .topmeta { display: none; }
+      .scope-strip { grid-template-columns: 1fr; }
+      .gate { padding: 20px; }
+      .board-shell { overflow: visible; padding: 0; border: 0; background: transparent; box-shadow: none; }
+      .board { min-width: 0; grid-template-columns: 1fr; }
+      .column { min-height: 0; }
+      .mobile-note { display: block; margin: 0 0 13px; color: var(--cyan); font: 10px var(--mono); }
+      .owner { grid-template-columns: 1fr; gap: 5px; }
+      .transitions { display: block; overflow-x: auto; }
+      .footer { flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span> agent-teams / plan gate</div>
+      <div class="topmeta">at-s003 · epic agent-teams-tuy9 · 2026-08-20</div>
+    </div>
+
+    <header class="hero">
+      <div class="eyebrow">Initiative drill-in redesign</div>
+      <h1>See the whole initiative move.</h1>
+      <p class="lede">A kanban-first drill-in that makes concurrent workstreams and several PRs legible at once—without inventing state the source systems do not actually know.</p>
+    </header>
+
+    <article class="gate" aria-labelledby="gate-title">
+      <div>
+        <div class="eyebrow">The one plan gate</div>
+        <h2 id="gate-title">Approve a read-only, five-column kanban as the new initiative drill-in.</h2>
+        <p>The first testable build replaces the tables-first work view at <code>/initiative/:id</code>. It projects existing Bead and per-PR gate data into Planned, Active, Review, Blocked, and Done. Workstream cards and PR cards remain honest independent objects until a durable association exists. Notes, sessions, attach, and logs stay available below the board.</p>
+        <span class="recommend">Recommendation · approve this direction</span>
+      </div>
+      <aside class="decision">
+        <div class="eyebrow">Approval means</div>
+        <strong>One decision now, then autonomous delivery.</strong>
+        <ul>
+          <li>No drag/drop writes in the first loop.</li>
+          <li>No inferred PR↔workstream ownership.</li>
+          <li>No new backend or CLI contract for the first build.</li>
+          <li>No further human design gates before a testable build.</li>
+        </ul>
+      </aside>
+    </article>
+
+    <div class="scope-strip" aria-label="Plan boundaries">
+      <div><b>Surface</b><span>Existing initiative drill-in only; the initiatives list is unchanged.</span></div>
+      <div><b>Movement</b><span>Source state changes, then Refresh, move cards. Browser drag is not a write mechanism.</span></div>
+      <div><b>Core seam</b><span>Frontend-only projection over the existing <code>DrillInDetail</code> payload.</span></div>
+      <div><b>Loop exit</b><span>Automated regression gates plus a locally testable responsive build.</span></div>
+    </div>
+
+    <section aria-labelledby="experience-title">
+      <div class="eyebrow">01 · Intended experience</div>
+      <h2 id="experience-title">The board becomes the first viewport.</h2>
+      <p class="section-intro">The mock below is illustrative, but its information architecture is the contract: every column remains visible, work and PRs share the workflow without being conflated, and differing PR gates stay visible per PR.</p>
+      <p class="mobile-note">Narrow layout preview: columns stack in workflow order.</p>
+      <div class="board-shell" role="img" aria-label="Illustrative five-column initiative kanban board">
+        <div class="board">
+          <div class="column planned">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Planned</span><span class="count">2</span></div>
+            <article class="card">
+              <div class="card-type"><span>workstream</span><span>P1</span></div>
+              <h3>Freeze the board contract</h3>
+              <div class="card-id">agent-teams-tuy9.1</div>
+              <div class="chips"><span class="chip">open</span><span class="chip">task</span></div>
+            </article>
+            <article class="card">
+              <div class="card-type"><span>workstream</span><span>P2</span></div>
+              <h3>Responsive detail refinements</h3>
+              <div class="card-id">agent-teams-tuy9.x</div>
+              <div class="chips"><span class="chip">deferred</span><span class="chip">0 / 3 steps</span></div>
+            </article>
+          </div>
+
+          <div class="column active">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Active</span><span class="count">2</span></div>
+            <article class="card">
+              <div class="card-type"><span>workstream</span><span>P1</span></div>
+              <h3>Build the pure board model</h3>
+              <div class="card-id">agent-teams-tuy9.2</div>
+              <div class="chips"><span class="chip blue">in_progress</span><span class="chip">feature</span></div>
+            </article>
+            <article class="card">
+              <div class="card-type"><span>workstream</span><span>P1</span></div>
+              <h3>Create the responsive visual system</h3>
+              <div class="card-id">agent-teams-tuy9.4</div>
+              <div class="chips"><span class="chip blue">in_progress</span><span class="chip">1 / 4 steps</span></div>
+            </article>
+          </div>
+
+          <div class="column review">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Review</span><span class="count">3</span></div>
+            <article class="card pr">
+              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
+              <h3>agent-teams #179</h3>
+              <div class="card-id">mgt-insurance/agent-teams</div>
+              <div class="chips"><span class="chip violet">your review</span></div>
+            </article>
+            <article class="card pr">
+              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
+              <h3>midgard #5784</h3>
+              <div class="card-id">mgt-insurance/midgard</div>
+              <div class="chips"><span class="chip">open · no explicit gate</span></div>
+            </article>
+            <article class="card pr">
+              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
+              <h3>midgard #5690</h3>
+              <div class="card-id">mgt-insurance/midgard</div>
+              <div class="chips"><span class="chip violet">external review</span></div>
+            </article>
+          </div>
+
+          <div class="column blocked">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Blocked</span><span class="count">2</span></div>
+            <article class="card block">
+              <div class="card-type"><span>workstream</span><span>P1</span></div>
+              <h3>Resolve an integration dependency</h3>
+              <div class="card-id">agent-teams-example.3</div>
+              <div class="chips"><span class="chip red">blocked</span><span class="chip">bug</span></div>
+            </article>
+            <article class="card pr block">
+              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
+              <h3>midgard #5801</h3>
+              <div class="card-id">mgt-insurance/midgard</div>
+              <div class="chips"><span class="chip red">question</span></div>
+            </article>
+          </div>
+
+          <div class="column done">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Done</span><span class="count">2</span></div>
+            <article class="card done-card">
+              <div class="card-type"><span>workstream</span><span>P1</span></div>
+              <h3>Expose ordered multi-PR data</h3>
+              <div class="card-id">foundation</div>
+              <div class="chips"><span class="chip green">closed</span><span class="chip">3 / 3 steps</span></div>
+            </article>
+            <article class="card pr done-card">
+              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
+              <h3>agent-teams #171</h3>
+              <div class="card-id">initiative closed</div>
+              <div class="chips"><span class="chip green">done</span></div>
+            </article>
+          </div>
+        </div>
+      </div>
+      <div class="annotation">Static plan illustration · the shipped build reads real Bead and per-PR gate data</div>
+    </section>
+
+    <section aria-labelledby="semantics-title">
+      <div class="eyebrow">02 · Columns and transitions</div>
+      <h2 id="semantics-title">A total projection, not a second workflow engine.</h2>
+      <p class="section-intro">Every input object lands exactly once. The source of truth stays in Beads and the Go-computed PR gate array; Refresh simply reruns the projection.</p>
+      <table class="transitions">
+        <thead><tr><th>Object</th><th>Source state</th><th>Column</th><th>Meaning shown to the user</th></tr></thead>
+        <tbody>
+          <tr><td><span class="state">Workstream</span></td><td><code>open</code>, <code>deferred</code>, unknown nonterminal</td><td>Planned</td><td>Not actively executing. Raw status remains visible; unknown is never hidden.</td></tr>
+          <tr><td><span class="state">Workstream</span></td><td><code>in_progress</code></td><td>Active</td><td>Execution is underway.</td></tr>
+          <tr><td><span class="state">Workstream</span></td><td><code>blocked</code></td><td>Blocked</td><td>Cannot proceed; the reason/state is textual as well as colored.</td></tr>
+          <tr><td><span class="state">Workstream</span></td><td><code>closed</code></td><td>Done</td><td>Completed work, with child progress when a hierarchy exists.</td></tr>
+          <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate <code>review</code>, <code>external</code>, or empty</td><td>Review</td><td>One PR card per URL. Badge distinguishes “your review,” “external review,” and “no explicit gate.”</td></tr>
+          <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate <code>question</code></td><td>Blocked</td><td>A specific PR is waiting on a decision.</td></tr>
+          <tr><td><span class="state">Pull request</span></td><td>Initiative <code>closed</code> or <code>done</code></td><td>Done</td><td>Initiative completion wins. The first loop does not claim a per-PR GitHub merge fact.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="model-title">
+      <div class="eyebrow">03 · Card and data model</div>
+      <h2 id="model-title">Two card types; one honest board.</h2>
+      <div class="grid-3">
+        <article class="panel"><span class="number">W</span><h3>Workstream card</h3><p>Derived from root-epic children in <code>workBeads</code>. Shows bead id, title, raw status, type, priority, and recursive child progress. Bare or orphan legacy work remains visible.</p></article>
+        <article class="panel"><span class="number">PR</span><h3>Pull-request card</h3><p>Derived from ordered <code>prs</code>, joined to <code>prReviews</code> by exact URL. Shows a compact repo/number label, safe external link, and explicit per-PR gate.</p></article>
+        <article class="panel"><span class="number">∅</span><h3>No invented relationship</h3><p>The current payload has no durable PR-to-workstream key. Cards therefore remain siblings. Position, title, repo, or branch will never be used as a hidden association heuristic.</p></article>
+      </div>
+      <div class="grid-2" style="margin-top:15px">
+        <article class="panel"><h3>Card anatomy</h3><ul><li>Eyebrow: object kind + priority or destination</li><li>Title: human-scannable work or repo#PR</li><li>Identity: stable bead id or canonical PR URL</li><li>State chips: raw and explicit, never color-only</li><li>Progress: descendant closed/total for hierarchical work</li></ul></article>
+        <article class="panel"><h3>Transition safeguards</h3><ul><li>Done precedence before all other placement</li><li>PR question precedence before normal Review</li><li>Unknown work status gracefully falls back to Planned</li><li>No duplicate/drop: every input is accounted for</li><li>Stable source ordering prevents refresh jitter</li></ul></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="seams-title">
+      <div class="eyebrow">04 · What the repository already provides</div>
+      <h2 id="seams-title">The smallest loop is frontend-only.</h2>
+      <div class="evidence">
+        <div class="evidence-item"><b>Shared response is already rich enough.</b><span><code>dashboard/shared/types.ts</code> defines <code>WorkBead</code>, <code>PRReview</code>, and <code>DrillInDetail</code> with ordered PRs and work beads.</span></div>
+        <div class="evidence-item"><b>The detail endpoint already joins the sources.</b><span><code>dashboard/server/src/index.ts</code> GET <code>/api/initiatives/:id</code> returns snapshot initiative data, matched sessions, labeled Beads, and notes history.</span></div>
+        <div class="evidence-item"><b>PR gate state is computed upstream.</b><span><code>ateam list-json</code> emits <code>prs</code> and aligned <code>pr_reviews</code>. A live run found multi-PR initiatives with different per-PR gate values.</span></div>
+        <div class="evidence-item"><b>Workstream structure survives the read.</b><span><code>bd list --label … --status=all --json</code> includes inherited initiative labels, parent ids, statuses, types, priorities, and dependency counts.</span></div>
+        <div class="evidence-item"><b>The current frontend seam is concentrated.</b><span><code>dashboard/web/src/views/drillin/index.tsx</code>, <code>drillin.css</code>, and <code>drillin.test.tsx</code> own the current route’s view, style, and regression surface.</span></div>
+        <div class="evidence-item"><b>No new write contract is justified.</b><span>The current server route is read-only. Drag/drop would require product semantics and mutation APIs that do not exist and are not needed to close the visual loop.</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="implementation-title">
+      <div class="eyebrow">05 · Implementation plan</div>
+      <h2 id="implementation-title">Contract → file-disjoint tracks → one live join.</h2>
+      <div class="flow" aria-label="Implementation dependency flow">
+        <div class="step"><div class="eyebrow">agent-teams-tuy9.1</div><b>Freeze contract</b><span>Columns, precedence, card anatomy, read-only boundary, accessibility, responsive behavior.</span></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="step"><div class="eyebrow">parallel</div><b>Model + visual system</b><span><code>.2</code> owns new pure model files. <code>.4</code> owns CSS only.</span><div class="branch">file-disjoint</div></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="step"><div class="eyebrow">agent-teams-tuy9.3</div><b>Compose the view</b><span>One React file imports the model, adds Refresh, and preserves notes/sessions/attach/logs.</span></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="step"><div class="eyebrow">agent-teams-tuy9.5</div><b>Close the loop</b><span>View regressions, full gates, responsive/keyboard/live checks, testable local build.</span></div>
+      </div>
+      <h3 style="margin-top:27px">Ownership boundaries</h3>
+      <div class="ownership">
+        <div class="owner"><b>MODEL · .2</b><span><code>web/src/views/drillin/kanban-model.ts</code> + its new unit test only</span></div>
+        <div class="owner"><b>VIEW · .3</b><span><code>web/src/views/drillin/index.tsx</code> only</span></div>
+        <div class="owner"><b>STYLE · .4</b><span><code>web/src/views/drillin/drillin.css</code> only</span></div>
+        <div class="owner"><b>TEST · .5</b><span><code>web/src/views/drillin/drillin.test.tsx</code> + live verification only</span></div>
+      </div>
+      <div class="panel" style="margin-top:15px"><h3>Integration order</h3><p><code>.1 → (.2 ∥ .4) → .3 → .5</code>. Model lands before the view consumes it; CSS can proceed against frozen selectors; test/live verification joins the composed work. No loop track touches Go, server, shared types, router, global CSS, manifests, versions, or binaries.</p></div>
+    </section>
+
+    <section aria-labelledby="test-title">
+      <div class="eyebrow">06 · Testability</div>
+      <h2 id="test-title">The build is testable at four levels.</h2>
+      <div class="panel tests">
+        <div class="test"><b>Pure model witnesses</b><span>Every status/gate mapping, precedence, root exclusion, legacy hierarchy fallback, multi-PR disagreement, stable ordering, and total accounting.</span></div>
+        <div class="test"><b>React behavior witnesses</b><span>Five columns and counts, card anatomy, safe PR links, noninteractive cards, Refresh success/failure, and preserved Back/Attach/log/session/note behavior.</span></div>
+        <div class="test"><b>Repository gates</b><span>Build shared first, then targeted Vitest, web typecheck/build, full server tests, and full web tests. Partial test collection does not count.</span></div>
+        <div class="test"><b>Live observable verification</b><span>Real multi-PR and multi-child initiatives; 1440/1024/390px; horizontal board vs stacked board; keyboard focus; reduced motion; explicit Refresh; preserved operational details.</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="responsive-title">
+      <div class="eyebrow">07 · Accessibility and responsive behavior</div>
+      <h2 id="responsive-title">Wide when comparison matters; stacked when reading matters.</h2>
+      <div class="grid-3">
+        <article class="panel"><span class="number">≥</span><h3>Wide viewport</h3><p>Five fixed/min-width columns in one visibly bounded horizontal region. The board scrolls; the page does not. Column comparison stays intact.</p></article>
+        <article class="panel"><span class="number">≤</span><h3>Narrow viewport</h3><p>Columns stack Planned→Active→Review→Blocked→Done. Long titles and URLs wrap, with no document horizontal overflow.</p></article>
+        <article class="panel"><span class="number">A11y</span><h3>Semantic and keyboard-safe</h3><p>Native sections/headings/lists/links, announced names and counts, visible focus, written state labels, no fake card buttons, and reduced-motion support.</p></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="autonomy-title">
+      <div class="eyebrow">08 · Decisions made autonomously after approval</div>
+      <h2 id="autonomy-title">No second design gate before the testable build.</h2>
+      <div class="autonomy">
+        <ul>
+          <li>Exact typography scale, spacing, radii, shadows, and token-safe hues</li>
+          <li>Exact breakpoint and minimum column width after live content inspection</li>
+          <li>Refresh loading/success/error microcopy and placement</li>
+          <li>Which secondary detail panels default open, while preserving access</li>
+          <li>Compact PR URL fallback presentation for non-GitHub-shaped input</li>
+          <li>Stable within-column spacing and empty-column copy</li>
+          <li>Test fixture details and representative real initiative used live</li>
+          <li>Small implementation adjustments that preserve the frozen semantics</li>
+        </ul>
+      </div>
+      <div class="grid-2" style="margin-top:15px">
+        <article class="panel"><h3>Gated follow-up · <code>agent-teams-tuy9.6</code></h3><p>Add a durable, empirically verified PR↔workstream association. Blocked until the independent-card loop closes; no heuristic grouping may sneak into v1.</p></article>
+        <article class="panel"><h3>Gated follow-up · <code>agent-teams-tuy9.7</code></h3><p>Add bounded automatic live refresh only after measuring CLI-backed detail-read cost. Manual Refresh closes v1 without creating a polling storm.</p></article>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span>Standalone planning artifact · no feature implementation</span>
+      <span>Recommended decision: approve the single high-level direction</span>
+    </footer>
+  </main>
+</body>
+</html>
