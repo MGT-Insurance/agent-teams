@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Initiative Kanban — high-level plan gate</title>
+  <title>Initiative Kanban — revised delivery plan</title>
   <style>
     :root {
       color-scheme: dark;
@@ -80,14 +80,16 @@
     section { scroll-margin-top: 20px; margin-top: 76px; }
     .section-intro { max-width: 790px; margin-bottom: 28px; color: var(--muted); }
     .board-shell { padding: 14px; border: 1px solid var(--line); border-radius: 20px; background: #0c151f; box-shadow: var(--shadow); overflow-x: auto; }
-    .board { display: grid; grid-template-columns: repeat(5, minmax(215px, 1fr)); gap: 12px; min-width: 1150px; }
+    .board { display: grid; grid-template-columns: repeat(7, minmax(205px, 1fr)); gap: 12px; min-width: 1515px; }
     .column { min-height: 480px; padding: 12px; border: 1px solid #213447; border-radius: 14px; background: #101b26; }
     .column-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; padding: 3px 2px 11px; border-bottom: 1px solid var(--line); }
     .column-name { display: flex; align-items: center; gap: 8px; font: 750 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
     .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--blue); box-shadow: 0 0 15px currentColor; }
     .planned .dot { color: var(--faint); background: var(--faint); }
     .active .dot { color: var(--blue); background: var(--blue); }
-    .review .dot { color: var(--violet); background: var(--violet); }
+    .verifying .dot { color: var(--cyan); background: var(--cyan); }
+    .your-review .dot { color: var(--amber); background: var(--amber); }
+    .external-review .dot { color: var(--violet); background: var(--violet); }
     .blocked .dot { color: var(--red); background: var(--red); }
     .done .dot { color: var(--green); background: var(--green); }
     .count { min-width: 23px; padding: 2px 7px; text-align: center; border-radius: 999px; color: var(--muted); background: #0a131c; font: 11px var(--mono); }
@@ -170,7 +172,7 @@
 <body>
   <main class="page">
     <div class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"></span> agent-teams / plan gate</div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span> agent-teams / revised plan</div>
       <div class="topmeta">at-s003 · epic agent-teams-tuy9 · 2026-08-20</div>
     </div>
 
@@ -182,14 +184,14 @@
 
     <article class="gate" aria-labelledby="gate-title">
       <div>
-        <div class="eyebrow">The one plan gate</div>
-        <h2 id="gate-title">Approve a read-only, five-column kanban as the new initiative drill-in.</h2>
-        <p>The first testable build replaces the tables-first work view at <code>/initiative/:id</code>. It projects existing Bead and per-PR gate data into Planned, Active, Review, Blocked, and Done. Workstream cards and PR cards remain honest independent objects until a durable association exists. Notes, sessions, attach, and logs stay available below the board.</p>
-        <span class="recommend">Recommendation · approve this direction</span>
+        <div class="eyebrow">Plan-gate response incorporated</div>
+        <h2 id="gate-title">Build a read-only, seven-column kanban as the new initiative drill-in.</h2>
+        <p>The first testable build replaces the tables-first work view at <code>/initiative/:id</code>. It projects existing Bead and per-PR gate data into Planned, Active, Verifying, Your Review, External Review, Blocked, and Done. Workstream cards and PR cards remain honest independent objects until a durable association exists. Notes, sessions, attach, and logs stay available below the board.</p>
+        <span class="recommend">Revision applied · autonomous delivery can begin</span>
       </div>
       <aside class="decision">
-        <div class="eyebrow">Approval means</div>
-        <strong>One decision now, then autonomous delivery.</strong>
+        <div class="eyebrow">The settled direction</div>
+        <strong>Seven honest states, then autonomous delivery.</strong>
         <ul>
           <li>No drag/drop writes in the first loop.</li>
           <li>No inferred PR↔workstream ownership.</li>
@@ -211,7 +213,7 @@
       <h2 id="experience-title">The board becomes the first viewport.</h2>
       <p class="section-intro">The mock below is illustrative, but its information architecture is the contract: every column remains visible, work and PRs share the workflow without being conflated, and differing PR gates stay visible per PR.</p>
       <p class="mobile-note">Narrow layout preview: columns stack in workflow order.</p>
-      <div class="board-shell" role="img" aria-label="Illustrative five-column initiative kanban board">
+      <div class="board-shell" role="img" aria-label="Illustrative seven-column initiative kanban board">
         <div class="board">
           <div class="column planned">
             <div class="column-head"><span class="column-name"><span class="dot"></span>Planned</span><span class="count">2</span></div>
@@ -230,7 +232,7 @@
           </div>
 
           <div class="column active">
-            <div class="column-head"><span class="column-name"><span class="dot"></span>Active</span><span class="count">2</span></div>
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Active</span><span class="count">3</span></div>
             <article class="card">
               <div class="card-type"><span>workstream</span><span>P1</span></div>
               <h3>Build the pure board model</h3>
@@ -243,22 +245,36 @@
               <div class="card-id">agent-teams-tuy9.4</div>
               <div class="chips"><span class="chip blue">in_progress</span><span class="chip">1 / 4 steps</span></div>
             </article>
-          </div>
-
-          <div class="column review">
-            <div class="column-head"><span class="column-name"><span class="dot"></span>Review</span><span class="count">3</span></div>
-            <article class="card pr">
-              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
-              <h3>agent-teams #179</h3>
-              <div class="card-id">mgt-insurance/agent-teams</div>
-              <div class="chips"><span class="chip violet">your review</span></div>
-            </article>
             <article class="card pr">
               <div class="card-type"><span>pull request</span><span>github ↗</span></div>
               <h3>midgard #5784</h3>
               <div class="card-id">mgt-insurance/midgard</div>
               <div class="chips"><span class="chip">open · no explicit gate</span></div>
             </article>
+          </div>
+
+          <div class="column verifying">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Verifying</span><span class="count">1</span></div>
+            <article class="card">
+              <div class="card-type"><span>verification workstream</span><span>P1</span></div>
+              <h3>Exercise the composed dashboard</h3>
+              <div class="card-id">agent-teams-tuy9.5</div>
+              <div class="chips"><span class="chip blue">in_progress</span><span class="chip">track:test</span></div>
+            </article>
+          </div>
+
+          <div class="column your-review">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>Your Review</span><span class="count">1</span></div>
+            <article class="card pr">
+              <div class="card-type"><span>pull request</span><span>github ↗</span></div>
+              <h3>agent-teams #179</h3>
+              <div class="card-id">mgt-insurance/agent-teams</div>
+              <div class="chips"><span class="chip violet">your review</span></div>
+            </article>
+          </div>
+
+          <div class="column external-review">
+            <div class="column-head"><span class="column-name"><span class="dot"></span>External Review</span><span class="count">1</span></div>
             <article class="card pr">
               <div class="card-type"><span>pull request</span><span>github ↗</span></div>
               <h3>midgard #5690</h3>
@@ -311,10 +327,13 @@
         <thead><tr><th>Object</th><th>Source state</th><th>Column</th><th>Meaning shown to the user</th></tr></thead>
         <tbody>
           <tr><td><span class="state">Workstream</span></td><td><code>open</code>, <code>deferred</code>, unknown nonterminal</td><td>Planned</td><td>Not actively executing. Raw status remains visible; unknown is never hidden.</td></tr>
-          <tr><td><span class="state">Workstream</span></td><td><code>in_progress</code></td><td>Active</td><td>Execution is underway.</td></tr>
+          <tr><td><span class="state">Workstream</span></td><td><code>in_progress</code> without explicit <code>track:test</code></td><td>Active</td><td>Implementation or other execution is underway.</td></tr>
+          <tr><td><span class="state">Workstream</span></td><td><code>in_progress</code> plus the persisted Beads label <code>track:test</code></td><td>Verifying</td><td>An explicitly identified verification track is executing. Titles and session names are never guessed.</td></tr>
           <tr><td><span class="state">Workstream</span></td><td><code>blocked</code></td><td>Blocked</td><td>Cannot proceed; the reason/state is textual as well as colored.</td></tr>
           <tr><td><span class="state">Workstream</span></td><td><code>closed</code></td><td>Done</td><td>Completed work, with child progress when a hierarchy exists.</td></tr>
-          <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate <code>review</code>, <code>external</code>, or empty</td><td>Review</td><td>One PR card per URL. Badge distinguishes “your review,” “external review,” and “no explicit gate.”</td></tr>
+          <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate empty</td><td>Active</td><td>The PR exists and is not explicitly waiting on anyone. The badge says “open · no explicit gate”; it does not claim implementation, checks, or testing state.</td></tr>
+          <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate <code>review</code></td><td>Your Review</td><td>The persisted <code>gate:review</code> signal explicitly asks you to review this PR.</td></tr>
+          <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate <code>external</code></td><td>External Review</td><td>The human has declared their review complete via handoff; this PR is with other reviewers.</td></tr>
           <tr><td><span class="state">Pull request</span></td><td>Open initiative; gate <code>question</code></td><td>Blocked</td><td>A specific PR is waiting on a decision.</td></tr>
           <tr><td><span class="state">Pull request</span></td><td>Initiative <code>closed</code> or <code>done</code></td><td>Done</td><td>Initiative completion wins. The first loop does not claim a per-PR GitHub merge fact.</td></tr>
         </tbody>
@@ -331,7 +350,7 @@
       </div>
       <div class="grid-2" style="margin-top:15px">
         <article class="panel"><h3>Card anatomy</h3><ul><li>Eyebrow: object kind + priority or destination</li><li>Title: human-scannable work or repo#PR</li><li>Identity: stable bead id or canonical PR URL</li><li>State chips: raw and explicit, never color-only</li><li>Progress: descendant closed/total for hierarchical work</li></ul></article>
-        <article class="panel"><h3>Transition safeguards</h3><ul><li>Done precedence before all other placement</li><li>PR question precedence before normal Review</li><li>Unknown work status gracefully falls back to Planned</li><li>No duplicate/drop: every input is accounted for</li><li>Stable source ordering prevents refresh jitter</li></ul></article>
+        <article class="panel"><h3>Transition safeguards</h3><ul><li>Done precedence before all other placement</li><li>Blocked/question precedence before every other nonterminal placement</li><li>Verifying requires both <code>in_progress</code> and exact label <code>track:test</code></li><li>An empty PR gate falls back to Active with an explicit unknown-state badge</li><li>Unknown work status gracefully falls back to Planned</li><li>No duplicate/drop: every input is accounted for</li><li>Stable source ordering prevents refresh jitter</li></ul></article>
       </div>
     </section>
 
@@ -341,8 +360,8 @@
       <div class="evidence">
         <div class="evidence-item"><b>Shared response is already rich enough.</b><span><code>dashboard/shared/types.ts</code> defines <code>WorkBead</code>, <code>PRReview</code>, and <code>DrillInDetail</code> with ordered PRs and work beads.</span></div>
         <div class="evidence-item"><b>The detail endpoint already joins the sources.</b><span><code>dashboard/server/src/index.ts</code> GET <code>/api/initiatives/:id</code> returns snapshot initiative data, matched sessions, labeled Beads, and notes history.</span></div>
-        <div class="evidence-item"><b>PR gate state is computed upstream.</b><span><code>ateam list-json</code> emits <code>prs</code> and aligned <code>pr_reviews</code>. A live run found multi-PR initiatives with different per-PR gate values.</span></div>
-        <div class="evidence-item"><b>Workstream structure survives the read.</b><span><code>bd list --label … --status=all --json</code> includes inherited initiative labels, parent ids, statuses, types, priorities, and dependency counts.</span></div>
+        <div class="evidence-item"><b>PR gate state is computed upstream.</b><span><code>ateam list-json</code> emits <code>prs</code> and aligned <code>pr_reviews</code>. <code>review</code> is an explicit review ask; <code>external</code> is an explicit completed-human-handoff declaration; empty means no explicit gate.</span></div>
+        <div class="evidence-item"><b>Verification is explicit in Beads.</b><span><code>bd list --label … --status=all --json</code> carries both status and exact labels into <code>workBeads</code>. Only <code>in_progress</code> + <code>track:test</code> means Verifying; other work never gets classified from title or session-name prose.</span></div>
         <div class="evidence-item"><b>The current frontend seam is concentrated.</b><span><code>dashboard/web/src/views/drillin/index.tsx</code>, <code>drillin.css</code>, and <code>drillin.test.tsx</code> own the current route’s view, style, and regression surface.</span></div>
         <div class="evidence-item"><b>No new write contract is justified.</b><span>The current server route is read-only. Drag/drop would require product semantics and mutation APIs that do not exist and are not needed to close the visual loop.</span></div>
       </div>
@@ -367,7 +386,7 @@
         <div class="owner"><b>STYLE · .4</b><span><code>web/src/views/drillin/drillin.css</code> only</span></div>
         <div class="owner"><b>TEST · .5</b><span><code>web/src/views/drillin/drillin.test.tsx</code> + live verification only</span></div>
       </div>
-      <div class="panel" style="margin-top:15px"><h3>Integration order</h3><p><code>.1 → (.2 ∥ .4) → .3 → .5</code>. Model lands before the view consumes it; CSS can proceed against frozen selectors; test/live verification joins the composed work. No loop track touches Go, server, shared types, router, global CSS, manifests, versions, or binaries.</p></div>
+      <div class="panel" style="margin-top:15px"><h3>Integration order</h3><p><code>.1 → (.2 ∥ .4); .2 → .3; (.3 + .4) → .5</code>. Model lands before the view consumes it; CSS proceeds in parallel against frozen selectors and joins only at test/live verification. No loop track touches Go, server, shared types, router, global CSS, manifests, versions, or binaries.</p></div>
     </section>
 
     <section aria-labelledby="test-title">
@@ -375,7 +394,7 @@
       <h2 id="test-title">The build is testable at four levels.</h2>
       <div class="panel tests">
         <div class="test"><b>Pure model witnesses</b><span>Every status/gate mapping, precedence, root exclusion, legacy hierarchy fallback, multi-PR disagreement, stable ordering, and total accounting.</span></div>
-        <div class="test"><b>React behavior witnesses</b><span>Five columns and counts, card anatomy, safe PR links, noninteractive cards, Refresh success/failure, and preserved Back/Attach/log/session/note behavior.</span></div>
+        <div class="test"><b>React behavior witnesses</b><span>Seven columns and counts, card anatomy, safe PR links, noninteractive cards, Refresh success/failure, and preserved Back/Attach/log/session/note behavior.</span></div>
         <div class="test"><b>Repository gates</b><span>Build shared first, then targeted Vitest, web typecheck/build, full server tests, and full web tests. Partial test collection does not count.</span></div>
         <div class="test"><b>Live observable verification</b><span>Real multi-PR and multi-child initiatives; 1440/1024/390px; horizontal board vs stacked board; keyboard focus; reduced motion; explicit Refresh; preserved operational details.</span></div>
       </div>
@@ -385,8 +404,8 @@
       <div class="eyebrow">07 · Accessibility and responsive behavior</div>
       <h2 id="responsive-title">Wide when comparison matters; stacked when reading matters.</h2>
       <div class="grid-3">
-        <article class="panel"><span class="number">≥</span><h3>Wide viewport</h3><p>Five fixed/min-width columns in one visibly bounded horizontal region. The board scrolls; the page does not. Column comparison stays intact.</p></article>
-        <article class="panel"><span class="number">≤</span><h3>Narrow viewport</h3><p>Columns stack Planned→Active→Review→Blocked→Done. Long titles and URLs wrap, with no document horizontal overflow.</p></article>
+        <article class="panel"><span class="number">≥</span><h3>Wide viewport</h3><p>Seven fixed/min-width columns in one visibly bounded horizontal region. The board scrolls; the page does not. Column comparison stays intact.</p></article>
+        <article class="panel"><span class="number">≤</span><h3>Narrow viewport</h3><p>Columns stack Planned→Active→Verifying→Your Review→External Review→Blocked→Done. Long titles and URLs wrap, with no document horizontal overflow.</p></article>
         <article class="panel"><span class="number">A11y</span><h3>Semantic and keyboard-safe</h3><p>Native sections/headings/lists/links, announced names and counts, visible focus, written state labels, no fake card buttons, and reduced-motion support.</p></article>
       </div>
     </section>
@@ -414,7 +433,7 @@
 
     <footer class="footer">
       <span>Standalone planning artifact · no feature implementation</span>
-      <span>Recommended decision: approve the single high-level direction</span>
+      <span>Plan-gate response incorporated · ready for autonomous delivery</span>
     </footer>
   </main>
 </body>
