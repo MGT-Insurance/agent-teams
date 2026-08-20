@@ -6,8 +6,11 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
+	"unicode"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -32,8 +35,15 @@ type prCmd struct {
 // idempotent on a repeat URL: calling it again for a second, then a third PR
 // is how those get recorded on one initiative.
 type prAddKong struct {
-	InitiativeID string `arg:"" name:"initiative-id" help:"Initiative ID to record the PR on."`
-	URL          string `arg:"" name:"pr-url" help:"Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/3."`
+	InitiativeID string  `arg:"" name:"initiative-id" help:"Initiative ID to record the PR on."`
+	URL          string  `arg:"" name:"pr-url" help:"Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/3."`
+	Workstream   *string `name:"workstream" help:"Project Bead ID whose workstream owns this PR."`
+
+	newProjectBD func(string) projectBDRunner `kong:"-"`
+}
+
+type projectBDRunner interface {
+	Run(args ...string) (string, error)
 }
 
 // Validate rejects a malformed pr-url before any bd read/write. WithPR itself
@@ -48,6 +58,14 @@ func (c *prAddKong) Validate() error {
 	}
 	if !initiative.PRURLRE.MatchString(c.URL) {
 		return cli.Usagef("ateam pr add: pr-url must be a full GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>), got %q", c.URL)
+	}
+	if c.Workstream != nil {
+		if *c.Workstream == "" {
+			return cli.Usagef("ateam pr add: --workstream must not be empty")
+		}
+		if strings.IndexFunc(*c.Workstream, unicode.IsSpace) >= 0 {
+			return cli.Usagef("ateam pr add: --workstream must be a whitespace-free Bead ID, got %q", *c.Workstream)
+		}
 	}
 	return nil
 }
@@ -86,6 +104,19 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("ateam pr add: %w", err)
 	}
+
+	if c.Workstream != nil {
+		withPR := issue
+		withPR.Description = plan.Description
+		associationPlan, err := initiative.WithPRWorkstream(withPR, c.URL, *c.Workstream)
+		if err != nil {
+			return fmt.Errorf("ateam pr add: %w", err)
+		}
+		if err := c.validateWorkstream(issue, *c.Workstream); err != nil {
+			return err
+		}
+		plan = associationPlan
+	}
 	if plan.Description == issue.Description {
 		fmt.Fprintf(ctx.Stdout, "pr add: %s already recorded on %s\n", c.URL, c.InitiativeID)
 		return nil
@@ -108,6 +139,69 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	}
 	fmt.Fprintf(ctx.Stdout, "pr add: recorded %s on %s\n", c.URL, c.InitiativeID)
 	return nil
+}
+
+type projectIssue struct {
+	ID     string `json:"id"`
+	Parent string `json:"parent"`
+}
+
+func showProjectIssue(runner projectBDRunner, id string) (projectIssue, error) {
+	out, err := runner.Run("show", id, "--json")
+	if err != nil {
+		return projectIssue{}, err
+	}
+	var issues []projectIssue
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return projectIssue{}, fmt.Errorf("decode bd show %s: %w", id, err)
+	}
+	if len(issues) == 0 || issues[0].ID == "" {
+		return projectIssue{}, fmt.Errorf("bd show %s: not found", id)
+	}
+	return issues[0], nil
+}
+
+func (c *prAddKong) validateWorkstream(initiativeIssue bd.Issue, workstream string) error {
+	fields := initiative.Of(initiativeIssue)
+	if fields.Repo == "" {
+		return fmt.Errorf("ateam pr add: --workstream requires initiative %s to have a non-empty repo field", c.InitiativeID)
+	}
+	if fields.Epic == "" {
+		return fmt.Errorf("ateam pr add: --workstream requires initiative %s to have a non-empty epic field", c.InitiativeID)
+	}
+	if workstream == fields.Epic {
+		return fmt.Errorf("ateam pr add: workstream %s is the initiative epic itself, not a descendant", workstream)
+	}
+
+	newProjectBD := c.newProjectBD
+	if newProjectBD == nil {
+		newProjectBD = func(repo string) projectBDRunner { return bd.NewClient(repo) }
+	}
+	projectBD := newProjectBD(fields.Repo)
+	if projectBD == nil {
+		return fmt.Errorf("ateam pr add: inspect project %s: no bd client", fields.Repo)
+	}
+
+	seen := make(map[string]struct{})
+	current := workstream
+	for {
+		if _, duplicate := seen[current]; duplicate {
+			return fmt.Errorf("ateam pr add: workstream %s parent chain contains a cycle at %s", workstream, current)
+		}
+		seen[current] = struct{}{}
+
+		projectIssue, err := showProjectIssue(projectBD, current)
+		if err != nil {
+			return fmt.Errorf("ateam pr add: inspect workstream %s in project %s: %w", current, fields.Repo, err)
+		}
+		if projectIssue.Parent == fields.Epic {
+			return nil
+		}
+		if projectIssue.Parent == "" {
+			return fmt.Errorf("ateam pr add: workstream %s is not a descendant of epic %s", workstream, fields.Epic)
+		}
+		current = projectIssue.Parent
+	}
 }
 
 // resolvePR canonicalizes pr and requires it to identify one of id's actual

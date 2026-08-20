@@ -35,6 +35,7 @@
     "notes": "session 1, 2026-07-28, bg — DRI booted, Phase 2 investigation starting (planner spawn)\n\n\u003c\u003c\u003cateam-ask\ndecision: Approve Farm plan (midgard-5lqj.1-.8 loop set) w/ appetite MAPPING fix, not a Farm exemption?\nrecommendation: Approve: map 'farm'-\u003eFARMOWNERS_POLICY + industryGroup FARM; loud failure on unmapped discriminants\nalternative: Exempt Farm from the gate pending appetite support — rejected: del",
     "owner": "erlloyd@gmail.com",
     "pr_reviews": [],
+    "pr_workstreams": [],
     "priority": 2,
     "prs": [],
     "status": "closed",
@@ -64,6 +65,7 @@
     ],
     "owner": "erlloyd@gmail.com",
     "pr_reviews": [],
+    "pr_workstreams": [],
     "priority": 2,
     "prs": [],
     "status": "open",
@@ -97,6 +99,7 @@
     "notes": "session 1, 2026-07-28, bg. DRI resumed by id. Phase 0 preflight clean (ateam audit clean, epic agent-teams-p9dm exists). No standby field. Beginning Phase 2 investigation on both items in parallel.\n\n## at-jno7 — investigation complete, design ready for your call (session 1, 2026-07-28)\n\nTwo planners investigated both items. I verified every load-bearing claim myself\nagainst the source and against ",
     "owner": "erlloyd@gmail.com",
     "pr_reviews": [],
+    "pr_workstreams": [],
     "priority": 2,
     "prs": [],
     "status": "open",
@@ -139,6 +142,7 @@
         "gate": ""
       }
     ],
+    "pr_workstreams": [],
     "priority": 2,
     "prs": [
       "https://github.com/mgt-insurance/midgard/pull/4567"
@@ -174,6 +178,7 @@
     "notes": "\u003c\u003c\u003cateam-ask\ndecision: Standby — waiting for direction\nrecommendation: Once released, begin Phase 2 clarify: investigate the cardtable2 repo/plugin structure and ask Eric what specific enhancements he wants\nalternative: Hold indefinitely for Eric's follow-up instructions; no other viable path without scope\n\u003e\u003e\u003e",
     "owner": "erlloyd@gmail.com",
     "pr_reviews": [],
+    "pr_workstreams": [],
     "priority": 2,
     "prs": [],
     "status": "open",

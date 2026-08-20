@@ -100,7 +100,8 @@ func (c *listJSONKong) Run(ctx *cli.Context) error {
 }
 
 // withRoutingFields returns raw — bd's JSON array of issues — with a "fields"
-// object, a "prs" array, and a "pr_reviews" array added to every element.
+// object, a "prs" array, a "pr_reviews" array, and a "pr_workstreams" array
+// added to every element.
 // "fields" holds that issue's routing data as parsed by internal/initiative.
 // "prs" is the RESOLVED PR list (initiative.ResolvedPRs — docs/multi-pr-
 // contract.md §2a; NOT fields.pr, which stays the raw rail-only projection).
@@ -137,7 +138,7 @@ func withRoutingFields(raw []byte) ([]byte, error) {
 		// bd emitting any of these keys itself would make the assignments
 		// below a silent overwrite of real data. Refuse instead of guessing
 		// which one wins.
-		for _, key := range []string{"fields", "prs", "pr_reviews"} {
+		for _, key := range []string{"fields", "prs", "pr_reviews", "pr_workstreams"} {
 			if _, exists := keyed[key]; exists {
 				return nil, fmt.Errorf("ateam list-json: element %d already carries a %q key; refusing to overwrite it", i, key)
 			}
@@ -167,6 +168,16 @@ func withRoutingFields(raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("ateam list-json: element %d: encoding pr_reviews: %w", i, err)
 		}
 		keyed["pr_reviews"] = reviewsJSON
+
+		prWorkstreams := initiative.PRWorkstreams(issue)
+		if prWorkstreams == nil {
+			prWorkstreams = []initiative.PRWorkstream{}
+		}
+		prWorkstreamsJSON, err := json.Marshal(prWorkstreams)
+		if err != nil {
+			return nil, fmt.Errorf("ateam list-json: element %d: encoding pr_workstreams: %w", i, err)
+		}
+		keyed["pr_workstreams"] = prWorkstreamsJSON
 
 		enriched = append(enriched, keyed)
 	}

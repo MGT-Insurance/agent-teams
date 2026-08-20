@@ -28,6 +28,17 @@ type Fields struct {
 	// initiative has opened. Same URL shape, different key, different
 	// initiative kind — no collision.
 	PRs []string
+	// PRWorkstreams is every well-formed "pr-workstream" association in
+	// persisted order. Malformed legacy values remain available through
+	// JSONFields but are deliberately excluded from this typed projection.
+	PRWorkstreams []PRWorkstream
+}
+
+// PRWorkstream durably associates one canonical GitHub PR URL with the
+// project Bead whose card owns it.
+type PRWorkstream struct {
+	PR         string `json:"pr"`
+	Workstream string `json:"workstream"`
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -57,7 +68,7 @@ var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team",
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
 // single-valued.
-var multiValuedKeys = []string{"session", "track-worktree", "pr"}
+var multiValuedKeys = []string{"session", "track-worktree", "pr", "pr-workstream"}
 
 // multiValued reports whether key accumulates instead of first-wins.
 func multiValued(key string) bool {
@@ -169,12 +180,52 @@ func first(lines map[string][]string, key string) string {
 	return ""
 }
 
+// parsePRWorkstream parses the exact persisted association grammar:
+//
+//	<canonical-github-pr-url><one ASCII space><whitespace-free-bead-id>
+//
+// It intentionally rejects rather than repairs legacy near-misses. Their raw
+// values still survive in JSONFields; only the typed association rail is
+// filtered.
+func parsePRWorkstream(value string) (PRWorkstream, bool) {
+	pr, workstream, ok := strings.Cut(value, " ")
+	if !ok || pr == "" || workstream == "" || strings.Contains(workstream, " ") {
+		return PRWorkstream{}, false
+	}
+	if strings.IndexFunc(pr, unicode.IsSpace) >= 0 || strings.IndexFunc(workstream, unicode.IsSpace) >= 0 {
+		return PRWorkstream{}, false
+	}
+	canonical, ok := CanonicalPRURL(pr)
+	if !ok || canonical != pr {
+		return PRWorkstream{}, false
+	}
+	return PRWorkstream{PR: pr, Workstream: workstream}, true
+}
+
+// PRWorkstreams returns valid durable PR-to-workstream associations in their
+// persisted order. Invalid legacy lines are omitted without changing the raw
+// routing-fields projection.
+func PRWorkstreams(iss bd.Issue) []PRWorkstream {
+	return parsePRWorkstreamValues(all(iss)["pr-workstream"])
+}
+
+func parsePRWorkstreamValues(values []string) []PRWorkstream {
+	out := make([]PRWorkstream, 0, len(values))
+	for _, value := range values {
+		if association, ok := parsePRWorkstream(value); ok {
+			out = append(out, association)
+		}
+	}
+	return out
+}
+
 // Of parses iss's routing fields per the frozen rule. Single-valued keys
 // (problem, repo, worktree, branch, team, mode, runtime, epic, standby) are
-// first-occurrence-wins; the multi-valued session, track-worktree, and pr
-// keys accumulate into Sessions, Tracks, and PRs in registration order.
+// first-occurrence-wins; the multi-valued session, track-worktree, pr, and
+// pr-workstream keys accumulate in registration order. Malformed
+// pr-workstream values are retained by JSONFields but excluded here.
 //
-// Of is the TYPED projection of all, and models twelve keys only — an
+// Of is the TYPED projection of all, and models thirteen keys only — an
 // initiative carrying an unmodeled canonical key (e.g. pr-url) has no Fields
 // member to hold it, so a caller that needs every stored key wants
 // JSONFields instead (package doc comment, frozen item 3).
@@ -185,18 +236,19 @@ func first(lines map[string][]string, key string) string {
 func Of(iss bd.Issue) Fields {
 	lines := all(iss)
 	return Fields{
-		Problem:  first(lines, "problem"),
-		Repo:     first(lines, "repo"),
-		Worktree: first(lines, "worktree"),
-		Branch:   first(lines, "branch"),
-		Team:     first(lines, "team"),
-		Mode:     first(lines, "mode"),
-		Runtime:  first(lines, "runtime"),
-		Epic:     first(lines, "epic"),
-		Standby:  first(lines, "standby") == "true",
-		Sessions: lines["session"],
-		Tracks:   lines["track-worktree"],
-		PRs:      lines["pr"],
+		Problem:       first(lines, "problem"),
+		Repo:          first(lines, "repo"),
+		Worktree:      first(lines, "worktree"),
+		Branch:        first(lines, "branch"),
+		Team:          first(lines, "team"),
+		Mode:          first(lines, "mode"),
+		Runtime:       first(lines, "runtime"),
+		Epic:          first(lines, "epic"),
+		Standby:       first(lines, "standby") == "true",
+		Sessions:      lines["session"],
+		Tracks:        lines["track-worktree"],
+		PRs:           lines["pr"],
+		PRWorkstreams: parsePRWorkstreamValues(lines["pr-workstream"]),
 	}
 }
 
@@ -213,7 +265,7 @@ func Of(iss bd.Issue) Fields {
 // that hoisted the modeled keys and swept the rest into a nested bag would
 // have the opposite property — modeling a key would MOVE it and break readers.
 //
-// Types: the two multi-valued keys are always arrays; standby is a bool
+// Types: the multi-valued keys are always arrays; standby is a bool
 // (true only for the exact value "true", matching Of); every other key is its
 // value string. An absent key is OMITTED rather than emitted empty, so a
 // consumer can tell "not set" from "set to something empty" — the frozen rule
@@ -251,6 +303,25 @@ func JSONFields(iss bd.Issue) map[string]any {
 // body item 3, "func New(f Fields) WritePlan") — flagged, not made
 // unilaterally; see the session report.
 func New(f Fields) (WritePlan, error) {
+	associationValues := make([]string, 0, len(f.PRWorkstreams))
+	associationByPR := make(map[string]string, len(f.PRWorkstreams))
+	for _, association := range f.PRWorkstreams {
+		canonical, ok := CanonicalPRURL(association.PR)
+		if !ok {
+			return WritePlan{}, fmt.Errorf("initiative.New: pr-workstream PR must be a GitHub PR URL: %q", association.PR)
+		}
+		if association.Workstream == "" || strings.IndexFunc(association.Workstream, unicode.IsSpace) >= 0 {
+			return WritePlan{}, fmt.Errorf("initiative.New: pr-workstream workstream must be a whitespace-free Bead ID: %q", association.Workstream)
+		}
+		if existing, seen := associationByPR[canonical]; seen {
+			if existing != association.Workstream {
+				return WritePlan{}, fmt.Errorf("initiative.New: PR %s maps to both %s and %s", canonical, existing, association.Workstream)
+			}
+			continue
+		}
+		associationByPR[canonical] = association.Workstream
+		associationValues = append(associationValues, canonical+" "+association.Workstream)
+	}
 	fields := []struct {
 		key    string
 		values []string
@@ -266,6 +337,7 @@ func New(f Fields) (WritePlan, error) {
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
+		{"pr-workstream", associationValues},
 	}
 	for _, fv := range fields {
 		for _, v := range fv.values {
@@ -304,6 +376,9 @@ func New(f Fields) (WritePlan, error) {
 	}
 	for _, u := range f.PRs {
 		write("pr", u)
+	}
+	for _, association := range associationValues {
+		write("pr-workstream", association)
 	}
 	return WritePlan{Description: b.String()}, nil
 }
@@ -538,6 +613,42 @@ func WithPR(iss bd.Issue, url string) (WritePlan, error) {
 		}
 	}
 	return WritePlan{Description: appendLine(iss.Description, "pr", stored)}, nil
+}
+
+// WithPRWorkstream returns the WritePlan that associates url with workstream.
+// URL identity is canonicalized before comparison and storage. Repeating the
+// same pair is a no-op; mapping the same canonical PR to another workstream is
+// rejected. The caller remains responsible for validating that workstream is
+// a descendant of the initiative's project epic before persisting the plan.
+func WithPRWorkstream(iss bd.Issue, url, workstream string) (WritePlan, error) {
+	canonical, ok := CanonicalPRURL(url)
+	if !ok {
+		return WritePlan{}, fmt.Errorf("initiative.WithPRWorkstream: url must be a GitHub PR URL: %q", url)
+	}
+	if workstream == "" {
+		return WritePlan{}, fmt.Errorf("initiative.WithPRWorkstream: workstream must not be empty")
+	}
+	if strings.IndexFunc(workstream, unicode.IsSpace) >= 0 {
+		return WritePlan{}, fmt.Errorf("initiative.WithPRWorkstream: workstream must not contain whitespace: %q", workstream)
+	}
+	existingWorkstream := ""
+	for _, existing := range PRWorkstreams(iss) {
+		if existing.PR != canonical {
+			continue
+		}
+		if existingWorkstream != "" && existingWorkstream != existing.Workstream {
+			return WritePlan{}, fmt.Errorf("initiative.WithPRWorkstream: PR %s already has conflicting persisted workstreams %s and %s", canonical, existingWorkstream, existing.Workstream)
+		}
+		existingWorkstream = existing.Workstream
+	}
+	if existingWorkstream == workstream {
+		return WritePlan{Description: iss.Description}, nil
+	}
+	if existingWorkstream != "" {
+		return WritePlan{}, fmt.Errorf("initiative.WithPRWorkstream: PR %s is already associated with workstream %s", canonical, existingWorkstream)
+	}
+	value := canonical + " " + workstream
+	return WritePlan{Description: appendLine(iss.Description, "pr-workstream", value)}, nil
 }
 
 // singleValued returns the set of single-valued canonical keys f currently

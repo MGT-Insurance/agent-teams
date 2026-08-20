@@ -2,6 +2,8 @@
 package verbs
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,6 +11,8 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
+
+func workstreamPtr(value string) *string { return &value }
 
 // ── prAddKong.Validate ────────────────────────────────────────────────────────
 
@@ -38,6 +42,27 @@ func TestPrAddKong_Validate_AcceptsWellFormedURL(t *testing.T) {
 	cmd := &prAddKong{InitiativeID: "at-z", URL: "https://github.com/owner/repo/pull/42"}
 	if err := cmd.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestPrAddKong_ValidateWorkstreamToken(t *testing.T) {
+	for _, value := range []string{"", "repo epic.2", "repo-epic.2\n"} {
+		cmd := &prAddKong{
+			InitiativeID: "at-z",
+			URL:          "https://github.com/owner/repo/pull/42",
+			Workstream:   workstreamPtr(value),
+		}
+		if err := cmd.Validate(); err == nil {
+			t.Errorf("Validate --workstream=%q: expected error", value)
+		}
+	}
+	cmd := &prAddKong{
+		InitiativeID: "at-z",
+		URL:          "https://github.com/owner/repo/pull/42",
+		Workstream:   workstreamPtr("repo-epic.2"),
+	}
+	if err := cmd.Validate(); err != nil {
+		t.Fatalf("valid --workstream rejected: %v", err)
 	}
 }
 
@@ -183,6 +208,274 @@ func TestPrAddKong_Run_IdempotentOnRepeatURL(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "already recorded") {
 		t.Errorf("expected 'already recorded' message, got %q", stdout.String())
+	}
+}
+
+func TestPrAddKong_RunPersistsPRAndValidatedWorkstreamInOneUpdate(t *testing.T) {
+	const (
+		repo       = "/project/repo"
+		epic       = "repo-root"
+		workstream = "repo-root.2.1"
+		canonical  = "https://github.com/owner/repo/pull/9"
+	)
+	issue := bd.Issue{
+		ID:          "at-owned",
+		Description: "repo: " + repo + "\nepic: " + epic + "\ncustom: untouched  \n",
+	}
+	var updates []string
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		switch args[0] {
+		case "show":
+			return issueJSON(issue), nil
+		case "update":
+			bodyFile := strings.TrimPrefix(args[2], "--body-file=")
+			body, err := readFileT(t, bodyFile)
+			if err != nil {
+				t.Fatalf("read update body: %v", err)
+			}
+			updates = append(updates, body)
+			issue.Description = body
+		}
+		return "", nil
+	}}
+
+	var projectRepo string
+	var projectShows []string
+	project := &fakeBD{runFn: func(args ...string) (string, error) {
+		projectShows = append(projectShows, args[1])
+		switch args[1] {
+		case workstream:
+			return fmt.Sprintf(`[{"id":%q,"parent":"repo-root.2"}]`, workstream), nil
+		case "repo-root.2":
+			return `[{"id":"repo-root.2","parent":"repo-root"}]`, nil
+		default:
+			return `[]`, nil
+		}
+	}}
+	cmd := &prAddKong{
+		InitiativeID: "at-owned",
+		URL:          "http://github.com/Owner/Repo/pull/9",
+		Workstream:   workstreamPtr(workstream),
+		newProjectBD: func(got string) projectBDRunner {
+			projectRepo = got
+			return project
+		},
+	}
+	ctx, _, _ := makeCtx(global, t.TempDir())
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if projectRepo != repo {
+		t.Fatalf("project client repo = %q, want %q", projectRepo, repo)
+	}
+	if got, want := strings.Join(projectShows, ","), workstream+",repo-root.2"; got != want {
+		t.Fatalf("project show chain = %q, want %q", got, want)
+	}
+	if len(updates) != 1 {
+		t.Fatalf("global update calls = %d, want exactly 1", len(updates))
+	}
+	if !strings.Contains(updates[0], "pr: "+canonical+"\n") ||
+		!strings.Contains(updates[0], "pr-workstream: "+canonical+" "+workstream+"\n") {
+		t.Fatalf("single update does not contain both rails:\n%s", updates[0])
+	}
+	if !strings.Contains(updates[0], "custom: untouched  \n") {
+		t.Fatalf("unmodeled field bytes were not preserved:\n%s", updates[0])
+	}
+}
+
+func TestPrAddKong_RunMappedRepeatIsIdempotent(t *testing.T) {
+	const association = "pr-workstream: https://github.com/owner/repo/pull/9 repo-root.2\n"
+	issue := bd.Issue{
+		ID:          "at-repeat",
+		Description: "repo: /project\nepic: repo-root\npr: https://github.com/owner/repo/pull/9\n" + association,
+	}
+	updates := 0
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		if args[0] == "show" {
+			return issueJSON(issue), nil
+		}
+		if args[0] == "update" {
+			updates++
+		}
+		return "", nil
+	}}
+	project := &fakeBD{runFn: func(args ...string) (string, error) {
+		return `[{"id":"repo-root.2","parent":"repo-root"}]`, nil
+	}}
+	ctx, stdout, _ := makeCtx(global, t.TempDir())
+	cmd := &prAddKong{
+		InitiativeID: "at-repeat",
+		URL:          "https://github.com/OWNER/REPO/pull/9",
+		Workstream:   workstreamPtr("repo-root.2"),
+		newProjectBD: func(string) projectBDRunner { return project },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if updates != 0 {
+		t.Fatalf("repeat pair performed %d updates, want 0", updates)
+	}
+	if !strings.Contains(stdout.String(), "already recorded") {
+		t.Fatalf("stdout = %q, want already-recorded notice", stdout.String())
+	}
+}
+
+func TestPrAddKong_RunRejectsConflictingWorkstreamBeforeProjectRead(t *testing.T) {
+	issue := bd.Issue{
+		ID: "at-conflict",
+		Description: "repo: /project\nepic: repo-root\n" +
+			"pr: https://github.com/owner/repo/pull/9\n" +
+			"pr-workstream: https://github.com/owner/repo/pull/9 repo-root.2\n",
+	}
+	updates := 0
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		if args[0] == "show" {
+			return issueJSON(issue), nil
+		}
+		if args[0] == "update" {
+			updates++
+		}
+		return "", nil
+	}}
+	ctx, _, _ := makeCtx(global, t.TempDir())
+	cmd := &prAddKong{
+		InitiativeID: "at-conflict",
+		URL:          "https://github.com/owner/repo/pull/9",
+		Workstream:   workstreamPtr("repo-root.7"),
+		newProjectBD: func(string) projectBDRunner {
+			t.Fatal("project must not be read after a persisted mapping already proves a conflict")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "already associated with workstream repo-root.2") {
+		t.Fatalf("conflicting Run error = %v", err)
+	}
+	if updates != 0 {
+		t.Fatalf("conflict performed %d updates, want 0", updates)
+	}
+}
+
+func TestPrAddKong_RunRejectsNonDescendantWithoutGlobalMutation(t *testing.T) {
+	issue := bd.Issue{ID: "at-other", Description: "repo: /project\nepic: repo-root\n"}
+	updates := 0
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		if args[0] == "show" {
+			return issueJSON(issue), nil
+		}
+		updates++
+		return "", nil
+	}}
+	project := &fakeBD{runFn: func(args ...string) (string, error) {
+		if args[1] == "other-root.2" {
+			return `[{"id":"other-root.2","parent":"other-root"}]`, nil
+		}
+		return `[{"id":"other-root"}]`, nil
+	}}
+	ctx, _, _ := makeCtx(global, t.TempDir())
+	cmd := &prAddKong{
+		InitiativeID: "at-other",
+		URL:          "https://github.com/owner/repo/pull/9",
+		Workstream:   workstreamPtr("other-root.2"),
+		newProjectBD: func(string) projectBDRunner { return project },
+	}
+	err := cmd.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "not a descendant of epic repo-root") {
+		t.Fatalf("non-descendant Run error = %v", err)
+	}
+	if updates != 0 {
+		t.Fatalf("non-descendant performed %d global mutations, want 0", updates)
+	}
+}
+
+func TestPrAddKong_RunMappedRequiresRepoAndEpic(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		description string
+		want        string
+	}{
+		{name: "missing repo", description: "epic: repo-root\n", want: "non-empty repo"},
+		{name: "missing epic", description: "repo: /project\n", want: "non-empty epic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := bd.Issue{ID: "at-missing", Description: tc.description}
+			global := &fakeBD{runFn: func(args ...string) (string, error) {
+				if args[0] == "show" {
+					return issueJSON(issue), nil
+				}
+				t.Fatalf("unexpected mutation: %v", args)
+				return "", nil
+			}}
+			ctx, _, _ := makeCtx(global, t.TempDir())
+			cmd := &prAddKong{
+				InitiativeID: "at-missing",
+				URL:          "https://github.com/owner/repo/pull/9",
+				Workstream:   workstreamPtr("repo-root.2"),
+				newProjectBD: func(string) projectBDRunner {
+					t.Fatal("project client must not be created without routing fields")
+					return nil
+				},
+			}
+			err := cmd.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrAddKong_RunMappedFailsClosedOnUnreadableMissingOrCyclicProject(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		projectRun func(args ...string) (string, error)
+		want       string
+	}{
+		{
+			name: "unreadable project",
+			projectRun: func(args ...string) (string, error) {
+				return "", errors.New("project store unavailable")
+			},
+			want: "project store unavailable",
+		},
+		{
+			name: "missing bead",
+			projectRun: func(args ...string) (string, error) {
+				return `[]`, nil
+			},
+			want: "not found",
+		},
+		{
+			name: "cyclic parents",
+			projectRun: func(args ...string) (string, error) {
+				if args[1] == "repo-root.2" {
+					return `[{"id":"repo-root.2","parent":"repo-root.3"}]`, nil
+				}
+				return `[{"id":"repo-root.3","parent":"repo-root.2"}]`, nil
+			},
+			want: "contains a cycle",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := bd.Issue{ID: "at-failclosed", Description: "repo: /project\nepic: repo-root\n"}
+			global := &fakeBD{runFn: func(args ...string) (string, error) {
+				if args[0] == "show" {
+					return issueJSON(issue), nil
+				}
+				t.Fatalf("unexpected global mutation: %v", args)
+				return "", nil
+			}}
+			ctx, _, _ := makeCtx(global, t.TempDir())
+			cmd := &prAddKong{
+				InitiativeID: "at-failclosed",
+				URL:          "https://github.com/owner/repo/pull/9",
+				Workstream:   workstreamPtr("repo-root.2"),
+				newProjectBD: func(string) projectBDRunner { return &fakeBD{runFn: tc.projectRun} },
+			}
+			err := cmd.Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
