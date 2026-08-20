@@ -446,6 +446,14 @@ func detectHungSuspendSpan(lastTickAtRFC3339 string, now time.Time, tickInterval
 	}
 	gap := now.Sub(lastTick)
 	threshold := tickInterval * time.Duration(multiplier)
+	// The production invariant this whole heuristic rests on: runHungTickUntil's
+	// real ticker fires every exactly tickInterval, so in production the ONLY
+	// thing that can make the gap between two consecutive doHungTick calls
+	// exceed a small multiple of tickInterval is the OS process itself having
+	// been suspended for the excess — nothing that happens inside one tick body
+	// can produce it. A gap this large from any other cause would mean the
+	// invariant itself broke (e.g. the ticker goroutine stalled or panicked
+	// without crashing the process), which is out of scope here.
 	if gap <= threshold {
 		return 0
 	}
