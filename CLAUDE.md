@@ -111,9 +111,9 @@ There is also a `dashboard/` (Node/TS, pnpm workspace: `shared`/`server`/`web`) 
 ## Conventions & Patterns
 
 - **Beads-first** for all task tracking; `bd remember` for project facts; never MEMORY.md. Memory routing for role/user learnings goes through `ateam learn` (see `plugins/agent-teams/CLAUDE.md`).
-- **🚨 Release protocol — rebuild binaries + bump version on ANY CLI change.** The committed binaries in `plugins/agent-teams/bin/` are what run at install time, and `claude plugin update` only picks up changes when the version changes. So whenever you change `ateam`'s behavior (new/changed/removed verb, flags, or output) OR any plugin content (skills, agents, hooks):
+- **🚨 Release protocol — rebuild binaries + bump version on ANY CLI change.** The committed binaries in `plugins/agent-teams/bin/` are what run at install time, and plugin updates only pick up changes when the relevant version changes. So whenever you change `ateam`'s behavior (new/changed/removed verb, flags, or output) OR any plugin content (skills, agents, hooks):
   1. `sh scripts/build-binaries.sh` and commit the updated `plugins/agent-teams/bin/`.
-  2. Bump the version in BOTH `.claude-plugin/marketplace.json` and `plugins/agent-teams/.claude-plugin/plugin.json` (keep them identical).
+  2. Apply `docs/plugin-versioning.md`: both runtimes changed means advance the shared minor and reset both patches to zero; a runtime-only change increments only its patch. Keep the two Claude version locations identical.
   3. For a new verb, add the kong struct and wire it in `RegisterAllKong`. Help text is generated from kong struct tags — no separate `UsageText` entry required.
 
   **No rebuild = the deployed `ateam` silently lacks your change; no version bump = installed sessions never pick it up.** A source-only PR that adds a verb is INCOMPLETE. (Detailed rationale in `cmd/ateam/CLAUDE.md` and `plugins/agent-teams/CLAUDE.md`.)
