@@ -570,6 +570,13 @@ func TestInitiativeMutationLockPathScopesUntrustedIDUnderHome(t *testing.T) {
 
 const prAddProcessHelperEnv = "ATEAM_PR_ADD_PROCESS_HELPER"
 
+type concurrentInitiativeMutation struct {
+	action     string
+	url        string
+	workstream string
+	session    string
+}
+
 // TestPrAddKong_ConcurrentProcessesPreserveDistinctMappedAdds is a real
 // process-level regression for the lost-update race. Two copies of this test
 // executable start together and use independent clients against one shared
@@ -581,59 +588,11 @@ func TestPrAddKong_ConcurrentProcessesPreserveDistinctMappedAdds(t *testing.T) {
 	if os.Getenv(prAddProcessHelperEnv) != "" {
 		t.Skip("parent-only concurrency test")
 	}
-	home := t.TempDir()
-	statePath := filepath.Join(home, "initiative-description")
-	if err := os.WriteFile(statePath, []byte("repo: /project\nepic: repo-root\n"), 0o600); err != nil {
-		t.Fatalf("write initial state: %v", err)
-	}
-	startPath := filepath.Join(home, "start")
-	readyPaths := []string{filepath.Join(home, "ready-1"), filepath.Join(home, "ready-2")}
-	shownPaths := []string{filepath.Join(home, "shown-1"), filepath.Join(home, "shown-2")}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	type child struct {
-		cmd    *exec.Cmd
-		output bytes.Buffer
-	}
-	children := make([]child, 2)
-	for i := range children {
-		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPrAddKong_ProcessHelper$")
-		cmd.Env = append(os.Environ(),
-			prAddProcessHelperEnv+"=1",
-			"ATEAM_PR_ADD_HOME="+home,
-			"ATEAM_PR_ADD_STATE="+statePath,
-			"ATEAM_PR_ADD_START="+startPath,
-			"ATEAM_PR_ADD_READY="+readyPaths[i],
-			"ATEAM_PR_ADD_SHOWN="+shownPaths[i],
-			"ATEAM_PR_ADD_OTHER_SHOWN="+shownPaths[1-i],
-			fmt.Sprintf("ATEAM_PR_ADD_URL=https://github.com/owner/repo/pull/%d", 41+i),
-			fmt.Sprintf("ATEAM_PR_ADD_WORKSTREAM=repo-root.%d", i+1),
-			fmt.Sprintf("ATEAM_PR_ADD_TEMP_SUFFIX=%d", i+1),
-		)
-		cmd.Stdout = &children[i].output
-		cmd.Stderr = &children[i].output
-		children[i].cmd = cmd
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start child %d: %v", i+1, err)
-		}
-	}
-
-	waitForPRAddFiles(t, ctx, readyPaths...)
-	if err := os.WriteFile(startPath, []byte("go"), 0o600); err != nil {
-		t.Fatalf("release children: %v", err)
-	}
-	for i := range children {
-		if err := children[i].cmd.Wait(); err != nil {
-			t.Fatalf("child %d failed: %v\n%s", i+1, err, children[i].output.String())
-		}
-	}
-
-	description, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatalf("read final state: %v", err)
-	}
-	issue := bd.Issue{ID: "at-concurrent", Description: string(description)}
+	description := runConcurrentInitiativeMutations(t, []concurrentInitiativeMutation{
+		{action: "pr", url: "https://github.com/owner/repo/pull/41", workstream: "repo-root.1"},
+		{action: "pr", url: "https://github.com/owner/repo/pull/42", workstream: "repo-root.2"},
+	})
+	issue := bd.Issue{ID: "at-concurrent", Description: description}
 	fields := initiative.Of(issue)
 	wantPRs := map[string]bool{
 		"https://github.com/owner/repo/pull/41": false,
@@ -662,6 +621,95 @@ func TestPrAddKong_ConcurrentProcessesPreserveDistinctMappedAdds(t *testing.T) {
 			t.Errorf("final mapping for %s = %q, want %q:\n%s", pr, got, wantWorkstream, description)
 		}
 	}
+}
+
+func TestPrAddKong_ConcurrentProcessPRAddAndSessionTiePreserveBoth(t *testing.T) {
+	if os.Getenv(prAddProcessHelperEnv) != "" {
+		t.Skip("parent-only concurrency test")
+	}
+	const (
+		prURL      = "https://github.com/owner/repo/pull/41"
+		workstream = "repo-root.1"
+		sessionID  = "sess-concurrent"
+	)
+	description := runConcurrentInitiativeMutations(t, []concurrentInitiativeMutation{
+		{action: "pr", url: prURL, workstream: workstream},
+		{action: "session", session: sessionID},
+	})
+	issue := bd.Issue{ID: "at-concurrent", Description: description}
+	fields := initiative.Of(issue)
+	if len(fields.Sessions) != 1 || fields.Sessions[0] != sessionID {
+		t.Errorf("final sessions = %v, want [%s]:\n%s", fields.Sessions, sessionID, description)
+	}
+	if len(fields.PRs) != 1 || fields.PRs[0] != prURL {
+		t.Errorf("final PRs = %v, want [%s]:\n%s", fields.PRs, prURL, description)
+	}
+	associations := initiative.PRWorkstreams(issue)
+	if len(associations) != 1 || associations[0].PR != prURL || associations[0].Workstream != workstream {
+		t.Errorf("final PR associations = %#v, want %s -> %s:\n%s", associations, prURL, workstream, description)
+	}
+}
+
+func runConcurrentInitiativeMutations(t *testing.T, mutations []concurrentInitiativeMutation) string {
+	t.Helper()
+	if len(mutations) != 2 {
+		t.Fatalf("concurrent mutation helper requires exactly 2 children, got %d", len(mutations))
+	}
+	home := t.TempDir()
+	statePath := filepath.Join(home, "initiative-description")
+	if err := os.WriteFile(statePath, []byte("repo: /project\nepic: repo-root\n"), 0o600); err != nil {
+		t.Fatalf("write initial state: %v", err)
+	}
+	startPath := filepath.Join(home, "start")
+	readyPaths := []string{filepath.Join(home, "ready-1"), filepath.Join(home, "ready-2")}
+	shownPaths := []string{filepath.Join(home, "shown-1"), filepath.Join(home, "shown-2")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	type child struct {
+		cmd    *exec.Cmd
+		output bytes.Buffer
+	}
+	children := make([]child, len(mutations))
+	for i, mutation := range mutations {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPrAddKong_ProcessHelper$")
+		cmd.Env = append(os.Environ(),
+			prAddProcessHelperEnv+"=1",
+			"ATEAM_PR_ADD_HOME="+home,
+			"ATEAM_PR_ADD_STATE="+statePath,
+			"ATEAM_PR_ADD_START="+startPath,
+			"ATEAM_PR_ADD_READY="+readyPaths[i],
+			"ATEAM_PR_ADD_SHOWN="+shownPaths[i],
+			"ATEAM_PR_ADD_OTHER_SHOWN="+shownPaths[1-i],
+			"ATEAM_PR_ADD_ACTION="+mutation.action,
+			"ATEAM_PR_ADD_URL="+mutation.url,
+			"ATEAM_PR_ADD_WORKSTREAM="+mutation.workstream,
+			"ATEAM_PR_ADD_SESSION="+mutation.session,
+			fmt.Sprintf("ATEAM_PR_ADD_TEMP_SUFFIX=%d", i+1),
+		)
+		cmd.Stdout = &children[i].output
+		cmd.Stderr = &children[i].output
+		children[i].cmd = cmd
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child %d: %v", i+1, err)
+		}
+	}
+
+	waitForPRAddFiles(t, ctx, readyPaths...)
+	if err := os.WriteFile(startPath, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release children: %v", err)
+	}
+	for i := range children {
+		if err := children[i].cmd.Wait(); err != nil {
+			t.Fatalf("child %d failed: %v\n%s", i+1, err, children[i].output.String())
+		}
+	}
+
+	description, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read final state: %v", err)
+	}
+	return string(description)
 }
 
 func waitForPRAddFiles(t *testing.T, ctx context.Context, paths ...string) {
@@ -703,53 +751,80 @@ func TestPrAddKong_ProcessHelper(t *testing.T) {
 	defer cancel()
 	waitForPRAddFiles(t, helperCtx, os.Getenv("ATEAM_PR_ADD_START"))
 
-	global := &fakeBD{runFn: func(args ...string) (string, error) {
-		switch args[0] {
-		case "show":
-			description, err := os.ReadFile(statePath)
-			if err != nil {
-				return "", err
-			}
-			if err := os.WriteFile(shownPath, []byte("shown"), 0o600); err != nil {
-				return "", err
-			}
-			deadline := time.Now().Add(500 * time.Millisecond)
-			for time.Now().Before(deadline) {
-				if _, err := os.Stat(otherShownPath); err == nil {
-					break
+	readIssue := func() (bd.Issue, error) {
+		description, err := os.ReadFile(statePath)
+		return bd.Issue{ID: "at-concurrent", Status: "open", Description: string(description)}, err
+	}
+	global := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			switch args[0] {
+			case "show":
+				issue, err := readIssue()
+				if err != nil {
+					return "", err
 				}
-				time.Sleep(5 * time.Millisecond)
+				if err := os.WriteFile(shownPath, []byte("shown"), 0o600); err != nil {
+					return "", err
+				}
+				deadline := time.Now().Add(500 * time.Millisecond)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(otherShownPath); err == nil {
+						break
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				return issueJSON(issue), nil
+			case "update":
+				bodyPath := strings.TrimPrefix(args[2], "--body-file=")
+				description, err := os.ReadFile(bodyPath)
+				if err != nil {
+					return "", err
+				}
+				tmpPath := statePath + "." + os.Getenv("ATEAM_PR_ADD_TEMP_SUFFIX")
+				if err := os.WriteFile(tmpPath, description, 0o600); err != nil {
+					return "", err
+				}
+				if err := os.Rename(tmpPath, statePath); err != nil {
+					return "", err
+				}
 			}
-			return issueJSON(bd.Issue{ID: "at-concurrent", Description: string(description)}), nil
-		case "update":
-			bodyPath := strings.TrimPrefix(args[2], "--body-file=")
-			description, err := os.ReadFile(bodyPath)
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			issue, err := readIssue()
 			if err != nil {
-				return "", err
+				return err
 			}
-			tmpPath := statePath + "." + os.Getenv("ATEAM_PR_ADD_TEMP_SUFFIX")
-			if err := os.WriteFile(tmpPath, description, 0o600); err != nil {
-				return "", err
+			issues, ok := dst.(*[]bd.Issue)
+			if !ok {
+				return fmt.Errorf("unexpected list destination %T", dst)
 			}
-			if err := os.Rename(tmpPath, statePath); err != nil {
-				return "", err
-			}
-		}
-		return "", nil
-	}}
+			*issues = []bd.Issue{issue}
+			return nil
+		},
+	}
 	project := &fakeBD{runFn: func(args ...string) (string, error) {
 		return fmt.Sprintf(`[{"id":%q,"parent":"repo-root"}]`, args[1]), nil
 	}}
-	workstream := os.Getenv("ATEAM_PR_ADD_WORKSTREAM")
-	cmd := &prAddKong{
-		InitiativeID: "at-concurrent",
-		URL:          os.Getenv("ATEAM_PR_ADD_URL"),
-		Workstream:   &workstream,
-		newProjectBD: func(string) projectBDRunner { return project },
-	}
 	ctx, _, _ := makeCtx(global, home)
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("mapped pr add: %v", err)
+	switch os.Getenv("ATEAM_PR_ADD_ACTION") {
+	case "pr":
+		workstream := os.Getenv("ATEAM_PR_ADD_WORKSTREAM")
+		cmd := &prAddKong{
+			InitiativeID: "at-concurrent",
+			URL:          os.Getenv("ATEAM_PR_ADD_URL"),
+			Workstream:   &workstream,
+			newProjectBD: func(string) projectBDRunner { return project },
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("mapped pr add: %v", err)
+		}
+	case "session":
+		if err := appendSessionID(ctx, "at-concurrent", os.Getenv("ATEAM_PR_ADD_SESSION")); err != nil {
+			t.Fatalf("session tie: %v", err)
+		}
+	default:
+		t.Fatalf("unknown helper action %q", os.Getenv("ATEAM_PR_ADD_ACTION"))
 	}
 }
 
