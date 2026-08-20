@@ -6,10 +6,14 @@
 package verbs
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -46,6 +50,66 @@ type projectBDRunner interface {
 	Run(args ...string) (string, error)
 }
 
+// initiativeMutationLock serializes whole-description read/modify/write
+// operations for one initiative across ateam processes. The lock file remains
+// on disk after Close; only the kernel flock represents ownership, so a
+// crashed process cannot leave a stale claim and release never races a new
+// acquirer by unlinking the inode it locked.
+type initiativeMutationLock struct {
+	file *os.File
+}
+
+func initiativeMutationLockPath(home, initiativeID string) string {
+	digest := sha256.Sum256([]byte(initiativeID))
+	return filepath.Join(home, ".locks", "initiatives", fmt.Sprintf("%x.lock", digest))
+}
+
+func acquireInitiativeMutationLock(home, initiativeID string) (*initiativeMutationLock, error) {
+	if home == "" {
+		return nil, fmt.Errorf("agent-teams home is empty")
+	}
+	path := initiativeMutationLockPath(home, initiativeID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create initiative lock directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open initiative lock: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("set initiative lock permissions: %w", err)
+	}
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("flock initiative lock: %w", err)
+	}
+	return &initiativeMutationLock{file: file}, nil
+}
+
+func (l *initiativeMutationLock) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	file := l.file
+	l.file = nil
+	unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	closeErr := file.Close()
+	if unlockErr != nil {
+		return fmt.Errorf("unlock initiative lock: %w", unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close initiative lock: %w", closeErr)
+	}
+	return nil
+}
+
 // Validate rejects a malformed pr-url before any bd read/write. WithPR itself
 // only enforces the field-line rule's structural constraints (no
 // leading/trailing whitespace, no line break) — it deliberately does not
@@ -71,11 +135,28 @@ func (c *prAddKong) Validate() error {
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
-func (c *prAddKong) Run(ctx *cli.Context) error {
+func (c *prAddKong) Run(ctx *cli.Context) (runErr error) {
 	if ctx == nil {
 		return fmt.Errorf("ateam pr add: no context")
 	}
+	lock, err := acquireInitiativeMutationLock(ctx.Home, c.InitiativeID)
+	if err != nil {
+		return fmt.Errorf("ateam pr add: acquire initiative %s lock: %w", c.InitiativeID, err)
+	}
+	defer func() {
+		if err := lock.Close(); err != nil {
+			lockErr := fmt.Errorf("ateam pr add: release initiative %s lock: %w", c.InitiativeID, err)
+			if runErr == nil {
+				runErr = lockErr
+			} else {
+				runErr = errors.Join(runErr, lockErr)
+			}
+		}
+	}()
 
+	// This is intentionally the first initiative read: every process re-reads
+	// after acquiring the per-initiative lock, then holds that lock through
+	// planning, descendant validation, and the final whole-description update.
 	issue, err := bd.ShowIssue(ctx.BD, c.InitiativeID)
 	if err != nil {
 		return fmt.Errorf("ateam pr add: bd show %s: %w", c.InitiativeID, err)

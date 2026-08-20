@@ -2,10 +2,17 @@
 package verbs
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -476,6 +483,273 @@ func TestPrAddKong_RunMappedFailsClosedOnUnreadableMissingOrCyclicProject(t *tes
 				t.Fatalf("Run error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestPrAddKong_RunFailsBeforeReadWhenInitiativeLockCannotBeCreated(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(homeFile, []byte("occupied"), 0o600); err != nil {
+		t.Fatalf("write fake home file: %v", err)
+	}
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		t.Fatalf("bd must not be read when lock acquisition fails, got %v", args)
+		return "", nil
+	}}
+	ctx, _, _ := makeCtx(global, homeFile)
+	err := (&prAddKong{
+		InitiativeID: "at-lock-error",
+		URL:          "https://github.com/owner/repo/pull/9",
+	}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "acquire initiative at-lock-error lock") {
+		t.Fatalf("Run error = %v, want initiative lock acquisition failure", err)
+	}
+}
+
+func TestPrAddKong_RunReleasesInitiativeLockAfterUpdateError(t *testing.T) {
+	home := t.TempDir()
+	issue := bd.Issue{ID: "at-release", Description: "repo: /project\nepic: repo-root\n"}
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		if args[0] == "show" {
+			return issueJSON(issue), nil
+		}
+		return "", errors.New("injected update failure")
+	}}
+	ctx, _, _ := makeCtx(global, home)
+	err := (&prAddKong{
+		InitiativeID: "at-release",
+		URL:          "https://github.com/owner/repo/pull/9",
+	}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "injected update failure") {
+		t.Fatalf("Run error = %v, want injected update failure", err)
+	}
+
+	path := initiativeMutationLockPath(home, "at-release")
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open lock after failed command: %v", err)
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("lock remained held after failed command: %v", err)
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatalf("stat lock: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("lock permissions = %o, want 600", got)
+	}
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat lock directory: %v", err)
+	}
+	if got := dirInfo.Mode().Perm() & 0o077; got != 0 {
+		t.Fatalf("lock directory grants group/other permissions: %o", dirInfo.Mode().Perm())
+	}
+}
+
+func TestInitiativeMutationLockPathScopesUntrustedIDUnderHome(t *testing.T) {
+	home := t.TempDir()
+	first := initiativeMutationLockPath(home, "../other/initiative")
+	second := initiativeMutationLockPath(home, "at-safe")
+	if first == second {
+		t.Fatal("distinct initiative IDs resolved to the same lock path")
+	}
+	rel, err := filepath.Rel(home, first)
+	if err != nil {
+		t.Fatalf("relative lock path: %v", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("initiative lock escaped home: %s", first)
+	}
+	if got, want := filepath.Dir(first), filepath.Join(home, ".locks", "initiatives"); got != want {
+		t.Fatalf("initiative lock dir = %q, want %q", got, want)
+	}
+}
+
+const prAddProcessHelperEnv = "ATEAM_PR_ADD_PROCESS_HELPER"
+
+// TestPrAddKong_ConcurrentProcessesPreserveDistinctMappedAdds is a real
+// process-level regression for the lost-update race. Two copies of this test
+// executable start together and use independent clients against one shared
+// file-backed initiative. Each show deliberately waits for the peer's show;
+// without the process lock both read the old description and the last update
+// drops one mapping. With the lock, the second process cannot read until the
+// first process has completed its update.
+func TestPrAddKong_ConcurrentProcessesPreserveDistinctMappedAdds(t *testing.T) {
+	if os.Getenv(prAddProcessHelperEnv) != "" {
+		t.Skip("parent-only concurrency test")
+	}
+	home := t.TempDir()
+	statePath := filepath.Join(home, "initiative-description")
+	if err := os.WriteFile(statePath, []byte("repo: /project\nepic: repo-root\n"), 0o600); err != nil {
+		t.Fatalf("write initial state: %v", err)
+	}
+	startPath := filepath.Join(home, "start")
+	readyPaths := []string{filepath.Join(home, "ready-1"), filepath.Join(home, "ready-2")}
+	shownPaths := []string{filepath.Join(home, "shown-1"), filepath.Join(home, "shown-2")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	type child struct {
+		cmd    *exec.Cmd
+		output bytes.Buffer
+	}
+	children := make([]child, 2)
+	for i := range children {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPrAddKong_ProcessHelper$")
+		cmd.Env = append(os.Environ(),
+			prAddProcessHelperEnv+"=1",
+			"ATEAM_PR_ADD_HOME="+home,
+			"ATEAM_PR_ADD_STATE="+statePath,
+			"ATEAM_PR_ADD_START="+startPath,
+			"ATEAM_PR_ADD_READY="+readyPaths[i],
+			"ATEAM_PR_ADD_SHOWN="+shownPaths[i],
+			"ATEAM_PR_ADD_OTHER_SHOWN="+shownPaths[1-i],
+			fmt.Sprintf("ATEAM_PR_ADD_URL=https://github.com/owner/repo/pull/%d", 41+i),
+			fmt.Sprintf("ATEAM_PR_ADD_WORKSTREAM=repo-root.%d", i+1),
+			fmt.Sprintf("ATEAM_PR_ADD_TEMP_SUFFIX=%d", i+1),
+		)
+		cmd.Stdout = &children[i].output
+		cmd.Stderr = &children[i].output
+		children[i].cmd = cmd
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child %d: %v", i+1, err)
+		}
+	}
+
+	waitForPRAddFiles(t, ctx, readyPaths...)
+	if err := os.WriteFile(startPath, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release children: %v", err)
+	}
+	for i := range children {
+		if err := children[i].cmd.Wait(); err != nil {
+			t.Fatalf("child %d failed: %v\n%s", i+1, err, children[i].output.String())
+		}
+	}
+
+	description, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read final state: %v", err)
+	}
+	issue := bd.Issue{ID: "at-concurrent", Description: string(description)}
+	fields := initiative.Of(issue)
+	wantPRs := map[string]bool{
+		"https://github.com/owner/repo/pull/41": false,
+		"https://github.com/owner/repo/pull/42": false,
+	}
+	for _, pr := range fields.PRs {
+		if _, ok := wantPRs[pr]; ok {
+			wantPRs[pr] = true
+		}
+	}
+	for pr, found := range wantPRs {
+		if !found {
+			t.Errorf("final PR rail omitted %s:\n%s", pr, description)
+		}
+	}
+	wantMappings := map[string]string{
+		"https://github.com/owner/repo/pull/41": "repo-root.1",
+		"https://github.com/owner/repo/pull/42": "repo-root.2",
+	}
+	gotMappings := make(map[string]string)
+	for _, association := range initiative.PRWorkstreams(issue) {
+		gotMappings[association.PR] = association.Workstream
+	}
+	for pr, wantWorkstream := range wantMappings {
+		if got := gotMappings[pr]; got != wantWorkstream {
+			t.Errorf("final mapping for %s = %q, want %q:\n%s", pr, got, wantWorkstream, description)
+		}
+	}
+}
+
+func waitForPRAddFiles(t *testing.T, ctx context.Context, paths ...string) {
+	t.Helper()
+	for {
+		allPresent := true
+		for _, path := range paths {
+			if _, err := os.Stat(path); err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("stat helper marker %s: %v", path, err)
+				}
+				allPresent = false
+			}
+		}
+		if allPresent {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for helper markers %v: %v", paths, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestPrAddKong_ProcessHelper(t *testing.T) {
+	if os.Getenv(prAddProcessHelperEnv) == "" {
+		t.Skip("subprocess helper")
+	}
+	home := os.Getenv("ATEAM_PR_ADD_HOME")
+	statePath := os.Getenv("ATEAM_PR_ADD_STATE")
+	readyPath := os.Getenv("ATEAM_PR_ADD_READY")
+	shownPath := os.Getenv("ATEAM_PR_ADD_SHOWN")
+	otherShownPath := os.Getenv("ATEAM_PR_ADD_OTHER_SHOWN")
+	if err := os.WriteFile(readyPath, []byte("ready"), 0o600); err != nil {
+		t.Fatalf("write ready marker: %v", err)
+	}
+	helperCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	waitForPRAddFiles(t, helperCtx, os.Getenv("ATEAM_PR_ADD_START"))
+
+	global := &fakeBD{runFn: func(args ...string) (string, error) {
+		switch args[0] {
+		case "show":
+			description, err := os.ReadFile(statePath)
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(shownPath, []byte("shown"), 0o600); err != nil {
+				return "", err
+			}
+			deadline := time.Now().Add(500 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(otherShownPath); err == nil {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			return issueJSON(bd.Issue{ID: "at-concurrent", Description: string(description)}), nil
+		case "update":
+			bodyPath := strings.TrimPrefix(args[2], "--body-file=")
+			description, err := os.ReadFile(bodyPath)
+			if err != nil {
+				return "", err
+			}
+			tmpPath := statePath + "." + os.Getenv("ATEAM_PR_ADD_TEMP_SUFFIX")
+			if err := os.WriteFile(tmpPath, description, 0o600); err != nil {
+				return "", err
+			}
+			if err := os.Rename(tmpPath, statePath); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}}
+	project := &fakeBD{runFn: func(args ...string) (string, error) {
+		return fmt.Sprintf(`[{"id":%q,"parent":"repo-root"}]`, args[1]), nil
+	}}
+	workstream := os.Getenv("ATEAM_PR_ADD_WORKSTREAM")
+	cmd := &prAddKong{
+		InitiativeID: "at-concurrent",
+		URL:          os.Getenv("ATEAM_PR_ADD_URL"),
+		Workstream:   &workstream,
+		newProjectBD: func(string) projectBDRunner { return project },
+	}
+	ctx, _, _ := makeCtx(global, home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("mapped pr add: %v", err)
 	}
 }
 
