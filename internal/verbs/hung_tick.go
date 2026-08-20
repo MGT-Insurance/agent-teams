@@ -363,11 +363,19 @@ func ladderActionName(action hungLadderAction) string {
 // had simply not been observed.
 //
 // This deliberately does NOT touch the work-product flatline clock
-// (hung_workproduct.go's computeWorkProductClock / WorkProductLastProgressAt):
-// that clock is recomputed every tick straight from real, external
-// timestamps (git index/commit mtimes, the bead's updated_at) rather than
-// accumulated against a persisted "since" anchor, so it has no drift for a
-// suspend to introduce — there is nothing to shift.
+// (hung_workproduct.go's computeWorkProductClock). That clock IS affected by a
+// suspend too — flat = now.Sub(lastProgress), and lastProgress is built from
+// real timestamps (git index/commit mtimes, the bead's updated_at) that do not
+// advance during sleep, so a suspend inflates flat exactly as it inflates the
+// STUCK/DEAD anchors. It is left out here on purpose for two reasons: (1) unlike
+// the STUCK/DEAD anchors, lastProgress is recomputed from external timestamps
+// every tick rather than persisted, so a one-time forward shift does not hold —
+// discounting suspend there needs cumulative-suspend accounting, a separate and
+// heavier mechanism (tracked as a follow-up bead); and (2) the resume backstop
+// (agent-teams-ndr4.1) already makes a duplicate concurrent session structurally
+// impossible no matter which tripwire fires, so a suspend-driven work-product
+// alert can at worst be spurious steward noise, never the duplicate this bead
+// set out to prevent.
 
 // hungTickMetaFileName is the JSON file (under StewardHome, alongside
 // hung-state.json and the journal) that persists the wall-clock time of the
