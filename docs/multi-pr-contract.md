@@ -543,3 +543,65 @@ at-d9ck  [QUESTION]  <title>
 brevity.) This is plain-text CLI output, not a wire format a dashboard codes
 against — the row-per-gated-PR shape is what's frozen; exact column
 spacing/formatting is Track G's call.
+
+## 7. Durable PR-to-workstream association
+
+A PR may identify the persistent workstream that owns it. The sanctioned
+write is the existing PR registration command with an optional workstream:
+
+```sh
+ateam pr add <initiative-id> <pr-url> [--workstream <bead-id>]
+```
+
+Without `--workstream`, registration keeps the existing PR-only behavior.
+With it, the command records the canonical PR on the `pr` rail and appends a
+repeatable Description field with this exact value shape:
+
+```text
+pr-workstream: <canonical-pr-url> <bead-id>
+```
+
+The canonical URL and Bead id are whitespace-free tokens separated by exactly
+one ASCII space. The PR rail and association are planned in the same
+Description update, so a failed association does not leave a newly registered
+PR behind. Repeating the same canonical PR/workstream pair is a no-op. One
+canonical PR may map to at most one workstream; attempting to remap it is
+rejected before the initiative is mutated.
+
+Association validation fails closed. The initiative must have non-empty
+`repo` and `epic` fields, the project store must be inspectable, and the
+workstream Bead's parent chain must reach the initiative epic. The epic itself
+is not a workstream. Missing Beads, malformed or whitespace-bearing ids,
+non-descendants, unreadable project data, and cyclic parent chains are
+rejected.
+
+`ateam list-json` adds a top-level structured sibling array in persisted
+association order:
+
+```json
+{
+  "prs": ["https://github.com/acme/widget/pull/12"],
+  "pr_reviews": [
+    { "pr": "https://github.com/acme/widget/pull/12", "gate": "" }
+  ],
+  "pr_workstreams": [
+    {
+      "pr": "https://github.com/acme/widget/pull/12",
+      "workstream": "widget-epic.2"
+    }
+  ],
+  "fields": {
+    "pr": ["https://github.com/acme/widget/pull/12"],
+    "pr-workstream": [
+      "https://github.com/acme/widget/pull/12 widget-epic.2"
+    ]
+  }
+}
+```
+
+`pr_workstreams` is always an array, including `[]` when no valid association
+exists. Malformed legacy `pr-workstream` lines remain visible in the raw
+`fields.pr-workstream` projection but are excluded from the structured array.
+The existing `fields`, `prs`, and `pr_reviews` meanings and shapes are
+unchanged; consumers join a structured association to the matching canonical
+PR and must not infer workstream ownership from array order or PR metadata.
