@@ -30,8 +30,10 @@ The DRI never changes its session cwd. Create track worktrees below
 when available, and operate through absolute paths or `git -C` / `bd -C`.
 Never create independent clones.
 
-Append `track-worktree: <absolute-path>` to the initiative before spawning its
-implementer. Provision live environment only when needed, through
+Run `ateam track add <initiative-id> <absolute-path>` before spawning the
+implementer. This atomically appends the initiative's `track-worktree:` line;
+never use a show/edit/update-description sequence for this append. Provision
+live environment only when needed, through
 `ateam worktree-setup <absolute-path>`.
 
 Implementers never push, merge, or deploy. The DRI inspects and integrates,

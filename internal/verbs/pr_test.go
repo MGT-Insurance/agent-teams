@@ -575,6 +575,7 @@ type concurrentInitiativeMutation struct {
 	url        string
 	workstream string
 	session    string
+	track      string
 }
 
 // TestPrAddKong_ConcurrentProcessesPreserveDistinctMappedAdds is a real
@@ -685,6 +686,7 @@ func runConcurrentInitiativeMutations(t *testing.T, mutations []concurrentInitia
 			"ATEAM_PR_ADD_URL="+mutation.url,
 			"ATEAM_PR_ADD_WORKSTREAM="+mutation.workstream,
 			"ATEAM_PR_ADD_SESSION="+mutation.session,
+			"ATEAM_PR_ADD_TRACK="+mutation.track,
 			fmt.Sprintf("ATEAM_PR_ADD_TEMP_SUFFIX=%d", i+1),
 		)
 		cmd.Stdout = &children[i].output
@@ -822,6 +824,14 @@ func TestPrAddKong_ProcessHelper(t *testing.T) {
 	case "session":
 		if err := appendSessionID(ctx, "at-concurrent", os.Getenv("ATEAM_PR_ADD_SESSION")); err != nil {
 			t.Fatalf("session tie: %v", err)
+		}
+	case "track":
+		cmd := &trackAddKong{
+			InitiativeID: "at-concurrent",
+			Path:         os.Getenv("ATEAM_PR_ADD_TRACK"),
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("track add: %v", err)
 		}
 	default:
 		t.Fatalf("unknown helper action %q", os.Getenv("ATEAM_PR_ADD_ACTION"))

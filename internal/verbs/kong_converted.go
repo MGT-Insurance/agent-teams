@@ -1455,4 +1455,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterSpawnCheckKong(p)
 	RegisterPreflightKong(p)
 	RegisterPRKong(p)
+	RegisterTrackKong(p)
 }
