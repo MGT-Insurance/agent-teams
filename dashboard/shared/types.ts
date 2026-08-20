@@ -67,6 +67,9 @@ export interface RawInitiative {
   // same reason `prs` is: a real `ateam list-json` payload always includes
   // it, possibly as `[]`; hand-built RawInitiative test literals need not.
   pr_reviews?: PRReview[];
+  // Durable PR-to-workstream ownership emitted beside prs/pr_reviews. Optional
+  // so older/ad-hoc fixtures remain readable; ParsedInitiative normalizes it.
+  pr_workstreams?: PRWorkstream[];
 }
 
 // Explicit gate kind derived from labels:
@@ -90,6 +93,15 @@ export interface PRReview {
   gate: ExplicitGateKind | "";
 }
 
+// Durable PR-to-workstream association emitted by `ateam list-json`. The Go
+// producer has already canonicalized and collision-checked both tokens; the
+// dashboard consumes this structured rail and never re-parses description
+// text to recover associations.
+export interface PRWorkstream {
+  pr: string;
+  workstream: string;
+}
+
 // RawInitiative plus fields parsed out of description text, and the resolved
 // PR list (agent-teams-ssib.9: replaces the old single `prUrl`, which came
 // from this file's own regex scan over notes/description — deleted along with
@@ -107,6 +119,9 @@ export interface ParsedInitiative extends RawInitiative {
   // The per-PR gate array, verbatim from raw.pr_reviews (agent-teams-ssib.10).
   // [] when raw.pr_reviews is absent (ad-hoc/older callers) or empty.
   prReviews: PRReview[];
+  // Structured durable PR ownership, in persisted order. [] for initiatives
+  // created before the association rail existed.
+  prWorkstreams?: PRWorkstream[];
   // Root epic bead id in the project repo (e.g. "agent-teams-x6ce").
   // Absent for legacy initiatives registered before at-e3m. Dashboard uses
   // this to filter the drill-in work-bead list to just this initiative's subtree.
@@ -314,6 +329,11 @@ export interface InitiativeNode {
   // alert (conflict, zombie, stalled, etc.) — independent of needsHuman. A row
   // can have needsHuman=false and alert!=null (e.g. a closed+alive session).
   alert: Alert | null;
+  // Overview-board inputs projected server-side from one repo-batched Beads
+  // read. Optional for backward compatibility with older hand-built clients;
+  // every live snapshot produced by the current server populates both arrays.
+  workstreams?: InitiativeWorkstream[];
+  workstreamDiagnostics?: WorkstreamDiagnostic[];
 }
 
 // An item in the inbox requiring Eric's attention.
@@ -397,6 +417,28 @@ export interface WorkBead {
   issue_type: string;
   parent?: string;      // set on child beads; value is the parent epic's id
   labels?: string[];    // initiative-id label lives here
+}
+
+// One direct-child workstream (or the sole initiative fallback) supplied to
+// the pure browser board model. Nested descendants do not become cards: their
+// ids are carried in memberIds and their lifecycle contributes to progress.
+export interface InitiativeWorkstream {
+  id: string;
+  title: string;
+  status: string;
+  issueType?: string;
+  priority?: string | number;
+  labels?: string[];
+  progress?: { total: number; closed: number };
+  memberIds?: string[];
+  sourceOrder?: number;
+  kind?: "workstream" | "fallback";
+}
+
+export interface WorkstreamDiagnostic {
+  kind: string;
+  message: string;
+  beadId?: string;
 }
 
 // Full drill-in payload for a single initiative.
