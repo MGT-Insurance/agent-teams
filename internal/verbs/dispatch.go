@@ -688,36 +688,68 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	// fall-through) racing a live session spawns a second one, and both can
 	// act (e.g. both post reviews). agentsFunc is nil for callers that
 	// haven't opted into this guard yet; see the field doc comment.
+	//
+	// Fails CLOSED on a query error (agentsFunc itself, or the --supersede
+	// re-query below): if we can't enumerate sessions we can't rule out a
+	// duplicate — and can't enumerate what to stop either — so refuse rather
+	// than risk launching a second session (mirrors reapOrphansKong.Run).
 	if c.agentsFunc != nil {
-		sessions, err := c.agentsFunc()
-		if err != nil {
-			fmt.Fprintf(ctx.Stdout, "ateam resume: note: could not query live sessions (%v); proceeding\n", err)
-		} else {
+		liveSessions := func() ([]agentSession, error) {
+			sessions, err := c.agentsFunc()
+			if err != nil {
+				return nil, err
+			}
 			var live []agentSession
 			for _, s := range matchSessionsForInitiative(sessions, issue) {
 				if s.PID != nil {
 					live = append(live, s)
 				}
 			}
-			if len(live) > 0 {
-				ids := make([]string, len(live))
-				for i, s := range live {
-					ids[i] = sessionStopID(s)
+			return live, nil
+		}
+
+		live, err := liveSessions()
+		if err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam resume: could not verify live sessions for %s (%v); refusing to avoid a possible duplicate — retry, or stop the session yourself\n", c.ID, err)
+			return cli.Silent(1)
+		}
+		if len(live) > 0 {
+			ids := make([]string, len(live))
+			for i, s := range live {
+				ids[i] = sessionStopID(s)
+			}
+			if !c.Supersede {
+				fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s already has a live session: %s — pass --supersede to stop it and relaunch\n",
+					c.ID, strings.Join(ids, ", "))
+				return cli.Silent(1)
+			}
+			stop := c.stopSession
+			if stop == nil {
+				stop = defaultStopSession
+			}
+			for _, id := range ids {
+				if err := stop(id); err != nil {
+					fmt.Fprintf(ctx.Stderr, "ateam resume: warning: stop %s failed (%v); continuing\n", id, err)
 				}
-				if !c.Supersede {
-					fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s already has a live session: %s — pass --supersede to stop it and relaunch\n",
-						c.ID, strings.Join(ids, ", "))
-					return cli.Silent(1)
+			}
+
+			// Verify the stop(s) actually worked before launching: a
+			// stopSession error can be a benign race (session already died
+			// on its own — re-query shows it gone, safe to launch) or a real
+			// failure (session still alive — launching now would duplicate
+			// it). Only the re-query can distinguish the two.
+			stillLive, err := liveSessions()
+			if err != nil {
+				fmt.Fprintf(ctx.Stderr, "ateam resume: could not verify live sessions for %s (%v); refusing to avoid a possible duplicate — retry, or stop the session yourself\n", c.ID, err)
+				return cli.Silent(1)
+			}
+			if len(stillLive) > 0 {
+				stillIDs := make([]string, len(stillLive))
+				for i, s := range stillLive {
+					stillIDs[i] = sessionStopID(s)
 				}
-				stop := c.stopSession
-				if stop == nil {
-					stop = defaultStopSession
-				}
-				for _, id := range ids {
-					if err := stop(id); err != nil {
-						fmt.Fprintf(ctx.Stderr, "ateam resume: warning: stop %s failed (%v); continuing\n", id, err)
-					}
-				}
+				fmt.Fprintf(ctx.Stderr, "ateam resume: session %s still live after supersede stop; refusing to avoid a duplicate\n", strings.Join(stillIDs, ", "))
+				return cli.Silent(1)
 			}
 		}
 	}

@@ -44,12 +44,12 @@ Note: slug-based lookup and cwd-inference are separate gated features; descripti
 Once an id is settled, run a single call:
 
 ```bash
-ateam resume <id> --supersede
+ateam resume <id>
 ```
 
 `ateam resume` looks up the registered worktree for the initiative, validates the initiative is still open (non-zero exit with a clear error if it is closed or the worktree is missing), and launches a background `/dri <id>` session in the registered worktree. It is prompt-free — the launch happens inside the binary (`Bash(ateam:*)`).
 
-`--supersede` is required here: this skill's own use cases (§ above) include "drifted idle," which is a session that is still LIVE, just stuck — not the same as crashed/stopped. Without `--supersede`, `ateam resume` refuses outright rather than spawn a second concurrent session on top of a live one; `--supersede` stops the live session first (stop-then-spawn — never a window with two), then launches. Omitting it is safe when the prior session is already gone (crashed/stopped), since there's nothing to stop.
+If `ateam resume` refuses because a live session already exists on the initiative, that is the duplicate-session guard working — the session is already running, so normally leave it alone. This skill's own use cases (§ above) include "drifted idle," a session that is still LIVE, just stuck; reach for `ateam resume <id> --supersede` only once you've decided to stop that live session and cold-restart it, accepting the loss of its in-session context (stop-then-spawn — never a window with two).
 
 On success, `ateam resume` prints a confirmation block to stdout:
 

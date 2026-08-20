@@ -138,7 +138,7 @@ Planner plans (never writes code); implementers write code + core-path tests onl
 
 # Spawning a sibling initiative
 
-Separable work that would balloon this initiative's scope (a discovery bead that's really its own feature, tooling/infra) → dispatch as its own background initiative via **`/agent-teams:dispatch-dri`** (creates the worktree, registers it, launches a background DRI — invoke with the problem statement, never hand-roll `claude --bg`). Re-launch a parked/interrupted initiative: `ateam resume <id>`.
+Separable work that would balloon this initiative's scope (a discovery bead that's really its own feature, tooling/infra) → dispatch as its own background initiative via **`/agent-teams:dispatch-dri`** (creates the worktree, registers it, launches a background DRI — invoke with the problem statement, never hand-roll `claude --bg`). Re-launch a parked/interrupted initiative: `ateam resume <id>` (refuses if a session is already live on the initiative; pass `--supersede` to stop it and relaunch).
 
 # References (read when you reach them)
 
