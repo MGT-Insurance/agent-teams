@@ -249,7 +249,7 @@
   border-bottom: 0;
 }
 
-.initiative-lane__identity {
+.initiative-board__lane > .initiative-lane__identity.row-card {
   position: sticky;
   left: 0;
   z-index: 3;
@@ -718,9 +718,10 @@
     border-radius: 8px;
   }
 
-  .initiative-lane__identity {
+  .initiative-board__lane > .initiative-lane__identity.row-card {
     position: relative;
     left: auto;
+    z-index: auto;
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
   }
