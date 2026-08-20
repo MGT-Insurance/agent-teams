@@ -46,6 +46,8 @@ func RegisterDispatchKong(p *cli.Parser) {
 		launchRaw:    rawLaunchBGSession,
 		runtimeStart: startRuntimeWorker,
 		codexCheck:   sessionruntime.RequireCompatibleCodex,
+		agentsFunc:   defaultAgentsJSONAll,
+		stopSession:  defaultStopSession,
 	})
 	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
 }
@@ -610,11 +612,19 @@ type resumeKong struct {
 	LaunchPrompt string `name:"launch-prompt" help:"Custom launch prompt for the session (default: the runtime's DRI skill with <id>)."`
 	Model        string `name:"model" help:"Model for a --launch-prompt session (Claude default: claude-opus-4-8; Codex default: user config). Requires --launch-prompt."`
 	Runtime      string `name:"runtime" help:"Assert the initiative runtime (claude or codex)."`
+	Supersede    bool   `name:"supersede" help:"Stop any session(s) already live on this initiative first, then launch. Without this flag, resume refuses when a live session exists."`
 
 	launch       launchFunc                          `kong:"-"`
 	launchRaw    rawLaunchFunc                       `kong:"-"`
 	runtimeStart runtimeStartFunc                    `kong:"-"`
 	codexCheck   func(context.Context, string) error `kong:"-"`
+
+	// agentsFunc/stopSession back the duplicate-live-session guard below.
+	// Nil in a caller that hasn't opted in (e.g. the mail-path escalation in
+	// messaging.go's defaultResume, hardened separately by agent-teams-ndr4.3)
+	// skips the guard entirely, preserving that caller's existing behavior.
+	agentsFunc  agentsJSONFunc  `kong:"-"`
+	stopSession stopSessionFunc `kong:"-"`
 }
 
 // Validate checks that the required ID arg is non-empty.
@@ -670,6 +680,46 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 	if _, err := os.Stat(dir); err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: worktree path does not exist: %s\n", dir)
 		return cli.Silent(1)
+	}
+
+	// Duplicate-live-session guard (agent-teams-ndr4.1): resume used to launch
+	// unconditionally, which is the direct cause of duplicate concurrent
+	// sessions on one initiative — any caller (steward recovery, human, mail
+	// fall-through) racing a live session spawns a second one, and both can
+	// act (e.g. both post reviews). agentsFunc is nil for callers that
+	// haven't opted into this guard yet; see the field doc comment.
+	if c.agentsFunc != nil {
+		sessions, err := c.agentsFunc()
+		if err != nil {
+			fmt.Fprintf(ctx.Stdout, "ateam resume: note: could not query live sessions (%v); proceeding\n", err)
+		} else {
+			var live []agentSession
+			for _, s := range matchSessionsForInitiative(sessions, issue) {
+				if s.PID != nil {
+					live = append(live, s)
+				}
+			}
+			if len(live) > 0 {
+				ids := make([]string, len(live))
+				for i, s := range live {
+					ids[i] = sessionStopID(s)
+				}
+				if !c.Supersede {
+					fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s already has a live session: %s — pass --supersede to stop it and relaunch\n",
+						c.ID, strings.Join(ids, ", "))
+					return cli.Silent(1)
+				}
+				stop := c.stopSession
+				if stop == nil {
+					stop = defaultStopSession
+				}
+				for _, id := range ids {
+					if err := stop(id); err != nil {
+						fmt.Fprintf(ctx.Stderr, "ateam resume: warning: stop %s failed (%v); continuing\n", id, err)
+					}
+				}
+			}
+		}
 	}
 
 	var launchErr error
