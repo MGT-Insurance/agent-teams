@@ -1,7 +1,7 @@
 // Package verbs — hung_config.go is the ONLY seam that reads operator
 // configuration for stall detection (agent-teams-rhnc.1).
 //
-// The seven tunables in hung_scan.go / hung_tick.go / hung_workproduct.go
+// The eight tunables in hung_scan.go / hung_tick.go / hung_workproduct.go
 // were compiled-in constants, so retuning them meant a source edit, a
 // rebuild of the four committed platform binaries, and a plugin version
 // bump. This file makes them settable at process start.
@@ -42,7 +42,7 @@ import (
 // value so an operator can `cat` the whole tuning state at once.
 const hungConfigFileName = "hung-config.json"
 
-// Compiled defaults for the seven tunables — the last tier of the
+// Compiled defaults for the eight tunables — the last tier of the
 // env -> file -> default resolution, and the value each var is initialized
 // to so that code paths which never call loadHungConfig (every existing
 // unit test) behave deterministically.
@@ -51,6 +51,15 @@ const hungConfigFileName = "hung-config.json"
 // rather than aliasing defaultHungStuckThreshold, even though the two are
 // equal today: the point of giving it its own key is that an operator can
 // move them apart, and an alias would quietly re-couple them.
+//
+// defaultHungSuspendGapMultiplier (agent-teams-ndr4.2) is the tick loop's
+// own suspend detector: the real ticker (runHungTickUntil, hung_tick.go)
+// fires every exactly hungTickInterval, so a gap between two consecutive
+// doHungTick invocations far exceeding that interval can only mean the OS
+// process itself was suspended (laptop sleep) for the excess, not that
+// anything took long inside one tick. 3x leaves headroom for an ordinary
+// slow tick (a busy machine, a slow `bd list`) without mistaking it for a
+// suspend.
 const (
 	defaultHungTickInterval                 = 20 * time.Minute
 	defaultHungStuckThreshold               = 2 * time.Hour
@@ -59,6 +68,7 @@ const (
 	defaultHungWorkProductAlertThreshold    = 4 * time.Hour
 	defaultHungDeadWorktreeThreshold        = 2 * time.Hour
 	defaultHungTranscriptCorroboratorWindow = 2 * time.Hour
+	defaultHungSuspendGapMultiplier         = 3
 )
 
 // Environment variables overriding each value, checked before the file.
@@ -70,6 +80,7 @@ const (
 	envHungWorkProductAlertThreshold    = "AGENT_TEAMS_HUNG_WORKPRODUCT_ALERT_THRESHOLD"
 	envHungDeadWorktreeThreshold        = "AGENT_TEAMS_HUNG_DEAD_WORKTREE_THRESHOLD"
 	envHungTranscriptCorroboratorWindow = "AGENT_TEAMS_HUNG_TRANSCRIPT_CORROBORATOR_WINDOW"
+	envHungSuspendGapMultiplier         = "AGENT_TEAMS_HUNG_SUSPEND_GAP_MULTIPLIER"
 )
 
 // hungConfigFile is the on-disk shape of <home>/hung-config.json.
@@ -91,9 +102,10 @@ type hungConfigFile struct {
 	WorkProductAlertThreshold    *string `json:"workproduct_alert_threshold"`
 	DeadWorktreeThreshold        *string `json:"dead_worktree_threshold"`
 	TranscriptCorroboratorWindow *string `json:"transcript_corroborator_window"`
+	SuspendGapMultiplier         *int    `json:"suspend_gap_multiplier"`
 }
 
-// loadHungConfig resolves all seven tunables and assigns them to their
+// loadHungConfig resolves all eight tunables and assigns them to their
 // package-level vars. Call it ONCE per process, before anything reads them:
 // relayKong.Run (before starting the tick goroutine) and hungScanKong.Run
 // (before scanHung), so `ateam hung-scan` reports against exactly the
@@ -113,6 +125,7 @@ func loadHungConfig(w io.Writer, home string) {
 	hungWorkProductAlertThreshold = resolveHungDuration(w, envHungWorkProductAlertThreshold, "workproduct_alert_threshold", file.WorkProductAlertThreshold, defaultHungWorkProductAlertThreshold)
 	hungDeadWorktreeThreshold = resolveHungDuration(w, envHungDeadWorktreeThreshold, "dead_worktree_threshold", file.DeadWorktreeThreshold, defaultHungDeadWorktreeThreshold)
 	hungTranscriptCorroboratorWindow = resolveHungDuration(w, envHungTranscriptCorroboratorWindow, "transcript_corroborator_window", file.TranscriptCorroboratorWindow, defaultHungTranscriptCorroboratorWindow)
+	hungSuspendGapMultiplier = resolveHungInt(w, envHungSuspendGapMultiplier, "suspend_gap_multiplier", file.SuspendGapMultiplier, defaultHungSuspendGapMultiplier)
 }
 
 // readHungConfigFile decodes <home>/hung-config.json. An absent file is the
@@ -201,13 +214,13 @@ func hungConfigSource(envKey string, fileVal *string) (raw, source string) {
 	return "", ""
 }
 
-// hungConfigSummary renders the RESOLVED value of all seven tunables, keyed
+// hungConfigSummary renders the RESOLVED value of all eight tunables, keyed
 // by the json key an operator would set to change each one. The relay logs
 // it at startup: because config is read once at process start, this line is
 // the only way to confirm a hand-started relay actually picked up an edit.
 func hungConfigSummary() string {
 	return fmt.Sprintf(
-		"tick_interval=%s stuck_threshold=%s wake_attempts_before_alert=%d workproduct_flat_threshold=%s workproduct_alert_threshold=%s dead_worktree_threshold=%s transcript_corroborator_window=%s",
+		"tick_interval=%s stuck_threshold=%s wake_attempts_before_alert=%d workproduct_flat_threshold=%s workproduct_alert_threshold=%s dead_worktree_threshold=%s transcript_corroborator_window=%s suspend_gap_multiplier=%d",
 		hungTickInterval,
 		hungStuckThreshold,
 		hungWakeAttemptsBeforeDirectAlert,
@@ -215,5 +228,6 @@ func hungConfigSummary() string {
 		hungWorkProductAlertThreshold,
 		hungDeadWorktreeThreshold,
 		hungTranscriptCorroboratorWindow,
+		hungSuspendGapMultiplier,
 	)
 }

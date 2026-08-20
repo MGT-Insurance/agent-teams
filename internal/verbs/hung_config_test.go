@@ -13,19 +13,21 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-// restoreHungConfig snapshots the seven package-level tunables and restores
+// restoreHungConfig snapshots the eight package-level tunables and restores
 // them when the test ends. Every test here calls loadHungConfig, which
-// assigns all seven; without this a configured value would leak into every
+// assigns all eight; without this a configured value would leak into every
 // subsequent test in the package.
 func restoreHungConfig(t *testing.T) {
 	t.Helper()
 	tick, stuck, wake := hungTickInterval, hungStuckThreshold, hungWakeAttemptsBeforeDirectAlert
 	flat, alert := hungWorkProductFlatThreshold, hungWorkProductAlertThreshold
 	dead, window := hungDeadWorktreeThreshold, hungTranscriptCorroboratorWindow
+	suspendMultiplier := hungSuspendGapMultiplier
 	t.Cleanup(func() {
 		hungTickInterval, hungStuckThreshold, hungWakeAttemptsBeforeDirectAlert = tick, stuck, wake
 		hungWorkProductFlatThreshold, hungWorkProductAlertThreshold = flat, alert
 		hungDeadWorktreeThreshold, hungTranscriptCorroboratorWindow = dead, window
+		hungSuspendGapMultiplier = suspendMultiplier
 	})
 }
 
@@ -67,6 +69,9 @@ func TestLoadHungConfig_NoEnvNoFile_AllDefaults(t *testing.T) {
 	}
 	if hungTranscriptCorroboratorWindow != 2*time.Hour {
 		t.Errorf("transcript_corroborator_window = %s, want 2h", hungTranscriptCorroboratorWindow)
+	}
+	if hungSuspendGapMultiplier != 3 {
+		t.Errorf("suspend_gap_multiplier = %d, want 3", hungSuspendGapMultiplier)
 	}
 	if out.String() != "" {
 		t.Errorf("a missing config file must be silent, got %q", out.String())
@@ -112,7 +117,7 @@ func TestHungTranscriptCorroboratorWindow_IsNotAnAliasOfFlat(t *testing.T) {
 // ── resolution order, per value ───────────────────────────────────────────────
 
 // TestLoadHungConfig_ResolutionOrder table-tests env > file > default for
-// every one of the seven values, so no key can be wired to the wrong env var
+// every one of the eight values, so no key can be wired to the wrong env var
 // or json tag without a failure here.
 func TestLoadHungConfig_ResolutionOrder(t *testing.T) {
 	tests := []struct {
@@ -144,6 +149,9 @@ func TestLoadHungConfig_ResolutionOrder(t *testing.T) {
 
 		{"corroborator: file beats default", "", "", `{"transcript_corroborator_window":"45m"}`, func() string { return hungTranscriptCorroboratorWindow.String() }, "45m0s"},
 		{"corroborator: env beats file", envHungTranscriptCorroboratorWindow, "90m", `{"transcript_corroborator_window":"45m"}`, func() string { return hungTranscriptCorroboratorWindow.String() }, "1h30m0s"},
+
+		{"suspend gap multiplier: file beats default", "", "", `{"suspend_gap_multiplier":5}`, func() string { return strconv.Itoa(hungSuspendGapMultiplier) }, "5"},
+		{"suspend gap multiplier: env beats file", envHungSuspendGapMultiplier, "7", `{"suspend_gap_multiplier":5}`, func() string { return strconv.Itoa(hungSuspendGapMultiplier) }, "7"},
 	}
 
 	for _, tc := range tests {
@@ -391,6 +399,16 @@ func TestLoadHungConfig_RejectsNonPositive(t *testing.T) {
 				t.Errorf("wake_attempts_before_alert = %d, want the default 2", hungWakeAttemptsBeforeDirectAlert)
 			}
 		}},
+		{"zero suspend gap multiplier", envHungSuspendGapMultiplier, "0", func(t *testing.T) {
+			if hungSuspendGapMultiplier != 3 {
+				t.Errorf("suspend_gap_multiplier = %d, want the default 3", hungSuspendGapMultiplier)
+			}
+		}},
+		{"non-numeric suspend gap multiplier", envHungSuspendGapMultiplier, "banana", func(t *testing.T) {
+			if hungSuspendGapMultiplier != 3 {
+				t.Errorf("suspend_gap_multiplier = %d, want the default 3", hungSuspendGapMultiplier)
+			}
+		}},
 	}
 
 	for _, tc := range tests {
@@ -426,6 +444,27 @@ func TestLoadHungConfig_NonPositiveCountInFile(t *testing.T) {
 	}
 }
 
+// TestLoadHungConfig_NonPositiveSuspendGapMultiplierInFile is
+// TestLoadHungConfig_NonPositiveCountInFile's counterpart for the eighth
+// tunable, added alongside it (agent-teams-ndr4.2) rather than folded into
+// the same test body, matching how the other seven each get their own
+// resolution-order/non-positive coverage.
+func TestLoadHungConfig_NonPositiveSuspendGapMultiplierInFile(t *testing.T) {
+	restoreHungConfig(t)
+	home := t.TempDir()
+	writeHungConfig(t, home, `{"suspend_gap_multiplier":0}`)
+
+	var out strings.Builder
+	loadHungConfig(&out, home)
+
+	if hungSuspendGapMultiplier != 3 {
+		t.Errorf("suspend_gap_multiplier = %d, want the default 3", hungSuspendGapMultiplier)
+	}
+	if !strings.Contains(out.String(), "suspend_gap_multiplier") {
+		t.Errorf("warning must name the key, got %q", out.String())
+	}
+}
+
 // TestHungConfigSummary_NamesEverySettableKey guards the startup log line the
 // shell test (agent-teams-rhnc.3) and any operator reads: every key must
 // appear with its RESOLVED value, keyed by the name you would actually put
@@ -445,6 +484,7 @@ func TestHungConfigSummary_NamesEverySettableKey(t *testing.T) {
 		"workproduct_alert_threshold=4h0m0s",
 		"dead_worktree_threshold=2h0m0s",
 		"transcript_corroborator_window=2h0m0s",
+		"suspend_gap_multiplier=3",
 	}
 	for _, w := range want {
 		if !strings.Contains(summary, w) {
