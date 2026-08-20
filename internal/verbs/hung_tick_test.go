@@ -55,6 +55,61 @@ func TestNextHungLadderAction(t *testing.T) {
 	}
 }
 
+// ── detectHungSuspendSpan / shiftHungTimestamp (pure, no I/O) ────────────────
+
+// TestDetectHungSuspendSpan table-tests the suspend heuristic's boundary
+// behavior: no prior tick, a gap at/under the threshold, and a gap over it.
+func TestDetectHungSuspendSpan(t *testing.T) {
+	const interval = 20 * time.Minute
+	const multiplier = 3 // threshold = 60m
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		lastTickAt string
+		now        time.Time
+		want       time.Duration
+	}{
+		{"no prior tick: first tick ever, never a suspend", "", now, 0},
+		{"unparseable prior tick: degrades to no suspend", "not-a-time", now, 0},
+		{"gap under threshold: ordinary cadence", now.Add(-5 * time.Minute).UTC().Format(time.RFC3339), now, 0},
+		{"gap exactly at threshold: not yet a suspend", now.Add(-60 * time.Minute).UTC().Format(time.RFC3339), now, 0},
+		{"gap just over threshold: suspend = gap - interval", now.Add(-61 * time.Minute).UTC().Format(time.RFC3339), now, 41 * time.Minute},
+		{"gap way over threshold: multi-hour suspend", now.Add(-3 * time.Hour).UTC().Format(time.RFC3339), now, 3*time.Hour - interval},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectHungSuspendSpan(tc.lastTickAt, tc.now, interval, multiplier)
+			if got != tc.want {
+				t.Errorf("detectHungSuspendSpan() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShiftHungTimestamp covers the two passthrough cases (nothing to shift)
+// alongside the normal shift.
+func TestShiftHungTimestamp(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   string
+		want string
+	}{
+		{"empty: no live episode, unchanged", "", ""},
+		{"unparseable: left alone rather than fabricated", "garbage", "garbage"},
+		{"normal: shifted forward by suspend", "2026-07-21T10:00:00Z", "2026-07-21T12:40:00Z"},
+	}
+	suspend := 2*time.Hour + 40*time.Minute
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shiftHungTimestamp(tc.ts, suspend)
+			if got != tc.want {
+				t.Errorf("shiftHungTimestamp() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // ── doHungTick (integration-level, fakes for send + topic-post + transport) ──
 
 // fakeHungWakeSend is an injectable hungWakeSendFunc that records the
@@ -406,9 +461,29 @@ func TestDoHungTick_EpisodeEnds_LadderResetsOnReentry(t *testing.T) {
 		t.Errorf("fresh episode WakeAttempts = %d, want 0 (not carried over from the previous episode)", anchor.WakeAttempts)
 	}
 
-	// Advance past the threshold on the NEW episode -> ladder restarts at
-	// attempt 1, proving the previous episode's count was not reused.
-	deps.now = fixedNow(t0.Add(2*time.Minute + hungStuckThreshold + time.Minute))
+	// Advance past the threshold on the NEW episode via realistic
+	// tick-interval cadence rather than one large jump. agent-teams-ndr4.2
+	// makes any gap between two doHungTick calls that exceeds
+	// hungTickInterval*hungSuspendGapMultiplier read as a machine suspend
+	// and shift the anchor forward to compensate — exactly the shape a
+	// single big jump here (the original form of this test) had. The real
+	// ticker never produces that shape (it fires every exactly
+	// hungTickInterval), so this test walks the same span at that cadence
+	// instead: silent while still under threshold, crossing it on the
+	// final tick -> ladder restarts at attempt 1, proving the previous
+	// episode's count was not reused.
+	reentryAt := t0.Add(2 * time.Minute)
+	for elapsed := time.Duration(0); elapsed+hungTickInterval < hungStuckThreshold; elapsed += hungTickInterval {
+		cur := reentryAt.Add(elapsed + hungTickInterval)
+		deps.now = fixedNow(cur)
+		if err := doHungTick(ctx, deps); err != nil {
+			t.Fatalf("intervening tick at %s: %v", cur, err)
+		}
+		if len(wake.bodies) != 1 {
+			t.Fatalf("intervening tick at %s should stay below threshold, wake calls = %d", cur, len(wake.bodies))
+		}
+	}
+	deps.now = fixedNow(reentryAt.Add(hungStuckThreshold + time.Minute))
 	if err := doHungTick(ctx, deps); err != nil {
 		t.Fatalf("tick 4 (new episode crosses threshold): %v", err)
 	}
@@ -418,6 +493,106 @@ func TestDoHungTick_EpisodeEnds_LadderResetsOnReentry(t *testing.T) {
 	anchors = loadHungState(hungStatePath(ctx))
 	if anchors["at-3"].WakeAttempts != 1 {
 		t.Errorf("new episode WakeAttempts = %d, want 1 (ladder restarted, not continued)", anchors["at-3"].WakeAttempts)
+	}
+}
+
+// TestDoHungTick_SuspendGap_SuppressesEscalationThenResumesNormally is
+// agent-teams-ndr4.2's core-path proof, covering the bead's three specified
+// scenarios in one chained sequence (mirroring how the other doHungTick
+// tests in this file walk a scenario across several ticks):
+//
+//  1. normal cadence: a session idle past hungStuckThreshold still flags
+//     STUCK (the final tick below).
+//  2. one tick with a huge gap (simulated machine suspend): a session whose
+//     entire idle span is contained within that gap does NOT flag/escalate.
+//  3. after that post-wake tick, the still-idle session flags on a later
+//     tick at normal cadence — proving the anchor shift didn't just suppress
+//     escalation forever, only discounted the suspend span.
+func TestDoHungTick_SuspendGap_SuppressesEscalationThenResumesNormally(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{
+		ID:          "at-1",
+		Title:       "idle across a laptop sleep",
+		Description: "worktree: " + wt,
+		Status:      "open",
+		Labels:      []string{"at-1", "thread:1"},
+	}}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 1
+	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
+
+	wake := &fakeHungWakeSend{}
+	ft := &fakeTransport{returnRef: "1"}
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	deps := hungTickDeps{
+		agentsFunc: agentsFunc,
+		now:        fixedNow(t0),
+		wakeSend:   wake.send,
+		topicPost:  defaultHungTopicPost,
+		transport:  ft,
+	}
+
+	// Tick 0: the session first goes idle. First-ever tick (no persisted
+	// tick meta yet) -> no suspend check applies, StuckSince anchors fresh
+	// at t0.
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("tick 0: %v", err)
+	}
+	if len(wake.bodies) != 0 {
+		t.Fatalf("tick 0: freshly-idle session must not wake, wake calls = %d", len(wake.bodies))
+	}
+	anchors := loadHungState(hungStatePath(ctx))
+	if anchors["at-1"].StuckSince != t0.UTC().Format(time.RFC3339) {
+		t.Fatalf("tick 0: StuckSince = %q, want fresh anchor at t0", anchors["at-1"].StuckSince)
+	}
+
+	// Tick 1: the laptop sleeps for ~3h, then wakes — a single tick fires
+	// with a ~3h gap since tick 0, far exceeding
+	// hungTickInterval*hungSuspendGapMultiplier (20m*3 = 60m default). The
+	// session's entire idle span (t0 to now) is contained within that gap,
+	// so per scenario 2 it must NOT flag/escalate: the anchor is shifted
+	// forward by the inferred suspend (gap - hungTickInterval = 2h40m),
+	// leaving only 20m of "real" elapsed idle time.
+	t1 := t0.Add(3 * time.Hour)
+	deps.now = fixedNow(t1)
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("tick 1 (post-wake): %v", err)
+	}
+	if len(wake.bodies) != 0 {
+		t.Fatalf("tick 1: idle time entirely within the suspend gap must not wake, wake calls = %d", len(wake.bodies))
+	}
+	if len(ft.calls) != 0 {
+		t.Fatalf("tick 1: idle time entirely within the suspend gap must not alert, topic posts = %d", len(ft.calls))
+	}
+	anchors = loadHungState(hungStatePath(ctx))
+	wantShifted := t0.Add(3*time.Hour - hungTickInterval).UTC().Format(time.RFC3339)
+	if anchors["at-1"].StuckSince != wantShifted {
+		t.Fatalf("tick 1: StuckSince = %q, want shifted anchor %q", anchors["at-1"].StuckSince, wantShifted)
+	}
+
+	// Ticks 2-4: back to normal cadence (well under the suspend-gap
+	// threshold), still idle. The session was already ~20m into its
+	// (post-shift) idle episode after tick 1, so it crosses
+	// hungStuckThreshold partway through this loop -> flags STUCK and wakes
+	// on that tick, per scenario 3 ("a still-idle session flags on the next
+	// normal tick"), then stays flagged through the remaining ticks.
+	step := 40 * time.Minute
+	cur := t1
+	for i := 0; i < 3; i++ {
+		cur = cur.Add(step)
+		deps.now = fixedNow(cur)
+		if err := doHungTick(ctx, deps); err != nil {
+			t.Fatalf("tick %d (normal cadence): %v", i+2, err)
+		}
+	}
+	if len(wake.bodies) != 1 {
+		t.Fatalf("expected the ladder to fire once escalation resumed at normal cadence, wake calls = %d", len(wake.bodies))
+	}
+	anchors = loadHungState(hungStatePath(ctx))
+	if anchors["at-1"].StuckSince != wantShifted {
+		t.Errorf("later normal-cadence ticks must not re-shift the anchor, StuckSince = %q, want unchanged %q", anchors["at-1"].StuckSince, wantShifted)
 	}
 }
 
