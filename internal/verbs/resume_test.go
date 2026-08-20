@@ -429,3 +429,116 @@ func TestResume_ModelWithoutLaunchPromptRejected(t *testing.T) {
 		t.Errorf("expected exit 2, got %d", code)
 	}
 }
+
+// ---- resumeKong: duplicate-live-session guard (agent-teams-ndr4.1) --------
+
+// livePID is a placeholder PID for a fake live agentSession in the tests
+// below; only presence (non-nil), never the value, is meaningful.
+var livePID = 4242
+
+func TestResume_NoLiveSession_Launches(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-nolive", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var launched bool
+	cmd := &resumeKong{
+		ID:         "at-nolive",
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !launched {
+		t.Fatal("expected launch to be called when no live session exists")
+	}
+}
+
+func TestResume_LiveSessionNoSupersede_RefusesAndNamesID(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-live1", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+
+	cmd := &resumeKong{
+		ID: "at-live1",
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{Name: filepath.Base(dir), ID: "sess-abc", PID: &livePID}}, nil
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			t.Fatal("launch called; want refusal when a live session exists")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error refusing to resume, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "sess-abc") {
+		t.Errorf("expected live session id %q in stderr, got: %s", "sess-abc", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--supersede") {
+		t.Errorf("expected --supersede mentioned in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestResume_LiveSessionWithSupersede_StopsThenLaunches(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-live2", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var stoppedID string
+	var stopCalledBeforeLaunch, launched bool
+	cmd := &resumeKong{
+		ID:        "at-live2",
+		Supersede: true,
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{Name: filepath.Base(dir), ID: "sess-xyz", PID: &livePID}}, nil
+		},
+		stopSession: func(id string) error {
+			stoppedID = id
+			stopCalledBeforeLaunch = !launched
+			return nil
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stoppedID != "sess-xyz" {
+		t.Errorf("stopSession id = %q, want %q", stoppedID, "sess-xyz")
+	}
+	if !launched {
+		t.Fatal("expected launch to be called after superseding the live session")
+	}
+	if !stopCalledBeforeLaunch {
+		t.Fatal("expected stopSession to be called before launch (stop-then-spawn)")
+	}
+}

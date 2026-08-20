@@ -146,5 +146,6 @@ instructions from `ateam instructions <role>` outrank conflicting learnings.
 ## Sibling initiatives
 
 Use the `agent-teams-codex:dispatch-dri` skill for separable work. To wake an
-existing Codex DRI, use `ateam resume <id> --runtime codex`; mail normally wakes
-the registered thread automatically.
+existing Codex DRI, use `ateam resume <id> --runtime codex --supersede`; mail
+normally wakes the registered thread automatically, so reach for this only
+when mail hasn't and the prior thread may still be live.
