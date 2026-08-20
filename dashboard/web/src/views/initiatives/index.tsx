@@ -5,6 +5,13 @@ import { useSnapshotContext } from "../../SnapshotContext.js";
 import { useRowClickNav } from "../../hooks/useRowClickNav.js";
 import { RowActions } from "../../components/RowActions.js";
 import { AlertInfoIcon } from "../../components/AlertInfoIcon.js";
+import {
+  buildInitiativeBoard,
+  type BoardInitiativeNode,
+  type BoardPullRequest,
+  type InitiativeKanbanCard,
+  type InitiativeKanbanLane,
+} from "./kanban-model.js";
 import "./initiatives.css";
 
 // Persist a boolean toggle to localStorage (no server). Reads on init, writes on
@@ -30,46 +37,29 @@ function usePersistedBool(key: string, initial: boolean): [boolean, (v: boolean)
   return [value, set];
 }
 
-// Closed states — status comes from the registry as free TEXT, compare lowercased.
 const CLOSED_STATUSES = new Set(["closed", "done"]);
 
 function isClosed(node: InitiativeNode): boolean {
   return CLOSED_STATUSES.has(node.initiative.status.toLowerCase());
 }
 
-// Session "kind" — the only session distinction that matters (see truth table):
-//   "alive" = a matched background session whose process is still running
-//             (status present: busy/idle/waiting — pid alive).
-//   "dead"  = a matched entry whose process has exited (status null/absent;
-//             lingers in `claude agents --all` history). Won't receive messages.
-//   "none"  = no matched session entry at all.
-// Thin node-level wrapper — the actual classification is the canonical
-// sessionKind() from @agent-teams/shared (agent-teams-rybk.5.2), shared with
-// the server's deriveAlert (server/src/parse.ts). Do not re-implement the
-// status!=null check here.
 function sessionKind(node: InitiativeNode): "alive" | "dead" | "none" {
   return canonicalSessionKind(node.session);
 }
 
-// "Completed" = closed AND the session is completely gone (no entry at all).
-// A closed initiative with ANY lingering session (alive or dead) is NOT
-// completed — it stays visible with a row alert until the session is reaped.
+// A closed initiative with any lingering session stays visible until reaped.
 function isCompleted(node: InitiativeNode): boolean {
   return isClosed(node) && sessionKind(node) === "none";
 }
 
-// Returns the short 8-hex session id if the session carries a valid attachable id,
-// undefined otherwise. A valid id means `claude attach <id>` should work regardless
-// of whether the session is alive (status present) or detached (status absent).
-// Reserve Launch only for when there is NO matched entry at all.
 function sessionAttachId(session: SessionState | null | undefined): string | undefined {
   const id = session?.id;
   return typeof id === "string" && isValidSessionId(id) ? id : undefined;
 }
 
-// Session chip presentation per the truth table: glyph by liveness
-// (● alive · ◐ dead · ○ none), color by health (good=healthy live, warn=
-// problematic and actionable, muted=dead-but-not-actionable, off=none).
+type ChipTone = "machine" | "pr" | "session";
+type ChipLevel = "on" | "good" | "warn" | "muted" | "off";
+
 function sessionChip(node: InitiativeNode): { glyph: string; level: ChipLevel; value: string } {
   const kind = sessionKind(node);
   if (kind === "none") return { glyph: "○", level: "off", value: "none" };
@@ -78,33 +68,20 @@ function sessionChip(node: InitiativeNode): { glyph: string; level: ChipLevel; v
       ? { glyph: "●", level: "warn", value: "running (close it)" }
       : { glyph: "●", level: "good", value: "running" };
   }
-  // dead — amber when actionable (closed, or open+on-machine), else muted grey.
   const actionable = isClosed(node) || node.worktreeExists;
   return { glyph: "◐", level: actionable ? "warn" : "muted", value: "dead" };
 }
 
-// Phase token hue is keyed by phase so categories read at a glance: delivered
-// (shipped), parked (needs attention), and done (complete) each get their own
-// treatment; the in-progress phases keep the base accent. Normalized so the
-// free-text phase maps to a stable selector (see initiatives.css).
 function phaseClass(phase: string): string {
   return `init-row__phase--${phase.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 }
-
-// Per-signal hue so the three chips are distinguishable when lit:
-// machine=blue, pr=violet, session=green (see initiatives.css).
-type ChipTone = "machine" | "pr" | "session";
-
-// Chip intensity. machine/PR use on|off; session uses good|warn|muted|off
-// (see sessionChip + initiatives.css).
-type ChipLevel = "on" | "good" | "warn" | "muted" | "off";
 
 interface SignalChipProps {
   level: ChipLevel;
   tone: ChipTone;
   icon: string;
   label: string;
-  value: string; // aria value, e.g. "yes" | "no" | "live" | "dormant" | "none"
+  value: string;
   title: string;
 }
 
@@ -121,23 +98,187 @@ function SignalChip({ level, tone, icon, label, value, title }: SignalChipProps)
   );
 }
 
-function InitiativeRow({ node }: { node: InitiativeNode }) {
+/**
+ * Keep the model boundary explicit: the browser model receives only its
+ * sanctioned initiative/workstream rails, while the original node remains on
+ * the adapted object for identity signals, actions, and alerts.
+ */
+type InitiativeBoardNode = InitiativeNode & BoardInitiativeNode;
+
+function toBoardNode(node: InitiativeNode): InitiativeBoardNode {
+  return {
+    ...node,
+    initiative: {
+      ...node.initiative,
+      prs: node.initiative.prs,
+      prReviews: node.initiative.prReviews,
+      prWorkstreams: node.initiative.prWorkstreams,
+    },
+    workstreams: node.workstreams,
+    workstreamDiagnostics: node.workstreamDiagnostics,
+  };
+}
+
+function stopIdentityNavigation(
+  event: React.MouseEvent<HTMLAnchorElement> | React.KeyboardEvent<HTMLAnchorElement>,
+) {
+  event.stopPropagation();
+}
+
+function pullRequestLabel(href: string): string {
+  try {
+    const url = new URL(href);
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length >= 4 && parts[parts.length - 2] === "pull") {
+      return `${parts[0]}/${parts[1]} #${parts[parts.length - 1]}`;
+    }
+    return `${url.hostname}${url.pathname}`;
+  } catch {
+    return href;
+  }
+}
+
+function PullRequestLink({ pr, unassigned = false }: { pr: BoardPullRequest; unassigned?: boolean }) {
+  const gate = pr.rawGate === "" ? "no gate" : pr.rawGate;
+  return (
+    <a
+      href={pr.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="initiative-pr-link"
+      onClick={stopIdentityNavigation}
+      onKeyDown={stopIdentityNavigation}
+      aria-label={`Open PR ${pullRequestLabel(pr.href)}; gate ${gate}${unassigned ? "; unassigned" : ""}`}
+      title={pr.href}
+    >
+      <span className="initiative-pr-link__name">{pullRequestLabel(pr.href)} ↗</span>
+      <span className="initiative-pr-link__gate">Gate: {gate}</span>
+    </a>
+  );
+}
+
+function WorkstreamCard({ card, columnLabel }: { card: InitiativeKanbanCard; columnLabel: string }) {
+  const identity = card.kind === "fallback" ? `Fallback ${card.key}` : `Bead ${card.workstreamId}`;
+  const issueType = card.issueType || "unspecified";
+  const priority = card.priority === null || card.priority === "" ? "unspecified" : String(card.priority);
+
+  return (
+    <article
+      className="initiative-card"
+      data-column={card.columnId}
+      aria-label={`${card.title}, ${columnLabel}`}
+    >
+      <div className="initiative-card__identity">{identity}</div>
+      <h4 className="initiative-card__title">{card.title}</h4>
+      <dl className="initiative-card__facts">
+        <div><dt>Board state</dt><dd>{columnLabel}</dd></div>
+        <div><dt>Raw state</dt><dd>{card.rawStatus || "unknown"}</dd></div>
+        <div><dt>Type</dt><dd>{issueType}</dd></div>
+        <div><dt>Priority</dt><dd>{priority}</dd></div>
+        <div><dt>Descendants</dt><dd>{card.progress.closed} / {card.progress.total} closed</dd></div>
+      </dl>
+
+      {card.labels.length > 0 && (
+        <ul className="initiative-card__labels" aria-label="Workstream labels">
+          {card.labels.map((label, index) => <li key={`${label}:${index}`}>{label}</li>)}
+        </ul>
+      )}
+
+      {card.pullRequests.length > 0 && (
+        <div className="initiative-card__prs">
+          <h5>Pull requests ({card.pullRequests.length})</h5>
+          <ul>
+            {card.pullRequests.map((pr) => (
+              <li key={pr.href}><PullRequestLink pr={pr} /></li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function LaneDiagnostics({ lane }: { lane: InitiativeKanbanLane<InitiativeBoardNode> }) {
+  const { diagnostics } = lane;
+  const hasDiagnostics =
+    diagnostics.unassignedPRs.length > 0 ||
+    diagnostics.staleAssociations.length > 0 ||
+    diagnostics.source.length > 0 ||
+    diagnostics.duplicateWorkstreamIds.length > 0;
+
+  if (!hasDiagnostics) return null;
+
+  return (
+    <aside className="initiative-lane__diagnostics" aria-label="Initiative diagnostics">
+      {diagnostics.unassignedPRs.length > 0 && (
+        <div className="initiative-diagnostic initiative-diagnostic--warn">
+          <h4>Unassigned PRs ({diagnostics.unassignedPRs.length})</h4>
+          <ul>
+            {diagnostics.unassignedPRs.map((pr) => (
+              <li key={pr.href}><PullRequestLink pr={pr} unassigned /></li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diagnostics.staleAssociations.length > 0 && (
+        <div className="initiative-diagnostic initiative-diagnostic--warn">
+          <h4>Stale PR mappings ({diagnostics.staleAssociations.length})</h4>
+          <ul>
+            {diagnostics.staleAssociations.map(({ association, reason }, index) => (
+              <li key={`${association.pr}:${association.workstream}:${index}`}>
+                <span>{reason.replaceAll("-", " ")}: </span>
+                <a
+                  href={association.pr}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={stopIdentityNavigation}
+                  onKeyDown={stopIdentityNavigation}
+                  aria-label={`Open stale PR mapping ${pullRequestLabel(association.pr)}`}
+                >
+                  {pullRequestLabel(association.pr)} ↗
+                </a>
+                <span> → {association.workstream}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diagnostics.source.length > 0 && (
+        <div className="initiative-diagnostic">
+          <h4>Workstream data ({diagnostics.source.length})</h4>
+          <ul>
+            {diagnostics.source.map((diagnostic, index) => (
+              <li key={`${diagnostic.kind}:${diagnostic.beadId ?? ""}:${index}`}>
+                <strong>{diagnostic.kind.replaceAll("-", " ")}:</strong> {diagnostic.message}
+                {diagnostic.beadId ? ` (${diagnostic.beadId})` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {diagnostics.duplicateWorkstreamIds.length > 0 && (
+        <div className="initiative-diagnostic initiative-diagnostic--warn">
+          <h4>Duplicate workstreams</h4>
+          <p>{diagnostics.duplicateWorkstreamIds.join(", ")}</p>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function InitiativeIdentity({ lane }: { lane: InitiativeKanbanLane<InitiativeBoardNode> }) {
+  const node = lane.node;
   const { initiative } = node;
   const rowNav = useRowClickNav(initiative.id, initiative.title);
-
-  const onMachine = node.worktreeExists;
-  const hasPr = node.delivery === "pr-open";
   const sess = sessionChip(node);
-  const alert = node.alert;
   const attachId = sessionAttachId(node.session);
+  const sourcePrCount = lane.accounting.sourcePRCount;
+  const hasPrSignal = node.delivery === "pr-open" || sourcePrCount > 0;
+  const explicitWorkstreams = lane.accounting.sourceWorkstreamCount;
 
-  function handlePrLinkClick(e: React.MouseEvent<HTMLAnchorElement>) {
-    // Don't let the PR link bubble up to the row's drill-in navigation.
-    e.stopPropagation();
-  }
-
-  // status and/or state can be absent in the agent data — join only what's
-  // present so the tooltip never renders "undefined".
   const sessionDetail = node.session
     ? [node.session.status, node.session.state].filter(Boolean).join(" / ")
     : "";
@@ -154,54 +295,41 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
 
   return (
     <div
-      className="row-card init-row"
+      className="row-card init-row initiative-lane__identity"
       data-initiative-id={initiative.id}
       data-closed={isClosed(node) ? "true" : "false"}
-      data-alert={alert?.level}
+      data-alert={node.alert?.level}
       {...rowNav}
     >
       <div className="init-row__main">
-        <span className="init-row__title">{initiative.title}</span>
+        <h3 className="init-row__title">{initiative.title}</h3>
         <span className="init-row__id">{initiative.id}</span>
         <span className={`init-row__phase ${phaseClass(node.phase)}`}>{node.phase}</span>
+        <p className="initiative-lane__summary">
+          {explicitWorkstreams > 0
+            ? `${explicitWorkstreams} workstream${explicitWorkstreams === 1 ? "" : "s"}`
+            : "Initiative fallback"}
+          {` · ${sourcePrCount} PR${sourcePrCount === 1 ? "" : "s"}`}
+        </p>
       </div>
-      <div className="init-row__signals">
+
+      <div className="init-row__signals" aria-label="Initiative signals">
         <SignalChip
-          level={onMachine ? "on" : "off"}
+          level={node.worktreeExists ? "on" : "off"}
           tone="machine"
           icon="▣"
           label="on machine"
-          value={onMachine ? "yes" : "no"}
-          title={onMachine ? "Worktree exists on this machine" : "Worktree not on this machine"}
+          value={node.worktreeExists ? "yes" : "no"}
+          title={node.worktreeExists ? "Worktree exists on this machine" : "Worktree not on this machine"}
         />
-        {/* One chip per PR — an initiative can have more than one open at once
-            (agent-teams-ssib.9). */}
-        {hasPr && initiative.prs.length > 0 ? (
-          initiative.prs.map((url) => (
-            <a
-              key={url}
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="init-chip init-chip--on init-chip--pr init-chip--link"
-              onClick={handlePrLinkClick}
-              title={`Open PR: ${url}`}
-              aria-label="open PR: yes"
-            >
-              <span className="init-chip__icon" aria-hidden="true">⎘</span>
-              <span className="init-chip__label">PR ↗</span>
-            </a>
-          ))
-        ) : (
-          <SignalChip
-            level={hasPr ? "on" : "off"}
-            tone="pr"
-            icon="⎘"
-            label="PR"
-            value={hasPr ? "yes" : "no"}
-            title={hasPr ? "Has an open PR" : "No open PR"}
-          />
-        )}
+        <SignalChip
+          level={hasPrSignal ? "on" : "off"}
+          tone="pr"
+          icon="⎘"
+          label="PR"
+          value={sourcePrCount > 0 ? `${sourcePrCount} open` : hasPrSignal ? "yes" : "no"}
+          title={sourcePrCount > 0 ? `${sourcePrCount} open pull request${sourcePrCount === 1 ? "" : "s"}` : hasPrSignal ? "Has an open PR" : "No open PR"}
+        />
         <SignalChip
           level={sess.level}
           tone="session"
@@ -211,6 +339,9 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           title={sessionTitle}
         />
       </div>
+
+      <LaneDiagnostics lane={lane} />
+
       <div className="row-action-slot">
         <RowActions
           input={{
@@ -223,7 +354,7 @@ function InitiativeRow({ node }: { node: InitiativeNode }) {
           }}
         />
       </div>
-      <AlertInfoIcon alert={alert} />
+      <AlertInfoIcon alert={node.alert} />
     </div>
   );
 }
@@ -239,7 +370,7 @@ function EmptyState({ message }: { message: string }) {
 function DisconnectedBanner({ connectionState, error }: { connectionState: string; error: string | null }) {
   const isError = connectionState === "error";
   return (
-    <div className={`initiatives-banner initiatives-banner--${isError ? "error" : "warn"}`}>
+    <div className={`initiatives-banner initiatives-banner--${isError ? "error" : "warn"}`} role="status">
       {isError
         ? `Connection error${error ? `: ${error}` : ""}`
         : "Reconnecting to agent stream…"}
@@ -255,7 +386,7 @@ export default function InitiativesView() {
 
   const q = query.trim().toLowerCase();
   const filtered = initiatives.filter((node) => {
-    // Reap zombies are always visible — bypass BOTH the showCompleted and onlyOnMachine filters.
+    // Reap zombies are always visible — bypass both visibility toggles.
     const forceShow = node.needsHuman === "reap";
     if (!forceShow && !showCompleted && isCompleted(node)) return false;
     if (!forceShow && onlyOnMachine && !node.worktreeExists) return false;
@@ -263,10 +394,9 @@ export default function InitiativesView() {
     const { id, title } = node.initiative;
     return id.toLowerCase().includes(q) || title.toLowerCase().includes(q);
   });
-
+  const board = buildInitiativeBoard(filtered.map(toBoardNode));
   const showBanner = connectionState !== "connected";
-  const emptyMessage =
-    q !== "" ? "No initiatives match your search." : "No initiatives to show.";
+  const emptyMessage = q !== "" ? "No initiatives match your search." : "No initiatives to show.";
 
   return (
     <div className="initiatives-view">
@@ -277,9 +407,7 @@ export default function InitiativesView() {
         </span>
       </header>
 
-      {showBanner && (
-        <DisconnectedBanner connectionState={connectionState} error={error} />
-      )}
+      {showBanner && <DisconnectedBanner connectionState={connectionState} error={error} />}
 
       <div className="initiatives-controls">
         <input
@@ -311,13 +439,70 @@ export default function InitiativesView() {
       {filtered.length === 0 ? (
         <EmptyState message={emptyMessage} />
       ) : (
-        <ul className="initiatives-list" aria-label="Initiatives">
-          {filtered.map((node) => (
-            <li key={node.initiative.id} className="initiatives-list__item">
-              <InitiativeRow node={node} />
-            </li>
-          ))}
-        </ul>
+        <section className="initiative-board" aria-labelledby="initiative-board-title">
+          <h2 id="initiative-board-title" className="initiative-board__title">
+            Initiative workflow board
+          </h2>
+          <p className="initiative-board__summary">
+            {board.accounting.cardCount} workstream card{board.accounting.cardCount === 1 ? "" : "s"} across seven states
+          </p>
+          <div
+            className="initiative-board__scroller"
+            role="region"
+            aria-label="Seven-column initiative swimlane board; scroll horizontally to see every state"
+            tabIndex={0}
+          >
+            <div className="initiative-board__canvas">
+              <div className="initiative-board__header" aria-hidden="true">
+                <div className="initiative-board__corner">Initiative</div>
+                {board.columns.map((column) => {
+                  const count = board.lanes.reduce((total, lane) => total + lane.cells[column.id].count, 0);
+                  return (
+                    <div key={column.id} className="initiative-board__column-header" data-column={column.id}>
+                      <span>{column.label}</span>
+                      <span>{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <ol className="initiative-board__lanes" aria-label="Initiative swimlanes">
+                {board.lanes.map((lane) => (
+                  <li key={lane.key} className="initiative-board__lane">
+                    <InitiativeIdentity lane={lane} />
+                    {board.columns.map((column) => {
+                      const cell = lane.cells[column.id];
+                      return (
+                        <section
+                          key={column.id}
+                          className="initiative-board__cell"
+                          data-column={column.id}
+                          aria-label={`${column.label}: ${cell.count} workstream${cell.count === 1 ? "" : "s"} for ${lane.node.initiative.title}`}
+                        >
+                          <h3 className="initiative-board__cell-title">
+                            <span>{column.label}</span>
+                            <span>{cell.count}</span>
+                          </h3>
+                          {cell.cards.length === 0 ? (
+                            <p className="initiative-board__empty">No workstreams</p>
+                          ) : (
+                            <ul className="initiative-board__cards">
+                              {cell.cards.map((card) => (
+                                <li key={card.key}>
+                                  <WorkstreamCard card={card} columnLabel={column.label} />
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </section>
+                      );
+                    })}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        </section>
       )}
     </div>
   );

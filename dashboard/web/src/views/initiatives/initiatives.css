@@ -1,13 +1,15 @@
 .initiatives-view {
   display: flex;
   flex-direction: column;
-  padding: 24px 32px;
   gap: 16px;
-  max-width: 900px;
   width: 100%;
-  margin: 0 auto;
-  /* PR signal hue (no global token exists; violet, GitHub-PR-like). */
+  min-width: 0;
+  max-width: 100%;
+  padding: 24px 32px;
+  overflow: hidden;
   --chip-pr: #a371f7;
+  --board-identity-width: 260px;
+  --board-column-width: 194px;
 }
 
 .initiatives-header {
@@ -16,42 +18,43 @@
   gap: 10px;
 }
 
-.initiatives-header__title {
+.initiatives-header__title,
+.initiative-board__title {
+  margin: 0;
+  color: var(--color-text);
   font-size: 18px;
   font-weight: 600;
-  color: var(--color-text);
 }
 
 .initiatives-header__count {
+  padding: 1px 8px;
+  border-radius: 10px;
+  color: var(--color-accent);
+  background: var(--color-accent-dim);
   font-family: var(--font-mono);
   font-size: 12px;
-  background: var(--color-accent-dim);
-  color: var(--color-accent);
-  border-radius: 10px;
-  padding: 1px 8px;
 }
 
-/* Banner for disconnected / error states */
 .initiatives-banner {
   padding: 8px 14px;
   border-radius: 4px;
-  font-size: 13px;
   font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .initiatives-banner--warn {
-  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
-  color: var(--color-warn);
   border: 1px solid color-mix(in srgb, var(--color-warn) 30%, transparent);
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
 }
 
 .initiatives-banner--error {
-  background: color-mix(in srgb, var(--color-error) 12%, transparent);
-  color: var(--color-error);
   border: 1px solid color-mix(in srgb, var(--color-error) 30%, transparent);
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
 }
 
-/* Search + closed toggle */
 .initiatives-controls {
   display: flex;
   align-items: center;
@@ -63,29 +66,30 @@
   flex: 1;
   min-width: 200px;
   padding: 8px 12px;
-  font-size: 13px;
-  font-family: var(--font-mono);
-  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  color: var(--color-text);
   outline: none;
-}
-
-.initiatives-search:focus {
-  border-color: var(--color-accent);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
 .initiatives-search::placeholder {
   color: var(--color-text-muted);
 }
 
+.initiatives-search:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
 .initiatives-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
   color: var(--color-text-muted);
+  font-size: 13px;
   cursor: pointer;
   user-select: none;
 }
@@ -94,7 +98,11 @@
   cursor: pointer;
 }
 
-/* Empty state */
+.initiatives-toggle input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .initiatives-empty {
   display: flex;
   flex-direction: column;
@@ -105,39 +113,168 @@
 }
 
 .initiatives-empty__message {
+  margin: 0;
   font-size: 14px;
 }
 
-/* List */
-.initiatives-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* The overview has exactly one scroll owner. Its DOM node and every keyed lane
+   remain stable across SSE snapshots, so native focus and scroll positions are
+   preserved while React updates card content in place. */
+.initiative-board {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-width: 0;
 }
 
-.initiatives-list__item {
-  display: contents;
+.initiative-board__summary {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
-/* Row card — shared position/background/border/hover/focus-visible base
-   lives in .row-card (styles/global.css, agent-teams-m380.3); layout-only
-   declarations stay here. */
-.init-row {
+.initiative-board__scroller {
+  grid-column: 1 / -1;
+  max-width: 100%;
+  max-height: calc(100vh - 230px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  outline: none;
+  background: var(--color-bg);
+  scrollbar-gutter: stable;
+}
+
+.initiative-board__scroller:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.initiative-board__canvas {
+  /* 260px identity rail + seven 194px workflow columns. Keep this explicit:
+     CSS multiplication in calc() is not supported by all target browsers. */
+  min-width: 1618px;
+}
+
+.initiative-board__header,
+.initiative-board__lane {
+  display: grid;
+  grid-template-columns: var(--board-identity-width) repeat(7, minmax(var(--board-column-width), 1fr));
+}
+
+.initiative-board__header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  min-height: 42px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.initiative-board__corner,
+.initiative-board__column-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 12px 32px 12px 16px;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.initiative-board__corner {
+  position: sticky;
+  left: 0;
+  z-index: 7;
+  background: var(--color-surface);
+}
+
+.initiative-board__column-header > span:last-child,
+.initiative-board__cell-title > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  color: var(--color-text-muted);
+  background: var(--color-border);
+  font-size: 9px;
+}
+
+.initiative-board__column-header[data-column="active"],
+.initiative-board__column-header[data-column="your-review"] {
+  color: var(--color-accent);
+}
+
+.initiative-board__column-header[data-column="verifying"],
+.initiative-board__column-header[data-column="done"] {
+  color: var(--color-ok);
+}
+
+.initiative-board__column-header[data-column="external-review"] {
+  color: var(--chip-pr);
+}
+
+.initiative-board__column-header[data-column="blocked"] {
+  color: var(--color-error);
+}
+
+.initiative-board__lanes,
+.initiative-board__cards,
+.initiative-card__labels,
+.initiative-card__prs ul,
+.initiative-diagnostic ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.initiative-board__lane {
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.initiative-board__lane:last-child {
+  border-bottom: 0;
+}
+
+.initiative-lane__identity {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 11px;
+  min-width: 0;
+  padding: 16px 28px 16px 16px;
+  border: 0;
+  border-right: 1px solid var(--color-border);
+  border-radius: 0;
+  background: var(--color-surface);
+}
+
+.initiative-lane__identity .row-action-slot {
+  top: 5px;
+  right: 5px;
 }
 
 .init-row[data-closed="true"] {
-  opacity: 0.6;
+  opacity: 0.66;
 }
 
-/* Row alerts — an anomaly where action should be taken, ranked by urgency.
-   Always full-opacity (overrides the dimmed-closed look) with a left accent +
-   tint scaled to urgency: urgent=red, med=amber, low=subtle amber. */
 .init-row[data-alert] {
   opacity: 1;
 }
@@ -149,9 +286,6 @@
 
 .init-row[data-alert="urgent"]:hover,
 .init-row[data-alert="urgent"]:focus-visible {
-  /* Restated (not just inherited from the base rule above) so this tier's
-     left-accent color wins deterministically over the shared .row-card:hover
-     border-color, regardless of stylesheet load order (agent-teams-m380.5). */
   border-left-color: var(--color-error);
   background: color-mix(in srgb, var(--color-error) 13%, var(--color-surface));
 }
@@ -179,35 +313,37 @@
 .init-row__main {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 7px 9px;
   min-width: 0;
-  flex: 1;
   flex-wrap: wrap;
 }
 
 .init-row__title {
-  font-size: 14px;
-  font-weight: 500;
+  flex-basis: 100%;
+  margin: 0;
   color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .init-row__id {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  min-width: 0;
   color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .init-row__phase {
+  color: var(--color-accent);
   font-family: var(--font-mono);
   font-size: 10px;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--color-accent);
 }
 
-/* Per-phase hues — the base accent above is the in-progress look
-   (active/executing/investigating/planning). Only the phases that should read
-   as a distinct category override it. */
 .init-row__phase--delivered {
   color: var(--color-ok);
 }
@@ -220,18 +356,20 @@
   color: var(--color-text-muted);
 }
 
-/* Signal chips — a compact vertical mini-column on the right. The stack
-   shrink-wraps to its widest child (always the "on machine" chip, which renders
-   in every row), so the column is a constant width across rows and stays narrow,
-   keeping the title primary. align-items: stretch makes all three chips share
-   that width, so lit/dim/arrow state never changes the footprint or alignment. */
+.initiative-lane__summary {
+  flex-basis: 100%;
+  margin: 1px 0 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
 .init-row__signals {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 3px;
-  width: max-content;
-  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .init-chip {
@@ -239,79 +377,405 @@
   align-items: center;
   justify-content: flex-start;
   gap: 5px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  padding: 2px 7px;
-  border-radius: 3px;
+  padding: 2px 6px;
   border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   white-space: nowrap;
-  text-decoration: none;
 }
 
-/* Lit — signal present. Structure only; per-signal tone sets the hue below. */
-.init-chip--on {
-  border-style: solid;
-}
-
-/* Per-signal hues — applied only when lit (compound with --on). */
 .init-chip--on.init-chip--machine {
-  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  color: var(--color-accent);
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
 }
 
 .init-chip--on.init-chip--pr {
-  background: color-mix(in srgb, var(--chip-pr) 15%, transparent);
-  color: var(--chip-pr);
   border-color: color-mix(in srgb, var(--chip-pr) 35%, transparent);
+  color: var(--chip-pr);
+  background: color-mix(in srgb, var(--chip-pr) 15%, transparent);
 }
 
-/* Session chip levels (machine/PR use --on above; session uses these).
-   good = healthy live session (green) · warn = problematic session that needs
-   action (amber) · muted = dead but not locally actionable (faint, dashed) ·
-   off = no session. */
 .init-chip--good {
-  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
-  color: var(--color-ok);
   border-color: color-mix(in srgb, var(--color-ok) 35%, transparent);
-  border-style: solid;
+  color: var(--color-ok);
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
 }
 
 .init-chip--warn {
-  background: color-mix(in srgb, var(--color-warn) 15%, transparent);
-  color: var(--color-warn);
   border-color: color-mix(in srgb, var(--color-warn) 35%, transparent);
-  border-style: solid;
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 15%, transparent);
 }
 
 .init-chip--muted {
-  background: transparent;
-  color: var(--color-text-muted);
   border-color: var(--color-border);
   border-style: dashed;
-}
-
-/* Dim — signal absent (tone class present but uncolored). */
-.init-chip--off {
-  background: transparent;
   color: var(--color-text-muted);
-  border-color: var(--color-border);
-  opacity: 0.55;
 }
 
-.init-chip--link:hover {
-  filter: brightness(1.25);
+.init-chip--off {
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  opacity: 0.58;
 }
 
 .init-chip__icon {
-  font-size: 11px;
-  line-height: 1;
-  width: 12px;
-  text-align: center;
+  width: 11px;
   flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
 }
 
-/* Action button positioning moved to the shared .row-action-slot utility
-   class (styles/global.css, agent-teams-m380.3). */
+.initiative-lane__diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding-top: 9px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.initiative-diagnostic {
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.initiative-diagnostic--warn {
+  color: var(--color-warn);
+}
+
+.initiative-diagnostic h4,
+.initiative-diagnostic p {
+  margin: 0;
+  font: inherit;
+}
+
+.initiative-diagnostic h4 {
+  margin-bottom: 3px;
+  color: currentColor;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.initiative-diagnostic li + li {
+  margin-top: 4px;
+}
+
+.initiative-diagnostic a {
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.initiative-board__cell {
+  position: relative;
+  min-width: 0;
+  min-height: 174px;
+  padding: 10px;
+  border-right: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 72%, var(--color-bg));
+}
+
+.initiative-board__cell:last-child {
+  border-right: 0;
+}
+
+/* Cell headings are semantic at every width. The global aligned header is the
+   visual heading on wide boards; narrow sections reveal their local heading. */
+.initiative-board__cell-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.initiative-board__empty {
+  display: grid;
+  min-height: 150px;
+  margin: 0;
+  place-items: center;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.initiative-board__cards > li + li {
+  margin-top: 9px;
+}
+
+.initiative-card {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 78%, var(--color-text-muted));
+  border-left-width: 3px;
+  border-radius: 7px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.16);
+  overflow-wrap: anywhere;
+}
+
+.initiative-card[data-column="active"],
+.initiative-card[data-column="your-review"] {
+  border-left-color: var(--color-accent);
+}
+
+.initiative-card[data-column="verifying"],
+.initiative-card[data-column="done"] {
+  border-left-color: var(--color-ok);
+}
+
+.initiative-card[data-column="external-review"] {
+  border-left-color: var(--chip-pr);
+}
+
+.initiative-card[data-column="blocked"] {
+  border-left-color: var(--color-error);
+}
+
+.initiative-card__identity {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.initiative-card__title {
+  margin: 5px 0 9px;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.initiative-card__facts {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.initiative-card__facts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.initiative-card__facts dt {
+  color: var(--color-text-muted);
+}
+
+.initiative-card__facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.initiative-card__labels {
+  display: flex;
+  gap: 4px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+
+.initiative-card__labels li {
+  max-width: 100%;
+  padding: 2px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  overflow-wrap: anywhere;
+}
+
+.initiative-card__prs {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.initiative-card__prs h5 {
+  margin: 0 0 5px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.initiative-card__prs li + li {
+  margin-top: 5px;
+}
+
+.initiative-pr-link {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  border-radius: 3px;
+  color: var(--chip-pr);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.4;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.initiative-pr-link:hover {
+  text-decoration: underline;
+}
+
+.initiative-pr-link:focus-visible,
+.initiative-diagnostic a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.initiative-pr-link__name,
+.initiative-pr-link__gate {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.initiative-pr-link__gate {
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 720px) {
+  .initiatives-view {
+    padding: 16px 12px 28px;
+    overflow: visible;
+  }
+
+  .initiatives-controls {
+    align-items: stretch;
+    gap: 10px 14px;
+  }
+
+  .initiatives-search {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .initiative-board {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .initiative-board__scroller {
+    max-height: none;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    scrollbar-gutter: auto;
+  }
+
+  .initiative-board__scroller:focus-visible {
+    border-color: transparent;
+    box-shadow: none;
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+
+  .initiative-board__canvas {
+    min-width: 0;
+  }
+
+  .initiative-board__header {
+    display: none;
+  }
+
+  .initiative-board__lanes {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 8px;
+  }
+
+  .initiative-board__lane {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+  }
+
+  .initiative-lane__identity {
+    position: relative;
+    left: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .initiative-board__cell {
+    min-height: 76px;
+    padding: 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .initiative-board__cell:last-child {
+    border-bottom: 0;
+  }
+
+  .initiative-board__cell-title {
+    position: static;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: auto;
+    height: auto;
+    margin: 0 0 9px;
+    overflow: visible;
+    clip: auto;
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: normal;
+  }
+
+  .initiative-board__empty {
+    min-height: 42px;
+    place-items: center start;
+  }
+
+  .initiative-card__facts > div {
+    grid-template-columns: minmax(0, 120px) minmax(0, 1fr);
+  }
+
+  .initiative-card__facts dd {
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .initiatives-view *,
+  .initiatives-view *::before,
+  .initiatives-view *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
