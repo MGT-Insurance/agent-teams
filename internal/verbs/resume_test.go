@@ -429,3 +429,284 @@ func TestResume_ModelWithoutLaunchPromptRejected(t *testing.T) {
 		t.Errorf("expected exit 2, got %d", code)
 	}
 }
+
+// ---- resumeKong: duplicate-live-session guard (agent-teams-ndr4.1) --------
+
+// livePID is a placeholder PID for a fake live agentSession in the tests
+// below; only presence (non-nil), never the value, is meaningful.
+var livePID = 4242
+
+func TestResume_NoLiveSession_Launches(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-nolive", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var launched bool
+	cmd := &resumeKong{
+		ID:         "at-nolive",
+		agentsFunc: func() ([]agentSession, error) { return nil, nil },
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !launched {
+		t.Fatal("expected launch to be called when no live session exists")
+	}
+}
+
+func TestResume_LiveSessionNoSupersede_RefusesAndNamesID(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-live1", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+
+	cmd := &resumeKong{
+		ID: "at-live1",
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{Name: filepath.Base(dir), ID: "sess-abc", PID: &livePID}}, nil
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			t.Fatal("launch called; want refusal when a live session exists")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error refusing to resume, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "sess-abc") {
+		t.Errorf("expected live session id %q in stderr, got: %s", "sess-abc", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--supersede") {
+		t.Errorf("expected --supersede mentioned in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestResume_LiveSessionWithSupersede_StopsThenLaunches(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-live2", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var stoppedID string
+	var stopCalledBeforeLaunch, launched bool
+	var agentsCalls int
+	cmd := &resumeKong{
+		ID:        "at-live2",
+		Supersede: true,
+		agentsFunc: func() ([]agentSession, error) {
+			agentsCalls++
+			if agentsCalls == 1 {
+				// Initial query: the old session is still live.
+				return []agentSession{{Name: filepath.Base(dir), ID: "sess-xyz", PID: &livePID}}, nil
+			}
+			// Re-query after the stop: it's gone.
+			return nil, nil
+		},
+		stopSession: func(id string) error {
+			stoppedID = id
+			stopCalledBeforeLaunch = !launched
+			return nil
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stoppedID != "sess-xyz" {
+		t.Errorf("stopSession id = %q, want %q", stoppedID, "sess-xyz")
+	}
+	if !launched {
+		t.Fatal("expected launch to be called after superseding the live session")
+	}
+	if !stopCalledBeforeLaunch {
+		t.Fatal("expected stopSession to be called before launch (stop-then-spawn)")
+	}
+	if agentsCalls != 2 {
+		t.Fatalf("expected agentsFunc to be called twice (initial query + re-query after stop), got %d", agentsCalls)
+	}
+}
+
+// TestResume_AgentsFuncError_RefusesAndDoesNotLaunch covers Fix 1: when the
+// initial live-session query itself fails, resume must fail CLOSED (refuse)
+// rather than proceed as if no live session existed — with or without
+// --supersede, since a failed query means there's nothing to enumerate or
+// stop either way.
+func TestResume_AgentsFuncError_RefusesAndDoesNotLaunch(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-qerr", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+
+	cmd := &resumeKong{
+		ID: "at-qerr",
+		agentsFunc: func() ([]agentSession, error) {
+			return nil, fmt.Errorf("agents: connection refused")
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			t.Fatal("launch called; want refusal when the live-session query fails")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error refusing to resume, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "at-qerr") {
+		t.Errorf("expected initiative id in stderr, got: %s", stderr.String())
+	}
+}
+
+// TestResume_AgentsFuncError_SupersedeStillRefuses covers Fix 1's other half:
+// --supersede cannot help when the query itself errors, since there is
+// nothing enumerable to stop — the guard must still refuse.
+func TestResume_AgentsFuncError_SupersedeStillRefuses(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-qerr2", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	cmd := &resumeKong{
+		ID:        "at-qerr2",
+		Supersede: true,
+		agentsFunc: func() ([]agentSession, error) {
+			return nil, fmt.Errorf("agents: connection refused")
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			t.Fatal("launch called; want refusal when the live-session query fails even with --supersede")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error refusing to resume, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+}
+
+// TestResume_SupersedeStopFails_StillLiveOnRequery_Refuses covers Fix 2's
+// abort path: stopSession reporting an error is not itself proof the session
+// died — but here the re-query confirms it's still live, so resume must
+// abort rather than launch a duplicate.
+func TestResume_SupersedeStopFails_StillLiveOnRequery_Refuses(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-stilllive", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+
+	cmd := &resumeKong{
+		ID:        "at-stilllive",
+		Supersede: true,
+		agentsFunc: func() ([]agentSession, error) {
+			// Both the initial query and the re-query see the session live.
+			return []agentSession{{Name: filepath.Base(dir), ID: "sess-stuck", PID: &livePID}}, nil
+		},
+		stopSession: func(id string) error {
+			return fmt.Errorf("stop: session busy")
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			t.Fatal("launch called; want abort when the session is still live after supersede stop")
+			return nil
+		},
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error aborting resume, got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "sess-stuck") {
+		t.Errorf("expected still-live session id %q in stderr, got: %s", "sess-stuck", stderr.String())
+	}
+}
+
+// TestResume_SupersedeStopErrors_ButGoneOnRequery_Launches covers Fix 2's
+// benign-race path: stopSession errors (e.g. the session already exited on
+// its own between the initial query and the stop call), but the re-query
+// shows it gone — resume should proceed and launch.
+func TestResume_SupersedeStopErrors_ButGoneOnRequery_Launches(t *testing.T) {
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			issues := []bd.Issue{{ID: "at-benignrace", Status: "open", Description: "worktree: " + dir + "\n"}}
+			raw, _ := json.Marshal(issues)
+			return string(raw), nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	var agentsCalls int
+	var launched bool
+	cmd := &resumeKong{
+		ID:        "at-benignrace",
+		Supersede: true,
+		agentsFunc: func() ([]agentSession, error) {
+			agentsCalls++
+			if agentsCalls == 1 {
+				return []agentSession{{Name: filepath.Base(dir), ID: "sess-raced", PID: &livePID}}, nil
+			}
+			// Re-query: already gone despite the stop call erroring.
+			return nil, nil
+		},
+		stopSession: func(id string) error {
+			return fmt.Errorf("stop: session %s: not found", id)
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error {
+			launched = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !launched {
+		t.Fatal("expected launch to be called: stop errored but the session was already gone on re-query")
+	}
+}

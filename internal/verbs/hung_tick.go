@@ -14,9 +14,11 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -42,6 +44,12 @@ var hungTickInterval = defaultHungTickInterval
 // initiative's own Telegram topic, exactly once per episode. Set by
 // loadHungConfig; see hung_config.go.
 var hungWakeAttemptsBeforeDirectAlert = defaultHungWakeAttemptsBeforeAlert
+
+// hungSuspendGapMultiplier (agent-teams-ndr4.2) is how many multiples of
+// hungTickInterval a gap between two consecutive doHungTick invocations must
+// exceed before it's treated as a machine suspend rather than an ordinary
+// slow tick. Set by loadHungConfig; see hung_config.go.
+var hungSuspendGapMultiplier = defaultHungSuspendGapMultiplier
 
 // hungLadderAction is what nextHungLadderAction decided to do for one HUNG
 // initiative on this tick.
@@ -330,7 +338,187 @@ func ladderActionName(action hungLadderAction) string {
 	}
 }
 
+// ── agent-teams-ndr4.2: sleep-aware suspend detection ────────────────────────
+//
+// scanHung's STUCK/DEAD anchors (hung_scan.go's hungAnchor.StuckSince/
+// DeadSince) are wall-clock timestamps, and every "how long has this been
+// going on" computation is a plain now.Sub(since) against them. That's
+// correct as long as the tick loop itself runs continuously — but when the
+// laptop sleeps for hours, the whole `ateam relay` OS process (this tick's
+// goroutine included) is SUSPENDED, not merely idle: on wake, the elapsed
+// time since the anchor was set is inflated by the entire sleep span, so a
+// session that was actually fine (or itself suspended) reads as STUCK/DEAD
+// far past the threshold and gets wrongly escalated. This is the root
+// trigger of the duplicate-review incident that motivated this bead.
+//
+// The fix detects a suspend from the TICK LOOP's OWN scheduling gap rather
+// than any OS-specific sleep API: runHungTickUntil's real ticker fires every
+// exactly hungTickInterval, so if the wall-clock gap between two consecutive
+// doHungTick invocations far exceeds that interval (hungSuspendGapMultiplier,
+// hung_config.go), the excess can only be explained by the process having
+// been suspended for it — nothing that happens inside a single tick body can
+// produce that gap. On detecting one, every live STUCK/DEAD anchor is shifted
+// forward by the inferred suspend span BEFORE scanHung reads them as
+// prevAnchors this tick, so the elapsed math comes out as if the suspend span
+// had simply not been observed.
+//
+// This deliberately does NOT touch the work-product flatline clock
+// (hung_workproduct.go's computeWorkProductClock). That clock IS affected by a
+// suspend too — flat = now.Sub(lastProgress), and lastProgress is built from
+// real timestamps (git index/commit mtimes, the bead's updated_at) that do not
+// advance during sleep, so a suspend inflates flat exactly as it inflates the
+// STUCK/DEAD anchors. It is left out here on purpose for two reasons: (1) unlike
+// the STUCK/DEAD anchors, lastProgress is recomputed from external timestamps
+// every tick rather than persisted, so a one-time forward shift does not hold —
+// discounting suspend there needs cumulative-suspend accounting, a separate and
+// heavier mechanism (tracked as a follow-up bead); and (2) the resume backstop
+// (agent-teams-ndr4.1) already makes a duplicate concurrent session structurally
+// impossible no matter which tripwire fires, so a suspend-driven work-product
+// alert can at worst be spurious steward noise, never the duplicate this bead
+// set out to prevent.
+
+// hungTickMetaFileName is the JSON file (under StewardHome, alongside
+// hung-state.json and the journal) that persists the wall-clock time of the
+// PREVIOUS doHungTick invocation — the raw material detectHungSuspendSpan
+// needs. A file of its own rather than a new field on hungAnchor/hung-state.json:
+// it's not per-initiative state, and keeping it separate leaves hungAnchor's
+// shape (and the ~15 existing tests that construct map[string]hungAnchor
+// directly) untouched.
+const hungTickMetaFileName = "hung-tick-meta.json"
+
+// hungTickMetaPath returns the path to that file, mirroring hungStatePath's
+// StewardHome-relative convention (hung_scan.go).
+func hungTickMetaPath(ctx *cli.Context) string {
+	return filepath.Join(StewardHome(ctx), hungTickMetaFileName)
+}
+
+// hungTickMeta is hungTickMetaPath's on-disk shape.
+type hungTickMeta struct {
+	LastTickAt string `json:"last_tick_at"`
+}
+
+// loadHungTickMeta reads hungTickMeta at path. Any read/parse error
+// (including a not-yet-created file — e.g. the process's very first tick)
+// yields a zero-value struct, whose empty LastTickAt tells
+// detectHungSuspendSpan there is no baseline to compare against yet:
+// best-effort persistence, never a hard dependency, mirroring loadHungState.
+func loadHungTickMeta(path string) hungTickMeta {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return hungTickMeta{}
+	}
+	var m hungTickMeta
+	if err := json.Unmarshal(data, &m); err != nil {
+		return hungTickMeta{}
+	}
+	return m
+}
+
+// saveHungTickMeta writes m to path as JSON, creating the parent directory if
+// needed. A package-level var (not a plain func), mirroring saveHungState, so
+// a future test can substitute it without touching doHungTick. Unlike
+// saveHungState this skips the atomic temp-file-rename dance: a crash
+// mid-write here just resets the next tick's suspend baseline to "unknown",
+// which safely degrades to "no shift applied" for that one tick — a
+// materially smaller blast radius than losing every initiative's STUCK/DEAD
+// anchors, which is what saveHungState's atomicity guards against.
+var saveHungTickMeta = func(path string, m hungTickMeta) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir tick meta dir: %w", err)
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("marshal tick meta: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// detectHungSuspendSpan infers a machine-suspend duration from the wall-clock
+// gap between this tick (now) and the previous one (lastTickAtRFC3339, ""
+// meaning no previous tick is known — the process's first tick, which is
+// always treated as normal cadence). tickInterval and multiplier are
+// hungTickInterval/hungSuspendGapMultiplier, passed as parameters so this
+// stays a pure, seam-free function to unit test.
+//
+// Returns the inferred suspend span for the caller to correct for, or 0 if
+// the gap is consistent with normal tick cadence (including a gap smaller
+// than tickInterval, e.g. an operator-triggered extra scan).
+func detectHungSuspendSpan(lastTickAtRFC3339 string, now time.Time, tickInterval time.Duration, multiplier int) time.Duration {
+	if lastTickAtRFC3339 == "" {
+		return 0
+	}
+	lastTick, err := time.Parse(time.RFC3339, lastTickAtRFC3339)
+	if err != nil {
+		return 0
+	}
+	gap := now.Sub(lastTick)
+	threshold := tickInterval * time.Duration(multiplier)
+	// The production invariant this whole heuristic rests on: runHungTickUntil's
+	// real ticker fires every exactly tickInterval, so in production the ONLY
+	// thing that can make the gap between two consecutive doHungTick calls
+	// exceed a small multiple of tickInterval is the OS process itself having
+	// been suspended for the excess — nothing that happens inside one tick body
+	// can produce it. A gap this large from any other cause would mean the
+	// invariant itself broke (e.g. the ticker goroutine stalled or panicked
+	// without crashing the process), which is out of scope here.
+	if gap <= threshold {
+		return 0
+	}
+	suspend := gap - tickInterval
+	if suspend < 0 {
+		suspend = 0
+	}
+	return suspend
+}
+
+// shiftHungTimestamp adds suspend to the RFC3339 timestamp ts, returning ts
+// unchanged if it's empty (no live episode to shift) or unparseable (leave
+// corrupt data alone rather than fabricate a time from it).
+func shiftHungTimestamp(ts string, suspend time.Duration) string {
+	if ts == "" {
+		return ts
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+	return t.Add(suspend).UTC().Format(time.RFC3339)
+}
+
+// shiftHungAnchorsForSuspend loads the persisted anchor state at statePath
+// and pushes every live STUCK/DEAD since-baseline (StuckSince/DeadSince)
+// forward by suspend, then re-saves — run once, BEFORE scanHung reads
+// prevAnchors for this tick (hung_scan.go's elapsed := nowT.Sub(since) at
+// ~l.425/451), so that computation comes out as if the suspend span had
+// simply not been observed. Best-effort: a read/write failure here degrades
+// to "no shift applied" (logged by the caller), never blocks the tick.
+func shiftHungAnchorsForSuspend(statePath string, suspend time.Duration) error {
+	anchors := loadHungState(statePath)
+	if len(anchors) == 0 {
+		return nil
+	}
+	for id, anchor := range anchors {
+		anchor.StuckSince = shiftHungTimestamp(anchor.StuckSince, suspend)
+		anchor.DeadSince = shiftHungTimestamp(anchor.DeadSince, suspend)
+		anchors[id] = anchor
+	}
+	return saveHungState(statePath, anchors)
+}
+
 func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
+	nowT := deps.now()
+	metaPath := hungTickMetaPath(ctx)
+	meta := loadHungTickMeta(metaPath)
+	if suspend := detectHungSuspendSpan(meta.LastTickAt, nowT, hungTickInterval, hungSuspendGapMultiplier); suspend > 0 {
+		if err := shiftHungAnchorsForSuspend(hungStatePath(ctx), suspend); err != nil {
+			transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: shift anchors for suspend (%s): %v", suspend, err)
+		}
+	}
+	if err := saveHungTickMeta(metaPath, hungTickMeta{LastTickAt: nowT.UTC().Format(time.RFC3339)}); err != nil {
+		transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: persist tick meta: %v", err)
+	}
+
 	entries, err := scanHung(ctx, deps.agentsFunc, deps.now, true)
 	if err != nil {
 		return fmt.Errorf("hung tick: scan: %w", err)
