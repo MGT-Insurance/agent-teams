@@ -99,7 +99,7 @@ Relay the output `ateam dispatch` printed. Tell the human:
 - How to watch and control the review session:
 
 ```bash
-claude agents                   # list background sessions
+ateam runtime open claude      # open the native agents view
 claude logs <session-id>        # recent output without attaching
 claude attach <session-id>      # open it in this terminal
 claude stop <session-id>        # abort early OR reap a finished idle session

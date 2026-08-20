@@ -51,7 +51,7 @@ path. Useful controls are:
 
 ```bash
 tail -f <event-log-path>
-codex resume <thread-id>
+ateam runtime open codex
 ateam show <initiative-id>
 ateam human-list
 ateam resume <initiative-id> --runtime codex

@@ -58,7 +58,7 @@ worktree: <abs-path>
 Background session launched: <session-name>
 
 Watch and control:
-  claude agents          # list background sessions
+  ateam runtime open claude  # open the native agents view
   claude logs <session-name>         # recent output without attaching
   claude attach <session-name>       # open it in this terminal
   claude stop <session-name>         # abort it early
@@ -70,7 +70,7 @@ The session name is the basename of the registered worktree directory.
 
 The watch and control commands are printed by `ateam resume` — relay them to the human as-is. No need to look up the session name separately.
 
-When the background DRI finishes, it ends its turn and the session stays idle — it does NOT self-stop. It appears as idle in `claude agents`; use `claude stop <session-id>` to stop it when you are done with it.
+When the background DRI finishes, it ends its turn and the session stays idle — it does NOT self-stop. It appears as idle in `ateam runtime open claude`; use `claude stop <session-id>` to stop it when you are done with it.
 
 Any human gate the background DRI parks on surfaces through `ateam human-list` and the `/initiatives` dashboard — so a needed decision is discoverable without tailing logs.
 

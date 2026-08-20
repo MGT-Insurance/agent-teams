@@ -109,7 +109,7 @@ func printCodexControls(w io.Writer, home, initiativeID, sessionID string) {
 	fmt.Fprintln(w, "\nWatch and control:")
 	fmt.Fprintf(w, "  tail -f %s  # runtime events\n", sessionruntime.EventLogPath(home, initiativeID))
 	if sessionID != "" {
-		fmt.Fprintf(w, "  codex resume %s  # open the durable thread interactively\n", sessionID)
+		fmt.Fprintln(w, "  ateam runtime open codex  # open the native thread picker")
 	} else {
 		fmt.Fprintln(w, "  ateam show "+initiativeID+"  # inspect the bound session: thread id")
 	}

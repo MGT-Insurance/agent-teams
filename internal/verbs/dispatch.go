@@ -966,7 +966,7 @@ func launchBGSession(ctx *cli.Context, dir, driArg, role, initiativeID string) e
 // passed to claude --bg -n.
 func printWatchControl(w io.Writer, sessionName string) {
 	fmt.Fprintf(w, "\nWatch and control:\n")
-	fmt.Fprintf(w, "  claude agents          # list background sessions\n")
+	fmt.Fprintf(w, "  ateam runtime open claude  # open the native agents view\n")
 	fmt.Fprintf(w, "  claude logs %s         # recent output without attaching\n", sessionName)
 	fmt.Fprintf(w, "  claude attach %s       # open it in this terminal\n", sessionName)
 	fmt.Fprintf(w, "  claude stop %s         # abort it early\n", sessionName)

@@ -46,7 +46,7 @@ Do NOT add the DRI-specific `--append-system-prompt` or auto-compact env vars th
 Tell the human the session name/id and the target directory, then give the standard control block:
 
 ```bash
-claude agents                   # list background sessions
+ateam runtime open claude      # open the native agents view
 claude logs <id>                # recent output without attaching
 claude attach <id>              # open it in this terminal
 claude stop <id>                # stop it

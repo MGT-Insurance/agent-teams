@@ -26,6 +26,13 @@ type ManagedDaemonInfo struct {
 
 type ensureDaemonFunc func(context.Context, string) (ManagedDaemonInfo, error)
 
+// EnsureManagedCodexDaemon starts or reconnects to the standalone managed
+// app-server and returns the executable and socket paths clients need to open
+// a native Codex UI against it.
+func EnsureManagedCodexDaemon(ctx context.Context, executable string) (ManagedDaemonInfo, error) {
+	return ensureManagedCodexDaemon(ctx, executable)
+}
+
 func ensureManagedCodexDaemon(ctx context.Context, executable string) (ManagedDaemonInfo, error) {
 	if executable == "" {
 		executable = "codex"
