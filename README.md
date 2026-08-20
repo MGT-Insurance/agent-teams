@@ -166,7 +166,7 @@ pnpm typecheck                 # strict tsc across packages
 **Release protocol — required on ANY CLI or plugin change:**
 
 1. Run `sh scripts/build-binaries.sh` and commit the updated `plugins/agent-teams/bin/`.
-2. Bump the version in BOTH `plugins/agent-teams/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` (keep the two version strings identical).
+2. Apply the coordinated [plugin versioning contract](docs/plugin-versioning.md). Claude and Codex always share `MAJOR.MINOR`; shared changes advance the minor and reset both patches, while runtime-only changes increment only that runtime's patch. Keep the two Claude version strings identical.
 3. For a new verb, add the kong struct and wire it in `RegisterAllKong`. Help text is generated from kong struct tags — no separate `UsageText` entry required.
 
 `claude plugin update` keys off the version: no bump means installed sessions silently keep the old copy. A source-only PR that changes `ateam` behavior or plugin content without rebuilding binaries and bumping the version is incomplete.

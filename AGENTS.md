@@ -26,6 +26,14 @@ bd dolt push          # Push beads data to remote
 **Initiative work: always use `--parent <epicId>`.**
 All work beads for an initiative live under the initiative's root epic. The DRI provides the epic id in the spawn prompt. Use `bd create --parent <epicId>` for every work bead — task beads, discovery beads, test beads. Never create bare top-level beads for initiative work.
 
+## Plugin versioning
+
+The Claude and Codex plugins always share the same `MAJOR.MINOR`. A change to
+both advances the shared minor and resets both patches to zero. A runtime-only
+change increments only that runtime's patch; patches never decrease or reset
+within a minor line. Keep the Claude marketplace and plugin versions identical.
+See `docs/plugin-versioning.md` for the complete release contract and examples.
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.

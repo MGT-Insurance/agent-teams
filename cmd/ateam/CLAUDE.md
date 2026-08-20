@@ -12,10 +12,10 @@ changes output that callers parse. When it does, before the change is done:
 
 1. **Rebuild the committed binaries:** `sh scripts/build-binaries.sh` (builds all
    4 platforms into `plugins/agent-teams/bin/`), then **commit** `plugins/agent-teams/bin/`.
-2. **Bump the version** in BOTH `.claude-plugin/marketplace.json` and
-   `plugins/agent-teams/.claude-plugin/plugin.json` — keep them identical.
-   `claude plugin update` keys off the version; no bump = installed sessions keep
-   the cached old copy and silently never see your change.
+2. **Bump both plugin versions** under the coordinated contract in
+   `docs/plugin-versioning.md`. A shared CLI change advances the common minor
+   and resets both patches to zero. Keep `.claude-plugin/marketplace.json` and
+   `plugins/agent-teams/.claude-plugin/plugin.json` identical.
 
 **No rebuild = the deployed `ateam` silently lacks your change.** A PR that edits
 this package but leaves `plugins/agent-teams/bin/` and the version untouched is
