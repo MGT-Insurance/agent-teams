@@ -583,6 +583,63 @@ func TestWithPR_RejectsEdgeWhitespace(t *testing.T) {
 // silently report zero PRs for all 178 the moment they start reading the
 // rail — worse than the bug this initiative set out to fix. ResolvedPRs
 // must still resolve the PR when it lives ONLY in Notes.
+// ── ReviewPRURL (agent-teams-huq7.1 S1) ──────────────────────────────────────
+
+// TestReviewPRURL_FoundInDescription is S1's core-path fixture, transcribed
+// from the live at-2rnv review-shaped instance: a "pr-url:" Description
+// field line marks the initiative review-shaped and returns its value.
+func TestReviewPRURL_FoundInDescription(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-2rnv",
+		Description: "problem: review PR #5840\nrepo: /some/repo\npr-number: 5840\npr-repo: mgt-insurance/midgard\npr-url: https://github.com/mgt-insurance/midgard/pull/5840\n",
+	}
+	url, ok := initiative.ReviewPRURL(iss)
+	if !ok {
+		t.Fatal("ReviewPRURL: ok = false, want true")
+	}
+	if want := "https://github.com/mgt-insurance/midgard/pull/5840"; url != want {
+		t.Errorf("ReviewPRURL: url = %q, want %q", url, want)
+	}
+}
+
+// TestReviewPRURL_NotFoundWhenOnlyInNotes is the DRI-shaped negative: a DRI
+// initiative carries its PR in Notes via the "pr:" key (not "pr-url:", and
+// not in Description at all — the dri skill's convention). ReviewPRURL must
+// not treat that as review-shaped, even though the same URL sits in Notes.
+func TestReviewPRURL_NotFoundWhenOnlyInNotes(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-dri",
+		Description: "problem: ship the thing\nrepo: /some/repo\n",
+		Notes:       "delivered, ready for review.\npr: https://github.com/mgt-insurance/midgard/pull/999\n",
+	}
+	if url, ok := initiative.ReviewPRURL(iss); ok {
+		t.Fatalf("ReviewPRURL: ok = true, url = %q, want false (DRI's PR lives in Notes, not a Description pr-url line)", url)
+	}
+}
+
+// TestReviewPRURL_NotFoundWhenPRURLLineIsInNotes is the sharper negative:
+// even a correctly-keyed "pr-url:" line does not count if it only appears in
+// Notes — S1 is Description-only, full stop, never a Notes fallback.
+func TestReviewPRURL_NotFoundWhenPRURLLineIsInNotes(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-notesonly-prurl",
+		Description: "problem: p\n",
+		Notes:       "pr-url: https://github.com/mgt-insurance/midgard/pull/1\n",
+	}
+	if url, ok := initiative.ReviewPRURL(iss); ok {
+		t.Fatalf("ReviewPRURL: ok = true, url = %q, want false (pr-url in Notes must not count)", url)
+	}
+}
+
+// TestReviewPRURL_AbsentEverywhere covers the plain not-review-shaped case:
+// no pr-url line anywhere.
+func TestReviewPRURL_AbsentEverywhere(t *testing.T) {
+	iss := bd.Issue{ID: "at-plain", Description: "problem: p\nrepo: /r\n"}
+	if url, ok := initiative.ReviewPRURL(iss); ok {
+		t.Fatalf("ReviewPRURL: ok = true, url = %q, want false", url)
+	}
+}
+
 func TestResolvedPRs_FallsBackToNotesOnlyPR(t *testing.T) {
 	iss := bd.Issue{
 		ID:          "at-notesonly",

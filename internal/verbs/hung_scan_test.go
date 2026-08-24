@@ -189,6 +189,32 @@ func TestClassifyInitiative(t *testing.T) {
 	}
 }
 
+// ── hasReviewPostedNote (agent-teams-huq7.1 S2) ──────────────────────────────
+
+func TestHasReviewPostedNote(t *testing.T) {
+	tests := []struct {
+		name  string
+		notes string
+		want  bool
+	}{
+		{"review-posted line present", "review-posted: PR #5840 — approved\n", true},
+		{"comment-replies line present", "comment-replies: PR #4773 — 2 thread(s) answered\n", true},
+		{"both markers, either is sufficient", "review-posted: one\ncomment-replies: two\n", true},
+		{"review-timeout must NOT count", "review-timeout: no diff after 10 attempts\n", false},
+		{"empty notes", "", false},
+		{"unrelated prose only", "delivered, ready for review.\n", false},
+		{"marker not at line start does not count", "note: see review-posted: below\n", false},
+		{"marker several lines down the append-open tail still matches", "some earlier note.\nanother note.\nreview-posted: PR #1 — approved\n", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasReviewPostedNote(tc.notes); got != tc.want {
+				t.Errorf("hasReviewPostedNote(%q) = %v, want %v", tc.notes, got, tc.want)
+			}
+		})
+	}
+}
+
 // ── classifyInitiative: session-set aggregation (agent-teams-zalv.4 / at-ps11) ──
 //
 // Truth table from the contract (agent-teams-zalv.1 §6), exercised against a
@@ -498,6 +524,54 @@ func TestScanHung_Dead_PidNilAndCwdMissing(t *testing.T) {
 // through its full lifecycle: set on first STUCK observation, elapsed grows
 // (and hung flips true) as an injected clock advances, then cleared the
 // instant the session stops being STUCK (busy in this test).
+// ── scanHung: ReviewPRURL/Notes wiring (agent-teams-huq7.1 S1/S5) ────────────
+
+// TestScanHung_PopulatesReviewPRURLAndNotes proves scanHung threads through
+// both S1's review-shaped predicate and the raw Notes text a consumer (the
+// hung tick's S2/S3 gate) needs, WITHOUT changing classification at all —
+// S5 is explicit that this is an additive field, no classification change.
+func TestScanHung_PopulatesReviewPRURLAndNotes(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{
+		ID:          "at-1",
+		Title:       "review initiative",
+		Description: "worktree: " + wt + "\npr-url: https://github.com/acme/widget/pull/12\n",
+		Notes:       "review-posted: PR #12 — approved\n",
+		Status:      "open",
+	}}
+	ctx := makeHungCtx(t, issues)
+
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return nil, nil }, fixedNow(time.Now()), true)
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if want := "https://github.com/acme/widget/pull/12"; out[0].ReviewPRURL != want {
+		t.Errorf("ReviewPRURL = %q, want %q", out[0].ReviewPRURL, want)
+	}
+	if out[0].Notes != issues[0].Notes {
+		t.Errorf("Notes = %q, want %q", out[0].Notes, issues[0].Notes)
+	}
+	if out[0].Classification != hungClassDead {
+		t.Fatalf("classification = %q, want DEAD (no live session) — ReviewPRURL/Notes must not change classification", out[0].Classification)
+	}
+}
+
+// TestScanHung_ReviewPRURLEmptyWhenNotReviewShaped proves a plain
+// (non-review) initiative's ReviewPRURL stays empty.
+func TestScanHung_ReviewPRURLEmptyWhenNotReviewShaped(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{ID: "at-1", Title: "plain", Description: "worktree: " + wt, Status: "open"}}
+	ctx := makeHungCtx(t, issues)
+
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return nil, nil }, fixedNow(time.Now()), true)
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if out[0].ReviewPRURL != "" {
+		t.Errorf("ReviewPRURL = %q, want empty", out[0].ReviewPRURL)
+	}
+}
+
 func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	wt := t.TempDir()
 	issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
