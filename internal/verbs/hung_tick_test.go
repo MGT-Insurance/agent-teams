@@ -3,6 +3,8 @@ package verbs
 import (
 	"fmt"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -689,5 +691,741 @@ func TestSendHungWakeEnvelope_SendFailurePropagates(t *testing.T) {
 	err := sendHungWakeEnvelope(ctx, send, "at-7", "body")
 	if err == nil {
 		t.Fatal("expected the send error to propagate")
+	}
+}
+
+// ── agent-teams-huq7.1 S3/S5: the review-backstop auto-close ────────────────
+
+// fakeHungClose is an injectable hungCloseFunc recording every (id, reason)
+// call and returning a configured error.
+type fakeHungClose struct {
+	calls []struct{ id, reason string }
+	err   error
+}
+
+func (f *fakeHungClose) close(_ *cli.Context, id, reason string) error {
+	f.calls = append(f.calls, struct{ id, reason string }{id, reason})
+	return f.err
+}
+
+// fakePendingReviewComment is an injectable pendingReviewCommentFunc
+// returning a canned (pending, err) and recording every call — so tests
+// drive the S3(d)/S4 gate without shelling to gh.
+type fakePendingReviewComment struct {
+	pending bool
+	err     error
+	calls   int
+}
+
+func (f *fakePendingReviewComment) probe(_ string, _ int) (bool, error) {
+	f.calls++
+	return f.pending, f.err
+}
+
+// reviewIssue builds the bd.Issue fixture shape common to every backstop
+// test below: a review-shaped Description (worktree + pr-url) and,
+// optionally, a review-posted Notes line.
+func reviewIssue(id, wt, prURL string, posted bool) bd.Issue {
+	notes := ""
+	if posted {
+		notes = "review-posted: PR — approved\n"
+	}
+	return bd.Issue{
+		ID:          id,
+		Title:       "review initiative",
+		Description: "worktree: " + wt + "\npr-url: " + prURL + "\n",
+		Notes:       notes,
+		Status:      "open",
+		Labels:      []string{id, "thread:1"},
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_ClosesOnDeadNoPendingComment is S3/S5's core
+// path: a review-shaped, review-posted initiative with no live session
+// (DEAD) and no pending comment is auto-closed — and the DEAD ladder never
+// fires (no wake, no alert).
+func TestDoHungTick_ReviewBackstop_ClosesOnDeadNoPendingComment(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-2rnv", wt, "https://github.com/acme/widget/pull/12", true)}
+	ctx := makeHungCtx(t, issues)
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	ft := &fakeTransport{returnRef: "1"}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            ft,
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1", len(closeFn.calls))
+	}
+	if closeFn.calls[0].id != "at-2rnv" {
+		t.Errorf("closed id = %q, want at-2rnv", closeFn.calls[0].id)
+	}
+	if closeFn.calls[0].reason != hungReviewBackstopCloseReason {
+		t.Errorf("close reason = %q, want %q", closeFn.calls[0].reason, hungReviewBackstopCloseReason)
+	}
+	if len(wake.bodies) != 0 {
+		t.Errorf("wake calls = %d, want 0 (backstop close must skip the DEAD ladder)", len(wake.bodies))
+	}
+	if len(ft.calls) != 0 {
+		t.Errorf("topic posts = %d, want 0", len(ft.calls))
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if !strings.Contains(string(journalData), `"ladder_action":"close"`) {
+		t.Errorf("journal missing the close ladder_action: %s", journalData)
+	}
+	if !strings.Contains(string(journalData), `"ladder":"review-backstop"`) {
+		t.Errorf("journal missing the review-backstop ladder tag: %s", journalData)
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_ClosesOnStuckHungNoPendingComment is S3(c)'s
+// other qualifying classification: a live-but-idle session that has crossed
+// hungStuckThreshold (STUCK + Hung) also auto-closes, exactly like DEAD.
+func TestDoHungTick_ReviewBackstop_ClosesOnStuckHungNoPendingComment(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-stuck", wt, "https://github.com/acme/widget/pull/13", true)}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 1
+	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedStuckSince := t0.Add(-(hungStuckThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-stuck": {StuckSince: seedStuckSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return idleSessions, nil },
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1", len(closeFn.calls))
+	}
+	if len(wake.bodies) != 0 {
+		t.Errorf("wake calls = %d, want 0 (backstop close must skip the STUCK ladder)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_NoCloseWhenPendingComment proves S3(d): a
+// pending, unanswered comment blocks the close even though every other gate
+// condition holds — and the existing DEAD ladder still fires (wake), exactly
+// as if this bead didn't exist.
+func TestDoHungTick_ReviewBackstop_NoCloseWhenPendingComment(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-pending", wt, "https://github.com/acme/widget/pull/14", true)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-pending": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: true} // someone is still waiting on us
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (a pending comment must block the close)", len(closeFn.calls))
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing DEAD ladder must still fire)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_NoCloseWhenWorking proves S3(c): a live,
+// actively-working review session is never closed, regardless of the other
+// gate conditions — WORKING is excluded by construction.
+func TestDoHungTick_ReviewBackstop_NoCloseWhenWorking(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-working", wt, "https://github.com/acme/widget/pull/15", true)}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 1
+	busySessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return busySessions, nil },
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             (&fakeHungWakeSend{}).send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (WORKING must never auto-close)", len(closeFn.calls))
+	}
+	if pending.calls != 0 {
+		t.Errorf("pending-comment probe calls = %d, want 0 (gate (c) should short-circuit before ever probing)", pending.calls)
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_NoCloseWhenNeverPosted proves S3(b): a
+// review-shaped, DEAD initiative whose review was never posted (no
+// review-posted:/comment-replies: note) is NOT auto-closed — it still falls
+// through to the existing DEAD ladder, which huq7.7 (not this bead) may one
+// day refine.
+func TestDoHungTick_ReviewBackstop_NoCloseWhenNeverPosted(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-neverposted", wt, "https://github.com/acme/widget/pull/16", false)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-neverposted": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (never-posted must not auto-close)", len(closeFn.calls))
+	}
+	if pending.calls != 0 {
+		t.Errorf("pending-comment probe calls = %d, want 0 (gate (b) should short-circuit before ever probing)", pending.calls)
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing DEAD ladder must still fire for a never-posted review)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_NonReviewShapedUnaffected proves S1's gate:
+// a plain (non-review) DEAD-with-worktree initiative is completely
+// unaffected by this bead — no probe is ever consulted, and the existing D4
+// ladder fires exactly as it did before huq7.4.
+func TestDoHungTick_ReviewBackstop_NonReviewShapedUnaffected(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{
+		ID: "at-plain", Title: "plain initiative", Description: "worktree: " + wt,
+		Status: "open", Labels: []string{"at-plain", "thread:1"},
+	}}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-plain": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (non-review-shaped must never auto-close)", len(closeFn.calls))
+	}
+	if pending.calls != 0 {
+		t.Errorf("pending-comment probe calls = %d, want 0 (gate (a) should short-circuit before ever probing)", pending.calls)
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing D4/DEAD ladder must fire unchanged)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_NilCloseFuncFallsThroughToLadder proves the
+// nil-seam safe default: with no closeFunc configured, the backstop never
+// engages at all (not even a probe call), and the tick behaves exactly as it
+// did before this bead existed.
+func TestDoHungTick_ReviewBackstop_NilCloseFuncFallsThroughToLadder(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-noclose", wt, "https://github.com/acme/widget/pull/17", true)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-noclose": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            nil, // not configured
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if pending.calls != 0 {
+		t.Errorf("pending-comment probe calls = %d, want 0 (nil closeFunc must short-circuit before probing)", pending.calls)
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (must fall through to the existing DEAD ladder)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder proves the
+// agent-teams-huq7.1 CONTRACT AMENDMENT: when closeFunc returns an error for
+// an otherwise gate-eligible entry, doHungTick must NOT journal a successful
+// close (misleading — it didn't happen) and must NOT silently drop the
+// entry — it must fall through to the existing DEAD ladder so the entry
+// still gets a wake/alert, exactly as if the close had never been
+// attempted.
+func TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-closeerr", wt, "https://github.com/acme/widget/pull/18", true)}
+	ctx := makeHungCtx(t, issues)
+
+	// Seed a DeadSince anchor already past hungDeadWorktreeThreshold, exactly
+	// like TestDoHungTick_ReviewBackstop_NoCloseWhenPendingComment, so the
+	// existing DEAD ladder (D4, entry.DeadHung) actually has something to
+	// fire once this tick falls through to it — a freshly-classified DEAD
+	// entry (DeadSince set to "now") wouldn't yet be past the ladder's own
+	// elapsed threshold, which would mask this test's real assertion.
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-closeerr": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{err: fmt.Errorf("bd close: exit status 1")}
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1 (a failing close must still be attempted)", len(closeFn.calls))
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	journalStr := string(journalData)
+	if strings.Contains(journalStr, `"ladder_action":"close"`) {
+		t.Errorf("journal must NOT record a successful close when closeFunc errored: %s", journalStr)
+	}
+	if !strings.Contains(journalStr, `"ladder_action":"close-failed"`) {
+		t.Errorf("journal missing an accurate close-failed marker: %s", journalStr)
+	}
+	if !strings.Contains(journalStr, `"ladder":"dead"`) {
+		t.Errorf("journal missing the fallthrough DEAD ladder entry: %s", journalStr)
+	}
+
+	// (b): the entry is NOT silently dropped — the existing DEAD ladder
+	// still fires a wake, exactly as if the backstop gate had never held.
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (a failing close must still escalate via the existing DEAD ladder)", len(wake.bodies))
+	}
+}
+
+// ── defaultHungClose (agent-teams-huq7.1 S5, real bd.Run mechanics) ─────────
+
+// TestDefaultHungClose_WritesNoteThenCloses proves the real production
+// closeFunc's mechanics: a `bd note --file=<tmp>` call carrying reason as
+// durable prose, followed by a `bd close --reason=<reason>` call — both
+// through ctx.BD.Run (the raw bd CLI), never the `ateam close` verb.
+//
+// The note's temp file is read INSIDE the fake exec call, not after
+// defaultHungClose returns: defaultHungClose removes it (defer os.Remove)
+// before returning, mirroring writeEnvelopeToTemp's cleanup discipline
+// elsewhere in this file.
+func TestDefaultHungClose_WritesNoteThenCloses(t *testing.T) {
+	var calls []capturedCall
+	var noteContent string
+	execFn := func(name string, args ...string) ([]byte, []byte, error) {
+		stripped := args
+		if len(args) >= 2 && args[0] == "-C" {
+			stripped = args[2:]
+		}
+		calls = append(calls, capturedCall{args: stripped})
+		if len(stripped) > 0 && stripped[0] == "note" {
+			for _, a := range stripped {
+				if path, ok := strings.CutPrefix(a, "--file="); ok {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatalf("read note temp file during call: %v", err)
+					}
+					noteContent = string(data)
+				}
+			}
+		}
+		return nil, nil, nil
+	}
+	ctx := &cli.Context{
+		Home:   t.TempDir(),
+		BD:     bd.NewClientWithExec(t.TempDir(), execFn),
+		Stdout: &strings.Builder{},
+		Stderr: &strings.Builder{},
+	}
+
+	if err := defaultHungClose(ctx, "at-1", "some reason"); err != nil {
+		t.Fatalf("defaultHungClose: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("bd calls = %d, want 2 (note, close)", len(calls))
+	}
+
+	noteCall := calls[0]
+	if len(noteCall.args) < 3 || noteCall.args[0] != "note" || noteCall.args[1] != "at-1" || !strings.HasPrefix(noteCall.args[2], "--file=") {
+		t.Fatalf("first call = %v, want [note at-1 --file=...]", noteCall.args)
+	}
+	if !strings.Contains(noteContent, "some reason") {
+		t.Errorf("note file content = %q, want it to contain the reason", noteContent)
+	}
+
+	closeCall := calls[1]
+	wantClose := []string{"close", "at-1", "--reason=some reason"}
+	if !reflect.DeepEqual(closeCall.args, wantClose) {
+		t.Errorf("close call = %v, want %v", closeCall.args, wantClose)
+	}
+}
+
+// TestDefaultHungClose_PropagatesNoteFailure proves a bd note failure
+// aborts before ever attempting the close.
+func TestDefaultHungClose_PropagatesNoteFailure(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{err: fmt.Errorf("bd note failed")}})
+	if err := defaultHungClose(ctx, "at-1", "reason"); err == nil {
+		t.Fatal("expected an error when bd note fails")
+	}
+	if len(*calls) != 1 {
+		t.Errorf("bd calls = %d, want 1 (close must not be attempted after note fails)", len(*calls))
+	}
+}
+
+// ── resolveOurGHLogin (agent-teams-huq7.1 CONTRACT AMENDMENT, S4 guard) ─────
+
+// TestResolveOurGHLogin proves the login-validation guard defaultPending
+// ReviewComment relies on: raw `gh api user -q .login` output must trim and
+// validate before it's usable as hasPendingCommentThread's "ours" login. An
+// empty/whitespace-only string or the literal "null" (both observed from
+// GitHub App / installation-token auth that passes `gh auth status` but
+// yields no real user login) must degrade to an error — never a silently
+// accepted empty/null login — while an ordinary (possibly newline-terminated,
+// as `gh api ... -q .login`'s real stdout is) login is accepted and trimmed.
+func TestResolveOurGHLogin(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{"empty string: rejected", "", "", true},
+		{"whitespace/newline only: rejected", "\n", "", true},
+		{"literal null: rejected", "null", "", true},
+		{"literal null with trailing newline: rejected", "null\n", "", true},
+		{"ordinary login: accepted and trimmed", "pr-shepherd-bot\n", "pr-shepherd-bot", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveOurGHLogin(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveOurGHLogin(%q) = (%q, nil), want an error", tc.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveOurGHLogin(%q) unexpected error: %v", tc.raw, err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveOurGHLogin(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// ── hasPendingCommentThread (agent-teams-huq7.1 S4, pure grouping logic) ────
+
+// TestHasPendingCommentThread mirrors SKILL.md comment-reply step 1's own
+// selection rule against a table of thread shapes, with zero I/O (no real
+// gh call — defaultPendingReviewComment's two `gh api` calls are the only
+// part of that function this does NOT exercise).
+func TestHasPendingCommentThread(t *testing.T) {
+	const ourLogin = "pr-shepherd-bot"
+	t1 := "2026-07-21T10:00:00Z"
+	t2 := "2026-07-21T11:00:00Z"
+	t3 := "2026-07-21T12:00:00Z"
+
+	tests := []struct {
+		name     string
+		comments []ghPRComment
+		want     bool
+	}{
+		{
+			name:     "no comments at all",
+			comments: nil,
+			want:     false,
+		},
+		{
+			name: "we replied, nobody after us: not pending",
+			comments: []ghPRComment{
+				{ID: 1, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+				{ID: 2, InReplyToID: 1, CreatedAt: t2, User: struct {
+					Login string `json:"login"`
+				}{ourLogin}},
+			},
+			want: false,
+		},
+		{
+			name: "someone replied after us: pending",
+			comments: []ghPRComment{
+				{ID: 1, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{ourLogin}},
+				{ID: 2, InReplyToID: 1, CreatedAt: t2, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+			},
+			want: true,
+		},
+		{
+			name: "we're not in the thread at all: not pending",
+			comments: []ghPRComment{
+				{ID: 1, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+				{ID: 2, InReplyToID: 1, CreatedAt: t2, User: struct {
+					Login string `json:"login"`
+				}{"bob"}},
+			},
+			want: false,
+		},
+		{
+			name: "root comment (no in_reply_to_id) IS the thread id: someone replies to it after us",
+			comments: []ghPRComment{
+				{ID: 5, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{ourLogin}}, // root, authored by us
+				{ID: 6, InReplyToID: 5, CreatedAt: t2, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+			},
+			want: true,
+		},
+		{
+			name: "our reply is the LATEST in the thread even though an earlier other-author comment exists: not pending",
+			comments: []ghPRComment{
+				{ID: 1, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+				{ID: 2, InReplyToID: 1, CreatedAt: t2, User: struct {
+					Login string `json:"login"`
+				}{ourLogin}},
+			},
+			want: false,
+		},
+		{
+			name: "multiple threads: one resolved, one pending -> overall pending",
+			comments: []ghPRComment{
+				// Thread A (root 1): resolved — we spoke last.
+				{ID: 1, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+				{ID: 2, InReplyToID: 1, CreatedAt: t2, User: struct {
+					Login string `json:"login"`
+				}{ourLogin}},
+				// Thread B (root 10): pending — alice spoke last.
+				{ID: 10, CreatedAt: t1, User: struct {
+					Login string `json:"login"`
+				}{ourLogin}},
+				{ID: 11, InReplyToID: 10, CreatedAt: t3, User: struct {
+					Login string `json:"login"`
+				}{"alice"}},
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasPendingCommentThread(tc.comments, ourLogin); got != tc.want {
+				t.Errorf("hasPendingCommentThread() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHasPendingCommentThread_EmptyOurLoginNeverMatches documents the exact
+// hazard resolveOurGHLogin's guard exists to prevent (agent-teams-huq7.1
+// CONTRACT AMENDMENT): if an empty ourLogin ever reached this function, it
+// would match NO comment as "ours" (no comment's User.Login is ever ""),
+// so a thread with a genuine unanswered comment — alice posts, then bob
+// replies after her, nobody from "our" side ever appears — reports
+// not-pending regardless. That is exactly the silent false-negative that
+// would wrongly authorize a backstop close; resolveOurGHLogin's job is to
+// make sure defaultPendingReviewComment errors out before ever calling this
+// function with such a login.
+func TestHasPendingCommentThread_EmptyOurLoginNeverMatches(t *testing.T) {
+	comments := []ghPRComment{
+		{ID: 1, CreatedAt: "2026-07-21T10:00:00Z", User: struct {
+			Login string `json:"login"`
+		}{"alice"}},
+		{ID: 2, InReplyToID: 1, CreatedAt: "2026-07-21T11:00:00Z", User: struct {
+			Login string `json:"login"`
+		}{"bob"}},
+	}
+	if got := hasPendingCommentThread(comments, ""); got != false {
+		t.Errorf("hasPendingCommentThread(comments, \"\") = %v, want false (empty ourLogin matches no comment — the hazard the login guard prevents)", got)
+	}
+}
+
+// ── hungPendingCommentProbe: cache + preflight lifecycle (S4) ───────────────
+
+// TestHungPendingCommentProbe_CachesWithinTTL proves the probe is only
+// invoked once for repeated evaluate calls on the same PR within
+// hungPendingCommentTTL, and re-invoked once the cached entry goes stale.
+func TestHungPendingCommentProbe_CachesWithinTTL(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	pending := &fakePendingReviewComment{pending: false}
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	deps := hungTickDeps{
+		now:                  fixedNow(now),
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+	entry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+
+	p := newHungPendingCommentProbe(ctx, deps)
+	if _, probed := p.evaluate(entry); !probed {
+		t.Fatal("first evaluate: expected probed=true")
+	}
+	if _, probed := p.evaluate(entry); !probed {
+		t.Fatal("second evaluate (same tick): expected probed=true")
+	}
+	if pending.calls != 1 {
+		t.Errorf("raw probe calls = %d, want 1 (second call should hit the freshly-written cache)", pending.calls)
+	}
+
+	// Stale cache (TTL elapsed) -> re-probes.
+	deps.now = fixedNow(now.Add(hungPendingCommentTTL + time.Minute))
+	p2 := newHungPendingCommentProbe(ctx, deps)
+	if _, probed := p2.evaluate(entry); !probed {
+		t.Fatal("third evaluate (stale cache): expected probed=true")
+	}
+	if pending.calls != 2 {
+		t.Errorf("raw probe calls = %d, want 2 (stale cache should force a fresh probe)", pending.calls)
+	}
+}
+
+// TestHungPendingCommentProbe_PreflightFailureSkipsProbe proves a failing
+// gh preflight degrades to probed=false (never authorizes a close) without
+// ever calling the raw probe.
+func TestHungPendingCommentProbe_PreflightFailureSkipsProbe(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	pending := &fakePendingReviewComment{pending: false}
+	deps := hungTickDeps{
+		now:                  fixedNow(time.Now()),
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return fmt.Errorf("gh not authenticated") },
+	}
+	entry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+
+	p := newHungPendingCommentProbe(ctx, deps)
+	if _, probed := p.evaluate(entry); probed {
+		t.Error("expected probed=false when the gh preflight fails")
+	}
+	if pending.calls != 0 {
+		t.Errorf("raw probe calls = %d, want 0 (preflight failure must skip the probe entirely)", pending.calls)
 	}
 }
