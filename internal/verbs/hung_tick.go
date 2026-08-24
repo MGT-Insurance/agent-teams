@@ -368,6 +368,24 @@ func reviewBackstopCloseGateHolds(entry hungScanEntry) bool {
 	return entry.Classification == hungClassDead || (entry.Classification == hungClassStuck && entry.Hung)
 }
 
+// hungReviewBackstopJournalEntry builds the review-backstop journal line
+// shared by the close-succeeded and close-failed cases in doHungTick below —
+// identical shape, differing only in ladderAction ("close" on success,
+// "close-failed" on a closeFunc error — agent-teams-huq7.1 CONTRACT
+// AMENDMENT).
+func hungReviewBackstopJournalEntry(nowRFC3339 string, entry hungScanEntry, ladderAction string) hungJournalEntry {
+	return hungJournalEntry{
+		Timestamp:           nowRFC3339,
+		InitiativeID:        entry.ID,
+		Classification:      entry.Classification,
+		Mode:                entry.Mode,
+		StuckElapsedSeconds: entry.StuckElapsedSeconds,
+		DeadElapsedSeconds:  entry.DeadElapsedSeconds,
+		Ladder:              "review-backstop",
+		LadderAction:        ladderAction,
+	}
+}
+
 // ── agent-teams-huq7.1 S4: the pending-comment probe (HUMAN-GATED default:
 // included, per Eric's ruling — option (a), keep the probe) ────────────────
 //
@@ -404,6 +422,30 @@ type ghPRComment struct {
 	} `json:"user"`
 }
 
+// resolveOurGHLogin trims and validates the raw output of `gh api user -q
+// .login` for use as hasPendingCommentThread's "ours" comparison. `gh api
+// user` exiting 0 does NOT guarantee a real login: some GitHub App /
+// installation-token auth passes `gh auth status` but yields an empty
+// string or the literal "null" for `.login`. Either value would make
+// hasPendingCommentThread match NO comment as "ours" and silently return
+// false ("no pending comment"), which would wrongly authorize a backstop
+// close of an initiative that may in fact have a genuine pending
+// unanswered comment. Split out as a tiny pure helper (agent-teams-huq7.1
+// CONTRACT AMENDMENT, S4 guard) so this guard is unit-testable without
+// shelling out to a real gh.
+func resolveOurGHLogin(raw string) (string, error) {
+	login := strings.TrimSpace(raw)
+	if login == "" || login == "null" {
+		// S3(d) requires PROOF of no pending comment; a bogus/empty login
+		// can never provide that proof, so this degrades to an error
+		// (probed=false via hungPendingCommentProbe.evaluate) rather than
+		// proceeding with a login that would make every thread look
+		// resolved.
+		return "", fmt.Errorf("gh api user returned no usable login (got %q)", login)
+	}
+	return login, nil
+}
+
 // defaultPendingReviewComment runs, verbatim from SKILL.md comment-reply
 // step 1:
 //
@@ -436,7 +478,10 @@ func defaultPendingReviewComment(ownerRepo string, prNumber int) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("gh api user: %w", err)
 	}
-	ourLogin := strings.TrimSpace(string(loginOut))
+	ourLogin, err := resolveOurGHLogin(string(loginOut))
+	if err != nil {
+		return false, err
+	}
 
 	return hasPendingCommentThread(comments, ourLogin), nil
 }
@@ -986,21 +1031,23 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 				if pending, probed := pendingProbe.evaluate(entry); probed && !pending {
 					if err := deps.closeFunc(ctx, entry.ID, hungReviewBackstopCloseReason); err != nil {
 						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: backstop close %s failed: %v", entry.ID, err)
+						// agent-teams-huq7.1 CONTRACT AMENDMENT: a failing
+						// close must still escalate — do NOT journal a
+						// successful close (misleading: it didn't happen) and
+						// do NOT continue (would silently drop the entry,
+						// worse than pre-backstop behavior). Journal an
+						// accurate close-failed marker instead and fall
+						// through to the existing ladder switch below, exactly
+						// as if the gate hadn't held.
+						if err := appendHungJournal(journalPath, hungReviewBackstopJournalEntry(nowRFC3339, entry, "close-failed")); err != nil {
+							transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+						}
+					} else {
+						if err := appendHungJournal(journalPath, hungReviewBackstopJournalEntry(nowRFC3339, entry, "close")); err != nil {
+							transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+						}
+						continue
 					}
-					je := hungJournalEntry{
-						Timestamp:           nowRFC3339,
-						InitiativeID:        entry.ID,
-						Classification:      entry.Classification,
-						Mode:                entry.Mode,
-						StuckElapsedSeconds: entry.StuckElapsedSeconds,
-						DeadElapsedSeconds:  entry.DeadElapsedSeconds,
-						Ladder:              "review-backstop",
-						LadderAction:        "close",
-					}
-					if err := appendHungJournal(journalPath, je); err != nil {
-						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
-					}
-					continue
 				}
 			}
 

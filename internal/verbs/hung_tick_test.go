@@ -1049,6 +1049,75 @@ func TestDoHungTick_ReviewBackstop_NilCloseFuncFallsThroughToLadder(t *testing.T
 	}
 }
 
+// TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder proves the
+// agent-teams-huq7.1 CONTRACT AMENDMENT: when closeFunc returns an error for
+// an otherwise gate-eligible entry, doHungTick must NOT journal a successful
+// close (misleading — it didn't happen) and must NOT silently drop the
+// entry — it must fall through to the existing DEAD ladder so the entry
+// still gets a wake/alert, exactly as if the close had never been
+// attempted.
+func TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-closeerr", wt, "https://github.com/acme/widget/pull/18", true)}
+	ctx := makeHungCtx(t, issues)
+
+	// Seed a DeadSince anchor already past hungDeadWorktreeThreshold, exactly
+	// like TestDoHungTick_ReviewBackstop_NoCloseWhenPendingComment, so the
+	// existing DEAD ladder (D4, entry.DeadHung) actually has something to
+	// fire once this tick falls through to it — a freshly-classified DEAD
+	// entry (DeadSince set to "now") wouldn't yet be past the ladder's own
+	// elapsed threshold, which would mask this test's real assertion.
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-closeerr": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{err: fmt.Errorf("bd close: exit status 1")}
+	pending := &fakePendingReviewComment{pending: false}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1 (a failing close must still be attempted)", len(closeFn.calls))
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	journalStr := string(journalData)
+	if strings.Contains(journalStr, `"ladder_action":"close"`) {
+		t.Errorf("journal must NOT record a successful close when closeFunc errored: %s", journalStr)
+	}
+	if !strings.Contains(journalStr, `"ladder_action":"close-failed"`) {
+		t.Errorf("journal missing an accurate close-failed marker: %s", journalStr)
+	}
+	if !strings.Contains(journalStr, `"ladder":"dead"`) {
+		t.Errorf("journal missing the fallthrough DEAD ladder entry: %s", journalStr)
+	}
+
+	// (b): the entry is NOT silently dropped — the existing DEAD ladder
+	// still fires a wake, exactly as if the backstop gate had never held.
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (a failing close must still escalate via the existing DEAD ladder)", len(wake.bodies))
+	}
+}
+
 // ── defaultHungClose (agent-teams-huq7.1 S5, real bd.Run mechanics) ─────────
 
 // TestDefaultHungClose_WritesNoteThenCloses proves the real production
@@ -1120,6 +1189,48 @@ func TestDefaultHungClose_PropagatesNoteFailure(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Errorf("bd calls = %d, want 1 (close must not be attempted after note fails)", len(*calls))
+	}
+}
+
+// ── resolveOurGHLogin (agent-teams-huq7.1 CONTRACT AMENDMENT, S4 guard) ─────
+
+// TestResolveOurGHLogin proves the login-validation guard defaultPending
+// ReviewComment relies on: raw `gh api user -q .login` output must trim and
+// validate before it's usable as hasPendingCommentThread's "ours" login. An
+// empty/whitespace-only string or the literal "null" (both observed from
+// GitHub App / installation-token auth that passes `gh auth status` but
+// yields no real user login) must degrade to an error — never a silently
+// accepted empty/null login — while an ordinary (possibly newline-terminated,
+// as `gh api ... -q .login`'s real stdout is) login is accepted and trimmed.
+func TestResolveOurGHLogin(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{"empty string: rejected", "", "", true},
+		{"whitespace/newline only: rejected", "\n", "", true},
+		{"literal null: rejected", "null", "", true},
+		{"literal null with trailing newline: rejected", "null\n", "", true},
+		{"ordinary login: accepted and trimmed", "pr-shepherd-bot\n", "pr-shepherd-bot", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveOurGHLogin(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveOurGHLogin(%q) = (%q, nil), want an error", tc.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveOurGHLogin(%q) unexpected error: %v", tc.raw, err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveOurGHLogin(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1232,6 +1343,30 @@ func TestHasPendingCommentThread(t *testing.T) {
 				t.Errorf("hasPendingCommentThread() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHasPendingCommentThread_EmptyOurLoginNeverMatches documents the exact
+// hazard resolveOurGHLogin's guard exists to prevent (agent-teams-huq7.1
+// CONTRACT AMENDMENT): if an empty ourLogin ever reached this function, it
+// would match NO comment as "ours" (no comment's User.Login is ever ""),
+// so a thread with a genuine unanswered comment — alice posts, then bob
+// replies after her, nobody from "our" side ever appears — reports
+// not-pending regardless. That is exactly the silent false-negative that
+// would wrongly authorize a backstop close; resolveOurGHLogin's job is to
+// make sure defaultPendingReviewComment errors out before ever calling this
+// function with such a login.
+func TestHasPendingCommentThread_EmptyOurLoginNeverMatches(t *testing.T) {
+	comments := []ghPRComment{
+		{ID: 1, CreatedAt: "2026-07-21T10:00:00Z", User: struct {
+			Login string `json:"login"`
+		}{"alice"}},
+		{ID: 2, InReplyToID: 1, CreatedAt: "2026-07-21T11:00:00Z", User: struct {
+			Login string `json:"login"`
+		}{"bob"}},
+	}
+	if got := hasPendingCommentThread(comments, ""); got != false {
+		t.Errorf("hasPendingCommentThread(comments, \"\") = %v, want false (empty ourLogin matches no comment — the hazard the login guard prevents)", got)
 	}
 }
 
