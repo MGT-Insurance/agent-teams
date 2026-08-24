@@ -136,9 +136,13 @@ Default to `ateam learn`; `bd remember` only for repo-shared project facts. Cont
 
 Planner plans (never writes code); implementers write code + core-path tests only (never push/merge, stop-and-ask over guessing); tester owns edge cases/E2E + live verification; reviewer never fixes, you route findings; all roles file discovery beads, you triage. Per-role detail: references/execution.md.
 
-# Spawning a sibling initiative
+# Spawning a sibling initiative, messaging its DRI
 
 Separable work that would balloon this initiative's scope (a discovery bead that's really its own feature, tooling/infra) → dispatch as its own background initiative via **`/agent-teams:dispatch-dri`** (creates the worktree, registers it, launches a background DRI — invoke with the problem statement, never hand-roll `claude --bg`). Re-launch a parked/interrupted initiative: `ateam resume <id>` (refuses if a session is already live on the initiative; pass `--supersede` to stop it and relaunch).
+
+**Messaging a peer DRI (this initiative's or a sibling's):** native-first. Discover live local peers via `ListAgents` and address by session name with native `SendMessage`; fall back to `ateam mail send <initiative-id> --file <msg-file>` when the peer isn't a live local Claude session — offline, another machine, a non-Claude runtime (codex/opencode) — or native delivery fails. `ateam mail send` stays the only path for cross-machine / non-Claude / async-to-human hops. Never ask a peer to do what your own permissions blocked.
+
+Peer-to-peer work coordination (rebase now, I own file X, I merged the shared contract) is fine directly — the steward is not a required relay for it. Still route through the steward (`ateam gate`) anything that would become a human gate: "would this become a gate to Eric? -> steward" covers plan/scope/merge/design-fork/unblock. And even pure coordination gets a heads-up to the steward when it materially changes an initiative's design or direction, so its cross-initiative view stays complete — mechanical coordination that never touches design/direction needs no steward involvement at all.
 
 # References (read when you reach them)
 
