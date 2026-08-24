@@ -33,6 +33,7 @@ import InitiativesView from "./views/initiatives/index.js";
 import DrillInView from "./views/drillin/index.js";
 import MailView from "./views/mail/index.js";
 import MemoriesView from "./views/memories/index.js";
+import InitiativeLabView from "./views/initiative-lab/index.js";
 
 export function AppRoutes() {
   return (
@@ -41,6 +42,7 @@ export function AppRoutes() {
       <Route path="/" element={<Navigate to="/inbox" replace />} />
       <Route path="/inbox" element={<InboxView />} />
       <Route path="/initiatives" element={<InitiativesView />} />
+      <Route path="/initiatives/lab" element={<InitiativeLabView />} />
       <Route path="/mail" element={<MailView />} />
       <Route path="/memories" element={<MemoriesView />} />
       {/* Old constellation path → Initiatives (its replacement). */}
