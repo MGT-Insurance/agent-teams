@@ -111,6 +111,9 @@ describe("initiative lab concept interactions", () => {
     expect(screen.queryByText("Concept comparison ready")).toBeNull();
     expect(screen.queryByText("Sample Bead ids")).toBeNull();
     expect(screen.queryByText("Implementation metadata")).toBeNull();
+    expect(screen.queryByText("Checks in flight")).toBeNull();
+    expect(screen.queryByText("Latest log")).toBeNull();
+    expect(screen.queryByText("Verification history")).toBeNull();
 
     const card = screen.getByRole("button", { name: /PR #180.*Prototype interaction lab/i });
     expect(within(card).getByText("Rowan", { exact: false })).toBeTruthy();
@@ -135,6 +138,32 @@ describe("initiative lab concept interactions", () => {
     expect(document.activeElement).toBe(card);
   });
 
+  it("keeps live verification visible on its lifecycle card and detail behind activation", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+
+    const stage = screen.getByRole("heading", { name: "Building" }).closest("section");
+    expect(stage).toBeTruthy();
+    const card = within(stage!).getByRole("button", { name: /Active effort.*Responsive hardening/i });
+    expect(within(card).getByText("Live verification")).toBeTruthy();
+    expect(within(card).getByText("Nadia · Mobile pipeline · 390 × 844")).toBeTruthy();
+    expect(
+      screen.queryByText("The five-stage board stays inside its local horizontal scroller at the mobile boundary."),
+    ).toBeNull();
+    expect(screen.queryByText(/Playwright pass 18 of 24/)).toBeNull();
+
+    fireEvent.click(card);
+    const detail = screen.getByRole("dialog", { name: "Responsive hardening" });
+    expect(
+      within(detail).getByRole("heading", { name: "Nadia is verifying Mobile pipeline · 390 × 844" }),
+    ).toBeTruthy();
+    expect(
+      within(detail).getByText("The five-stage board stays inside its local horizontal scroller at the mobile boundary."),
+    ).toBeTruthy();
+    expect(within(detail).getByText("No document-level horizontal overflow")).toBeTruthy();
+    expect(within(detail).getByText(/Playwright pass 18 of 24/)).toBeTruthy();
+    expect(within(detail).getByText("Mobile overflow check running")).toBeTruthy();
+  });
+
   it("filters Needs you orthogonally without changing lifecycle columns or card stage", () => {
     renderLab("/initiatives/lab?concept=pipeline");
     const stageNames = ["Investigating", "Building", "In Review", "Ready to Land", "Done"];
@@ -154,6 +183,34 @@ describe("initiative lab concept interactions", () => {
     expect(within(inReview!).getByRole("button", { name: /PR #180.*Prototype interaction lab/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Responsive hardening/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Investigate reconnect regression/ })).toBeNull();
+  });
+
+  it("filters live verification independently and composes both filters with an honest empty state", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    const stageNames = ["Investigating", "Building", "In Review", "Ready to Land", "Done"];
+    const liveFilter = screen.getByRole("checkbox", { name: "Live verification only" });
+    const needsYouFilter = screen.getByRole("checkbox", { name: "Needs you only" });
+    const controls = screen.getByRole("group", { name: "Filter Outcome Pipeline" });
+
+    expect(screen.getByLabelText("1 live verification item").textContent).toBe("1");
+    fireEvent.click(liveFilter);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(stageNames);
+    const building = screen.getByRole("heading", { name: "Building" }).closest("section");
+    expect(within(building!).getByRole("button", { name: /Responsive hardening/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Prototype interaction lab/ })).toBeNull();
+    expect(within(controls).getByRole("status").textContent).toContain("1 live verification item");
+
+    fireEvent.click(liveFilter);
+    fireEvent.click(needsYouFilter);
+    expect(screen.getByRole("button", { name: /Prototype interaction lab/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Responsive hardening/ })).toBeNull();
+
+    fireEvent.click(liveFilter);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(stageNames);
+    expect(screen.queryByRole("button", { name: /Prototype interaction lab/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Responsive hardening/ })).toBeNull();
+    expect(within(controls).getByRole("status").textContent).toBe("No delivery items match both active filters.");
+    expect(screen.getAllByText("No matching items")).toHaveLength(5);
   });
 
   it("changes cockpit initiative context and its Now, Next, Risks, and timeline", () => {

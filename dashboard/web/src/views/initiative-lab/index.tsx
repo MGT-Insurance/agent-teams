@@ -182,8 +182,13 @@ const pipelineItems = workScenarios.flatMap<PipelineItem>((work) => {
   }));
 });
 
-function matchesPipelineAttentionFilter(item: PipelineItem, needsYouOnly: boolean): boolean {
-  return !needsYouOnly || item.work.needsYou;
+function matchesPipelineFilters(
+  item: PipelineItem,
+  needsYouOnly: boolean,
+  liveVerificationOnly: boolean,
+): boolean {
+  return (!needsYouOnly || item.work.needsYou)
+    && (!liveVerificationOnly || item.work.liveVerification !== null);
 }
 
 function PipelineCard({
@@ -196,9 +201,10 @@ function PipelineCard({
   onSelect: (trigger: HTMLButtonElement) => void;
 }) {
   const { work, pullRequest } = item;
+  const liveVerification = work.liveVerification;
   return (
     <article
-      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${selected ? " pipeline-card--selected" : ""}`}
+      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${liveVerification ? " pipeline-card--live-verification" : ""}${selected ? " pipeline-card--selected" : ""}`}
     >
       <button
         type="button"
@@ -209,10 +215,21 @@ function PipelineCard({
       >
         <span className="pipeline-card__topline">
           <span className="pipeline-card__identity">{pullRequest ? `PR #${pullRequest.number}` : "Active effort"}</span>
-          {work.needsYou && <span className="pipeline-card__attention">Needs you</span>}
+          <span className="pipeline-card__signals">
+            {liveVerification && (
+              <span className="pipeline-card__live"><i aria-hidden="true" />Live verification</span>
+            )}
+            {work.needsYou && <span className="pipeline-card__attention">Needs you</span>}
+          </span>
         </span>
         <strong className="pipeline-card__title">{work.title}</strong>
         <AgentLabel work={work} />
+        {liveVerification && (
+          <span className="pipeline-card__verification-summary">
+            <small>Verifier · target</small>
+            <strong>{liveVerification.verifier} · {liveVerification.target}</strong>
+          </span>
+        )}
         {work.needsYou && work.nextAction && (
           <span className="pipeline-card__next">
             <small>Next action</small>
@@ -222,6 +239,38 @@ function PipelineCard({
         <span className="pipeline-card__open">Open details</span>
       </button>
     </article>
+  );
+}
+
+function PipelineVerificationDetail({ work }: { work: WorkScenario }) {
+  const verification = work.liveVerification;
+  if (!verification) return null;
+
+  return (
+    <section className="pipeline__verification-detail" aria-labelledby="pipeline-verification-heading">
+      <div className="pipeline__verification-heading">
+        <span><i aria-hidden="true" />Live verification</span>
+        <h4 id="pipeline-verification-heading">{verification.verifier} is verifying {verification.target}</h4>
+      </div>
+      <div className="pipeline__verification-grid">
+        <section>
+          <span>Evidence</span>
+          <p>{verification.evidence}</p>
+        </section>
+        <section>
+          <span>Checks in flight</span>
+          <ul>{verification.checks.map((check) => <li key={check}>{check}</li>)}</ul>
+        </section>
+        <section>
+          <span>Latest log</span>
+          <code>{verification.log}</code>
+        </section>
+        <section>
+          <span>Verification history</span>
+          <ol>{verification.history.map((event) => <li key={event}>{event}</li>)}</ol>
+        </section>
+      </div>
+    </section>
   );
 }
 
@@ -255,6 +304,8 @@ function PipelineDetail({ item, onClose }: { item: PipelineItem; onClose: () => 
         <button type="button" onClick={onClose} aria-label={`Close details for ${work.title}`}>Close</button>
       </header>
       <p className="pipeline__detail-summary">{work.summary}</p>
+
+      <PipelineVerificationDetail work={work} />
 
       <div className="pipeline__detail-grid">
         <section>
@@ -303,8 +354,14 @@ function PipelineDetail({ item, onClose }: { item: PipelineItem; onClose: () => 
 function PipelineConcept() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
+  const [liveVerificationOnly, setLiveVerificationOnly] = useState(false);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const selected = pipelineItems.find((item) => item.key === selectedKey) ?? null;
+  const needsYouCount = pipelineItems.filter((item) => item.work.needsYou).length;
+  const liveVerificationCount = pipelineItems.filter((item) => item.work.liveVerification !== null).length;
+  const matchingItemCount = pipelineItems.filter(
+    (item) => matchesPipelineFilters(item, needsYouOnly, liveVerificationOnly),
+  ).length;
 
   function closeDetail() {
     detailTriggerRef.current?.focus();
@@ -321,22 +378,58 @@ function PipelineConcept() {
         <p>Scan real PRs and pre-PR efforts by lifecycle. Needs you stays visible without becoming a stage.</p>
       </div>
 
-      <div className="pipeline__controls">
-        <label>
-          <input
-            type="checkbox"
-            aria-label="Needs you only"
-            checked={needsYouOnly}
-            onChange={(event) => {
-              const checked = event.currentTarget.checked;
-              setNeedsYouOnly(checked);
-              if (checked && selected && !selected.work.needsYou) setSelectedKey(null);
-            }}
-          />
-          <span>Needs you only</span>
-          <strong>{pipelineItems.filter((item) => item.work.needsYou).length}</strong>
-        </label>
-        <p>{needsYouOnly ? "Showing attention items in their current lifecycle stage." : "Showing every delivery item."}</p>
+      <div className="pipeline__controls" role="group" aria-label="Filter Outcome Pipeline">
+        <div className="pipeline__filter-group">
+          <label>
+            <input
+              type="checkbox"
+              aria-label="Needs you only"
+              checked={needsYouOnly}
+              onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                setNeedsYouOnly(checked);
+                if (selected && !matchesPipelineFilters(selected, checked, liveVerificationOnly)) {
+                  setSelectedKey(null);
+                }
+              }}
+            />
+            <span>Needs you only</span>
+            <strong aria-label={`${needsYouCount} ${needsYouCount === 1 ? "item needs" : "items need"} you`}>
+              {needsYouCount}
+            </strong>
+          </label>
+          <label className="pipeline__filter--live">
+            <input
+              type="checkbox"
+              aria-label="Live verification only"
+              checked={liveVerificationOnly}
+              onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                setLiveVerificationOnly(checked);
+                if (selected && !matchesPipelineFilters(selected, needsYouOnly, checked)) {
+                  setSelectedKey(null);
+                }
+              }}
+            />
+            <span>Live verification only</span>
+            <strong
+              aria-label={`${liveVerificationCount} live verification ${liveVerificationCount === 1 ? "item" : "items"}`}
+            >
+              {liveVerificationCount}
+            </strong>
+          </label>
+        </div>
+        <p role="status">
+          {matchingItemCount === 0
+            ? "No delivery items match both active filters."
+            : needsYouOnly && liveVerificationOnly
+              ? `Showing ${matchingItemCount} item matching both active filters in its current lifecycle stage.`
+              : liveVerificationOnly
+                ? `Showing ${matchingItemCount} live verification item in its current lifecycle stage.`
+                : needsYouOnly
+                  ? `Showing ${matchingItemCount} attention item in its current lifecycle stage.`
+                  : "Showing every delivery item."}
+        </p>
       </div>
 
       <div
@@ -348,7 +441,8 @@ function PipelineConcept() {
         <div className="pipeline__board">
           {pipelineStages.map((stage) => {
             const stageItems = pipelineItems.filter(
-              (item) => item.work.pipelineStage === stage.id && matchesPipelineAttentionFilter(item, needsYouOnly),
+              (item) => item.work.pipelineStage === stage.id
+                && matchesPipelineFilters(item, needsYouOnly, liveVerificationOnly),
             );
             return (
               <section className="pipeline__stage" key={stage.id} aria-labelledby={`stage-${stage.id}`}>

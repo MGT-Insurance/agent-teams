@@ -14,6 +14,15 @@ export interface PullRequestScenario {
   href: string;
 }
 
+export interface LiveVerificationScenario {
+  verifier: string;
+  target: string;
+  evidence: string;
+  checks: string[];
+  log: string;
+  history: string[];
+}
+
 export interface WorkScenario {
   id: string;
   initiativeId: string;
@@ -22,6 +31,7 @@ export interface WorkScenario {
   pipelineStage: PipelineStage;
   queueGroup: QueueGroup;
   needsYou: boolean;
+  liveVerification: LiveVerificationScenario | null;
   pullRequests: PullRequestScenario[];
   owner: string;
   agent: {
@@ -73,6 +83,7 @@ export const workScenarios: WorkScenario[] = [
     pipelineStage: "in-review",
     queueGroup: "needs-you",
     needsYou: true,
+    liveVerification: null,
     pullRequests: [
       {
         number: 180,
@@ -102,6 +113,14 @@ export const workScenarios: WorkScenario[] = [
     pipelineStage: "building",
     queueGroup: "agents-working",
     needsYou: false,
+    liveVerification: {
+      verifier: "Nadia",
+      target: "Mobile pipeline · 390 × 844",
+      evidence: "The five-stage board stays inside its local horizontal scroller at the mobile boundary.",
+      checks: ["No document-level horizontal overflow", "Keyboard focus remains visible while stages scroll"],
+      log: "Playwright pass 18 of 24 · exercising the detail panel at the narrow viewport",
+      history: ["Desktop viewport passed", "Mobile overflow check running"],
+    },
     pullRequests: [],
     owner: "Eric",
     agent: { name: "Mira", state: "building mobile layout" },
@@ -124,6 +143,7 @@ export const workScenarios: WorkScenario[] = [
     pipelineStage: "investigating",
     queueGroup: "agents-working",
     needsYou: false,
+    liveVerification: null,
     pullRequests: [],
     owner: "Eric",
     agent: { name: "Ada", state: "reproducing disconnect" },
@@ -149,6 +169,7 @@ export const workScenarios: WorkScenario[] = [
     pipelineStage: "ready-to-land",
     queueGroup: "waiting",
     needsYou: false,
+    liveVerification: null,
     pullRequests: [
       {
         number: 176,
@@ -184,6 +205,7 @@ export const workScenarios: WorkScenario[] = [
     pipelineStage: "done",
     queueGroup: "landed",
     needsYou: false,
+    liveVerification: null,
     pullRequests: [
       {
         number: 174,
