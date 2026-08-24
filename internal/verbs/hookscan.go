@@ -68,11 +68,14 @@ func (c *hookScanKong) Validate() error {
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
 // OUTPUT CONTRACT, which inbox-drain.sh depends on: on a match, "id: <id>"
-// then "unread: 0" or "unread: 1", each on its own line, nothing else. On no
-// match (unregistered path, disabled repo, or a bd failure), no output at
-// all and exit 0 — a hook's normal, expected condition for any session
-// outside a registered worktree, matching resolveInitiativeKong's contract
-// so hooks never start reporting failures on an ordinary session.
+// then "unread: <N>" (the actual unread count, not a 0/1 flag), each on its
+// own line, nothing else. On no match (unregistered path, disabled repo), no
+// output at all and exit 0 — a hook's normal, expected condition for any
+// session outside a registered worktree, matching resolveInitiativeKong's
+// contract so hooks never start reporting failures on an ordinary session. A
+// bd failure now returns the error (non-zero exit) instead of exit 0 —
+// errors propagate rather than being silently swallowed; inbox-drain.sh's
+// `2>/dev/null || true` capture absorbs this unchanged.
 func (c *hookScanKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam hook-scan: nil context")
@@ -80,12 +83,19 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--include-infra", "--json"); err != nil {
-		return nil
+		return err
 	}
 
 	id := c.ID
 	if id == "" {
-		match := matchByWorktreeOrAncestor(issues, c.Path)
+		// Match candidates exclude message-type beads: --include-infra widens
+		// the list beyond the plain --status=open resolveInitiativeKong used,
+		// and a message body containing a literal "worktree: <path>" line
+		// could otherwise misroute to the message bead instead of the
+		// initiative that actually owns that worktree. Only initiatives carry
+		// a worktree: line, so excluding message-type is sufficient — other
+		// non-initiative beads (agent/role) have no worktree: line to match.
+		match := matchByWorktreeOrAncestor(excludeMessageType(issues), c.Path)
 		if match == nil {
 			return nil
 		}
@@ -95,19 +105,47 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		id = match.ID
 	}
 
+	// Duplicate-steward defense-in-depth backstop (agent-teams-e3mq.31),
+	// restored exactly as inboxKong.Run (messaging.go) applies it: a
+	// duplicate steward session must not surface a mail signal for the
+	// incumbent's mailbox. inbox-drain.sh's steward branch calls hook-scan
+	// via `2>/dev/null || true`, so this error is absorbed and no signal is
+	// emitted — matching the old peek-guard behavior.
+	if id == StewardHandle {
+		if err := checkStewardInboxGuard(ctx); err != nil {
+			return err
+		}
+	}
+
 	fmt.Fprintf(ctx.Stdout, "id: %s\n", id)
 
 	// unread predicate mirrors queryUnreadMessages/filterMessageType
 	// (messaging.go): type==message AND assignee==id AND status==open AND
 	// NOT label "read". Status==open is already guaranteed by the list call
-	// above; the explicit check documents the reused predicate exactly.
+	// above; the explicit check documents the reused predicate exactly. Uses
+	// the FULL issue list (not the match-candidate exclusion above) — that
+	// exclusion only matters for worktree matching.
 	unread := 0
 	for _, iss := range filterMessageType(issues) {
 		if iss.Assignee == id && iss.Status == "open" && !hasLabel(iss.Labels, "read") {
-			unread = 1
-			break
+			unread++
 		}
 	}
 	fmt.Fprintf(ctx.Stdout, "unread: %d\n", unread)
 	return nil
+}
+
+// excludeMessageType returns issues with IssueType != "message" — the
+// inverse of filterMessageType (messaging.go). Used to build the
+// match-candidate slice for matchByWorktreeOrAncestor so message beads,
+// which can never legitimately carry a worktree: line, are never match
+// candidates (see FIX 3 doc above Run).
+func excludeMessageType(issues []bd.Issue) []bd.Issue {
+	var out []bd.Issue
+	for _, iss := range issues {
+		if iss.IssueType != "message" {
+			out = append(out, iss)
+		}
+	}
+	return out
 }

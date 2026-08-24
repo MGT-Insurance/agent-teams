@@ -108,8 +108,8 @@ if [ -f "$DOORBELL" ]; then
 fi
 
 # ── Signal: unread mail, from the combined scan above; emit additionalContext ─
-if [ "$unread" = "1" ]; then
-  signal="You have unread mail — run \`ateam mail inbox\` to read them."
+if [ -n "$unread" ] && [ "$unread" -gt 0 ]; then
+  signal="You have $unread unread message(s) — run \`ateam mail inbox\` to read them."
   HOOK_EXIT_REASON="mail-signaled"
   jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
 fi
