@@ -3,7 +3,10 @@
 # Fires on every user prompt. Does two things:
 #   1. DISARM: kills the pending wake watcher for this initiative (the session
 #      is now active; the watcher re-arms on the next Stop).
-#   2. SIGNAL: runs `ateam mail inbox --peek`; if unread mail is reported, emits an
+#   2. SIGNAL: runs `ateam hook-scan` (one combined bd call resolving the
+#      initiative id AND unread mail — agent-teams-1y0m.8, replacing the old
+#      resolve-initiative + mail inbox --peek pair to cut this hook's per-
+#      prompt Dolt opens from 3 to 1); if unread mail is reported, emits an
 #      additionalContext message telling the model to run `ateam mail inbox`.
 #      Does NOT consume (drain) mail — the model runs `ateam mail inbox` to do that.
 # Silent no-op when cwd is not a registered initiative — teammate subagents and
@@ -41,16 +44,23 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 
 if is_steward_cwd; then
   match_id="steward"
+  # The Steward has no worktree: line to resolve, but still needs its unread
+  # mail checked — `--id` skips path/worktree resolution and checks unread
+  # mail directly for this already-known recipient (internal/verbs/hookscan.go).
+  scan_out=$("$ATEAM" hook-scan --id="$match_id" 2>/dev/null || true)
 else
-  # ── Resolve initiative id for $PWD (the worktree root OR any subdir) ────────
-  # `ateam resolve-initiative` owns the matching rule (internal/verbs/match.go);
+  # ── Resolve initiative id for $PWD (the worktree root OR any subdir) AND ───
+  # check unread mail, both from ONE combined bd call. `ateam hook-scan` owns
+  # the matching rule (internal/verbs/match.go via internal/verbs/hookscan.go);
   # this script must not re-derive it.
-  match_id=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
+  scan_out=$("$ATEAM" hook-scan "$PWD" 2>/dev/null || true)
+  match_id=$(printf '%s\n' "$scan_out" | sed -n 's/^id: //p')
   if [ -z "$match_id" ]; then
     HOOK_EXIT_REASON="no-open-match"
     exit 0
   fi
 fi
+unread=$(printf '%s\n' "$scan_out" | sed -n 's/^unread: //p')
 
 HOOK_INITIATIVE="$match_id"
 export HOOK_INITIATIVE
@@ -97,16 +107,12 @@ if [ -f "$DOORBELL" ]; then
   hook_log_note "note" "doorbell-consumed initiative=${match_id}"
 fi
 
-# ── Signal: peek at unread mail; emit additionalContext if any ───────────────
-peek_out=$("$ATEAM" mail inbox --peek 2>/dev/null || true)
-# peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.
-case "$peek_out" in
-  *"unread message"*)
-    signal="You have ${peek_out} — run \`ateam mail inbox\` to read them."
-    HOOK_EXIT_REASON="mail-signaled"
-    jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
-    ;;
-esac
+# ── Signal: unread mail, from the combined scan above; emit additionalContext ─
+if [ -n "$unread" ] && [ "$unread" -gt 0 ]; then
+  signal="You have $unread unread message(s) — run \`ateam mail inbox\` to read them."
+  HOOK_EXIT_REASON="mail-signaled"
+  jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
+fi
 
 if [ "$HOOK_EXIT_REASON" = "unexpected" ]; then
   HOOK_EXIT_REASON="ok"
