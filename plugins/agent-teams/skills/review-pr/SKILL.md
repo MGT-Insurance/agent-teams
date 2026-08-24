@@ -21,6 +21,16 @@ Do NOT:
 
 ## Steps
 
+**Wake invariant (read first if resuming, not starting fresh).** If this
+session is woken (by mail, on resume, or by a heartbeat) and you believe you
+already finished this review, do not trust that belief. FIRST re-run
+`ateam show <id>`. If the initiative is OPEN, you were reopened — do
+the pending work (re-derive it from GitHub: comment-reply or re-review,
+whichever applies), then re-close idempotently exactly as step 10 /
+comment-reply step 4 (note + `ateam close`). NEVER end a turn with the
+initiative OPEN and no gate. Trust the bead, not an in-memory belief that
+it is already closed.
+
 ### 1. Parse the argument
 
 The first argument is an initiative id (e.g. `at-xxx`). An optional second
@@ -118,7 +128,7 @@ Capture the full output. If the diff is empty or the command fails, stop and not
 
 ### 7. Spawn the reviewer subagent
 
-Spawn one `agent-teams-reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The reviewer pulls its own prior-review learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md` — run BARE, never piped through `| head` or `| tail` (that silently drops the fresh-tier tail). The SubagentStart hook cannot do this for it: SubagentStart stdout is never rendered into a spawned agent's context at any size, so a payload written there would reach nobody. The hook only runs `ateam pull`, so that self-fetch reads current data.
+Spawn one `agent-teams-reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The reviewer pulls its own prior-review learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md` — run BARE, never piped through `| head` or `| tail` (that silently drops the fresh-tier tail). The SubagentStart hook cannot do this on the reviewer's behalf — see `references/mechanics-notes.md` for why.
 
 Include in the reviewer's prompt:
 
@@ -139,7 +149,7 @@ If no SendMessage arrives within a reasonable time, note the timeout in the init
 
 Post the review using the GitHub API. Build the inline comments from the reviewer's findings (one comment per finding at the reported `file:line`).
 
-**If the body is long or multiline, don't fight the shell quoting — write it to a temp file and post its CONTENTS**, not its path: `gh pr review <pr-number> --body-file <file>`, or `gh api …/reviews -F body=@<file>` / `-F body=@-` (stdin). **Never** `-f body=@<file>`, `--raw-field body=@<file>`, or `--body @<file>` — those flags treat the value as a literal string, so gh posts the path text itself, not the file's contents (this is exactly how midgard #5203 shipped a review whose entire body was a local file path). A PreToolUse guard now denies a bare-path/`@path` review or comment body outright, so a slip here fails loudly instead of posting silently.
+**If the body is long or multiline, don't fight the shell quoting — write it to a temp file and post its CONTENTS**, not its path: `gh pr review <pr-number> --body-file <file>`, or `gh api …/reviews -F body=@<file>` / `-F body=@-` (stdin). **Never** `-f body=@<file>`, `--raw-field body=@<file>`, or `--body @<file>` — those flags post the literal path text, not the file's contents. See `references/mechanics-notes.md` for why this matters and the guard that catches a slip.
 
 **The two lens conclusions always go in the body, unconditionally.** The reviewer always reports a parity/overlap enumeration and an after-the-fact-identifiability answer as their own section, separate from its findings list, even when the answer is "none" (reviewer-prompt.md). Treat them like the `question`-labelled findings below: no severity prefix, posted verbatim. This applies in every branch below — no-findings or findings — never drop or summarize them while condensing the rest into the one-sentence summary; a reported "checked, nothing found" is what makes the check falsifiable later.
 
@@ -245,24 +255,18 @@ instead.
 
 That last block posts to the shared **Reviews** topic — one topic for all PR
 reviews, not one per review. The text is frozen; reproduce it exactly.
-
-- `<repo>` is the **basename** from step 2 (`midgard`, never `acme/midgard`).
-- `TITLE_SEG` is `" — "` (space, em dash **U+2014**, space) then step 3's PR
-  title, or the **empty string** if that lookup failed. Copy the separator out
-  of the block above rather than retyping it — an en dash or a hyphen looks
-  right in a diff and is wrong. Keep it a separate variable; never splice the
-  title into a hardcoded `%s — %s`. `ateam dispatch` builds the "Review
-  started" line by this identical rule, and the two must not drift.
-- Two lines is deliberate: text, then the bare URL alone so it renders as a
-  tap target.
+`<repo>` is the **basename** from step 2 (`midgard`, never `acme/midgard`).
+`TITLE_SEG` is `" — "` (space, em dash **U+2014**, space) then step 3's PR
+title, or the **empty string** if that lookup failed — copy the separator out
+of the block above rather than retyping it (see
+`references/mechanics-notes.md` for why that matters). Two lines
+is deliberate: text, then the bare URL alone so it renders as a tap target.
 
 **Nothing else goes in it** — no finding count, no severity, no
-`APPROVE`/`COMMENT` verdict. That belongs in the note and on the PR; this
-topic says only that a review happened and hands over the link. Do NOT pass
-`--to` (only the direct handle reads it); `--title` defaults to `Reviews`.
-
-Post it **last, after the close** — `ateam notify` hits a network transport,
-and a failure there must never strand the initiative open.
+`APPROVE`/`COMMENT` verdict; that belongs in the note and on the PR. Do NOT
+pass `--to` (only the direct handle reads it); `--title` defaults to
+`Reviews`. Post it **last, after the close** — `ateam notify` hits a network
+transport, and a failure there must never strand the initiative open.
 
 **Step-8 timeout path** (no review was posted): swap the wording — the note
 is `review-timeout: PR #<pr-number> — reviewer subagent did not respond` and
@@ -291,7 +295,10 @@ Someone replied in an inline review-comment thread this identity participated
 in, and pr-shepherd reopened this initiative to respond. The mail carrying the
 reply text arrives via the normal hook flow — treat it as context if present,
 but do NOT run `ateam mail inbox` yourself (the hooks own mail consumption),
-and do not depend on it: re-derive the work from GitHub directly.
+and do not depend on it: re-derive the work from GitHub directly, every time —
+including on a wake where you believe this thread is already handled. That
+belief is never a substitute for step 1's fresh fetch (see the wake
+invariant above).
 
 1. **Find the threads.** Fetch all inline review comments:
 
@@ -329,9 +336,10 @@ and do not depend on it: re-derive the work from GitHub directly.
    No new findings, no new threads, no code changes, no review posting, no
    APPROVE/REQUEST_CHANGES events.
 
-3. **Nothing to answer?** If no qualifying threads exist (already handled, or
-   a stale notification), note that and close — and skip the completion line
-   in step 4, since nothing happened to report.
+3. **Nothing to answer?** Reached only after step 1's fresh fetch — never
+   from memory of an earlier pass. If no qualifying threads exist (already
+   handled, or a stale notification), note that and close — and skip the
+   completion line in step 4, since nothing happened to report.
 
 4. **Note, close, and post the completion line:**
 

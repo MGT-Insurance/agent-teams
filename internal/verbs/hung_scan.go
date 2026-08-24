@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -113,6 +114,23 @@ type hungScanEntry struct {
 	WorkProductTripEligible bool   `json:"wp_trip_eligible,omitempty"`
 	WorkProductDowngraded   bool   `json:"wp_downgraded,omitempty"` // transcript corroborator held it
 	FailureTokensFound      bool   `json:"failure_tokens_found,omitempty"`
+
+	// ReviewPRURL is agent-teams-huq7.1 S1's review-shaped predicate:
+	// initiative.ReviewPRURL(iss)'s value when iss's Description carries a
+	// "pr-url:" field line, "" otherwise. Additive and classification-neutral
+	// — it never changes Classification/Hung/DeadHung/WorkProductTripEligible
+	// above, it only lets a consumer (the hung tick's S3/S5 backstop) tell a
+	// review-shaped initiative apart from every other kind.
+	ReviewPRURL string `json:"review_pr_url,omitempty"`
+
+	// Notes is iss.Notes, carried through unconditionally so a consumer (the
+	// hung tick's hasReviewPostedNote gate, S2) can evaluate the
+	// review-posted signal without a second bd fetch. Deliberately excluded
+	// from the wire format (json:"-") — Notes is free-form prose that can
+	// grow large and isn't part of this verb's documented emitted shape; it
+	// is an in-process-only convenience field for this package's own
+	// consumers.
+	Notes string `json:"-"`
 }
 
 // hungAnchor is the durable per-initiative record persisted at
@@ -319,6 +337,34 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 	return hungClassStuck, matched, cwdPresent
 }
 
+// hasReviewPostedNote reports whether notes (an initiative's bd Notes text)
+// has a line beginning "review-posted:" or "comment-replies:" — the exact
+// markers plugins/agent-teams/skills/review-pr/SKILL.md's step 10 (L228) and
+// comment-reply step 4 (L339) write via `ateam note` once a review or a
+// comment-reply round has actually been posted to GitHub. This is the LOCAL,
+// no-network S2 signal (agent-teams-huq7.1 S2): the note is the
+// authoritative record that WE did our job, so the hung-tick backstop never
+// needs to ask GitHub whether a review exists at all — only (via the
+// separate S4 probe) whether a LATER comment is still awaiting a reply.
+//
+// "review-timeout:" is the NO-REVIEW-POSTED case (the skill gave up waiting
+// for the diff, SKILL.md's timeout path) and deliberately does not match
+// this prefix scan — a timed-out review must not be treated as posted.
+//
+// This is a line-PREFIX scan, not internal/initiative's frozen field-line
+// rule: Notes is free-form prose the skill appends lines like
+// "review-posted: <detail>" into (not routing data), so this intentionally
+// does not reuse fieldLine's "exact key, single colon, single space"
+// grammar from a different package meant for a different kind of text.
+func hasReviewPostedNote(notes string) bool {
+	for _, line := range strings.Split(notes, "\n") {
+		if strings.HasPrefix(line, "review-posted:") || strings.HasPrefix(line, "comment-replies:") {
+			return true
+		}
+	}
+	return false
+}
+
 // scanHung is the reusable classification+anchor engine behind `ateam
 // hung-scan`. Per agent-teams-6rru.9's dep note, a future periodic relay
 // tick must reuse this SAME core rather than reimplementing it — the kong
@@ -362,6 +408,8 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 		wt := f.Worktree
 		mode := f.Mode
 
+		reviewPRURL, _ := initiative.ReviewPRURL(iss)
+
 		if agentsErr != nil {
 			out = append(out, hungScanEntry{
 				ID:             iss.ID,
@@ -369,6 +417,8 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 				Worktree:       wt,
 				Classification: hungClassUnknown,
 				Mode:           mode,
+				ReviewPRURL:    reviewPRURL,
+				Notes:          iss.Notes,
 			})
 			continue
 		}
@@ -382,6 +432,8 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			Classification: class,
 			CWDPresent:     cwdPresent,
 			Mode:           mode,
+			ReviewPRURL:    reviewPRURL,
+			Notes:          iss.Notes,
 		}
 		if len(matched) > 0 {
 			// Report the primary (first tied session) for the diagnostic
