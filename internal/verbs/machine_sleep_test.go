@@ -51,8 +51,8 @@ func TestSleptBetween(t *testing.T) {
 			name:        "window straddles the left edge of a sleep interval",
 			log:         pmsetTwoSleeps,
 			start:       "2026-08-23 22:40:00 -0500",
-			end:         "2026-08-23 22:50:00 -0500",
-			wantSeconds: 5*60 + 50, // clipped: 22:40:00-22:45:50 only
+			end:         "2026-08-23 22:46:00 -0500",
+			wantSeconds: 5*60 + 50, // clipped: 22:40:00-22:45:50 only; window ends before the next sleep starts (22:46:35)
 		},
 		{
 			name:        "window straddles the right edge of a sleep interval",
