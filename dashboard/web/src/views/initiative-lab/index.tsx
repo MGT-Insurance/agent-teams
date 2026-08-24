@@ -173,6 +173,14 @@ interface PipelineItem {
   pullRequest: PullRequestScenario | null;
 }
 
+function pipelineItemIdentity(item: PipelineItem): string {
+  return item.pullRequest ? `PR #${item.pullRequest.number}` : "Active effort";
+}
+
+function pipelineStageLabel(stageId: PipelineStage): string {
+  return pipelineStages.find((stage) => stage.id === stageId)?.label ?? stageId;
+}
+
 const pipelineItems = workScenarios.flatMap<PipelineItem>((work) => {
   if (work.pullRequests.length === 0) return [{ key: `${work.id}:effort`, work, pullRequest: null }];
   return work.pullRequests.map((pullRequest) => ({
@@ -194,17 +202,20 @@ function matchesPipelineFilters(
 function PipelineCard({
   item,
   selected,
+  related,
   onSelect,
 }: {
   item: PipelineItem;
   selected: boolean;
+  related: boolean;
   onSelect: (trigger: HTMLButtonElement) => void;
 }) {
   const { work, pullRequest } = item;
   const liveVerification = work.liveVerification;
   return (
     <article
-      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${liveVerification ? " pipeline-card--live-verification" : ""}${selected ? " pipeline-card--selected" : ""}`}
+      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${liveVerification ? " pipeline-card--live-verification" : ""}${related ? " pipeline-card--related" : ""}${selected ? " pipeline-card--selected" : ""}`}
+      data-initiative-related={related ? "true" : undefined}
     >
       <button
         type="button"
@@ -214,15 +225,19 @@ function PipelineCard({
         aria-expanded={selected}
       >
         <span className="pipeline-card__topline">
-          <span className="pipeline-card__identity">{pullRequest ? `PR #${pullRequest.number}` : "Active effort"}</span>
+          <span className="pipeline-card__identity">{pipelineItemIdentity(item)}</span>
           <span className="pipeline-card__signals">
             {liveVerification && (
               <span className="pipeline-card__live"><i aria-hidden="true" />Live verification</span>
+            )}
+            {pullRequest?.externalReview && (
+              <span className="pipeline-card__external-review">{pullRequest.externalReview.status}</span>
             )}
             {work.needsYou && <span className="pipeline-card__attention">Needs you</span>}
           </span>
         </span>
         <strong className="pipeline-card__title">{work.title}</strong>
+        <span className="pipeline-card__initiative">Initiative · {initiativeFor(work).title}</span>
         <AgentLabel work={work} />
         {liveVerification && (
           <span className="pipeline-card__verification-summary">
@@ -239,6 +254,39 @@ function PipelineCard({
         <span className="pipeline-card__open">Open details</span>
       </button>
     </article>
+  );
+}
+
+function PipelineExternalReviewDetail({ pullRequest }: { pullRequest: PullRequestScenario | null }) {
+  const externalReview = pullRequest?.externalReview;
+  if (!externalReview) return null;
+
+  return (
+    <section className="pipeline__external-review" aria-labelledby="pipeline-external-review-heading">
+      <span>External review</span>
+      <h4 id="pipeline-external-review-heading">{externalReview.status}</h4>
+      <p>Reviewer · <strong>{externalReview.reviewer}</strong></p>
+    </section>
+  );
+}
+
+function PipelineDistribution({ items }: { items: PipelineItem[] }) {
+  return (
+    <section className="pipeline__distribution" aria-labelledby="pipeline-distribution-heading">
+      <div>
+        <span>Initiative footprint</span>
+        <h4 id="pipeline-distribution-heading">Initiative distribution</h4>
+      </div>
+      <ol>
+        {items.map((item) => (
+          <li key={item.key}>
+            <span>{pipelineItemIdentity(item)}</span>
+            <strong>{item.work.title}</strong>
+            <em>{pipelineStageLabel(item.work.pipelineStage)}</em>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -274,7 +322,15 @@ function PipelineVerificationDetail({ work }: { work: WorkScenario }) {
   );
 }
 
-function PipelineDetail({ item, onClose }: { item: PipelineItem; onClose: () => void }) {
+function PipelineDetail({
+  item,
+  distributionItems,
+  onClose,
+}: {
+  item: PipelineItem;
+  distributionItems: PipelineItem[];
+  onClose: () => void;
+}) {
   const panelRef = useRef<HTMLElement>(null);
   const { work, pullRequest } = item;
 
@@ -306,6 +362,8 @@ function PipelineDetail({ item, onClose }: { item: PipelineItem; onClose: () => 
       <p className="pipeline__detail-summary">{work.summary}</p>
 
       <PipelineVerificationDetail work={work} />
+      <PipelineExternalReviewDetail pullRequest={pullRequest} />
+      <PipelineDistribution items={distributionItems} />
 
       <div className="pipeline__detail-grid">
         <section>
@@ -357,6 +415,10 @@ function PipelineConcept() {
   const [liveVerificationOnly, setLiveVerificationOnly] = useState(false);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const selected = pipelineItems.find((item) => item.key === selectedKey) ?? null;
+  const selectedInitiativeId = selected?.work.initiativeId ?? null;
+  const selectedInitiativeItems = selectedInitiativeId
+    ? pipelineItems.filter((item) => item.work.initiativeId === selectedInitiativeId)
+    : [];
   const needsYouCount = pipelineItems.filter((item) => item.work.needsYou).length;
   const liveVerificationCount = pipelineItems.filter((item) => item.work.liveVerification !== null).length;
   const matchingItemCount = pipelineItems.filter(
@@ -463,6 +525,7 @@ function PipelineConcept() {
                         key={item.key}
                         item={item}
                         selected={item.key === selected?.key}
+                        related={item.work.initiativeId === selectedInitiativeId}
                         onSelect={(trigger) => {
                           detailTriggerRef.current = trigger;
                           setSelectedKey(item.key);
@@ -479,7 +542,9 @@ function PipelineConcept() {
         </div>
       </div>
 
-      {selected && <PipelineDetail item={selected} onClose={closeDetail} />}
+      {selected && (
+        <PipelineDetail item={selected} distributionItems={selectedInitiativeItems} onClose={closeDetail} />
+      )}
     </section>
   );
 }

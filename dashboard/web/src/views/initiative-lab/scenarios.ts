@@ -12,6 +12,10 @@ export interface PullRequestScenario {
   repository: string;
   status: "open" | "merged";
   href: string;
+  externalReview: {
+    status: "Waiting on external review";
+    reviewer: string;
+  } | null;
 }
 
 export interface LiveVerificationScenario {
@@ -90,6 +94,7 @@ export const workScenarios: WorkScenario[] = [
         repository: "agent-teams/agent-teams",
         status: "open",
         href: "https://github.com/agent-teams/agent-teams/pull/180",
+        externalReview: null,
       },
     ],
     owner: "Eric",
@@ -139,26 +144,26 @@ export const workScenarios: WorkScenario[] = [
     id: "reconnect-regression",
     initiativeId: "session-recovery",
     title: "Investigate reconnect regression",
-    summary: "Reproduce an intermittent reconnect failure before deciding whether a code change is warranted.",
-    pipelineStage: "investigating",
+    summary: "Repair the intermittent reconnect failure across the narrowed recovery modes.",
+    pipelineStage: "building",
     queueGroup: "agents-working",
     needsYou: false,
     liveVerification: null,
     pullRequests: [],
     owner: "Eric",
-    agent: { name: "Ada", state: "reproducing disconnect" },
+    agent: { name: "Ada", state: "building reconnect repair" },
     nextAction: {
-      text: "Isolate the failing reconnect sequence",
+      text: "Finish the reconnect repair and open its PR",
       responsible: "Ada",
     },
-    review: "Not requested — investigation may conclude without a PR",
-    checks: "Reproduction matrix in progress",
+    review: "Not requested — no PR yet",
+    checks: "Reconnect checks running during the build",
     blocker: {
       reason: "The failure is intermittent across recovery modes",
       unblocker: "Ada",
     },
     progress: { complete: 1, total: 3 },
-    timeline: ["Regression reported", "Recovery modes narrowed to two candidates"],
+    timeline: ["Recovery modes narrowed to two candidates", "Reconnect repair started"],
     implementationIds: ["agent-teams-tuy9.26"],
   },
   {
@@ -166,7 +171,7 @@ export const workScenarios: WorkScenario[] = [
     initiativeId: "session-recovery",
     title: "Preserve session identity",
     summary: "Carry the same session identity across a stopped process and the next recovery attempt.",
-    pipelineStage: "ready-to-land",
+    pipelineStage: "in-review",
     queueGroup: "waiting",
     needsYou: false,
     liveVerification: null,
@@ -176,12 +181,10 @@ export const workScenarios: WorkScenario[] = [
         repository: "agent-teams/agent-teams",
         status: "open",
         href: "https://github.com/agent-teams/agent-teams/pull/176",
-      },
-      {
-        number: 179,
-        repository: "agent-teams/dashboard",
-        status: "open",
-        href: "https://github.com/agent-teams/dashboard/pull/179",
+        externalReview: {
+          status: "Waiting on external review",
+          reviewer: "Agent-teams maintainer",
+        },
       },
     ],
     owner: "Eric",
@@ -198,6 +201,37 @@ export const workScenarios: WorkScenario[] = [
     implementationIds: ["agent-teams-tuy9.23", "agent-teams-tuy9.24"],
   },
   {
+    id: "recovery-handoff",
+    initiativeId: "session-recovery",
+    title: "Harden recovery handoff",
+    summary: "Make the recovered session handoff deterministic after identity has been restored.",
+    pipelineStage: "ready-to-land",
+    queueGroup: "waiting",
+    needsYou: false,
+    liveVerification: null,
+    pullRequests: [
+      {
+        number: 179,
+        repository: "agent-teams/dashboard",
+        status: "open",
+        href: "https://github.com/agent-teams/dashboard/pull/179",
+        externalReview: null,
+      },
+    ],
+    owner: "Eric",
+    agent: { name: "Sol", state: "finished" },
+    nextAction: {
+      text: "Land the recovery handoff after the final checks",
+      responsible: "Eric",
+    },
+    review: "Approved",
+    checks: "Automated checks passed",
+    blocker: null,
+    progress: { complete: 5, total: 5 },
+    timeline: ["Recovery handoff separated from identity work", "PR #179 approved and ready to land"],
+    implementationIds: ["agent-teams-tuy9.24"],
+  },
+  {
     id: "matching-runtimes",
     initiativeId: "release-parity",
     title: "Publish matching runtimes",
@@ -212,6 +246,7 @@ export const workScenarios: WorkScenario[] = [
         repository: "agent-teams/agent-teams",
         status: "merged",
         href: "https://github.com/agent-teams/agent-teams/pull/174",
+        externalReview: null,
       },
     ],
     owner: "Eric",

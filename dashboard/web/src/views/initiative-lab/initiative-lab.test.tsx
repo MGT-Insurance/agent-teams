@@ -46,6 +46,7 @@ describe("initiative lab fixture", () => {
       "Responsive hardening",
       "Investigate reconnect regression",
       "Preserve session identity",
+      "Harden recovery handoff",
       "Publish matching runtimes",
     ]);
     expect(workScenarios.flatMap((work) => work.pullRequests.map((pullRequest) => pullRequest.number))).toEqual([
@@ -53,8 +54,24 @@ describe("initiative lab fixture", () => {
     ]);
     expect(workScenarios.filter((work) => work.pullRequests.length === 0).map((work) => work.pipelineStage)).toEqual([
       "building",
-      "investigating",
+      "building",
     ]);
+
+    const recoveryWork = workScenarios.filter((work) => work.initiativeId === "session-recovery");
+    expect(new Set(recoveryWork.map((work) => work.id)).size).toBe(3);
+    expect(recoveryWork.map((work) => ({
+      title: work.title,
+      stage: work.pipelineStage,
+      pullRequests: work.pullRequests.map((pullRequest) => pullRequest.number),
+    }))).toEqual([
+      { title: "Investigate reconnect regression", stage: "building", pullRequests: [] },
+      { title: "Preserve session identity", stage: "in-review", pullRequests: [176] },
+      { title: "Harden recovery handoff", stage: "ready-to-land", pullRequests: [179] },
+    ]);
+    expect(recoveryWork[1]?.pullRequests[0]?.externalReview).toEqual({
+      status: "Waiting on external review",
+      reviewer: "Agent-teams maintainer",
+    });
   });
 });
 
@@ -114,6 +131,7 @@ describe("initiative lab concept interactions", () => {
     expect(screen.queryByText("Checks in flight")).toBeNull();
     expect(screen.queryByText("Latest log")).toBeNull();
     expect(screen.queryByText("Verification history")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Initiative distribution" })).toBeNull();
 
     const card = screen.getByRole("button", { name: /PR #180.*Prototype interaction lab/i });
     expect(within(card).getByText("Rowan", { exact: false })).toBeTruthy();
@@ -136,6 +154,109 @@ describe("initiative lab concept interactions", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(card);
+  });
+
+  it("keeps five exact stages and a primary delivery identity plus initiative affiliation on every card", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual([
+      "Investigating",
+      "Building",
+      "In Review",
+      "Ready to Land",
+      "Done",
+    ]);
+    const cards = screen.getAllByRole("button", { name: /Open details/i });
+    expect(cards).toHaveLength(6);
+    for (const card of cards) {
+      const identity = card.querySelector(".pipeline-card__identity");
+      expect(identity?.textContent).toMatch(/^(PR #\d+|Active effort)$/);
+      expect(within(card).getByText(/^Initiative · /)).toBeTruthy();
+    }
+
+    const inReview = screen.getByRole("heading", { name: "In Review" }).closest("section");
+    const externalReviewCard = within(inReview!).getByRole("button", { name: /PR #176.*Preserve session identity/i });
+    expect(within(externalReviewCard).getByText("Waiting on external review")).toBeTruthy();
+    expect(screen.queryByText("Agent-teams maintainer")).toBeNull();
+    expect(screen.queryByRole("heading", { name: /External Review|Waiting/i })).toBeNull();
+  });
+
+  it.each([
+    [/Active effort.*Investigate reconnect regression/i, "Building", "mouse"],
+    [/PR #176.*Preserve session identity/i, "In Review", "keyboard"],
+    [/PR #179.*Harden recovery handoff/i, "Ready to Land", "mouse"],
+  ] as const)("selecting %s reveals the same initiative distribution without moving cards", (name, stageName, input) => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    expect(screen.queryByRole("heading", { name: "Initiative distribution" })).toBeNull();
+
+    const trigger = screen.getByRole("button", { name });
+    if (input === "keyboard") {
+      trigger.focus();
+      fireEvent.click(trigger, { detail: 0 });
+    } else {
+      fireEvent.click(trigger);
+    }
+
+    const detail = screen.getByRole("dialog");
+    const distribution = within(detail).getByRole("heading", { name: "Initiative distribution" }).closest("section");
+    const rows = within(distribution!).getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Active effortInvestigate reconnect regressionBuilding",
+      "PR #176Preserve session identityIn Review",
+      "PR #179Harden recovery handoffReady to Land",
+    ]);
+
+    const relatedCards = Array.from(document.querySelectorAll<HTMLElement>('[data-initiative-related="true"]'));
+    expect(relatedCards).toHaveLength(3);
+    expect(relatedCards.map((card) => card.querySelector(".pipeline-card__identity")?.textContent)).toEqual([
+      "Active effort",
+      "PR #176",
+      "PR #179",
+    ]);
+    expect(screen.getByRole("button", { name: /PR #180.*Prototype interaction lab/i }).closest("article")
+      ?.hasAttribute("data-initiative-related")).toBe(false);
+    expect(screen.getByRole("button", { name }).closest("section")
+      ?.querySelector("h3")?.textContent).toBe(stageName);
+
+    expect(within(screen.getByRole("heading", { name: "Building" }).closest("section")!)
+      .getByRole("button", { name: /Active effort.*Investigate reconnect regression/i })).toBeTruthy();
+    expect(within(screen.getByRole("heading", { name: "In Review" }).closest("section")!)
+      .getByRole("button", { name: /PR #176.*Preserve session identity/i })).toBeTruthy();
+    expect(within(screen.getByRole("heading", { name: "Ready to Land" }).closest("section")!)
+      .getByRole("button", { name: /PR #179.*Harden recovery handoff/i })).toBeTruthy();
+  });
+
+  it("shows external reviewer detail only after #176 activation", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    expect(screen.queryByText("Agent-teams maintainer")).toBeNull();
+
+    const inReview = screen.getByRole("heading", { name: "In Review" }).closest("section");
+    fireEvent.click(within(inReview!).getByRole("button", { name: /PR #176.*Preserve session identity/i }));
+
+    const detail = screen.getByRole("dialog", { name: "Preserve session identity" });
+    expect(within(detail).getByRole("heading", { name: "Waiting on external review" })).toBeTruthy();
+    expect(within(detail).getByText("Agent-teams maintainer")).toBeTruthy();
+  });
+
+  it("clears the initiative footprint and restores focus through Close and Escape", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    const inReview = screen.getByRole("heading", { name: "In Review" }).closest("section");
+    const reviewCard = within(inReview!).getByRole("button", { name: /PR #176.*Preserve session identity/i });
+    fireEvent.click(reviewCard);
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Close details for Preserve session identity" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(reviewCard);
+
+    const readyToLand = screen.getByRole("heading", { name: "Ready to Land" }).closest("section");
+    const landCard = within(readyToLand!).getByRole("button", { name: /PR #179.*Harden recovery handoff/i });
+    fireEvent.click(landCard);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(landCard);
   });
 
   it("keeps live verification visible on its lifecycle card and detail behind activation", () => {
@@ -174,7 +295,7 @@ describe("initiative lab concept interactions", () => {
     expect(inReview).toBeTruthy();
     expect(readyToLand).toBeTruthy();
     expect(within(inReview!).getByRole("button", { name: /PR #180.*Prototype interaction lab/i })).toBeTruthy();
-    expect(within(readyToLand!).getByRole("button", { name: /PR #176/ })).toBeTruthy();
+    expect(within(inReview!).getByRole("button", { name: /PR #176/ })).toBeTruthy();
     expect(within(readyToLand!).getByRole("button", { name: /PR #179/ })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Needs you only" }));
@@ -213,6 +334,19 @@ describe("initiative lab concept interactions", () => {
     expect(screen.getAllByText("No matching items")).toHaveLength(5);
   });
 
+  it("clears selected detail and related treatment when filters remove its card", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    const responsiveCard = screen.getByRole("button", { name: /Active effort.*Responsive hardening/i });
+    fireEvent.click(responsiveCard);
+    expect(screen.getByRole("dialog", { name: "Responsive hardening" })).toBeTruthy();
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Needs you only" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /PR #180.*Prototype interaction lab/i })).toBeTruthy();
+  });
+
   it("changes cockpit initiative context and its Now, Next, Risks, and timeline", () => {
     renderLab("/initiatives/lab?concept=cockpit");
     fireEvent.click(screen.getByRole("button", { name: /Reliable session recovery/ }));
@@ -235,8 +369,8 @@ describe("initiative lab concept interactions", () => {
     fireEvent.click(itemSummary!);
     const item = itemSummary!.closest("details");
     expect(item?.open).toBe(true);
-    expect(within(item!).getByText("Not requested — investigation may conclude without a PR")).toBeTruthy();
-    expect(within(item!).getByText("Reproduction matrix in progress")).toBeTruthy();
+    expect(within(item!).getByText("Not requested — no PR yet")).toBeTruthy();
+    expect(within(item!).getByText("Reconnect checks running during the build")).toBeTruthy();
     expect(within(item!).getByText("The failure is intermittent across recovery modes")).toBeTruthy();
     const progress = within(item!).getByRole("progressbar", { name: "Outcome progress" });
     expect(progress.getAttribute("aria-valuenow")).toBe("1");
