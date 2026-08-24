@@ -203,19 +203,33 @@ function PipelineCard({
   item,
   selected,
   related,
+  hovered,
+  hoverRelated,
   onSelect,
+  onHoverStart,
+  onHoverEnd,
 }: {
   item: PipelineItem;
   selected: boolean;
   related: boolean;
+  hovered: boolean;
+  hoverRelated: boolean;
   onSelect: (trigger: HTMLButtonElement) => void;
+  onHoverStart: () => void;
+  onHoverEnd: () => void;
 }) {
   const { work, pullRequest } = item;
   const liveVerification = work.liveVerification;
   return (
     <article
-      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${liveVerification ? " pipeline-card--live-verification" : ""}${related ? " pipeline-card--related" : ""}${selected ? " pipeline-card--selected" : ""}`}
+      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${liveVerification ? " pipeline-card--live-verification" : ""}${related ? " pipeline-card--related" : ""}${selected ? " pipeline-card--selected" : ""}${hoverRelated ? " pipeline-card--hover-related" : ""}${hovered ? " pipeline-card--hovered" : ""}`}
       data-initiative-related={related ? "true" : undefined}
+      data-initiative-hover-related={hoverRelated ? "true" : undefined}
+      data-pipeline-hovered={hovered ? "true" : undefined}
+      onPointerEnter={(event) => {
+        if (event.pointerType !== "touch") onHoverStart();
+      }}
+      onPointerLeave={onHoverEnd}
     >
       <button
         type="button"
@@ -411,6 +425,7 @@ function PipelineDetail({
 
 function PipelineConcept() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
   const [liveVerificationOnly, setLiveVerificationOnly] = useState(false);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -419,6 +434,8 @@ function PipelineConcept() {
   const selectedInitiativeItems = selectedInitiativeId
     ? pipelineItems.filter((item) => item.work.initiativeId === selectedInitiativeId)
     : [];
+  const hovered = pipelineItems.find((item) => item.key === hoveredKey) ?? null;
+  const hoveredInitiativeId = hovered?.work.initiativeId ?? null;
   const needsYouCount = pipelineItems.filter((item) => item.work.needsYou).length;
   const liveVerificationCount = pipelineItems.filter((item) => item.work.liveVerification !== null).length;
   const matchingItemCount = pipelineItems.filter(
@@ -450,6 +467,7 @@ function PipelineConcept() {
               onChange={(event) => {
                 const checked = event.currentTarget.checked;
                 setNeedsYouOnly(checked);
+                setHoveredKey(null);
                 if (selected && !matchesPipelineFilters(selected, checked, liveVerificationOnly)) {
                   setSelectedKey(null);
                 }
@@ -468,6 +486,7 @@ function PipelineConcept() {
               onChange={(event) => {
                 const checked = event.currentTarget.checked;
                 setLiveVerificationOnly(checked);
+                setHoveredKey(null);
                 if (selected && !matchesPipelineFilters(selected, needsYouOnly, checked)) {
                   setSelectedKey(null);
                 }
@@ -526,9 +545,17 @@ function PipelineConcept() {
                         item={item}
                         selected={item.key === selected?.key}
                         related={item.work.initiativeId === selectedInitiativeId}
+                        hovered={item.key === hovered?.key}
+                        hoverRelated={hovered !== null
+                          && item.key !== hovered.key
+                          && item.work.initiativeId === hoveredInitiativeId}
                         onSelect={(trigger) => {
                           detailTriggerRef.current = trigger;
                           setSelectedKey(item.key);
+                        }}
+                        onHoverStart={() => setHoveredKey(item.key)}
+                        onHoverEnd={() => {
+                          setHoveredKey((currentKey) => currentKey === item.key ? null : currentKey);
                         }}
                       />
                     ))}

@@ -553,6 +553,11 @@
   border: 1px solid var(--lab-line);
   border-radius: 6px;
   background: var(--lab-panel-raised);
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease;
 }
 
 .pipeline-card--needs-you {
@@ -581,6 +586,29 @@
   background:
     linear-gradient(135deg, rgba(119, 214, 187, 0.1), transparent 68%),
     var(--lab-panel-raised);
+}
+
+.pipeline-card--hover-related {
+  border-color: rgba(119, 214, 187, 0.76);
+  background:
+    linear-gradient(135deg, rgba(119, 214, 187, 0.16), transparent 72%),
+    var(--lab-panel-raised);
+  box-shadow:
+    inset 3px 0 0 rgba(119, 214, 187, 0.72),
+    0 8px 22px rgba(26, 104, 86, 0.18);
+}
+
+.pipeline-card--hovered {
+  z-index: 1;
+  border-color: rgba(169, 240, 220, 0.98);
+  background:
+    linear-gradient(135deg, rgba(119, 214, 187, 0.28), rgba(119, 214, 187, 0.05) 72%),
+    #1b2c32;
+  box-shadow:
+    inset 0 0 0 1px rgba(169, 240, 220, 0.36),
+    0 16px 36px rgba(25, 116, 94, 0.38),
+    0 5px 12px rgba(0, 0, 0, 0.38);
+  transform: translateY(-5px);
 }
 
 .pipeline-card__select {
@@ -1650,6 +1678,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .pipeline-card {
+    transition: none;
+  }
+
+  .pipeline-card--hovered {
+    transform: none;
+  }
+
   .pipeline-card__live i,
   .pipeline__verification-heading i {
     animation: none;

@@ -227,6 +227,52 @@ describe("initiative lab concept interactions", () => {
       .getByRole("button", { name: /PR #179.*Harden recovery handoff/i })).toBeTruthy();
   });
 
+  it("coordinates pointer hover across only initiative siblings without changing stages or selection", () => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    const hoveredTrigger = screen.getByRole("button", { name: /PR #176.*Preserve session identity/i });
+    const hoveredCard = hoveredTrigger.closest("article");
+    const unrelatedCard = screen.getByRole("button", { name: /PR #180.*Prototype interaction lab/i })
+      .closest("article");
+    const originalStages = new Map([
+      [/Active effort.*Investigate reconnect regression/i, "Building"],
+      [/PR #176.*Preserve session identity/i, "In Review"],
+      [/PR #179.*Harden recovery handoff/i, "Ready to Land"],
+    ] as const);
+
+    fireEvent.pointerEnter(hoveredCard!, { pointerType: "mouse" });
+
+    expect(hoveredCard?.getAttribute("data-pipeline-hovered")).toBe("true");
+    const hoverRelatedCards = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-initiative-hover-related="true"]'),
+    );
+    expect(hoverRelatedCards.map((card) => card.querySelector(".pipeline-card__identity")?.textContent)).toEqual([
+      "Active effort",
+      "PR #179",
+    ]);
+    expect(unrelatedCard?.hasAttribute("data-pipeline-hovered")).toBe(false);
+    expect(unrelatedCard?.hasAttribute("data-initiative-hover-related")).toBe(false);
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
+    for (const [name, stageName] of originalStages) {
+      expect(screen.getByRole("button", { name }).closest("section")?.querySelector("h3")?.textContent)
+        .toBe(stageName);
+    }
+
+    fireEvent.click(hoveredTrigger);
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-pipeline-hovered="true"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-initiative-hover-related="true"]')).toHaveLength(2);
+
+    fireEvent.pointerLeave(hoveredCard!, { pointerType: "mouse" });
+    expect(document.querySelectorAll('[data-pipeline-hovered="true"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[data-initiative-hover-related="true"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(3);
+    expect(screen.getByRole("dialog", { name: "Preserve session identity" })).toBeTruthy();
+    for (const [name, stageName] of originalStages) {
+      expect(screen.getByRole("button", { name }).closest("section")?.querySelector("h3")?.textContent)
+        .toBe(stageName);
+    }
+  });
+
   it("shows external reviewer detail only after #176 activation", () => {
     renderLab("/initiatives/lab?concept=pipeline");
     expect(screen.queryByText("Agent-teams maintainer")).toBeNull();
