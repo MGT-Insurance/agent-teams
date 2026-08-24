@@ -130,9 +130,26 @@ fi
 printf '%s\t%s' "$$" "$HOOK_SESSION_ID" > "$PIDFILE"
 
 # ── Heartbeat interval: 4 hours = 14400 seconds, just under the 24h timeout ──
-HEARTBEAT_SECS=14400
-deadline=$(( $(date +%s) + HEARTBEAT_SECS ))
-start_epoch=$(date +%s)
+# Measured in AWAKE time, not wall-clock: a machine sleep spanning part of the
+# window would otherwise count toward it, so many watchers armed at similar
+# times cross their deadline together on wake — a re-arm burst (the
+# Steward's re-arm is a full context reload, the expensive one). Each loop
+# iteration compares "now" to the previous iteration's tick; a gap far past
+# the ~1s poll cadence (HEARTBEAT_SLEEP_GAP_SECS) means the process was
+# suspended, and the excess beyond one second is pushed onto the deadline so
+# the 4h budget counts only awake seconds. HEARTBEAT_SAFETY_SECS is an
+# independent wall-clock hard cap (23h, comfortably under Claude Code's 24h
+# hook timeout above) that fires regardless of awake-time accounting — a
+# mostly-asleep machine still re-arms at least once every ~23h wall-clock.
+# All three are env-overridable so tests can drive the loop without waiting
+# hours; production always gets the defaults below.
+HEARTBEAT_SECS="${HEARTBEAT_SECS:-14400}"
+HEARTBEAT_SAFETY_SECS="${HEARTBEAT_SAFETY_SECS:-82800}"   # 23h
+HEARTBEAT_SLEEP_GAP_SECS="${HEARTBEAT_SLEEP_GAP_SECS:-10}"
+arm_epoch=$(date +%s)
+deadline=$(( arm_epoch + HEARTBEAT_SECS ))
+start_epoch=$arm_epoch
+prev_tick=$arm_epoch
 last_alive_log=$start_epoch
 alive_interval=60   # log an "alive" tick every 60 seconds
 
@@ -179,9 +196,27 @@ while true; do
     exit 2
   fi
 
-  # Heartbeat deadline: exit 2 to trigger a cheap re-arm turn.
+  # Sleep-gap detection: a gap between iterations far past the ~1s poll
+  # cadence means the machine (or this process) was suspended between ticks.
+  # Push the deadline forward by the excess beyond one second so the
+  # heartbeat window counts only awake time — this is what keeps a
+  # mostly-asleep machine from re-arming every 4h of wall-clock.
   now=$(date +%s)
-  if [ "$now" -ge "$deadline" ]; then
+  gap=$(( now - prev_tick ))
+  if [ "$gap" -ge "$HEARTBEAT_SLEEP_GAP_SECS" ]; then
+    sleep_excess=$(( gap - 1 ))
+    deadline=$(( deadline + sleep_excess ))
+    hook_log_note "note" "sleep-gap-detected gap=${gap}s deadline-extended-by=${sleep_excess}s"
+  fi
+  prev_tick=$now
+
+  # Heartbeat deadline (awake-time) OR the wall-clock safety cap, whichever
+  # fires first — the safety cap guarantees a re-arm at least every
+  # ~HEARTBEAT_SAFETY_SECS of wall-clock regardless of how much sleep-gap
+  # discounting has pushed the awake-time deadline out, so this can never
+  # drift past that bound and risk crossing Claude Code's 24h hook timeout.
+  wall_since_arm=$(( now - arm_epoch ))
+  if [ "$now" -ge "$deadline" ] || [ "$wall_since_arm" -ge "$HEARTBEAT_SAFETY_SECS" ]; then
     if ! still_open_and_enabled; then
       # Initiative closed, or its repo went disabled since this watcher
       # armed — stop pulsing, go quiet.
