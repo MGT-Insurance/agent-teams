@@ -577,15 +577,33 @@
 }
 
 .pipeline-card--related {
-  outline: 1px solid rgba(119, 214, 187, 0.48);
+  border-color: rgba(119, 214, 187, 0.78);
+  outline: 1px solid rgba(119, 214, 187, 0.66);
   outline-offset: 2px;
+  background:
+    linear-gradient(135deg, rgba(119, 214, 187, 0.18), rgba(119, 214, 187, 0.025) 72%),
+    var(--lab-panel-raised);
+  box-shadow:
+    inset 3px 0 0 rgba(119, 214, 187, 0.78),
+    inset 0 0 0 1px rgba(169, 240, 220, 0.12),
+    0 10px 28px rgba(25, 116, 94, 0.24),
+    0 3px 9px rgba(0, 0, 0, 0.28);
 }
 
 .pipeline-card--selected {
-  border-color: rgba(119, 214, 187, 0.88);
+  z-index: 1;
+  border-color: rgba(191, 255, 235, 1);
+  outline: 2px solid rgba(119, 214, 187, 0.9);
+  outline-offset: 2px;
   background:
-    linear-gradient(135deg, rgba(119, 214, 187, 0.1), transparent 68%),
-    var(--lab-panel-raised);
+    linear-gradient(135deg, rgba(119, 214, 187, 0.38), rgba(119, 214, 187, 0.08) 68%),
+    #1b2c32;
+  box-shadow:
+    inset 0 0 0 1px rgba(213, 255, 243, 0.42),
+    inset 4px 0 0 rgba(169, 240, 220, 0.98),
+    0 0 0 4px rgba(119, 214, 187, 0.13),
+    0 18px 40px rgba(25, 116, 94, 0.42),
+    0 5px 14px rgba(0, 0, 0, 0.42);
 }
 
 .pipeline-card--hover-related {

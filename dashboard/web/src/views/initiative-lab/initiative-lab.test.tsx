@@ -5,6 +5,8 @@ import { AppRoutes } from "../../router.js";
 import InitiativeLabView from "./index.js";
 import { initiatives, workScenarios } from "./scenarios.js";
 
+const originalScrollYDescriptor = Object.getOwnPropertyDescriptor(window, "scrollY");
+
 vi.mock("../../SnapshotContext.js", () => ({
   useSnapshotContext: () => ({
     initiatives: [],
@@ -32,7 +34,13 @@ function renderLab(entry = "/initiatives/lab") {
   );
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  if (originalScrollYDescriptor) {
+    Object.defineProperty(window, "scrollY", originalScrollYDescriptor);
+  }
+});
 
 describe("initiative lab fixture", () => {
   it("shares three initiatives across realistic PR and active-effort scenarios", () => {
@@ -258,7 +266,14 @@ describe("initiative lab concept interactions", () => {
     }
 
     fireEvent.click(hoveredTrigger);
-    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(3);
+    const persistentlyRelatedCards = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-initiative-related="true"]'),
+    );
+    expect(persistentlyRelatedCards).toHaveLength(3);
+    expect(persistentlyRelatedCards.every((card) => card.classList.contains("pipeline-card--related"))).toBe(true);
+    expect(hoveredCard?.classList.contains("pipeline-card--selected")).toBe(true);
+    expect(unrelatedCard?.classList.contains("pipeline-card--related")).toBe(false);
+    expect(unrelatedCard?.classList.contains("pipeline-card--selected")).toBe(false);
     expect(document.querySelectorAll('[data-pipeline-hovered="true"]')).toHaveLength(1);
     expect(document.querySelectorAll('[data-initiative-hover-related="true"]')).toHaveLength(2);
 
@@ -266,11 +281,46 @@ describe("initiative lab concept interactions", () => {
     expect(document.querySelectorAll('[data-pipeline-hovered="true"]')).toHaveLength(0);
     expect(document.querySelectorAll('[data-initiative-hover-related="true"]')).toHaveLength(0);
     expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(3);
+    expect(hoveredCard?.classList.contains("pipeline-card--selected")).toBe(true);
+    expect(persistentlyRelatedCards.every((card) => card.classList.contains("pipeline-card--related"))).toBe(true);
     expect(screen.getByRole("dialog", { name: "Preserve session identity" })).toBeTruthy();
     for (const [name, stageName] of originalStages) {
       expect(screen.getByRole("button", { name }).closest("section")?.querySelector("h3")?.textContent)
         .toBe(stageName);
     }
+  });
+
+  it.each([
+    ["mouse"],
+    ["keyboard"],
+  ] as const)("opens and closes detail by %s without changing page or board scroll", (input) => {
+    renderLab("/initiatives/lab?concept=pipeline");
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 731, writable: true });
+    const scroller = screen.getByRole("region", { name: /Outcome Pipeline board/ });
+    scroller.scrollLeft = 487;
+    const trigger = screen.getByRole("button", { name: /PR #179.*Harden recovery handoff/i });
+
+    if (input === "keyboard") {
+      trigger.focus();
+      fireEvent.click(trigger, { detail: 0 });
+    } else {
+      fireEvent.click(trigger);
+    }
+
+    const detail = screen.getByRole("dialog", { name: "Harden recovery handoff" });
+    expect(document.activeElement).toBe(detail);
+    expect(focusSpy).toHaveBeenLastCalledWith({ preventScroll: true });
+    expect(window.scrollY).toBe(731);
+    expect(scroller.scrollLeft).toBe(487);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(focusSpy).toHaveBeenLastCalledWith({ preventScroll: true });
+    expect(window.scrollY).toBe(731);
+    expect(scroller.scrollLeft).toBe(487);
+    expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
   });
 
   it("shows external reviewer detail only after #176 activation", () => {
@@ -287,6 +337,10 @@ describe("initiative lab concept interactions", () => {
 
   it("clears the initiative footprint and restores focus through Close and Escape", () => {
     renderLab("/initiatives/lab?concept=pipeline");
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 619, writable: true });
+    const scroller = screen.getByRole("region", { name: /Outcome Pipeline board/ });
+    scroller.scrollLeft = 403;
     const inReview = screen.getByRole("heading", { name: "In Review" }).closest("section");
     const reviewCard = within(inReview!).getByRole("button", { name: /PR #176.*Preserve session identity/i });
     fireEvent.click(reviewCard);
@@ -295,6 +349,9 @@ describe("initiative lab concept interactions", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
     expect(document.activeElement).toBe(reviewCard);
+    expect(focusSpy).toHaveBeenLastCalledWith({ preventScroll: true });
+    expect(window.scrollY).toBe(619);
+    expect(scroller.scrollLeft).toBe(403);
 
     const readyToLand = screen.getByRole("heading", { name: "Ready to Land" }).closest("section");
     const landCard = within(readyToLand!).getByRole("button", { name: /PR #179.*Harden recovery handoff/i });
@@ -303,6 +360,9 @@ describe("initiative lab concept interactions", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.querySelectorAll('[data-initiative-related="true"]')).toHaveLength(0);
     expect(document.activeElement).toBe(landCard);
+    expect(focusSpy).toHaveBeenLastCalledWith({ preventScroll: true });
+    expect(window.scrollY).toBe(619);
+    expect(scroller.scrollLeft).toBe(403);
   });
 
   it("keeps live verification visible on its lifecycle card and detail behind activation", () => {

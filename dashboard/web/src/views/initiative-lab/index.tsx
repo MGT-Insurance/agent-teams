@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   initiativeFor,
@@ -349,7 +349,7 @@ function PipelineDetail({
   const { work, pullRequest } = item;
 
   useEffect(() => {
-    panelRef.current?.focus();
+    panelRef.current?.focus({ preventScroll: true });
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") onClose();
     }
@@ -442,10 +442,10 @@ function PipelineConcept() {
     (item) => matchesPipelineFilters(item, needsYouOnly, liveVerificationOnly),
   ).length;
 
-  function closeDetail() {
-    detailTriggerRef.current?.focus();
+  const closeDetail = useCallback(() => {
+    detailTriggerRef.current?.focus({ preventScroll: true });
     setSelectedKey(null);
-  }
+  }, []);
 
   return (
     <section className="pipeline" aria-labelledby="pipeline-heading">
