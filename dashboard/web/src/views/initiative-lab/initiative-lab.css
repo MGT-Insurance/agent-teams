@@ -644,10 +644,6 @@
   text-align: left;
 }
 
-.pipeline-card__select:hover {
-  background: rgba(255, 255, 255, 0.025);
-}
-
 .pipeline-card__topline {
   display: flex;
   align-items: center;
@@ -835,11 +831,6 @@
   background: transparent;
   cursor: pointer;
   font-size: 9px;
-}
-
-.pipeline__detail-heading button:hover {
-  color: var(--lab-text);
-  border-color: var(--lab-accent);
 }
 
 .pipeline__detail h3 {
@@ -1073,12 +1064,23 @@
   text-decoration: none;
 }
 
-.pipeline__detail-pr:hover {
-  color: var(--lab-text);
-}
-
 .pipeline__detail-effort {
   color: var(--lab-muted);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pipeline-card__select:hover {
+    background: rgba(255, 255, 255, 0.025);
+  }
+
+  .pipeline__detail-heading button:hover {
+    color: var(--lab-text);
+    border-color: var(--lab-accent);
+  }
+
+  .pipeline__detail-pr:hover {
+    color: var(--lab-text);
+  }
 }
 
 .pipeline__timeline h4 {

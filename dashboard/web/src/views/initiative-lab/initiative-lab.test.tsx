@@ -1,4 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { AppRoutes } from "../../router.js";
@@ -6,6 +8,25 @@ import InitiativeLabView from "./index.js";
 import { initiatives, workScenarios } from "./scenarios.js";
 
 const originalScrollYDescriptor = Object.getOwnPropertyDescriptor(window, "scrollY");
+const initiativeLabCss = readFileSync(
+  resolve(process.cwd(), "src/views/initiative-lab/initiative-lab.css"),
+  "utf8",
+);
+
+function getCssBlock(source: string, header: string) {
+  const headerIndex = source.indexOf(header);
+  if (headerIndex === -1) throw new Error(`Missing CSS block: ${header}`);
+  const blockStart = source.indexOf("{", headerIndex);
+  let depth = 0;
+
+  for (let index = blockStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(headerIndex, index + 1);
+  }
+
+  throw new Error(`Unclosed CSS block: ${header}`);
+}
 
 vi.mock("../../SnapshotContext.js", () => ({
   useSnapshotContext: () => ({
@@ -43,6 +64,23 @@ afterEach(() => {
 });
 
 describe("initiative lab fixture", () => {
+  it("limits every native pipeline hover visual to hover-capable fine pointers", () => {
+    const hoverMediaBlock = getCssBlock(
+      initiativeLabCss,
+      "@media (hover: hover) and (pointer: fine)",
+    );
+    const pipelineHoverSelectors = [
+      ".pipeline-card__select:hover",
+      ".pipeline__detail-heading button:hover",
+      ".pipeline__detail-pr:hover",
+    ];
+
+    for (const selector of pipelineHoverSelectors) {
+      expect(hoverMediaBlock).toContain(`${selector} {`);
+    }
+    expect(initiativeLabCss.replace(hoverMediaBlock, "")).not.toMatch(/\.pipeline[^\n{]*:hover\s*\{/);
+  });
+
   it("shares three initiatives across realistic PR and active-effort scenarios", () => {
     expect(initiatives.map((initiative) => initiative.title)).toEqual([
       "Dashboard initiative refresh",
