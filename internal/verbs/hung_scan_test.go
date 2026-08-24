@@ -16,6 +16,17 @@ import (
 
 // ── classifyInitiative (unit-level) ──────────────────────────────────────────
 
+// neverCalledCodexReader returns a codexRolloutReadFunc that fails the test
+// if invoked — used by every Claude-runtime classifyInitiative case to pin
+// that the codex seam is never reached for a non-codex initiative.
+func neverCalledCodexReader(t *testing.T) codexRolloutReadFunc {
+	t.Helper()
+	return func(threadID string) (string, time.Time, bool, bool) {
+		t.Fatalf("codexRolloutReadFunc must not be called for a Claude-runtime initiative (threadID=%q)", threadID)
+		return "", time.Time{}, false, false
+	}
+}
+
 func TestClassifyInitiative(t *testing.T) {
 	const wt = "/fake/wt"
 	dirExists := func(string) bool { return true }
@@ -178,7 +189,7 @@ func TestClassifyInitiative(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			iss := bd.Issue{Description: "worktree: " + wt + "\n"}
-			gotClass, _, gotCwd := classifyInitiative(tc.labels, tc.sessions, iss, tc.dirExists)
+			gotClass, _, gotCwd := classifyInitiative(tc.labels, tc.sessions, iss, tc.dirExists, time.Now(), neverCalledCodexReader(t))
 			if gotClass != tc.wantClass {
 				t.Errorf("classification = %q, want %q", gotClass, tc.wantClass)
 			}
@@ -204,7 +215,7 @@ func TestClassifyInitiative_SessionSet_AnyBusyWorking(t *testing.T) {
 		{SessionID: "sess-a", Status: "idle", PID: &pidA},
 		{SessionID: "sess-b", Status: "busy", PID: &pidB},
 	}
-	class, matched, _ := classifyInitiative(nil, sessions, iss, dirExists)
+	class, matched, _ := classifyInitiative(nil, sessions, iss, dirExists, time.Now(), neverCalledCodexReader(t))
 	if class != hungClassWorking {
 		t.Errorf("classification = %q, want WORKING (any tied session busy)", class)
 	}
@@ -222,7 +233,7 @@ func TestClassifyInitiative_SessionSet_AllIdleNoGateStuck(t *testing.T) {
 		{SessionID: "sess-a", Status: "idle", PID: &pidA},
 		{SessionID: "sess-b", Status: "waiting", PID: &pidB},
 	}
-	class, _, _ := classifyInitiative(nil, sessions, iss, dirExists)
+	class, _, _ := classifyInitiative(nil, sessions, iss, dirExists, time.Now(), neverCalledCodexReader(t))
 	if class != hungClassStuck {
 		t.Errorf("classification = %q, want STUCK (all tied sessions idle/waiting, no gate)", class)
 	}
@@ -235,7 +246,7 @@ func TestClassifyInitiative_SessionSet_NoneAliveDead(t *testing.T) {
 	// Neither session id appears live (PID present) in the agents snapshot —
 	// matchSessionsForInitiative returns an empty tied set.
 	sessions := []agentSession{}
-	class, matched, _ := classifyInitiative(nil, sessions, iss, dirExists)
+	class, matched, _ := classifyInitiative(nil, sessions, iss, dirExists, time.Now(), neverCalledCodexReader(t))
 	if class != hungClassDead {
 		t.Errorf("classification = %q, want DEAD (no tied session alive)", class)
 	}
@@ -260,7 +271,7 @@ func TestClassifyInitiative_SessionSet_DriftedButAlive_WorksNotDead(t *testing.T
 		// (interactive session) -- only SessionID ties it back.
 		{SessionID: "sess-dri", CWD: "/fake/wt-track-h", Status: "busy", PID: &pid},
 	}
-	class, matched, cwdPresent := classifyInitiative(nil, sessions, iss, dirExists)
+	class, matched, cwdPresent := classifyInitiative(nil, sessions, iss, dirExists, time.Now(), neverCalledCodexReader(t))
 	if class != hungClassWorking {
 		t.Errorf("classification = %q, want WORKING (drifted-but-alive session tied by id)", class)
 	}
@@ -275,7 +286,7 @@ func TestClassifyInitiative_SessionSet_DriftedButAlive_WorksNotDead(t *testing.T
 	sessionsIdle := []agentSession{
 		{SessionID: "sess-dri", CWD: "/fake/wt-track-h", Status: "idle", PID: &pid},
 	}
-	class2, _, _ := classifyInitiative(nil, sessionsIdle, iss, dirExists)
+	class2, _, _ := classifyInitiative(nil, sessionsIdle, iss, dirExists, time.Now(), neverCalledCodexReader(t))
 	if class2 != hungClassStuck {
 		t.Errorf("classification = %q, want STUCK (drifted-but-alive, idle, no gate)", class2)
 	}
@@ -295,7 +306,7 @@ func TestClassifyInitiative_LegacyNoSessionLines_UnchangedByteForByte(t *testing
 		t.Fatal("test setup: description must have no session: lines")
 	}
 	sessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
-	class, matched, cwdPresent := classifyInitiative(nil, sessions, iss, dirExists)
+	class, matched, cwdPresent := classifyInitiative(nil, sessions, iss, dirExists, time.Now(), neverCalledCodexReader(t))
 	if class != hungClassWorking {
 		t.Errorf("classification = %q, want WORKING", class)
 	}
@@ -305,6 +316,126 @@ func TestClassifyInitiative_LegacyNoSessionLines_UnchangedByteForByte(t *testing
 	if len(matched) != 1 {
 		t.Errorf("matched = %v, want exactly the one worktree-matched session", matched)
 	}
+}
+
+// ── classifyInitiative: codex runtime (agent-teams-n4bv.1) ──────────────────
+//
+// Mapping under test (RULED, hung_scan.go's classifyCodexLiveness doc
+// comment): empty thread id / reader not-found / trailing "Exited." all ->
+// DEAD; function_call kind -> WORKING at any age; a last event within
+// hungCodexActivityWindow -> WORKING regardless of kind (including
+// task_complete); otherwise -> STUCK, never DEAD from staleness alone.
+
+func TestClassifyInitiative_Codex(t *testing.T) {
+	const wt = "/fake/wt"
+	dirExists := func(string) bool { return true }
+	now := time.Date(2026, 8, 24, 16, 0, 0, 0, time.UTC)
+
+	fakeReader := func(kind string, ts time.Time, exited, found bool) codexRolloutReadFunc {
+		return func(threadID string) (string, time.Time, bool, bool) {
+			if threadID != "thread-1" {
+				t.Fatalf("readCodex called with unexpected threadID %q", threadID)
+			}
+			return kind, ts, exited, found
+		}
+	}
+
+	tests := []struct {
+		name      string
+		sessions  string // "" => no session: line at all
+		readCodex codexRolloutReadFunc
+		wantClass string
+	}{
+		{
+			name:      "trailing Exited. marker => DEAD, regardless of kind/age",
+			sessions:  "thread-1",
+			readCodex: fakeReader("task_complete", now, true, true),
+			wantClass: hungClassDead,
+		},
+		{
+			name:      "function_call kind, very stale => WORKING at any age",
+			sessions:  "thread-1",
+			readCodex: fakeReader("function_call", now.Add(-5*time.Hour), false, true),
+			wantClass: hungClassWorking,
+		},
+		{
+			name:      "recent non-terminal kind (reasoning) => WORKING",
+			sessions:  "thread-1",
+			readCodex: fakeReader("reasoning", now.Add(-10*time.Minute), false, true),
+			wantClass: hungClassWorking,
+		},
+		{
+			name:      "recent task_complete => WORKING (ambiguous kind resolved by recency)",
+			sessions:  "thread-1",
+			readCodex: fakeReader("task_complete", now.Add(-10*time.Minute), false, true),
+			wantClass: hungClassWorking,
+		},
+		{
+			name:      "stale, no exit marker, non-function_call => STUCK not DEAD",
+			sessions:  "thread-1",
+			readCodex: fakeReader("task_complete", now.Add(-45*time.Minute), false, true),
+			wantClass: hungClassStuck,
+		},
+		{
+			name:      "no session: line at all => DEAD, reader never called",
+			sessions:  "",
+			readCodex: neverCalledCodexReader(t),
+			wantClass: hungClassDead,
+		},
+		{
+			name:      "reader reports not found => DEAD",
+			sessions:  "thread-1",
+			readCodex: fakeReader("", time.Time{}, false, false),
+			wantClass: hungClassDead,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			desc := "worktree: " + wt + "\nruntime: codex\n"
+			if tc.sessions != "" {
+				desc += "session: " + tc.sessions + "\n"
+			}
+			iss := bd.Issue{Description: desc}
+			gotClass, _, gotCwd := classifyInitiative(nil, nil, iss, dirExists, now, tc.readCodex)
+			if gotClass != tc.wantClass {
+				t.Errorf("classification = %q, want %q", gotClass, tc.wantClass)
+			}
+			if !gotCwd {
+				t.Error("cwdPresent should be true")
+			}
+		})
+	}
+}
+
+// TestClassifyInitiative_Codex_CwdMissingAndGateStillPreempt pins that the
+// two shared checks straddling the codex branch (worktree-missing => DEAD,
+// human+gate => AWAITING-HUMAN) still preempt it, exactly as they do for the
+// Claude path — the codex branch only fires once both have been ruled out.
+func TestClassifyInitiative_Codex_CwdMissingAndGateStillPreempt(t *testing.T) {
+	const wt = "/fake/wt"
+	now := time.Now()
+	neverReader := func(t *testing.T) codexRolloutReadFunc { return neverCalledCodexReader(t) }
+
+	t.Run("cwd missing preempts codex branch => DEAD, reader never called", func(t *testing.T) {
+		iss := bd.Issue{Description: "worktree: " + wt + "\nruntime: codex\nsession: thread-1\n"}
+		class, _, cwdPresent := classifyInitiative(nil, nil, iss, func(string) bool { return false }, now, neverReader(t))
+		if class != hungClassDead {
+			t.Errorf("classification = %q, want DEAD", class)
+		}
+		if cwdPresent {
+			t.Error("cwdPresent should be false")
+		}
+	})
+
+	t.Run("human+gate preempts codex branch => AWAITING-HUMAN, reader never called", func(t *testing.T) {
+		iss := bd.Issue{Description: "worktree: " + wt + "\nruntime: codex\nsession: thread-1\n"}
+		labels := []string{"human", "gate:question"}
+		class, _, _ := classifyInitiative(labels, nil, iss, func(string) bool { return true }, now, neverReader(t))
+		if class != hungClassAwaitingHuman {
+			t.Errorf("classification = %q, want AWAITING-HUMAN", class)
+		}
+	})
 }
 
 // ── scanHung (integration-level) ─────────────────────────────────────────────

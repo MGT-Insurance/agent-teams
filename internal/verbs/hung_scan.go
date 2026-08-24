@@ -54,6 +54,13 @@ const (
 // operator-facing key name.
 var hungStuckThreshold = defaultHungStuckThreshold
 
+// hungCodexActivityWindow is how recent a codex rollout's last event must be
+// for the initiative to classify WORKING (see classifyCodexLiveness below).
+// Unlike hungStuckThreshold, this is not yet operator-tunable via
+// hung_config.go (that plumbing is a separate, gated bead) — just a var
+// mirroring hungStuckThreshold's shape so that future wiring is a small diff.
+var hungCodexActivityWindow = defaultHungCodexActivityWindow
+
 // hungStateFileName is the JSON file (under StewardHome) hung-scan persists
 // its per-initiative stuck-since anchors to.
 const hungStateFileName = "hung-state.json"
@@ -246,6 +253,64 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 	return nil
 }
 
+// codexRolloutReadFunc is the injected seam for reading a codex thread's
+// rollout file: given a thread id, it returns the last event's kind
+// (payload.type) and timestamp, whether a trailing "Exited." agent_message
+// marks a genuine exit, and whether a rollout for this thread was found at
+// all. Pure I/O — no age/threshold logic lives behind this seam, so
+// classifyCodexLiveness below stays unit-testable with fake times and no
+// filesystem. defaultCodexRolloutRead (hung_codex.go) is the real
+// implementation; classifyInitiative's tests pass a fake.
+type codexRolloutReadFunc func(threadID string) (lastEventKind string, lastEventTime time.Time, exitedMarker bool, found bool)
+
+// classifyCodexLiveness is classifyInitiative's codex-runtime branch: a
+// codex DRI is a thread inside a shared codex app-server, never a Claude
+// session, so it never appears in `claude agents --all --json` — the signal
+// the Claude-runtime tail below relies on. Liveness instead comes from the
+// codex rollout file's last event.
+//
+// Mapping (RULED — DRI-ratified 2026-08-24, agent-teams-n4bv.1; do not
+// re-open without a new ruling):
+//  1. no tied thread id (Sessions empty) -> DEAD.
+//  2. readCodex reports !found (rollout for this thread absent) -> DEAD.
+//  3. a trailing "Exited." agent_message among recent events -> DEAD (the
+//     genuine-exit witness — the ONLY staleness-independent DEAD path).
+//  4. lastEventKind=="function_call" -> WORKING at any age (blocked on a
+//     subagent, e.g. collaboration/wait_agent, is healthy regardless of how
+//     long it's been waiting).
+//  5. now - lastEventTime <= hungCodexActivityWindow -> WORKING (recent
+//     last event, including a recent task_complete, is mid-turn or
+//     just-finished).
+//  6. else -> STUCK, riding the existing hungStuckThreshold ladder. Codex
+//     NEVER reaches DEAD from staleness alone — only via rules 1-3. That
+//     asymmetry is the false-DEAD fix this bead exists to deliver.
+//
+// task_complete is deliberately not treated as terminal on its own: it is
+// the last event of BOTH a healthy idling DRI and a cleanly-finished one —
+// even an explicit `exit` ends with task_complete, with "Exited." sitting a
+// few events earlier. Recency (rules 5/6) disambiguates; kind alone cannot.
+func classifyCodexLiveness(f initiative.Fields, now time.Time, readCodex codexRolloutReadFunc) string {
+	if len(f.Sessions) == 0 {
+		return hungClassDead
+	}
+	threadID := f.Sessions[len(f.Sessions)-1]
+
+	kind, lastEventTime, exited, found := readCodex(threadID)
+	if !found {
+		return hungClassDead
+	}
+	if exited {
+		return hungClassDead
+	}
+	if kind == "function_call" {
+		return hungClassWorking
+	}
+	if now.Sub(lastEventTime) <= hungCodexActivityWindow {
+		return hungClassWorking
+	}
+	return hungClassStuck
+}
+
 // classifyInitiative returns the hung-scan classification for one
 // initiative, given its labels, the current live sessions, and the
 // initiative's bd.Issue (for its worktree: line and session: lines). Mirrors
@@ -263,12 +328,17 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 //  2. AWAITING-HUMAN — labels carry "human" AND ("gate:question" OR
 //     "gate:review") — checked regardless of PID presence, since a real gate
 //     means the initiative is waiting on the human, not hung.
-//  3. DEAD  — no tied session is alive (matchSessionsForInitiative returned
+//  3. codex runtime — classifyCodexLiveness (above) decides WORKING/STUCK/
+//     DEAD from the rollout file's last event; the Claude-only tail below
+//     (steps 4-6) never runs for a codex initiative, and readCodex is never
+//     called for a Claude one (agent-teams-n4bv.1: codex-specific branch,
+//     no general per-runtime interface — the Claude path stays untouched).
+//  4. DEAD  — no tied session is alive (matchSessionsForInitiative returned
 //     no live entry) — reached only once a real gate has already been ruled
 //     out.
-//  4. WORKING — ANY live tied session is actively working (status=="busy"
+//  5. WORKING — ANY live tied session is actively working (status=="busy"
 //     or state=="working"; same predicate as isActivelyWorking).
-//  5. STUCK — everything else: at least one live tied session, all
+//  6. STUCK — everything else: at least one live tied session, all
 //     idle/waiting, no gate.
 //
 // matched is the tied-session set from matchSessionsForInitiative
@@ -276,10 +346,12 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 // LIVE sessions, primary-first; for a legacy initiative (no session: lines)
 // it falls back to the single matchSessionByWorktree result, which — unlike
 // the session-set path — may be a PID-nil (tracked-but-dead) session, so
-// pidPresent below is computed from the live subset, not len(matched).
-func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, dirExists dirExistsFunc) (classification string, matched []agentSession, cwdPresent bool) {
-	worktree := initiative.Of(iss).Worktree
-	cwdPresent = worktree != "" && dirExists(worktree)
+// pidPresent below is computed from the live subset, not len(matched). For a
+// codex initiative matched is typically empty (its thread never appears in
+// the Claude agents snapshot sessions is built from) and is not meaningful.
+func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, dirExists dirExistsFunc, now time.Time, readCodex codexRolloutReadFunc) (classification string, matched []agentSession, cwdPresent bool) {
+	f := initiative.Of(iss)
+	cwdPresent = f.Worktree != "" && dirExists(f.Worktree)
 	matched = matchSessionsForInitiative(sessions, iss)
 
 	var live []agentSession
@@ -304,6 +376,10 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 	hasGate := hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:review")
 	if hasHuman && hasGate {
 		return hungClassAwaitingHuman, matched, cwdPresent
+	}
+
+	if f.Runtime == "codex" {
+		return classifyCodexLiveness(f, now, readCodex), matched, cwdPresent
 	}
 
 	if len(live) == 0 {
@@ -373,7 +449,7 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			continue
 		}
 
-		class, matched, cwdPresent := classifyInitiative(iss.Labels, sessions, iss, defaultDirExists)
+		class, matched, cwdPresent := classifyInitiative(iss.Labels, sessions, iss, defaultDirExists, nowT, defaultCodexRolloutRead)
 
 		entry := hungScanEntry{
 			ID:             iss.ID,

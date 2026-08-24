@@ -1,0 +1,8 @@
+{"timestamp":"2026-08-20T14:21:25.224Z","type":"event_msg","payload":{"type":"thread_settings_applied"}}
+{"timestamp":"2026-08-20T14:21:25.227Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-08-20T14:21:25.268Z","type":"response_item","payload":{"type":"message","id":"msg_01a01f8c-redacted","role":"developer","content":[{"type":"input_text","text":"redacted"}]}}
+{"timestamp":"2026-08-20T14:21:26.756Z","type":"event_msg","payload":{"type":"user_message","message":"exit"}}
+{"timestamp":"2026-08-20T14:21:29.872Z","type":"event_msg","payload":{"type":"agent_message","message":"Exited."}}
+{"timestamp":"2026-08-20T14:21:29.872Z","type":"response_item","payload":{"type":"message","id":"msg_01a01f8c-redacted2","role":"assistant","content":[{"type":"output_text","text":"Exited."}]}}
+{"timestamp":"2026-08-20T14:21:29.895Z","type":"event_msg","payload":{"type":"token_count"}}
+{"timestamp":"2026-08-20T14:21:31.406Z","type":"event_msg","payload":{"type":"task_complete"}}

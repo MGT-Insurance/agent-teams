@@ -59,6 +59,15 @@ const (
 	defaultHungWorkProductAlertThreshold    = 4 * time.Hour
 	defaultHungDeadWorktreeThreshold        = 2 * time.Hour
 	defaultHungTranscriptCorroboratorWindow = 2 * time.Hour
+
+	// defaultHungCodexActivityWindow is RULED (agent-teams-n4bv.1,
+	// 2026-08-24): how recent a codex rollout's last event must be for
+	// classifyCodexLiveness (hung_scan.go) to classify a codex initiative
+	// WORKING rather than STUCK. Not yet wired into the env/file tiers
+	// above — operator-tunability for this value is a separate, gated bead
+	// (agent-teams-n4bv.3); this const is only the compiled default that
+	// hungCodexActivityWindow (hung_scan.go) is initialized to.
+	defaultHungCodexActivityWindow = 30 * time.Minute
 )
 
 // Environment variables overriding each value, checked before the file.
