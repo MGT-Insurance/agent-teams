@@ -27,7 +27,7 @@ import (
 type sendKong struct {
 	RecipientID        string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
 	File               string `name:"file"   help:"Path to the message body file (required)." required:""`
-	Sender             string `name:"sender" help:"Sender identifier (default: git user.name)."`
+	Sender             string `name:"sender" help:"Sender identifier (default: steward when sent from the steward session, else git user.name)."`
 	Thread             string `name:"thread" help:"Optional thread identifier label."`
 	ResumeLaunchPrompt string `name:"resume-launch-prompt" help:"Launch prompt used if the recipient session is gone and must be resumed (default: /dri <id>)."`
 	ResumeModel        string `name:"resume-model" help:"Model for a resumed session (only meaningful with --resume-launch-prompt)."`
@@ -59,11 +59,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return cli.Usagef("ateam send: file not found: %s", c.File)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("ateam send: resolve cwd: %w", err)
-	}
-	sender := resolveSender(ctx, cwd, c.Sender)
+	sender := resolveSender(ctx, c.Sender)
 
 	createArgs := []string{
 		"create",
@@ -467,16 +463,28 @@ func defaultRespawn(id string) error {
 
 // resolveSender determines the mail envelope sender. An explicit --sender
 // always wins (relay=human, hung_tick=hung-scan, route=pr-shepherd, and a
-// human typing the CLI can override too). With no explicit sender, a send
-// originating from the Steward's own session is stamped as the Steward, so
-// model-driven steward->DRI mail is attributed to the steward rather than
-// collapsing to git user.name — which is only the right sender for a human
-// running the CLI outside the steward session. Every other session keeps the
-// git user.name fallback.
-func resolveSender(ctx *cli.Context, cwd, explicit string) string {
+// human typing the CLI can override too) and never touches the filesystem, so
+// those paths cannot be aborted by a cwd lookup. With no explicit sender, cwd
+// is resolved best-effort: a send from the Steward's own session is stamped as
+// the Steward (so model-driven steward->DRI mail is attributed to the steward
+// rather than collapsing to git user.name), while every other session — and a
+// cwd that cannot be read — keeps the git user.name fallback rather than
+// failing the send.
+func resolveSender(ctx *cli.Context, explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return gitUserName()
+	}
+	return defaultSender(ctx, cwd)
+}
+
+// defaultSender picks the no-explicit-sender default for a known cwd: the
+// Steward when the send originates from the Steward's session, otherwise git
+// user.name.
+func defaultSender(ctx *cli.Context, cwd string) string {
 	if isStewardSession(ctx, cwd) {
 		return StewardHandle
 	}
