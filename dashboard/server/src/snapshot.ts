@@ -2,7 +2,12 @@
 
 import { existsSync } from "node:fs";
 
-import type { SessionState, SnapshotEvent } from "@agent-teams/shared";
+import type {
+  SessionState,
+  SnapshotEvent,
+  WorkBead,
+  WorkstreamDiagnostic,
+} from "@agent-teams/shared";
 import {
   CliError,
   ateamListJson,
@@ -10,6 +15,7 @@ import {
   ateamWs,
   claudeAgentsJson,
   bdHumanList,
+  bdProjectBeads,
 } from "./cli.js";
 import {
   parseAteamListJson,
@@ -18,12 +24,18 @@ import {
   buildInitiativeNodes,
   buildOrphanSessions,
   buildInbox,
+  projectInitiativeWorkstreams,
 } from "./parse.js";
 
 // 15s (not 2s): each tick fires 4 subprocess calls against the global bd
 // workspace, which serializes on an advisory flock (at-6nj). 2s caused
 // lock-contention pileups under concurrent load.
 const POLL_INTERVAL_MS = 15_000;
+
+// Project repositories can live on slower volumes and bd serializes within a
+// repository. Keep different repositories moving in parallel without spawning
+// an unbounded subprocess fan-out on a large registry.
+export const PROJECT_READ_CONCURRENCY = 3;
 
 // Per-session transition bookkeeping (agent-teams-ni2y.8). sessionId -> last-seen
 // (status, state) pair plus the epoch ms it last changed. Server-internal only —
@@ -140,6 +152,7 @@ export type LastGoodSlices = {
   closedJsonRaw?: string;
   agentsRaw?: string;
   humanRaw?: string;
+  projectJsonByRepo?: Map<string, string>;
 };
 
 // Raw-JSON fallback for a slice with no prior last-known-good value (cold
@@ -155,7 +168,7 @@ function resolveSlice(
   result: PromiseSettledResult<string>,
   cliName: string,
   lastGood: LastGoodSlices | undefined,
-  key: keyof LastGoodSlices,
+  key: "listJsonRaw" | "closedJsonRaw" | "agentsRaw" | "humanRaw",
 ): string {
   if (result.status === "fulfilled") {
     if (lastGood) lastGood[key] = result.value;
@@ -168,6 +181,76 @@ function resolveSlice(
     console.error(`[snapshot] ${cliName} failed, keeping last-known-good:`, reason);
   }
   return lastGood?.[key] ?? EMPTY_JSON_ARRAY;
+}
+
+interface ProjectRepoState {
+  beads: WorkBead[];
+  diagnostics: WorkstreamDiagnostic[];
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  limit: number,
+  fn: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= values.length) return;
+      results[index] = await fn(values[index]!);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, values.length) }, () => worker()),
+  );
+  return results;
+}
+
+async function readProjectRepo(
+  repo: string,
+  lastGood: LastGoodSlices | undefined,
+): Promise<ProjectRepoState> {
+  try {
+    const raw = await bdProjectBeads(repo);
+    const beads = parseBdList(raw);
+    if (lastGood) {
+      lastGood.projectJsonByRepo ??= new Map();
+      lastGood.projectJsonByRepo.set(repo, raw);
+    }
+    return { beads, diagnostics: [] };
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    const prior = lastGood?.projectJsonByRepo?.get(repo);
+    if (prior !== undefined) {
+      try {
+        console.error(`[snapshot] bd project list failed for ${repo}, keeping last-known-good: ${message}`);
+        return {
+          beads: parseBdList(prior),
+          diagnostics: [
+            {
+              kind: "load-stale",
+              message: `Project repository refresh failed; showing last-known-good workstreams: ${message}`,
+            },
+          ],
+        };
+      } catch {
+        // A corrupt prior slice is not usable. Fall through to the isolated
+        // cold-start degradation below rather than failing the whole snapshot.
+      }
+    }
+    console.error(`[snapshot] bd project list failed for ${repo}: ${message}`);
+    return {
+      beads: [],
+      diagnostics: [
+        {
+          kind: "load-error",
+          message: `Project repository could not be loaded: ${message}`,
+        },
+      ],
+    };
+  }
 }
 
 // Build one SnapshotEvent by calling all CLIs in parallel where possible.
@@ -217,7 +300,24 @@ export async function buildSnapshot(
     return true;
   });
 
-  const nodes = buildInitiativeNodes(initiatives, sessions, humanGatedIds, existsSync);
+  const repos = [
+    ...new Set(initiatives.map((initiative) => initiative.repo.trim()).filter(Boolean)),
+  ];
+  const repoStates = new Map<string, ProjectRepoState>();
+  const states = await mapWithConcurrency(repos, PROJECT_READ_CONCURRENCY, (repo) =>
+    readProjectRepo(repo, lastGood),
+  );
+  repos.forEach((repo, index) => repoStates.set(repo, states[index]!));
+
+  const nodes = buildInitiativeNodes(initiatives, sessions, humanGatedIds, existsSync).map((node) => {
+    const state = repoStates.get(node.initiative.repo.trim());
+    const projection = projectInitiativeWorkstreams(
+      node.initiative,
+      state?.beads ?? [],
+      state?.diagnostics ?? [],
+    );
+    return { ...node, ...projection };
+  });
   const unmatchedSessions = buildOrphanSessions(initiatives, sessions);
   // Session-transition-aware recency (agent-teams-ni2y.8): stamp this tick's transitions
   // when a map was threaded in (the poll loop), else leave undefined for graceful degrade.

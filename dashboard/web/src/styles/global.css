@@ -115,6 +115,35 @@ body {
   cursor: help;
 }
 
+@media (max-width: 720px) {
+  .nav {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 12px;
+    height: auto;
+    min-height: var(--nav-height);
+    padding: 8px 12px;
+  }
+
+  .nav-links {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    min-width: 0;
+    justify-content: space-between;
+  }
+
+  .nav-link {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .connection-badge {
+    grid-row: 1;
+    grid-column: 2;
+    margin-left: 0;
+  }
+}
+
 /* Full-height view area for routed views */
 .view-area {
   flex: 1;

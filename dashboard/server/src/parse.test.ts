@@ -22,6 +22,7 @@ import {
   deriveNeedsHuman,
   deriveSessionSignal,
   derivePhase,
+  projectInitiativeWorkstreams,
 } from "./parse.js";
 import type {
   RawInitiative,
@@ -29,6 +30,7 @@ import type {
   ParsedInitiative,
   PRReview,
   ExplicitGateKind,
+  WorkBead,
 } from "@agent-teams/shared";
 import { sessionKind } from "@agent-teams/shared";
 
@@ -306,6 +308,29 @@ describe("parseInitiative", () => {
     delete (raw as { prs?: string[] }).prs;
     const parsed = parseInitiative(raw);
     expect(parsed.prs).toEqual([]);
+  });
+
+  it("reads structured pr_workstreams verbatim without scanning description text", () => {
+    const parsed = parseInitiative({
+      ...RAW_AT_V4E,
+      description: "pr-workstream: https://wrong.example/pull/1 wrong-bead",
+      pr_workstreams: [
+        {
+          pr: "https://github.com/MGT-Insurance/midgard/pull/3551",
+          workstream: "agent-teams-child",
+        },
+      ],
+    });
+    expect(parsed.prWorkstreams).toEqual([
+      {
+        pr: "https://github.com/MGT-Insurance/midgard/pull/3551",
+        workstream: "agent-teams-child",
+      },
+    ]);
+  });
+
+  it("defaults prWorkstreams to [] when the producer field is absent", () => {
+    expect(parseInitiative(RAW_AT_V4E).prWorkstreams).toEqual([]);
   });
 
   it("preserves raw initiative fields", () => {
@@ -3144,5 +3169,113 @@ describe("buildInbox — notes-block nextAction fallback for check/generic/revie
     const nodes = buildInitiativeNodes([init], [sess], new Set());
     const inbox = buildInbox(nodes);
     expect(inbox[0]?.nextAction).toBe("session 1 — session paused mid-rebase, no explicit gate set.");
+  });
+});
+
+describe("projectInitiativeWorkstreams", () => {
+  function makeInitiative(overrides: Partial<RawInitiative> = {}): ParsedInitiative {
+    return parseInitiative({
+      ...RAW_AT_V4E,
+      id: "at-board",
+      title: "Board initiative",
+      status: "open",
+      fields: { repo: "/repo", epic: "epic-board" },
+      prs: ["https://github.com/org/repo/pull/1"],
+      pr_workstreams: [
+        { pr: "https://github.com/org/repo/pull/1", workstream: "nested-closed" },
+      ],
+      ...overrides,
+    });
+  }
+
+  function bead(
+    id: string,
+    overrides: Partial<WorkBead> = {},
+  ): WorkBead {
+    return {
+      id,
+      title: id,
+      status: "open",
+      priority: "2",
+      issue_type: "task",
+      ...overrides,
+    };
+  }
+
+  it("projects direct children, rolls nested descendants into progress/memberIds, and guards cycles/orphans", () => {
+    const initiative = makeInitiative();
+    const projection = projectInitiativeWorkstreams(initiative, [
+      bead("epic-board", { issue_type: "epic" }),
+      bead("direct", { parent: "epic-board", status: "in_progress", labels: ["track:test"] }),
+      bead("nested", { parent: "direct" }),
+      bead("nested-closed", { parent: "nested", status: "closed" }),
+      bead("other-root", { issue_type: "epic" }),
+      bead("orphan", { parent: "missing-parent", labels: ["at-board"] }),
+      bead("cycle-a", { parent: "cycle-b", labels: ["at-board"] }),
+      bead("cycle-b", { parent: "cycle-a" }),
+    ]);
+
+    expect(projection.workstreams).toEqual([
+      expect.objectContaining({
+        id: "direct",
+        kind: "workstream",
+        memberIds: ["direct", "nested", "nested-closed"],
+        progress: { total: 2, closed: 1 },
+        labels: ["track:test"],
+      }),
+    ]);
+    expect(projection.workstreamDiagnostics.map((diagnostic) => diagnostic.kind)).toEqual(
+      expect.arrayContaining(["orphan", "cycle"]),
+    );
+    expect(projection.workstreamDiagnostics.map((diagnostic) => diagnostic.kind)).not.toContain(
+      "association-missing",
+    );
+  });
+
+  it("uses exact initiative labels only when epic ancestry is unavailable", () => {
+    const initiative = makeInitiative({ fields: { repo: "/repo" }, pr_workstreams: [] });
+    const projection = projectInitiativeWorkstreams(initiative, [
+      bead("legacy-epic", { issue_type: "epic", labels: ["at-board"] }),
+      bead("legacy-direct", { parent: "legacy-epic", labels: ["at-board"] }),
+      bead("legacy-nested", {
+        parent: "legacy-direct",
+        status: "closed",
+        labels: ["at-board"],
+      }),
+      bead("unrelated", { labels: ["someone-else"] }),
+    ]);
+
+    expect(projection.workstreams).toEqual([
+      expect.objectContaining({
+        id: "legacy-direct",
+        memberIds: ["legacy-direct", "legacy-nested"],
+        progress: { total: 1, closed: 1 },
+      }),
+    ]);
+    expect(projection.workstreamDiagnostics).toContainEqual(
+      expect.objectContaining({ kind: "legacy-label" }),
+    );
+  });
+
+  it("synthesizes exactly one fallback and diagnoses stale associations without label leakage", () => {
+    const initiative = makeInitiative({
+      pr_workstreams: [
+        { pr: "https://github.com/org/repo/pull/1", workstream: "missing-target" },
+      ],
+    });
+    const projection = projectInitiativeWorkstreams(initiative, [
+      bead("epic-board", { issue_type: "epic" }),
+      bead("legacy-looking", { labels: ["at-board"] }),
+    ]);
+
+    expect(projection.workstreams).toEqual([
+      expect.objectContaining({ id: "initiative:at-board", kind: "fallback" }),
+    ]);
+    expect(projection.workstreamDiagnostics).toContainEqual(
+      expect.objectContaining({ kind: "association-missing", beadId: "missing-target" }),
+    );
+    expect(projection.workstreamDiagnostics.map((diagnostic) => diagnostic.kind)).not.toContain(
+      "legacy-label",
+    );
   });
 });

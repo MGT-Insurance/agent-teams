@@ -32,7 +32,7 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 
-const { spawnClaudeLogs, bdLabeledBeads, ateamLearnings } = await import("./cli.js");
+const { spawnClaudeLogs, bdLabeledBeads, bdProjectBeads, ateamLearnings } = await import("./cli.js");
 
 describe("runCli timeout (via bdLabeledBeads)", () => {
   beforeEach(() => {
@@ -147,6 +147,25 @@ describe("bdLabeledBeads", () => {
     currentProc.emit("close", 1);
 
     await expect(promise).rejects.toMatchObject({ name: "CliError", exitCode: 1 });
+  });
+});
+
+describe("bdProjectBeads", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reads the full project once without an initiative label filter", async () => {
+    const promise = bdProjectBeads("/repo/path");
+    currentProc.stdout.emit("data", Buffer.from("[]"));
+    currentProc.emit("close", 0);
+
+    await expect(promise).resolves.toBe("[]");
+    expect(spawn).toHaveBeenCalledWith(
+      "bd",
+      ["-C", "/repo/path", "list", "--status=all", "--json"],
+      expect.anything(),
+    );
   });
 });
 

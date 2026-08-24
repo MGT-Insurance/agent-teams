@@ -4,11 +4,12 @@
 // # Background
 //
 // An initiative's routing data (repo path, worktree, branch, tied sessions,
-// ...) lives as "key: value" text lines inside the initiative bead's
-// description. Before this package existed, roughly twenty call sites across
-// internal/verbs each re-implemented their own line scanner: one
-// (parseDescriptionFields, internal/verbs/route_match.go:29) was last-wins
-// and case-insensitive; the rest were first-wins and case-sensitive. On
+// PRs, PR-to-workstream associations, ...) lives as "key: value" text lines
+// inside the initiative bead's description. Before this package existed,
+// roughly twenty call sites across internal/verbs each re-implemented their
+// own line scanner. One (parseDescriptionFields,
+// internal/verbs/route_match.go:29) was last-wins and case-insensitive; the
+// rest were first-wins and case-sensitive. On
 // 2026-07-28 a briefing line in an initiative's description redefined the
 // repo-path key, the last-wins reader took the redefined value,
 // claimsInitiativeLocally (internal/verbs/routing_ownership.go:40) failed its
@@ -26,17 +27,18 @@
 // Exactly one rule, used by every reader AND by the redefinition-collision
 // check. Stated verbatim:
 //
-//	A field line is: start of line (column 0), an exact-lowercase key, a
-//	single colon, a single space, then a non-empty value. The FIRST
-//	occurrence of a key wins; later occurrences are ignored. Multi-valued
-//	keys (the session tie and track-worktree) accumulate in registration
-//	order instead.
+//	A field line is: start of line (column 0), a key matching
+//	[a-z][a-z0-9-]*, a single colon, a single space, then a non-empty value
+//	whose first character is not whitespace. The value is right-trimmed. The
+//	FIRST occurrence of a key wins; later occurrences are ignored.
+//	Multi-valued keys (session, track-worktree, pr, and pr-workstream)
+//	accumulate in registration order instead.
 //
-// No leading whitespace. No case folding. No tolerance of a missing space
-// after the colon. Under this rule, lines shaped like "Repo: ..." (wrong
-// case) or "- Repo: ..." / "• Repo: ..." (list-prefixed) or "GOAL: ..."
-// (prose, not a field) are structurally invisible — they never match at all,
-// so first-wins is defence in depth rather than the only defence.
+// No leading whitespace. No case folding. No tolerance of a missing or extra
+// space after the colon. Under this rule, lines shaped like "Repo: ..."
+// (wrong case) or "- Repo: ..." / "• Repo: ..." (list-prefixed) or
+// "GOAL: ..." (prose, not a field) are structurally invisible — they never
+// match at all, so first-wins is defence in depth rather than the only defence.
 //
 // A census of every open initiative at the time this contract was written
 // found 100% of real field lines already canonical under this rule. The only
@@ -48,16 +50,17 @@
 // A description is: header (the canonical field lines), then a free-form
 // prose body of arbitrary length, then an APPEND-OPEN TAIL that grows for
 // the life of the initiative (session ties, track-worktree registrations,
-// ...) — appended below the entire prose body on every session start and
-// every track registration.
+// PR registrations, and PR-to-workstream associations) — appended below the
+// entire prose body on every registration.
 //
 // THE TRAP, stated so nobody rediscovers it the hard way: the obvious-looking
 // fix is to bound the parser — stop scanning at the first blank line, or
 // read only a fixed header block. DO NOT DO THIS. The schema block is not
 // contiguous. A bounded parser would stop before the tail lines and
-// therefore fail to resolve a session (or a track) for EVERY live
-// initiative, classifying all of them as dead. That failure is silent and
-// total — strictly worse than the bug this package exists to fix.
+// therefore fail to resolve any session, track, PR, or PR-to-workstream line
+// appended below prose. For sessions and tracks that would classify live work
+// as dead; for PRs and associations it would silently discard durable routing
+// data. Both failures are worse than the bug this package exists to fix.
 //
 // Any change to this package must preserve: a field line is found no matter
 // how far down the description it appears, and a prose body of arbitrary
@@ -65,14 +68,14 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models twelve fields (AMENDED for agent-teams-ssib: "pr" joined
-// the multi-valued rail alongside "session" and "track-worktree" — see
-// [Fields.PRs] and [WithPR]). The live registry carries at least THIRTEEN
-// canonical keys beyond those twelve: pr-number, pr-repo, and pr-url —
-// written not by Go code but by an LLM following a skill's instructions,
-// which then parses those same keys back out of `ateam show`. A skill file
-// can therefore introduce a new canonical key without one line of Go
-// changing.
+// [Fields] models the single-valued routing fields plus four multi-valued
+// rails: "session", "track-worktree", "pr", and "pr-workstream" (see
+// [Fields.Sessions], [Fields.Tracks], [Fields.PRs], and
+// [Fields.PRWorkstreams]). The live registry also carries canonical keys that
+// [Fields] does not model, including pr-number, pr-repo, and pr-url. Those keys
+// are written not by Go code but by an LLM following a skill's instructions,
+// which then parses the same keys back out of `ateam show`. A skill file can
+// therefore introduce a new canonical key without one line of Go changing.
 //
 // "pr" and the pr-number/pr-repo/pr-url trio are NOT the same field wearing
 // two names — they describe different things for different initiative
@@ -89,6 +92,14 @@
 // ("pr"), coincidentally — see docs/multi-pr-contract.md for the frozen
 // grammar and the empirical keystone behind it.
 //
+// A typed "pr-workstream" value has the exact grammar
+// "<canonical-github-pr-url><one ASCII space><whitespace-free-bead-id>".
+// [PRWorkstreams] and [Fields.PRWorkstreams] exclude malformed legacy values,
+// while [JSONFields] preserves every raw matching line. [WithPRWorkstream]
+// canonicalizes URL identity, treats the same pair as a no-op, and rejects a
+// conflicting workstream for the same canonical PR; its caller validates Bead
+// ancestry before persistence.
+//
 // Consequence: no design in this package may assume the typed [Fields]
 // struct enumerates everything storable. An unmodeled canonical key (a line
 // that satisfies frozen item 1 but has no matching Fields member) is
@@ -104,15 +115,15 @@
 //
 //   - [New] composes a fresh description and is for NEW initiatives ONLY. It
 //     must never be used to rewrite an existing initiative's description.
-//   - Every mutation of an EXISTING initiative — [WithSession], [WithTrack] —
-//     is strictly append-only: it takes the issue's current description
-//     unchanged and appends below it, never re-deriving or dropping any
-//     line.
+//   - Every mutation of an EXISTING initiative — [WithSession], [WithTrack],
+//     [WithPR], and [WithPRWorkstream] — is strictly append-only: it takes the
+//     issue's current description unchanged and appends below it, never
+//     re-deriving or dropping any line. An idempotent repeat is a no-op.
 //   - A future migration off this description format (e.g. to bd labels)
 //     must carry every canonical key found in the raw text, not merely the
 //     ones that happen to have a Fields member. A migration that moves only
-//     the twelve modeled fields drops unmodeled keys (e.g. the pr-* trio) on
-//     the floor.
+//     the modeled fields drops unmodeled keys (e.g. the pr-* trio) on the
+//     floor.
 //
 // # Package surface
 //
@@ -122,14 +133,25 @@
 //	    Sessions []string
 //	    Tracks   []string
 //	    PRs      []string
+//	    PRWorkstreams []PRWorkstream
+//	}
+//
+//	type PRWorkstream struct {
+//	    PR         string `json:"pr"`
+//	    Workstream string `json:"workstream"`
 //	}
 //
 //	func Of(iss bd.Issue) Fields                        // READ SEAM (typed)
 //	func JSONFields(iss bd.Issue) map[string]any         // READ SEAM (wire)
+//	func PRWorkstreams(iss bd.Issue) []PRWorkstream      // READ SEAM (valid associations)
+//	func ResolvedPRs(iss bd.Issue) []string              // READ SEAM (rail, then legacy fallback)
+//	var PRURLRE *regexp.Regexp                            // shared GitHub PR matcher
+//	func CanonicalPRURL(url string) (string, bool)
 //	func New(f Fields) (WritePlan, error)                // WRITE SEAM (new initiatives only — see item 4)
 //	func WithSession(iss bd.Issue, id string) (WritePlan, error)
 //	func WithTrack(iss bd.Issue, path string) (WritePlan, error)
 //	func WithPR(iss bd.Issue, url string) (WritePlan, error)
+//	func WithPRWorkstream(iss bd.Issue, url, workstream string) (WritePlan, error)
 //
 //	type WritePlan struct {
 //	    Description string
@@ -144,8 +166,8 @@
 // implementation review, not decided here: a value containing a line break
 // would inject a fake field line into the composed description that wins
 // under first-wins (frozen item 1), so New validates and rejects rather than
-// silently composing broken output. There are zero callers of New today, so
-// this signature change has zero blast radius.
+// silently composing broken output. The error-returning signature is the
+// shipped API, and every caller must handle that validation failure.
 //
 // [Fields.Standby] only ever tells you the WRITE half of the standby
 // lifecycle. [New] writes a "standby: true" header line and [Of] parses it
@@ -158,13 +180,13 @@
 // both Description (via [Of]) and Notes; do not build one that trusts
 // Fields.Standby in isolation.
 //
-// [JSONFields] is the second read seam, added for consumers outside this
-// process — specifically the TypeScript dashboard, which cannot import this
-// package and until now re-implemented the frozen rule in its own regex
+// [JSONFields] is the wire read seam for consumers outside this process —
+// specifically the TypeScript dashboard, which cannot import this package and
+// until now re-implemented the frozen rule in its own regex
 // (agent-teams-ully.12). `ateam list-json` calls it and attaches the result to
 // every element as a "fields" object; the dashboard reads that object.
 //
-// [JSONFields] is deliberately NOT a projection of the twelve [Fields] members.
+// [JSONFields] is deliberately NOT a projection of the typed [Fields] members.
 // Doing that would drop every unmodeled canonical key at a read seam, which
 // item 3 forbids. Instead it emits the canonical LINE key verbatim for every
 // matched line, so the wire shape does not depend on which keys Go models: the
@@ -201,9 +223,10 @@
 //
 // # Scope boundary
 //
-// This package is a read/write component for the routing fields above only.
-// It is not a general refactor of description handling — bead notes, the
-// PR-URL extractor, and free-form prose stay where they are.
+// This package is a read/write component for the routing fields above and the
+// shared PR identity/read helpers required to consume them. It is not a
+// general refactor of description handling: bead notes and free-form prose
+// stay where they are.
 //
 // This package imports internal/bd only (a leaf package, so importing it
 // here creates no cycle even though internal/verbs imports both). As of the

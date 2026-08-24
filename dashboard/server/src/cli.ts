@@ -194,6 +194,13 @@ export function bdLabeledBeads(repo: string, label: string): Promise<string> {
   return runCli("bd", ["-C", repo, "list", "--label", label, "--status=all", "--json"]);
 }
 
+// Returns every bead in one project repository. Snapshot callers deduplicate
+// repositories before invoking this wrapper, so overview polling is one read
+// per distinct repo rather than one read per initiative.
+export function bdProjectBeads(repo: string): Promise<string> {
+  return runCli("bd", ["-C", repo, "list", "--status=all", "--json"]);
+}
+
 // Spawns `claude logs <sessionId>` and pipes raw bytes to the provided callback.
 // Calls onData for each chunk, onEnd when complete, onError on failure.
 // Returns a teardown function that kills the process early (e.g. client disconnect).

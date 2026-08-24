@@ -12,6 +12,8 @@ import type {
   NeedsHumanFlavor,
   ExplicitGateKind,
   PRReview,
+  InitiativeWorkstream,
+  WorkstreamDiagnostic,
   InitiativeNode,
   InboxItem,
   WorkBead,
@@ -86,6 +88,7 @@ export function parseInitiative(raw: RawInitiative): ParsedInitiative {
     // omit the key — a real `ateam list-json` payload always includes it.
     prs: raw.prs ?? [],
     prReviews: raw.pr_reviews ?? [],
+    prWorkstreams: raw.pr_workstreams ?? [],
     epic: fields.epic ?? extractEpicFromNotes(notes),
   };
 }
@@ -162,6 +165,246 @@ export function parseBdList(raw: string): WorkBead[] {
     throw new Error("bd list --json: unexpected element shape (missing id or title)");
   }
   return items as WorkBead[];
+}
+
+export interface WorkstreamProjection {
+  workstreams: InitiativeWorkstream[];
+  workstreamDiagnostics: WorkstreamDiagnostic[];
+}
+
+type AncestryResult =
+  | { kind: "descendant"; directId: string }
+  | { kind: "cycle" }
+  | { kind: "orphan" }
+  | { kind: "other" };
+
+function traceToEpic(
+  bead: WorkBead,
+  epicId: string,
+  byId: ReadonlyMap<string, WorkBead>,
+): AncestryResult {
+  let current = bead;
+  const seen = new Set<string>();
+  while (true) {
+    if (current.id === epicId) return { kind: "other" };
+    if (seen.has(current.id)) return { kind: "cycle" };
+    seen.add(current.id);
+    const parentId = current.parent;
+    if (!parentId) return { kind: "other" };
+    if (parentId === epicId) return { kind: "descendant", directId: current.id };
+    const parent = byId.get(parentId);
+    if (!parent) return { kind: "orphan" };
+    current = parent;
+  }
+}
+
+function isClosedWorkBeadStatus(status: string): boolean {
+  const normalized = (status ?? "").toLowerCase();
+  return normalized === "closed" || normalized === "done";
+}
+
+function fallbackWorkstream(initiative: ParsedInitiative): InitiativeWorkstream {
+  return {
+    id: `initiative:${initiative.id}`,
+    title: initiative.title,
+    status: initiative.status,
+    issueType: initiative.issue_type,
+    priority: initiative.priority,
+    labels: initiative.labels ?? [],
+    progress: { total: 0, closed: 0 },
+    memberIds: [],
+    sourceOrder: 0,
+    kind: "fallback",
+  };
+}
+
+function buildProjectedWorkstreams(
+  directIds: readonly string[],
+  membersByDirect: ReadonlyMap<string, WorkBead[]>,
+  sourceOrder: ReadonlyMap<string, number>,
+  byId: ReadonlyMap<string, WorkBead>,
+): InitiativeWorkstream[] {
+  return directIds
+    .map((id) => byId.get(id))
+    .filter((bead): bead is WorkBead => bead !== undefined)
+    .sort((a, b) => (sourceOrder.get(a.id) ?? 0) - (sourceOrder.get(b.id) ?? 0) || a.id.localeCompare(b.id))
+    .map((direct) => {
+      const orderedMembers = [...(membersByDirect.get(direct.id) ?? [direct])].sort(
+        (a, b) => (sourceOrder.get(a.id) ?? 0) - (sourceOrder.get(b.id) ?? 0) || a.id.localeCompare(b.id),
+      );
+      const descendants = orderedMembers.filter((member) => member.id !== direct.id);
+      return {
+        id: direct.id,
+        title: direct.title,
+        status: direct.status,
+        issueType: direct.issue_type,
+        priority: direct.priority,
+        labels: direct.labels ?? [],
+        progress: {
+          total: descendants.length,
+          closed: descendants.filter((member) => isClosedWorkBeadStatus(member.status)).length,
+        },
+        memberIds: [direct.id, ...descendants.map((member) => member.id)],
+        sourceOrder: sourceOrder.get(direct.id) ?? 0,
+        kind: "workstream" as const,
+      };
+    });
+}
+
+function legacyLabelProjection(
+  initiative: ParsedInitiative,
+  beads: WorkBead[],
+  byId: ReadonlyMap<string, WorkBead>,
+  sourceOrder: ReadonlyMap<string, number>,
+  addDiagnostic: (diagnostic: WorkstreamDiagnostic) => void,
+): InitiativeWorkstream[] {
+  const matched = beads.filter((bead) => bead.labels?.includes(initiative.id));
+  if (matched.length === 0) return [];
+
+  addDiagnostic({
+    kind: "legacy-label",
+    message: `Using exact ${initiative.id} labels because no usable epic ancestry was found.`,
+  });
+
+  const matchedById = new Map(matched.map((bead) => [bead.id, bead]));
+  const matchedEpicIds = new Set(
+    matched.filter((bead) => (bead.issue_type ?? "").toLowerCase() === "epic").map((bead) => bead.id),
+  );
+  const membersByDirect = new Map<string, WorkBead[]>();
+
+  for (const bead of matched) {
+    if (matchedEpicIds.has(bead.id)) continue;
+    let current = bead;
+    const seen = new Set<string>();
+    let directId: string | null = null;
+    while (directId === null) {
+      if (seen.has(current.id)) {
+        addDiagnostic({
+          kind: "cycle",
+          message: `Legacy label ancestry for ${bead.id} contains a parent cycle.`,
+          beadId: bead.id,
+        });
+        break;
+      }
+      seen.add(current.id);
+      const parentId = current.parent;
+      if (!parentId || matchedEpicIds.has(parentId)) {
+        directId = current.id;
+        break;
+      }
+      const matchedParent = matchedById.get(parentId);
+      if (!matchedParent) {
+        if (!byId.has(parentId)) {
+          addDiagnostic({
+            kind: "orphan",
+            message: `Legacy label ancestry for ${bead.id} references missing parent ${parentId}.`,
+            beadId: bead.id,
+          });
+        }
+        directId = current.id;
+        break;
+      }
+      current = matchedParent;
+    }
+    if (directId === null) continue;
+    const members = membersByDirect.get(directId) ?? [];
+    members.push(bead);
+    membersByDirect.set(directId, members);
+  }
+
+  return buildProjectedWorkstreams([...membersByDirect.keys()], membersByDirect, sourceOrder, byId);
+}
+
+// Project one initiative's workstream cards from a repo-wide Beads list. The
+// caller performs one read per distinct repo; this helper stays pure so parent
+// ancestry, legacy fallback, progress, and diagnostics are independently tested.
+export function projectInitiativeWorkstreams(
+  initiative: ParsedInitiative,
+  beads: WorkBead[],
+  initialDiagnostics: readonly WorkstreamDiagnostic[] = [],
+): WorkstreamProjection {
+  const diagnostics: WorkstreamDiagnostic[] = [...initialDiagnostics];
+  const diagnosticKeys = new Set(
+    diagnostics.map((diagnostic) => `${diagnostic.kind}\u0000${diagnostic.beadId ?? ""}\u0000${diagnostic.message}`),
+  );
+  const addDiagnostic = (diagnostic: WorkstreamDiagnostic): void => {
+    const key = `${diagnostic.kind}\u0000${diagnostic.beadId ?? ""}\u0000${diagnostic.message}`;
+    if (!diagnosticKeys.has(key)) {
+      diagnosticKeys.add(key);
+      diagnostics.push(diagnostic);
+    }
+  };
+  const byId = new Map(beads.map((bead) => [bead.id, bead]));
+  const sourceOrder = new Map(beads.map((bead, index) => [bead.id, index]));
+  const associations = initiative.prWorkstreams ?? [];
+  const mappedIds = new Set(associations.map((association) => association.workstream));
+  const epicId = initiative.epic;
+  let usableAncestry = epicId !== null && byId.has(epicId);
+  const membersByDirect = new Map<string, WorkBead[]>();
+
+  if (!initiative.repo.trim()) {
+    addDiagnostic({ kind: "no-repo", message: "Initiative has no project repository." });
+  }
+
+  if (epicId !== null) {
+    if (!byId.has(epicId)) {
+      addDiagnostic({
+        kind: "no-root",
+        message: `Project epic ${epicId} was not present in the repository snapshot.`,
+        beadId: epicId,
+      });
+    }
+    for (const bead of beads) {
+      if (bead.id === epicId) continue;
+      const ancestry = traceToEpic(bead, epicId, byId);
+      if (ancestry.kind === "descendant") {
+        usableAncestry = true;
+        const members = membersByDirect.get(ancestry.directId) ?? [];
+        members.push(bead);
+        membersByDirect.set(ancestry.directId, members);
+        continue;
+      }
+      const relevant = bead.labels?.includes(initiative.id) || mappedIds.has(bead.id);
+      if (relevant && (ancestry.kind === "cycle" || ancestry.kind === "orphan")) {
+        addDiagnostic({
+          kind: ancestry.kind,
+          message:
+            ancestry.kind === "cycle"
+              ? `Bead ${bead.id} contains a parent cycle before reaching ${epicId}.`
+              : `Bead ${bead.id} has a missing parent before reaching ${epicId}.`,
+          beadId: bead.id,
+        });
+      }
+    }
+  }
+
+  let workstreams: InitiativeWorkstream[];
+  if (usableAncestry) {
+    workstreams = buildProjectedWorkstreams(
+      [...membersByDirect.keys()],
+      membersByDirect,
+      sourceOrder,
+      byId,
+    );
+  } else {
+    workstreams = legacyLabelProjection(initiative, beads, byId, sourceOrder, addDiagnostic);
+  }
+
+  const memberIds = new Set(workstreams.flatMap((workstream) => workstream.memberIds ?? [workstream.id]));
+  for (const association of associations) {
+    if (memberIds.has(association.workstream)) continue;
+    const targetExists = byId.has(association.workstream);
+    addDiagnostic({
+      kind: targetExists ? "association-outside-initiative" : "association-missing",
+      message: targetExists
+        ? `PR association target ${association.workstream} is outside the initiative workstream ancestry.`
+        : `PR association target ${association.workstream} is missing from the repository snapshot.`,
+      beadId: association.workstream,
+    });
+  }
+
+  if (workstreams.length === 0) workstreams = [fallbackWorkstream(initiative)];
+  return { workstreams, workstreamDiagnostics: diagnostics };
 }
 
 // ---------------------------------------------------------------------------

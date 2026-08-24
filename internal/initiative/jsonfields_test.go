@@ -88,6 +88,20 @@ func TestJSONFieldsPRsEmitAsArray(t *testing.T) {
 	}
 }
 
+func TestJSONFieldsPRWorkstreamsRemainRawRepeatableValues(t *testing.T) {
+	got := initiative.JSONFields(issue(
+		"pr-workstream: https://github.com/owner/repo/pull/1 repo-epic.1\n" +
+			"pr-workstream: malformed legacy value\n",
+	))
+	want := []string{
+		"https://github.com/owner/repo/pull/1 repo-epic.1",
+		"malformed legacy value",
+	}
+	if !reflect.DeepEqual(got["pr-workstream"], want) {
+		t.Fatalf(`JSONFields["pr-workstream"] = %#v, want %#v`, got["pr-workstream"], want)
+	}
+}
+
 // A single session still marshals as a one-element array, not a bare string.
 func TestJSONFieldsSingleSessionMarshalsAsArray(t *testing.T) {
 	raw, err := json.Marshal(initiative.JSONFields(issue("repo: /r\nsession: only-one\n")))

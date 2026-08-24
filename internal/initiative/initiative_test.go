@@ -574,6 +574,69 @@ func TestWithPR_RejectsEdgeWhitespace(t *testing.T) {
 	}
 }
 
+func TestWithPRWorkstream_AppendsCanonicalPairAndIsIdempotent(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-association",
+		Description: "problem: p\ncustom: preserve this byte-for-byte  \n",
+	}
+	plan, err := initiative.WithPRWorkstream(iss, "http://github.com/Owner/Repo/pull/3", "repo-epic.2")
+	if err != nil {
+		t.Fatalf("WithPRWorkstream: %v", err)
+	}
+	wantLine := "pr-workstream: https://github.com/owner/repo/pull/3 repo-epic.2\n"
+	if !strings.HasPrefix(plan.Description, iss.Description) || !strings.HasSuffix(plan.Description, wantLine) {
+		t.Fatalf("description was not append-only:\n%s", plan.Description)
+	}
+
+	updated := bd.Issue{ID: iss.ID, Description: plan.Description}
+	want := []initiative.PRWorkstream{{PR: "https://github.com/owner/repo/pull/3", Workstream: "repo-epic.2"}}
+	if got := initiative.PRWorkstreams(updated); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PRWorkstreams = %#v, want %#v", got, want)
+	}
+	if got := initiative.Of(updated).PRWorkstreams; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Of(...).PRWorkstreams = %#v, want %#v", got, want)
+	}
+
+	repeat, err := initiative.WithPRWorkstream(updated, "https://github.com/owner/repo/pull/3", "repo-epic.2")
+	if err != nil {
+		t.Fatalf("WithPRWorkstream repeat: %v", err)
+	}
+	if repeat.Description != updated.Description {
+		t.Error("repeating the same association changed the description")
+	}
+}
+
+func TestWithPRWorkstream_RejectsConflictingRemap(t *testing.T) {
+	iss := bd.Issue{Description: "pr-workstream: https://github.com/owner/repo/pull/3 repo-epic.2\n"}
+	_, err := initiative.WithPRWorkstream(iss, "https://github.com/OWNER/REPO/pull/3", "repo-epic.7")
+	if err == nil || !strings.Contains(err.Error(), "already associated with workstream repo-epic.2") {
+		t.Fatalf("conflicting remap error = %v", err)
+	}
+}
+
+func TestPRWorkstreams_ExcludesMalformedLegacyLinesInPersistedOrder(t *testing.T) {
+	iss := bd.Issue{Description: strings.Join([]string{
+		"pr-workstream: https://github.com/owner/repo/pull/1 repo-epic.1",
+		"pr-workstream: https://github.com/owner/repo/pull/2  repo-epic.2", // doubled separator
+		"pr-workstream: http://github.com/owner/repo/pull/3 repo-epic.3",   // non-canonical URL
+		"pr-workstream: https://github.com/owner/repo/pull/4 repo epic.4",  // whitespace in Bead id
+		"pr-workstream: https://github.com/owner/repo/pull/5 repo-epic.5",
+	}, "\n") + "\n"}
+	want := []initiative.PRWorkstream{
+		{PR: "https://github.com/owner/repo/pull/1", Workstream: "repo-epic.1"},
+		{PR: "https://github.com/owner/repo/pull/5", Workstream: "repo-epic.5"},
+	}
+	if got := initiative.PRWorkstreams(iss); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PRWorkstreams = %#v, want %#v", got, want)
+	}
+
+	// The raw fields rail is lossless even though the typed rail filters it.
+	raw, ok := initiative.JSONFields(iss)["pr-workstream"].([]string)
+	if !ok || len(raw) != 5 {
+		t.Fatalf("raw fields pr-workstream = %#v, want all 5 persisted values", raw)
+	}
+}
+
 // TestResolvedPRs_FallsBackToNotesOnlyPR is the exact case the DRI review
 // (team-lead, on top of agent-teams-ssib.6) demanded a witness for: 178 of
 // 549 registered initiatives recorded their PR by writing "pr: <url>" into
@@ -673,6 +736,9 @@ func TestNew_ComposesHeaderInFixedOrder(t *testing.T) {
 		Standby:  true,
 		Sessions: []string{"sess-1"},
 		Tracks:   []string{"/track-1"},
+		PRWorkstreams: []initiative.PRWorkstream{
+			{PR: "http://github.com/Owner/Repo/pull/3", Workstream: "epic-1.2"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -690,6 +756,9 @@ func TestNew_ComposesHeaderInFixedOrder(t *testing.T) {
 	}
 	if len(got.Tracks) != 1 || got.Tracks[0] != "/track-1" {
 		t.Errorf("Tracks = %v, want [/track-1]", got.Tracks)
+	}
+	if want := []initiative.PRWorkstream{{PR: "https://github.com/owner/repo/pull/3", Workstream: "epic-1.2"}}; !reflect.DeepEqual(got.PRWorkstreams, want) {
+		t.Errorf("PRWorkstreams = %#v, want %#v", got.PRWorkstreams, want)
 	}
 }
 

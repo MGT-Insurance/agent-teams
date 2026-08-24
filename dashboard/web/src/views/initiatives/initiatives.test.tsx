@@ -47,6 +47,22 @@ function renderView() {
   );
 }
 
+function rerenderView(view: ReturnType<typeof renderView>) {
+  view.rerender(
+    <MemoryRouter>
+      <InitiativesView />
+    </MemoryRouter>
+  );
+}
+
+function initiativeIdentity(title: string) {
+  return screen.getByRole("button", { name: `Open initiative: ${title}` });
+}
+
+function queryInitiativeIdentity(title: string) {
+  return screen.queryByRole("button", { name: `Open initiative: ${title}` });
+}
+
 function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative {
   return {
     id: "init-1",
@@ -73,6 +89,12 @@ function makeInitiative(over: Partial<ParsedInitiative> = {}): ParsedInitiative 
     fields: {},
     ...over,
   };
+}
+
+// The browser must render a future producer gate honestly even though today's
+// shared union enumerates only the gates currently emitted by the CLI.
+function forwardCompatiblePRReview(pr: string, gate: string): ParsedInitiative["prReviews"][number] {
+  return { pr, gate } as unknown as ParsedInitiative["prReviews"][number];
 }
 
 const workingSession: SessionState = {
@@ -196,8 +218,8 @@ describe("InitiativesView — list rendering", () => {
       makeNode({}, { id: "init-2", title: "Beta feature" }),
     ]);
     renderView();
-    expect(screen.getByText("Alpha feature")).toBeTruthy();
-    expect(screen.getByText("Beta feature")).toBeTruthy();
+    expect(initiativeIdentity("Alpha feature")).toBeTruthy();
+    expect(initiativeIdentity("Beta feature")).toBeTruthy();
     expect(screen.getByText("init-1")).toBeTruthy();
     expect(screen.getByText("init-2")).toBeTruthy();
   });
@@ -217,6 +239,283 @@ describe("InitiativesView — list rendering", () => {
   });
 });
 
+describe("InitiativesView — kanban DOM integration", () => {
+  it("renders the seven states in order, one lane per filtered initiative, and only direct or sole fallback cards", () => {
+    setInitiatives([
+      makeNode(
+        {
+          workstreams: [
+            {
+              id: "ws-api",
+              title: "API delivery",
+              status: "open",
+              issueType: "feature",
+              priority: "P1",
+              labels: [],
+              progress: { total: 2, closed: 1 },
+              memberIds: ["ws-api", "api-child"],
+              sourceOrder: 0,
+            },
+            {
+              id: "ws-web",
+              title: "Web delivery",
+              status: "in_progress",
+              issueType: "task",
+              priority: "P2",
+              labels: [],
+              progress: { total: 0, closed: 0 },
+              memberIds: ["ws-web"],
+              sourceOrder: 1,
+            },
+          ],
+        },
+        { id: "init-direct", title: "Direct initiative" },
+      ),
+      makeNode({}, { id: "init-fallback", title: "Fallback initiative" }),
+    ]);
+
+    const { container } = renderView();
+    const labels = Array.from(
+      container.querySelectorAll(".initiative-board__header .initiative-board__column-header > span:first-child"),
+      (element) => element.textContent,
+    );
+    expect(labels).toEqual([
+      "Planned",
+      "Active",
+      "Verifying",
+      "Your Review",
+      "External Review",
+      "Blocked",
+      "Done",
+    ]);
+
+    const laneList = screen.getByRole("list", { name: "Initiative swimlanes" });
+    expect(laneList.children).toHaveLength(2);
+    expect(initiativeIdentity("Direct initiative")).toBeTruthy();
+    expect(initiativeIdentity("Fallback initiative")).toBeTruthy();
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByRole("article", { name: "API delivery, Planned" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: "Web delivery, Active" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: "Fallback initiative, Planned" })).toBeTruthy();
+    expect(screen.queryByText("Fallback initiative:init-direct")).toBeNull();
+    expect(screen.getByText("Fallback initiative:init-fallback")).toBeTruthy();
+
+    // The fallback title intentionally appears as the lane heading and card heading,
+    // but the stable fallback card itself appears exactly once.
+    expect(screen.getAllByText("Fallback initiative")).toHaveLength(2);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "fallback" } });
+    expect(laneList.children).toHaveLength(1);
+    expect(queryInitiativeIdentity("Direct initiative")).toBeNull();
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+  });
+
+  it("keeps one stable workstream card while PR attachment moves it through every state", () => {
+    const href = "https://github.com/example/dashboard/pull/101";
+    const stableNode = (status: string, gate?: string) =>
+      makeNode(
+        {
+          workstreams: [
+            {
+              id: "ws-stable",
+              title: "Persistent stream",
+              status,
+              issueType: "task",
+              priority: "P1",
+              labels: [],
+              progress: { total: 3, closed: 1 },
+              memberIds: ["ws-stable"],
+            },
+          ],
+        },
+        {
+          id: "init-stable",
+          title: "Stable initiative",
+          prs: gate === undefined ? [] : [href],
+          prReviews: gate === undefined ? [] : [forwardCompatiblePRReview(href, gate)],
+          prWorkstreams: gate === undefined ? [] : [{ pr: href, workstream: "ws-stable" }],
+        },
+      );
+
+    const assertOnlyStableCard = (columnLabel: string, expectedLinks: number) => {
+      const cards = screen.getAllByRole("article");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]?.getAttribute("aria-label")).toBe(`Persistent stream, ${columnLabel}`);
+      expect(cards[0]?.getAttribute("data-column")).toBe(columnLabel.toLowerCase().replace(" ", "-"));
+      expect(within(cards[0] as HTMLElement).getByText("Bead ws-stable")).toBeTruthy();
+      expect(within(cards[0] as HTMLElement).queryAllByRole("link")).toHaveLength(expectedLinks);
+    };
+
+    setInitiatives([stableNode("open")]);
+    const view = renderView();
+    assertOnlyStableCard("Planned", 0);
+
+    const scroller = screen.getByRole("region", { name: /seven-column initiative swimlane board/i });
+    scroller.focus();
+    scroller.scrollLeft = 271;
+
+    setInitiatives([stableNode("in_progress")]);
+    rerenderView(view);
+    assertOnlyStableCard("Active", 0);
+    expect(document.activeElement).toBe(scroller);
+    expect(scroller.scrollLeft).toBe(271);
+
+    for (const scenario of [
+      { status: "in_progress", gate: "future-gate", label: "Verifying" },
+      { status: "in_progress", gate: "review", label: "Your Review" },
+      { status: "in_progress", gate: "external", label: "External Review" },
+      { status: "in_progress", gate: "question", label: "Blocked" },
+      { status: "closed", gate: "question", label: "Done" },
+    ]) {
+      setInitiatives([stableNode(scenario.status, scenario.gate)]);
+      rerenderView(view);
+      assertOnlyStableCard(scenario.label, 1);
+      expect(screen.getByRole("link", { name: new RegExp(`gate ${scenario.gate}`, "i") })).toBeTruthy();
+    }
+  });
+
+  it("applies multi-PR precedence, exposes unknown gates, and renders safe accessible destinations", () => {
+    const prs = [
+      "https://github.com/example/dashboard/pull/201",
+      "https://github.com/example/dashboard/pull/202",
+      "https://github.com/example/dashboard/pull/203",
+      "https://github.com/example/dashboard/pull/204",
+    ];
+    setInitiatives([
+      makeNode(
+        {
+          workstreams: [{
+            id: "ws-many-prs",
+            title: "Many PR stream",
+            status: "in_progress",
+            labels: [],
+            progress: { total: 0, closed: 0 },
+            memberIds: ["ws-many-prs"],
+          }],
+        },
+        {
+          id: "init-many-prs",
+          title: "Many PR initiative",
+          prs,
+          prReviews: [
+            forwardCompatiblePRReview(prs[0] as string, "external"),
+            forwardCompatiblePRReview(prs[1] as string, "vendor-hold"),
+            forwardCompatiblePRReview(prs[2] as string, "review"),
+            forwardCompatiblePRReview(prs[3] as string, "question"),
+          ],
+          prWorkstreams: prs.map((pr) => ({ pr, workstream: "ws-many-prs" })),
+        },
+      ),
+    ]);
+
+    renderView();
+    const card = screen.getByRole("article", { name: "Many PR stream, Blocked" });
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(within(card).getByText("Pull requests (4)")).toBeTruthy();
+    expect(within(card).getByText("Gate: vendor-hold")).toBeTruthy();
+    const links = within(card).getAllByRole("link", { name: /open pr example\/dashboard/i });
+    expect(links).toHaveLength(4);
+    for (const [index, link] of links.entries()) {
+      expect(link.getAttribute("href")).toBe(prs[index]);
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    }
+  });
+
+  it("renders unassigned and stale diagnostics without losing descendant progress or total accounting", () => {
+    const assigned = "https://github.com/example/dashboard/pull/301";
+    const omitted = "https://github.com/example/dashboard/pull/302";
+    const stale = "https://github.com/example/dashboard/pull/303";
+    const missing = "https://github.com/example/dashboard/pull/304";
+    setInitiatives([
+      makeNode(
+        {
+          workstreams: [{
+            id: "ws-diagnostic",
+            title: "Diagnostic stream",
+            status: "open",
+            labels: [],
+            progress: { total: 5, closed: 2 },
+            memberIds: ["ws-diagnostic", "nested-diagnostic"],
+          }],
+          workstreamDiagnostics: [
+            { kind: "orphan", message: "Parent not found", beadId: "orphan-1" },
+            { kind: "load-error", message: "Using last-known-good workstreams" },
+          ],
+        },
+        {
+          id: "init-diagnostic",
+          title: "Diagnostic initiative",
+          prs: [assigned, omitted, stale],
+          prReviews: [
+            forwardCompatiblePRReview(assigned, "review"),
+            forwardCompatiblePRReview(omitted, ""),
+            forwardCompatiblePRReview(stale, "vendor-hold"),
+          ],
+          prWorkstreams: [
+            { pr: assigned, workstream: "nested-diagnostic" },
+            { pr: stale, workstream: "deleted-stream" },
+            { pr: missing, workstream: "ws-diagnostic" },
+          ],
+        },
+      ),
+    ]);
+
+    const { container } = renderView();
+    const card = screen.getByRole("article", { name: "Diagnostic stream, Your Review" });
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(within(card).getByText("2 / 5 closed")).toBeTruthy();
+    expect(within(card).getAllByRole("link")).toHaveLength(1);
+
+    const diagnostics = screen.getByRole("complementary", { name: "Initiative diagnostics" });
+    expect(within(diagnostics).getByRole("heading", { name: "Unassigned PRs (2)" })).toBeTruthy();
+    expect(within(diagnostics).getByRole("heading", { name: "Stale PR mappings (2)" })).toBeTruthy();
+    expect(within(diagnostics).getByText(/missing workstream:/i)).toBeTruthy();
+    expect(within(diagnostics).getByText(/missing pr:/i)).toBeTruthy();
+    expect(within(diagnostics).getByText(/Parent not found/)).toBeTruthy();
+    expect(within(diagnostics).getByText(/Using last-known-good workstreams/)).toBeTruthy();
+    expect(within(diagnostics).getAllByRole("link")).toHaveLength(4);
+
+    expect(container.querySelector(".initiative-board__summary")?.textContent).toBe(
+      "1 workstream card across seven states",
+    );
+    const counts = Array.from(container.querySelectorAll<HTMLElement>(".initiative-board__cell"))
+      .map((cell) => Number(cell.getAttribute("aria-label")?.match(/: (\d+) workstream/)?.[1] ?? 0));
+    expect(counts).toEqual([0, 0, 0, 1, 0, 0, 0]);
+    expect(counts.reduce((total, count) => total + count, 0)).toBe(1);
+  });
+
+  it("keeps reap actions and alerts visible through filters and supports keyboard drill-in navigation", () => {
+    const reapSession = { ...deadSession, id: "deadbeef" };
+    setInitiatives([
+      makeNode(
+        {
+          session: reapSession,
+          needsHuman: "reap",
+          worktreeExists: false,
+          alert: closedDeadAlert,
+        },
+        { id: "init-reap", title: "Reap this session", status: "closed" },
+      ),
+      makeNode({}, { id: "init-other", title: "Other initiative" }),
+    ]);
+
+    renderView();
+    fireEvent.click(screen.getByRole("checkbox", { name: /on this machine/i }));
+    const identity = initiativeIdentity("Reap this session");
+    expect(queryInitiativeIdentity("Other initiative")).toBeNull();
+    expect(within(identity).getByRole("button", { name: "Stop session" })).toBeTruthy();
+    expect(within(identity).getByRole("tooltip").textContent).toMatch(/reap it/i);
+    fireEvent.keyDown(identity, { key: "Enter" });
+    expect(mockNavigate).toHaveBeenCalledWith("/initiative/init-reap");
+
+    const scroller = screen.getByRole("region", { name: /seven-column initiative swimlane board/i });
+    expect(scroller.getAttribute("tabindex")).toBe("0");
+    const card = screen.getByRole("article", { name: "Reap this session, Done" });
+    expect(card.getAttribute("role")).toBeNull();
+    expect(within(card).queryByRole("button")).toBeNull();
+  });
+});
+
 describe("InitiativesView — search", () => {
   beforeEach(() =>
     setInitiatives([
@@ -228,15 +527,15 @@ describe("InitiativesView — search", () => {
   it("filters rows by title substring (case-insensitive)", () => {
     renderView();
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "auth" } });
-    expect(screen.getByText("Refactor auth")).toBeTruthy();
-    expect(screen.queryByText("Dashboard polish")).toBeNull();
+    expect(initiativeIdentity("Refactor auth")).toBeTruthy();
+    expect(queryInitiativeIdentity("Dashboard polish")).toBeNull();
   });
 
   it("filters rows by id substring", () => {
     renderView();
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "init-2" } });
-    expect(screen.getByText("Dashboard polish")).toBeTruthy();
-    expect(screen.queryByText("Refactor auth")).toBeNull();
+    expect(initiativeIdentity("Dashboard polish")).toBeTruthy();
+    expect(queryInitiativeIdentity("Refactor auth")).toBeNull();
   });
 
   it("shows the no-match empty state when search matches nothing", () => {
@@ -257,17 +556,17 @@ describe("InitiativesView — completed toggle", () => {
 
   it("hides completed (closed/done, no live session) initiatives by default", () => {
     renderView();
-    expect(screen.getByText("Open one")).toBeTruthy();
-    expect(screen.queryByText("Closed one")).toBeNull();
-    expect(screen.queryByText("Done one")).toBeNull();
+    expect(initiativeIdentity("Open one")).toBeTruthy();
+    expect(queryInitiativeIdentity("Closed one")).toBeNull();
+    expect(queryInitiativeIdentity("Done one")).toBeNull();
   });
 
   it("reveals completed initiatives when 'Show completed' is on", () => {
     renderView();
     fireEvent.click(screen.getByRole("checkbox", { name: /show completed/i }));
-    expect(screen.getByText("Open one")).toBeTruthy();
-    expect(screen.getByText("Closed one")).toBeTruthy();
-    expect(screen.getByText("Done one")).toBeTruthy();
+    expect(initiativeIdentity("Open one")).toBeTruthy();
+    expect(initiativeIdentity("Closed one")).toBeTruthy();
+    expect(initiativeIdentity("Done one")).toBeTruthy();
   });
 
   it("keeps a closed initiative with ANY lingering session visible (not completed)", () => {
@@ -279,9 +578,9 @@ describe("InitiativesView — completed toggle", () => {
     renderView();
     // Show completed OFF: the two with a lingering session show; only the
     // truly-gone one (closed + no session) is hidden as "completed".
-    expect(screen.getByText("Closed alive")).toBeTruthy();
-    expect(screen.getByText("Closed dead")).toBeTruthy();
-    expect(screen.queryByText("Closed quiet")).toBeNull();
+    expect(initiativeIdentity("Closed alive")).toBeTruthy();
+    expect(initiativeIdentity("Closed dead")).toBeTruthy();
+    expect(queryInitiativeIdentity("Closed quiet")).toBeNull();
   });
 });
 
@@ -295,15 +594,15 @@ describe("InitiativesView — on-this-machine filter", () => {
 
   it("shows all initiatives by default", () => {
     renderView();
-    expect(screen.getByText("On this host")).toBeTruthy();
-    expect(screen.getByText("Other host")).toBeTruthy();
+    expect(initiativeIdentity("On this host")).toBeTruthy();
+    expect(initiativeIdentity("Other host")).toBeTruthy();
   });
 
   it("hides off-machine initiatives when 'On this machine' is on", () => {
     renderView();
     fireEvent.click(screen.getByRole("checkbox", { name: /on this machine/i }));
-    expect(screen.getByText("On this host")).toBeTruthy();
-    expect(screen.queryByText("Other host")).toBeNull();
+    expect(initiativeIdentity("On this host")).toBeTruthy();
+    expect(queryInitiativeIdentity("Other host")).toBeNull();
   });
 });
 
@@ -526,7 +825,7 @@ describe("InitiativesView — toggle persistence", () => {
     expect(
       (screen.getByRole("checkbox", { name: /show completed/i }) as HTMLInputElement).checked
     ).toBe(true);
-    expect(screen.getByText("Closed one")).toBeTruthy();
+    expect(initiativeIdentity("Closed one")).toBeTruthy();
   });
 
   it("persists 'On this machine' across remounts via localStorage", () => {
@@ -543,7 +842,7 @@ describe("InitiativesView — toggle persistence", () => {
     expect(
       (screen.getByRole("checkbox", { name: /on this machine/i }) as HTMLInputElement).checked
     ).toBe(true);
-    expect(screen.queryByText("Other host")).toBeNull();
+    expect(queryInitiativeIdentity("Other host")).toBeNull();
   });
 });
 

@@ -6,8 +6,15 @@
 package verbs
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"unicode"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -32,8 +39,75 @@ type prCmd struct {
 // idempotent on a repeat URL: calling it again for a second, then a third PR
 // is how those get recorded on one initiative.
 type prAddKong struct {
-	InitiativeID string `arg:"" name:"initiative-id" help:"Initiative ID to record the PR on."`
-	URL          string `arg:"" name:"pr-url" help:"Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/3."`
+	InitiativeID string  `arg:"" name:"initiative-id" help:"Initiative ID to record the PR on."`
+	URL          string  `arg:"" name:"pr-url" help:"Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/3."`
+	Workstream   *string `name:"workstream" help:"Project Bead ID whose workstream owns this PR."`
+
+	newProjectBD func(string) projectBDRunner `kong:"-"`
+}
+
+type projectBDRunner interface {
+	Run(args ...string) (string, error)
+}
+
+// initiativeMutationLock serializes whole-description read/modify/write
+// operations for one initiative across ateam processes. The lock file remains
+// on disk after Close; only the kernel flock represents ownership, so a
+// crashed process cannot leave a stale claim and release never races a new
+// acquirer by unlinking the inode it locked.
+type initiativeMutationLock struct {
+	file *os.File
+}
+
+func initiativeMutationLockPath(home, initiativeID string) string {
+	digest := sha256.Sum256([]byte(initiativeID))
+	return filepath.Join(home, ".locks", "initiatives", fmt.Sprintf("%x.lock", digest))
+}
+
+func acquireInitiativeMutationLock(home, initiativeID string) (*initiativeMutationLock, error) {
+	if home == "" {
+		return nil, fmt.Errorf("agent-teams home is empty")
+	}
+	path := initiativeMutationLockPath(home, initiativeID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create initiative lock directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open initiative lock: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("set initiative lock permissions: %w", err)
+	}
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("flock initiative lock: %w", err)
+	}
+	return &initiativeMutationLock{file: file}, nil
+}
+
+func (l *initiativeMutationLock) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	file := l.file
+	l.file = nil
+	unlockErr := syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	closeErr := file.Close()
+	if unlockErr != nil {
+		return fmt.Errorf("unlock initiative lock: %w", unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close initiative lock: %w", closeErr)
+	}
+	return nil
 }
 
 // Validate rejects a malformed pr-url before any bd read/write. WithPR itself
@@ -49,15 +123,40 @@ func (c *prAddKong) Validate() error {
 	if !initiative.PRURLRE.MatchString(c.URL) {
 		return cli.Usagef("ateam pr add: pr-url must be a full GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>), got %q", c.URL)
 	}
+	if c.Workstream != nil {
+		if *c.Workstream == "" {
+			return cli.Usagef("ateam pr add: --workstream must not be empty")
+		}
+		if strings.IndexFunc(*c.Workstream, unicode.IsSpace) >= 0 {
+			return cli.Usagef("ateam pr add: --workstream must be a whitespace-free Bead ID, got %q", *c.Workstream)
+		}
+	}
 	return nil
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
-func (c *prAddKong) Run(ctx *cli.Context) error {
+func (c *prAddKong) Run(ctx *cli.Context) (runErr error) {
 	if ctx == nil {
 		return fmt.Errorf("ateam pr add: no context")
 	}
+	lock, err := acquireInitiativeMutationLock(ctx.Home, c.InitiativeID)
+	if err != nil {
+		return fmt.Errorf("ateam pr add: acquire initiative %s lock: %w", c.InitiativeID, err)
+	}
+	defer func() {
+		if err := lock.Close(); err != nil {
+			lockErr := fmt.Errorf("ateam pr add: release initiative %s lock: %w", c.InitiativeID, err)
+			if runErr == nil {
+				runErr = lockErr
+			} else {
+				runErr = errors.Join(runErr, lockErr)
+			}
+		}
+	}()
 
+	// This is intentionally the first initiative read: every process re-reads
+	// after acquiring the per-initiative lock, then holds that lock through
+	// planning, descendant validation, and the final whole-description update.
 	issue, err := bd.ShowIssue(ctx.BD, c.InitiativeID)
 	if err != nil {
 		return fmt.Errorf("ateam pr add: bd show %s: %w", c.InitiativeID, err)
@@ -86,6 +185,19 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("ateam pr add: %w", err)
 	}
+
+	if c.Workstream != nil {
+		withPR := issue
+		withPR.Description = plan.Description
+		associationPlan, err := initiative.WithPRWorkstream(withPR, c.URL, *c.Workstream)
+		if err != nil {
+			return fmt.Errorf("ateam pr add: %w", err)
+		}
+		if err := c.validateWorkstream(issue, *c.Workstream); err != nil {
+			return err
+		}
+		plan = associationPlan
+	}
 	if plan.Description == issue.Description {
 		fmt.Fprintf(ctx.Stdout, "pr add: %s already recorded on %s\n", c.URL, c.InitiativeID)
 		return nil
@@ -108,6 +220,69 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	}
 	fmt.Fprintf(ctx.Stdout, "pr add: recorded %s on %s\n", c.URL, c.InitiativeID)
 	return nil
+}
+
+type projectIssue struct {
+	ID     string `json:"id"`
+	Parent string `json:"parent"`
+}
+
+func showProjectIssue(runner projectBDRunner, id string) (projectIssue, error) {
+	out, err := runner.Run("show", id, "--json")
+	if err != nil {
+		return projectIssue{}, err
+	}
+	var issues []projectIssue
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return projectIssue{}, fmt.Errorf("decode bd show %s: %w", id, err)
+	}
+	if len(issues) == 0 || issues[0].ID == "" {
+		return projectIssue{}, fmt.Errorf("bd show %s: not found", id)
+	}
+	return issues[0], nil
+}
+
+func (c *prAddKong) validateWorkstream(initiativeIssue bd.Issue, workstream string) error {
+	fields := initiative.Of(initiativeIssue)
+	if fields.Repo == "" {
+		return fmt.Errorf("ateam pr add: --workstream requires initiative %s to have a non-empty repo field", c.InitiativeID)
+	}
+	if fields.Epic == "" {
+		return fmt.Errorf("ateam pr add: --workstream requires initiative %s to have a non-empty epic field", c.InitiativeID)
+	}
+	if workstream == fields.Epic {
+		return fmt.Errorf("ateam pr add: workstream %s is the initiative epic itself, not a descendant", workstream)
+	}
+
+	newProjectBD := c.newProjectBD
+	if newProjectBD == nil {
+		newProjectBD = func(repo string) projectBDRunner { return bd.NewClient(repo) }
+	}
+	projectBD := newProjectBD(fields.Repo)
+	if projectBD == nil {
+		return fmt.Errorf("ateam pr add: inspect project %s: no bd client", fields.Repo)
+	}
+
+	seen := make(map[string]struct{})
+	current := workstream
+	for {
+		if _, duplicate := seen[current]; duplicate {
+			return fmt.Errorf("ateam pr add: workstream %s parent chain contains a cycle at %s", workstream, current)
+		}
+		seen[current] = struct{}{}
+
+		projectIssue, err := showProjectIssue(projectBD, current)
+		if err != nil {
+			return fmt.Errorf("ateam pr add: inspect workstream %s in project %s: %w", current, fields.Repo, err)
+		}
+		if projectIssue.Parent == fields.Epic {
+			return nil
+		}
+		if projectIssue.Parent == "" {
+			return fmt.Errorf("ateam pr add: workstream %s is not a descendant of epic %s", workstream, fields.Epic)
+		}
+		current = projectIssue.Parent
+	}
 }
 
 // resolvePR canonicalizes pr and requires it to identify one of id's actual

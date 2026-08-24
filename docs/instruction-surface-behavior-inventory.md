@@ -908,7 +908,7 @@ sample-verified against `git show 3c337f5:<path>`.
 | EXEC-43 | POINTER | Registration is the one correct place a raw path appears | execution.md:31 | execution.md:28 |
 | EXEC-44 | ABSOLUTE | Record `track-worktree:` line for every implementer worktree | execution.md:32 | execution.md:29 |
 | EXEC-45 | CONTEXT | Extends at-ps11 pattern; hung-scan unions the set | execution.md:32 | execution.md:29 |
-| EXEC-46 | PROCEDURE | Do this before spawning: append line, update-description | execution.md:33-35 | execution.md:29 |
+| EXEC-46 | PROCEDURE | Before spawning, atomically record the track with `ateam track add <initiative-id> <abs-path>`; never use show/edit/update-description for this append | execution.md:33-35 | execution.md:33 |
 | EXEC-47 | POLICY | Skip for the DRI's own worktree | execution.md:36 | execution.md:29 |
 | EXEC-48 | ABSOLUTE | Legacy fallback is not a substitute | execution.md:36 | execution.md:29 |
 | EXEC-49 | PROCEDURE / ABSOLUTE | Merge each track; resolve conflicts yourself | execution.md:40 | execution.md:33 |

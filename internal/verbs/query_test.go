@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -299,11 +300,11 @@ func TestListJSONPreservesEveryBdKey(t *testing.T) {
 			t.Errorf("key %q = %s, want %s", key, got, expected)
 		}
 	}
-	// Exactly three keys added: fields, prs, pr_reviews.
-	if len(got[0]) != len(original[0])+3 {
-		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\", \"prs\", \"pr_reviews\")", len(got[0]), len(original[0])+3)
+	// Exactly four keys added: fields, prs, pr_reviews, pr_workstreams.
+	if len(got[0]) != len(original[0])+4 {
+		t.Errorf("emitted %d keys, want %d (the original set plus \"fields\", \"prs\", \"pr_reviews\", \"pr_workstreams\")", len(got[0]), len(original[0])+4)
 	}
-	for _, key := range []string{"fields", "prs", "pr_reviews"} {
+	for _, key := range []string{"fields", "prs", "pr_reviews", "pr_workstreams"} {
 		if _, present := got[0][key]; !present {
 			t.Errorf("no %q key was added", key)
 		}
@@ -315,6 +316,9 @@ func TestListJSONPreservesEveryBdKey(t *testing.T) {
 	}
 	if got0Reviews := compactJSON(t, got[0]["pr_reviews"]); got0Reviews != "[]" {
 		t.Errorf(`pr_reviews = %s, want "[]"`, got0Reviews)
+	}
+	if got0Workstreams := compactJSON(t, got[0]["pr_workstreams"]); got0Workstreams != "[]" {
+		t.Errorf(`pr_workstreams = %s, want "[]"`, got0Workstreams)
 	}
 }
 
@@ -498,6 +502,52 @@ func TestListJSONRefusesToOverwriteAnExistingPRsKey(t *testing.T) {
 	err := listJSONErr(t, `[{"id":"at-x","title":"T","prs":["already here"]}]`)
 	if !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Errorf("error = %v, want a \"refusing to overwrite\" error", err)
+	}
+}
+
+func TestListJSONEmitsOrderedPRWorkstreamsAndFiltersMalformedLegacyLines(t *testing.T) {
+	bdOutput := `[{
+		"id":"at-workstreams",
+		"title":"T",
+		"description":"pr: https://github.com/owner/repo/pull/1\npr: https://github.com/owner/repo/pull/3\npr-workstream: https://github.com/owner/repo/pull/1 repo-root.1\npr-workstream: https://github.com/owner/repo/pull/2  repo-root.2\npr-workstream: https://github.com/owner/repo/pull/3 repo-root.3\n"
+	}]`
+	got := listJSON(t, bdOutput)
+	if len(got) != 1 {
+		t.Fatalf("elements = %d, want 1", len(got))
+	}
+	var associations []initiative.PRWorkstream
+	if err := json.Unmarshal(got[0]["pr_workstreams"], &associations); err != nil {
+		t.Fatalf("pr_workstreams is not a JSON array: %v", err)
+	}
+	want := []initiative.PRWorkstream{
+		{PR: "https://github.com/owner/repo/pull/1", Workstream: "repo-root.1"},
+		{PR: "https://github.com/owner/repo/pull/3", Workstream: "repo-root.3"},
+	}
+	if !reflect.DeepEqual(associations, want) {
+		t.Fatalf("pr_workstreams = %#v, want %#v", associations, want)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(got[0]["fields"], &fields); err != nil {
+		t.Fatalf("fields is not an object: %v", err)
+	}
+	raw, ok := fields["pr-workstream"].([]any)
+	if !ok || len(raw) != 3 {
+		t.Fatalf("fields.pr-workstream = %#v, want all 3 persisted lines", fields["pr-workstream"])
+	}
+}
+
+func TestListJSONPRWorkstreamsIsEmptyArrayWhenAbsent(t *testing.T) {
+	got := listJSON(t, `[{"id":"at-x","title":"T"}]`)
+	if string(got[0]["pr_workstreams"]) != "[]" {
+		t.Fatalf("pr_workstreams = %s, want []", got[0]["pr_workstreams"])
+	}
+}
+
+func TestListJSONRefusesToOverwriteAnExistingPRWorkstreamsKey(t *testing.T) {
+	err := listJSONErr(t, `[{"id":"at-x","title":"T","pr_workstreams":[]}]`)
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("error = %v, want a refusing-to-overwrite error", err)
 	}
 }
 

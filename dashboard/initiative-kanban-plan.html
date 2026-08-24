@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard initiative swimlanes — delivery plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#071019; --panel:#0d1823; --panel2:#122130; --line:#26394b;
+      --ink:#edf4fa; --muted:#9caebe; --blue:#67adff; --cyan:#55d7cf;
+      --amber:#f1bc65; --violet:#b7a1ff; --red:#ff7d89; --green:#6bd39d;
+      --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+      --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    }
+    * { box-sizing:border-box }
+    body { margin:0; color:var(--ink); background:radial-gradient(circle at 90% 0,rgba(103,173,255,.14),transparent 34rem),var(--bg); font:15px/1.55 var(--sans) }
+    a { color:var(--blue) } code { font-family:var(--mono); color:#c9dcf0 }
+    .page { width:min(1640px,calc(100% - 40px)); margin:auto; padding:26px 0 72px }
+    .top { display:flex; justify-content:space-between; gap:20px; color:var(--muted); font:11px var(--mono) }
+    .hero { max-width:980px; padding:66px 0 34px }
+    .eyebrow { color:var(--cyan); font:700 11px var(--mono); letter-spacing:.14em; text-transform:uppercase }
+    h1 { margin:12px 0 18px; font-size:clamp(40px,6vw,76px); line-height:.98; letter-spacing:-.05em }
+    h2 { margin:0 0 16px; font-size:clamp(25px,3vw,38px); line-height:1.1 }
+    h3,p { margin-top:0 } .lede { color:#bdcad6; font-size:18px }
+    .ruling { display:grid; grid-template-columns:1.4fr .8fr; gap:22px; padding:27px; border:1px solid rgba(85,215,207,.42); border-radius:18px; background:linear-gradient(145deg,rgba(85,215,207,.08),rgba(13,24,35,.95)) }
+    .ruling aside,.panel { padding:19px; border:1px solid var(--line); border-radius:13px; background:rgba(7,16,25,.48) }
+    .ruling ul,.panel ul { margin:8px 0 0; padding-left:19px; color:var(--muted) }
+    section { margin-top:72px; scroll-margin-top:18px }
+    .intro { max-width:880px; color:var(--muted) }
+    .board-shell { overflow:auto; border:1px solid var(--line); border-radius:18px; background:#09131d; box-shadow:0 22px 60px rgba(0,0,0,.28) }
+    .board { min-width:1600px }
+    .grid { display:grid; grid-template-columns:230px repeat(7,minmax(190px,1fr)); }
+    .head { position:sticky; top:0; z-index:4; border-bottom:1px solid var(--line); background:#101d29 }
+    .head > div { padding:13px; border-right:1px solid var(--line); font:700 10px var(--mono); letter-spacing:.07em; text-transform:uppercase }
+    .corner { position:sticky; left:0; z-index:6; color:var(--muted); background:#101d29 }
+    .lane { border-bottom:1px solid var(--line) }
+    .lane:last-child { border-bottom:0 }
+    .identity { position:sticky; left:0; z-index:3; padding:16px; border-right:1px solid var(--line); background:#0e1a25 }
+    .identity strong { display:block; line-height:1.3 }
+    .identity code { display:block; margin:7px 0; color:var(--muted); font-size:10px }
+    .identity small { color:var(--muted) }
+    .unassigned { margin-top:12px; padding-top:10px; border-top:1px dashed var(--line); color:var(--amber); font:10px var(--mono) }
+    .cell { min-height:165px; padding:10px; border-right:1px solid #1d3040; background:rgba(13,24,35,.66) }
+    .card { padding:12px; border:1px solid #30475c; border-radius:10px; background:linear-gradient(155deg,#172838,#111e2a); box-shadow:0 7px 18px rgba(0,0,0,.15) }
+    .card + .card { margin-top:9px }
+    .card h3 { margin:6px 0; font-size:13px; line-height:1.35 }
+    .meta { color:var(--muted); font:10px var(--mono); overflow-wrap:anywhere }
+    .chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:9px }
+    .chip { padding:2px 6px; border:1px solid #3a5267; border-radius:5px; color:#b8c7d4; font:9px var(--mono) }
+    .planned { color:var(--muted) }.active { color:var(--blue) }.verifying { color:var(--cyan) }.your { color:var(--amber) }.external { color:var(--violet) }.blocked { color:var(--red) }.done { color:var(--green) }
+    .empty { display:grid; place-items:center; color:#506273; font:10px var(--mono) }
+    .mobile-note { display:none; color:var(--cyan); font:10px var(--mono) }
+    .cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px }
+    .panel p,.panel li { color:var(--muted) }
+    .panel b { color:var(--ink) }
+    table { width:100%; border-collapse:collapse; border:1px solid var(--line); background:rgba(13,24,35,.78) }
+    th,td { padding:12px 14px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top }
+    th { color:#c8d7e3; background:#122130; font:700 10px var(--mono); letter-spacing:.07em; text-transform:uppercase }
+    td { color:var(--muted); font-size:13px } tr:last-child td { border-bottom:0 }
+    .flow { display:grid; grid-template-columns:repeat(4,1fr); gap:12px }
+    .step { padding:18px; border:1px solid var(--line); border-radius:13px; background:rgba(13,24,35,.8) }
+    .step span { color:var(--muted); font-size:12px }
+    .step b { display:block; margin-bottom:7px; color:var(--blue); font:700 11px var(--mono) }
+    .graph { padding:22px; border:1px solid var(--line); border-radius:14px; background:#0b1620; color:#cad7e2; font:12px/1.8 var(--mono); white-space:pre-wrap }
+    .footer { margin-top:70px; padding-top:22px; border-top:1px solid var(--line); color:var(--muted); font:10px var(--mono) }
+    @media (max-width:900px) { .ruling,.cards,.flow { grid-template-columns:1fr } }
+    @media (max-width:640px) {
+      .page { width:calc(100% - 24px); padding-top:16px }
+      .top span:last-child { display:none }
+      .board-shell { overflow:visible; border:0; background:transparent; box-shadow:none }
+      .board { min-width:0 }
+      .head { display:none }
+      .lane { display:block; margin-bottom:18px; border:1px solid var(--line); border-radius:14px; overflow:hidden }
+      .identity { position:static; border-right:0; border-bottom:1px solid var(--line) }
+      .cell { position:relative; min-height:72px; padding:38px 10px 10px; border-right:0; border-bottom:1px solid #1d3040 }
+      .cell::before { content:attr(data-column); position:absolute; top:10px; left:10px; font:700 10px var(--mono); letter-spacing:.07em; text-transform:uppercase }
+      .mobile-note { display:block }
+      table { display:block; overflow:auto }
+    }
+  </style>
+</head>
+<body>
+<main class="page">
+  <div class="top"><span>agent-teams / implementation plan</span><span>at-s003 · epic agent-teams-tuy9 · revised 2026-08-20</span></div>
+  <header class="hero">
+    <div class="eyebrow">Dashboard-wide initiative board</div>
+    <h1>One board. One lane per initiative. One card per workstream.</h1>
+    <p class="lede">The existing Initiatives overview becomes a seven-column kanban. A workstream card exists before a PR, keeps its identity as work advances, and gains PR links and review state without spawning a duplicate PR card.</p>
+  </header>
+
+  <article class="ruling" aria-labelledby="ruling-title">
+    <div>
+      <div class="eyebrow">Approved direction, frozen</div>
+      <h2 id="ruling-title">This is an overview redesign, not a drill-in redesign.</h2>
+      <p>The route is <code>/initiatives</code>. The global columns are Planned, Active, Verifying, Your Review, External Review, Blocked, and Done. Each initiative is one horizontal swimlane with sticky parent identity. At narrow widths, each initiative becomes its own stacked section in the same column order.</p>
+    </div>
+    <aside>
+      <b>Non-negotiable identity rule</b>
+      <ul>
+        <li>Cards represent workstreams, never PRs.</li>
+        <li>Opening a PR enriches the existing card.</li>
+        <li>No title, order, branch, or repo inference.</li>
+        <li>No child workstream means exactly one initiative fallback card.</li>
+      </ul>
+    </aside>
+  </article>
+
+  <section aria-labelledby="mock-title">
+    <div class="eyebrow">01 · Experience mock</div>
+    <h2 id="mock-title">Global columns, initiative swimlanes.</h2>
+    <p class="intro">The left identity rail and column header remain visible while the wide board scrolls. Multiple workstreams from the same initiative can occupy different columns. Legacy PRs without an association remain visible as “unassigned PRs” in the lane identity; they do not become cards and do not move an arbitrary workstream.</p>
+    <p class="mobile-note">Narrow preview: each lane stacks all seven states below its initiative header.</p>
+    <div class="board-shell" aria-label="Seven-column initiative swimlane mock">
+      <div class="board">
+        <div class="grid head">
+          <div class="corner">Initiative</div><div class="planned">Planned</div><div class="active">Active</div><div class="verifying">Verifying</div><div class="your">Your Review</div><div class="external">External Review</div><div class="blocked">Blocked</div><div class="done">Done</div>
+        </div>
+        <div class="grid lane">
+          <div class="identity"><strong>Dashboard initiative kanban</strong><code>at-s003 · agent-teams-tuy9</code><small>3 workstreams · 2 PRs</small></div>
+          <div class="cell" data-column="Planned"><article class="card"><div class="meta">agent-teams-tuy9.4 · P1</div><h3>Responsive swimlane visual system</h3><div class="chips"><span class="chip">open</span><span class="chip">track:web</span></div></article></div>
+          <div class="cell empty" data-column="Active">No workstreams</div>
+          <div class="cell" data-column="Verifying"><article class="card"><div class="meta">agent-teams-tuy9.3 · P1</div><h3>Overview payload and repository batching</h3><div class="chips"><span class="chip">in_progress</span><span class="chip">PR #184 ↗</span><span class="chip">checks / no gate</span></div></article></div>
+          <div class="cell" data-column="Your Review"><article class="card"><div class="meta">agent-teams-tuy9.2 · P1</div><h3>Durable PR → workstream contract</h3><div class="chips"><span class="chip">PR #183 ↗</span><span class="chip">gate:review</span></div></article></div>
+          <div class="cell empty" data-column="External Review">No workstreams</div>
+          <div class="cell empty" data-column="Blocked">No workstreams</div>
+          <div class="cell empty" data-column="Done">No workstreams</div>
+        </div>
+        <div class="grid lane">
+          <div class="identity"><strong>Legacy single-track initiative</strong><code>at-legacy · epic at-old</code><small>No explicit child workstream</small><div class="unassigned">1 legacy unassigned PR remains visible</div></div>
+          <div class="cell empty" data-column="Planned">No workstreams</div>
+          <div class="cell" data-column="Active"><article class="card"><div class="meta">fallback · at-legacy</div><h3>Legacy single-track initiative</h3><div class="chips"><span class="chip">initiative fallback</span><span class="chip">in_progress</span></div></article></div>
+          <div class="cell empty" data-column="Verifying">No workstreams</div><div class="cell empty" data-column="Your Review">No workstreams</div><div class="cell empty" data-column="External Review">No workstreams</div><div class="cell empty" data-column="Blocked">No workstreams</div><div class="cell empty" data-column="Done">No workstreams</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="card-title">
+    <div class="eyebrow">02 · What is a card?</div>
+    <h2 id="card-title">A persistent workstream identity.</h2>
+    <div class="cards">
+      <article class="panel"><h3>Source and key</h3><p>An explicit card is a direct child of the initiative root epic from the project Beads database. Its stable key is the child Bead id. Descendants contribute compact progress but do not become duplicate cards. With no direct child, synthesize one fallback keyed by the initiative id.</p></article>
+      <article class="panel"><h3>PR attachment</h3><p><code>ateam pr add INIT PR --workstream BEAD</code> records a canonical URL → Bead-id relation. The same card then shows one or more linked PRs and uses their gates to advance. Omitted mappings stay backward compatible and visibly unassigned.</p></article>
+      <article class="panel"><h3>Lifecycle</h3><p>Bead status creates the card in Planned or Active. An attached open PR with no explicit gate, or an in-progress <code>track:test</code> workstream, is Verifying. Per-PR gates move that same card to Your Review, External Review, or Blocked. Closing the Bead moves it to Done.</p></article>
+    </div>
+  </section>
+
+  <section aria-labelledby="states-title">
+    <div class="eyebrow">03 · Total placement function</div>
+    <h2 id="states-title">Every workstream appears once.</h2>
+    <table>
+      <thead><tr><th>Precedence</th><th>Column</th><th>Rule for one persistent card</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td class="done">Done</td><td>Workstream Bead is closed, or its initiative is closed/done.</td></tr>
+        <tr><td>2</td><td class="blocked">Blocked</td><td>Workstream Bead is blocked, or any attached PR has gate <code>question</code>.</td></tr>
+        <tr><td>3</td><td class="your">Your Review</td><td>Any attached PR has gate <code>review</code> and no higher-precedence blocker exists.</td></tr>
+        <tr><td>4</td><td class="verifying">Verifying</td><td>An attached PR has empty/unknown gate, or the in-progress workstream has exact label <code>track:test</code>. Unknown gate is shown verbatim, never inferred as review.</td></tr>
+        <tr><td>5</td><td class="external">External Review</td><td>At least one PR is attached and every attached PR is <code>external</code>; no question/review/ungated PR remains.</td></tr>
+        <tr><td>6</td><td class="active">Active</td><td>Workstream status is <code>in_progress</code>.</td></tr>
+        <tr><td>7</td><td class="planned">Planned</td><td>Open/deferred/unknown nonterminal status. Preserve and display the raw status.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section aria-labelledby="association-title">
+    <div class="eyebrow">04 · Durable association contract</div>
+    <h2 id="association-title">One sanctioned write, one structured read.</h2>
+    <div class="flow">
+      <div class="step"><b>WRITE</b><span><code>ateam pr add &lt;initiative&gt; &lt;url&gt; --workstream &lt;bead-id&gt;</code>. The option is backward compatible. Canonicalize the URL, keep existing PR seeding/idempotency, and validate the Bead against the initiative's project epic descendants when repo + epic are available.</span></div>
+      <div class="step"><b>STORE</b><span>Append repeatable <code>pr-workstream: &lt;canonical-url&gt; &lt;bead-id&gt;</code> lines to the initiative description. Exactly one ASCII space separates the two whitespace-free tokens. Re-adding the same pair is a no-op; one PR may map to one workstream, and conflicting remap is rejected.</span></div>
+      <div class="step"><b>READ</b><span><code>internal/initiative</code> parses the rail once. <code>ateam list-json</code> adds a sibling <code>pr_workstreams</code> array of <code>{pr, workstream}</code>, while existing <code>prs</code>, <code>pr_reviews</code>, and <code>fields</code> remain backward compatible.</span></div>
+      <div class="step"><b>JOIN</b><span>The dashboard exact-joins canonical PR URL to review gate and exact-joins workstream id to the direct-child card. Invalid/stale mappings and legacy unmapped PRs are exposed as unassigned diagnostics; they never guess a card.</span></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="data-title">
+    <div class="eyebrow">05 · Overview data path</div>
+    <h2 id="data-title">Batch by repository, then project once.</h2>
+    <div class="cards">
+      <article class="panel"><h3>Existing producer</h3><p>The 15-second snapshot already runs open and closed <code>ateam list-json</code>, parses <code>prs</code>/<code>pr_reviews</code>, and builds <code>InitiativeNode[]</code>. Extend that same wire with <code>pr_workstreams</code>; do not add a per-card endpoint.</p></article>
+      <article class="panel"><h3>Controlled Beads reads</h3><p>Group parsed initiatives by distinct non-empty <code>repo</code>. Run one <code>bd -C REPO list --status=all --json</code> per distinct repo through a small fixed-concurrency pool, never one process per initiative. Reuse per-repo last-known-good data on transient failure and prevent overlapping snapshot ticks.</p></article>
+      <article class="panel"><h3>Snapshot projection</h3><p>For each initiative, select descendants of its <code>epic</code> (with initiative-label fallback for legacy data), derive direct-child workstreams and progress, and attach them to its <code>InitiativeNode</code>. The existing SSE snapshot therefore supplies the entire board and keeps it live without drill-in fetches.</p></article>
+    </div>
+  </section>
+
+  <section aria-labelledby="tracks-title">
+    <div class="eyebrow">06 · File-disjoint delivery graph</div>
+    <h2 id="tracks-title">Contract first; smallest end-to-end loop next.</h2>
+    <div class="graph">agent-teams-tuy9.1  CONTRACT
+        ├── agent-teams-tuy9.2  Go storage + sanctioned writer + list-json
+        │       ├── agent-teams-tuy9.3  shared/server snapshot aggregation
+        │       └── agent-teams-tuy9.6  docs + version + binary release join
+        └── agent-teams-tuy9.4  pure workstream board model
+                └── agent-teams-tuy9.5  /initiatives swimlane UI + CSS
+
+(.3 + .5 + .6) ──► agent-teams-tuy9.7  integration, live verification, loop close</div>
+    <p class="intro">The Go track owns initiative parsing, <code>pr add</code>, list-json, and their tests/golden. The server track owns shared wire types, CLI batching, snapshot projection, and server tests. The model track owns its new model and unit test. The UI track owns only the Initiatives JSX/CSS. The release join alone owns docs, manifests, versions, and binaries. The final verifier owns overview integration tests and live checks, not production files.</p>
+  </section>
+
+  <section aria-labelledby="verify-title">
+    <div class="eyebrow">07 · Loop closure</div>
+    <h2 id="verify-title">Prove identity, movement, and bounded reads.</h2>
+    <div class="cards">
+      <article class="panel"><h3>Contract round trip</h3><ul><li>Scratch project: two child workstreams, two PRs, distinct mappings.</li><li>Run the built CLI and inspect <code>pr_workstreams</code>.</li><li>Reject a non-descendant and conflicting remap.</li><li>Old unassociated PRs still emit and render.</li></ul></article>
+      <article class="panel"><h3>Board behavior</h3><ul><li>One card exists before and after its PR opens.</li><li>Fixtures exercise all seven columns and precedence.</li><li>Multiple initiatives and workstreams remain isolated.</li><li>Search, completed/on-machine toggles, row actions, inbox, and drill-in navigation remain usable.</li></ul></article>
+      <article class="panel"><h3>Live and responsive</h3><ul><li>Observe real SSE-driven movement without page reload.</li><li>Instrument child-process calls: one Beads list per distinct repo per tick, fixed concurrency, no overlap.</li><li>Inspect wide sticky rails and narrow stacked sections around 390px.</li><li>Run Go, shared, server, and web CI-equivalent gates.</li></ul></article>
+    </div>
+  </section>
+
+  <footer class="footer">Planning artifact only · no drag/drop write API · no GitHub status inference · exact durable association required</footer>
+</main>
+</body>
+</html>

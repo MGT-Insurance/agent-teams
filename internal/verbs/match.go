@@ -76,14 +76,32 @@ func RegisterMatchKong(p *cli.Parser) {
 //
 // The signature is load-bearing: tie_session.go calls this and is the only
 // other caller. Change the body, not the shape.
-func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
+func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) (runErr error) {
 	if sessionID == "" {
 		return fmt.Errorf("appendSessionID: sessionID must not be empty")
 	}
 	if strings.ContainsAny(sessionID, " \t\r\n") {
 		return fmt.Errorf("appendSessionID: sessionID must not contain whitespace: %q", sessionID)
 	}
+	lock, err := acquireInitiativeMutationLock(ctx.Home, initiativeID)
+	if err != nil {
+		return fmt.Errorf("appendSessionID: acquire initiative %s lock: %w", initiativeID, err)
+	}
+	defer func() {
+		if err := lock.Close(); err != nil {
+			lockErr := fmt.Errorf("appendSessionID: release initiative %s lock: %w", initiativeID, err)
+			if runErr == nil {
+				runErr = lockErr
+			} else {
+				runErr = errors.Join(runErr, lockErr)
+			}
+		}
+	}()
 
+	// Re-read only after acquiring the same per-initiative lock as pr add.
+	// The lock remains held through the cross-initiative uniqueness scan,
+	// append planning, and whole-description update so those writers cannot
+	// overwrite one another from stale snapshots.
 	issue, err := bd.ShowIssue(ctx.BD, initiativeID)
 	if err != nil {
 		return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)

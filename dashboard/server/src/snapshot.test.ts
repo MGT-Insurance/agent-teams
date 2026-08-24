@@ -3,8 +3,14 @@
 // core-path coverage for the poll overlap-guard and partial-snapshot
 // tolerance added in agent-teams-assa.1.
 
-import { describe, it, expect, vi } from "vitest";
-import { stampTransitions, buildSnapshot, SnapshotManager, type TransitionMap } from "./snapshot.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import {
+  stampTransitions,
+  buildSnapshot,
+  SnapshotManager,
+  PROJECT_READ_CONCURRENCY,
+  type TransitionMap,
+} from "./snapshot.js";
 import type { SessionState } from "@agent-teams/shared";
 import * as cli from "./cli.js";
 
@@ -17,6 +23,7 @@ vi.mock("./cli.js", async (importOriginal) => {
     ateamClosedInitiatives: vi.fn(),
     claudeAgentsJson: vi.fn(),
     bdHumanList: vi.fn(),
+    bdProjectBeads: vi.fn(),
   };
 });
 
@@ -131,5 +138,168 @@ describe("buildSnapshot partial-snapshot tolerance (agent-teams-assa.1)", () => 
     expect(event.unmatchedSessions.map((s) => s.sessionId)).toContain("s1");
     // And the successful fallback is recorded back into lastGood for reuse.
     expect(lastGood.agentsRaw).toBe(goodAgentsRaw);
+  });
+});
+
+function rawInitiative(
+  id: string,
+  repo: string,
+  epic: string,
+  associations: Array<{ pr: string; workstream: string }> = [],
+) {
+  const prs = associations.map((association) => association.pr);
+  return {
+    id,
+    title: `Initiative ${id}`,
+    description: "",
+    notes: "",
+    status: "open",
+    priority: "2",
+    issue_type: "epic",
+    owner: "owner",
+    created_at: "2026-08-20T00:00:00Z",
+    updated_at: "2026-08-20T00:00:00Z",
+    fields: { repo, epic },
+    prs,
+    pr_reviews: prs.map((pr) => ({ pr, gate: "" })),
+    pr_workstreams: associations,
+  };
+}
+
+function rawBead(
+  id: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    title: id,
+    status: "open",
+    priority: "2",
+    issue_type: "task",
+    ...overrides,
+  };
+}
+
+function mockSnapshotSlices(initiatives: unknown[]): void {
+  vi.mocked(cli.ateamWs).mockResolvedValue("/ws");
+  vi.mocked(cli.ateamListJson).mockResolvedValue(JSON.stringify(initiatives));
+  vi.mocked(cli.ateamClosedInitiatives).mockResolvedValue("[]");
+  vi.mocked(cli.claudeAgentsJson).mockResolvedValue("[]");
+  vi.mocked(cli.bdHumanList).mockResolvedValue("[]");
+}
+
+describe("buildSnapshot repo-batched workstream projection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("issues one project read per distinct repo and isolates two initiatives sharing a repo", async () => {
+    const pr = "https://github.com/org/repo/pull/1";
+    mockSnapshotSlices([
+      rawInitiative("at-a", "/repo/shared", "epic-a", [{ pr, workstream: "a-nested" }]),
+      rawInitiative("at-b", "/repo/shared", "epic-b"),
+      rawInitiative("at-c", "/repo/other", "epic-c"),
+      rawInitiative("at-empty", "   ", "epic-empty"),
+    ]);
+    vi.mocked(cli.bdProjectBeads).mockImplementation(async (repo) => {
+      if (repo === "/repo/shared") {
+        return JSON.stringify([
+          rawBead("epic-a", { issue_type: "epic" }),
+          rawBead("a-direct", { parent: "epic-a", status: "in_progress" }),
+          rawBead("a-nested", { parent: "a-direct", status: "closed" }),
+          rawBead("epic-b", { issue_type: "epic" }),
+          rawBead("b-direct", { parent: "epic-b" }),
+        ]);
+      }
+      return JSON.stringify([
+        rawBead("epic-c", { issue_type: "epic" }),
+        rawBead("c-direct", { parent: "epic-c" }),
+      ]);
+    });
+
+    const event = await buildSnapshot();
+
+    expect(cli.bdProjectBeads).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(cli.bdProjectBeads).mock.calls.map(([repo]) => repo)).toEqual([
+      "/repo/shared",
+      "/repo/other",
+    ]);
+    const a = event.initiatives.find((node) => node.initiative.id === "at-a")!;
+    const b = event.initiatives.find((node) => node.initiative.id === "at-b")!;
+    const c = event.initiatives.find((node) => node.initiative.id === "at-c")!;
+    const empty = event.initiatives.find((node) => node.initiative.id === "at-empty")!;
+    expect(a.workstreams).toEqual([
+      expect.objectContaining({
+        id: "a-direct",
+        memberIds: ["a-direct", "a-nested"],
+        progress: { total: 1, closed: 1 },
+      }),
+    ]);
+    expect(b.workstreams?.map((workstream) => workstream.id)).toEqual(["b-direct"]);
+    expect(c.workstreams?.map((workstream) => workstream.id)).toEqual(["c-direct"]);
+    expect(b.workstreams?.flatMap((workstream) => workstream.memberIds ?? [])).not.toContain(
+      "a-nested",
+    );
+    expect(empty.workstreams).toEqual([
+      expect.objectContaining({ id: "initiative:at-empty", kind: "fallback" }),
+    ]);
+    expect(empty.workstreamDiagnostics).toContainEqual(expect.objectContaining({ kind: "no-repo" }));
+  });
+
+  it("retains per-repo last-known-good workstreams while another repo refreshes", async () => {
+    mockSnapshotSlices([
+      rawInitiative("at-a", "/repo/a", "epic-a"),
+      rawInitiative("at-b", "/repo/b", "epic-b"),
+    ]);
+    const lastGood = {};
+    vi.mocked(cli.bdProjectBeads).mockImplementation(async (repo) =>
+      JSON.stringify([
+        rawBead(repo === "/repo/a" ? "epic-a" : "epic-b", { issue_type: "epic" }),
+        rawBead(repo === "/repo/a" ? "a-old" : "b-old", {
+          parent: repo === "/repo/a" ? "epic-a" : "epic-b",
+        }),
+      ]),
+    );
+    await buildSnapshot(undefined, 1, lastGood);
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(cli.bdProjectBeads).mockImplementation(async (repo) => {
+      if (repo === "/repo/a") throw new Error("repo a unavailable");
+      return JSON.stringify([
+        rawBead("epic-b", { issue_type: "epic" }),
+        rawBead("b-new", { parent: "epic-b" }),
+      ]);
+    });
+    const event = await buildSnapshot(undefined, 2, lastGood);
+    errorSpy.mockRestore();
+
+    const a = event.initiatives.find((node) => node.initiative.id === "at-a")!;
+    const b = event.initiatives.find((node) => node.initiative.id === "at-b")!;
+    expect(a.workstreams?.map((workstream) => workstream.id)).toEqual(["a-old"]);
+    expect(a.workstreamDiagnostics).toContainEqual(expect.objectContaining({ kind: "load-stale" }));
+    expect(b.workstreams?.map((workstream) => workstream.id)).toEqual(["b-new"]);
+    expect(b.workstreamDiagnostics).toEqual([]);
+  });
+
+  it("runs project reads concurrently but never exceeds the fixed pool size", async () => {
+    const initiatives = Array.from({ length: PROJECT_READ_CONCURRENCY + 3 }, (_, index) =>
+      rawInitiative(`at-${index}`, `/repo/${index}`, `epic-${index}`),
+    );
+    mockSnapshotSlices(initiatives);
+    let active = 0;
+    let maxActive = 0;
+    vi.mocked(cli.bdProjectBeads).mockImplementation(async (_repo) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      return "[]";
+    });
+
+    await buildSnapshot();
+
+    expect(cli.bdProjectBeads).toHaveBeenCalledTimes(initiatives.length);
+    expect(maxActive).toBe(PROJECT_READ_CONCURRENCY);
+    expect(maxActive).toBeLessThanOrEqual(PROJECT_READ_CONCURRENCY);
   });
 });
