@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   initiativeFor,
@@ -7,6 +7,7 @@ import {
   workScenarios,
   type InitiativeScenario,
   type PipelineStage,
+  type PullRequestScenario,
   type QueueGroup,
   type WorkScenario,
 } from "./scenarios.js";
@@ -21,11 +22,11 @@ const concepts: Array<{ id: Concept; label: string; eyebrow: string }> = [
 ];
 
 const pipelineStages: Array<{ id: PipelineStage; label: string; hint: string }> = [
-  { id: "ready", label: "Ready", hint: "Clear to begin" },
-  { id: "building", label: "Building", hint: "In progress" },
-  { id: "review", label: "Review", hint: "Needs a decision" },
-  { id: "ship", label: "Merge and ship", hint: "Final path" },
-  { id: "done", label: "Done", hint: "Outcome landed" },
+  { id: "investigating", label: "Investigating", hint: "Understand the problem" },
+  { id: "building", label: "Building", hint: "Make the change" },
+  { id: "in-review", label: "In Review", hint: "Get a decision" },
+  { id: "ready-to-land", label: "Ready to Land", hint: "Clear the final path" },
+  { id: "done", label: "Done", hint: "Landed or concluded" },
 ];
 
 const queueGroups: Array<{ id: QueueGroup; label: string; hint: string }> = [
@@ -66,6 +67,14 @@ function Progress({ complete, total, label }: { complete: number; total: number;
 }
 
 function PullRequestLinks({ work }: { work: WorkScenario }) {
+  if (work.pullRequests.length === 0) {
+    return (
+      <div className="initiative-lab__pr-group">
+        <span>Active effort · no PR yet</span>
+      </div>
+    );
+  }
+
   return (
     <div className="initiative-lab__pr-group">
       <span>
@@ -99,8 +108,11 @@ function ImplementationMetadata({ work }: { work: WorkScenario }) {
 }
 
 function AgentLabel({ work }: { work: WorkScenario }) {
+  const stateClass = work.agent.state === "paused" || work.agent.state === "finished"
+    ? work.agent.state
+    : "active";
   return (
-    <span className={`initiative-lab__agent initiative-lab__agent--${work.agent.state}`}>
+    <span className={`initiative-lab__agent initiative-lab__agent--${stateClass}`}>
       <span aria-hidden="true" />
       Agent: {work.agent.name ? `${work.agent.name} · ` : ""}{work.agent.state}
     </span>
@@ -155,36 +167,149 @@ function Blocker({ work }: { work: WorkScenario }) {
   );
 }
 
+interface PipelineItem {
+  key: string;
+  work: WorkScenario;
+  pullRequest: PullRequestScenario | null;
+}
+
+const pipelineItems = workScenarios.flatMap<PipelineItem>((work) => {
+  if (work.pullRequests.length === 0) return [{ key: `${work.id}:effort`, work, pullRequest: null }];
+  return work.pullRequests.map((pullRequest) => ({
+    key: `${work.id}:pr-${pullRequest.number}`,
+    work,
+    pullRequest,
+  }));
+});
+
+function matchesPipelineAttentionFilter(item: PipelineItem, needsYouOnly: boolean): boolean {
+  return !needsYouOnly || item.work.needsYou;
+}
+
 function PipelineCard({
-  work,
+  item,
   selected,
   onSelect,
 }: {
-  work: WorkScenario;
+  item: PipelineItem;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (trigger: HTMLButtonElement) => void;
 }) {
-  const initiative = initiativeFor(work);
+  const { work, pullRequest } = item;
   return (
-    <article className={`pipeline-card${selected ? " pipeline-card--selected" : ""}`}>
-      <button type="button" className="pipeline-card__select" onClick={onSelect} aria-pressed={selected}>
-        <span>{initiative.title}</span>
-        <strong>{work.title}</strong>
-        <small>{selected ? "Selected for detail" : "Select for detail"}</small>
+    <article
+      className={`pipeline-card${work.needsYou ? " pipeline-card--needs-you" : ""}${selected ? " pipeline-card--selected" : ""}`}
+    >
+      <button
+        type="button"
+        className="pipeline-card__select"
+        onClick={(event) => onSelect(event.currentTarget)}
+        aria-haspopup="dialog"
+        aria-expanded={selected}
+      >
+        <span className="pipeline-card__topline">
+          <span className="pipeline-card__identity">{pullRequest ? `PR #${pullRequest.number}` : "Active effort"}</span>
+          {work.needsYou && <span className="pipeline-card__attention">Needs you</span>}
+        </span>
+        <strong className="pipeline-card__title">{work.title}</strong>
+        <AgentLabel work={work} />
+        {work.needsYou && work.nextAction && (
+          <span className="pipeline-card__next">
+            <small>Next action</small>
+            <strong>{work.nextAction.text}</strong>
+          </span>
+        )}
+        <span className="pipeline-card__open">Open details</span>
       </button>
-      <NextAction work={work} />
-      <SignalFacts work={work} compact />
-      <Blocker work={work} />
-      <Progress {...work.progress} />
-      <PullRequestLinks work={work} />
-      <ImplementationMetadata work={work} />
     </article>
   );
 }
 
+function PipelineDetail({ item, onClose }: { item: PipelineItem; onClose: () => void }) {
+  const panelRef = useRef<HTMLElement>(null);
+  const { work, pullRequest } = item;
+
+  useEffect(() => {
+    panelRef.current?.focus();
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <aside
+      ref={panelRef}
+      className="pipeline__detail"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="pipeline-detail-title"
+      tabIndex={-1}
+    >
+      <header className="pipeline__detail-heading">
+        <div>
+          <span>{pullRequest ? `PR #${pullRequest.number}` : "Active effort"}</span>
+          <h3 id="pipeline-detail-title">{work.title}</h3>
+        </div>
+        <button type="button" onClick={onClose} aria-label={`Close details for ${work.title}`}>Close</button>
+      </header>
+      <p className="pipeline__detail-summary">{work.summary}</p>
+
+      <div className="pipeline__detail-grid">
+        <section>
+          <span>Initiative</span>
+          <strong>{initiativeFor(work).title}</strong>
+        </section>
+        <section>
+          <span>Owner</span>
+          <strong>{work.owner}</strong>
+        </section>
+        <section>
+          <span>Review</span>
+          <strong>{work.review}</strong>
+        </section>
+        <section>
+          <span>Checks</span>
+          <strong>{work.checks}</strong>
+        </section>
+      </div>
+
+      <div className="pipeline__detail-evidence">
+        <NextAction work={work} />
+        <Blocker work={work} />
+        <Progress {...work.progress} />
+        {pullRequest ? (
+          <a className="pipeline__detail-pr" href={pullRequest.href} target="_blank" rel="noreferrer">
+            {pullRequest.repository} · PR #{pullRequest.number}{pullRequest.status === "merged" ? " · Merged" : ""}
+          </a>
+        ) : (
+          <p className="pipeline__detail-effort">No PR exists yet. This effort may conclude without one.</p>
+        )}
+      </div>
+
+      <section className="pipeline__timeline" aria-labelledby="pipeline-timeline-heading">
+        <span>Timeline</span>
+        <h4 id="pipeline-timeline-heading">Recent activity</h4>
+        <ol>
+          {work.timeline.map((event) => <li key={event}>{event}</li>)}
+        </ol>
+      </section>
+      <ImplementationMetadata work={work} />
+    </aside>
+  );
+}
+
 function PipelineConcept() {
-  const [selectedId, setSelectedId] = useState(workScenarios[0]?.id ?? "");
-  const selected = workScenarios.find((work) => work.id === selectedId) ?? workScenarios[0];
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [needsYouOnly, setNeedsYouOnly] = useState(false);
+  const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const selected = pipelineItems.find((item) => item.key === selectedKey) ?? null;
+
+  function closeDetail() {
+    detailTriggerRef.current?.focus();
+    setSelectedKey(null);
+  }
 
   return (
     <section className="pipeline" aria-labelledby="pipeline-heading">
@@ -193,7 +318,25 @@ function PipelineConcept() {
           <span className="initiative-lab__kicker">Concept A · Flow view</span>
           <h2 id="pipeline-heading">Outcome Pipeline</h2>
         </div>
-        <p>Scan PR groups by delivery stage. Select any card for a focused, non-mutating readout.</p>
+        <p>Scan real PRs and pre-PR efforts by lifecycle. Needs you stays visible without becoming a stage.</p>
+      </div>
+
+      <div className="pipeline__controls">
+        <label>
+          <input
+            type="checkbox"
+            aria-label="Needs you only"
+            checked={needsYouOnly}
+            onChange={(event) => {
+              const checked = event.currentTarget.checked;
+              setNeedsYouOnly(checked);
+              if (checked && selected && !selected.work.needsYou) setSelectedKey(null);
+            }}
+          />
+          <span>Needs you only</span>
+          <strong>{pipelineItems.filter((item) => item.work.needsYou).length}</strong>
+        </label>
+        <p>{needsYouOnly ? "Showing attention items in their current lifecycle stage." : "Showing every delivery item."}</p>
       </div>
 
       <div
@@ -204,7 +347,9 @@ function PipelineConcept() {
       >
         <div className="pipeline__board">
           {pipelineStages.map((stage) => {
-            const stageWork = workScenarios.filter((work) => work.pipelineStage === stage.id);
+            const stageItems = pipelineItems.filter(
+              (item) => item.work.pipelineStage === stage.id && matchesPipelineAttentionFilter(item, needsYouOnly),
+            );
             return (
               <section className="pipeline__stage" key={stage.id} aria-labelledby={`stage-${stage.id}`}>
                 <header>
@@ -212,22 +357,27 @@ function PipelineConcept() {
                     <span>{stage.hint}</span>
                     <h3 id={`stage-${stage.id}`}>{stage.label}</h3>
                   </div>
-                  <strong aria-label={`${stageWork.length} PR groups`}>{stageWork.length}</strong>
+                  <strong aria-label={`${stageItems.length} delivery ${stageItems.length === 1 ? "item" : "items"}`}>
+                    {stageItems.length}
+                  </strong>
                 </header>
                 <div className="pipeline__stage-line" aria-hidden="true" />
-                {stageWork.length ? (
+                {stageItems.length ? (
                   <div className="pipeline__cards">
-                    {stageWork.map((work) => (
+                    {stageItems.map((item) => (
                       <PipelineCard
-                        key={work.id}
-                        work={work}
-                        selected={work.id === selected?.id}
-                        onSelect={() => setSelectedId(work.id)}
+                        key={item.key}
+                        item={item}
+                        selected={item.key === selected?.key}
+                        onSelect={(trigger) => {
+                          detailTriggerRef.current = trigger;
+                          setSelectedKey(item.key);
+                        }}
                       />
                     ))}
                   </div>
                 ) : (
-                  <p className="pipeline__empty">No PR groups at this stage</p>
+                  <p className="pipeline__empty">No matching items</p>
                 )}
               </section>
             );
@@ -235,20 +385,7 @@ function PipelineConcept() {
         </div>
       </div>
 
-      {selected && (
-        <aside className="pipeline__detail" aria-live="polite" aria-label="Selected PR group detail">
-          <div>
-            <span>Selected PR group</span>
-            <h3>{selected.title}</h3>
-            <p>{selected.summary}</p>
-          </div>
-          <div className="pipeline__detail-context">
-            <span>Initiative context</span>
-            <strong>{initiativeFor(selected).title}</strong>
-          </div>
-          <NextAction work={selected} />
-        </aside>
-      )}
+      {selected && <PipelineDetail item={selected} onClose={closeDetail} />}
     </section>
   );
 }
@@ -270,7 +407,7 @@ function CockpitWork({ work, index }: { work: WorkScenario; index: number }) {
       <div className="cockpit__work-body">
         <div className="cockpit__work-heading">
           <div>
-            <span>PR group</span>
+            <span>Delivery item</span>
             <h4>{work.title}</h4>
           </div>
           <AgentLabel work={work} />
@@ -341,7 +478,7 @@ function InitiativeCockpit() {
             <section>
               <span>Now</span>
               <strong>{now}</strong>
-              <p>{selectedWork.length} active PR group{selectedWork.length === 1 ? "" : "s"}</p>
+              <p>{selectedWork.length} delivery item{selectedWork.length === 1 ? "" : "s"}</p>
             </section>
             <section>
               <span>Next</span>
@@ -358,7 +495,7 @@ function InitiativeCockpit() {
           <section className="cockpit__timeline" aria-labelledby="timeline-heading">
             <div className="cockpit__timeline-heading">
               <span>Delivery sequence</span>
-              <h3 id="timeline-heading">PR-group timeline</h3>
+              <h3 id="timeline-heading">Delivery timeline</h3>
             </div>
             {selectedWork.map((work, index) => <CockpitWork key={work.id} work={work} index={index} />)}
           </section>
@@ -487,7 +624,10 @@ export default function InitiativeLabView() {
           </div>
           <aside className="initiative-lab__sample" role="status">
             <strong>Sample data</strong>
-            <span>3 initiatives · 4 PR groups</span>
+            <span>
+              {initiatives.length} initiatives · {workScenarios.length} efforts ·{" "}
+              {workScenarios.reduce((total, work) => total + work.pullRequests.length, 0)} PRs
+            </span>
           </aside>
         </div>
         <p className="initiative-lab__prompt">
