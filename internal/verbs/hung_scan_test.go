@@ -599,6 +599,113 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	}
 }
 
+// ── agent-teams-bq9y.2: machine-sleep discount disambiguation ────────────────
+//
+// Both tests below drive the SAME raw wall-clock span (StuckSince/DeadSince
+// to a point comfortably past the threshold) through two scenarios: the
+// machine slept through nearly all of it (must NOT trip — the discount is
+// the whole point of bq9y.2), versus the same span with no sleep recorded
+// (must STILL trip — proving the discount doesn't mask a genuine stall).
+// TestMain (machine_sleep_test.go) defaults machineSleepLog to "no sleep",
+// so the second scenario needs no override at all.
+
+// TestScanHung_MachineSleepDiscountsStuckElapsed covers the STUCK clock.
+func TestScanHung_MachineSleepDiscountsStuckElapsed(t *testing.T) {
+	wt := t.TempDir()
+	pid := 1
+	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(hungStuckThreshold + 5*time.Minute) // raw elapsed: over threshold
+
+	t.Run("sleep covering the window suppresses the trip", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		// Asleep for all but a 4-minute awake remainder — real awake elapsed
+		// (4m) comes out well under threshold despite raw elapsed being over.
+		restore := setMachineSleepLog(t, fakeSleepIntervalLog(t0.Add(time.Minute), t1.Add(-4*time.Minute)))
+		defer restore()
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if out[0].Hung {
+			t.Errorf("expected hung=false: nearly the entire raw elapsed window was machine sleep, want it discounted (stuck_elapsed_seconds=%d)", out[0].StuckElapsedSeconds)
+		}
+	})
+
+	t.Run("no sleep in the window: the genuine stall still trips", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if !out[0].Hung {
+			t.Error("expected hung=true: no sleep occurred, the stall is genuine")
+		}
+	})
+}
+
+// TestScanHung_MachineSleepDiscountsDeadElapsed is the STUCK test's
+// counterpart for D4 (DEAD-with-worktree-present): same mechanics
+// (elapsed := now.Sub(DeadSince) - sleptBetween(...)), a matched session
+// with PID nil (classifyInitiative: cwdPresent && zero live sessions ->
+// DEAD).
+func TestScanHung_MachineSleepDiscountsDeadElapsed(t *testing.T) {
+	wt := t.TempDir()
+	sessions := []agentSession{{CWD: wt, Status: "idle"}} // PID nil -> not live
+	agentsFunc := func() ([]agentSession, error) { return sessions, nil }
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(hungDeadWorktreeThreshold + 5*time.Minute)
+
+	t.Run("sleep covering the window suppresses the trip", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		restore := setMachineSleepLog(t, fakeSleepIntervalLog(t0.Add(time.Minute), t1.Add(-4*time.Minute)))
+		defer restore()
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if out[0].DeadHung {
+			t.Errorf("expected dead_hung=false: nearly the entire raw elapsed window was machine sleep, want it discounted (dead_elapsed_seconds=%d)", out[0].DeadElapsedSeconds)
+		}
+	})
+
+	t.Run("no sleep in the window: the genuine stall still trips", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if !out[0].DeadHung {
+			t.Error("expected dead_hung=true: no sleep occurred, the stall is genuine")
+		}
+	})
+}
+
 // ── saveHungState atomicity ──────────────────────────────────────────────────
 
 // TestSaveHungState_AtomicRoundTripNoTempLeft verifies the temp-file+rename

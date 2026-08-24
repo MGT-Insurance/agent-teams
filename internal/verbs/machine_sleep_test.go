@@ -2,9 +2,27 @@ package verbs
 
 import (
 	"errors"
+	"os"
 	"testing"
 	"time"
 )
+
+// TestMain guarantees no test in this package ever shells out to the real
+// `pmset -g log` (machine_sleep.go's production default for machineSleepLog).
+// agent-teams-bq9y.2 put sleptBetween on every STUCK/DEAD/work-product
+// elapsed-time path, so any hung_scan/hung_tick test exercising those
+// without its own override would otherwise depend on THIS machine's actual
+// sleep history — non-deterministic, and able to silently flip a
+// fabricated [since,now] test window's classification if it happens to
+// overlap a real recent sleep (and slow: a real pmset log can run to tens of
+// thousands of lines). Tests that specifically want to exercise sleep
+// discounting still can, via setMachineSleepLog or a direct assignment
+// (restored via t.Cleanup/defer) — this only replaces the otherwise-real
+// default every other test silently inherited.
+func TestMain(m *testing.M) {
+	machineSleepLog = func() (string, error) { return "", nil }
+	os.Exit(m.Run())
+}
 
 // canned pmset -g log excerpts, shaped exactly like real samples from this
 // machine (agent-teams-bq9y.1 bead notes): tab-delimited "date time zone
@@ -152,4 +170,16 @@ func setMachineSleepLog(t *testing.T, text string) func() {
 	prev := machineSleepLog
 	machineSleepLog = func() (string, error) { return text, nil }
 	return func() { machineSleepLog = prev }
+}
+
+// fakeSleepIntervalLog renders a minimal pmset -g log excerpt containing
+// exactly one Sleep/Wake pair spanning [start, end) — shaped like the real
+// tab-delimited "date time zone KIND<TAB>message" lines parsePmsetSleepLog
+// expects (see pmsetTwoSleeps above for a fuller real-sample excerpt).
+// Shared by hung_scan_test.go / hung_workproduct_test.go's machine-sleep
+// disambiguation tests (agent-teams-bq9y.2) so each builds its own covering
+// window without duplicating the format details.
+func fakeSleepIntervalLog(start, end time.Time) string {
+	return start.Format(pmsetTimestampLayout) + " Sleep\tsimulated sleep\n" +
+		end.Format(pmsetTimestampLayout) + " Wake\tsimulated wake\n"
 }
