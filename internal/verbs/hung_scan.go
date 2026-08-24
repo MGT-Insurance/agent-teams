@@ -475,7 +475,14 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			keep = true
 
 			if since, parseErr := time.Parse(time.RFC3339, newAnchor.StuckSince); parseErr == nil {
-				elapsed := nowT.Sub(since)
+				// agent-teams-bq9y.2: discount real machine-sleep time from
+				// the elapsed measurement — a maintenance-sleep span this
+				// machine spends looks identical to "the session stopped
+				// responding" unless it's subtracted out here.
+				elapsed := nowT.Sub(since) - sleptBetween(since, nowT)
+				if elapsed < 0 {
+					elapsed = 0
+				}
 				entry.StuckSince = newAnchor.StuckSince
 				entry.StuckElapsedSeconds = int64(elapsed.Seconds())
 				entry.Hung = elapsed >= hungStuckThreshold
@@ -500,7 +507,12 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			keep = true
 
 			if since, parseErr := time.Parse(time.RFC3339, newAnchor.DeadSince); parseErr == nil {
-				elapsed := nowT.Sub(since)
+				// agent-teams-bq9y.2: same machine-sleep discount as STUCK
+				// above.
+				elapsed := nowT.Sub(since) - sleptBetween(since, nowT)
+				if elapsed < 0 {
+					elapsed = 0
+				}
 				entry.DeadSince = newAnchor.DeadSince
 				entry.DeadElapsedSeconds = int64(elapsed.Seconds())
 				entry.DeadHung = elapsed >= hungDeadWorktreeThreshold
@@ -561,7 +573,11 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			if !lastProgress.IsZero() {
 				newAnchor.WorkProductLastProgressAt = lastProgress.UTC().Format(time.RFC3339)
 				entry.WorkProductLastProgress = newAnchor.WorkProductLastProgressAt
-				flat := nowT.Sub(lastProgress)
+				// agent-teams-bq9y.2: discount real machine-sleep time —
+				// the #1 previously sleep-blind clock (lastProgress is built
+				// from external timestamps that don't advance during sleep,
+				// so a suspend inflated this exactly like STUCK/DEAD above).
+				flat := nowT.Sub(lastProgress) - sleptBetween(lastProgress, nowT)
 				if flat < 0 {
 					flat = 0
 				}
