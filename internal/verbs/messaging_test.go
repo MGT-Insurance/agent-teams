@@ -358,6 +358,47 @@ func TestIsStewardSession_NoMarker_ReturnsFalse(t *testing.T) {
 	}
 }
 
+func TestResolveSender_StewardSession_StampsSteward(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	// cwd is the steward session: the sender must be the steward, not git
+	// user.name. This is the bug — steward->DRI mail used to collapse to
+	// gitUserName() ("Eric Lloyd") on model-driven send paths.
+	if got := defaultSender(ctx, StewardSessionDir(ctx)); got != StewardHandle {
+		t.Errorf("defaultSender(steward session) = %q, want %q", got, StewardHandle)
+	}
+}
+
+func TestResolveSender_ExplicitAlwaysWins(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	// An explicit --sender wins without touching the filesystem; the relay
+	// (human), hung_tick (hung-scan) and route (pr-shepherd) paths all depend
+	// on this precedence and must never be aborted by a cwd lookup.
+	if got := resolveSender(ctx, "human"); got != "human" {
+		t.Errorf("resolveSender(explicit) = %q, want %q", got, "human")
+	}
+}
+
+func TestResolveSender_NonStewardSession_FallsBackToGitUser(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	// A non-steward cwd keeps the git user.name fallback — the legitimate
+	// "human running the CLI" case.
+	if got := defaultSender(ctx, t.TempDir()); got != gitUserName() {
+		t.Errorf("defaultSender(non-steward) = %q, want gitUserName() %q", got, gitUserName())
+	}
+}
+
 func TestResolveInboxRecipient_StewardSession_BypassesInitiativeLookup(t *testing.T) {
 	home := t.TempDir()
 	// fakeBD errors if resolveMyInitiative's `bd list --status=open` is ever
