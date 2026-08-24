@@ -111,8 +111,15 @@ func parsePmsetSleepLog(text string) []sleepInterval {
 		}
 		switch strings.Join(head[3:], " ") {
 		case "Sleep":
-			sleepStart = ts
-			haveSleepStart = true
+			// Keep the EARLIEST open sleep start. Back-to-back "Sleep" lines
+			// with no intervening Wake/DarkWake occur in real pmset logs; a
+			// later one must not overwrite the first, which would discard the
+			// gap between them and undercount sleep (biasing toward a false
+			// "still hung"). A Sleep while one is already open is redundant.
+			if !haveSleepStart {
+				sleepStart = ts
+				haveSleepStart = true
+			}
 		case "Wake", "DarkWake":
 			if haveSleepStart {
 				if ts.After(sleepStart) {

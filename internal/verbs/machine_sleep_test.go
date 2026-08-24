@@ -40,6 +40,14 @@ const pmsetWithWakeRequests = "" +
 	"2026-08-23 10:00:03 -0500 Wake Requests       \t[*process=dasd request=SleepService deltaSecs=949]\n" +
 	"2026-08-23 10:15:00 -0500 DarkWake            \tDarkWake from Deep Idle [CDNP]\n"
 
+// two "Sleep" lines with NO intervening Wake/DarkWake — a real pmset pattern
+// (a retried/re-entered sleep). The first must win; the 10:00:30 line must not
+// overwrite the 10:00:00 start.
+const pmsetDoubleSleep = "" +
+	"2026-08-23 10:00:00 -0500 Sleep \tEntering Sleep state\n" +
+	"2026-08-23 10:00:30 -0500 Sleep \tEntering Sleep state (retry, no wake between)\n" +
+	"2026-08-23 10:15:00 -0500 Wake \tFullWake\n"
+
 func mustParse(t *testing.T, layout, value string) time.Time {
 	t.Helper()
 	tm, err := time.Parse(layout, value)
@@ -123,6 +131,24 @@ func TestSleptBetween(t *testing.T) {
 				t.Errorf("sleptBetween(%s, %s) = %s, want %s", tc.start, tc.end, got, want)
 			}
 		})
+	}
+}
+
+// TestSleptBetween_BackToBackSleep verifies consecutive "Sleep" lines with no
+// intervening Wake/DarkWake keep the EARLIEST start rather than the later one
+// overwriting it — otherwise the gap between them is dropped and sleep is
+// undercounted (biasing toward a false "still hung").
+func TestSleptBetween_BackToBackSleep(t *testing.T) {
+	const layout = "2006-01-02 15:04:05 -0700"
+	restore := setMachineSleepLog(t, pmsetDoubleSleep)
+	defer restore()
+
+	start := mustParse(t, layout, "2026-08-23 09:00:00 -0500")
+	end := mustParse(t, layout, "2026-08-23 11:00:00 -0500")
+	// 10:00:00 (first Sleep) -> 10:15:00 (Wake) = 15m. If the 10:00:30 retry
+	// overwrote the start it would be 870s, not 900s.
+	if got, want := sleptBetween(start, end), 15*time.Minute; got != want {
+		t.Errorf("sleptBetween back-to-back Sleep = %s, want %s", got, want)
 	}
 }
 
