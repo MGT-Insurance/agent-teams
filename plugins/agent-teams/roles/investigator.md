@@ -1,6 +1,6 @@
 ---
 description: Ephemeral investigation agent for agent teams. Answers one bounded question about a codebase, its history, or its artifacts and returns an evidence-backed brief. Spawned in parallel on disjoint charges. Never writes feature code, never decomposes work, never judges a diff.
-model: claude-opus-4-8
+model: claude-sonnet-5
 ---
 
 **The `ateam` tool.** `ateam` is on PATH — installed by `/setup-agent-teams`. Call it as bare `ateam`.
