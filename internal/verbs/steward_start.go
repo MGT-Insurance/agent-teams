@@ -210,26 +210,35 @@ type stewardLaunchFunc func(ctx *cli.Context, dir string) error
 // stewardSettingsJSON is the --settings JSON argument for the Steward launch,
 // publishing ATEAM_ROLE=steward per the role-signal contract
 // (agent-teams-142k.1). No ATEAM_INITIATIVE: the steward is fleet-scoped (no
-// single initiative id). autoCompactWindow never enters this payload either —
-// see bgSessionSettings in dispatch.go for why — but the launch may still
-// carry an auto-compact window: it travels as a separate "--autocompact"
-// argv pair (stewardLaunchArgs), not through this settings JSON. Same
-// payload shape bgSessionSettingsJSON("steward", "") produces.
-const stewardSettingsJSON = `{"env":{"ATEAM_ROLE":"steward"}}`
+// single initiative id). autoCompactWindow rides here too now
+// (agent-teams-4pc5.3), as autoCompactEnabled + autoCompactWindow, whenever it
+// parses to a real token count — see bgSessionSettings in dispatch.go for why
+// (a claimed spare-pool session, which nearly all Steward launches are,
+// honors --settings but not a startup-time --autocompact flag, and the
+// window alone does nothing while autoCompactEnabled defaults false). The
+// launch still ALSO carries the flag (stewardLaunchArgs), belt-and-suspenders
+// for a cold launch. This is a thin wrapper: same payload shape
+// bgSessionSettingsJSON("steward", "", autoCompactWindow) produces, since it
+// IS that call.
+func stewardSettingsJSON(autoCompactWindow string) string {
+	return bgSessionSettingsJSON("steward", "", autoCompactWindow)
+}
 
 // stewardLaunchArgs returns the argv slice (everything after "claude") for
-// the sanctioned Steward launch. autoCompactWindow, when non-empty, appends
+// the sanctioned Steward launch. autoCompactWindow is passed straight through
+// to stewardSettingsJSON (which pins it into --settings when it parses to a
+// real token count) AND, when non-empty, still appends
 // "--autocompact <autoCompactWindow>" to the argv verbatim — no parsing, no
-// range check; the claude CLI's own --autocompact flag validates form and
-// range and fails loudly on bad input, same contract as bgSessionArgs in
-// dispatch.go. When empty (the default), argv is byte-identical to before
-// this parameter existed. Pure: extracted so tests can assert the argv
-// without exec-ing a real claude binary.
+// range check there; the claude CLI's own --autocompact flag validates form
+// and range and fails loudly on bad input, same contract as bgSessionArgs in
+// dispatch.go. When empty (the default), argv AND the --settings payload are
+// byte-identical to before this parameter existed. Pure: extracted so tests
+// can assert the argv without exec-ing a real claude binary.
 func stewardLaunchArgs(autoCompactWindow string) []string {
 	args := []string{
 		"--bg",
 		"--permission-mode", "bypassPermissions",
-		"--settings", stewardSettingsJSON,
+		"--settings", stewardSettingsJSON(autoCompactWindow),
 	}
 	if autoCompactWindow != "" {
 		args = append(args, "--autocompact", autoCompactWindow)
@@ -239,13 +248,15 @@ func stewardLaunchArgs(autoCompactWindow string) []string {
 
 // defaultStewardLaunch execs the sanctioned Steward launch command —
 // `claude --bg --permission-mode bypassPermissions --settings
-// '{"env":{"ATEAM_ROLE":"steward"}}' /agent-teams:steward`, plus
+// '{"env":{"ATEAM_ROLE":"steward"}}' /agent-teams:steward` by default, plus
 // "--autocompact <window>" when CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW is
 // set (driAutoCompactWindow, shared with the dispatch producer in
-// dispatch.go) — with its working directory set to dir via exec.Command's
-// .Dir (never os.Chdir, which would change the whole ateam process's cwd).
-// claude's own stdout/stderr, including the background session id it
-// prints, are streamed straight through to ctx.Stdout/ctx.Stderr.
+// dispatch.go) — in which case the --settings payload also gains
+// autoCompactEnabled/autoCompactWindow (see stewardSettingsJSON) — with its
+// working directory set to dir via exec.Command's .Dir (never os.Chdir, which
+// would change the whole ateam process's cwd). claude's own stdout/stderr,
+// including the background session id it prints, are streamed straight
+// through to ctx.Stdout/ctx.Stderr.
 func defaultStewardLaunch(ctx *cli.Context, dir string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam steward start: 'claude' not found in PATH")

@@ -833,17 +833,33 @@ type bgSessionEnv struct {
 }
 
 // bgSessionSettings is the --settings JSON payload for a background session
-// launch: an optional env map, and nothing else.
+// launch: an optional env map, plus autoCompactEnabled/autoCompactWindow when
+// a window was configured and parses to a real token count.
 //
-// Notably absent: autoCompactWindow. It never enters this payload — re-adding
-// it here is a regression, guarded by
-// TestBGSessionArgs_SettingsOmitsAutoCompactWindow — because the window is
-// settable through a different mechanism: the claude CLI's own --autocompact
-// flag, appended to argv by bgSessionArgs whenever
-// CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW is non-empty (see
-// driAutoCompactWindow). The flag and this struct's absent field write the
-// same resolver slot, so there is never a reason to carry the value in both
-// places. The CLI resolves the window as (2.1.222, function qX):
+// autoCompactWindow ALSO rides here now (agent-teams-4pc5.3), not only as the
+// claude CLI's own --autocompact flag (still appended to argv by bgSessionArgs
+// whenever CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW is non-empty — see
+// driAutoCompactWindow). Both are needed, for two independent reasons proven
+// empirically on real claimed-spare bg sessions:
+//
+//  1. Most bg launches are served by the daemon's pre-warmed spare pool
+//     (`claude bg-spare`), not a fresh exec from this argv. A claimed spare's
+//     compaction window was fixed at its generic warm-up exec (no
+//     --autocompact); the CLAUDE-flag only reaches a genuinely cold launch.
+//     --settings, by contrast, IS honored by the claim payload — so the
+//     window has to travel there too, or every pool-served session (which is
+//     nearly all of them) silently keeps the default ~967k window.
+//  2. autoCompactWindow alone is not enough even via --settings: the CLI only
+//     compacts when autoCompactEnabled is also true, and the user's global
+//     default for that flag is false. Without autoCompactEnabled:true riding
+//     alongside, a pinned window sits there unused.
+//
+// Evidence (agent-teams-4pc5.3, 2026-08-26): {"autoCompactWindow":100000,
+// "env":{...}} on a claimed spare climbed to ~102k and never compacted;
+// {"autoCompactEnabled":true,"autoCompactWindow":100000,"env":{...}} on
+// another claimed spare compacted right on schedule.
+//
+// The CLI resolves the window as (2.1.222, function qX):
 //
 //	W  = first match of: CLAUDE_CODE_AUTO_COMPACT_WINDOW env >
 //	     configured (the --autocompact flag OR an autoCompactWindow settings
@@ -856,16 +872,16 @@ type bgSessionEnv struct {
 //	effective = W - min(maxOutputTokens, 20000)
 //	compact  at effective - 13000
 //
-// The rest of this comment is the argument for the DEFAULT (empty, i.e.
-// --autocompact omitted) — not an argument against the knob existing. Sending
-// nothing falls through to "auto" on a 1M-context model — the model-default
-// tier is gated on the real window being under 1M, so a 1M model skips it —
-// giving a ~967000 trigger that tracks whatever model the session actually
-// runs on. Any value pinned here can only lower that: this call site used to
-// request 200000, which produced a 167000 trigger
-// (200000 - 20000 - 13000, matching compactions observed at 167,030 / 167,041
-// / 167,052) — a self-inflicted ~6x reduction of the trigger the same session
-// reaches with nothing set.
+// The rest of this comment is the argument for the DEFAULT (empty, i.e. both
+// --autocompact and the settings keys omitted) — not an argument against the
+// knob existing. Sending nothing falls through to "auto" on a 1M-context
+// model — the model-default tier is gated on the real window being under 1M,
+// so a 1M model skips it — giving a ~967000 trigger that tracks whatever
+// model the session actually runs on. Any value pinned here can only lower
+// that: this call site used to request 200000, which produced a 167000
+// trigger (200000 - 20000 - 13000, matching compactions observed at 167,030 /
+// 167,041 / 167,052) — a self-inflicted ~6x reduction of the trigger the same
+// session reaches with nothing set.
 //
 // The window is not where the waste is, either. Measured over 51 compactions
 // in one three-day DRI session, the first API request after a compaction
@@ -873,13 +889,67 @@ type bgSessionEnv struct {
 // the re-injected tool/skill/agent/hook listings are re-established every
 // time. Shrinking that beats widening the window.
 type bgSessionSettings struct {
-	Env *bgSessionEnv `json:"env,omitempty"`
+	Env                *bgSessionEnv `json:"env,omitempty"`
+	AutoCompactEnabled *bool         `json:"autoCompactEnabled,omitempty"`
+	AutoCompactWindow  *int          `json:"autoCompactWindow,omitempty"`
+}
+
+// parseAutoCompactWindowTokens parses the free-form value accepted by the
+// claude CLI's own --autocompact flag into a token count, for use ONLY in
+// deciding whether bgSessionSettingsJSON also pins the window into --settings
+// (see bgSessionSettings). The CLI flag itself (bgSessionArgs) still carries
+// the raw value through verbatim, unparsed — that flag remains the sole
+// source of validation/error-reporting for a value the CLI itself rejects;
+// this parser never invents validation beyond the forms below and simply
+// declines (ok=false) to duplicate a value it cannot confidently turn into an
+// integer token count.
+//
+// Accepted forms, mirroring what --autocompact documents:
+//   - a plain integer token count ("300000")
+//   - a k/m suffix ("300k" -> 300000, "1m" -> 1000000)
+//   - a bare integer from 100-1000, read as thousands-of-tokens shorthand
+//     ("200" -> 200000)
+//   - the literal "auto"
+//
+// "auto", "", and anything else that doesn't match one of the forms above all
+// return ok=false ("no window" — omit both settings keys and the flag, i.e.
+// today's default).
+func parseAutoCompactWindowTokens(value string) (tokens int, ok bool) {
+	v := strings.TrimSpace(value)
+	if v == "" || strings.EqualFold(v, "auto") {
+		return 0, false
+	}
+	lower := strings.ToLower(v)
+	multiplier := 1
+	numPart := lower
+	switch {
+	case strings.HasSuffix(lower, "k"):
+		multiplier = 1000
+		numPart = strings.TrimSuffix(lower, "k")
+	case strings.HasSuffix(lower, "m"):
+		multiplier = 1_000_000
+		numPart = strings.TrimSuffix(lower, "m")
+	}
+	n, err := strconv.Atoi(numPart)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	if multiplier == 1 && n >= 100 && n <= 1000 {
+		// Bare number in the CLI's thousands-shorthand range.
+		return n * 1000, true
+	}
+	return n * multiplier, true
 }
 
 // bgSessionSettingsJSON builds the --settings JSON argument for a background
 // session launch: an "env" map carrying ATEAM_ROLE/ATEAM_INITIATIVE when
-// either is non-empty, and "" when neither is (the caller then omits the flag
-// rather than passing an empty object). role and initiativeID are independent:
+// either is non-empty, plus autoCompactEnabled/autoCompactWindow when
+// autoCompactWindow parses to a real token count (parseAutoCompactWindowTokens
+// — see bgSessionSettings for why both keys travel together and why they must
+// ride --settings rather than rely on the argv flag alone). Returns "" only
+// when there is nothing at all to carry (no role, no initiativeID, no usable
+// window) — the caller then omits the --settings flag entirely rather than
+// passing an empty object. role and initiativeID are independent:
 // initiativeID is omitted whenever the launcher doesn't know the initiative id
 // (e.g. new-initiative given a bare problem statement, or the steward, which
 // is fleet-scoped and never carries one).
@@ -888,14 +958,24 @@ type bgSessionSettings struct {
 // processes via IPC rather than exec'ing fresh ones from this call's argv, so
 // cmd.Env set here never reaches the claimed session (verified live) — but the
 // claim payload does carry --settings, so it is honored.
-func bgSessionSettingsJSON(role, initiativeID string) string {
-	if role == "" && initiativeID == "" {
+func bgSessionSettingsJSON(role, initiativeID, autoCompactWindow string) string {
+	tokens, windowOK := parseAutoCompactWindowTokens(autoCompactWindow)
+	if role == "" && initiativeID == "" && !windowOK {
 		return ""
 	}
-	settings := bgSessionSettings{Env: &bgSessionEnv{Role: role, Initiative: initiativeID}}
+	var settings bgSessionSettings
+	if role != "" || initiativeID != "" {
+		settings.Env = &bgSessionEnv{Role: role, Initiative: initiativeID}
+	}
+	if windowOK {
+		enabled := true
+		settings.AutoCompactEnabled = &enabled
+		settings.AutoCompactWindow = &tokens
+	}
 	b, err := json.Marshal(settings)
 	if err != nil {
-		// Env's fields are plain strings — Marshal cannot fail here.
+		// All fields are plain strings/bools/ints behind pointers — Marshal
+		// cannot fail here.
 		return ""
 	}
 	return string(b)
@@ -912,11 +992,14 @@ func bgSessionSettingsJSON(role, initiativeID string) string {
 // anthropics/claude-code#81746, see agent-teams-wf7o.9 — and is always
 // emitted; resolving/validating it is the CALLER's job (rawLaunchBGSession),
 // not this function's: bgSessionArgs stays pure and does not read the
-// filesystem or environment. autoCompactWindow, when non-empty, appends
-// "--autocompact <autoCompactWindow>" to the argv verbatim — no parsing, no
-// range check; the claude CLI's own --autocompact flag validates form and
-// range and fails loudly on bad input (see bgSessionSettings for why nothing
-// duplicates that check here). When empty (the default), argv is
+// filesystem or environment. autoCompactWindow is passed straight through to
+// bgSessionSettingsJSON (which pins it into --settings when it parses to a
+// real token count — see bgSessionSettings for why) AND, when non-empty,
+// still appends "--autocompact <autoCompactWindow>" to the argv verbatim — no
+// parsing, no range check there; the claude CLI's own --autocompact flag
+// validates form and range and fails loudly on bad input, belt-and-suspenders
+// for the rare cold launch that execs fresh instead of claiming a pool spare.
+// When empty (the default), argv AND the --settings payload are
 // byte-identical to before this parameter existed. Extracted so tests can
 // assert the argv without executing the command.
 func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, autoCompactWindow string) []string {
@@ -929,7 +1012,7 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON,
 		"--model", model,
 		"--permission-mode", "bypassPermissions",
 	}
-	if settings := bgSessionSettingsJSON(role, initiativeID); settings != "" {
+	if settings := bgSessionSettingsJSON(role, initiativeID, autoCompactWindow); settings != "" {
 		args = append(args, "--settings", settings)
 	}
 	if autoCompactWindow != "" {

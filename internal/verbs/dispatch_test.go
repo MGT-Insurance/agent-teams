@@ -1497,6 +1497,41 @@ func TestDriAutoCompactWindow(t *testing.T) {
 	}
 }
 
+// ---- parseAutoCompactWindowTokens: value parser ---------------------------
+
+// TestParseAutoCompactWindowTokens covers every accepted form the claude
+// CLI's own --autocompact flag documents (plain integer, k/m suffix, bare
+// 100-1000 thousands shorthand, the literal "auto") plus the fail-closed
+// cases (empty, unparseable) that must all resolve to ok=false ("no window").
+func TestParseAutoCompactWindowTokens(t *testing.T) {
+	cases := []struct {
+		name       string
+		value      string
+		wantTokens int
+		wantOK     bool
+	}{
+		{name: "k_suffix", value: "300k", wantTokens: 300000, wantOK: true},
+		{name: "bare_thousands_shorthand", value: "200", wantTokens: 200000, wantOK: true},
+		{name: "plain_integer", value: "300000", wantTokens: 300000, wantOK: true},
+		{name: "m_suffix", value: "1m", wantTokens: 1000000, wantOK: true},
+		{name: "literal_auto", value: "auto", wantOK: false},
+		{name: "auto_uppercase", value: "AUTO", wantOK: false},
+		{name: "empty", value: "", wantOK: false},
+		{name: "garbage", value: "banana", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTokens, gotOK := parseAutoCompactWindowTokens(tc.value)
+			if gotOK != tc.wantOK {
+				t.Fatalf("parseAutoCompactWindowTokens(%q) ok = %v, want %v", tc.value, gotOK, tc.wantOK)
+			}
+			if gotOK && gotTokens != tc.wantTokens {
+				t.Errorf("parseAutoCompactWindowTokens(%q) tokens = %d, want %d", tc.value, gotTokens, tc.wantTokens)
+			}
+		})
+	}
+}
+
 func TestNewInitiative_MissingClaude(t *testing.T) {
 	// Only run when 'claude' is NOT in PATH.
 	if _, err := exec.LookPath("claude"); err == nil {
@@ -1933,30 +1968,62 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 
 // ── bgSessionArgs: --settings argument ─────────────────────────────────────
 
-// TestBGSessionArgs_SettingsOmitsAutoCompactWindow pins the decision NOT to
-// configure Claude Code's auto-compact trigger from here. Any value ateam pins
-// can only lower the threshold: unset falls through to the CLI's "auto" term,
-// which is the running model's full context window, while a pinned number is
-// clamped by min(realModelWindow, requested). This call site once requested
-// 200000 and cost every background session 5x its usable context. If a future
-// change reintroduces the key, this test is the thing that should stop it.
-func TestBGSessionArgs_SettingsOmitsAutoCompactWindow(t *testing.T) {
-	// Every production launch path supplies a role, so --settings is present.
-	// The non-empty window cases are the ones that matter: the regression this
-	// guards against is a future change that pins the window in --settings as
-	// well as on argv, which can only happen when a window is actually set.
-	for _, tc := range []struct{ role, initiativeID, window string }{
-		{"dri", "at-abc123", ""},
-		{"dri", "", ""},
-		{"steward", "", ""},
-		{"dri", "at-abc123", "450000"},
-		{"dri", "", "500k"},
-		{"steward", "", "auto"},
+// TestBGSessionArgs_SettingsAutoCompactWindow pins agent-teams-4pc5.3's fix:
+// the auto-compact window now DOES belong in --settings (inverting the older
+// decision this test used to guard — the earlier default-safety argument
+// still holds for the UNSET case, just not for a value the caller actually
+// configured). Nearly all background launches are served by the daemon's
+// pre-warmed spare pool, which claims a session via IPC and only honors
+// --settings, never a startup-time --autocompact flag — so a window pinned
+// only on argv silently never reaches those sessions. Every parseable window
+// must appear as autoCompactEnabled:true + autoCompactWindow:<int> (the
+// global default for autoCompactEnabled is false, so the window alone would
+// still leave compaction off); "auto", empty, and unparseable values must
+// still omit both keys, keeping today's default byte-identical. Unmarshaled
+// into a map rather than string-compared, so key ordering can't make this
+// brittle.
+func TestBGSessionArgs_SettingsAutoCompactWindow(t *testing.T) {
+	for _, tc := range []struct {
+		role, initiativeID, window string
+		wantWindow                 int
+		wantKeys                   bool
+	}{
+		{role: "dri", initiativeID: "at-abc123", window: "", wantKeys: false},
+		{role: "dri", initiativeID: "", window: "", wantKeys: false},
+		{role: "steward", initiativeID: "", window: "", wantKeys: false},
+		{role: "steward", initiativeID: "", window: "auto", wantKeys: false},
+		{role: "dri", initiativeID: "", window: "banana", wantKeys: false},
+		{role: "dri", initiativeID: "at-abc123", window: "450000", wantWindow: 450000, wantKeys: true},
+		{role: "dri", initiativeID: "", window: "500k", wantWindow: 500000, wantKeys: true},
+		{role: "dri", initiativeID: "at-abc123", window: "1m", wantWindow: 1000000, wantKeys: true},
+		{role: "dri", initiativeID: "", window: "200", wantWindow: 200000, wantKeys: true},
 	} {
 		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}", tc.window)
 		got := settingsValue(t, args)
-		if strings.Contains(got, "autoCompactWindow") {
-			t.Errorf("--settings for role=%q window=%q must not pin autoCompactWindow; got %q", tc.role, tc.window, got)
+
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+			t.Fatalf("role=%q window=%q: --settings = %q is not valid JSON: %v", tc.role, tc.window, got, err)
+		}
+
+		if !tc.wantKeys {
+			if _, ok := parsed["autoCompactEnabled"]; ok {
+				t.Errorf("role=%q window=%q: --settings must omit autoCompactEnabled; got %q", tc.role, tc.window, got)
+			}
+			if _, ok := parsed["autoCompactWindow"]; ok {
+				t.Errorf("role=%q window=%q: --settings must omit autoCompactWindow; got %q", tc.role, tc.window, got)
+			}
+			continue
+		}
+		enabled, ok := parsed["autoCompactEnabled"].(bool)
+		if !ok || !enabled {
+			t.Errorf("role=%q window=%q: --settings missing autoCompactEnabled:true; got %q", tc.role, tc.window, got)
+		}
+		winVal, ok := parsed["autoCompactWindow"].(float64)
+		if !ok {
+			t.Errorf("role=%q window=%q: --settings missing numeric autoCompactWindow; got %q", tc.role, tc.window, got)
+		} else if int(winVal) != tc.wantWindow {
+			t.Errorf("role=%q window=%q: autoCompactWindow = %v, want %d", tc.role, tc.window, winVal, tc.wantWindow)
 		}
 	}
 }
