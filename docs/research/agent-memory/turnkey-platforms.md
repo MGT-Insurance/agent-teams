@@ -89,12 +89,12 @@ decision. Neither behavior can be assumed across both versions or editions.
 
 | Gate | Mem0 Platform | Mem0 OSS |
 | --- | --- | --- |
-| R1 | **Partial, B.** `user_id`, `agent_id`, `run_id`, and `app_id` provide namespaces, but current filter docs disagree on whether entity types combine or identify independent entity stores. A role mapping and isolation test remain necessary. | **Pass for basic isolation, A.** A local `v2.0.19` probe stored and retrieved separate `agent_id=implementer` and `agent_id=tester` records. Role identity policy remains adapter code. |
+| R1 | **Partial, B.** `user_id`, `agent_id`, `run_id`, and `app_id` provide namespaces, but current filter docs disagree on whether entity types combine or identify independent entity stores. A role mapping and isolation test remain necessary. | **Pass for basic isolation, B.** Pinned source defines `agent_id` scope on writes and filter-scoped search. The documented credential-free probe could not initialize through public configuration; an unsupported patched diagnostic isolated two roles, but does not raise the evidence grade. Role identity policy remains adapter code. |
 | R2 | **Partial, B.** The managed API is reachable across machines and offers rate limits and asynchronous operations. Primary docs do not define convergence, serialization, or lost-update behavior for concurrent contradictory writes. | **Unknown, B.** A central deployment can serve many clients, but no primary source defines same-memory write ordering or multi-writer convergence. The reference stack is not evidence of distributed synchronization. |
 | R3 | **Partial, B.** CLI and MCP can expose memory to agents, but neither proves automatic delivery at all four agent-teams lifecycle points. | **Partial, B.** REST/SDK access is available; Claude Code, Codex, compaction, resume, and subagent hooks remain retained adapters. |
-| R4 | **Partial, B.** History, CRUD, export, decay, and some algorithm-specific dedupe exist. Version-dependent conflict behavior, bounded promotion/demotion, and reversible curation are not one documented contract. | **Partial, A/B.** Local CRUD and history were reproduced. Full inferred dedupe/conflict behavior was not. Manual deletion/history does not provide bounded automated curation or rollback. |
+| R4 | **Partial, B.** History, CRUD, export, decay, and some algorithm-specific dedupe exist. Version-dependent conflict behavior, bounded promotion/demotion, and reversible curation are not one documented contract. | **Partial, B.** CRUD and history are source-defined. A patched diagnostic exercised add, update, and history, but the documented public configuration failed before initialization. Inferred dedupe/conflict behavior, bounded automated curation, and rollback remain unproved. |
 | R5 | **Partial, B.** Search supports filters, `top_k`, threshold, reranking, and recency weighting. There is no documented token-budgeted hot tier or deterministic injection contract. | **Partial, B.** Search can bound result count; token measurement, startup injection, hot/cold promotion, and overflow behavior remain custom. |
-| R6 | **Pass for access boundary, B.** REST, official SDKs, CLI, and MCP are client-neutral. The lifecycle contract still belongs to agent-teams under R3. | **Pass for access boundary, A/B.** The local REST surface and Python SDK were exercised; the API is usable from arbitrary clients. Hosted `/v1` paths and OSS paths are not drop-in compatible. |
+| R6 | **Pass for access boundary, B.** REST, official SDKs, CLI, and MCP are client-neutral. The lifecycle contract still belongs to agent-teams under R3. | **Pass for access boundary, B.** Official source and documentation expose local REST and Python interfaces usable from arbitrary clients. The documented credential-free initialization was not reproduced through public configuration, and hosted `/v1` paths and OSS paths are not drop-in compatible. |
 | R7 | **Partial, B.** The feedback API accepts positive/negative feedback, while webhooks report add/update/delete/categorize. Docs do not show an automatic memory-applied event that binds provenance, task outcome, and retention action. | **Fail, B.** The reference server exposes request logging and memory history, but no applied/usefulness endpoint or retention feedback loop. |
 
 ### Operational assessment
@@ -311,61 +311,64 @@ is a gate result, not a product ranking or winner selection.
 | Hosted outage or account loss | Maintain bounded local hot cache, regular validated exports, credential rotation, and a tested read-only fallback. |
 | Self-host restore failure | Use application-consistent snapshots and scheduled restore drills, including vector/graph indexes and encryption keys. |
 
-## Reproducible local probes
+## Local probe results and gaps
 
-### Mem0 OSS: run result
+### Mem0 OSS: supported-path failure and patched diagnostic
 
-The following core-path probe was run against `mem0ai==2.0.19` in a temporary
-virtual environment with telemetry disabled. It used embedded Qdrant and Mem0's
-deterministic mock embedder, so it incurred no model call. It validated scoped
-CRUD/search and history plumbing only. It did **not** test semantic quality,
-inference, inferred deduplication, contradiction handling, concurrent writes,
-hybrid BM25, auth, or server deployment.
+A clean isolated rerun against `mem0ai==2.0.19`, with telemetry disabled and a
+temporary embedded Qdrant path, failed before `Memory` construction. The
+documented probe's configuration was rejected:
 
-Observed result:
+```text
+Configuration validation error: 1 validation error for MemoryConfig
+embedder.config
+  Value error, Unsupported embedding provider: mock
+```
+
+The wheel contains `mem0.embeddings.mock.MockEmbeddings`, but the pinned
+`EmbedderConfig` provider allowlist and `EmbedderFactory.provider_to_class`
+mapping both omit `mock`. The class's presence therefore does not make
+`{"embedder":{"provider":"mock"}}` a supported configuration.
+
+For bounded diagnosis only, the configuration was first validated with an
+allowed provider, then mutated to `mock`, and `MockEmbeddings` was registered in
+the factory at runtime. Construction and `infer=False` writes then succeeded,
+but the probe's top-level search scope failed:
+
+```text
+Top-level entity parameters frozenset({'agent_id'}) are not supported in search().
+Use filters={'user_id': '...'} instead.
+```
+
+Switching the diagnostic to `filters={"agent_id": role}` produced one expected
+record per role and `ADD`/`UPDATE` history:
 
 ```json
-{"history_events":["ADD","UPDATE"],"infer":false,"package":"mem0ai==2.0.19","role_isolation":{"implementer":1,"tester":1},"semantic_quality_tested":false}
+{
+  "history_events": ["ADD", "UPDATE"],
+  "package": "mem0ai==2.0.19",
+  "patched_internals": true,
+  "role_isolation": {
+    "implementer": { "expected_only": true, "result_count": 1 },
+    "tester": { "expected_only": true, "result_count": 1 }
+  },
+  "semantic_quality_tested": false
+}
 ```
 
-Reproduction outline:
+The prior command also used `len(memory.search(...))`. In the pinned API,
+`search` returns a dictionary with a `results` key, so that expression counted
+response keys rather than retrieved memories. The earlier `role_isolation`
+counts were invalid independently of the configuration and search-parameter
+failures.
 
-```bash
-python3 -m venv /tmp/mem0-probe
-/tmp/mem0-probe/bin/pip install 'mem0ai==2.0.19'
-MEM0_TELEMETRY=false OPENAI_API_KEY=probe-only /tmp/mem0-probe/bin/python - <<'PY'
-import json
-import tempfile
-from mem0 import Memory
-
-root = tempfile.mkdtemp(prefix="mem0-qdrant-")
-config = {
-    "vector_store": {
-        "provider": "qdrant",
-        "config": {"path": root, "collection_name": "probe", "embedding_model_dims": 10},
-    },
-    "embedder": {"provider": "mock", "config": {"embedding_dims": 10}},
-}
-memory = Memory.from_config(config)
-ids = {}
-for role in ("implementer", "tester"):
-    result = memory.add(
-        "Remember scoped auth checks for this role.", agent_id=role, infer=False
-    )
-    ids[role] = result["results"][0]["id"]
-
-isolated = {
-    role: len(memory.search("scoped auth checks", agent_id=role))
-    for role in ids
-}
-memory.update(ids["implementer"], "Remember scoped auth and rollback checks.")
-events = [entry["event"] for entry in memory.history(ids["implementer"])]
-print(json.dumps({"history_events": events, "infer": False,
-                  "package": "mem0ai==2.0.19",
-                  "role_isolation": isolated,
-                  "semantic_quality_tested": False}, sort_keys=True))
-PY
-```
+Evidence disposition: the documented credential-free core-path probe did not
+succeed through the public configuration path. The patched result confirms only
+that underlying OSS CRUD, filter, and history mechanics can operate after
+runtime-only substitutions. It is not a supported reproduction, does not
+validate hosted Platform behavior, and does not earn grade A. Semantic quality,
+inference, inferred deduplication, contradiction handling, concurrent writes,
+hybrid BM25, auth, and server deployment remain untested.
 
 ### Graphiti OSS: unrun gap
 
@@ -427,10 +430,15 @@ procurement or pilot decision.
 - **B:** [OSS REST API](https://docs.mem0.ai/open-source/features/rest-api) and
   [self-host setup](https://docs.mem0.ai/open-source/setup) define the server,
   routes, auth, dashboard, and reference storage.
-- **A/B:** [Mem0 OSS `v2.0.19`](https://github.com/mem0ai/mem0/tree/v2.0.19),
+- **B:** [Mem0 OSS `v2.0.19`](https://github.com/mem0ai/mem0/tree/v2.0.19),
   [release](https://github.com/mem0ai/mem0/releases/tag/v2.0.19), and
   [Apache-2.0 license](https://github.com/mem0ai/mem0/blob/v2.0.19/LICENSE)
-  pin the reproduced library and source.
+  pin the evaluated library and source. The pinned
+  [`EmbedderConfig`](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/embeddings/configs.py),
+  [embedder factory](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/utils/factory.py),
+  and [`Memory.search`](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/memory/main.py)
+  support the API-mismatch diagnosis; the patched diagnostic is not grade-A
+  product evidence.
 - **B:** [search](https://docs.mem0.ai/core-concepts/memory-operations/search),
   [entity scope](https://docs.mem0.ai/platform/features/entity-scoped-memory),
   and [v2 filters](https://docs.mem0.ai/platform/features/v2-memory-filters)
