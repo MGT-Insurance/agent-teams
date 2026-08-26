@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Agent memory landscape research plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f1f3f2;
+      --paper: #ffffff;
+      --ink: #18201d;
+      --muted: #5d6762;
+      --line: #d7ddda;
+      --strong-line: #aeb9b3;
+      --green: #176b52;
+      --green-bg: #e9f4ef;
+      --amber: #835c0b;
+      --amber-bg: #fff5d8;
+      --red: #9b322b;
+      --red-bg: #fff0ee;
+      --blue: #285c85;
+      --blue-bg: #edf5fb;
+      --code-bg: #f4f6f5;
+      --max: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font: 16px/1.58 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--green); text-underline-offset: 0.16em; }
+    code, kbd {
+      padding: 0.1rem 0.3rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--code-bg);
+      font: 0.88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre {
+      overflow-x: auto;
+      margin: 1rem 0;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--code-bg);
+      font: 0.84rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      gap: 2rem;
+      width: min(var(--max), calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 1.5rem 0 4rem;
+    }
+    nav {
+      position: sticky;
+      top: 1rem;
+      align-self: start;
+      max-height: calc(100vh - 2rem);
+      overflow: auto;
+      padding: 1rem 0;
+      border-top: 3px solid var(--green);
+    }
+    nav strong {
+      display: block;
+      margin-bottom: 0.65rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    nav ol { margin: 0; padding: 0; list-style: none; }
+    nav li { margin: 0.18rem 0; }
+    nav a {
+      display: block;
+      padding: 0.25rem 0.35rem;
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.3;
+      text-decoration: none;
+    }
+    nav a:hover, nav a:focus-visible { background: var(--green-bg); color: var(--ink); }
+
+    main {
+      min-width: 0;
+      padding: clamp(1.25rem, 4vw, 3.75rem);
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+    header { padding-bottom: 2rem; border-bottom: 1px solid var(--strong-line); }
+    .kicker {
+      margin: 0 0 0.65rem;
+      color: var(--green);
+      font-size: 0.8rem;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 19ch;
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 3.6rem);
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+    .lede { max-width: 72ch; margin: 1.1rem 0 0; color: var(--muted); font-size: 1.08rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-top: 1.25rem; color: var(--muted); font-size: 0.84rem; }
+    .status {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border: 1px solid #dfbd60;
+      border-radius: 4px;
+      background: var(--amber-bg);
+      color: var(--amber);
+      font-weight: 750;
+    }
+
+    section { padding-top: 2.7rem; }
+    h2 {
+      margin: 0 0 1rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid var(--line);
+      font-size: 1.55rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    h3 { margin: 1.7rem 0 0.55rem; font-size: 1.08rem; line-height: 1.3; letter-spacing: 0; }
+    p { margin: 0.75rem 0; }
+    ul, ol { padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    .compact li { margin: 0.2rem 0; }
+
+    .notice, .question, .candidate {
+      margin: 1rem 0;
+      padding: 0.9rem 1rem;
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+      border-radius: 6px;
+    }
+    .notice { border-left-color: var(--amber); background: var(--amber-bg); }
+    .question { border-left-color: var(--blue); background: var(--blue-bg); }
+    .candidate { border-left-color: var(--green); background: var(--green-bg); }
+    .candidate h3, .question h3 { margin-top: 0; }
+    .label {
+      display: inline-block;
+      margin-bottom: 0.35rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .grid-2, .grid-3 {
+      display: grid;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .panel {
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper);
+    }
+    .panel h3 { margin-top: 0; }
+
+    .table-wrap { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.7rem 0.75rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--code-bg); font-size: 0.78rem; letter-spacing: 0.03em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .nowrap { white-space: nowrap; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.7rem;
+      margin: 1.25rem 0;
+    }
+    .flow div {
+      position: relative;
+      min-height: 7.5rem;
+      padding: 0.85rem;
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--green);
+      background: var(--paper);
+      font-size: 0.86rem;
+    }
+    .flow div:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -0.58rem;
+      z-index: 2;
+      color: var(--green);
+      content: "›";
+      font-size: 1.5rem;
+      font-weight: 800;
+      transform: translateY(-55%);
+    }
+    .flow strong { display: block; margin-bottom: 0.35rem; }
+
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--strong-line); color: var(--muted); font-size: 0.84rem; }
+
+    @media (max-width: 900px) {
+      .page { display: block; width: min(100% - 1rem, 820px); padding-top: 0.5rem; }
+      nav { position: static; max-height: none; margin-bottom: 0.5rem; }
+      nav ol { columns: 2; }
+      main { padding: 1.25rem; }
+      .grid-3, .flow { grid-template-columns: 1fr 1fr; }
+      .flow div:not(:last-child)::after { content: ""; }
+    }
+    @media (max-width: 620px) {
+      nav ol { columns: 1; }
+      .grid-2, .grid-3, .flow { grid-template-columns: 1fr; }
+      th, td { padding: 0.55rem; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --page: #111715;
+        --paper: #18201d;
+        --ink: #edf2ef;
+        --muted: #a9b3ae;
+        --line: #36413c;
+        --strong-line: #59665f;
+        --green: #73d3ad;
+        --green-bg: #17372b;
+        --amber: #f0cd75;
+        --amber-bg: #3a3018;
+        --red: #f0958f;
+        --red-bg: #3a211f;
+        --blue: #99c8ee;
+        --blue-bg: #1c3040;
+        --code-bg: #202925;
+      }
+      .status { border-color: #796328; }
+    }
+    @media print {
+      body { background: #fff; color: #000; font-size: 10.5pt; }
+      .page { display: block; width: auto; padding: 0; }
+      nav { display: none; }
+      main { padding: 0; border: 0; }
+      section, table, .panel, .candidate, .question { break-inside: avoid; }
+      a { color: #000; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav aria-label="Plan sections">
+      <strong>Agent memory research</strong>
+      <ol>
+        <li><a href="#status">Status and revision</a></li>
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#questions">Human decisions</a></li>
+        <li><a href="#problem">Problem and outcomes</a></li>
+        <li><a href="#requirements">Required capabilities</a></li>
+        <li><a href="#current">Current system</a></li>
+        <li><a href="#candidates">Candidate set</a></li>
+        <li><a href="#evidence">Evidence and scoring</a></li>
+        <li><a href="#execution">Execution sequence</a></li>
+        <li><a href="#tracks">Tracks and ownership</a></li>
+        <li><a href="#validation">Validation scenarios</a></li>
+        <li><a href="#deliverables">Deliverables and non-goals</a></li>
+        <li><a href="#risks">Risks and unknowns</a></li>
+        <li><a href="#beads">Draft Bead mapping</a></li>
+        <li><a href="#approval">Approval boundary</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <header>
+        <p class="kicker">agent-teams · research plan · 26 August 2026</p>
+        <h1>Agent memory landscape research plan</h1>
+        <p class="lede">A primary-source research program to decide whether agent-teams should keep, incrementally improve, replace, or combine parts of its current memory system while preserving the behaviors that already work.</p>
+        <div class="meta">
+          <span class="status">Draft for human review</span>
+          <span>Repository baseline: <code>e028082e9f8de49342dc6d5b9106af2b7c4b44da</code></span>
+          <span>Research execution: not authorized</span>
+        </div>
+      </header>
+
+      <section id="status">
+        <h2>Status and revision</h2>
+        <div class="notice">
+          <strong>Approval boundary.</strong> This document is the missing human-review plan artifact. The existing execution Beads were created too early and are only draft source material. This artifact does not authorize them. No research track begins, and no execution Bead becomes active, until a human reviews this exact document and the DRI reconciles the approved plan back into Beads.
+        </div>
+        <p><strong>26 August 2026, corrective revision:</strong> adds the required reviewable HTML plan; makes “keep the current system unchanged” and “incrementally improve the current system” separate first-class candidates; preserves external candidate families; and freezes the proposed evidence, gating, ownership, validation, and sequencing method without making a recommendation.</p>
+      </section>
+
+      <section id="summary">
+        <h2>Summary</h2>
+        <p>The current custom memory system is useful but spans storage, synchronization, command behavior, prompts, hooks, curation instructions, runtime-specific startup paths, and dashboard surfaces. The research will compare that system against external platforms, framework-native libraries, composable components, and hybrid architectures using one required-capability contract and one evidence ledger. The unchanged system and a bounded incremental-improvement option will be evaluated independently, not used as an undifferentiated baseline. Work proceeds from contract approval to parallel evidence collection, then joins for live validation, reproducible scoring, independent review, and a final recommendation. The research does not implement or migrate anything.</p>
+      </section>
+
+      <section id="questions">
+        <h2>Questions requiring human judgment</h2>
+        <div class="question">
+          <span class="label">Decision 1 · optimization target</span>
+          <h3>After R1–R7 pass, should maintenance reduction be the dominant decision factor?</h3>
+          <p><strong>Recommended default:</strong> yes. Treat portability, export, rollback, and privacy as safeguards that cannot be traded away for a lower maintenance estimate.</p>
+        </div>
+        <div class="question">
+          <span class="label">Decision 2 · hosted-service appetite</span>
+          <h3>May a hosted service win if it materially reduces maintenance?</h3>
+          <p><strong>Recommended default:</strong> keep hosted and self-hosted editions as separate candidates; allow a hosted winner only when data handling, export fidelity, recurring cost, outage behavior, and rollback are explicit and acceptable.</p>
+        </div>
+        <div class="question">
+          <span class="label">Decision 3 · useful-memory signal</span>
+          <h3>What quality bar should R7 require?</h3>
+          <p><strong>Recommended default:</strong> automatic application events with provenance and outcome context are a pass; voluntary agent self-reporting alone is partial because it is expected to undercount and can be lost under concurrency.</p>
+        </div>
+        <div class="question">
+          <span class="label">Decision 4 · curation authority</span>
+          <h3>How much autonomous deletion or conflict resolution is acceptable?</h3>
+          <p><strong>Recommended default:</strong> automate reversible promotion, demotion, duplicate detection, and suggested merges; require a reviewable record for semantic conflict resolution and destructive eviction until validation shows a lower-risk policy.</p>
+        </div>
+      </section>
+
+      <section id="problem">
+        <h2>Problem and desired outcomes</h2>
+        <p>Repeated instances of the same role need to accumulate durable operational knowledge across sessions and machines. The best knowledge must arrive automatically in a small context budget; the long tail must remain searchable; and curation must keep the system from growing without bound. These behaviors currently work well enough to be valuable, but maintaining them requires coordination across multiple custom layers.</p>
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Desired outcome</h3>
+            <ul class="compact">
+              <li>A defensible keep, improve, buy, or hybrid recommendation.</li>
+              <li>Lower owned maintenance without losing R1–R7.</li>
+              <li>A clear boundary between vendor/library responsibility and agent-teams responsibility.</li>
+              <li>A reversible adoption path with explicit retained custom code.</li>
+              <li>Evidence that another reviewer can reopen and reproduce.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>Decision quality</h3>
+            <ul class="compact">
+              <li>No winner is assumed by this plan.</li>
+              <li>Roadmap and marketing claims cannot carry a recommendation.</li>
+              <li>Hosted and self-hosted capability surfaces remain separate.</li>
+              <li>Unknown means unknown, not zero and not absent.</li>
+              <li>Maintenance moved into adapters still counts as maintenance.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="requirements">
+        <h2>Required capabilities R1–R7</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Requirement</th><th>Required behavior</th><th>Minimum evidence scenario</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="nowrap"><strong>R1 · Role scope</strong></td><td>Memories are isolated and retrieved by role while remaining shared by all instances of that role.</td><td>Two roles store overlapping terms; each role read returns only its own namespace.</td></tr>
+              <tr><td class="nowrap"><strong>R2 · Shared contribution</strong></td><td>Repeated role instances can contribute across sessions and machines with defined concurrency and synchronization behavior.</td><td>Concurrent writers create and update memories, synchronize, and converge without silent loss.</td></tr>
+              <tr><td class="nowrap"><strong>R3 · Automatic availability</strong></td><td>Relevant memory is available at startup, resume, compaction recovery, and subagent start.</td><td>Claude Code and Codex role runs demonstrate delivery, including truncation or failure detection.</td></tr>
+              <tr><td class="nowrap"><strong>R4 · Bounded curation</strong></td><td>Growth is bounded through deduplication, conflict handling, provenance, promotion/demotion, and recoverability.</td><td>A duplicate and a contradiction enter the store; the system produces a traceable, reversible result within budget.</td></tr>
+              <tr><td class="nowrap"><strong>R5 · Hot plus searchable pool</strong></td><td>A token-budgeted hot set is injected while a larger cold pool remains searchable with useful ranking.</td><td>Hot selection stays within budget; a relevant cold memory is retrieved from a distractor set.</td></tr>
+              <tr><td class="nowrap"><strong>R6 · Harness portability</strong></td><td>A stable CLI, API, or protocol boundary works across Claude Code, Codex, and another neutral client without framework lock-in.</td><td>The same write/read contract is exercised from two supported harnesses and one generic client or fixture.</td></tr>
+              <tr><td class="nowrap"><strong>R7 · Applied/usefulness telemetry</strong></td><td>The system records when memory is applied and supplies a signal useful for retention, promotion, and quality evaluation.</td><td>An application event is captured, tied to a memory and context, and reflected in a later curation or ranking decision.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="current">
+        <h2>Current system at a high level</h2>
+        <figure>
+          <pre aria-label="Current agent memory flow">Role agent
+   │  ateam learn &lt;role&gt; &lt;slug&gt;
+   ▼
+Dolt/Beads memory store ───── refs/dolt/data sync across machines
+   │
+   ├── fresh: newly written, auto-served
+   ├── hot: curated, auto-served
+   └── cold: searchable on demand
+          │
+          ├── ateam learnings &lt;role&gt;  → startup/subagent context
+          ├── ateam recall &lt;role&gt;     → tokenized cold search
+          ├── ateam applied &lt;role&gt;    → use counter + timestamp
+          └── condense workflow        → promote / merge / demote / evict
+
+Claude Code hooks + role definitions       Codex skills + custom agent definitions
+                    \                       /
+                     └── runtime-specific delivery ──┘</pre>
+          <figcaption>The research baseline will verify this flow at a pinned source revision and against the shipped CLI artifact; the diagram is an implementation map, not a quality judgment.</figcaption>
+        </figure>
+
+        <h3>Observed architecture</h3>
+        <ul>
+          <li><strong>Storage and sync:</strong> role memories live in the global Dolt-backed Beads workspace and synchronize through <code>refs/dolt/data</code>.</li>
+          <li><strong>Tiering:</strong> keys encode fresh, hot, and cold tiers. Fresh and hot are returned by <code>ateam learnings</code>; cold is available through <code>ateam recall</code>.</li>
+          <li><strong>Writes:</strong> <code>ateam learn</code> is an upsert with per-entry byte caps. <code>ateam forget</code> removes a tier-specific key with recovery available from Dolt history.</li>
+          <li><strong>Curation:</strong> <code>ateam condense-check</code> gates work based on fresh material. A prompt-driven condense process designs and applies a hot set, then drains fresh to cold under an advisory lock.</li>
+          <li><strong>Use tracking:</strong> <code>ateam applied</code> stores a tier-independent count and timestamp through a non-atomic read-modify-write operation.</li>
+          <li><strong>Delivery:</strong> Claude Code uses hooks plus role self-fetch instructions; Codex uses plugin hooks, skills, and generated custom-agent definitions. The dashboard reads a normalized <code>ateam memories-json</code> view.</li>
+        </ul>
+
+        <h3>Maintenance concerns to measure, not presume</h3>
+        <div class="grid-3">
+          <div class="panel"><h3>Distributed contract</h3><p>Behavior is coordinated across Go verbs, role prompts, hook scripts, skills, generated agent definitions, dashboard types, tests, and prebuilt binaries.</p></div>
+          <div class="panel"><h3>Runtime delivery</h3><p>Claude Code and Codex have different startup and subagent mechanisms, limits, and recovery paths. Cross-harness parity requires explicit upkeep.</p></div>
+          <div class="panel"><h3>Curation operation</h3><p>The current workflow combines deterministic commands with model-driven judgment and ordering-sensitive instructions. Its safety depends on lock, drain, and recovery conventions.</p></div>
+          <div class="panel"><h3>Retrieval quality</h3><p>Cold retrieval is custom tokenized substring ranking. Relevance, scale, and false-positive behavior need an empirical baseline.</p></div>
+          <div class="panel"><h3>Telemetry fidelity</h3><p>Applied counts are self-reported and non-atomic. The research must measure what that signal proves and where it can undercount.</p></div>
+          <div class="panel"><h3>Operational ownership</h3><p>Dolt synchronization, release/version parity, hook reliability, token budgets, prompt contracts, and dashboard compatibility remain project-owned today.</p></div>
+        </div>
+        <p><strong>Primary repository surfaces for the baseline:</strong> <code>README.md</code>; <code>plugins/agent-teams/CLAUDE.md</code>; <code>internal/verbs/query.go</code>, <code>write.go</code>, <code>kong_converted.go</code>, and <code>condense_check.go</code>; <code>plugins/agent-teams/hooks/**</code>; <code>plugins/agent-teams/roles/**</code>; <code>plugins/agent-teams/skills/condense/**</code>; <code>plugins/agent-teams-codex/**</code>; <code>internal/verbs/codex_agents/**</code>; and the dashboard memory API, types, and view.</p>
+      </section>
+
+      <section id="candidates">
+        <h2>Candidate set</h2>
+        <p>Names below are leads for broad screening, not a shortlist or endorsement. Research may add or remove candidates when primary evidence supports the change, but it may not silently omit a family.</p>
+
+        <div class="candidate">
+          <span class="label">Internal candidate A · first class</span>
+          <h3>Keep the current system unchanged</h3>
+          <p>Measure the shipped system as it exists at the pinned revision. Score its actual R1–R7 behavior, maintenance load, reliability, cost, portability, recovery, and operational ownership. Do not credit hypothetical fixes.</p>
+        </div>
+        <div class="candidate">
+          <span class="label">Internal candidate B · first class</span>
+          <h3>Incrementally improve the current system</h3>
+          <p>Define the smallest coherent improvements suggested by baseline evidence, such as strengthening retrieval, application telemetry, curation evaluation, or a neutral boundary. Name every changed component and retained responsibility. Do not implement the option, and do not let it inherit the unchanged candidate's score.</p>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>External family</th><th>Initial leads to screen</th><th>Research focus</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Turnkey managed or self-hostable memory platforms</strong></td><td>Mem0; Zep and Graphiti; Letta; Supermemory; Cognee</td><td>End-to-end lifecycle ownership, edition differences, namespace model, export, curation, telemetry, hosting, cost, and retained adapters.</td></tr>
+              <tr><td><strong>Framework-native and harness-native memory</strong></td><td>LangGraph and LangMem; LlamaIndex; Semantic Kernel; AutoGen; official provider or harness memory/session facilities</td><td>Lifecycle APIs, persistence interfaces, role modeling, background curation, observability, language support, and portability outside the parent framework.</td></tr>
+              <tr><td><strong>Composable stores, retrieval, graph, and protocols</strong></td><td>SQLite FTS and maintained vector extensions; LanceDB; PostgreSQL with pgvector; Qdrant; Chroma; maintained MCP memory servers and specification surfaces</td><td>Metadata filtering, local operation, concurrency, export/backup, search quality, dependency footprint, and the custom orchestration left behind.</td></tr>
+              <tr><td><strong>Quality, curation, evaluation, and observability</strong></td><td>Primary memory and retrieval papers; maintained evaluation libraries; OpenTelemetry-compatible tracing; Phoenix, LangSmith, Ragas, DeepEval, and comparable maintained surfaces</td><td>Extraction, consolidation, duplicate and contradiction detection, provenance, forgetting, retrieval evaluation, application events, bias, privacy, and model cost.</td></tr>
+              <tr><td><strong>Hybrid architectures</strong></td><td>Combinations emerging from the strongest evidence above</td><td>Whether stable external primitives can retire a high-maintenance layer while agent-teams retains role semantics, injection control, and a neutral harness adapter.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="evidence">
+        <h2>Primary-source evidence and scoring</h2>
+        <h3>Evidence grades</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Grade</th><th>Meaning</th><th>Permitted use</th></tr></thead>
+            <tbody>
+              <tr><td><strong>A · reproduced</strong></td><td>Behavior reproduced from a pinned release, commit, executable, or disposable probe and paired with current official documentation or repository source.</td><td>May support required-capability gates and load-bearing recommendation claims.</td></tr>
+              <tr><td><strong>B · primary documented</strong></td><td>Explicit current official docs, API/SDK reference, repository source, release notes, or primary paper, pinned by version or commit and access date, but not reproduced locally.</td><td>May support a gate when the behavior cannot reasonably be run and the limitation is explicit.</td></tr>
+              <tr><td><strong>C · directional</strong></td><td>Maintainer issue, discussion, roadmap, or primary paper whose applicability to the candidate is not demonstrated.</td><td>May identify a lead or unknown; cannot independently pass a required gate.</td></tr>
+              <tr><td><strong>D · discovery only</strong></td><td>Vendor marketing, secondary analysis, community commentary, or inference.</td><td>May identify what to verify; cannot support a score or recommendation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Every scored claim records candidate and edition, version or commit, source URL or repository path, source type, access date, a paraphrased claim, evidence grade, reproduction command or artifact when applicable, and uncertainty. Newer observed behavior outranks conflicting prose. Inaccessible or unsupported behavior remains <strong>unknown</strong>.</p>
+
+        <h3>Required-capability gate</h3>
+        <ul>
+          <li>Each candidate receives <strong>pass, partial, fail, or unknown</strong> for each of R1–R7.</li>
+          <li>A standalone recommendation must pass every required capability with grade A or B evidence.</li>
+          <li>Partial, fail, or unresolved unknown blocks a standalone recommendation. The candidate may remain as a hybrid only when the missing adapter, owner, maintenance cost, and validation plan are explicit.</li>
+          <li>Hosted and self-hosted editions are gated independently. Provider-native behavior is not cross-harness unless a neutral exportable boundary is proven.</li>
+        </ul>
+
+        <h3>Non-gating score</h3>
+        <p>Only candidates that clear the gate, or explicit hybrid architectures that fill each gap, receive a weighted score. Each dimension uses a documented 0–4 scale: <strong>0</strong> unacceptable or absent, <strong>1</strong> major gaps, <strong>2</strong> workable with material burden, <strong>3</strong> strong with bounded caveats, <strong>4</strong> strong and directly evidenced. Unknown is not converted to zero; it remains unscored and blocks ranking until resolved or accepted as a human risk.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Dimension</th><th>Weight</th><th>What is scored</th></tr></thead>
+            <tbody>
+              <tr><td>Expected maintenance reduction</td><td>20%</td><td>Owned components retired, update burden, prompt/hook/runtime coordination removed, and maintenance merely shifted into adapters.</td></tr>
+              <tr><td>Integration and retained custom code</td><td>15%</td><td>Adapter count, code surface, runtime dependencies, and change isolation.</td></tr>
+              <tr><td>Harness portability and coupling</td><td>15%</td><td>Neutral CLI/API/protocol support and independence from one orchestrator or model provider.</td></tr>
+              <tr><td>Data ownership, export, migration, rollback</td><td>12%</td><td>Schema transparency, complete export, backup/restore, dual run, and reversibility.</td></tr>
+              <tr><td>Security and privacy</td><td>10%</td><td>Data flow, tenancy, retention, encryption, credential scope, and local/self-host controls.</td></tr>
+              <tr><td>Maturity and reliability</td><td>10%</td><td>Release health, compatibility discipline, failure behavior, concurrency, and recovery.</td></tr>
+              <tr><td>Operational burden</td><td>8%</td><td>Services, upgrades, monitoring, storage operations, incident response, and offline behavior.</td></tr>
+              <tr><td>Cost</td><td>6%</td><td>License, service, model, embedding, storage, and engineering costs under stated usage assumptions.</td></tr>
+              <tr><td>Licensing and project risk</td><td>4%</td><td>License constraints, governance, lock-in, maintenance activity, and abandonment risk.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>Sensitivity check:</strong> recompute with equal weights, then vary the three largest weights by ±25% while keeping totals normalized. A winner that changes under plausible weights is reported as decision-sensitive, not definitive. Raw scores, weighted scores, formulas, exclusions, and evidence rows remain visible together.</p>
+      </section>
+
+      <section id="execution">
+        <h2>Proposed execution sequence</h2>
+        <div class="flow" role="img" aria-label="Research sequence from approval through final recommendation">
+          <div><strong>0 · Human approval</strong>Freeze requirements, candidate families, rubric, questions, and authorization boundary.</div>
+          <div><strong>1 · Smallest closed research loop</strong>Baseline both internal candidates; broad-screen every family; select one evidenced representative per viable family.</div>
+          <div><strong>2 · Deep evidence</strong>Run file-disjoint family and quality tracks in parallel; expand only candidates that can retire a real maintenance layer.</div>
+          <div><strong>3 · Validation join</strong>Exercise one shared scenario set against the internal candidates, strongest external option, and strongest hybrid.</div>
+          <div><strong>4 · Decide and audit</strong>Score, sensitivity-test, independently review, resolve findings, and author the final recommendation.</div>
+        </div>
+        <p>This sequence is concentric. Phase 1 closes a small end-to-end research loop before deep profiles expand: contract → current baseline → broad family coverage → shortlist rationale. Deep research does not begin for candidates that cannot plausibly own a high-maintenance layer or cannot provide primary evidence. Validation is a join, not a separate parallel opinion, and the final report remains blocked on independent evidence review.</p>
+      </section>
+
+      <section id="tracks">
+        <h2>Research tracks, ownership, and joins</h2>
+        <p>The DRI assigns one named owner per file only after plan approval. Parallel tracks are file-disjoint; source code is read-only. A track may cite another track but may not edit its artifact.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Track</th><th>Why and what</th><th>Sole-owned artifact</th><th>Verification</th></tr></thead>
+            <tbody>
+              <tr><td><strong>T1 · Current system and internal candidates</strong></td><td>Trace the shipped data flow and maintenance inventory. Produce separate unchanged and incremental candidates with independent R1–R7 results and retained responsibilities.</td><td><code>docs/research/agent-memory/current-system.md</code></td><td>Pinned source and shipped CLI path; read-only command exercises; existing targeted fixtures; observed/source/artifact claims labeled separately.</td></tr>
+              <tr><td><strong>T2 · Turnkey platforms</strong></td><td>Screen managed and self-hostable platforms; deep-profile viable candidates without choosing a winner.</td><td><code>docs/research/agent-memory/turnkey-platforms.md</code></td><td>Official docs, source, tags, SDKs, pricing/licensing; disposable read/write/search probes when feasible.</td></tr>
+              <tr><td><strong>T3 · Framework and harness memory</strong></td><td>Evaluate framework-owned lifecycle behavior and quantify the coupling and adapter surface outside its parent framework.</td><td><code>docs/research/agent-memory/framework-libraries.md</code></td><td>Published interfaces and generated types, not package metadata alone; disposable examples where feasible.</td></tr>
+              <tr><td><strong>T4 · Components and protocols</strong></td><td>Evaluate local/hosted storage, retrieval, graph, metadata, synchronization, and neutral boundary primitives for hybrid use.</td><td><code>docs/research/agent-memory/composable-components.md</code></td><td>Metadata-filtered write/search/export probes for shortlisted local components; dependency and runtime footprint recorded.</td></tr>
+              <tr><td><strong>T5 · Quality and observability</strong></td><td>Research curation, conflict handling, provenance, forgetting, retrieval evaluation, and usefulness attribution independently of storage choice.</td><td><code>docs/research/agent-memory/quality-observability.md</code></td><td>Primary papers and maintained schemas; deterministic duplicate/conflict example; telemetry surface inspection; model costs labeled.</td></tr>
+              <tr><td><strong>J1 · Validation and migration join</strong></td><td>Join T1–T5, select the strongest supported candidates without category preference, run the common scenarios, and build the migration-risk register.</td><td><code>docs/research/agent-memory/validation-and-migration.md</code></td><td>Pinned disposable probes; actual inputs/outputs; hosted credential gaps labeled; current store remains read-only.</td></tr>
+              <tr><td><strong>J2 · Decision matrix</strong></td><td>Normalize evidence, apply gates and frozen weights, describe viable retain, improve, buy, and hybrid architectures, and run sensitivity analysis.</td><td><code>docs/research/agent-memory/decision-matrix.md</code></td><td>Formula recomputation, evidence links, version checks, and no hidden unknown-to-zero conversion.</td></tr>
+              <tr><td><strong>J3 · Independent review</strong></td><td>Challenge family coverage, source quality, arithmetic, migration assumptions, omissions, and conclusions that outrun evidence.</td><td><code>docs/research/agent-memory/evidence-review.md</code></td><td>Reopen every grade-A claim, sample grade-B claims, rerun representative probes and matrix arithmetic.</td></tr>
+              <tr><td><strong>J4 · Final recommendation</strong></td><td>Resolve findings and author the decision artifact with architecture boundaries, retained maintenance, migration, rollback, risks, unknowns, and revisit triggers.</td><td><code>docs/research/agent-memory-landscape.md</code></td><td>Final citation, version, link, R1–R7 traceability, arithmetic, and finding-disposition check.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>Parallel group:</strong> T1–T5 may run concurrently after approval and contract reconciliation because they own different files. <strong>Join order:</strong> J1 depends on all five tracks; J2 depends on J1; J3 depends on J2 and its transitive evidence; J4 depends on resolved J3 findings. The DRI owns joins and human communication; research owners do not modify shared source or one another's evidence.</p>
+      </section>
+
+      <section id="validation">
+        <h2>Validation scenarios</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Scenario</th><th>Requirements</th><th>Observable result</th></tr></thead>
+            <tbody>
+              <tr><td><strong>V1 · Role isolation</strong></td><td>R1</td><td>Two role namespaces with overlapping language do not leak across filtered reads, search, curation, or telemetry.</td></tr>
+              <tr><td><strong>V2 · Repeated and concurrent writers</strong></td><td>R1, R2</td><td>Separate sessions and machines write concurrently; synchronization converges; overwrite/conflict semantics and any lost-update window are measured.</td></tr>
+              <tr><td><strong>V3 · Automatic hot delivery</strong></td><td>R3, R5, R6</td><td>Startup, resume, compaction, and subagent flows receive the expected role hot set in Claude Code and Codex, with truncation and missing-delivery detection.</td></tr>
+              <tr><td><strong>V4 · Cold retrieval quality</strong></td><td>R5</td><td>A small evaluation corpus with distractors measures ranking, precision/recall or reciprocal rank, latency, and token cost for known queries.</td></tr>
+              <tr><td><strong>V5 · Duplicate and contradiction lifecycle</strong></td><td>R4</td><td>Near-duplicate and conflicting memories retain provenance, receive a traceable decision, stay within budget, and can be recovered or reversed.</td></tr>
+              <tr><td><strong>V6 · Applied and outcome telemetry</strong></td><td>R7</td><td>A memory application event is captured with identity and context; concurrent events do not silently corrupt the signal; curation can consume it without popularity bias being hidden.</td></tr>
+              <tr><td><strong>V7 · Neutral boundary</strong></td><td>R3, R6</td><td>The same schema and operations work through Claude Code, Codex, and a generic CLI/API/MCP fixture with adapter differences named.</td></tr>
+              <tr><td><strong>V8 · Export and restore</strong></td><td>R2, R4, R6</td><td>Memories, role/tier metadata, provenance, conflicts, and application events export and restore without silent loss.</td></tr>
+              <tr><td><strong>V9 · Migration and rollback</strong></td><td>R1–R7</td><td>Backfill, dual-write or dual-read, cutover, validation, and rollback steps identify data-loss windows and retained custom adapters.</td></tr>
+              <tr><td><strong>V10 · Failure and offline operation</strong></td><td>R2, R3, R5, R6</td><td>Service outage, network partition, stale sync, unavailable model, and local-only operation produce documented degraded behavior rather than silent empty context.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Each candidate/scenario cell is <strong>pass, partial, fail, or unknown</strong> with evidence grade, exact version, command or source, input, observed output, resource caveat, and cleanup. Hosted-only or credential-gated gaps remain explicit. Disposable probes stay outside the repository unless a separate approved plan authorizes a reusable fixture.</p>
+      </section>
+
+      <section id="deliverables">
+        <h2>Deliverables and explicit non-goals</h2>
+        <div class="grid-2">
+          <div class="panel">
+            <h3>Deliverables after approval</h3>
+            <ul class="compact">
+              <li>Five source-owned evidence artifacts under <code>docs/research/agent-memory/</code>.</li>
+              <li>A validation and migration artifact with reproducible scenarios and risk register.</li>
+              <li>A transparent decision matrix with raw evidence, gates, weights, and sensitivity results.</li>
+              <li>An independent evidence review with finding dispositions.</li>
+              <li>A final report at <code>docs/research/agent-memory-landscape.md</code> recommending keep, improve, buy, or hybrid.</li>
+              <li>A staged migration and rollback outline if the recommendation changes the system.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h3>Non-goals</h3>
+            <ul class="compact">
+              <li>No feature implementation, refactor, migration, deployment, or production write.</li>
+              <li>No product winner or architectural conclusion in individual research tracks.</li>
+              <li>No exhaustive benchmark of every vector database or agent framework.</li>
+              <li>No acceptance of roadmap, marketing, or secondary claims as decision evidence.</li>
+              <li>No silent expansion into project knowledge, user-preference, or machine-local instruction redesign beyond interfaces that affect R1–R7.</li>
+              <li>No reusable probe code checked into the repository without separate authorization.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="risks">
+        <h2>Risks and unknowns</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Risk or unknown</th><th>Research treatment</th></tr></thead>
+            <tbody>
+              <tr><td>Fast-moving products, editions, and licensing</td><td>Pin versions, commits, access dates, edition, and license. Recheck all load-bearing links at synthesis and final review.</td></tr>
+              <tr><td>Vendor claims exceed shipped behavior</td><td>Require API/SDK/source evidence and runnable probes where feasible; keep unrun hosted claims at grade B or lower.</td></tr>
+              <tr><td>Framework lock-in is mistaken for maintenance reduction</td><td>Count orchestration coupling, language/runtime restrictions, adapter code, upgrade burden, and exit cost.</td></tr>
+              <tr><td>A hybrid hides a custom system inside adapters</td><td>Name each retained component and owner; score total maintenance surface, not just the purchased layer.</td></tr>
+              <tr><td>Small synthetic retrieval tests overstate quality</td><td>Build scenarios from real current memory shapes, include distractors and conflicts, and label sample-size limits.</td></tr>
+              <tr><td>Applied events measure popularity rather than usefulness</td><td>Separate application, success/outcome, recency, role, and exposure signals; test feedback-loop bias and undercounting.</td></tr>
+              <tr><td>Current-system baseline is inferred from source only</td><td>Compare pinned source with the actual shipped CLI and read-only observed behavior; discrepancies become evidence, not assumptions.</td></tr>
+              <tr><td>Migration or rollback loses metadata</td><td>Test round-trip fidelity for roles, tiers, provenance, conflicts, timestamps, application events, and stable identities before recommending cutover.</td></tr>
+              <tr><td>Credential or cost gates block live validation</td><td>Record the gap as unknown, inspect concrete SDK/API artifacts, and require human approval before any paid or account-mutating probe.</td></tr>
+              <tr><td>The research optimizes for the wrong human preference</td><td>Resolve the four questions near the top before deep evidence work and publish any approved weight or policy change before scoring.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="beads">
+        <h2>Draft Bead mapping — not authorized</h2>
+        <div class="notice">
+          <strong>Read-only planning record.</strong> These Beads already exist from the premature decomposition. They are listed so the human can review the proposed mapping, not because this document approves or activates them. After this HTML is approved, the DRI must reconcile their descriptions, acceptance criteria, dependencies, and status with the approved document before assigning execution.
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Proposed work contract</th><th>Draft tracking reference</th><th>Depends on</th><th>Parallel / join</th></tr></thead>
+            <tbody>
+              <tr><td>Research contract and evaluation rubric</td><td><code>agent-teams-ird0.1</code></td><td>Human approval of this HTML</td><td>Contract gate</td></tr>
+              <tr><td>T1 · Current system and two internal candidates</td><td><code>agent-teams-ird0.2</code></td><td>Approved and reconciled contract</td><td>Parallel evidence track</td></tr>
+              <tr><td>T2 · Turnkey platforms</td><td><code>agent-teams-ird0.3</code></td><td>Approved and reconciled contract</td><td>Parallel evidence track</td></tr>
+              <tr><td>T3 · Framework and harness memory</td><td><code>agent-teams-ird0.4</code></td><td>Approved and reconciled contract</td><td>Parallel evidence track</td></tr>
+              <tr><td>T4 · Components and protocols</td><td><code>agent-teams-ird0.5</code></td><td>Approved and reconciled contract</td><td>Parallel evidence track</td></tr>
+              <tr><td>T5 · Quality and observability</td><td><code>agent-teams-ird0.6</code></td><td>Approved and reconciled contract</td><td>Parallel evidence track</td></tr>
+              <tr><td>J1 · Validation and migration</td><td><code>agent-teams-ird0.7</code></td><td>T1–T5 complete</td><td>Evidence join</td></tr>
+              <tr><td>J2 · Decision matrix</td><td><code>agent-teams-ird0.8</code></td><td>J1 complete</td><td>Synthesis join</td></tr>
+              <tr><td>J3 · Independent review</td><td><code>agent-teams-ird0.9</code></td><td>J2 and transitive evidence complete</td><td>Review gate</td></tr>
+              <tr><td>J4 · Final recommendation</td><td><code>agent-teams-ird0.10</code></td><td>J3 findings resolved or explicitly decision-blocking</td><td>Terminal research deliverable</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Every mapped item remains a direct child of the initiative root epic. Track files do not overlap. No shared manifest, source, binary, or version file is assigned because the initiative is research-only.</p>
+      </section>
+
+      <section id="approval">
+        <h2>Approval boundary</h2>
+        <p>Approval should confirm the R1–R7 contract, candidate families, separate internal candidates, evidence grades, gate and weights, research tracks, validation scenarios, deliverables, non-goals, and the recommended defaults for the four human decisions. Approval is permission for the DRI to reconcile the draft Beads and begin the research sequence. It is not approval to implement, migrate, purchase, deploy, or select a winner.</p>
+      </section>
+
+      <footer>
+        <p>This is a self-contained HTML document. It loads no remote fonts, scripts, stylesheets, images, or other runtime dependencies.</p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
