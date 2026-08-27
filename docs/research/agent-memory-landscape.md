@@ -1,9 +1,13 @@
 # Agent Memory Landscape Recommendation
 
-**Initiative:** `at-jo7h`  
-**Research date:** 2026-08-26  
-**Repository baseline:** `e028082e9f8de49342dc6d5b9106af2b7c4b44da`  
-**Plan:** [Agent memory research plan](../2026-08-26-agent-memory-research-plan.html)  
+**Initiative:** `at-jo7h`
+
+**Research date:** 2026-08-26
+
+**Repository baseline:** `e028082e9f8de49342dc6d5b9106af2b7c4b44da`
+
+**Plan:** [Agent memory research plan](../2026-08-26-agent-memory-research-plan.html)
+
 **Independent review:** [Passed after correction](agent-memory/evidence-review.md)
 
 ## Executive Recommendation
