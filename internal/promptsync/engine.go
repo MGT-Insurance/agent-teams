@@ -167,14 +167,19 @@ func renderAll(config Config, entries []Entry) ([]renderedOutput, Report, error)
 					continue
 				}
 				encoding := encodings[part]
-				if output.Format == FormatTOML && encoding == EncodingTOMLBasicMultiline && bytes.Contains(content, []byte(`"""`)) {
-					problems = append(problems, fmt.Sprintf("%s: unsafe TOML: input %q for %s contains basic multiline delimiter \\\"\\\"\\\"", entry.ID, part, output.Path))
-					failed = true
-					continue
-				}
 				if output.Format == FormatTOML && encoding == EncodingTOMLLiteralMultiline && bytes.Contains(content, []byte("'''")) {
 					problems = append(problems, fmt.Sprintf("%s: unsafe TOML: input %q for %s contains literal multiline delimiter '''", entry.ID, part, output.Path))
 					failed = true
+					continue
+				}
+				if output.Format == FormatTOML && encoding == EncodingTOMLBasicMultiline {
+					encoded, err := encodeTOMLBasicMultiline(content)
+					if err != nil {
+						problems = append(problems, fmt.Sprintf("%s: encode TOML input %q for %s: %v", entry.ID, part, output.Path, err))
+						failed = true
+						continue
+					}
+					buffer.Write(encoded)
 					continue
 				}
 				buffer.Write(content)
@@ -183,6 +188,12 @@ func renderAll(config Config, entries []Entry) ([]renderedOutput, Report, error)
 				continue
 			}
 			item := renderedOutput{id: entry.ID, output: output, bytes: buffer.Bytes()}
+			if output.Format == FormatTOML {
+				if err := validateTOML(item.bytes); err != nil {
+					problems = append(problems, fmt.Sprintf("%s: rendered TOML %s is invalid: %v", entry.ID, output.Path, err))
+					continue
+				}
+			}
 			rendered = append(rendered, item)
 			if output.SkillBudget != nil {
 				measurement, err := measureSkill(entry.ID, output.Path, item.bytes, *output.SkillBudget)

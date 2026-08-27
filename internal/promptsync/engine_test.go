@@ -1,6 +1,7 @@
 package promptsync
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestKnownGoodDriftAndWriteControls(t *testing.T) {
@@ -237,13 +240,89 @@ func TestStrictAndTemporaryUnmigratedValidation(t *testing.T) {
 	}
 }
 
-func TestUnsafeTOMLTripleQuotes(t *testing.T) {
+func TestTOMLBasicMultilineEncodingPreservesCanonicalText(t *testing.T) {
+	tests := []struct {
+		name    string
+		content []byte
+	}{
+		{name: "valid escape spelling", content: []byte(`literal \n and C:\new\file`)},
+		{name: "invalid escape spelling", content: []byte(`literal \q remains literal`)},
+		{name: "triple delimiter", content: []byte(`embedded """ delimiter and " quote`)},
+		{name: "controls", content: []byte{'a', '\b', '\t', '\f', '\r', 0, 0x1f, 0x7f, 'z'}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := encodeTOMLBasicMultiline(tt.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			document := append([]byte("developer_instructions = \"\"\"\n"), encoded...)
+			document = append(document, []byte("\"\"\"\n")...)
+			var decoded struct {
+				DeveloperInstructions string `toml:"developer_instructions"`
+			}
+			if err := toml.Unmarshal(document, &decoded); err != nil {
+				t.Fatalf("parse encoded TOML: %v\n%s", err, document)
+			}
+			if got := []byte(decoded.DeveloperInstructions); !bytes.Equal(got, tt.content) {
+				t.Fatalf("decoded content:\n got %q\nwant %q\nTOML:\n%s", got, tt.content, document)
+			}
+		})
+	}
+}
+
+func TestTOMLBasicMultilineEncodingRejectsInvalidUTF8(t *testing.T) {
+	if _, err := encodeTOMLBasicMultiline([]byte{0xff}); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRenderedTOMLPreservesCanonicalEscapeAndDelimiterText(t *testing.T) {
 	root := fixtureCopy(t)
 	path := filepath.Join(root, "promptsrc/agent-teams/roles/shared.md")
-	writeFile(t, path, []byte("unsafe \"\"\" content\n"))
-	_, err := Check(Config{Root: root})
-	if err == nil || !strings.Contains(err.Error(), "unsafe TOML") || !strings.Contains(err.Error(), "role.planner") {
-		t.Fatalf("error = %v", err)
+	want := []byte("literal \\n, invalid \\q, delimiter \"\"\", control \x00\n")
+	writeFile(t, path, want)
+	if _, err := Write(Config{Root: root}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	generated := readFile(t, filepath.Join(root, "internal/verbs/codex_agents/agent-teams-planner.toml"))
+	var decoded struct {
+		DeveloperInstructions string `toml:"developer_instructions"`
+	}
+	if err := toml.Unmarshal(generated, &decoded); err != nil {
+		t.Fatalf("parse generated TOML: %v", err)
+	}
+	if got := []byte(decoded.DeveloperInstructions); !bytes.Equal(got, want) {
+		t.Fatalf("decoded generated prompt:\n got %q\nwant %q", got, want)
+	}
+	if _, err := Check(Config{Root: root}); err != nil {
+		t.Fatalf("check generated TOML: %v", err)
+	}
+}
+
+func TestInvalidFinalTOMLBlocksCheckAndWrite(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(Config) (Report, error)
+	}{
+		{name: "check", run: Check},
+		{name: "write", run: Write},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			root := fixtureCopy(t)
+			path := filepath.Join(root, "promptsrc/agent-teams/roles/codex-header.toml")
+			content := strings.Replace(string(readFile(t, path)), `name = "fixture-planner"`, `name = "invalid\q"`, 1)
+			writeFile(t, path, []byte(content))
+			before := snapshot(t, root)
+			_, err := operation.run(Config{Root: root})
+			if err == nil || !strings.Contains(err.Error(), "role.planner") || !strings.Contains(err.Error(), "rendered TOML") || !strings.Contains(err.Error(), "invalid escape") {
+				t.Fatalf("error = %v", err)
+			}
+			if after := snapshot(t, root); fmt.Sprint(after) != fmt.Sprint(before) {
+				t.Fatal("invalid rendered TOML changed the fixture tree")
+			}
+		})
 	}
 }
 
