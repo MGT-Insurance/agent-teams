@@ -45,12 +45,14 @@ in registry.md.
 
 ## Phase 2: clarify
 
-Delegate bounded investigation to a planner before spending human attention.
-Ask only questions that materially change the design, with a recommendation
-and one meaningful alternative. Every human pause follows
-[gates.md](references/gates.md): record an atomic global gate, state the
-question, then end the turn. Mail and lifecycle hooks wake this same durable
-thread when the answer arrives.
+Delegate bounded, evidence-only questions to an `agent-teams-investigator`
+when parallel investigation will improve the decision. The investigator
+reports evidence and options only; the `agent-teams-planner` retains design
+authority and owns decomposition. Ask only questions that materially change
+the design, with a recommendation and one meaningful alternative. Every human
+pause follows [gates.md](references/gates.md): record an atomic global gate,
+state the question, then end the turn. Mail and lifecycle hooks wake this same
+durable thread when the answer arrives.
 
 Any departure from the human's mechanism, named reuse path, or scope class is
 a design pivot. Raise a QUESTION gate at the moment of divergence with the

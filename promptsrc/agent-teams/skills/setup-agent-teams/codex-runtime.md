@@ -37,9 +37,10 @@
 
    Do not use `--force` when a definition has local changes unless the human
    explicitly approves replacing those changes.
-5. Verify all four files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
+5. Verify all five files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
    `agent-teams-planner.toml`, `agent-teams-implementer.toml`,
-   `agent-teams-tester.toml`, and `agent-teams-reviewer.toml`.
+   `agent-teams-tester.toml`, `agent-teams-reviewer.toml`, and
+   `agent-teams-investigator.toml`.
 6. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
    Trust its current `SessionStart`, `UserPromptSubmit`, and `Stop` command-hook
    definitions if they are marked for review. Do not claim mail wake is ready

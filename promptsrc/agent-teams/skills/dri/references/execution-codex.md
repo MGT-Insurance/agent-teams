@@ -4,8 +4,10 @@
 ## Child contract
 
 Codex custom agents are bounded children. Spawn `agent-teams-planner`,
-`agent-teams-implementer`, `agent-teams-tester`, or `agent-teams-reviewer` with
-`fork_turns="none"`; do not override their model or reasoning settings. A child
+`agent-teams-implementer`, `agent-teams-tester`, `agent-teams-reviewer`, or
+`agent-teams-investigator` with `fork_turns="none"`; do not override their model
+or reasoning settings. Use the investigator only for bounded, evidence-only
+questions; the planner retains design authority and owns decomposition. A child
 does not own the initiative mailbox and need not survive past its result.
 
 Every prompt includes:

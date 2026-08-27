@@ -1,6 +1,6 @@
 ---
 name: setup-agent-teams
-description: Install and verify agent-teams for Codex, including the standalone managed app-server requirement and the planner, implementer, tester, and reviewer custom agent definitions. Use on a new Codex machine, after installing or updating the agent-teams-codex plugin, or when a custom agent type is missing.
+description: Install and verify agent-teams for Codex, including the standalone managed app-server requirement and the planner, implementer, tester, reviewer, and investigator custom agent definitions. Use on a new Codex machine, after installing or updating the agent-teams-codex plugin, or when a custom agent type is missing.
 ---
 
 # Set up agent-teams for Codex
@@ -128,9 +128,10 @@ The Git remote carries repository files; the Dolt remote carries Beads data unde
 
    Do not use `--force` when a definition has local changes unless the human
    explicitly approves replacing those changes.
-5. Verify all four files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
+5. Verify all five files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
    `agent-teams-planner.toml`, `agent-teams-implementer.toml`,
-   `agent-teams-tester.toml`, and `agent-teams-reviewer.toml`.
+   `agent-teams-tester.toml`, `agent-teams-reviewer.toml`, and
+   `agent-teams-investigator.toml`.
 6. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
    Trust its current `SessionStart`, `UserPromptSubmit`, and `Stop` command-hook
    definitions if they are marked for review. Do not claim mail wake is ready
