@@ -1,13 +1,20 @@
 # Independent evidence review: agent memory research
 
-**Review date:** 2026-08-26  
-**Reviewer bead:** `agent-teams-ird0.9`  
-**Initiative:** `at-jo7h` under `agent-teams-ird0`  
-**Reviewed range:** `e028082` through `20dd426b22fb3640281dc47878683847aad75d47`  
-**Approved contract:** [agent memory research plan](../../2026-08-26-agent-memory-research-plan.html)  
-**Result:** **FAIL. Two blocking findings remain. Leave `agent-teams-ird0.9` open.**
+**Review date:** 2026-08-26
 
-## Findings
+**Reviewer bead:** `agent-teams-ird0.9`
+
+**Initiative:** `at-jo7h` under `agent-teams-ird0`
+
+**Reviewed range:** `e028082` through `20dd426b22fb3640281dc47878683847aad75d47`
+
+**Approved contract:** [agent memory research plan](../../2026-08-26-agent-memory-research-plan.html)
+
+**Initial result:** **FAIL. Two blocking findings remained at `20dd426`.**
+
+**Final re-review result:** **PASS at `f91277ff3268a8dc6c4258c2284ecff3f09ec5eb`.**
+
+## Initial findings
 
 ### ER-01 - Blocking, high: scores exist for candidates that fail the required gate
 
@@ -64,7 +71,7 @@ The artifacts say that current documentation disagrees about entity combinations
 
 **Required disposition:** Replace the documentation-ambiguity statement with the current documented semantics. Keep `Partial, B` until a credentialed role-isolation and authorization probe passes. Record an access date or a stable documentation snapshot.
 
-## Required review results
+## Initial required review results
 
 | Review area | Result | Basis |
 | --- | --- | --- |
@@ -234,7 +241,7 @@ Mem0 feedback and webhooks do not supply a complete exposure-to-application-to-o
 
 Migration actions also lack complete identifiability today. Stable versions, complete exports, journals, reconciliation records, and reverse import must exist before a cutover can be reconstructed after the fact.
 
-## Gate results
+## Initial audit gate results
 
 | Gate | Result |
 | --- | --- |
@@ -248,6 +255,57 @@ Migration actions also lack complete identifiability today. Stable versions, com
 | Targeted memory and lifecycle tests | PASS |
 | Independent arithmetic recomputation | PASS for calculation, FAIL for eligibility and maintenance evidence. |
 
-## Closure decision
+## Initial closure decision
 
-Leave `agent-teams-ird0.9` open. ER-01 and ER-02 block a passing evidence review. ER-03 does not block closure, but its disposition is required before final publication.
+The initial review left `agent-teams-ird0.9` open. ER-01 and ER-02 blocked a passing evidence review. ER-03 also required disposition before final publication.
+
+## Re-review and final disposition
+
+**Re-review date:** 2026-08-26
+
+**Corrected matrix commit:** `f91277ff3268a8dc6c4258c2284ecff3f09ec5eb`
+
+**Scope:** ER-01, ER-02, ER-03, and regression review of the changed matrix text.
+
+**Final result:** **PASS. No blocking or non-blocking findings remain.**
+
+### Finding dispositions
+
+| Finding | Result | Exact re-review evidence |
+| --- | --- | --- |
+| ER-01 | **Resolved** | All architecture-specific raw scores, weighted totals, intervals, and sensitivity results are absent. Lines 75-99 retain only the approved future scoring template. Lines 77 and 99 state that the method is dormant while every candidate remains gate-blocked. |
+| ER-02 | **Resolved** | A2, A3, and A4 state that net maintenance reduction is `unknown` at lines 131, 159, and 187. No percentage or numerical maintenance judgment remains for these candidates. Line 109 retains A1 `0%` only because an unchanged boundary retires no work. It explicitly states that this value is not a labor estimate. |
+| ER-03 | **Resolved** | N04 cites the current Mem0 entity-scope and filter documents. It records speaker-based default attribution, the `infer=False` direct-import exception, and implicit `AND` filter semantics. A3 R1 remains `Partial, B` at line 55 because credentialed authorization and role isolation are unproved. |
+
+### Required checks
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| No score for a gate-blocked architecture | **PASS** | The four ranking rows remain `Blocked`. No candidate row contains a raw score, weighted total, interval, or sensitivity result. |
+| Frozen weights are dormant | **PASS** | The matrix labels the section `Deferred weighted evaluation template`. It permits execution only after full gate clearance or proof that a hybrid fills every gap. |
+| A2-A4 numerical maintenance claims are absent | **PASS** | The three architecture sections use `unknown`. Counts of retained adapters describe scope and are not maintenance-reduction judgments. |
+| A1 `0%` is definitional only | **PASS** | The text ties `0%` only to the unchanged architecture boundary and disclaims a labor or operations estimate. |
+| Mem0 semantics are current and cited | **PASS** | The cited official pages state that default extraction assigns `user_id` or `agent_id` by speaker. Direct import can populate both. Sibling filter fields use implicit `AND`. |
+| Mem0 R1 remains bounded | **PASS** | R1 remains `Partial, B` until a credentialed authorization and role-isolation probe passes. Documented filtering does not become authorization evidence. |
+| Recommendation is not a winner | **PASS** | The result and recommendation sections call A2 a shadowed validation sequence. A1 remains the production authority and rollback path. A3 and A4 are research comparators. |
+| Unknown handling | **PASS** | Unknowns do not become zeroes, numerical bounds, point scores, or rankings. |
+| New inconsistency or unsupported claim | **PASS** | The corrected claims remain within N01-N10 and the prior evidence review. No changed claim grants a gate pass, projected maintenance benefit, or adoption status. |
+
+### Source re-open
+
+The re-review reopened both official Mem0 pages on 2026-08-26:
+
+- [Entity-scoped memory](https://docs.mem0.ai/platform/features/entity-scoped-memory) states that default extraction assigns facts by speaker. It also identifies direct import with `infer=False` as the path that can populate both IDs.
+- [V2 memory filters](https://docs.mem0.ai/platform/features/v2-memory-filters) states that sibling top-level fields use implicit `AND`. The flat and explicit `AND` forms are equivalent.
+
+These documents support the corrected B-grade semantics. They do not prove credentialed role authorization or isolation.
+
+### Regression review
+
+The corrected commit changes only [decision-matrix.md](decision-matrix.md). It removes 85 lines and adds 41 lines. The change removes numerical outputs and narrows claims. It does not change evidence grades, gate results, migration controls, edition boundaries, security boundaries, or rollback status.
+
+The future scale and exact weights remain in the matrix because the approved plan freezes them. They are method definitions, not candidate judgments. The `25 percent` sensitivity instruction is also dormant and has no current output.
+
+### Final closure decision
+
+The corrected matrix satisfies the evidence rubric. It contains no unsupported winner, no gated failure hidden by weighting, and no high-risk migration issue without mitigation or unknown status. Close `agent-teams-ird0.9`.
