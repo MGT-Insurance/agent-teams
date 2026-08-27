@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "skill.dispatch-dri",
+      "kind": "skill",
+      "status": "paired",
+      "inputs": [
+        {"id": "skill", "path": "promptsrc/agent-teams/skills/dispatch-dri.md"}
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dispatch-dri/SKILL.md",
+          "format": "markdown",
+          "parts": ["skill"],
+          "skill_budget": {"base_directory": "/opt/agent-teams/skills/dispatch-dri", "min_headroom": 4000}
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dispatch-dri/SKILL.md",
+          "format": "markdown",
+          "parts": ["skill"],
+          "skill_budget": {"base_directory": "/opt/agent-teams-codex/skills/dispatch-dri", "min_headroom": 4000}
+        }
+      ]
+    },
+    {
+      "id": "reference.dispatch-execution",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {"id": "reference", "path": "promptsrc/agent-teams/skills/execution.md"}
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dispatch-dri/references/execution.md",
+          "format": "markdown",
+          "parts": ["reference"]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dispatch-dri/references/execution.md",
+          "format": "markdown",
+          "parts": ["reference"]
+        }
+      ]
+    }
+  ]
+}

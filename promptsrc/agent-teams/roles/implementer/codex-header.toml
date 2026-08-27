@@ -1,0 +1,4 @@
+name = "agent-teams-implementer"
+description = "Implements one bounded Beads work item in its assigned worktree, adds core-path tests, runs quality gates, and commits without pushing or merging."
+model_reasoning_effort = "high"
+developer_instructions = """

@@ -5,100 +5,73 @@ description: Create a NEW agent-teams initiative and hand it to a background DRI
 
 You dispatch a new initiative; you do not become its DRI. This skill sets up a fresh, isolated checkout, registers the initiative in the global workspace, and launches a **background** `/dri` session that owns it end-to-end. The current session stays free.
 
-Use this when:
+For becoming the DRI in this Claude session, use `/agent-teams:dri` instead.
 
-- A human wants to kick off an initiative without tying up this session.
-- A DRI (or any session) surfaces **separable** work — a discovery bead that is really its own feature, infra/tooling work, anything that would balloon the current scope. Do NOT absorb it; dispatch it here. The current initiative stays focused; the new one gets its own DRI, checkout, team, and PR.
+**The `ateam` tool.** `ateam` is on PATH in a configured plugin installation. Call it as bare `ateam`; the plugin's `bin/` directory supplies it and `/setup-agent-teams` installs and verifies it. One allowlist entry, `Bash(ateam:*)`, covers its subcommands.
 
-For *becoming* the DRI in this session, use `/agent-teams:dri` instead.
+## Dispatcher authority
 
----
+Use this handoff when a human wants an initiative to proceed without occupying the current session, or when separable work deserves its own DRI, checkout, team, and PR instead of expanding another initiative. Do not absorb that separable work into the current initiative.
 
-**THIS SESSION IS A HAND-OFF, NOT AN INVESTIGATION.**
+**THIS SESSION IS A HANDOFF, NOT AN INVESTIGATION.**
 
-**ABSOLUTE CONSTRAINT — NEVER investigate.**
-The dispatcher MUST NOT do any investigation whatsoever. No codebase exploration, no grepping, no file reading, no architecture analysis, no mechanism opinions, no solution design, no clarifying-question answering on the human's behalf. If you find yourself reading files, running searches, or reasoning about the codebase, STOP immediately — that is the background DRI's job, not yours. This applies even when the problem statement is vague: pass the vague statement through; do not investigate to refine it. Violating this constraint injects the dispatcher's assumptions into the context block and degrades the DRI's ability to plan independently.
+**ABSOLUTE CONSTRAINT — NEVER investigate.** Do not explore or read the codebase, grep files, research mechanisms, analyze architecture, design a solution, or answer open questions on the human's behalf. A vague statement stays vague. The background DRI must investigate independently; dispatcher analysis contaminates the handoff with assumptions.
 
-**ABSOLUTE CONSTRAINT — ALWAYS launch a DRI. This is not optional.**
-Every invocation of this skill MUST end by launching a background DRI session via `ateam dispatch`. Refusing, declining, deciding "this doesn't need a DRI", deciding the scope is unclear, or returning to the human with "let me know if you want to proceed" is NEVER a valid outcome. The only two stopping points before dispatch are: (1) `ateam` is not on PATH — tell the human to run `/setup-agent-teams` and stop; (2) no problem statement has been provided — ask the human for one, then dispatch immediately once received. Once those conditions are resolved, dispatch unconditionally. There is no circumstance under which the dispatcher evaluates the work and decides not to launch.
+**ABSOLUTE CONSTRAINT — ALWAYS launch a DRI.** Every invocation must end in a background DRI launch. Do not refuse, decide that the work is too small, judge that the scope is unclear, or ask whether the human wants to proceed. There are only two legitimate pre-dispatch stops:
 
-Your job is: preflight → capture the human's framing → dispatch. Nothing more.
+1. `ateam` or the selected runtime is unavailable. Direct the human to the selected runtime's agent-teams setup skill and stop.
+2. No problem statement was provided. Ask only for that statement, then dispatch immediately after receiving it.
 
-Do NOT:
-- Grep the codebase or measure current state.
-- Research the topic or form a mechanism opinion.
-- Design a solution or write an "agreed design direction" into the context block.
-- Answer clarifying questions on the human's behalf.
+Once the required inputs exist, launch unconditionally. Your complete job is preflight, capture the human's framing verbatim, dispatch, and hand off the output.
 
-All of that is the background DRI's job in its clarify/plan phase. The background DRI has no human attached — it recovers context from the initiative bead and then investigates and plans. Doing that work here does not help; it contaminates the context block with the dispatcher's assumptions instead of the human's framing.
+**CARDINAL Beads boundary.** The global agent-teams workspace holds only initiative-tracking beads and role memory. Initiative registration is the one global write, performed only by `ateam dispatch` through its sanctioned register path—never by raw `bd -C`. All contract, feature, task, test, and discovery beads belong to the PROJECT repository and are created later by the DRI and its team.
 
----
+## 1. Preflight
 
-## The `ateam` tool
+- Run `ateam ws`. If it fails or `ateam` is not found, use the selected runtime's setup route and stop.
+- Run `ateam audit`. It must report clean before dispatch.
 
-`ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
+- For a missing or failing `ateam`, direct the human to `/setup-agent-teams`.
 
-**🚨 CARDINAL RULE.** The GLOBAL workspace (reached ONLY via `ateam`) holds ONLY initiative-tracking beads and role memories. Registering an initiative is the ONE write you make there, and `ateam register` is the only sanctioned way to do it — NEVER `bd -C <global> create`. All work beads (the planner's decomposition, feature/task/discovery beads) live in the PROJECT repo and are created by the background DRI and its team, not here.
+## 2. Capture the human's framing
 
-## Steps
+The only judgment here is whether the handoff inputs are present. Do not investigate or analyze the repository to fill perceived gaps.
 
-### 1. Preflight
+- **Problem statement:** take the one-line statement verbatim from the invocation. If none exists, ask the human for it. Do not rephrase or embellish it.
+- **Context:** copy the human's constraints, background, decisions, and unanswered questions verbatim into a temporary body file outside the repository. Do not add analysis, mechanism opinions, or design assumptions. Pass open questions through unanswered. Omit the file and `--body-file` only when the human supplied no additional context.
+- **Target repository:** the initiative can target a different repository from the dispatcher's current directory. Default to the single unambiguous current Git repository. Pass `--repo <absolute-path>` only when the human named another target, cwd is not inside a repository, the problem clearly refers to a different project you cannot locate, or more than one repository plausibly fits. Do not explore code to choose.
+- **Base branch:** let dispatch detect the repository's default branch. Pass `--base-branch <branch>` only when the human named or clearly implied a non-default base, or when there is genuine base ambiguity.
+- **Standby:** pass `--standby` only when the invocation contains that token or an explicit request to park or wait. This is mechanical passthrough, not a judgment about whether standby is warranted. Standby never cancels the launch.
 
-- Verify `ateam` is on PATH: run `ateam ws`. If it errors or is not found, tell the human to run `/setup-agent-teams` and stop.
-- Run `ateam audit`. It must report clean before you add anything.
+## 3. Dispatch through Claude
 
-### 2. Capture the human's framing
-
-The dispatcher's only judgment here is whether the hand-off inputs are present. Do NOT research the topic or analyze the codebase to fill gaps you perceive.
-
-- **Problem statement.** Take it verbatim from the invocation. If none was given, ask the human — this is the only load-bearing input you should ask for. Do not rephrase or embellish it.
-- **Context block.** Copy the human's framing as-is: their stated constraints, background, decisions they've already made, and any open questions they've raised that the background DRI should answer before planning. This mirrors the old "CONTEXT FROM <human>" block. Write it verbatim — do not add your own analysis, mechanism opinions, or design assumptions. If the human has open questions they haven't answered, pass them through as open questions; do not answer them. Write the context to a temp file (e.g. `/tmp/ateam-ctx-<slug>.txt`) using the Write tool. If there is genuinely no additional context from the human, skip the file and omit `--body-file`.
-- **Target repo.** The initiative may target a repo OTHER than the one this dispatcher session is sitting in — do not blindly assume cwd. Identify the target directory the human means (explicit in the invocation if they named one, otherwise the current directory). If that yields a single unambiguous repo, pass nothing (dispatch defaults to cwd). Pass `--repo <abs-path>` ONLY when you are not confident: cwd is not inside any repo, the problem clearly refers to a different project you cannot locate, or more than one repo plausibly fits.
-- **Base branch.** Default is the repo's detected default branch (dispatch auto-detects). Pass `--base-branch <b>` only when the human implies a non-default base or there is genuine ambiguity — a wrong base is expensive to unwind.
-
-### 3. Dispatch
-
-Run a single call. Everything deterministic (slugify, git worktree add, initiative register, background DRI launch) is handled inside `ateam dispatch`:
+Run exactly one creation call:
 
 ```bash
 ateam dispatch --problem "<one-line problem statement>" --body-file <tmpfile> [--repo <abs-path>] [--base-branch <branch>] [--standby]
 ```
 
-`--problem` is the one-line title. `--body-file` carries the context block you wrote in step 2 (schema lines come first automatically; the context is appended after them). Omit `--body-file` only when there is truly no additional context from the human to pass.
+`--problem` is the one-line title. `--body-file` carries the additional verbatim human context; dispatch writes schema lines first and appends that context. Omit it only when no additional human context exists. Do not use a no-launch mode. `ateam dispatch` handles slug creation, worktree creation, initiative registration, and the background `/dri` launch. It fails without prompting for an invalid repository, empty slug, worktree collision, or unreadable body file.
 
-`--standby` is a mechanical passthrough, not a judgment call. Pass it when the invocation contains an explicit `--standby` token, or a clear standby / "park it" / "wait for direction" keyword — nothing more. Otherwise omit it. Detecting the keyword is not investigation; deciding whether standby is *warranted* would be, so don't do that. Standby changes nothing else here: still capture the human's framing verbatim, still launch unconditionally.
+The Claude launch runs with `--permission-mode bypassPermissions` because no human is attached to answer prompts. Bypass mode requires one-time interactive acceptance on the machine. Dispatch only well-scoped work, and confirm with the human before dispatching sensitive tooling or infrastructure.
 
-`dispatch` fail-fasts (non-zero exit) on: not-a-git-repo, empty slug, worktree-slug collision, or a `--body-file` path that cannot be read. It never prompts. On success it prints:
+## 4. Report and hand off
 
-```
-initiative_id: <id>
-worktree: <abs-path>
-slug: <slug>
-base_branch: <branch>
-```
+Relay the successful dispatch output without replacing it with a summary. Report the initiative ID, absolute worktree path, slug, and base branch exactly as printed. Tell the human that decision gates are visible through `ateam human-list` and the initiatives dashboard, so they do not need to tail runtime logs continuously.
 
-**🚨 CARDINAL RULE.** `ateam dispatch` performs the ONE write to the global workspace (initiative registration via the same `register` path). All work beads (planner's decomposition, feature/task/discovery beads) live in the PROJECT repo and are created by the background DRI and its team, not here.
+The dispatcher does not investigate after launch and does not take ownership of the new initiative. The background DRI recovers the verbatim framing from the initiative record, investigates, plans, and drives the work.
 
-### 4. Report and hand off
+### Claude session controls
 
-Relay the output `dispatch` printed. Tell the human:
-
-- The initiative id and the worktree path (from dispatch output).
-- How to watch and control it:
+Relay the Claude session identifier when it is available. Give the human these runtime controls:
 
 ```bash
-ateam runtime open claude      # open the native agents view
-claude logs <session-id>        # recent output without attaching
-claude attach <session-id>      # open it in this terminal
-claude stop <session-id>        # abort early OR reap a finished idle session
+ateam runtime open claude
+claude logs <session-id>
+claude attach <session-id>
+claude stop <session-id>
 ```
 
-When the background DRI finishes, it ends its turn and the session stays idle — it does NOT self-stop. It appears as idle in `ateam runtime open claude`; use `claude stop <session-id>` to stop it when you are done with it.
-
-Any human gate the background DRI parks on surfaces through `ateam human-list` and the `/initiatives` dashboard — so a needed decision is discoverable without tailing logs.
-
-## Permissions
-
-A backgrounded DRI has **no human attached to answer prompts**, so it runs with `--permission-mode bypassPermissions` (what `ateam dispatch` sets when launching the background DRI). This requires a **one-time interactive acceptance** of bypass mode on the machine first. A bypass-mode DRI edits a real repo unattended — only dispatch one for well-scoped work, and confirm with the human first when the initiative touches sensitive tooling or infrastructure.
+When the DRI ends its turn, the background Claude session remains idle rather than stopping itself. Use `claude stop <session-id>` to abort early or reap a finished idle session. Human gates also surface through `ateam human-list` and the initiatives dashboard.
 
 Reference: https://code.claude.com/docs/en/agent-view

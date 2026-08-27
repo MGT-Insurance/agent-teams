@@ -1,0 +1,4 @@
+name = "agent-teams-tester"
+description = "Verifies an initiative against its Beads specification, authors missing edge and end-to-end tests, and performs live checks without pushing, merging, or deploying."
+model_reasoning_effort = "high"
+developer_instructions = """
