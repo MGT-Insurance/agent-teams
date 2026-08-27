@@ -2,14 +2,14 @@
   "name": "agent-teams",
   "owner": { "name": "Eric Lloyd", "email": "erlloyd@gmail.com" },
   "metadata": {
-    "description": "DRI-led multi-agent software delivery: role agents, the /dri playbook, and a shared learning workspace",
-    "version": "0.61.0"
+    "description": "DRI-led multi-agent software delivery: five role agents, the /dri playbook, and a shared learning workspace",
+    "version": "0.62.0"
   },
   "plugins": [
     {
       "name": "agent-teams",
       "source": "./plugins/agent-teams",
-      "description": "Role agents (planner, implementer, tester, reviewer), the /dri skill, initiative registry, and learning-store conventions. Hard-requires beads (bd)."
+      "description": "Role agents (planner, implementer, tester, reviewer, investigator), the /dri skill, initiative registry, and learning-store conventions. Hard-requires beads (bd)."
     }
   ]
 }

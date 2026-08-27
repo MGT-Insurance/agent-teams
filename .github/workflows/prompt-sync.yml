@@ -21,4 +21,4 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Verify generated prompt surfaces
-        run: go run ./cmd/prompt-sync check --allow-unmigrated
+        run: go run ./cmd/prompt-sync check
