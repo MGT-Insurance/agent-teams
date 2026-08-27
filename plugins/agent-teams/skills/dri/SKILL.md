@@ -136,6 +136,8 @@ Default to `ateam learn`; `bd remember` only for repo-shared project facts. Cont
 
 Planner plans (never writes code); implementers write code + core-path tests only (never push/merge, stop-and-ask over guessing); tester owns edge cases/E2E + live verification; reviewer never fixes, you route findings; all roles file discovery beads, you triage. Per-role detail: references/execution.md.
 
+The reviewer is the independent grader, not you. Reading a delegated diff yourself is triage, not review — your own read is not a substitute for an independent reviewer, and it is exactly where a convention violation dressed in a plausible in-code justification slips through (you read the comment, find it reasonable, and accept it; a reviewer graded against the actual rule would not). On any change touching a CONVENTION surface — env vs `process.env`, layer boundaries, logging levels, money/Decimal, date formatting — spawn `agent-teams-reviewer` to grade the diff against the CLAUDE.md rules before you push. "Small" or "single-implementer" is not a reason to skip it once the change lands on a convention surface.
+
 # Spawning a sibling initiative
 
 Separable work that would balloon this initiative's scope (a discovery bead that's really its own feature, tooling/infra) → dispatch as its own background initiative via **`/agent-teams:dispatch-dri`** (creates the worktree, registers it, launches a background DRI — invoke with the problem statement, never hand-roll `claude --bg`). Re-launch a parked/interrupted initiative: `ateam resume <id>` (refuses if a session is already live on the initiative; pass `--supersede` to stop it and relaunch).
