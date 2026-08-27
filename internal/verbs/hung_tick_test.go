@@ -846,6 +846,378 @@ func TestDoHungTick_ReviewBackstop_NonReviewShapedUnaffected(t *testing.T) {
 	}
 }
 
+// ── agent-teams-lu02.1: the merged/closed backstop (no review-posted note) ──
+
+// fakePRState is an injectable prStateFunc returning a canned (state, err)
+// and recording every call — so tests drive the agent-teams-lu02.1
+// merged/closed gate without shelling to gh.
+type fakePRState struct {
+	state string
+	err   error
+	calls int
+}
+
+func (f *fakePRState) probe(_ string, _ int) (string, error) {
+	f.calls++
+	return f.state, f.err
+}
+
+// TestDoHungTick_ReviewBackstop_ClosesOnMergedNoPostedNote is
+// agent-teams-lu02.1's core new path: a review-shaped, DEAD initiative that
+// never got a review-posted note (session died first) is still auto-closed
+// once the PR's own state proves the episode is over (MERGED), provided
+// there's no pending unanswered comment. Uses the NEW close reason, and the
+// DEAD ladder never fires.
+func TestDoHungTick_ReviewBackstop_ClosesOnMergedNoPostedNote(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-merged", wt, "https://github.com/acme/widget/pull/20", false)}
+	ctx := makeHungCtx(t, issues)
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged}
+	wake := &fakeHungWakeSend{}
+	ft := &fakeTransport{returnRef: "1"}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            ft,
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1", len(closeFn.calls))
+	}
+	if closeFn.calls[0].id != "at-merged" {
+		t.Errorf("closed id = %q, want at-merged", closeFn.calls[0].id)
+	}
+	if closeFn.calls[0].reason != hungReviewBackstopMergedCloseReason {
+		t.Errorf("close reason = %q, want %q", closeFn.calls[0].reason, hungReviewBackstopMergedCloseReason)
+	}
+	if len(wake.bodies) != 0 {
+		t.Errorf("wake calls = %d, want 0 (backstop close must skip the DEAD ladder)", len(wake.bodies))
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if !strings.Contains(string(journalData), `"ladder_action":"close"`) {
+		t.Errorf("journal missing the close ladder_action: %s", journalData)
+	}
+	if !strings.Contains(string(journalData), `"ladder":"review-backstop"`) {
+		t.Errorf("journal missing the review-backstop ladder tag: %s", journalData)
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_ClosesOnClosedNoPostedNote is the CLOSED
+// counterpart to the MERGED case above — GitHub's other terminal PR state
+// must authorize the same close.
+func TestDoHungTick_ReviewBackstop_ClosesOnClosedNoPostedNote(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-closed", wt, "https://github.com/acme/widget/pull/21", false)}
+	ctx := makeHungCtx(t, issues)
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateClosed}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             (&fakeHungWakeSend{}).send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1", len(closeFn.calls))
+	}
+	if closeFn.calls[0].reason != hungReviewBackstopMergedCloseReason {
+		t.Errorf("close reason = %q, want %q", closeFn.calls[0].reason, hungReviewBackstopMergedCloseReason)
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_ClosesOnMergedStuckHungNoPostedNote proves
+// gate (c)'s other qualifying classification for the merged path too: a
+// live-but-idle session past hungStuckThreshold (STUCK + Hung) also
+// auto-closes on MERGED, exactly like DEAD.
+func TestDoHungTick_ReviewBackstop_ClosesOnMergedStuckHungNoPostedNote(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-mergedstuck", wt, "https://github.com/acme/widget/pull/22", false)}
+	ctx := makeHungCtx(t, issues)
+
+	pid := 1
+	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedStuckSince := t0.Add(-(hungStuckThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-mergedstuck": {StuckSince: seedStuckSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return idleSessions, nil },
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1", len(closeFn.calls))
+	}
+	if closeFn.calls[0].reason != hungReviewBackstopMergedCloseReason {
+		t.Errorf("close reason = %q, want %q", closeFn.calls[0].reason, hungReviewBackstopMergedCloseReason)
+	}
+	if len(wake.bodies) != 0 {
+		t.Errorf("wake calls = %d, want 0 (backstop close must skip the STUCK ladder)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPROpen is the guard
+// proving an OPEN PR must never authorize this path — the entry falls
+// through to the existing DEAD ladder exactly as it did before this bead.
+func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPROpen(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-open", wt, "https://github.com/acme/widget/pull/23", false)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-open": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateOpen}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (an OPEN PR must never authorize a close)", len(closeFn.calls))
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing DEAD ladder must still fire for an open PR)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPendingComment proves
+// gate (d) still applies to this path exactly as it does to the posted-note
+// path: a pending unanswered comment blocks the close even though the PR is
+// already MERGED.
+func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPendingComment(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-mergedpending", wt, "https://github.com/acme/widget/pull/24", false)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-mergedpending": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: true} // someone is still waiting on us
+	prState := &fakePRState{state: ghPRStateMerged}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (a pending comment must block the close)", len(closeFn.calls))
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing DEAD ladder must still fire)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenProbeErrors proves the
+// probe-unavailable guard: a failing PR-state probe means "cannot prove
+// merged/closed" — probed=false — which must never authorize a close, even
+// though every classification gate holds.
+func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenProbeErrors(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-probeerr", wt, "https://github.com/acme/widget/pull/25", false)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-probeerr": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{err: fmt.Errorf("gh pr view: exit status 1")}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (a failing PR-state probe must never authorize a close)", len(closeFn.calls))
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing DEAD ladder must still fire)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPreflightFails is the
+// preflight variant of the probe-unavailable guard: gh unusable at all this
+// tick must degrade the same way as a single failed call.
+func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPreflightFails(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-preflightfail", wt, "https://github.com/acme/widget/pull/26", false)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-preflightfail": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return fmt.Errorf("gh not authenticated") },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (a failing gh preflight must never authorize a close)", len(closeFn.calls))
+	}
+	if prState.calls != 0 {
+		t.Errorf("raw PR-state probe calls = %d, want 0 (preflight failure must skip the probe entirely)", prState.calls)
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (existing DEAD ladder must still fire)", len(wake.bodies))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_PostedNotePathUnaffectedByMergedGate is the
+// regression proof that the two gates are mutually exclusive by
+// construction: a review-posted, DEAD, not-pending initiative still closes
+// via the EXISTING (posted-note) reason, and the new merged-gate probe is
+// never even consulted — the posted-note branch above always wins for a
+// posted note, exactly as it did before this bead.
+func TestDoHungTick_ReviewBackstop_PostedNotePathUnaffectedByMergedGate(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-postedstillworks", wt, "https://github.com/acme/widget/pull/27", true)}
+	ctx := makeHungCtx(t, issues)
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged} // must never be consulted for a posted note
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             (&fakeHungWakeSend{}).send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1", len(closeFn.calls))
+	}
+	if closeFn.calls[0].reason != hungReviewBackstopCloseReason {
+		t.Errorf("close reason = %q, want the EXISTING reason %q (posted-note path must be unchanged)", closeFn.calls[0].reason, hungReviewBackstopCloseReason)
+	}
+	if prState.calls != 0 {
+		t.Errorf("PR-state probe calls = %d, want 0 (a posted note must take the existing path and never consult the merged gate)", prState.calls)
+	}
+}
+
 // TestDoHungTick_ReviewBackstop_NilCloseFuncFallsThroughToLadder proves the
 // nil-seam safe default: with no closeFunc configured, the backstop never
 // engages at all (not even a probe call), and the tick behaves exactly as it

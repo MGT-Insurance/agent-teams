@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -315,6 +316,16 @@ func postHungAlert(ctx *cli.Context, deps hungTickDeps, entry hungScanEntry, bod
 // trail reads identically regardless of which tick or which PR closed it.
 const hungReviewBackstopCloseReason = "auto-closed by hung-scan backstop: review posted, session dead/stuck, no pending comment"
 
+// hungReviewBackstopMergedCloseReason (agent-teams-lu02.1) is the
+// close-reason text for the SIBLING backstop path below
+// (reviewBackstopMergedGateHolds): a review-shaped initiative whose session
+// died BEFORE a review-posted note was ever written, but whose PR is already
+// MERGED or CLOSED on GitHub — proof the review episode is over regardless
+// of whether our own note-writing step ever ran. Kept textually distinct
+// from hungReviewBackstopCloseReason so an audit trail (or a human reading
+// bd notes) can always tell which gate authorized a given auto-close.
+const hungReviewBackstopMergedCloseReason = "auto-closed by hung-scan backstop: PR merged/closed, session dead/stuck, review not posted, no pending comment"
+
 // hungCloseFunc closes id, recording reason as both a durable note and the
 // bd close reason. Injected into hungTickDeps so tests substitute a fake
 // instead of shelling to a real bd binary.
@@ -369,6 +380,30 @@ func reviewBackstopCloseGateHolds(entry hungScanEntry) bool {
 	// dead-session — classifyInitiative emits DEAD for both) OR STUCK past
 	// hungStuckThreshold. NEVER WORKING, NEVER AWAITING-HUMAN — a live
 	// working review, or one already parked on a real gate, is untouched.
+	return entry.Classification == hungClassDead || (entry.Classification == hungClassStuck && entry.Hung)
+}
+
+// reviewBackstopMergedGateHolds (agent-teams-lu02.1) evaluates the
+// classification-only part of the SIBLING close gate that reaches the
+// residual "session died before posting the review" class
+// reviewBackstopCloseGateHolds cannot: (a) review-shaped AND NOT (b)
+// review-posted AND (c) session inactive. It is deliberately the logical
+// complement of reviewBackstopCloseGateHolds on (b) — doHungTick wires this
+// predicate as an ELSE to that one, so an entry with a posted note always
+// takes the EXISTING path unchanged, and this path only ever sees the
+// not-posted case. Like its sibling, the PR-state probe (MERGED/CLOSED) and
+// the pending-comment probe are deliberately NOT folded in here — they may
+// require a live GitHub call, so the caller (doHungTick) evaluates them
+// separately, only for entries this cheap, pure predicate already says are
+// candidates.
+func reviewBackstopMergedGateHolds(entry hungScanEntry) bool {
+	if entry.ReviewPRURL == "" { // (a) review-shaped
+		return false
+	}
+	if hasReviewPostedNote(entry.Notes) { // NOT (b): only the not-posted case
+		return false
+	}
+	// (c) identical guard to reviewBackstopCloseGateHolds's own (c).
 	return entry.Classification == hungClassDead || (entry.Classification == hungClassStuck && entry.Hung)
 }
 
@@ -762,6 +797,255 @@ func (p *hungPendingCommentProbe) flush() {
 	}
 }
 
+// ── agent-teams-lu02.1: the PR-state probe ──────────────────────────────────
+//
+// reviewBackstopCloseGateHolds's gate (b) requires a review-posted note —
+// but a session can die BEFORE it ever writes that note, leaking a
+// review-shaped initiative the existing backstop can never reach. This probe
+// answers the one question that closes that residual gap without ever
+// touching the PROHIBITED reviewer-attention fields (external_review.go:
+// 20-42's binding prohibition on reviewRequests/reviewDecision/
+// latestReviews): is the PR's own `state` already MERGED or CLOSED? That is
+// proof, independent of our own note-writing, that the review episode is
+// over. Mirrors the pending-comment probe's cache/preflight lifecycle above
+// exactly, just answering a different question.
+
+// ghPRStateOpen, ghPRStateMerged, and ghPRStateClosed are the three values
+// GitHub's `gh pr view --json state` can report.
+const (
+	ghPRStateOpen   = "OPEN"
+	ghPRStateMerged = "MERGED"
+	ghPRStateClosed = "CLOSED"
+)
+
+// prStateFunc probes ownerRepo's PR prNumber and reports its raw `state`
+// (OPEN, MERGED, or CLOSED). Injected into hungTickDeps so tests substitute
+// a canned answer without shelling to gh. Deliberately request ONLY state —
+// see external_review.go:20-42's binding prohibition on
+// reviewRequests/reviewDecision/latestReviews; those fields MUST NOT gate
+// this or any other close decision.
+type prStateFunc func(ownerRepo string, prNumber int) (state string, err error)
+
+// ghPRView is the subset of `gh pr view --json state` defaultPRState needs.
+type ghPRView struct {
+	State string `json:"state"`
+}
+
+// defaultPRState runs `gh pr view <n> -R <owner>/<repo> --json state`,
+// bounded by hungReviewCommentProbeTimeout (shared with the pending-comment
+// probe — both are short single gh calls with the same hang risk), and
+// returns the raw state string.
+func defaultPRState(ownerRepo string, prNumber int) (string, error) {
+	cctx, cancel := context.WithTimeout(context.Background(), hungReviewCommentProbeTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(cctx, "gh", "pr", "view", strconv.Itoa(prNumber), "-R", ownerRepo, "--json", "state").Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view: %w", err)
+	}
+	var v ghPRView
+	if err := json.Unmarshal(out, &v); err != nil {
+		return "", fmt.Errorf("parse gh pr view output: %w", err)
+	}
+	return v.State, nil
+}
+
+// hungPRStateCacheFileName is the JSON file (under StewardHome) caching each
+// PR's last state probe, mirroring hungPendingCommentStateFileName's
+// lifecycle so a still-DEAD/STUCK review-shaped initiative doesn't force a
+// live gh probe on every single tick. A separate file/cache from the
+// pending-comment one — the two probes answer different questions and are
+// evaluated independently.
+const hungPRStateCacheFileName = "hung-pr-state-cache.json"
+
+// hungPRStateTTL bounds how long a cached PR-state result is trusted. A
+// MERGED/CLOSED result is terminal (a PR never un-merges), but an OPEN
+// result is not, so this mirrors hungPendingCommentTTL's 15m rather than
+// caching OPEN forever.
+var hungPRStateTTL = 15 * time.Minute
+
+// hungPRStateEntry is one cached probe result.
+type hungPRStateEntry struct {
+	ProbedAt string `json:"probed_at"`
+	State    string `json:"state"`
+}
+
+// hungPRStateCache is hungPRStateCacheFileName's in-memory working set.
+type hungPRStateCache struct {
+	Entries map[string]hungPRStateEntry `json:"entries"`
+}
+
+// prStateCacheKey identifies one PR for cache purposes.
+func prStateCacheKey(ownerRepo string, prNumber int) string {
+	return fmt.Sprintf("%s#%d", ownerRepo, prNumber)
+}
+
+// hungPRStateCachePath returns <StewardHome>/hung-pr-state-cache.json.
+func hungPRStateCachePath(ctx *cli.Context) string {
+	return filepath.Join(StewardHome(ctx), hungPRStateCacheFileName)
+}
+
+// loadHungPRStateCache reads the cache file at path. Any read/parse error
+// (including a not-yet-created file) yields an empty cache — best-effort
+// persistence, never a hard dependency, mirroring loadHungPendingCommentCache.
+func loadHungPRStateCache(path string) hungPRStateCache {
+	empty := hungPRStateCache{Entries: map[string]hungPRStateEntry{}}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return empty
+	}
+	var c hungPRStateCache
+	if err := json.Unmarshal(data, &c); err != nil || c.Entries == nil {
+		return empty
+	}
+	return c
+}
+
+// saveHungPRStateCache writes c to path as JSON, atomically (temp file in
+// the same directory, then os.Rename over the target), mirroring
+// saveHungPendingCommentCache so a concurrent reader never observes a torn
+// write.
+var saveHungPRStateCache = func(path string, c hungPRStateCache) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir pr-state cache dir: %w", err)
+	}
+	entries := c.Entries
+	if entries == nil {
+		entries = map[string]hungPRStateEntry{}
+	}
+	data, err := json.Marshal(hungPRStateCache{Entries: entries})
+	if err != nil {
+		return fmt.Errorf("marshal pr-state cache: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, "hung-pr-state-cache-*.json")
+	if err != nil {
+		return fmt.Errorf("create temp pr-state cache file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp pr-state cache: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp pr-state cache: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp pr-state cache: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename pr-state cache into place: %w", err)
+	}
+	return nil
+}
+
+// lookup returns the cached state value for key and whether it is still
+// fresh as of now (within ttl). fresh==false means the caller must probe: no
+// entry exists, its ProbedAt failed to parse, or its TTL has elapsed.
+func (c hungPRStateCache) lookup(key string, now time.Time, ttl time.Duration) (state string, fresh bool) {
+	entry, ok := c.Entries[key]
+	if !ok {
+		return "", false
+	}
+	probedAt, err := time.Parse(time.RFC3339, entry.ProbedAt)
+	if err != nil || now.Sub(probedAt) >= ttl {
+		return "", false
+	}
+	return entry.State, true
+}
+
+// put records a fresh probe result for key.
+func (c *hungPRStateCache) put(key, state string, now time.Time) {
+	if c.Entries == nil {
+		c.Entries = map[string]hungPRStateEntry{}
+	}
+	c.Entries[key] = hungPRStateEntry{ProbedAt: now.UTC().Format(time.RFC3339), State: state}
+}
+
+// hungPRStateProbe bundles the per-tick probe lifecycle: the TTL cache
+// (loaded lazily, only once some entry actually needs a live probe) and the
+// once-per-tick gh preflight (also lazy) — mirroring hungPendingCommentProbe
+// exactly, just against its own cache file. Constructed fresh by doHungTick
+// every tick; flush persists the cache file only if this tick actually wrote
+// a new entry.
+type hungPRStateProbe struct {
+	ctx  *cli.Context
+	deps hungTickDeps
+
+	cachePath   string
+	cache       hungPRStateCache
+	cacheLoaded bool
+	cacheDirty  bool
+
+	preflightChecked bool
+	preflightErr     error
+}
+
+func newHungPRStateProbe(ctx *cli.Context, deps hungTickDeps) *hungPRStateProbe {
+	return &hungPRStateProbe{ctx: ctx, deps: deps, cachePath: hungPRStateCachePath(ctx)}
+}
+
+// evaluate resolves the PR-state probe for one gate-eligible entry (the
+// caller must already have confirmed reviewBackstopMergedGateHolds).
+// probed==false means "could not determine" — the caller must treat that as
+// NOT authorizing a close: merged/closed can never be PROVEN without a
+// working gh, mirroring hungPendingCommentProbe.evaluate's own conservative
+// contract.
+func (p *hungPRStateProbe) evaluate(entry hungScanEntry) (state string, probed bool) {
+	if p.deps.prState == nil {
+		return "", false
+	}
+	ownerRepo, prNumber, ok := parsePrURL(entry.ReviewPRURL)
+	if !ok {
+		return "", false
+	}
+
+	if !p.cacheLoaded {
+		p.cache = loadHungPRStateCache(p.cachePath)
+		p.cacheLoaded = true
+	}
+	now := p.deps.now()
+	key := prStateCacheKey(ownerRepo, prNumber)
+	if cachedState, fresh := p.cache.lookup(key, now, hungPRStateTTL); fresh {
+		return cachedState, true
+	}
+
+	if !p.preflightChecked {
+		p.preflightChecked = true
+		if p.deps.ghPreflight != nil {
+			p.preflightErr = p.deps.ghPreflight()
+		}
+	}
+	if p.preflightErr != nil {
+		transport.Logf(p.ctx.Stderr, 0, "ateam relay: hung tick: gh preflight failed, skipping PR-state probes this tick: %v", p.preflightErr)
+		return "", false
+	}
+
+	result, err := p.deps.prState(ownerRepo, prNumber)
+	if err != nil {
+		transport.Logf(p.ctx.Stderr, 0, "ateam relay: hung tick: PR-state probe for %s failed: %v", entry.ID, err)
+		return "", false
+	}
+	p.cache.put(key, result, now)
+	p.cacheDirty = true
+	return result, true
+}
+
+// flush persists the cache once, at the end of the tick, only if evaluate
+// actually wrote a new entry this tick.
+func (p *hungPRStateProbe) flush() {
+	if !p.cacheDirty {
+		return
+	}
+	if err := saveHungPRStateCache(p.cachePath, p.cache); err != nil {
+		transport.Logf(p.ctx.Stderr, 0, "ateam relay: hung tick: persist pr-state cache: %v", err)
+	}
+}
+
 // hungTickDeps bundles the seams doHungTick needs beyond ctx. A fake in
 // tests substitutes every field so no subprocess/network/filesystem beyond
 // ctx.Home's temp dir is touched.
@@ -787,6 +1071,15 @@ type hungTickDeps struct {
 	// never authorizes a close.
 	pendingReviewComment pendingReviewCommentFunc
 	ghPreflight          func() error
+
+	// prState is agent-teams-lu02.1's PR-state probe seam, shared with
+	// ghPreflight above. nil-safe: a nil prState makes
+	// hungPRStateProbe.evaluate report probed=false for every entry, which
+	// means reviewBackstopMergedGateHolds candidates NEVER close (the
+	// conservative default) — every existing test in this file keeps
+	// passing untouched, since runHungTickUntil is the only caller that
+	// wires a non-nil prState.
+	prState prStateFunc
 }
 
 // doHungTick runs one periodic tick. scanHung (reused, called with
@@ -833,6 +1126,7 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	changed := false
 	journalPath := hungJournalPath(StewardHome(ctx))
 	pendingProbe := newHungPendingCommentProbe(ctx, deps)
+	mergedProbe := newHungPRStateProbe(ctx, deps)
 
 	for _, entry := range entries {
 		ladder := ""
@@ -871,6 +1165,37 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 							transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
 						}
 						continue
+					}
+				}
+			} else if deps.closeFunc != nil && reviewBackstopMergedGateHolds(entry) {
+				// agent-teams-lu02.1: the residual "session died before
+				// posting" close path. Only reached when the posted-note gate
+				// above did NOT hold (mutually exclusive by construction —
+				// reviewBackstopMergedGateHolds requires !hasReviewPostedNote)
+				// — so a posted review always takes the branch above,
+				// unchanged. Two independent GitHub facts must both hold
+				// before closing: the PR is MERGED or CLOSED (proof the
+				// episode is over even though we never wrote our own note),
+				// AND — exactly like the posted-note path — no pending
+				// unanswered comment.
+				if state, probed := mergedProbe.evaluate(entry); probed && (state == ghPRStateMerged || state == ghPRStateClosed) {
+					if pending, probed := pendingProbe.evaluate(entry); probed && !pending {
+						if err := deps.closeFunc(ctx, entry.ID, hungReviewBackstopMergedCloseReason); err != nil {
+							transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: backstop close %s failed: %v", entry.ID, err)
+							// Same CONTRACT AMENDMENT as the posted-note path
+							// above: a failing close must still escalate — do
+							// NOT journal a successful close and do NOT
+							// continue (would silently drop the entry). Fall
+							// through to the existing ladder switch below.
+							if err := appendHungJournal(journalPath, hungReviewBackstopJournalEntry(nowRFC3339, entry, "close-failed")); err != nil {
+								transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+							}
+						} else {
+							if err := appendHungJournal(journalPath, hungReviewBackstopJournalEntry(nowRFC3339, entry, "close")); err != nil {
+								transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+							}
+							continue
+						}
 					}
 				}
 			}
@@ -983,6 +1308,7 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 	}
 
 	pendingProbe.flush()
+	mergedProbe.flush()
 
 	if changed {
 		if err := saveHungState(statePath, anchors); err != nil {
@@ -1027,6 +1353,7 @@ func runHungTickUntil(ctx *cli.Context, t transport.Transport, stop <-chan struc
 		closeFunc:            defaultHungClose,
 		pendingReviewComment: defaultPendingReviewComment,
 		ghPreflight:          defaultHungReviewCommentPreflight,
+		prState:              defaultPRState,
 	}
 	ticker := time.NewTicker(hungTickInterval)
 	defer ticker.Stop()
