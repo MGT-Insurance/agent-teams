@@ -1328,6 +1328,80 @@ func TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder(t *testing.T) 
 	}
 }
 
+// TestDoHungTick_ReviewBackstop_MergedGate_CloseErrorFallsThroughToLadder is
+// the merged-gate sibling of
+// TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder above, proving
+// the SAME agent-teams-huq7.1 CONTRACT AMENDMENT applies to the
+// reviewBackstopMergedGateHolds branch (agent-teams-lu02.1): when closeFunc
+// errors for an otherwise gate-eligible not-posted/MERGED entry, doHungTick
+// must NOT journal a successful close and must NOT silently drop the entry —
+// it must fall through to the existing DEAD ladder so the entry still gets a
+// wake/alert, exactly as if the close had never been attempted.
+func TestDoHungTick_ReviewBackstop_MergedGate_CloseErrorFallsThroughToLadder(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-mergedcloseerr", wt, "https://github.com/acme/widget/pull/28", false)}
+	ctx := makeHungCtx(t, issues)
+
+	// Seed a DeadSince anchor already past hungDeadWorktreeThreshold, exactly
+	// like the posted-note sibling above, so the existing DEAD ladder (D4,
+	// entry.DeadHung) actually has something to fire once this tick falls
+	// through to it.
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-mergedcloseerr": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{err: fmt.Errorf("bd close: exit status 1")}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(t0),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 1 {
+		t.Fatalf("close calls = %d, want 1 (a failing close must still be attempted)", len(closeFn.calls))
+	}
+	if closeFn.calls[0].reason != hungReviewBackstopMergedCloseReason {
+		t.Errorf("close reason = %q, want %q", closeFn.calls[0].reason, hungReviewBackstopMergedCloseReason)
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	journalStr := string(journalData)
+	if strings.Contains(journalStr, `"ladder_action":"close"`) {
+		t.Errorf("journal must NOT record a successful close when closeFunc errored: %s", journalStr)
+	}
+	if !strings.Contains(journalStr, `"ladder_action":"close-failed"`) {
+		t.Errorf("journal missing an accurate close-failed marker: %s", journalStr)
+	}
+	if !strings.Contains(journalStr, `"ladder":"dead"`) {
+		t.Errorf("journal missing the fallthrough DEAD ladder entry: %s", journalStr)
+	}
+
+	// The entry is NOT silently dropped — the existing DEAD ladder still
+	// fires a wake, exactly as if the merged backstop gate had never held.
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (a failing close must still escalate via the existing DEAD ladder)", len(wake.bodies))
+	}
+}
+
 // ── defaultHungClose (agent-teams-huq7.1 S5, real bd.Run mechanics) ─────────
 
 // TestDefaultHungClose_WritesNoteThenCloses proves the real production
@@ -1637,5 +1711,162 @@ func TestHungPendingCommentProbe_PreflightFailureSkipsProbe(t *testing.T) {
 	}
 	if pending.calls != 0 {
 		t.Errorf("raw probe calls = %d, want 0 (preflight failure must skip the probe entirely)", pending.calls)
+	}
+}
+
+// ── hungPRStateProbe: cache + preflight lifecycle (agent-teams-lu02.1) ──────
+//
+// Mirrors the hungPendingCommentProbe section immediately above exactly,
+// case for case, just against the sibling PR-state cache/probe.
+
+// TestHungPRStateProbe_CachesWithinTTL proves the probe is only invoked once
+// for repeated evaluate calls on the same PR within hungPRStateTTL, and
+// re-invoked once the cached entry goes stale.
+func TestHungPRStateProbe_CachesWithinTTL(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	prState := &fakePRState{state: ghPRStateMerged}
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	deps := hungTickDeps{
+		now:         fixedNow(now),
+		prState:     prState.probe,
+		ghPreflight: func() error { return nil },
+	}
+	entry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+
+	p := newHungPRStateProbe(ctx, deps)
+	if _, probed := p.evaluate(entry); !probed {
+		t.Fatal("first evaluate: expected probed=true")
+	}
+	if _, probed := p.evaluate(entry); !probed {
+		t.Fatal("second evaluate (same tick): expected probed=true")
+	}
+	if prState.calls != 1 {
+		t.Errorf("raw probe calls = %d, want 1 (second call should hit the freshly-written cache)", prState.calls)
+	}
+
+	// Stale cache (TTL elapsed) -> re-probes.
+	deps.now = fixedNow(now.Add(hungPRStateTTL + time.Minute))
+	p2 := newHungPRStateProbe(ctx, deps)
+	if _, probed := p2.evaluate(entry); !probed {
+		t.Fatal("third evaluate (stale cache): expected probed=true")
+	}
+	if prState.calls != 2 {
+		t.Errorf("raw probe calls = %d, want 2 (stale cache should force a fresh probe)", prState.calls)
+	}
+}
+
+// TestHungPRStateProbe_PreflightFailureSkipsProbe proves a failing gh
+// preflight degrades to probed=false (never authorizes a close) without ever
+// calling the raw probe.
+func TestHungPRStateProbe_PreflightFailureSkipsProbe(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	prState := &fakePRState{state: ghPRStateMerged}
+	deps := hungTickDeps{
+		now:         fixedNow(time.Now()),
+		prState:     prState.probe,
+		ghPreflight: func() error { return fmt.Errorf("gh not authenticated") },
+	}
+	entry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+
+	p := newHungPRStateProbe(ctx, deps)
+	if _, probed := p.evaluate(entry); probed {
+		t.Error("expected probed=false when the gh preflight fails")
+	}
+	if prState.calls != 0 {
+		t.Errorf("raw probe calls = %d, want 0 (preflight failure must skip the probe entirely)", prState.calls)
+	}
+}
+
+// TestHungPRStateProbe_NilSeamReportsNotProbed proves the nil-seam safe
+// default: with deps.prState unconfigured, evaluate reports probed=false
+// without ever touching the cache or the (absent) preflight seam.
+func TestHungPRStateProbe_NilSeamReportsNotProbed(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	deps := hungTickDeps{
+		now: fixedNow(time.Now()),
+		// prState intentionally left nil.
+	}
+	entry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+
+	p := newHungPRStateProbe(ctx, deps)
+	if state, probed := p.evaluate(entry); probed {
+		t.Errorf("expected probed=false with a nil prState seam, got probed=true state=%q", state)
+	}
+}
+
+// TestHungPRStateProbe_ProbeErrorReportsNotProbed proves a failing raw probe
+// call (gh reachable, but the specific `gh pr view` invocation errors)
+// degrades to probed=false rather than propagating the error or caching a
+// bogus result.
+func TestHungPRStateProbe_ProbeErrorReportsNotProbed(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	prState := &fakePRState{err: fmt.Errorf("gh pr view: exit status 1")}
+	deps := hungTickDeps{
+		now:         fixedNow(time.Now()),
+		prState:     prState.probe,
+		ghPreflight: func() error { return nil },
+	}
+	entry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+
+	p := newHungPRStateProbe(ctx, deps)
+	if state, probed := p.evaluate(entry); probed {
+		t.Errorf("expected probed=false when the raw probe errors, got probed=true state=%q", state)
+	}
+	if prState.calls != 1 {
+		t.Errorf("raw probe calls = %d, want 1 (a probe error must still count as an attempted call)", prState.calls)
+	}
+}
+
+// TestHungPRStateProbe_FlushOnlyPersistsWhenDirty proves flush is a no-op
+// when evaluate never wrote a new cache entry this tick (cacheDirty stays
+// false on an all-cache-hit or all-failed tick), and DOES persist once a
+// live probe actually wrote a fresh entry.
+func TestHungPRStateProbe_FlushOnlyPersistsWhenDirty(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	cachePath := hungPRStateCachePath(ctx)
+
+	// A tick where the probe never succeeds (preflight failure) must never
+	// write the cache file at all.
+	failDeps := hungTickDeps{
+		now:         fixedNow(time.Now()),
+		prState:     (&fakePRState{state: ghPRStateMerged}).probe,
+		ghPreflight: func() error { return fmt.Errorf("gh not authenticated") },
+	}
+	failEntry := hungScanEntry{ID: "at-1", ReviewPRURL: "https://github.com/acme/widget/pull/1"}
+	failProbe := newHungPRStateProbe(ctx, failDeps)
+	if _, probed := failProbe.evaluate(failEntry); probed {
+		t.Fatal("expected probed=false on preflight failure")
+	}
+	failProbe.flush()
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("cache file exists after a dirty-free tick (stat err = %v), want no file written", err)
+	}
+
+	// A tick with a real, successful probe writes a dirty entry -> flush
+	// must persist it, and the atomic save/load round-trips the same value.
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	okDeps := hungTickDeps{
+		now:         fixedNow(now),
+		prState:     (&fakePRState{state: ghPRStateClosed}).probe,
+		ghPreflight: func() error { return nil },
+	}
+	okEntry := hungScanEntry{ID: "at-2", ReviewPRURL: "https://github.com/acme/widget/pull/2"}
+	okProbe := newHungPRStateProbe(ctx, okDeps)
+	if _, probed := okProbe.evaluate(okEntry); !probed {
+		t.Fatal("expected probed=true for a successful probe")
+	}
+	okProbe.flush()
+
+	loaded := loadHungPRStateCache(cachePath)
+	key := prStateCacheKey("acme/widget", 2)
+	entry, ok := loaded.Entries[key]
+	if !ok {
+		t.Fatalf("loadHungPRStateCache after flush: missing entry for key %q, entries=%+v", key, loaded.Entries)
+	}
+	if entry.State != ghPRStateClosed {
+		t.Errorf("round-tripped entry.State = %q, want %q", entry.State, ghPRStateClosed)
+	}
+	if entry.ProbedAt != now.UTC().Format(time.RFC3339) {
+		t.Errorf("round-tripped entry.ProbedAt = %q, want %q", entry.ProbedAt, now.UTC().Format(time.RFC3339))
 	}
 }
