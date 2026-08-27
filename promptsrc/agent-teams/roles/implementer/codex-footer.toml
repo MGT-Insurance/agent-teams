@@ -1,0 +1,3 @@
+
+Do not spawn child agents. Return the commit hash, files changed, exact gates, and any blockers or follow-up discoveries to the parent in your final response. Use the available parent messaging tool only for an urgent blocker.
+"""

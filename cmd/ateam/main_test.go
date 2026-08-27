@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,7 +100,21 @@ func TestRunSetupCodexPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
 	if code := run([]string{"setup", "codex"}); code != 0 {
 		t.Fatalf("run([setup codex]) with no bd or workspace = %d, want 0", code)
 	}
-	if _, err := os.Stat(filepath.Join(codexHome, "agents", "agent-teams-planner.toml")); err != nil {
-		t.Fatalf("setup codex did not install agent definitions: %v", err)
+	distinctiveRules := map[string]string{
+		"planner":      "Decompose in concentric circles",
+		"implementer":  "Never guess on design",
+		"reviewer":     "After-the-fact identifiability",
+		"tester":       "local-testing-<repo>",
+		"investigator": "vs TESTER",
+	}
+	for _, role := range []string{"planner", "implementer", "reviewer", "tester", "investigator"} {
+		path := filepath.Join(codexHome, "agents", "agent-teams-"+role+".toml")
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("setup codex did not install %s definition: %v", role, err)
+		}
+		if !strings.Contains(string(body), distinctiveRules[role]) {
+			t.Fatalf("installed %s definition missing %q", role, distinctiveRules[role])
+		}
 	}
 }
