@@ -99,7 +99,12 @@ gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate   # inline rev
 ```
 
 Collect every finding from our most recent review (its body plus the inline
-comments authored by `<our-login>`), each as file:line + description.
+comments authored by `<our-login>`), each as file:line + original
+severity/label + description. The label is recoverable from how it was
+posted: an inline comment prefixed `<severity>:` carries that severity
+(`critical`/`high`/`medium`); a finding posted in the review body with no
+prefix is a `question`. Preserve it — the step 9 gate keys off original
+severity, so a `question` never blocks on re-review.
 Re-review mode replaces the reviewer instructions in step 7 (see the
 re-review variant there) and changes the no-findings wording in step 9.
 Checkout, diff, posting mechanics, and close are unchanged.
@@ -211,18 +216,26 @@ ends up empty, the merged close step falls back to `<pr-url>`.
 
 If the `gh api` call fails (e.g. a file:line reference does not correspond to a diff hunk), retry without the failing inline comment(s) and add their content to the review body instead (capturing `REVIEW_URL` from the retry the same way), then note the fallback in the initiative.
 
-**Re-review mode:** findings reported `not addressed` are the only ones
-that force event=`COMMENT` — post them (inline where the line is in the
-diff, body otherwise) with a body like "Re-review: N of M prior findings
-addressed" (N counts `addressed` and `out of scope` together). Findings
-reported `out of scope` count as addressed for this gate — resolving them
-is legitimately not this PR's job — but restate each one in the review
-body (its reason and file:line) so it stays visible for whichever future
-PR owns it; they post in the body only, never as an inline comment. If
-every prior finding is either `addressed` or `out of scope`, this is the
-no-findings case above (APPROVE unless self-review) with body "Re-review:
-all M prior findings addressed" followed by the restated out-of-scope
-findings, if any. Capture `REVIEW_URL` the same way in both cases.
+**Re-review mode:** the gate keys off each finding's ORIGINAL severity, not
+its resolution. Only a finding originally labelled `critical`/`high`/`medium`
+AND reported `not addressed` forces event=`COMMENT`. A finding first raised as
+a `question` (or any non-blocking label) never forces `COMMENT` — addressed,
+left open, or explained-and-declined, its resolution cannot gate approval,
+because it was never blocking.
+
+Two kinds therefore never block but stay visible in the review body: every
+`out of scope` finding (not this PR's job) and every `question`/non-blocking
+finding (always the author's call). Restate each in the body — original label,
+reason, and file:line — never as an inline comment.
+
+Post any blocking `not addressed` finding inline where its line is in the
+diff, body otherwise, with a body like "Re-review: N of M prior findings
+resolved" (N = every finding that does not block: `addressed`, `out of scope`,
+and every `question`/non-blocking finding). If no `critical`/`high`/`medium`
+finding is `not addressed`, this is the no-findings case above (APPROVE unless
+self-review), body "Re-review: all blocking findings resolved" plus the
+restated out-of-scope and `question` findings, if any. Capture `REVIEW_URL`
+the same way in both cases.
 
 ### 10. Record the outcome and close the initiative
 
