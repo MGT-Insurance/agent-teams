@@ -19,13 +19,22 @@ func TestSetupCodexInstallsDefinitionsAndDetectsDrift(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("first setup: %v", err)
 	}
-	for _, role := range []string{"planner", "implementer", "tester", "reviewer"} {
+	distinctiveRules := map[string]string{
+		"planner":      "Decompose in concentric circles",
+		"implementer":  "Never guess on design",
+		"reviewer":     "After-the-fact identifiability",
+		"tester":       "Only the DRI starts a dev server",
+		"investigator": "vs PLANNER",
+	}
+	for _, role := range []string{"planner", "implementer", "tester", "reviewer", "investigator"} {
 		path := filepath.Join(codexHome, "agents", "agent-teams-"+role+".toml")
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", role, err)
 		}
-		if !strings.Contains(string(body), `name = "agent-teams-`+role+`"`) || !strings.Contains(string(body), "ateam learnings "+role) {
+		if !strings.Contains(string(body), `name = "agent-teams-`+role+`"`) ||
+			!strings.Contains(string(body), "ateam learnings "+role) ||
+			!strings.Contains(string(body), distinctiveRules[role]) {
 			t.Fatalf("invalid %s definition: %s", role, body)
 		}
 	}

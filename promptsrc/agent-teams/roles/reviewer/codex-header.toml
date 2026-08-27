@@ -1,0 +1,4 @@
+name = "agent-teams-reviewer"
+description = "Independently reviews a full feature diff against its Beads specification, reports material correctness and parity findings, and runs CI-equivalent gates without fixing code."
+model_reasoning_effort = "high"
+developer_instructions = """

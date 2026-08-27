@@ -1,7 +1,7 @@
 {
   "name": "agent-teams-codex",
-  "version": "0.61.1",
-  "description": "Codex-native DRI orchestration, role agents, durable Beads mail, and agent-teams setup.",
+  "version": "0.62.0",
+  "description": "Codex-native DRI orchestration, five role agents, durable Beads mail, and agent-teams setup.",
   "author": {
     "name": "Eric Lloyd",
     "email": "erlloyd@gmail.com",
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Agent Teams Codex",
     "shortDescription": "DRI-led software delivery with durable mail.",
-    "longDescription": "Run agent-teams initiatives in Codex with specialized planner, implementer, tester, and reviewer agents backed by Beads and durable cross-session mail.",
+    "longDescription": "Run agent-teams initiatives in Codex with specialized planner, implementer, tester, reviewer, and investigator agents backed by Beads and durable cross-session mail.",
     "developerName": "Eric Lloyd",
     "category": "Productivity",
     "capabilities": [

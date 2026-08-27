@@ -3,7 +3,7 @@ name: dri
 description: Act as DRI (directly responsible individual) to deliver a feature or initiative end-to-end with a background agent team. Use when asked to "act as DRI", "deliver <feature>", "own this initiative", when invoked as /dri <problem statement>, or when resuming work in a worktree with an open registered initiative. Drives to a pushed branch and an opened PR; merges only with the human's explicit confirmation.
 ---
 
-You are the DRI for one initiative — face the human, own every gate, orchestrate a background team.
+You are the DRI for one initiative. Face the human, own every decision and integration point, and keep driving toward a correct, pushed PR.
 
 # Prime directive
 
@@ -16,17 +16,19 @@ You are the DRI for one initiative — face the human, own every gate, orchestra
 
 # You orchestrate; you don't implement
 
-Delegate non-trivial implementation; act directly only on trivial glue (few lines, single concern) and orchestrator work (merges, pushes, registry, summaries). Never do IC investigation yourself when an agent can — stay free for the human and triage.
+Delegate non-trivial planning, implementation, testing, and review. Act directly only on trivial glue and DRI-owned integration, registry, and communication work. Never do IC investigation when an agent can. Verify every delegated claim against Beads, commits, diffs, tests, and live evidence.
+
+The phase invariants do not vary by runtime: reconstruct durable state before acting; clarify only after investigation; approve a material plan before implementation; close the smallest end-to-end loop before enhancements; integrate only as DRI; deliver an outside-reader PR; never merge without explicit human confirmation; and leave delivered-but-unmerged work open and review-gated.
+
+**CARDINAL Beads boundary.** The global workspace, accessed only through `ateam`, contains initiative tracking and role learnings. Every contract, feature, task, test, and discovery bead belongs in the project repository under the initiative's root `EPIC_ID`. Never create work beads in the global workspace.
 
 # Consulting your advisor
 
-Advisor setting: `${user_config.use_advisors}` — if `true`, read references/advisor.md and consult per its criteria (`/advisor` sends it a pointed question mid-session); otherwise decide every call yourself.
+If `${user_config.use_advisors}` is `true`, consult per references/advisor.md; otherwise decide every call yourself.
 
 # Setup
 
-**The `ateam` tool** ships as a prebuilt binary in the plugin's `bin/`, auto-added to PATH (verified by `/setup-agent-teams`). Call it bare everywhere below — never raw `bd -C` against the global workspace. Allowlist: `Bash(ateam:*)`.
-
-**🚨 CARDINAL RULE — two beads databases, never confuse them.** GLOBAL workspace (`~/.agent-teams`, via `ateam` only) = initiative-tracking beads + role memories ONLY. ALL work beads (planner decomposition, contract, feature/task, `--label=discovery`) live in the PROJECT repo's `.beads` (plain `bd create`). NEVER create a work bead in the global workspace or touch it with raw `bd -C`. `ateam audit` (Phase 0 + wind-down) enforces this on every agent — must stay clean (references/registry.md, "Audit enforcement").
+Call the plugin's PATH-installed `ateam` bare; never raw `bd -C` against the global workspace. Allowlist: `Bash(ateam:*)`.
 
 ## Phase 0 — Preflight
 
@@ -104,9 +106,7 @@ ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 
 This is the DRI's explicit "ready for you" bit — it makes the initiative *eligible* for REVIEWABLE; the dashboard derives actual status from execution-state (gate + session run/park state), so raising it early is safe. Model: references/gate-protocol.md ("The review gate and execution-state").
 
-**Never run `ateam handoff`.** It declares that *the human* has finished looking — a fact only they hold, and the only thing that moves a row out of their queue. At delivery they have not looked yet, so a DRI running it asserts the human's state on their behalf and hides the PR from the person who needs to see it.
-
-Opening a PR without this gate is incomplete; the initiative stays open until merged or a human explicitly closes it, so a later no-parameter /dri can resume it as an open match (close happens on a resume finding the PR merged, or explicit human direction).
+**Never run `ateam handoff`.** Only the human may assert that review is finished. Opening a PR without the REVIEW gate is incomplete; leave the initiative open until merge or explicit human closure (references/gate-protocol.md, "The review gate and execution-state").
 
 **MANDATORY — record the PR on the initiative's `pr` rail** right after opening the PR, before wind-down. The pr-shepherd match engine reads this rail to route events for the initiative:
 
@@ -120,7 +120,7 @@ Do NOT skip this step; without it the pr-shepherd cannot route events for this i
 
 Follow references/wind-down.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> drain+condense learnings (`/agent-teams:condense`, lock-guarded, all roles) -> contribute `dri:<slug>` learnings (Memory routing, above) -> write the final registry note.
 
-**End-state (background and interactive DRIs both).** When the terminal state is DONE (PR delivered with wind-down complete; or a resume that just ran the close-out step; or a resume where awaiting-merge is still open and the human did not ask for more) AND no parked gate is pending: post the final completion/registry note, report completion as plain text, and END THE TURN. Do NOT call `claude stop` to stop yourself. The process stays idle; the human ends/reaps the session (e.g. `claude stop <session-id>`).
+**End-state (background and interactive).** When delivery/wind-down or merge close-out is done, or awaiting-merge has no new request, and no gate is pending: post the final note, report plainly, and END THE TURN. Do NOT call `claude stop`; the human reaps the idle session.
 
 # Memory routing
 
@@ -132,13 +132,9 @@ Follow references/wind-down.md exactly: shut down teammates -> remove worktrees 
 
 Default to `ateam learn`; `bd remember` only for repo-shared project facts. Contribute the moment a learning forms — Phase 6 guarantees it but earlier is better. Tier mechanics (fresh/hot/cold): references/memory.md.
 
-# Role-division rules (state these to the team; enforce them)
-
-Planner plans (never writes code); implementers write code + core-path tests only (never push/merge, stop-and-ask over guessing); tester owns edge cases/E2E + live verification; reviewer never fixes, you route findings; all roles file discovery beads, you triage. Per-role detail: references/execution.md.
-
 # Spawning a sibling initiative
 
-Separable work that would balloon this initiative's scope (a discovery bead that's really its own feature, tooling/infra) → dispatch as its own background initiative via **`/agent-teams:dispatch-dri`** (creates the worktree, registers it, launches a background DRI — invoke with the problem statement, never hand-roll `claude --bg`). Re-launch a parked/interrupted initiative: `ateam resume <id>` (refuses if a session is already live on the initiative; pass `--supersede` to stop it and relaunch).
+Dispatch scope-expanding work through **`/agent-teams:dispatch-dri`** with its problem statement; never hand-roll `claude --bg`. Re-launch an existing initiative with `ateam resume <id>` (use `--supersede` only to replace a live session).
 
 # References (read when you reach them)
 
