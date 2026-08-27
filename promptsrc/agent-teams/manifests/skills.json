@@ -37,79 +37,323 @@
     {
       "id": "skill.dri",
       "kind": "skill",
-      "status": "temporarily-unmigrated",
-      "reason": "Dependency-gated paired skill migration in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "claude-header",
+          "path": "promptsrc/agent-teams/skills/dri/claude-header.md"
+        },
+        {
+          "id": "codex-header",
+          "path": "promptsrc/agent-teams/skills/dri/codex-header.md"
+        },
+        {
+          "id": "shared-authority",
+          "path": "promptsrc/agent-teams/skills/dri/shared-authority.md"
+        },
+        {
+          "id": "claude-runtime",
+          "path": "promptsrc/agent-teams/skills/dri/claude-runtime.md"
+        },
+        {
+          "id": "codex-runtime",
+          "path": "promptsrc/agent-teams/skills/dri/codex-runtime.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/SKILL.md", "format": "markdown"},
-        {"path": "plugins/agent-teams-codex/skills/dri/SKILL.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "claude-header",
+            "shared-authority",
+            "claude-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/dri",
+            "min_headroom": 4000
+          }
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "codex-header",
+            "shared-authority",
+            "codex-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/dri",
+            "min_headroom": 4000
+          }
+        }
       ]
     },
     {
       "id": "skill.setup-agent-teams",
       "kind": "skill",
-      "status": "temporarily-unmigrated",
-      "reason": "Dependency-gated paired skill migration in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "claude-header",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/claude-header.md"
+        },
+        {
+          "id": "codex-header",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/codex-header.md"
+        },
+        {
+          "id": "shared-workspace",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/shared-workspace.md"
+        },
+        {
+          "id": "claude-runtime",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/claude-runtime.md"
+        },
+        {
+          "id": "codex-runtime",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/codex-runtime.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/setup-agent-teams/SKILL.md", "format": "markdown"},
-        {"path": "plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/setup-agent-teams/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "claude-header",
+            "shared-workspace",
+            "claude-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/setup-agent-teams",
+            "min_headroom": 4000
+          }
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "codex-header",
+            "shared-workspace",
+            "codex-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/setup-agent-teams",
+            "min_headroom": 4000
+          }
+        }
       ]
     },
     {
       "id": "reference.dri.execution",
       "kind": "reference",
-      "status": "temporarily-unmigrated",
-      "reason": "Dependency-gated paired DRI reference migration in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/execution-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/execution-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/execution-codex.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/references/execution.md", "format": "markdown"},
-        {"path": "plugins/agent-teams-codex/skills/dri/references/execution.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/references/execution.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/execution.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
       ]
     },
     {
       "id": "reference.dri.gates",
       "kind": "reference",
-      "status": "temporarily-unmigrated",
-      "reason": "Dependency-gated gate-protocol to gates counterpart migration in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/gates-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/gates-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/gates-codex.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/references/gate-protocol.md", "format": "markdown"},
-        {"path": "plugins/agent-teams-codex/skills/dri/references/gates.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/references/gate-protocol.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/gates.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
       ]
     },
     {
       "id": "reference.dri.registry",
       "kind": "reference",
-      "status": "temporarily-unmigrated",
-      "reason": "Dependency-gated paired DRI reference migration in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/registry-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/registry-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/registry-codex.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/references/registry.md", "format": "markdown"},
-        {"path": "plugins/agent-teams-codex/skills/dri/references/registry.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/references/registry.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/registry.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
       ]
     },
     {
       "id": "reference.dri.wind-down",
       "kind": "reference",
-      "status": "temporarily-unmigrated",
-      "reason": "Dependency-gated paired DRI reference migration in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/wind-down-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/wind-down-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/wind-down-codex.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/references/wind-down.md", "format": "markdown"},
-        {"path": "plugins/agent-teams-codex/skills/dri/references/wind-down.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/references/wind-down.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/wind-down.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
       ]
     },
     {
       "id": "reference.dri.memory",
       "kind": "reference",
-      "status": "temporarily-unmigrated",
-      "reason": "Shared memory-routing substance is dependency-gated for migration and a possible Codex counterpart in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "claude-header",
+          "path": "promptsrc/agent-teams/skills/dri/references/memory-claude-header.md"
+        },
+        {
+          "id": "codex-header",
+          "path": "promptsrc/agent-teams/skills/dri/references/memory-codex-header.md"
+        },
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/memory-shared.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/references/memory.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/references/memory.md",
+          "format": "markdown",
+          "parts": [
+            "claude-header",
+            "shared"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/memory.md",
+          "format": "markdown",
+          "parts": [
+            "codex-header",
+            "shared"
+          ]
+        }
       ]
     },
     {
       "id": "reference.dri.pr-text",
       "kind": "reference",
-      "status": "temporarily-unmigrated",
-      "reason": "Shared outside-reader delivery substance is dependency-gated for migration and a possible Codex counterpart in agent-teams-mwvy.5.",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/pr-text-shared.md"
+        }
+      ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/dri/references/pr-text.md", "format": "markdown"}
+        {
+          "path": "plugins/agent-teams/skills/dri/references/pr-text.md",
+          "format": "markdown",
+          "parts": [
+            "shared"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/pr-text.md",
+          "format": "markdown",
+          "parts": [
+            "shared"
+          ]
+        }
       ]
     },
     {
