@@ -6,30 +6,38 @@ description: Install and verify agent-teams for Codex, including the standalone 
 # Set up agent-teams for Codex
 
 1. Resolve this installed plugin's bundled wrapper from Codex's own plugin
-   inventory and pin bare `ateam` to this active install. Do this even when
-   `command -v ateam` succeeds; another harness or an older plugin version may
-   own that symlink:
+   inventory. If `~/.local/bin/ateam` is absent, create a symlink to the
+   resolved wrapper. If any filesystem entry occupies that path, including a
+   dangling symlink, leave it untouched:
 
    ```bash
    PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"
    test -x "$PLUGIN_ATEAM"
-   mkdir -p ~/.local/bin
-   ln -sf "$PLUGIN_ATEAM" ~/.local/bin/ateam
-   ~/.local/bin/ateam ws
+   ATEAM_LINK="$HOME/.local/bin/ateam"
+   if [ -e "$ATEAM_LINK" ] || [ -L "$ATEAM_LINK" ]; then
+     printf 'agent-teams: left occupied path untouched: %s\n' "$ATEAM_LINK"
+   else
+     mkdir -p "$HOME/.local/bin"
+     ln -s "$PLUGIN_ATEAM" "$ATEAM_LINK"
+     printf 'agent-teams: created symlink: %s\n' "$ATEAM_LINK"
+   fi
+   "$PLUGIN_ATEAM" ws
    ```
 
    If inventory lookup or the executable check fails, stop and report the
    plugin installation problem. Do not substitute raw `bd` commands. The
-   trusted SessionStart hook repeats this link repair on every Codex session.
-   If `~/.local/bin` is not on PATH, tell the human to add it and use the
-   absolute `~/.local/bin/ateam` path for the remaining checks in this run.
-2. Run `ateam ws` and report the workspace path. If the workspace is not
-   initialized, use the workspace create/clone procedure from the agent-teams
-   repository before continuing.
+   trusted SessionStart hook follows the same create-only behavior at every
+   Codex session boundary. Report whether setup created the symlink or left an
+   occupied path untouched. If `~/.local/bin` is not on PATH, tell the human to
+   add it. Use the resolved `PLUGIN_ATEAM` wrapper, not the possibly preserved
+   `~/.local/bin/ateam` path, for all remaining setup checks in this run.
+2. Use `"$PLUGIN_ATEAM" ws` and report the workspace path. If the workspace is
+   not initialized, use the workspace create/clone procedure from the
+   agent-teams repository before continuing.
 3. Run the shared required compatibility check:
 
    ```bash
-   ateam runtime check codex
+   "$PLUGIN_ATEAM" runtime check codex
    ```
 
    Stop on failure. Codex initiatives require the official standalone Codex
@@ -38,7 +46,7 @@ description: Install and verify agent-teams for Codex, including the standalone 
 4. Install the bundled custom agent definitions:
 
    ```bash
-   ateam setup codex
+   "$PLUGIN_ATEAM" setup codex
    ```
 
    Do not use `--force` when a definition has local changes unless the human
