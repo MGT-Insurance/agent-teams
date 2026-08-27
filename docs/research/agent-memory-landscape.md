@@ -48,10 +48,10 @@ The research evaluated each option against the same contract:
 | --- | --- |
 | **R1** | Role-scoped memory shared by all instances of that role. |
 | **R2** | Contributions across sessions and machines with defined concurrency and synchronization. |
-| **R3** | Automatic availability at startup, resume, compaction, and subagent creation. |
+| **R3** | Automatic availability at startup, resume, compaction, clear recovery, and subagent creation. |
 | **R4** | Bounded curation with duplicate handling, conflict handling, provenance, and recovery. |
 | **R5** | A token-budgeted hot set and a larger searchable pool. |
-| **R6** | A stable CLI, API, or protocol boundary across agent harnesses. |
+| **R6** | One stable CLI, API, or protocol contract works through Claude Code, Codex, and a generic client or fixture. |
 | **R7** | Evidence that a memory was exposed, applied, and associated with an independent outcome. |
 
 A partial, failed, or unknown required capability blocks adoption. Weighted strengths cannot cancel a required-capability gap.
@@ -128,7 +128,7 @@ LanceDB and Chroma reproduced filtered local search and export behavior. Their P
 
 PostgreSQL/pgvector and Qdrant provide stronger shared-service concurrency. They add backup, upgrade, monitoring, and consistency responsibilities.
 
-A canonical CLI or API improves portability. MCP is useful as an adapter to that boundary. MCP does not guarantee that a harness calls memory tools at startup, resume, compaction, or subagent creation.
+A canonical CLI or API improves portability. MCP is useful as an adapter to that boundary. MCP does not guarantee lifecycle calls or generic-client conformance.
 
 No component owns agent-teams role authority, lifecycle delivery, curation judgment, hot-context budgeting, or usefulness semantics.
 
@@ -178,9 +178,9 @@ The current Dolt records remain authoritative.
 
 ### 2. Add Receipt-Bearing Context Delivery
 
-Make each startup, resume, compaction, and subagent load return a receipt. The receipt must identify the harness, role, memory revisions, token budget, and truncation state.
+Make each startup, resume, compaction, clear recovery, and subagent load return a receipt. The receipt must identify the harness, role, memory revisions, token budget, and truncation state.
 
-Claude Code and Codex can keep separate lifecycle adapters. Both adapters must satisfy one conformance contract.
+Claude Code and Codex can keep separate lifecycle adapters. Both adapters and one generic client fixture must satisfy the same conformance contract.
 
 ### 3. Replace Broad Lexical Recall In Shadow Mode
 
@@ -286,7 +286,7 @@ Telemetry must use IDs by default. Session content, memory text, model inputs, a
 The recommendation retains these unresolved risks:
 
 - Same-memory convergence across machines.
-- Reliable delivery during resume, compaction, and subagent creation.
+- Reliable delivery during resume, compaction, clear recovery, and subagent creation.
 - Complete export, restore, and reverse replay.
 - Retrieval precision, latency, token cost, and abstention on representative data.
 - Trustworthy application capture and independent outcome joins.
@@ -329,7 +329,8 @@ Reopen architecture selection when one option satisfies all of these conditions:
 - R1-R7 pass with grade A or B evidence.
 - Export, clean-target import, and rollback are reproduced.
 - Concurrent writes and role isolation are reproduced.
-- Claude Code and Codex lifecycle delivery are reproduced.
+- Claude Code, Codex, and a generic client fixture pass the same access contract.
+- Claude Code and Codex lifecycle delivery passes startup, resume, compaction, clear recovery, and subagent scenarios.
 - Usefulness events include exposure and independent outcomes.
 - Destructive curation remains reviewable and reversible.
 - Maintenance inputs use a measured baseline and a stated workload.
