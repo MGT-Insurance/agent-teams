@@ -179,6 +179,22 @@ run_hook "directory" 0
 [ "$(lstat_snapshot "$CASE_LINK")" = "$DIRECTORY_BEFORE_STATE" ] || fail "directory: inode/state changed"
 printf 'PASS directory (unchanged, with no nested ateam entry)\n'
 
+# An occupied path is a successful no-op before wrapper validation. Using a
+# FIFO also covers the contract's "other occupied node" class without deriving
+# the expected result from the hook's regular-file and symlink branches.
+case_paths "occupied-fifo-missing-target"
+assert_scratch_path "$(dirname "$CASE_LINK")"
+mkdir -p "$(dirname "$CASE_LINK")"
+mkfifo "$CASE_LINK"
+FIFO_BEFORE_STATE="$(lstat_snapshot "$CASE_LINK")"
+[ -p "$CASE_LINK" ] || fail "occupied FIFO: fixture is not a FIFO"
+[ ! -e "$CASE_PLUGIN/bin/ateam" ] || fail "occupied FIFO: wrapper fixture unexpectedly exists"
+run_hook "occupied FIFO with missing target" 0
+[ -p "$CASE_LINK" ] || fail "occupied FIFO: node type changed"
+[ "$(lstat_snapshot "$CASE_LINK")" = "$FIFO_BEFORE_STATE" ] ||
+  fail "occupied FIFO: inode/state changed"
+printf 'PASS occupied FIFO with missing target (successful unchanged no-op)\n'
+
 assert_wrapper_failure() {
   local label="$1" expected="$2"
   local stderr_file="$CASE_ROOT/hook.stderr"
