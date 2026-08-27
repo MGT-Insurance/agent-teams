@@ -14,6 +14,7 @@
         {"id": "codex-publication", "path": "promptsrc/agent-teams/roles/planner/codex-publication.md", "encoding": "toml-basic-multiline"},
         {"id": "shared-conventions", "path": "promptsrc/agent-teams/roles/planner/shared-conventions.md", "encoding": "toml-basic-multiline"},
         {"id": "claude-footer", "path": "promptsrc/agent-teams/roles/planner/claude-footer.md"},
+        {"id": "codex-outro", "path": "promptsrc/agent-teams/roles/planner/codex-outro.md", "encoding": "toml-basic-multiline"},
         {"id": "codex-footer", "path": "promptsrc/agent-teams/roles/planner/codex-footer.toml", "encoding": "toml-template"}
       ],
       "outputs": [
@@ -25,7 +26,8 @@
         {
           "path": "internal/verbs/codex_agents/agent-teams-planner.toml",
           "format": "toml",
-          "parts": ["codex-header", "shared-core", "shared-plan-document", "codex-publication", "shared-conventions", "codex-footer"]
+          "parts": ["codex-header", "shared-core", "shared-plan-document", "codex-publication", "shared-conventions", "codex-outro", "codex-footer"],
+          "instruction_parts": ["shared-core", "shared-plan-document", "codex-publication", "shared-conventions", "codex-outro"]
         }
       ]
     },
@@ -36,14 +38,16 @@
       "inputs": [
         {"id": "claude-header", "path": "promptsrc/agent-teams/roles/implementer/claude-header.md"},
         {"id": "codex-header", "path": "promptsrc/agent-teams/roles/implementer/codex-header.toml", "encoding": "toml-template"},
+        {"id": "codex-intro", "path": "promptsrc/agent-teams/roles/implementer/codex-intro.md", "encoding": "toml-basic-multiline"},
         {"id": "shared-core", "path": "promptsrc/agent-teams/roles/implementer/shared-core.md", "encoding": "toml-basic-multiline"},
         {"id": "claude-footer", "path": "promptsrc/agent-teams/roles/implementer/claude-footer.md"},
         {"id": "shared-memory", "path": "promptsrc/agent-teams/roles/implementer/shared-memory.md", "encoding": "toml-basic-multiline"},
+        {"id": "codex-outro", "path": "promptsrc/agent-teams/roles/implementer/codex-outro.md", "encoding": "toml-basic-multiline"},
         {"id": "codex-footer", "path": "promptsrc/agent-teams/roles/implementer/codex-footer.toml", "encoding": "toml-template"}
       ],
       "outputs": [
         {"path": "plugins/agent-teams/roles/implementer.md", "format": "markdown", "parts": ["claude-header", "shared-core", "claude-footer", "shared-memory"]},
-        {"path": "internal/verbs/codex_agents/agent-teams-implementer.toml", "format": "toml", "parts": ["codex-header", "shared-core", "shared-memory", "codex-footer"]}
+        {"path": "internal/verbs/codex_agents/agent-teams-implementer.toml", "format": "toml", "parts": ["codex-header", "codex-intro", "shared-core", "shared-memory", "codex-outro", "codex-footer"], "instruction_parts": ["codex-intro", "shared-core", "shared-memory", "codex-outro"]}
       ]
     },
     {
@@ -53,6 +57,7 @@
       "inputs": [
         {"id": "claude-header", "path": "promptsrc/agent-teams/roles/investigator/claude-header.md"},
         {"id": "codex-header", "path": "promptsrc/agent-teams/roles/investigator/codex-header.toml", "encoding": "toml-template"},
+        {"id": "codex-intro", "path": "promptsrc/agent-teams/roles/investigator/codex-intro.md", "encoding": "toml-basic-multiline"},
         {"id": "shared-boundary", "path": "promptsrc/agent-teams/roles/investigator/shared-boundary.md", "encoding": "toml-basic-multiline"},
         {"id": "claude-startup", "path": "promptsrc/agent-teams/roles/investigator/claude-startup.md"},
         {"id": "codex-startup", "path": "promptsrc/agent-teams/roles/investigator/codex-startup.md", "encoding": "toml-basic-multiline"},
@@ -61,11 +66,12 @@
         {"id": "shared-brief", "path": "promptsrc/agent-teams/roles/investigator/shared-brief.md", "encoding": "toml-basic-multiline"},
         {"id": "claude-comms", "path": "promptsrc/agent-teams/roles/investigator/claude-comms.md"},
         {"id": "shared-memory", "path": "promptsrc/agent-teams/roles/investigator/shared-memory.md", "encoding": "toml-basic-multiline"},
+        {"id": "codex-outro", "path": "promptsrc/agent-teams/roles/investigator/codex-outro.md", "encoding": "toml-basic-multiline"},
         {"id": "codex-footer", "path": "promptsrc/agent-teams/roles/investigator/codex-footer.toml", "encoding": "toml-template"}
       ],
       "outputs": [
         {"path": "plugins/agent-teams/roles/investigator.md", "format": "markdown", "parts": ["claude-header", "shared-boundary", "claude-startup", "shared-method", "claude-delivery", "shared-brief", "claude-comms", "shared-memory"]},
-        {"path": "internal/verbs/codex_agents/agent-teams-investigator.toml", "format": "toml", "parts": ["codex-header", "shared-boundary", "codex-startup", "shared-method", "shared-brief", "shared-memory", "codex-footer"]}
+        {"path": "internal/verbs/codex_agents/agent-teams-investigator.toml", "format": "toml", "parts": ["codex-header", "codex-intro", "shared-boundary", "codex-startup", "shared-method", "shared-brief", "shared-memory", "codex-outro", "codex-footer"], "instruction_parts": ["codex-intro", "shared-boundary", "codex-startup", "shared-method", "shared-brief", "shared-memory", "codex-outro"]}
       ]
     },
     {
@@ -75,14 +81,16 @@
       "inputs": [
         {"id": "claude-header", "path": "promptsrc/agent-teams/roles/reviewer/claude-header.md"},
         {"id": "codex-header", "path": "promptsrc/agent-teams/roles/reviewer/codex-header.toml", "encoding": "toml-template"},
+        {"id": "codex-intro", "path": "promptsrc/agent-teams/roles/reviewer/codex-intro.md", "encoding": "toml-basic-multiline"},
         {"id": "shared-core", "path": "promptsrc/agent-teams/roles/reviewer/shared-core.md", "encoding": "toml-basic-multiline"},
         {"id": "claude-footer", "path": "promptsrc/agent-teams/roles/reviewer/claude-footer.md"},
         {"id": "shared-memory", "path": "promptsrc/agent-teams/roles/reviewer/shared-memory.md", "encoding": "toml-basic-multiline"},
+        {"id": "codex-outro", "path": "promptsrc/agent-teams/roles/reviewer/codex-outro.md", "encoding": "toml-basic-multiline"},
         {"id": "codex-footer", "path": "promptsrc/agent-teams/roles/reviewer/codex-footer.toml", "encoding": "toml-template"}
       ],
       "outputs": [
         {"path": "plugins/agent-teams/roles/reviewer.md", "format": "markdown", "parts": ["claude-header", "shared-core", "claude-footer", "shared-memory"]},
-        {"path": "internal/verbs/codex_agents/agent-teams-reviewer.toml", "format": "toml", "parts": ["codex-header", "shared-core", "shared-memory", "codex-footer"]}
+        {"path": "internal/verbs/codex_agents/agent-teams-reviewer.toml", "format": "toml", "parts": ["codex-header", "codex-intro", "shared-core", "shared-memory", "codex-outro", "codex-footer"], "instruction_parts": ["codex-intro", "shared-core", "shared-memory", "codex-outro"]}
       ]
     },
     {
@@ -92,14 +100,16 @@
       "inputs": [
         {"id": "claude-header", "path": "promptsrc/agent-teams/roles/tester/claude-header.md"},
         {"id": "codex-header", "path": "promptsrc/agent-teams/roles/tester/codex-header.toml", "encoding": "toml-template"},
+        {"id": "codex-intro", "path": "promptsrc/agent-teams/roles/tester/codex-intro.md", "encoding": "toml-basic-multiline"},
         {"id": "shared-core", "path": "promptsrc/agent-teams/roles/tester/shared-core.md", "encoding": "toml-basic-multiline"},
         {"id": "claude-footer", "path": "promptsrc/agent-teams/roles/tester/claude-footer.md"},
         {"id": "shared-memory", "path": "promptsrc/agent-teams/roles/tester/shared-memory.md", "encoding": "toml-basic-multiline"},
+        {"id": "codex-outro", "path": "promptsrc/agent-teams/roles/tester/codex-outro.md", "encoding": "toml-basic-multiline"},
         {"id": "codex-footer", "path": "promptsrc/agent-teams/roles/tester/codex-footer.toml", "encoding": "toml-template"}
       ],
       "outputs": [
         {"path": "plugins/agent-teams/roles/tester.md", "format": "markdown", "parts": ["claude-header", "shared-core", "claude-footer", "shared-memory"]},
-        {"path": "internal/verbs/codex_agents/agent-teams-tester.toml", "format": "toml", "parts": ["codex-header", "shared-core", "shared-memory", "codex-footer"]}
+        {"path": "internal/verbs/codex_agents/agent-teams-tester.toml", "format": "toml", "parts": ["codex-header", "codex-intro", "shared-core", "shared-memory", "codex-outro", "codex-footer"], "instruction_parts": ["codex-intro", "shared-core", "shared-memory", "codex-outro"]}
       ]
     }
   ]

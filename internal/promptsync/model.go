@@ -71,10 +71,13 @@ type Input struct {
 }
 
 type Output struct {
-	Path        string       `json:"path"`
-	Format      Format       `json:"format"`
-	Parts       []string     `json:"parts,omitempty"`
-	SkillBudget *SkillBudget `json:"skill_budget,omitempty"`
+	Path   string   `json:"path"`
+	Format Format   `json:"format"`
+	Parts  []string `json:"parts,omitempty"`
+	// InstructionParts identifies the ordered canonical inputs that must equal
+	// the decoded developer_instructions value in a generated Codex role.
+	InstructionParts []string     `json:"instruction_parts,omitempty"`
+	SkillBudget      *SkillBudget `json:"skill_budget,omitempty"`
 }
 
 // SkillBudget records the human-selected safety policy for one generated
@@ -233,8 +236,8 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 						problems = append(problems, fmt.Sprintf("%s (%s): output %s references missing input %q", entry.ID, where, output.Path, part))
 					}
 				}
-			} else if len(output.Parts) != 0 || output.SkillBudget != nil {
-				problems = append(problems, fmt.Sprintf("%s (%s): classified-only output %s cannot have parts or a skill budget", entry.ID, where, output.Path))
+			} else if len(output.Parts) != 0 || len(output.InstructionParts) != 0 || output.SkillBudget != nil {
+				problems = append(problems, fmt.Sprintf("%s (%s): classified-only output %s cannot have parts, instruction_parts, or a skill budget", entry.ID, where, output.Path))
 			}
 			switch output.Format {
 			case FormatMarkdown, FormatTOML:
@@ -260,6 +263,39 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 						problems = append(problems, fmt.Sprintf("%s (%s): TOML output %s input %q needs explicit toml-template or multiline encoding", entry.ID, where, output.Path, part))
 					}
 				}
+			}
+			isCodexRole := entry.Kind == KindRole && output.Format == FormatTOML
+			if entry.Status == StatusPaired && isCodexRole {
+				if len(output.InstructionParts) == 0 {
+					problems = append(problems, fmt.Sprintf("%s (%s): Codex role output %s needs instruction_parts", entry.ID, where, output.Path))
+				}
+				partPositions := make(map[string]int, len(output.Parts))
+				for position, part := range output.Parts {
+					partPositions[part] = position
+				}
+				previousPosition := -1
+				seenInstructionParts := map[string]bool{}
+				for _, part := range output.InstructionParts {
+					position, exists := partPositions[part]
+					if !exists {
+						problems = append(problems, fmt.Sprintf("%s (%s): Codex role output %s instruction_parts references non-output input %q", entry.ID, where, output.Path, part))
+						continue
+					}
+					if seenInstructionParts[part] {
+						problems = append(problems, fmt.Sprintf("%s (%s): Codex role output %s has duplicate instruction part %q", entry.ID, where, output.Path, part))
+					}
+					seenInstructionParts[part] = true
+					if position <= previousPosition {
+						problems = append(problems, fmt.Sprintf("%s (%s): Codex role output %s instruction_parts must follow output parts order", entry.ID, where, output.Path))
+					}
+					previousPosition = position
+					encoding := inputEncoding(entry.Inputs, part)
+					if encoding != EncodingTOMLBasicMultiline && encoding != EncodingTOMLLiteralMultiline {
+						problems = append(problems, fmt.Sprintf("%s (%s): Codex role output %s instruction part %q must use a multiline encoding, not %q", entry.ID, where, output.Path, part, encoding))
+					}
+				}
+			} else if len(output.InstructionParts) != 0 {
+				problems = append(problems, fmt.Sprintf("%s (%s): output %s can declare instruction_parts only for a paired Codex role", entry.ID, where, output.Path))
 			}
 			isSkillFile := entry.Kind == KindSkill && filepath.Base(output.Path) == "SKILL.md"
 			if entry.Status == StatusPaired && isSkillFile && output.SkillBudget == nil {

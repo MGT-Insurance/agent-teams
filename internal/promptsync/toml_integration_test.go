@@ -17,7 +17,6 @@ func TestCommittedCodexRolesRoundTripCanonicalInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const opening = "developer_instructions = \"\"\"\n"
 	installedRoles := 0
 	for _, entry := range entries {
 		if entry.Kind != KindRole || entry.Status != StatusPaired {
@@ -34,7 +33,7 @@ func TestCommittedCodexRolesRoundTripCanonicalInstructions(t *testing.T) {
 			installedRoles++
 
 			var canonical bytes.Buffer
-			for _, part := range output.Parts {
+			for _, part := range output.InstructionParts {
 				input := inputs[part]
 				content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(input.Path)))
 				if err != nil {
@@ -42,13 +41,7 @@ func TestCommittedCodexRolesRoundTripCanonicalInstructions(t *testing.T) {
 				}
 				canonical.Write(content)
 			}
-			raw := canonical.Bytes()
-			start := bytes.Index(raw, []byte(opening))
-			end := bytes.LastIndex(raw, []byte("\"\"\"\n"))
-			if start < 0 || end < start+len(opening) {
-				t.Fatalf("%s: canonical templates do not delimit developer_instructions", entry.ID)
-			}
-			want := raw[start+len(opening) : end]
+			want := canonical.Bytes()
 
 			generated, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(output.Path)))
 			if err != nil {

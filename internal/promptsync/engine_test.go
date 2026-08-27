@@ -66,7 +66,7 @@ func TestOrderedInputsPreserveExactBytesAndFinalNewline(t *testing.T) {
 	if got := string(readFile(t, filepath.Join(root, "plugins/agent-teams/roles/planner.md"))); got != wantClaude {
 		t.Fatalf("ordered Claude bytes:\n got %q\nwant %q", got, wantClaude)
 	}
-	wantCodex := "name = \"fixture-planner\"\ndeveloper_instructions = \"\"\"\nSecond fragment.\nFinal fragment.\n\"\"\"\n"
+	wantCodex := "name = \"fixture-planner\"\ndeveloper_instructions = \"\"\"\nRuntime-only intro.\nSecond fragment.\nFinal fragment.\n\"\"\"\n"
 	if got := string(readFile(t, filepath.Join(root, "internal/verbs/codex_agents/agent-teams-planner.toml"))); got != wantCodex {
 		t.Fatalf("ordered Codex bytes:\n got %q\nwant %q", got, wantCodex)
 	}
@@ -113,6 +113,33 @@ func TestMalformedManifestAndInputs(t *testing.T) {
 				writeFile(t, path, []byte(data))
 			},
 			want: "needs explicit toml-template or multiline encoding",
+		},
+		{
+			name: "Codex role lacks instruction parts",
+			mutate: func(t *testing.T, root string) {
+				path := rolesManifest(root)
+				data := strings.Replace(string(readFile(t, path)), ",\n          \"instruction_parts\": [\"codex-intro\", \"shared\"]", "", 1)
+				writeFile(t, path, []byte(data))
+			},
+			want: "needs instruction_parts",
+		},
+		{
+			name: "Codex instruction parts are out of output order",
+			mutate: func(t *testing.T, root string) {
+				path := rolesManifest(root)
+				data := strings.Replace(string(readFile(t, path)), `"instruction_parts": ["codex-intro", "shared"]`, `"instruction_parts": ["shared", "codex-intro"]`, 1)
+				writeFile(t, path, []byte(data))
+			},
+			want: "instruction_parts must follow output parts order",
+		},
+		{
+			name: "Codex instruction part is a structural template",
+			mutate: func(t *testing.T, root string) {
+				path := rolesManifest(root)
+				data := strings.Replace(string(readFile(t, path)), `"instruction_parts": ["codex-intro", "shared"]`, `"instruction_parts": ["codex-header", "codex-intro", "shared"]`, 1)
+				writeFile(t, path, []byte(data))
+			},
+			want: `instruction part "codex-header" must use a multiline encoding`,
 		},
 		{
 			name: "generated output cannot be canonical input",
@@ -293,11 +320,69 @@ func TestRenderedTOMLPreservesCanonicalEscapeAndDelimiterText(t *testing.T) {
 	if err := toml.Unmarshal(generated, &decoded); err != nil {
 		t.Fatalf("parse generated TOML: %v", err)
 	}
-	if got := []byte(decoded.DeveloperInstructions); !bytes.Equal(got, want) {
-		t.Fatalf("decoded generated prompt:\n got %q\nwant %q", got, want)
+	wantInstructions := append([]byte("Runtime-only intro.\n"), want...)
+	if got := []byte(decoded.DeveloperInstructions); !bytes.Equal(got, wantInstructions) {
+		t.Fatalf("decoded generated prompt:\n got %q\nwant %q", got, wantInstructions)
 	}
 	if _, err := Check(Config{Root: root}); err != nil {
 		t.Fatalf("check generated TOML: %v", err)
+	}
+}
+
+func TestRuntimeInstructionEscapeSpellingIsPreservedByCheckAndWrite(t *testing.T) {
+	root := fixtureCopy(t)
+	introPath := filepath.Join(root, "promptsrc/agent-teams/roles/codex-intro.md")
+	intro := []byte("runtime literal \\n remains text\n")
+	writeFile(t, introPath, intro)
+
+	if _, err := Write(Config{Root: root}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Check(Config{Root: root}); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+
+	generated := readFile(t, filepath.Join(root, "internal/verbs/codex_agents/agent-teams-planner.toml"))
+	var decoded struct {
+		DeveloperInstructions string `toml:"developer_instructions"`
+	}
+	if err := toml.Unmarshal(generated, &decoded); err != nil {
+		t.Fatalf("parse generated TOML: %v", err)
+	}
+	want := append(append([]byte(nil), intro...), readFile(t, filepath.Join(root, "promptsrc/agent-teams/roles/shared.md"))...)
+	if got := []byte(decoded.DeveloperInstructions); !bytes.Equal(got, want) {
+		t.Fatalf("decoded runtime intro:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestInstructionProseInTOMLTemplateBlocksCheckAndWrite(t *testing.T) {
+	for _, operation := range []struct {
+		name string
+		run  func(Config) (Report, error)
+	}{
+		{name: "check", run: Check},
+		{name: "write", run: Write},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			root := fixtureCopy(t)
+			path := filepath.Join(root, "promptsrc/agent-teams/roles/codex-header.toml")
+			content := strings.Replace(
+				string(readFile(t, path)),
+				"developer_instructions = \"\"\"\n",
+				"developer_instructions = \"\"\"\nruntime \\n header\n",
+				1,
+			)
+			writeFile(t, path, []byte(content))
+			before := snapshot(t, root)
+
+			_, err := operation.run(Config{Root: root})
+			if err == nil || !strings.Contains(err.Error(), "role.planner") || !strings.Contains(err.Error(), "does not preserve ordered instruction_parts") || !strings.Contains(err.Error(), "decoded developer_instructions differs") {
+				t.Fatalf("error = %v", err)
+			}
+			if after := snapshot(t, root); !equalSnapshots(after, before) {
+				t.Fatal("semantic mismatch changed the fixture tree")
+			}
+		})
 	}
 }
 

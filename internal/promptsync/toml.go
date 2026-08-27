@@ -50,3 +50,23 @@ func validateTOML(content []byte) error {
 	var document map[string]any
 	return toml.Unmarshal(content, &document)
 }
+
+func validateTOMLInstructions(content, canonical []byte) error {
+	var document map[string]any
+	if err := toml.Unmarshal(content, &document); err != nil {
+		return err
+	}
+	value, exists := document["developer_instructions"]
+	if !exists {
+		return fmt.Errorf("developer_instructions is missing")
+	}
+	decoded, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("developer_instructions has type %T, want string", value)
+	}
+	if !bytes.Equal([]byte(decoded), canonical) {
+		offset := firstDifferentByte(canonical, []byte(decoded))
+		return fmt.Errorf("decoded developer_instructions differs from canonical instruction bytes at byte %d (canonical %d bytes, decoded %d)", offset, len(canonical), len(decoded))
+	}
+	return nil
+}

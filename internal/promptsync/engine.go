@@ -159,12 +159,20 @@ func renderAll(config Config, entries []Entry) ([]renderedOutput, Report, error)
 		}
 		for _, output := range entry.Outputs {
 			var buffer bytes.Buffer
+			var canonicalInstructions bytes.Buffer
 			failed := false
+			instructionParts := make(map[string]bool, len(output.InstructionParts))
+			for _, part := range output.InstructionParts {
+				instructionParts[part] = true
+			}
 			for _, part := range output.Parts {
 				content, ok := contents[part]
 				if !ok {
 					failed = true
 					continue
+				}
+				if instructionParts[part] {
+					canonicalInstructions.Write(content)
 				}
 				encoding := encodings[part]
 				if output.Format == FormatTOML && encoding == EncodingTOMLLiteralMultiline && bytes.Contains(content, []byte("'''")) {
@@ -192,6 +200,12 @@ func renderAll(config Config, entries []Entry) ([]renderedOutput, Report, error)
 				if err := validateTOML(item.bytes); err != nil {
 					problems = append(problems, fmt.Sprintf("%s: rendered TOML %s is invalid: %v", entry.ID, output.Path, err))
 					continue
+				}
+				if len(output.InstructionParts) != 0 {
+					if err := validateTOMLInstructions(item.bytes, canonicalInstructions.Bytes()); err != nil {
+						problems = append(problems, fmt.Sprintf("%s: rendered TOML %s does not preserve ordered instruction_parts: %v", entry.ID, output.Path, err))
+						continue
+					}
 				}
 			}
 			rendered = append(rendered, item)
