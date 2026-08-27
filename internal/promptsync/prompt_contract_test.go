@@ -49,6 +49,23 @@ func TestCodexPromptsIncludeInvestigatorContracts(t *testing.T) {
 	})
 }
 
+func TestCodexSetupPreservesOccupiedAteamPath(t *testing.T) {
+	root := filepath.Join("..", "..")
+	paths := []string{
+		"promptsrc/agent-teams/skills/setup-agent-teams/codex-runtime.md",
+		"plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md",
+	}
+
+	assertPromptClauses(t, root, paths,
+		"If any filesystem entry occupies that path, including a dangling symlink, leave it untouched",
+		`if [ -e "$ATEAM_LINK" ] || [ -L "$ATEAM_LINK" ]; then`,
+		`ln -s "$PLUGIN_ATEAM" "$ATEAM_LINK"`,
+		`"$PLUGIN_ATEAM" ws`,
+		"Use the resolved `PLUGIN_ATEAM` wrapper, not the possibly preserved `~/.local/bin/ateam` path",
+	)
+	assertPromptOmits(t, root, paths, "ln -sf", "ln -sfn")
+}
+
 func assertPromptClauses(t *testing.T, root string, paths []string, clauses ...string) {
 	t.Helper()
 	for _, path := range paths {
@@ -61,6 +78,21 @@ func assertPromptClauses(t *testing.T, root string, paths []string, clauses ...s
 			normalizedClause := strings.Join(strings.Fields(clause), " ")
 			if !strings.Contains(normalizedBody, normalizedClause) {
 				t.Errorf("%s does not contain %q", path, clause)
+			}
+		}
+	}
+}
+
+func assertPromptOmits(t *testing.T, root string, paths []string, clauses ...string) {
+	t.Helper()
+	for _, path := range paths {
+		body, err := os.ReadFile(filepath.Join(root, path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, clause := range clauses {
+			if strings.Contains(string(body), clause) {
+				t.Errorf("%s unexpectedly contains %q", path, clause)
 			}
 		}
 	}
