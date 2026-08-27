@@ -28,7 +28,8 @@ These review instructions:
 Replace the review instructions above with:
 
 - Here are the findings from our previous review of this PR: <the collected
-  prior findings, each with file:line and description>
+  prior findings, each with its original severity/label
+  (`critical`/`high`/`medium`/`question`), file:line, and description>
 - Verify each prior finding against the current diff: `addressed` means the
   code now handles it, or the author's stated reasoning is verified correct
   against the code — the author's word alone is a claim, not evidence, and
@@ -37,6 +38,9 @@ Replace the review instructions above with:
   future PR wires up a caller), not a miss in this one. Otherwise `not
   addressed`. Do NOT raise new findings — this is a scoped re-review of
   previously raised items only.
-- Report back via SendMessage one line per prior finding: `addressed` /
-  `out of scope` / `not addressed`, with a one-sentence reason each — for
-  `out of scope`, the reason must say which future PR or work owns it.
+- Report back via SendMessage one line per prior finding: its original
+  severity/label, then `addressed` / `out of scope` / `not addressed`, with a
+  one-sentence reason each — for `out of scope`, the reason must say which
+  future PR or work owns it. Carry the original severity/label through
+  unchanged; the orchestrator's approve gate keys off it, so do not
+  re-classify a finding's severity on re-review.
