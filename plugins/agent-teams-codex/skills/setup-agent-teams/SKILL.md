@@ -54,13 +54,24 @@ description: Install and verify agent-teams for Codex, including the standalone 
    Codex session boundary. Report whether setup created the symlink or left an
    occupied path untouched. If `~/.local/bin` is not on PATH, tell the human to
    add it. Use the resolved `PLUGIN_ATEAM` wrapper, not the possibly preserved
-   `~/.local/bin/ateam` path, for all remaining setup checks in this run.
-2. Use `"$PLUGIN_ATEAM" ws` and report the workspace path. If the workspace is
-   not initialized, use the workspace create/clone procedure from the
-   agent-teams repository before continuing.
+   `~/.local/bin/ateam` path, for every setup check. Each fenced command below
+   repeats the resolution and validation because Codex runs fenced commands in
+   fresh shells.
+2. The first command block runs the validated wrapper's `ws` command. Report
+   the workspace path. If the workspace is not initialized, use the workspace
+   create/clone procedure from the agent-teams repository before continuing.
 3. Run the shared required compatibility check:
 
    ```bash
+   if ! PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"; then
+     printf >&2 'agent-teams: could not resolve the installed agent-teams-codex wrapper; reinstall or update the plugin, then run setup again.\n'
+     exit 1
+   fi
+   if [ ! -x "$PLUGIN_ATEAM" ]; then
+     printf >&2 'agent-teams: installed wrapper is missing or not executable: %s\n' "$PLUGIN_ATEAM"
+     printf >&2 'Reinstall or update the agent-teams-codex plugin, then run setup again.\n'
+     exit 1
+   fi
    "$PLUGIN_ATEAM" runtime check codex
    ```
 
@@ -70,6 +81,15 @@ description: Install and verify agent-teams for Codex, including the standalone 
 4. Install the bundled custom agent definitions:
 
    ```bash
+   if ! PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"; then
+     printf >&2 'agent-teams: could not resolve the installed agent-teams-codex wrapper; reinstall or update the plugin, then run setup again.\n'
+     exit 1
+   fi
+   if [ ! -x "$PLUGIN_ATEAM" ]; then
+     printf >&2 'agent-teams: installed wrapper is missing or not executable: %s\n' "$PLUGIN_ATEAM"
+     printf >&2 'Reinstall or update the agent-teams-codex plugin, then run setup again.\n'
+     exit 1
+   fi
    "$PLUGIN_ATEAM" setup codex
    ```
 
