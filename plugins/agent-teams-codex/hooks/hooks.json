@@ -9,7 +9,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/ensure-ateam-link.sh\"",
             "timeout": 5,
-            "statusMessage": "Selecting the active agent-teams CLI"
+            "statusMessage": "Ensuring the agent-teams CLI is available"
           },
           {
             "type": "command",

@@ -6,30 +6,73 @@ description: Install and verify agent-teams for Codex, including the standalone 
 # Set up agent-teams for Codex
 
 1. Resolve this installed plugin's bundled wrapper from Codex's own plugin
-   inventory and pin bare `ateam` to this active install. Do this even when
-   `command -v ateam` succeeds; another harness or an older plugin version may
-   own that symlink:
+   inventory. If `~/.local/bin/ateam` is absent, create a symlink to the
+   resolved wrapper. If any filesystem entry occupies that path, including a
+   dangling symlink, leave it untouched:
 
    ```bash
-   PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"
-   test -x "$PLUGIN_ATEAM"
-   mkdir -p ~/.local/bin
-   ln -sf "$PLUGIN_ATEAM" ~/.local/bin/ateam
-   ~/.local/bin/ateam ws
+   if ! PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"; then
+     printf >&2 'agent-teams: could not resolve the installed agent-teams-codex wrapper; reinstall or update the plugin, then run setup again.\n'
+     exit 1
+   fi
+   if [ ! -x "$PLUGIN_ATEAM" ]; then
+     printf >&2 'agent-teams: installed wrapper is missing or not executable: %s\n' "$PLUGIN_ATEAM"
+     printf >&2 'Reinstall or update the agent-teams-codex plugin, then run setup again.\n'
+     exit 1
+   fi
+   ATEAM_LINK="$HOME/.local/bin/ateam"
+   if [ -e "$ATEAM_LINK" ] || [ -L "$ATEAM_LINK" ]; then
+     printf 'agent-teams: left occupied path untouched: %s\n' "$ATEAM_LINK"
+   else
+     if ! mkdir -p "$HOME/.local/bin"; then
+       printf >&2 'agent-teams: could not create parent directory for %s; setup stopped.\n' "$ATEAM_LINK"
+       exit 1
+     fi
+     if ln -s "$PLUGIN_ATEAM" "$ATEAM_LINK"; then
+       if [ -L "$ATEAM_LINK" ] && [ "$(readlink "$ATEAM_LINK")" = "$PLUGIN_ATEAM" ]; then
+         printf 'agent-teams: created symlink: %s\n' "$ATEAM_LINK"
+       else
+         printf >&2 'agent-teams: ln succeeded but did not create the requested symlink at %s; the path may have changed during setup. Setup stopped without cleanup.\n' "$ATEAM_LINK"
+         exit 1
+       fi
+     else
+       LN_STATUS=$?
+       if [ -e "$ATEAM_LINK" ] || [ -L "$ATEAM_LINK" ]; then
+         printf 'agent-teams: left path occupied during setup untouched: %s\n' "$ATEAM_LINK"
+       else
+         printf >&2 'agent-teams: could not create symlink at %s; setup stopped.\n' "$ATEAM_LINK"
+         exit "$LN_STATUS"
+       fi
+     fi
+   fi
+   "$PLUGIN_ATEAM" ws
    ```
 
    If inventory lookup or the executable check fails, stop and report the
    plugin installation problem. Do not substitute raw `bd` commands. The
-   trusted SessionStart hook repeats this link repair on every Codex session.
-   If `~/.local/bin` is not on PATH, tell the human to add it and use the
-   absolute `~/.local/bin/ateam` path for the remaining checks in this run.
-2. Run `ateam ws` and report the workspace path. If the workspace is not
-   initialized, use the workspace create/clone procedure from the agent-teams
-   repository before continuing.
+   trusted SessionStart hook follows the same create-only behavior at every
+   Codex session boundary. Report whether setup created the symlink or left an
+   occupied path untouched. If `~/.local/bin` is not on PATH, tell the human to
+   add it. Use the resolved `PLUGIN_ATEAM` wrapper, not the possibly preserved
+   `~/.local/bin/ateam` path, for every setup check. Each fenced command below
+   repeats the resolution and validation because Codex runs fenced commands in
+   fresh shells.
+2. The first command block runs the validated wrapper's `ws` command. Report
+   the workspace path. If the workspace is not initialized, use the workspace
+   create/clone procedure from the agent-teams repository before continuing.
 3. Run the shared required compatibility check:
 
    ```bash
-   ateam runtime check codex
+   if ! PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"; then
+     printf >&2 'agent-teams: could not resolve the installed agent-teams-codex wrapper; reinstall or update the plugin, then run setup again.\n'
+     exit 1
+   fi
+   if [ ! -x "$PLUGIN_ATEAM" ]; then
+     printf >&2 'agent-teams: installed wrapper is missing or not executable: %s\n' "$PLUGIN_ATEAM"
+     printf >&2 'Reinstall or update the agent-teams-codex plugin, then run setup again.\n'
+     exit 1
+   fi
+   "$PLUGIN_ATEAM" runtime check codex
    ```
 
    Stop on failure. Codex initiatives require the official standalone Codex
@@ -38,7 +81,16 @@ description: Install and verify agent-teams for Codex, including the standalone 
 4. Install the bundled custom agent definitions:
 
    ```bash
-   ateam setup codex
+   if ! PLUGIN_ATEAM="$(python3 -c 'import json, os, subprocess; d=json.loads(subprocess.check_output(["codex","plugin","list","--json"])); p=next(x for x in d["installed"] if x["name"]=="agent-teams-codex"); print(os.path.expanduser("~/.codex/plugins/cache/{marketplaceName}/{name}/{version}/bin/ateam".format(**p)))')"; then
+     printf >&2 'agent-teams: could not resolve the installed agent-teams-codex wrapper; reinstall or update the plugin, then run setup again.\n'
+     exit 1
+   fi
+   if [ ! -x "$PLUGIN_ATEAM" ]; then
+     printf >&2 'agent-teams: installed wrapper is missing or not executable: %s\n' "$PLUGIN_ATEAM"
+     printf >&2 'Reinstall or update the agent-teams-codex plugin, then run setup again.\n'
+     exit 1
+   fi
+   "$PLUGIN_ATEAM" setup codex
    ```
 
    Do not use `--force` when a definition has local changes unless the human
