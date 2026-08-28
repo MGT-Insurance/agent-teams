@@ -33,7 +33,7 @@ bd -C "$AGENT_TEAMS_HOME" create --title="Hook test initiative" --type=task --pr
 # Case 1: cwd matches a registered open initiative -> emits context
 out=$(cd "$T/wt" && "$SCRIPT")
 echo "$out" | grep -q "Hook test initiative" || { echo "FAIL case1: no context for matching cwd"; exit 1; }
-echo "$out" | grep -q "/dri skill governs" || { echo "FAIL case1: missing governance reminder"; exit 1; }
+echo "$out" | grep -q "re-invoke it now" || { echo "FAIL case1: missing governance reminder"; exit 1; }
 
 # Case 1b: cwd is a SUBDIRECTORY of the worktree -> still recovers.
 # Regression guard for agent-teams-ully.9: the old jq matched the worktree line
