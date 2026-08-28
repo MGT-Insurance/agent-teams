@@ -181,7 +181,7 @@ No substantive findings.
 
 Inline comments only work on diff lines. Two kinds belong in the body instead: parity/overlap findings referencing a consumer line **outside the diff**, and `question`-labeled findings (post verbatim, no severity prefix — a prefix would read as a defect). Everything else posts inline.
 
-Build the `## Summary` list first — one line per finding, same order as the comments below: `` `file:line` — <severity|question> — <one clause> ``, no flowery language, no restating the finding's full detail. Then construct the inline comments and collect everything into a single review POST:
+Build the `## Summary` list first — one line for **every** finding, including the `question` and out-of-diff parity/overlap findings that go in the body rather than inline: `` `file:line` — <severity|question> — <one clause> ``, no flowery language, no restating the finding's full detail. Then construct the inline comments (the diff-line subset only) and collect everything into a single review POST:
 
 ```bash
 REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
@@ -199,7 +199,7 @@ REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --jq .html_url)
 ```
 
-Repeat the `-F 'comments[]…'` flags and Summary `-` lines per finding — same set, same order. Post as `COMMENT`, never `APPROVE`/`REQUEST_CHANGES` — any critical/high/medium finding keeps it at `COMMENT` regardless of authorship.
+The Summary carries a `-` line for **every** finding; the `-F 'comments[]…'` flags cover only the inline (diff-line) subset — repeat each for its own members. Post as `COMMENT`, never `APPROVE`/`REQUEST_CHANGES` — any critical/high/medium finding keeps it at `COMMENT` regardless of authorship.
 
 Every review POST above (every variant, including retry and re-review) must
 append `--jq .html_url` into `REVIEW_URL`; step 10 cites it, falling back to
