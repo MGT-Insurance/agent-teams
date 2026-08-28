@@ -808,6 +808,29 @@ const memoryRoutingRule = `MEMORY ROUTING (agent-teams). Ignore the harness's bu
 - Project-specific knowledge every agent in THIS repo should share -> bd remember (project beads).
 Default to ateam learn. Use bd remember only for repo-shared project facts. Never MEMORY.md.`
 
+// driGuardrails is the terse, always-on DRI hard-guardrail digest appended
+// alongside memoryRoutingRule on every bg DRI launch/relaunch, so the hard
+// rules ride the same compaction-immune --append-system-prompt channel as the
+// memory-routing rule (--append-system-prompt is resent every turn, never
+// summarized away by /compact — verified live, agent-teams-kxlb.1). This is a
+// minimal turn-1 FLOOR, not a substitute for the full /dri skill: its first
+// bullet tells a compacted DRI to re-invoke the skill via the Skill tool to
+// restore full fidelity. DRI-owned instruction content, carried verbatim from
+// the contract bead (agent-teams-kxlb.5, amending kxlb.2); do not reword
+// without checking with the DRI/planner first.
+const driGuardrails = "DRI HARD GUARDRAILS (floor — re-invoke the /dri skill to restore full guidance):\n" +
+	"- If the /dri skill is not in your context (after compaction), re-invoke it via the Skill tool BEFORE any orchestration action.\n" +
+	"- You ORCHESTRATE; never implement and never run live verification yourself — delegate to role subagents.\n" +
+	"- This checkout IS your isolation: never EnterWorktree, never dirty it. Provision delegate worktrees via `ateam worktree-setup`, never a hand-rolled script.\n" +
+	"- Never merge without explicit human confirmation; leave delivered work OPEN and review-gated.\n" +
+	"- Work beads live in the project repo under the epic; the global workspace (ateam) is initiative tracking only."
+
+// driSystemPromptAppend is the full value passed to --append-system-prompt on
+// every bg DRI launch: memoryRoutingRule followed by driGuardrails,
+// concatenated into ONE string. Repeated --append-system-prompt flags are not
+// assumed to work, so both instruction sets must ride the same flag value.
+const driSystemPromptAppend = memoryRoutingRule + "\n\n" + driGuardrails
+
 // driDefaultModel is the model background sessions launch on when no explicit
 // override is supplied. Pinned to the concrete id claude-opus-4-8 rather than
 // the bare "opus" alias so the default stays put instead of silently following
@@ -1018,7 +1041,20 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON,
 	if autoCompactWindow != "" {
 		args = append(args, "--autocompact", autoCompactWindow)
 	}
-	args = append(args, "--append-system-prompt", memoryRoutingRule)
+	// driGuardrails are DRI-orchestration rules (delegate, don't implement;
+	// never merge unconfirmed; etc.) that make no sense for a non-DRI bg
+	// session — e.g. a review-pr session launched via --launch-prompt with
+	// role hardcoded "dri" (route.go -> launchRaw) but a
+	// "/agent-teams:review-pr ..." prompt that neither orchestrates nor runs
+	// rings. Gate strictly on the prompt prefix, since role alone can't tell
+	// true DRI launches apart from custom --launch-prompt ones: only a real
+	// /dri launch (launchBGSession always prepends "/dri ") gets the
+	// guardrail digest; every other bg session still gets memoryRoutingRule.
+	appendVal := memoryRoutingRule
+	if strings.HasPrefix(prompt, "/dri ") {
+		appendVal = driSystemPromptAppend
+	}
+	args = append(args, "--append-system-prompt", appendVal)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}

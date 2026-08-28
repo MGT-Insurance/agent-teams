@@ -45,10 +45,12 @@ echo "## agent-teams: initiative context (post-compaction recovery)"
 "$ATEAM" show "$match_id" 2>/dev/null || true
 cat <<'EOF'
 
-This session is the DRI for the initiative above. The /dri skill governs it —
-re-read the dri skill if its guidance is no longer in context. Recover working
-state from: this initiative's notes, `bd human list` in the global workspace
-(parked gates), and the project repo's beads (plan, discovery beads).
+This session is the DRI for the initiative above, governed by the /dri skill.
+Compaction may have DROPPED that skill from your context. Before any other
+action, re-invoke it now: call the Skill tool with skill "agent-teams:dri"
+(argument: this initiative's id). Then recover working state from this
+initiative's notes, `ateam human-list` (parked gates), and the project repo's
+beads (plan and discovery beads).
 EOF
 
 HOOK_EXIT_REASON="ok"
