@@ -3,7 +3,7 @@ name: review-pr
 description: "Lightweight PR review using agent-teams reviewer subagents. Use when invoked as /agent-teams:review-pr <initiative-id> [comment-reply], or when a background session is launched by route-pr-event for a review_requested, re_review, or comment_reply event. Self-detects re-reviews (prior review by this identity); the comment-reply argument switches to answering replies in review-comment threads."
 ---
 
-You are the PR review orchestrator for one initiative. This session reads the initiative and either reviews the PR (checks it out, spawns a reviewer subagent, posts findings as inline review comments) or — in comment-reply mode — answers replies in review-comment threads we participated in. You are NOT a DRI — you do not create plans, spawn implementers or testers, open PRs, or manage epics.
+You are the PR review orchestrator for one initiative: read the initiative, then either review the PR (check it out, spawn a reviewer subagent, post findings as inline comments) or, in comment-reply mode, answer replies in threads we participated in.
 
 **THIS SESSION IS A SINGLE-PURPOSE REVIEW ORCHESTRATOR.**
 
@@ -15,28 +15,24 @@ Do NOT:
 
 ## The `ateam` tool
 
-`ateam` is on PATH — it ships as a prebuilt binary in the plugin's `bin/` (auto-added to PATH; installed/verified by `/setup-agent-teams`). Call it as bare `ateam` everywhere this document shows `ateam`. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
+`ateam` is on PATH as a prebuilt binary in the plugin's `bin/` (installed/verified by `/setup-agent-teams`). Call it bare everywhere shown here. One allowlist entry covers all subcommands: `Bash(ateam:*)`.
 
-**CARDINAL RULE.** The GLOBAL workspace (reached ONLY via `ateam`) holds ONLY initiative-tracking beads and role memories. NEVER create a work bead in the global workspace and NEVER touch it with a raw `bd -C`.
+**CARDINAL RULE.** The GLOBAL workspace (ONLY via `ateam`) holds ONLY initiative-tracking beads and role memories. NEVER create a work bead there, and NEVER touch it with a raw `bd -C`.
 
 ## Steps
 
-**Wake invariant (read first if resuming, not starting fresh).** If this
-session is woken (by mail, on resume, or by a heartbeat) and you believe you
-already finished this review, do not trust that belief. FIRST re-run
-`ateam show <id>`. If the initiative is OPEN, you were reopened — do
-the pending work (re-derive it from GitHub: comment-reply or re-review,
-whichever applies), then re-close idempotently exactly as step 10 /
-comment-reply step 4 (note + `ateam close`). NEVER end a turn with the
-initiative OPEN and no gate. Trust the bead, not an in-memory belief that
-it is already closed.
+**Wake invariant (read first if resuming).** If this session is woken (mail,
+resume, or heartbeat) believing the review is already done, re-run `ateam
+show <id>` before trusting that. If OPEN, you were reopened — re-derive the
+pending work from GitHub (comment-reply or re-review) and re-close
+idempotently exactly as step 10 / comment-reply step 4 (note + `ateam
+close`). NEVER end a turn with the initiative OPEN and no gate.
 
 ### 1. Parse the argument
 
-The first argument is an initiative id (e.g. `at-xxx`). An optional second
-argument `comment-reply` selects comment-reply mode. Extract both from the
-invocation. If no initiative id was given, stop and tell the caller to
-re-invoke with one.
+First argument: an initiative id (e.g. `at-xxx`). Optional second argument
+`comment-reply` selects that mode. If no id was given, stop and tell the
+caller to re-invoke with one.
 
 - No second argument → normal flow (steps 2–10).
 - `comment-reply` → read the initiative fields (step 2), then follow the
@@ -51,13 +47,13 @@ Run:
 ateam show <id>
 ```
 
-Parse the output for these structured fields (one per line, key followed by colon and a space):
+Parse these structured fields (one per line, `key: value`):
 
 - `pr-number:` — the integer PR number
 - `pr-repo:` — owner/repo (e.g. `acme-org/myrepo`)
 - `pr-url:` — full https GitHub PR URL
 
-If any required field is missing, stop and report which fields are absent. Split `pr-repo` into `<owner>` and `<repo>` for later use with the GitHub API.
+If any is missing, stop and report which. Split `pr-repo` into `<owner>`/`<repo>` for later GitHub API calls.
 
 ### 3. Determine authorship
 
@@ -68,14 +64,20 @@ gh pr view <pr-number> --repo <owner>/<repo> --json author,title
 gh api user -q .login
 ```
 
-That call returns both `.author.login` (compared below) and `.title` — hold
-the title, step 10's completion line needs it. If the call fails, treat the
-title as empty; step 10 renders the line without it.
+Holds `.author.login` (compared below) and `.title` (step 10's completion
+line needs it — empty if this call fails).
 
-This one comparison drives **two independent decisions** downstream, and they have **opposite safe defaults** — do not collapse them into one boolean:
+This drives **two independent decisions** with **opposite safe defaults** —
+do not collapse them into one boolean:
 
-- **Approve gate (step 9):** if the two logins match, the PR was opened by the identity running this review — a self-review, so never auto-approve (stay `COMMENT`). If either command fails, also treat it as a self-review — a failed identity check must never default to auto-approve.
-- **Design-commentary phrasing (step 7):** a matching login means the PR was authored by the operator running this review — **their own work**, their call to make, so design/approach findings are stated directly. Treat it as **someone else's work** (→ curious-question phrasing) whenever the logins differ or the check fails. The conservative phrasing default is "someone else's work" — the exact opposite of the approve gate's "self-review on failure" default; a failed check must NOT flip phrasing to "the operator's own."
+- **Approve gate (step 9):** matching logins = self-review, never
+  auto-approve (stay `COMMENT`). A failed check also defaults to
+  self-review.
+- **Design-commentary phrasing (step 7):** matching logins = the operator's
+  own work, so state design/approach findings directly. Differing logins OR
+  a failed check = someone else's work → curious-question phrasing. A
+  failed check must NOT flip phrasing to "the operator's own" — the exact
+  opposite default from the approve gate.
 
 ### 4. Detect re-review
 
@@ -86,11 +88,11 @@ gh pr view <pr-number> --repo <owner>/<repo> --json reviews \
   -q '[.reviews[] | select(.author.login == "<our-login>")] | length'
 ```
 
-(`<our-login>` is the `gh api user -q .login` result from step 3. If that
-lookup failed, treat this as a first review.)
+(`<our-login>`: step 3's `gh api user -q .login` result; if that failed,
+treat this as a first review.)
 
 - **0** → first review. Proceed with the normal flow.
-- **1+** → **re-review mode.** The author has addressed our prior findings and
+- **1+** → **re-review mode.** The author addressed our prior findings and
   review was re-requested. Fetch the prior findings:
 
 ```bash
@@ -98,16 +100,14 @@ gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews    # review bodies
 gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate   # inline review comments
 ```
 
-Collect every finding from our most recent review (its body plus the inline
-comments authored by `<our-login>`), each as file:line + original
-severity/label + description. The label is recoverable from how it was
-posted: an inline comment prefixed `<severity>:` carries that severity
-(`critical`/`high`/`medium`); a finding posted in the review body with no
-prefix is a `question`. Preserve it — the step 9 gate keys off original
-severity, so a `question` never blocks on re-review.
-Re-review mode replaces the reviewer instructions in step 7 (see the
-re-review variant there) and changes the no-findings wording in step 9.
-Checkout, diff, posting mechanics, and close are unchanged.
+Collect every finding from our most recent review (body + inline comments by
+`<our-login>`) as file:line + original severity/label + description. Label
+recovery: an inline comment prefixed `<severity>:` carries that severity
+(`critical`/`high`/`medium`); an unprefixed body finding is a `question`.
+Preserve it — step 9's gate keys off original severity, so a `question`
+never blocks on re-review. Re-review mode replaces the reviewer instructions
+in step 7 and changes the no-findings wording in step 9; checkout, diff,
+posting mechanics, and close are unchanged.
 
 ### 5. Checkout the PR code
 
@@ -117,9 +117,9 @@ Run:
 gh pr checkout <pr-number>
 ```
 
-This checks out the PR's head branch into the current worktree so subsequent `gh pr` commands work against the correct code.
+Checks out the PR's head branch into the current worktree so subsequent `gh pr` commands target the right code.
 
-If this fails (e.g. the PR is from a fork with a non-writable ref, or the repo is not available locally), note the error and proceed with the diff-only approach in step 6 — the review can still run against the diff alone.
+If this fails (fork with a non-writable ref, repo unavailable locally), note the error and proceed diff-only via step 6.
 
 ### 6. Get the diff
 
@@ -133,70 +133,64 @@ Capture the full output. If the diff is empty or the command fails, stop and not
 
 ### 7. Spawn the reviewer subagent
 
-Spawn one `agent-teams-reviewer` subagent with `mode: bypassPermissions` and `run_in_background: true`. The reviewer pulls its own prior-review learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md` — run BARE, never piped through `| head` or `| tail` (that silently drops the fresh-tier tail). The SubagentStart hook cannot do this on the reviewer's behalf — see `references/mechanics-notes.md` for why.
+Spawn one `agent-teams-reviewer` subagent (`mode: bypassPermissions`, `run_in_background: true`). It self-fetches learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md` — run BARE, never piped through `head`/`tail` (drops the fresh tier). SubagentStart can't do this for it (why: `references/mechanics-notes.md`).
 
 Include in the reviewer's prompt:
 
 - The PR URL (`<pr-url>`) and PR number (`<pr-number>`)
-- **Whose work this is** — the phrasing determination from step 3, stated explicitly: "This is the operator's own work" or "This is someone else's work." The reviewer needs this to frame design commentary (see below). Do NOT pass the approve-gate value; pass the phrasing value.
-- The full diff captured in step 6 (inline it, or instruct the reviewer to run `gh pr diff <pr-number>` if the diff is too large to inline)
+- **Whose work this is** — step 3's phrasing determination, stated explicitly: "This is the operator's own work" or "This is someone else's work" (frames design commentary). Pass the phrasing value, NOT the approve-gate value.
+- The full diff from step 6 (inline it, or have the reviewer run `gh pr diff <pr-number>` if too large to inline)
 - The review instructions, verbatim from references/reviewer-prompt.md —
   normal mode by default, or its re-review variant if step 4 detected a
   prior review.
 
 ### 8. Collect findings
 
-Wait for the reviewer to complete. The reviewer will SendMessage its findings back to this session when done. Once the message arrives, capture the findings list.
+Wait for the reviewer's SendMessage with its findings list.
 
-If no SendMessage arrives within a reasonable time, note the timeout in the initiative and proceed to step 10 (record the outcome and close) without posting a review — there is no review URL in this path, so close citing `<pr-url>` and note the timeout in the close reason.
+If none arrives within a reasonable time, note the timeout in the initiative and proceed to step 10 (record and close) without posting a review — cite `<pr-url>` (no review URL exists in this path) and note the timeout in the close reason.
 
 ### 9. Post the review to GitHub
 
 Post the review using the GitHub API. Build the inline comments from the reviewer's findings (one comment per finding at the reported `file:line`).
 
-**If the body is long or multiline, don't fight the shell quoting — write it to a temp file and post its CONTENTS**, not its path: `gh pr review <pr-number> --body-file <file>`, or `gh api …/reviews -F body=@<file>` / `-F body=@-` (stdin). **Never** `-f body=@<file>`, `--raw-field body=@<file>`, or `--body @<file>` — those flags post the literal path text, not the file's contents. See `references/mechanics-notes.md` for why this matters and the guard that catches a slip.
+**If the body is long or multiline, don't fight shell quoting — write it to a temp file and post its CONTENTS**, not its path: `gh pr review <pr-number> --body-file <file>`, or `gh api …/reviews -F body=@<file>`/`-F body=@-` (stdin). **Never** `-f body=@<file>`, `--raw-field body=@<file>`, or `--body @<file>` — those post the literal path text (why + the guard: `references/mechanics-notes.md`).
 
-**The two lens conclusions always go in the body, unconditionally.** The reviewer always reports a parity/overlap enumeration and an after-the-fact-identifiability answer as their own section, separate from its findings list, even when the answer is "none" (reviewer-prompt.md). Treat them like the `question`-labelled findings below: no severity prefix, posted verbatim. This applies in every branch below — no-findings or findings — never drop or summarize them while condensing the rest into the one-sentence summary; a reported "checked, nothing found" is what makes the check falsifiable later.
+**Every posted review body opens with `## Summary`** — one concise line per finding, no flowery language — then the two lens conclusions below it: unconditional, unprefixed, verbatim. The reviewer always reports the parity/overlap enumeration and the after-the-fact-identifiability answer as their own section, even when the answer is "none" (reviewer-prompt.md) — never fold them into the Summary or drop them; "checked, nothing found" is what makes the check falsifiable later. Applies to every branch below; re-review's payload doesn't request the lens conclusions, so its Summary carries none.
 
 #### Handle the no-findings case
 
-If the reviewer reported no substantive findings, the event depends on step 3's self-review determination:
+If the reviewer reported no substantive findings, post:
 
-- **Not a self-review** (the PR is authored by someone else) — approve it:
+```bash
+REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
+  --method POST \
+  -f event=<APPROVE|COMMENT> \
+  -f body="## Summary
 
-  ```bash
-  REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
-    --method POST \
-    -f event=APPROVE \
-    -f body="Automated review: no substantive findings.
-
-<parity/overlap enumeration and identifiability answer, verbatim from the reviewer>" \
-    --jq .html_url)
-  ```
-
-- **Self-review** (the PR is our own) — keep the comment-only behavior; never auto-approve our own work:
-
-  ```bash
-  REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
-    --method POST \
-    -f event=COMMENT \
-    -f body="Automated review: no substantive findings.
+No substantive findings.
 
 <parity/overlap enumeration and identifiability answer, verbatim from the reviewer>" \
-    --jq .html_url)
-  ```
+  --jq .html_url)
+```
+
+`event=APPROVE` — unless step 3 found a self-review, then `event=COMMENT`
+(never auto-approve our own work).
 
 #### Handle findings
 
-Inline comments only work on lines present in the PR diff. Two kinds of finding won't post inline and belong in the review body instead: parity/overlap findings that reference a consumer line **outside the diff**, and design/approach findings labeled `question` (post those verbatim as questions in the body — do not prefix them with a severity, which would read as a defect). Everything else posts inline.
+Inline comments only work on diff lines. Two kinds belong in the body instead: parity/overlap findings referencing a consumer line **outside the diff**, and `question`-labeled findings (post verbatim, no severity prefix — a prefix would read as a defect). Everything else posts inline.
 
-For each inline finding, construct an inline comment. Collect them into a single review POST:
+Build the `## Summary` list first — one line per finding, same order as the comments below: `` `file:line` — <severity|question> — <one clause> ``, no flowery language, no restating the finding's full detail. Then construct the inline comments and collect everything into a single review POST:
 
 ```bash
 REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --method POST \
   -f event=COMMENT \
-  -f body="<one-sentence overall summary>
+  -f body="## Summary
+
+- \`<file:line>\` — <severity|question> — <one clause>
+- \`<file:line>\` — <severity|question> — <one clause>
 
 <parity/overlap enumeration and identifiability answer, verbatim from the reviewer>" \
   -F 'comments[][path]=<file-path>' \
@@ -205,47 +199,40 @@ REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --jq .html_url)
 ```
 
-Repeat the `-F 'comments[]…'` flags for each finding. Post as `COMMENT` — not `APPROVE` and not `REQUEST_CHANGES`. This applies regardless of authorship: any critical/high/medium finding keeps the review at `COMMENT`, even on a PR that isn't ours.
+Repeat the `-F 'comments[]…'` flags and Summary `-` lines per finding — same set, same order. Post as `COMMENT`, never `APPROVE`/`REQUEST_CHANGES` — any critical/high/medium finding keeps it at `COMMENT` regardless of authorship.
 
-The review body is a single sentence summarizing the overall assessment (e.g. "Two high-severity findings related to error handling and one medium concerning missing test coverage."), followed by the two lens conclusions — always, unprefixed, verbatim.
+Every review POST above (every variant, including retry and re-review) must
+append `--jq .html_url` into `REVIEW_URL`; step 10 cites it, falling back to
+`<pr-url>` if empty.
 
-Every review POST above — every variant, including the retry and re-review
-cases below — must append `--jq .html_url` and capture the result into
-`REVIEW_URL`; step 10 cites it when closing. If a call fails and `REVIEW_URL`
-ends up empty, the merged close step falls back to `<pr-url>`.
-
-If the `gh api` call fails (e.g. a file:line reference does not correspond to a diff hunk), retry without the failing inline comment(s) and add their content to the review body instead (capturing `REVIEW_URL` from the retry the same way), then note the fallback in the initiative.
+If `gh api` fails (e.g. a file:line outside a diff hunk), retry without the
+failing inline comment(s), moving their content to the review body instead
+(capture `REVIEW_URL` the same way), then note the fallback in the
+initiative.
 
 **Re-review mode:** the gate keys off each finding's ORIGINAL severity, not
-its resolution. Only a finding originally labelled `critical`/`high`/`medium`
-AND reported `not addressed` forces event=`COMMENT`. A finding first raised as
-a `question` (or any non-blocking label) never forces `COMMENT` — addressed,
-left open, or explained-and-declined, its resolution cannot gate approval,
-because it was never blocking.
-
-Two kinds therefore never block but stay visible in the review body: every
-`out of scope` finding (not this PR's job) and every `question`/non-blocking
-finding (always the author's call). Restate each in the body — original label,
-reason, and file:line — never as an inline comment.
+its resolution. Only `critical`/`high`/`medium` AND `not addressed` forces
+event=`COMMENT`. A `question` (or other non-blocking label) never forces
+`COMMENT`, regardless of resolution — it was never blocking.
 
 Post any blocking `not addressed` finding inline where its line is in the
-diff, body otherwise, with a body like "Re-review: N of M prior findings
-resolved" (N = every finding that does not block: `addressed`, `out of scope`,
-and every `question`/non-blocking finding). If no `critical`/`high`/`medium`
-finding is `not addressed`, this is the no-findings case above (APPROVE unless
-self-review), body "Re-review: all blocking findings resolved" plus the
-restated out-of-scope and `question` findings, if any. Capture `REVIEW_URL`
-the same way in both cases.
+diff. The body opens with `## Summary`, then the tally line (`Re-review: N
+of M prior findings resolved`, N = non-blocking: `addressed`, `out of
+scope`, every `question` — or `Re-review: all blocking findings resolved`
+once none remain), then one line per PRIOR finding, same order as step 4:
+`` `file:line` — <original label> — <addressed|out of scope|not
+addressed>: <one clause> ``. This restatement covers every finding,
+blocking or not — body-only, never inline. If no `critical`/`high`/`medium`
+is `not addressed`, event is APPROVE unless self-review, else `COMMENT`.
+Capture `REVIEW_URL` the same way.
 
 ### 10. Record the outcome and close the initiative
 
-Closing is part of delivering the review, not optional trailing bookkeeping —
-it happens in the same turn the review posts, as one atomic act with the
-outcome note. Re-reviews and comment replies spawn FRESH sessions via
-route-pr-event, which matches the CLOSED initiative and reopens it (or spawns
-anew) — so nothing requires this initiative to stay open once the review is
-posted. A review-delivered-but-open initiative is a defect: the hung-scan
-flags it and a human has to hand-triage it.
+Closing is part of delivering the review — same turn as the post, one atomic
+act with the outcome note. Re-reviews and comment replies spawn FRESH
+sessions via route-pr-event (matches the CLOSED initiative and reopens it),
+so nothing requires staying open. A review-delivered-but-open initiative is
+a defect the hung-scan flags for hand-triage.
 
 ```bash
 printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMENT>\n' \
@@ -260,43 +247,36 @@ printf 'Review complete · #%s %s%s\n%s' \
 ateam notify reviews --file "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
 ```
 
-`<review-html-url>` is `$REVIEW_URL` captured in step 9. If it's empty
-because the POST failed and no fallback URL was captured, cite `<pr-url>`
-instead.
+`<review-html-url>` is `$REVIEW_URL` from step 9 — cite `<pr-url>` instead
+if it's empty (POST failed, no fallback captured).
 
 #### The completion line
 
-That last block posts to the shared **Reviews** topic — one topic for all PR
-reviews, not one per review. The text is frozen; reproduce it exactly.
-`<repo>` is the **basename** from step 2 (`midgard`, never `acme/midgard`).
-`TITLE_SEG` is `" — "` (space, em dash **U+2014**, space) then step 3's PR
-title, or the **empty string** if that lookup failed — copy the separator out
-of the block above rather than retyping it (see
-`references/mechanics-notes.md` for why that matters). Two lines
-is deliberate: text, then the bare URL alone so it renders as a tap target.
+Posts to the shared **Reviews** topic (one topic for all reviews). Text is
+frozen — reproduce exactly (rationale: `references/mechanics-notes.md`).
+`<repo>` is the **basename** (`midgard`, never `acme/midgard`). `TITLE_SEG`
+is `" — "` (space, em dash **U+2014**, space) plus step 3's title, or
+**empty string** if that failed — copy the separator from the block above,
+don't retype it. Two lines: text, then the bare URL.
 
 **Nothing else goes in it** — no finding count, no severity, no
-`APPROVE`/`COMMENT` verdict; that belongs in the note and on the PR. Do NOT
-pass `--to` (only the direct handle reads it); `--title` defaults to
-`Reviews`. Post it **last, after the close** — `ateam notify` hits a network
-transport, and a failure there must never strand the initiative open.
+`APPROVE`/`COMMENT` verdict. Do NOT pass `--to`; `--title` defaults to
+`Reviews`. Post it **last, after the close** — a notify failure must never
+strand the initiative open.
 
-**Step-8 timeout path** (no review was posted): swap the wording — the note
-is `review-timeout: PR #<pr-number> — reviewer subagent did not respond` and
-the close is `--reason "Review not posted (reviewer timeout): <pr-url>"`.
-That note IS step 8's "note the timeout"; do not write a second one. Emit
-**no** completion line here — no review happened, and "Review complete" would
-be a false report.
+**Step-8 timeout path**: swap the wording — note `review-timeout: PR
+#<pr-number> — reviewer subagent did not respond`, close `--reason "Review
+not posted (reviewer timeout): <pr-url>"`. That note IS step 8's timeout
+note; don't write a second one, and emit **no** completion line — no review
+happened.
 
-**Re-review rounds end the same way.** route-pr-event reopened this
-initiative to run the round; once the re-review posts, run this merged
-note+close+notify step again, citing the new review's URL in both the close
-reason and the completion line.
+**Re-review rounds end the same way** — route-pr-event reopened this
+initiative to run the round; once it posts, rerun this note+close+notify
+step, citing the new review's URL in both places.
 
-**The rare same-session-follow-up carve-out.** If this session is
-deliberately waiting on a same-session follow-up (rare), never idle with the
-initiative open and gateless — raise a question gate instead, naming what
-it's waiting for:
+**Rare carve-out:** deliberately waiting on a same-session follow-up? Never
+idle with the initiative open and gateless — raise a question gate naming
+what it's waiting for:
 
 ```bash
 ateam gate <id> --file <note> --kind=question
@@ -304,14 +284,11 @@ ateam gate <id> --file <note> --kind=question
 
 ## Comment-reply mode
 
-Someone replied in an inline review-comment thread this identity participated
-in, and pr-shepherd reopened this initiative to respond. The mail carrying the
-reply text arrives via the normal hook flow — treat it as context if present,
-but do NOT run `ateam mail inbox` yourself (the hooks own mail consumption),
-and do not depend on it: re-derive the work from GitHub directly, every time —
-including on a wake where you believe this thread is already handled. That
-belief is never a substitute for step 1's fresh fetch (see the wake
-invariant above).
+Someone replied in an inline review-comment thread this identity
+participated in; pr-shepherd reopened this initiative to respond. Reply
+text may arrive as mail via the normal hook flow — treat it as context if
+present, but do NOT run `ateam mail inbox` yourself. Re-derive the work from
+GitHub directly, every time (wake invariant above).
 
 1. **Find the threads.** Fetch all inline review comments:
 
@@ -320,16 +297,16 @@ invariant above).
    gh api user -q .login
    ```
 
-   Group comments into threads by root id (`in_reply_to_id` if set, else `id`).
-   Select threads where our login authored at least one comment AND a comment
-   by someone else exists with `created_at` later than our last comment in
-   that thread. Those are the threads awaiting a response.
+   Group into threads by root id (`in_reply_to_id` if set, else `id`). Select
+   threads where our login authored a comment AND someone else's later
+   comment exists — those await a response.
 
-2. **Respond to each thread — evaluate before agreeing.** Read the thread and
-   enough of the surrounding code/diff to judge the reply on its merits
-   (`gh pr diff <pr-number>`, plus the file at the thread's `path` if needed).
-   Before reading any local file, run `gh pr checkout <pr-number>` so the worktree matches the PR's current head; if checkout fails, rely on `gh pr diff` and `gh api` file contents instead of local reads.
-   The reply is a claim, not a verdict:
+2. **Respond to each thread — evaluate before agreeing.** Read the thread
+   plus enough surrounding code/diff to judge the reply on its merits (`gh pr
+   diff <pr-number>`, the file at the thread's `path` if needed). Run `gh pr
+   checkout <pr-number>` first so the worktree matches the PR's head; if that
+   fails, rely on `gh pr diff`/`gh api` file contents instead. The reply is a
+   claim, not a verdict:
 
    - Verified correct → concede: "You're right — <what the code shows>."
    - The original finding still stands → hold position plainly, citing the
@@ -349,10 +326,10 @@ invariant above).
    No new findings, no new threads, no code changes, no review posting, no
    APPROVE/REQUEST_CHANGES events.
 
-3. **Nothing to answer?** Reached only after step 1's fresh fetch — never
-   from memory of an earlier pass. If no qualifying threads exist (already
-   handled, or a stale notification), note that and close — and skip the
-   completion line in step 4, since nothing happened to report.
+3. **Nothing to answer?** Reached only after step 1's fresh fetch, never
+   from memory. If no qualifying threads exist (already handled, stale
+   notification), note that, close, and skip the completion line — nothing
+   happened to report.
 
 4. **Note, close, and post the completion line:**
 
@@ -363,10 +340,10 @@ invariant above).
    ateam close <id> --reason "Comment replies posted: <pr-url>"
    ```
 
-   Then run step 10's completion-line block unchanged, under all the same
-   rules. Two differences: this mode posts no review, so the URL is
-   `<pr-url>`; and it skips step 3, so fetch the title here with `gh pr view
-   <pr-number> --repo <owner>/<repo> --json title -q .title`.
+   Then run step 10's completion-line block unchanged. Two differences: URL
+   is `<pr-url>` (no review posted); and it skips step 3, so fetch the title
+   with `gh pr view <pr-number> --repo <owner>/<repo> --json title -q
+   .title`.
 
 ## Key constraints
 
