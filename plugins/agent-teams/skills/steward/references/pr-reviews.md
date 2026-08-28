@@ -27,17 +27,17 @@ So the title is the entire basis on which he decides to dig, and "ask the stewar
 The findings survive in full on GitHub. Two endpoints, and you need both:
 
 ```bash
-# 1. Review bodies — one summarizing sentence per review, plus any finding
-#    that could not be attached to a diff line.
+# 1. Review bodies — a `## Summary` (one line per finding) plus the lens
+#    conclusions, plus any finding that could not be attached to a diff line.
 gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --jq '.[] | "\(.user.login) \(.state)\n\(.body)\n"'
 
-# 2. Inline review comments — where the substance actually lives.
+# 2. Inline review comments — where the full finding detail actually lives.
 gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate \
   --jq '.[] | "\(.user.login) \(.path):\(.line // .original_line)\n\(.body)\n"'
 ```
 
-**Run both.** The reviews endpoint alone will make a substantive review look thin: `review-pr` posts one comment per finding at its reported `file:line` and sets the review body to a single overall sentence (`skills/review-pr/SKILL.md`:191-202). Verified live on `MGT-Insurance/midgard#4408` — the reviews endpoint returned four bodies, but the critical finding on that PR (server actions shipped with no auth wrapper) exists only as an inline comment.
+**Run both.** The reviews endpoint alone will make a substantive review look thin: `review-pr` posts one comment per finding at its reported `file:line` and opens the review body with a `## Summary` (one concise line per finding, no full detail) rather than the finding's full description (`skills/review-pr/SKILL.md`, step 9). Verified live on `MGT-Insurance/midgard#4408` — the reviews endpoint returned four bodies, but the critical finding on that PR (server actions shipped with no auth wrapper) exists only as an inline comment.
 
 Both endpoints return every review by every author, ours and the humans'. That is a feature, not noise: "what did that review find" usually means the whole conversation on the PR, not just our bot's part. Attribute by `.user.login`; ours is whatever `gh api user -q .login` returns.
 
