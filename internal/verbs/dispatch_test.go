@@ -1227,11 +1227,15 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical driSystemPromptAppend const (memoryRoutingRule +
-	// driGuardrails, concatenated into one string — agent-teams-kxlb.2).
+	// driGuardrails, concatenated into one string — agent-teams-kxlb.2). A
+	// "/dri " prompt is what a true DRI launch always carries
+	// (launchBGSession prepends it), which is what earns the guardrail
+	// digest — see TestBGSessionArgs_ReviewPromptOmitsGuardrails for the
+	// negative case.
 	found := false
 	for i, a := range args {
 		if a == "--append-system-prompt" {
@@ -1256,6 +1260,38 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 			}
 			if !strings.Contains(val, "Never merge without explicit human confirmation") {
 				t.Errorf("append-system-prompt missing the never-merge-without-confirmation guardrail: %q", val)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --append-system-prompt; got: %v", args)
+	}
+}
+
+// TestBGSessionArgs_ReviewPromptOmitsGuardrails is the negative case for the
+// "/dri " gate above: a non-DRI bg session launched with a custom
+// --launch-prompt (e.g. review-pr, which hardcodes role "dri" — route.go ->
+// launchRaw — but never prefixes its prompt with "/dri ") must still get
+// memoryRoutingRule (role-agnostic, always wanted) but NOT driGuardrails
+// (DRI-orchestration rules that don't apply and would just add per-turn
+// bloat on a session that isn't a DRI).
+func TestBGSessionArgs_ReviewPromptOmitsGuardrails(t *testing.T) {
+	args := bgSessionArgs("my-session", "/agent-teams:review-pr at-x", "", "", "dri", "at-x", "{}", "")
+
+	found := false
+	for i, a := range args {
+		if a == "--append-system-prompt" {
+			if i+1 >= len(args) {
+				t.Fatal("--append-system-prompt has no following value in argv")
+			}
+			val := args[i+1]
+			if val != memoryRoutingRule {
+				t.Errorf("value after --append-system-prompt for a non-/dri prompt = %q, want memoryRoutingRule alone: %q", val, memoryRoutingRule)
+			}
+			if strings.Contains(val, "DRI HARD GUARDRAILS") {
+				t.Errorf("append-system-prompt for a review-pr (non-DRI) session must not contain the DRI guardrail digest: %q", val)
 			}
 			found = true
 			break

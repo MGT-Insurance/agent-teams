@@ -1042,7 +1042,20 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON,
 	if autoCompactWindow != "" {
 		args = append(args, "--autocompact", autoCompactWindow)
 	}
-	args = append(args, "--append-system-prompt", driSystemPromptAppend)
+	// driGuardrails are DRI-orchestration rules (delegate, don't implement;
+	// never merge unconfirmed; etc.) that make no sense for a non-DRI bg
+	// session — e.g. a review-pr session launched via --launch-prompt with
+	// role hardcoded "dri" (route.go -> launchRaw) but a
+	// "/agent-teams:review-pr ..." prompt that neither orchestrates nor runs
+	// rings. Gate strictly on the prompt prefix, since role alone can't tell
+	// true DRI launches apart from custom --launch-prompt ones: only a real
+	// /dri launch (launchBGSession always prepends "/dri ") gets the
+	// guardrail digest; every other bg session still gets memoryRoutingRule.
+	appendVal := memoryRoutingRule
+	if strings.HasPrefix(prompt, "/dri ") {
+		appendVal = driSystemPromptAppend
+	}
+	args = append(args, "--append-system-prompt", appendVal)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
