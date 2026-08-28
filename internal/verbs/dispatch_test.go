@@ -1255,8 +1255,8 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 			if !strings.Contains(val, "DRI HARD GUARDRAILS") {
 				t.Errorf("append-system-prompt missing DRI guardrail digest: %q", val)
 			}
-			if !strings.Contains(val, "You ORCHESTRATE; you do NOT implement") {
-				t.Errorf("append-system-prompt missing the orchestrate-don't-implement guardrail: %q", val)
+			if !strings.Contains(val, "re-invoke it via the Skill tool") {
+				t.Errorf("append-system-prompt missing the re-invoke-the-skill floor bullet: %q", val)
 			}
 			if !strings.Contains(val, "Never merge without explicit human confirmation") {
 				t.Errorf("append-system-prompt missing the never-merge-without-confirmation guardrail: %q", val)

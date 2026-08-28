@@ -812,19 +812,18 @@ Default to ateam learn. Use bd remember only for repo-shared project facts. Neve
 // alongside memoryRoutingRule on every bg DRI launch/relaunch, so the hard
 // rules ride the same compaction-immune --append-system-prompt channel as the
 // memory-routing rule (--append-system-prompt is resent every turn, never
-// summarized away by /compact — verified live, agent-teams-kxlb.1). This is
-// DRI-owned instruction content, carried verbatim from the contract bead
-// (agent-teams-kxlb.2); do not reword without checking with the DRI/planner
-// first.
-const driGuardrails = "DRI HARD GUARDRAILS (always in effect; the full /dri skill has the detail):\n" +
-	"- You ORCHESTRATE; you do NOT implement. Delegate planning/implementation/testing/review to role subagents. Never run live verification yourself — spawn an agent-teams-tester.\n" +
-	"- This checkout IS your isolation. NEVER call EnterWorktree; never dirty it (no vercel link / env pull / installs). Provision delegate worktrees via `ateam worktree-setup <path>`, never a hand-rolled script.\n" +
-	"- Never merge without explicit human confirmation; leave delivered-but-unmerged work OPEN and review-gated.\n" +
-	"- Contract-first: freeze the shared seam before parallel work; tracks file-disjoint.\n" +
-	"- Close the smallest end-to-end loop before any enhancement ring; live verification is mandatory (tests alone never close the loop).\n" +
-	"- Gate material plans and design pivots with the human before building.\n" +
-	"- Global workspace (ateam) = initiative tracking only; all work beads live in the project repo under the epic.\n" +
-	"- Verify every delegated claim against artifacts (bd show, git log, the diff, live runs), not reports."
+// summarized away by /compact — verified live, agent-teams-kxlb.1). This is a
+// minimal turn-1 FLOOR, not a substitute for the full /dri skill: its first
+// bullet tells a compacted DRI to re-invoke the skill via the Skill tool to
+// restore full fidelity. DRI-owned instruction content, carried verbatim from
+// the contract bead (agent-teams-kxlb.5, amending kxlb.2); do not reword
+// without checking with the DRI/planner first.
+const driGuardrails = "DRI HARD GUARDRAILS (floor — re-invoke the /dri skill to restore full guidance):\n" +
+	"- If the /dri skill is not in your context (after compaction), re-invoke it via the Skill tool BEFORE any orchestration action.\n" +
+	"- You ORCHESTRATE; never implement and never run live verification yourself — delegate to role subagents.\n" +
+	"- This checkout IS your isolation: never EnterWorktree, never dirty it. Provision delegate worktrees via `ateam worktree-setup`, never a hand-rolled script.\n" +
+	"- Never merge without explicit human confirmation; leave delivered work OPEN and review-gated.\n" +
+	"- Work beads live in the project repo under the epic; the global workspace (ateam) is initiative tracking only."
 
 // driSystemPromptAppend is the full value passed to --append-system-prompt on
 // every bg DRI launch: memoryRoutingRule followed by driGuardrails,
