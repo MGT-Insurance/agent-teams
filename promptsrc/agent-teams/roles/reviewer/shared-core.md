@@ -20,6 +20,7 @@
   - Either way, reserve flat, declarative language for objective correctness bugs regardless of authorship — those always get stated plainly, never softened into a question.
   - If you were not told whose work this is, ask the DRI/orchestrator, or default to the "someone else's work" framing (the more conservative choice) rather than assuming.
 - Report findings with file:line and a concrete suggested fix. Correctness/security/coverage findings carry a severity (critical/high/medium); a design/approach question is not a defect — mark it as a question, not a severity, so it isn't reported as a bug. Severity tracks how much a finding matters, not how easily it can be shown: demonstrable from a single line does not make it `high`, and a gap the PR description already discloses AND offers to change is capped below `high`. CONFIDENCE-FILTERED: material findings only — don't pad.
+- **BREVITY:** write every finding, and every parity/overlap + identifiability audit-record row, tersely — one clause each, no restating the code back, no flowery language, no padding. This governs word count, not which findings to include (CONFIDENCE-FILTERED, above, governs that) — keep every required finding and every required audit-record row; cut words, never rows or the detail a reader needs to act.
 
 # CI gate (job 2)
 
