@@ -148,6 +148,67 @@ func TestNotify_FileNotFound(t *testing.T) {
 	}
 }
 
+// TestNotify_ImageNotFound mirrors TestNotify_FileNotFound for the --image
+// flag: a nonexistent image path is a usage error, same shape as a
+// nonexistent --file.
+func TestNotify_ImageNotFound(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	nbd := &notifyFakeBD{issue: bd.Issue{ID: "at-abc"}}
+	cmd := &notifyKong{
+		ID:           "at-abc",
+		File:         bodyFile,
+		Image:        "/no/such/image.png",
+		transportFor: func(home string) (transport.Transport, error) { return nil, nil },
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	ctx, _, _ := newNotifyCtx(nbd)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for missing image")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+// TestNotify_WithImage_SetsImagePathOnOutboundMessage confirms --image flows
+// through to transport.OutboundMessage.ImagePath on the same Send call a
+// text-only notify makes — no separate send, no separate flag path.
+func TestNotify_WithImage_SetsImagePathOnOutboundMessage(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "here's a screenshot")
+	imagePath := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(imagePath, []byte("fake-png"), 0o644); err != nil {
+		t.Fatalf("write temp image: %v", err)
+	}
+
+	ft := &fakeTransport{returnRef: "999"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{ID: "at-00o", Title: "my initiative", Labels: []string{"at-00o"}},
+	}
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		Image:        imagePath,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+
+	ctx, _, _ := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].ImagePath != imagePath {
+		t.Errorf("ImagePath = %q, want %q", ft.calls[0].ImagePath, imagePath)
+	}
+	if ft.calls[0].Body != "here's a screenshot" {
+		t.Errorf("Body = %q, want %q", ft.calls[0].Body, "here's a screenshot")
+	}
+}
+
 // ── threadLabelValue ──────────────────────────────────────────────────────────
 
 func TestThreadLabelValue_Present(t *testing.T) {

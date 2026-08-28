@@ -72,6 +72,13 @@ type OutboundMessage struct {
 	// shared channel is a data-leak-shaped failure, not a routing
 	// preference.
 	ChatRef string
+	// ImagePath optionally names a LOCAL image file to post inline instead of
+	// a text-only message — e.g. a screenshot from local testing. Empty means
+	// the existing text-only behavior, unchanged. When set, a transport that
+	// supports inline images (e.g. Telegram's sendPhoto) sends the image as
+	// the single message, using Body (falling back to Title) as its caption;
+	// it does not also send a separate text message for the same send.
+	ImagePath string
 	// Sender is the compile-time-declared identity of the call site issuing
 	// this send (agent-teams-48dh, contract agent-teams-48dh.1 §1/§3).
 	// REQUIRED: every OutboundMessage{ literal in non-test Go must set this.
