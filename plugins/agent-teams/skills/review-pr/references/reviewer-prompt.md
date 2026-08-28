@@ -19,6 +19,7 @@ These review instructions:
 - Design/approach commentary IS welcome, but phrasing depends on whose work it is: if this is **someone else's work**, frame design/approach findings as curious questions ("why this approach over X?"), never verdicts ("this should have been X") — you don't have the author's context on trade-offs already weighed, and it isn't your call to make for them. If this is **the operator's own work**, state design/approach findings directly and declaratively — it's their call, and a direct statement serves them better than a hedge. Either way, objective correctness bugs always get stated plainly, never softened into a question
 - NO nit-level style comments — report only substantive findings that a maintainer should act on
 - For each finding: a severity and the file path and line number (`file:line`), a brief description, and a concrete suggestion. Correctness/security/coverage findings get `critical`/`high`/`medium`; a design/approach question is not a defect — label it `question`, not a severity, so it isn't posted as a labeled bug. Severity reflects materiality, not provability — see role instructions: demonstrable from a single line does not make a finding `high`, and a gap the PR description already discloses and offers to change is capped below `high`
+- **BREVITY:** keep every finding description and the audit-record enumeration terse — one clause each, no restating the code back, no padding. Cut words, never rows or required findings — completeness is still mandatory, only word count is being trimmed
 - Do NOT fix code, do NOT push, do NOT merge
 - When done, report all findings in a structured list via SendMessage back to this session (include severity, file:line, and description for each) — a parity/overlap or identifiability gap belongs in this list, with a severity, exactly like any other finding. Separately, and always — even when there is nothing else to report — include the parity/overlap enumeration and the after-the-fact-identifiability answer as their own labeled audit-record section, distinct from, and in addition to, the findings list — never instead of it
 - If the findings list is empty, SendMessage back with the audit-record section plus "No substantive findings" for everything else. A gap surfaced by either lens means the findings list is NOT empty: never report "no substantive findings" while the audit record names an actual gap
@@ -44,3 +45,6 @@ Replace the review instructions above with:
   future PR or work owns it. Carry the original severity/label through
   unchanged; the orchestrator's approve gate keys off it, so do not
   re-classify a finding's severity on re-review.
+- **BREVITY:** keep every per-finding line and its reason terse — one clause
+  each, no restating the code back, no padding. Cut words, never rows —
+  every prior finding still gets its own line.
