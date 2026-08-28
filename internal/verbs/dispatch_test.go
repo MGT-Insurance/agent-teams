@@ -1230,7 +1230,8 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "", "{}", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
-	// the canonical memoryRoutingRule const.
+	// the canonical driSystemPromptAppend const (memoryRoutingRule +
+	// driGuardrails, concatenated into one string — agent-teams-kxlb.2).
 	found := false
 	for i, a := range args {
 		if a == "--append-system-prompt" {
@@ -1238,14 +1239,23 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 				t.Fatal("--append-system-prompt has no following value in argv")
 			}
 			val := args[i+1]
-			if val != memoryRoutingRule {
-				t.Errorf("value after --append-system-prompt does not match memoryRoutingRule const:\ngot:  %q\nwant: %q", val, memoryRoutingRule)
+			if val != driSystemPromptAppend {
+				t.Errorf("value after --append-system-prompt does not match driSystemPromptAppend const:\ngot:  %q\nwant: %q", val, driSystemPromptAppend)
 			}
 			if !strings.Contains(val, "ateam learn") {
-				t.Errorf("memoryRoutingRule missing 'ateam learn': %q", val)
+				t.Errorf("append-system-prompt missing 'ateam learn': %q", val)
 			}
 			if !strings.Contains(val, "Never MEMORY.md") {
-				t.Errorf("memoryRoutingRule missing 'Never MEMORY.md': %q", val)
+				t.Errorf("append-system-prompt missing 'Never MEMORY.md': %q", val)
+			}
+			if !strings.Contains(val, "DRI HARD GUARDRAILS") {
+				t.Errorf("append-system-prompt missing DRI guardrail digest: %q", val)
+			}
+			if !strings.Contains(val, "You ORCHESTRATE; you do NOT implement") {
+				t.Errorf("append-system-prompt missing the orchestrate-don't-implement guardrail: %q", val)
+			}
+			if !strings.Contains(val, "Never merge without explicit human confirmation") {
+				t.Errorf("append-system-prompt missing the never-merge-without-confirmation guardrail: %q", val)
 			}
 			found = true
 			break
@@ -2129,7 +2139,7 @@ func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
 	// The flag it precedes must still be intact.
 	found := false
 	for i, a := range args {
-		if a == "--append-system-prompt" && i+1 < len(args) && args[i+1] == memoryRoutingRule {
+		if a == "--append-system-prompt" && i+1 < len(args) && args[i+1] == driSystemPromptAppend {
 			found = true
 		}
 	}
