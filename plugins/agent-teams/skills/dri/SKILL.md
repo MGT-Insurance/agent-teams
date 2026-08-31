@@ -91,7 +91,7 @@ Only after the loop closes: open enhancement rings — unblock the gated beads a
 
 **A PR's readers have no bead DB or initiative registry — write for them.** Describe the WORK, not the ticket ("Fixes silently dropped replies", not "implements agent-teams-ully.7"). Keep every id out of prose, title, and headings — subject, possessive, or passing mention all count. Ids only where skippable: parenthetical, table cell, footnote, trailer. Worked specimens: references/pr-text.md.
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors); reviewer findings triaged and resolved (fresh implementers). Push the branch; open the PR **ready for review by default** — draft only if asked or deliberately incomplete. **Never merge autonomously**, but you MAY once the human confirms (`--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing (`merged: <PR URL>`); after closing, run the local-main helper (fail-soft):
+Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors); reviewer findings triaged and resolved (fresh implementers); the live-test-review gate cleared. Push the branch; open the PR **ready for review by default** — draft only if asked or deliberately incomplete. **Never merge autonomously**, but you MAY once the human confirms (`--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing (`merged: <PR URL>`); after closing, run the local-main helper (fail-soft):
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/update-local-main.sh" "$PWD"
