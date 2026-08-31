@@ -180,7 +180,7 @@ func withRoutingFields(raw []byte) ([]byte, error) {
 // for a per-PR row, the PR it belongs to ("" for the legacy, no-PR shape).
 type humanListRow struct {
 	issue bd.Issue
-	kind  string // "REVIEW" or "QUESTION"
+	kind  string // "REVIEW", "QUESTION", or "LIVE-TEST-REVIEW"
 	pr    string // "" when not PR-specific
 	// multiPR is true when the issue has 2+ resolved PRs. On those rows the
 	// note/ask rendering is scoped to THIS pr's own tagged ask block only
@@ -240,6 +240,10 @@ func (c *humanListKong) Run(ctx *cli.Context) error {
 				// "external" (handed off) and "" (ungated) produce no row —
 				// same "no longer awaiting Eric" / "nothing to report" logic
 				// as the legacy branch above, applied per PR.
+				// No "live-test-review" case: gateForPR (status.go) never
+				// returns it — that gate is raised pre-PR-open and is bare-only
+				// (agent-teams-n0jt.1), so an issue carrying it has no resolved
+				// PR yet and always renders through the legacy branch above.
 			}
 		}
 	}
@@ -563,15 +567,23 @@ func renderAsk(b askBlock) string {
 }
 
 // gateKind derives the gate kind from a bead's labels using the kind-resolution
-// rule from contract agent-teams-04c:
+// rule from contract agent-teams-04c, extended by agent-teams-n0jt.1 for the
+// live-test-review gate:
 //   - contains "gate:review" (bare or any per-PR "gate:review:<url>" suffixed
 //     form, per hasGateKind/status.go) => "REVIEW"
+//   - else contains "gate:live-test-review" (bare only — that gate is raised
+//     pre-PR-open, agent-teams-n0jt.1, so it never takes a per-PR suffixed
+//     form) => "LIVE-TEST-REVIEW"
 //   - else (human present, or gate:question, or backward-compat) => "QUESTION"
 func gateKind(labels []string) string {
-	if hasGateKind(labels, "gate:review") {
+	switch {
+	case hasGateKind(labels, "gate:review"):
 		return "REVIEW"
+	case hasGateKind(labels, "gate:live-test-review"):
+		return "LIVE-TEST-REVIEW"
+	default:
+		return "QUESTION"
 	}
-	return "QUESTION"
 }
 
 // runLearnings prints full bodies of memories for role. Serves the union of

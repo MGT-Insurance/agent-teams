@@ -242,6 +242,16 @@ func TestGateKind(t *testing.T) {
 			labels: []string{"human", "gate:question"},
 			want:   "QUESTION",
 		},
+		{
+			name:   "bare gate:live-test-review yields LIVE-TEST-REVIEW",
+			labels: []string{"human", "gate:live-test-review"},
+			want:   "LIVE-TEST-REVIEW",
+		},
+		{
+			name:   "gate:review takes precedence over gate:live-test-review",
+			labels: []string{"human", "gate:review", "gate:live-test-review"},
+			want:   "REVIEW",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
