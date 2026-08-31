@@ -209,6 +209,139 @@ func TestNotify_WithImage_SetsImagePathOnOutboundMessage(t *testing.T) {
 	}
 }
 
+// TestNotify_DocumentNotFound mirrors TestNotify_ImageNotFound for the
+// --document flag: a nonexistent document path is a usage error, same shape
+// as a nonexistent --file/--image.
+func TestNotify_DocumentNotFound(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	nbd := &notifyFakeBD{issue: bd.Issue{ID: "at-abc"}}
+	cmd := &notifyKong{
+		ID:           "at-abc",
+		File:         bodyFile,
+		Document:     "/no/such/document.json",
+		transportFor: func(home string) (transport.Transport, error) { return nil, nil },
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	ctx, _, _ := newNotifyCtx(nbd)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for missing document")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+}
+
+// TestNotify_DocumentTooLarge confirms a --document over maxDocumentBytes is
+// rejected with a usage error before any send is attempted.
+func TestNotify_DocumentTooLarge(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	docPath := filepath.Join(t.TempDir(), "huge.bin")
+	if err := os.WriteFile(docPath, make([]byte, maxDocumentBytes+1), 0o644); err != nil {
+		t.Fatalf("write temp document: %v", err)
+	}
+
+	ft := &fakeTransport{returnRef: "999"}
+	nbd := &notifyFakeBD{issue: bd.Issue{ID: "at-abc"}}
+	cmd := &notifyKong{
+		ID:           "at-abc",
+		File:         bodyFile,
+		Document:     docPath,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	ctx, _, _ := newNotifyCtx(nbd)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for oversized document")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+	if len(ft.calls) != 0 {
+		t.Errorf("expected no Send call for a rejected oversized document, got %d", len(ft.calls))
+	}
+}
+
+// TestNotify_ImageAndDocumentTogether_Rejected confirms --image and
+// --document are mutually exclusive: passing both is a usage error, and no
+// send is attempted.
+func TestNotify_ImageAndDocumentTogether_Rejected(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "body")
+	imagePath := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(imagePath, []byte("fake-png"), 0o644); err != nil {
+		t.Fatalf("write temp image: %v", err)
+	}
+	docPath := filepath.Join(t.TempDir(), "results.json")
+	if err := os.WriteFile(docPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write temp document: %v", err)
+	}
+
+	ft := &fakeTransport{returnRef: "999"}
+	nbd := &notifyFakeBD{issue: bd.Issue{ID: "at-abc"}}
+	cmd := &notifyKong{
+		ID:           "at-abc",
+		File:         bodyFile,
+		Image:        imagePath,
+		Document:     docPath,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	ctx, _, _ := newNotifyCtx(nbd)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error for --image and --document together")
+	}
+	if code := cli.ExitCode(err); code != 2 {
+		t.Errorf("expected exit 2, got %d", code)
+	}
+	if len(ft.calls) != 0 {
+		t.Errorf("expected no Send call when --image and --document are both set, got %d", len(ft.calls))
+	}
+}
+
+// TestNotify_WithDocument_SetsDocumentPathOnOutboundMessage confirms
+// --document flows through to transport.OutboundMessage.DocumentPath on the
+// same Send call a text-only notify makes — no separate send, no separate
+// flag path.
+func TestNotify_WithDocument_SetsDocumentPathOnOutboundMessage(t *testing.T) {
+	bodyFile := makeTempBodyFile(t, "here's the test output")
+	docPath := filepath.Join(t.TempDir(), "results.json")
+	if err := os.WriteFile(docPath, []byte(`{"result":"pass"}`), 0o644); err != nil {
+		t.Fatalf("write temp document: %v", err)
+	}
+
+	ft := &fakeTransport{returnRef: "999"}
+	nbd := &notifyFakeBD{
+		issue: bd.Issue{ID: "at-00o", Title: "my initiative", Labels: []string{"at-00o"}},
+	}
+	cmd := &notifyKong{
+		ID:           "at-00o",
+		File:         bodyFile,
+		Document:     docPath,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+
+	ctx, _, _ := newNotifyCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(ft.calls) != 1 {
+		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
+	}
+	if ft.calls[0].DocumentPath != docPath {
+		t.Errorf("DocumentPath = %q, want %q", ft.calls[0].DocumentPath, docPath)
+	}
+	if ft.calls[0].ImagePath != "" {
+		t.Errorf("ImagePath = %q, want empty when only --document is set", ft.calls[0].ImagePath)
+	}
+	if ft.calls[0].Body != "here's the test output" {
+		t.Errorf("Body = %q, want %q", ft.calls[0].Body, "here's the test output")
+	}
+}
+
 // ── threadLabelValue ──────────────────────────────────────────────────────────
 
 func TestThreadLabelValue_Present(t *testing.T) {

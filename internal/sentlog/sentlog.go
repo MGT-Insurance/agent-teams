@@ -127,9 +127,19 @@ type Record struct {
 	// ImagePath, so decoding an old JSONL line with no "image" key leaves
 	// this at its zero value with no version branch required. Addition to
 	// §2, contract agent-teams-48dh.1 (agent-teams-bfw3.2).
-	Image   string `json:"image"`   // OutboundMessage.ImagePath, or "" for a text-only send
-	Outcome string `json:"outcome"` // "sent" | "failed" ONLY
-	Error   string `json:"error"`   // "" on success; on failure, RedactError(sendErr) — embedded URLs reduced to scheme://host (§6, amended)
+	Image string `json:"image"` // OutboundMessage.ImagePath, or "" for a text-only send
+	// Document mirrors OutboundMessage.DocumentPath verbatim — the local
+	// file a sendDocument-capable transport uploaded, not message content
+	// (that's already in Body as the caption). "" for every record
+	// predating this field and for every send that isn't a document
+	// attachment, old or new: neither ever set DocumentPath, so decoding an
+	// old JSONL line with no "document" key leaves this at its zero value
+	// with no version branch required. Addition to §2, contract
+	// agent-teams-48dh.1 (agent-teams-n0jt.6), mirroring Image's own
+	// addition above.
+	Document string `json:"document"` // OutboundMessage.DocumentPath, or "" for a non-document send
+	Outcome  string `json:"outcome"`  // "sent" | "failed" ONLY
+	Error    string `json:"error"`    // "" on success; on failure, RedactError(sendErr) — embedded URLs reduced to scheme://host (§6, amended)
 
 	SessionID  string `json:"session_id"`  // DERIVED (§4). May be "". MAY BE STALE.
 	Cwd        string `json:"cwd"`         // DERIVED

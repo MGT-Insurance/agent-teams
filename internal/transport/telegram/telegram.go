@@ -253,7 +253,7 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 		// Empty thread ref: sendMessage/sendPhoto omits message_thread_id
 		// entirely, which is required for a private chat and is already what
 		// a General send does. No new branch, and no empty-string thread id.
-		if err := t.sendMessageOrPhoto(chatID, "", msg); err != nil {
+		if err := t.sendMessageOrAttachment(chatID, "", msg); err != nil {
 			return "", err
 		}
 		return "", nil
@@ -283,21 +283,32 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	// empty ChatRef, and forum topics exist only in the configured
 	// supergroup — createForumTopic and CloseTopic stay group-only for the
 	// same reason.
-	if err := t.sendMessageOrPhoto(t.chatID, threadRef, msg); err != nil {
+	if err := t.sendMessageOrAttachment(t.chatID, threadRef, msg); err != nil {
 		return "", err
 	}
 	return threadRef, nil
 }
 
-// sendMessageOrPhoto posts msg into chatID/threadRef: sendPhoto (with a caption) when
-// msg.ImagePath is set, sendMessage (text-only) otherwise. The two Bot API
-// calls are mutually exclusive per send — an image paired with a body is
-// delivered as one photo message with the body as its caption, never a photo
-// followed by a redundant text message (agent-teams-bfw3.1).
-func (t *Telegram) sendMessageOrPhoto(chatID, threadRef string, msg transport.OutboundMessage) error {
+// sendMessageOrAttachment posts msg into chatID/threadRef: sendPhoto (with a
+// caption) when msg.ImagePath is set, else sendDocument (with a caption) when
+// msg.DocumentPath is set, else sendMessage (text-only). ImagePath is checked
+// first — the two attachment fields are mutually exclusive in practice (see
+// OutboundMessage.DocumentPath), but this ordering is what a caller that sets
+// both would get. All three Bot API calls are mutually exclusive per send: an
+// attachment paired with a body is delivered as one photo/document message
+// with the body as its caption, never an attachment followed by a redundant
+// text message (agent-teams-bfw3.1, extended for documents by
+// agent-teams-n0jt.6).
+func (t *Telegram) sendMessageOrAttachment(chatID, threadRef string, msg transport.OutboundMessage) error {
 	if msg.ImagePath != "" {
-		if err := t.sendPhoto(chatID, threadRef, photoCaption(msg), msg.ImagePath); err != nil {
+		if err := t.sendPhoto(chatID, threadRef, mediaCaption(msg), msg.ImagePath); err != nil {
 			return fmt.Errorf("telegram: sendPhoto: %w", err)
+		}
+		return nil
+	}
+	if msg.DocumentPath != "" {
+		if err := t.sendDocument(chatID, threadRef, mediaCaption(msg), msg.DocumentPath); err != nil {
+			return fmt.Errorf("telegram: sendDocument: %w", err)
 		}
 		return nil
 	}
@@ -307,14 +318,15 @@ func (t *Telegram) sendMessageOrPhoto(chatID, threadRef string, msg transport.Ou
 	return nil
 }
 
-// telegramCaptionMaxChars is the Bot API's sendPhoto caption cap.
+// telegramCaptionMaxChars is the Bot API's caption cap, shared by sendPhoto
+// and sendDocument.
 const telegramCaptionMaxChars = 1024
 
-// photoCaption derives the sendPhoto caption for msg: Body, falling back to
-// Title when Body is empty (so an image sent with only a title still gets a
-// caption), truncated to telegramCaptionMaxChars. Caption is optional —
-// msg with neither Body nor Title yields "".
-func photoCaption(msg transport.OutboundMessage) string {
+// mediaCaption derives the sendPhoto/sendDocument caption for msg: Body,
+// falling back to Title when Body is empty (so an attachment sent with only
+// a title still gets a caption), truncated to telegramCaptionMaxChars.
+// Caption is optional — msg with neither Body nor Title yields "".
+func mediaCaption(msg transport.OutboundMessage) string {
 	caption := msg.Body
 	if caption == "" {
 		caption = msg.Title
@@ -857,6 +869,46 @@ func (t *Telegram) sendPhoto(chatID, threadRef, caption, imagePath string) error
 	}
 
 	resp, err := t.httpClient.PostMultipart(t.apiURL("sendPhoto"), fields, "photo", filepath.Base(imagePath), data)
+	if err != nil {
+		return t.sanitizeTransportErr(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(resp.Body, &r); err != nil {
+		return err
+	}
+	if !r.OK {
+		return fmt.Errorf("API error: %s", r.Description)
+	}
+	return nil
+}
+
+// sendDocument posts the local file at documentPath into chatID as a
+// document attachment — a forum topic within it when threadRef is
+// non-empty, otherwise the chat itself — with an optional caption. Mirrors
+// sendPhoto's chat_id/message_thread_id handling and multipart upload,
+// swapping the file-part field name ("document" vs "photo") and the Bot API
+// endpoint (agent-teams-n0jt.6: non-image proof — JSON, logs, HAR — rides as
+// a document instead of inline, avoiding the ~4096-char text limit).
+func (t *Telegram) sendDocument(chatID, threadRef, caption, documentPath string) error {
+	data, err := os.ReadFile(documentPath)
+	if err != nil {
+		return fmt.Errorf("read document %s: %w", documentPath, err)
+	}
+
+	fields := map[string]string{"chat_id": chatID}
+	if caption != "" {
+		fields["caption"] = caption
+	}
+	if threadRef != "" {
+		fields["message_thread_id"] = threadRef
+	}
+
+	resp, err := t.httpClient.PostMultipart(t.apiURL("sendDocument"), fields, "document", filepath.Base(documentPath), data)
 	if err != nil {
 		return t.sanitizeTransportErr(err)
 	}

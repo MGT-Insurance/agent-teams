@@ -260,6 +260,34 @@ func TestLoggingTransportRecordsImagePath(t *testing.T) {
 	}
 }
 
+// TestLoggingTransportRecordsDocumentPath: a document send (DocumentPath
+// set) yields a record with document populated with that same path; a
+// text-only send (no DocumentPath) yields document=="" (agent-teams-n0jt.6,
+// mirroring TestLoggingTransportRecordsImagePath).
+func TestLoggingTransportRecordsDocumentPath(t *testing.T) {
+	home := t.TempDir()
+	inner := &fakeTransport{name: "fake", sendRef: "ref-3"}
+	lt := newLoggingTransport(inner, home)
+
+	docMsg := OutboundMessage{InitiativeID: "at-test", Title: "t", Body: "b", DocumentPath: "/tmp/results.json", Sender: sentlog.KindNotify}
+	if _, err := lt.Send(docMsg); err != nil {
+		t.Fatalf("document Send: %v", err)
+	}
+	docRec := lastRecord(t, home)
+	if docRec["document"] != "/tmp/results.json" {
+		t.Fatalf("document = %v, want /tmp/results.json", docRec["document"])
+	}
+
+	textMsg := OutboundMessage{InitiativeID: "at-test", Title: "t", Body: "b", Sender: sentlog.KindNotify}
+	if _, err := lt.Send(textMsg); err != nil {
+		t.Fatalf("text Send: %v", err)
+	}
+	textRec2 := lastRecord(t, home)
+	if textRec2["document"] != "" {
+		t.Fatalf("document = %v, want empty for a text-only send", textRec2["document"])
+	}
+}
+
 // TestLoggingTransportRedactsURLCredentialsFromError: loggingTransport is
 // generic — it wraps whatever Transport For returns and cannot call into
 // that transport's own error-sanitizer (today, Telegram's

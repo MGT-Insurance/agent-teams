@@ -483,14 +483,111 @@ func TestSend_WithImagePath_ExistingThread_PostsPhotoWithCaptionInsteadOfText(t 
 	}
 }
 
-// ── sendPhoto: caption derivation (photoCaption, agent-teams-bfw3.2) ─────────
+// ── Send: document attachment (sendDocument, agent-teams-n0jt.6) ────────────
 
-// TestPhotoCaption_TruncatesAtExactly1024Runes confirms photoCaption enforces
+// TestSend_WithDocumentPath_ExistingThread_PostsDocumentWithCaptionInsteadOfText
+// confirms the sendDocument path: an OutboundMessage with DocumentPath set
+// hits sendDocument (never sendMessage), carries message_thread_id and a
+// caption built from Body, and uploads the document file's own bytes as its
+// file part under the "document" field name.
+func TestSend_WithDocumentPath_ExistingThread_PostsDocumentWithCaptionInsteadOfText(t *testing.T) {
+	const chatID = "-100123456789"
+
+	docBytes := []byte(`{"result":"pass"}`)
+	docPath := filepath.Join(t.TempDir(), "test-results.json")
+	if err := os.WriteFile(docPath, docBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var gotSendMessage, gotSendPhoto, gotSendDocument bool
+	var gotChatID, gotThreadID, gotCaption string
+	var gotFileName string
+	var gotFileBytes []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			gotSendMessage = true
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+			gotSendPhoto = true
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		case strings.HasSuffix(r.URL.Path, "/sendDocument"):
+			gotSendDocument = true
+			if err := r.ParseMultipartForm(10 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm: %v", err)
+			}
+			gotChatID = r.FormValue("chat_id")
+			gotThreadID = r.FormValue("message_thread_id")
+			gotCaption = r.FormValue("caption")
+
+			file, header, err := r.FormFile("document")
+			if err != nil {
+				t.Fatalf("FormFile(document): %v", err)
+			}
+			defer file.Close()
+			gotFileName = header.Filename
+			gotFileBytes, err = io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("read document part: %v", err)
+			}
+
+			jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	threadRef, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		ThreadRef:    "7",
+		Title:        "Test results",
+		Body:         "Here's the test output.",
+		DocumentPath: docPath,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if gotSendMessage {
+		t.Error("sendMessage was called; a document send must not also fire a separate text message")
+	}
+	if gotSendPhoto {
+		t.Error("sendPhoto was called; a document send must not route through sendPhoto")
+	}
+	if !gotSendDocument {
+		t.Fatal("sendDocument was not called")
+	}
+	if threadRef != "7" {
+		t.Errorf("threadRef: got %q, want %q", threadRef, "7")
+	}
+	if gotChatID != chatID {
+		t.Errorf("sendDocument chat_id: got %q, want %q", gotChatID, chatID)
+	}
+	if gotThreadID != "7" {
+		t.Errorf("sendDocument message_thread_id: got %q, want %q", gotThreadID, "7")
+	}
+	if gotCaption != "Here's the test output." {
+		t.Errorf("sendDocument caption: got %q, want %q", gotCaption, "Here's the test output.")
+	}
+	if gotFileName != "test-results.json" {
+		t.Errorf("sendDocument file name: got %q, want %q", gotFileName, "test-results.json")
+	}
+	if string(gotFileBytes) != string(docBytes) {
+		t.Errorf("sendDocument file content: got %q, want %q", gotFileBytes, docBytes)
+	}
+}
+
+// ── sendPhoto/sendDocument: caption derivation (mediaCaption, agent-teams-bfw3.2, extended agent-teams-n0jt.6) ─
+
+// TestMediaCaption_TruncatesAtExactly1024Runes confirms mediaCaption enforces
 // telegramCaptionMaxChars on plain ASCII text: a caption 2000 runes long is
 // cut to exactly the first 1024.
-func TestPhotoCaption_TruncatesAtExactly1024Runes(t *testing.T) {
+func TestMediaCaption_TruncatesAtExactly1024Runes(t *testing.T) {
 	body := strings.Repeat("a", 2000)
-	caption := photoCaption(transport.OutboundMessage{Body: body})
+	caption := mediaCaption(transport.OutboundMessage{Body: body})
 
 	if got := len([]rune(caption)); got != telegramCaptionMaxChars {
 		t.Errorf("caption rune count: got %d, want %d", got, telegramCaptionMaxChars)
@@ -500,16 +597,16 @@ func TestPhotoCaption_TruncatesAtExactly1024Runes(t *testing.T) {
 	}
 }
 
-// TestPhotoCaption_MultiByteRuneTruncationStaysValid confirms truncateChars
+// TestMediaCaption_MultiByteRuneTruncationStaysValid confirms truncateChars
 // counts RUNES, not bytes: 1023 ASCII characters followed by multi-byte
 // emoji straddling the 1024-rune cut point must truncate at the rune
 // boundary, never mid-rune. A byte-based truncation at 1024 bytes would
 // instead cut partway through the first emoji's 4-byte encoding, producing
 // invalid UTF-8.
-func TestPhotoCaption_MultiByteRuneTruncationStaysValid(t *testing.T) {
+func TestMediaCaption_MultiByteRuneTruncationStaysValid(t *testing.T) {
 	const asciiPrefixLen = telegramCaptionMaxChars - 1
 	body := strings.Repeat("x", asciiPrefixLen) + strings.Repeat("😀", 10)
-	caption := photoCaption(transport.OutboundMessage{Body: body})
+	caption := mediaCaption(transport.OutboundMessage{Body: body})
 
 	if !utf8.ValidString(caption) {
 		t.Fatalf("caption is not valid UTF-8: %q", caption)
@@ -523,19 +620,19 @@ func TestPhotoCaption_MultiByteRuneTruncationStaysValid(t *testing.T) {
 	}
 }
 
-// TestPhotoCaption_FallsBackToTitleWhenBodyEmpty confirms an image sent with
-// only a title still gets a caption.
-func TestPhotoCaption_FallsBackToTitleWhenBodyEmpty(t *testing.T) {
-	caption := photoCaption(transport.OutboundMessage{Title: "Status update"})
+// TestMediaCaption_FallsBackToTitleWhenBodyEmpty confirms an attachment sent
+// with only a title still gets a caption.
+func TestMediaCaption_FallsBackToTitleWhenBodyEmpty(t *testing.T) {
+	caption := mediaCaption(transport.OutboundMessage{Title: "Status update"})
 	if caption != "Status update" {
 		t.Errorf("caption: got %q, want %q", caption, "Status update")
 	}
 }
 
-// TestPhotoCaption_OmittedWhenBodyAndTitleEmpty confirms a caption is
+// TestMediaCaption_OmittedWhenBodyAndTitleEmpty confirms a caption is
 // optional: an OutboundMessage with neither Body nor Title yields "".
-func TestPhotoCaption_OmittedWhenBodyAndTitleEmpty(t *testing.T) {
-	caption := photoCaption(transport.OutboundMessage{})
+func TestMediaCaption_OmittedWhenBodyAndTitleEmpty(t *testing.T) {
+	caption := mediaCaption(transport.OutboundMessage{})
 	if caption != "" {
 		t.Errorf("caption: got %q, want empty", caption)
 	}
@@ -543,7 +640,7 @@ func TestPhotoCaption_OmittedWhenBodyAndTitleEmpty(t *testing.T) {
 
 // TestSend_WithImagePath_NoBodyNoTitle_OmitsCaptionFieldEntirely confirms
 // sendPhoto drops the caption FIELD from the multipart request entirely when
-// photoCaption returns "" — not merely sends it as an empty value — mirroring
+// mediaCaption returns "" — not merely sends it as an empty value — mirroring
 // sendMessage/sendPhoto's message_thread_id omission (see sendMessage's doc
 // comment).
 func TestSend_WithImagePath_NoBodyNoTitle_OmitsCaptionFieldEntirely(t *testing.T) {

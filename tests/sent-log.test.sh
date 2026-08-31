@@ -256,21 +256,23 @@ cp "$T/hung_tick.go.bak" "$target_file"
 trap 'rm -rf "$T"' EXIT
 
 # ── Case 9: egress gate — pins the chokepoint the construction gate can't see
-# (agent-teams-48dh.28, amended agent-teams-bfw3.2 for inline images). Case7/8
+# (agent-teams-48dh.28, amended agent-teams-bfw3.2 for inline images, amended
+# agent-teams-n0jt.6 to admit sendDocument as a third audited method). Case7/8
 # count OutboundMessage LITERAL constructions, which is blind to a capability
 # that POSTs message text to the Bot API directly without building one —
 # CloseTopic and Ack already do this today, carrying no text, so they're
 # already invisible to case7/8 and harmless. This gate instead pins EGRESS:
-# Send funnels through exactly two t.sendMessageOrPhoto( call sites (its two send
-# shapes: ChatRef/General, and the forum-topic path), and sendMessageOrPhoto is the
-# sole chokepoint for the two AUDITED message-bearing methods — exactly one
-# apiURL("sendMessage") and exactly one apiURL("sendPhoto") call in
-# telegram.go, each with its one t.sendMessage(/t.sendPhoto( call site living
-# inside sendMessageOrPhoto. Every other message-bearing Bot API method stays
-# forbidden. A future capability that emits user-visible text without going
-# through Send->sendMessageOrPhoto adds a new egress or call site outside that
-# chokepoint and trips this immediately, even though it adds zero
-# OutboundMessage literals.
+# Send funnels through exactly two t.sendMessageOrAttachment( call sites (its
+# two send shapes: ChatRef/General, and the forum-topic path), and
+# sendMessageOrAttachment is the sole chokepoint for the three AUDITED
+# message-bearing methods — exactly one apiURL("sendMessage"), one
+# apiURL("sendPhoto"), and one apiURL("sendDocument") call in telegram.go,
+# each with its one t.sendMessage(/t.sendPhoto(/t.sendDocument( call site
+# living inside sendMessageOrAttachment. Every other message-bearing Bot API
+# method stays forbidden. A future capability that emits user-visible text
+# without going through Send->sendMessageOrAttachment adds a new egress or
+# call site outside that chokepoint and trips this immediately, even though
+# it adds zero OutboundMessage literals.
 TELEGRAM_GO="$ROOT/internal/transport/telegram/telegram.go"
 cp "$TELEGRAM_GO" "$T/telegram.go.bak"
 trap 'cp "$T/telegram.go.bak" "$TELEGRAM_GO" 2>/dev/null || true; rm -rf "$T"' EXIT
@@ -283,8 +285,12 @@ count_send_photo_egress() {
   grep -c 'apiURL("sendPhoto")' "$TELEGRAM_GO"
 }
 
+count_send_document_egress() {
+  grep -c 'apiURL("sendDocument")' "$TELEGRAM_GO"
+}
+
 count_send_text_call_sites() {
-  grep -c '\bt\.sendMessageOrPhoto(' "$TELEGRAM_GO"
+  grep -c '\bt\.sendMessageOrAttachment(' "$TELEGRAM_GO"
 }
 
 count_send_message_call_sites() {
@@ -293,6 +299,10 @@ count_send_message_call_sites() {
 
 count_send_photo_call_sites() {
   grep -c '\bt\.sendPhoto(' "$TELEGRAM_GO"
+}
+
+count_send_document_call_sites() {
+  grep -c '\bt\.sendDocument(' "$TELEGRAM_GO"
 }
 
 # Line range of a method body: from its signature to the next top-level
@@ -306,7 +316,7 @@ send_method_range() {
 
 sendtext_method_range() {
   awk '
-    /^func \(t \*Telegram\) sendMessageOrPhoto\(/ { start=NR; next }
+    /^func \(t \*Telegram\) sendMessageOrAttachment\(/ { start=NR; next }
     start && /^func / { print start","(NR-1); exit }
   ' "$TELEGRAM_GO"
 }
@@ -316,50 +326,61 @@ send_range="$(send_method_range)"
   || { echo "FAIL case9 setup: could not locate Send method bounds in telegram.go"; exit 1; }
 send_start="${send_range%,*}"
 send_end="${send_range#*,}"
-sendtext_sites_inside_send=$(sed -n "${send_start},${send_end}p" "$TELEGRAM_GO" | grep -c '\bt\.sendMessageOrPhoto(')
+sendtext_sites_inside_send=$(sed -n "${send_start},${send_end}p" "$TELEGRAM_GO" | grep -c '\bt\.sendMessageOrAttachment(')
 
 sendtext_range="$(sendtext_method_range)"
 [ -n "$sendtext_range" ] \
-  || { echo "FAIL case9 setup: could not locate sendMessageOrPhoto method bounds in telegram.go"; exit 1; }
+  || { echo "FAIL case9 setup: could not locate sendMessageOrAttachment method bounds in telegram.go"; exit 1; }
 sendtext_start="${sendtext_range%,*}"
 sendtext_end="${sendtext_range#*,}"
 sendmessage_sites_inside_sendtext=$(sed -n "${sendtext_start},${sendtext_end}p" "$TELEGRAM_GO" | grep -c '\bt\.sendMessage(')
 sendphoto_sites_inside_sendtext=$(sed -n "${sendtext_start},${sendtext_end}p" "$TELEGRAM_GO" | grep -c '\bt\.sendPhoto(')
+senddocument_sites_inside_sendtext=$(sed -n "${sendtext_start},${sendtext_end}p" "$TELEGRAM_GO" | grep -c '\bt\.sendDocument(')
 
 egress_sendmessage_count=$(count_send_message_egress)
 egress_sendphoto_count=$(count_send_photo_egress)
+egress_senddocument_count=$(count_send_document_egress)
 sendtext_callsite_count=$(count_send_text_call_sites)
 sendmessage_callsite_count=$(count_send_message_call_sites)
 sendphoto_callsite_count=$(count_send_photo_call_sites)
+senddocument_callsite_count=$(count_send_document_call_sites)
 
 [ "$egress_sendmessage_count" = "1" ] \
   || { echo "FAIL case9: expected exactly 1 apiURL(\"sendMessage\") egress, found $egress_sendmessage_count"; exit 1; }
 [ "$egress_sendphoto_count" = "1" ] \
   || { echo "FAIL case9: expected exactly 1 apiURL(\"sendPhoto\") egress, found $egress_sendphoto_count"; exit 1; }
+[ "$egress_senddocument_count" = "1" ] \
+  || { echo "FAIL case9: expected exactly 1 apiURL(\"sendDocument\") egress, found $egress_senddocument_count"; exit 1; }
 [ "$sendtext_callsite_count" = "2" ] \
-  || { echo "FAIL case9: expected exactly 2 t.sendMessageOrPhoto( call sites, found $sendtext_callsite_count"; exit 1; }
+  || { echo "FAIL case9: expected exactly 2 t.sendMessageOrAttachment( call sites, found $sendtext_callsite_count"; exit 1; }
 [ "$sendtext_sites_inside_send" = "2" ] \
-  || { echo "FAIL case9: expected both t.sendMessageOrPhoto( call sites inside Send (lines $send_start-$send_end), found $sendtext_sites_inside_send"; exit 1; }
+  || { echo "FAIL case9: expected both t.sendMessageOrAttachment( call sites inside Send (lines $send_start-$send_end), found $sendtext_sites_inside_send"; exit 1; }
 [ "$sendmessage_callsite_count" = "1" ] \
   || { echo "FAIL case9: expected exactly 1 t.sendMessage( call site, found $sendmessage_callsite_count"; exit 1; }
 [ "$sendphoto_callsite_count" = "1" ] \
   || { echo "FAIL case9: expected exactly 1 t.sendPhoto( call site, found $sendphoto_callsite_count"; exit 1; }
+[ "$senddocument_callsite_count" = "1" ] \
+  || { echo "FAIL case9: expected exactly 1 t.sendDocument( call site, found $senddocument_callsite_count"; exit 1; }
 [ "$sendmessage_sites_inside_sendtext" = "1" ] \
-  || { echo "FAIL case9: expected the t.sendMessage( call site inside sendMessageOrPhoto (lines $sendtext_start-$sendtext_end), found $sendmessage_sites_inside_sendtext"; exit 1; }
+  || { echo "FAIL case9: expected the t.sendMessage( call site inside sendMessageOrAttachment (lines $sendtext_start-$sendtext_end), found $sendmessage_sites_inside_sendtext"; exit 1; }
 [ "$sendphoto_sites_inside_sendtext" = "1" ] \
-  || { echo "FAIL case9: expected the t.sendPhoto( call site inside sendMessageOrPhoto (lines $sendtext_start-$sendtext_end), found $sendphoto_sites_inside_sendtext"; exit 1; }
-for forbidden in sendDocument sendAnimation copyMessage forwardMessage editMessageText; do
+  || { echo "FAIL case9: expected the t.sendPhoto( call site inside sendMessageOrAttachment (lines $sendtext_start-$sendtext_end), found $sendphoto_sites_inside_sendtext"; exit 1; }
+[ "$senddocument_sites_inside_sendtext" = "1" ] \
+  || { echo "FAIL case9: expected the t.sendDocument( call site inside sendMessageOrAttachment (lines $sendtext_start-$sendtext_end), found $senddocument_sites_inside_sendtext"; exit 1; }
+for forbidden in sendAnimation copyMessage forwardMessage editMessageText; do
   if grep -q "$forbidden" "$TELEGRAM_GO"; then
     echo "FAIL case9: forbidden message-bearing Bot API method '$forbidden' found in telegram.go"
     exit 1
   fi
 done
-echo "case9 PASS: egress gate — sendMessage+sendPhoto chokepoint via sendMessageOrPhoto, both funneled from Send, no other message-bearing methods present"
+echo "case9 PASS: egress gate — sendMessage+sendPhoto+sendDocument chokepoint via sendMessageOrAttachment, all three funneled from Send, no other message-bearing methods present"
 
 # ── Case 9b: prove the egress gate actually trips (a stray forbidden-method reference) ─
-printf '\n// case9b-injected: sendDocument\n' >> "$TELEGRAM_GO"
+# Probes with sendAnimation, not sendDocument — sendDocument is now an
+# ALLOWED egress (above), so it would no longer trip this check.
+printf '\n// case9b-injected: sendAnimation\n' >> "$TELEGRAM_GO"
 tripped=0
-for forbidden in sendDocument sendAnimation copyMessage forwardMessage editMessageText; do
+for forbidden in sendAnimation copyMessage forwardMessage editMessageText; do
   if grep -q "$forbidden" "$TELEGRAM_GO"; then
     tripped=1
     break
@@ -367,8 +388,8 @@ for forbidden in sendDocument sendAnimation copyMessage forwardMessage editMessa
 done
 cp "$T/telegram.go.bak" "$TELEGRAM_GO"
 [ "$tripped" = "1" ] \
-  || { echo "FAIL case9b: injecting a stray sendDocument reference did not trip the forbidden-method check"; exit 1; }
-echo "case9b PASS: a stray sendDocument reference trips the egress gate, as required"
+  || { echo "FAIL case9b: injecting a stray sendAnimation reference did not trip the forbidden-method check"; exit 1; }
+echo "case9b PASS: a stray sendAnimation reference trips the egress gate, as required"
 
 # Reset the trap to plain cleanup for the rest of the script.
 trap 'rm -rf "$T"' EXIT
