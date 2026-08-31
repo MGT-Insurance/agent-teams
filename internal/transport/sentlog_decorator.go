@@ -80,6 +80,7 @@ func (l *loggingTransport) record(msg OutboundMessage, threadRef string, sendErr
 	rec.General = msg.General
 	rec.Title = msg.Title
 	rec.Body = msg.Body
+	rec.Image = msg.ImagePath
 	if sendErr != nil {
 		rec.Outcome = sentlog.OutcomeFailed
 		rec.Error = sentlog.RedactError(sendErr)

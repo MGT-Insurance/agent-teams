@@ -81,6 +81,7 @@ type notifyKong struct {
 	File  string `name:"file" help:"Path to the message body file (required)." required:""`
 	Title string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, \"Reviews\" for the reviews handle, or \"Steward\" for the direct handle)."`
 	To    string `name:"to" help:"Conversation to reply in: the opaque ref from a steward-direct envelope, or the literal \"general\" for the shared General channel. Required for the direct handle."`
+	Image string `name:"image" help:"Path to a local image file to post inline instead of a text-only message (e.g. a screenshot from local testing). The message body still becomes the photo's caption."`
 
 	transportFor transportForFunc `kong:"-"`
 	labelAdd     labelAddFunc     `kong:"-"`
@@ -105,6 +106,11 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 	}
 	if _, err := os.Stat(c.File); err != nil {
 		return cli.Usagef("ateam notify: file not found: %s", c.File)
+	}
+	if c.Image != "" {
+		if _, err := os.Stat(c.Image); err != nil {
+			return cli.Usagef("ateam notify: image not found: %s", c.Image)
+		}
 	}
 
 	body, err := os.ReadFile(c.File)
@@ -160,6 +166,7 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 		ThreadRef:    threadRef,
 		Title:        title,
 		Body:         string(body),
+		ImagePath:    c.Image,
 		Sender:       sentlog.KindNotify,
 	}
 
@@ -312,6 +319,7 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 		InitiativeID: c.ID,
 		Title:        title,
 		Body:         body,
+		ImagePath:    c.Image,
 		Sender:       sentlog.KindNotifyBriefing,
 	}
 
@@ -346,6 +354,7 @@ func (c *notifyKong) runReviews(ctx *cli.Context, body string) error {
 		InitiativeID: c.ID,
 		Title:        title,
 		Body:         body,
+		ImagePath:    c.Image,
 		Sender:       sentlog.KindNotifyReviews,
 	}
 
@@ -414,6 +423,7 @@ func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
 		Body:         body,
 		General:      general,
 		ChatRef:      chatRef,
+		ImagePath:    c.Image,
 		Sender:       sentlog.KindNotifyDirect,
 	}
 

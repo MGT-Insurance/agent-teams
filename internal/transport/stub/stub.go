@@ -103,6 +103,7 @@ func (s *Stub) Send(msg transport.OutboundMessage) (string, error) {
 		"body":          msg.Body,
 		"chat_ref":      msg.ChatRef,
 		"general":       msg.General,
+		"image":         msg.ImagePath,
 		"destination":   destination,
 	}
 	data, err := json.Marshal(record)

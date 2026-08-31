@@ -58,10 +58,12 @@
 package telegram
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -146,6 +148,45 @@ func (t *Telegram) logf(depth int, format string, args ...any) {
 type httpDoer interface {
 	Get(url string) (*http.Response, error)
 	PostForm(url string, data url.Values) (*http.Response, error)
+	// PostMultipart posts fields plus one file part (fileField/fileName/
+	// fileContent) as multipart/form-data — sendPhoto's local image upload
+	// needs this; PostForm's urlencoded body cannot carry file content.
+	PostMultipart(url string, fields map[string]string, fileField, fileName string, fileContent []byte) (*http.Response, error)
+}
+
+// realHTTPClient adapts *http.Client to httpDoer. Get and PostForm are
+// promoted straight through via the embedded client; PostMultipart is added
+// here because http.Client has no multipart-upload method of its own.
+type realHTTPClient struct {
+	*http.Client
+}
+
+// PostMultipart builds a multipart/form-data request body from fields and one
+// file part, then posts it to url via the embedded client.
+func (c realHTTPClient) PostMultipart(url string, fields map[string]string, fileField, fileName string, fileContent []byte) (*http.Response, error) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for k, v := range fields {
+		if err := w.WriteField(k, v); err != nil {
+			return nil, err
+		}
+	}
+	part, err := w.CreateFormFile(fileField, fileName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(fileContent); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, url, &body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return c.Do(req)
 }
 
 // New constructs a Telegram transport. client may be nil (uses http.DefaultClient).
@@ -168,7 +209,7 @@ func New(home string, client httpDoer) (*Telegram, error) {
 		return nil, fmt.Errorf("telegram: dm-allowlist: %w", err)
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 45 * time.Second}
+		client = realHTTPClient{&http.Client{Timeout: 45 * time.Second}}
 	}
 	return &Telegram{
 		token:       token,
@@ -209,11 +250,11 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 				return "", fmt.Errorf("telegram: chat ref: %w", err)
 			}
 		}
-		// Empty thread ref: sendMessage omits message_thread_id entirely,
-		// which is required for a private chat and is already what a General
-		// send does. No new branch, and no empty-string thread id.
-		if err := t.sendMessage(chatID, "", msg.Body); err != nil {
-			return "", fmt.Errorf("telegram: sendMessage: %w", err)
+		// Empty thread ref: sendMessage/sendPhoto omits message_thread_id
+		// entirely, which is required for a private chat and is already what
+		// a General send does. No new branch, and no empty-string thread id.
+		if err := t.sendMessageOrPhoto(chatID, "", msg); err != nil {
+			return "", err
 		}
 		return "", nil
 	}
@@ -242,10 +283,43 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	// empty ChatRef, and forum topics exist only in the configured
 	// supergroup — createForumTopic and CloseTopic stay group-only for the
 	// same reason.
-	if err := t.sendMessage(t.chatID, threadRef, msg.Body); err != nil {
-		return "", fmt.Errorf("telegram: sendMessage: %w", err)
+	if err := t.sendMessageOrPhoto(t.chatID, threadRef, msg); err != nil {
+		return "", err
 	}
 	return threadRef, nil
+}
+
+// sendMessageOrPhoto posts msg into chatID/threadRef: sendPhoto (with a caption) when
+// msg.ImagePath is set, sendMessage (text-only) otherwise. The two Bot API
+// calls are mutually exclusive per send — an image paired with a body is
+// delivered as one photo message with the body as its caption, never a photo
+// followed by a redundant text message (agent-teams-bfw3.1).
+func (t *Telegram) sendMessageOrPhoto(chatID, threadRef string, msg transport.OutboundMessage) error {
+	if msg.ImagePath != "" {
+		if err := t.sendPhoto(chatID, threadRef, photoCaption(msg), msg.ImagePath); err != nil {
+			return fmt.Errorf("telegram: sendPhoto: %w", err)
+		}
+		return nil
+	}
+	if err := t.sendMessage(chatID, threadRef, msg.Body); err != nil {
+		return fmt.Errorf("telegram: sendMessage: %w", err)
+	}
+	return nil
+}
+
+// telegramCaptionMaxChars is the Bot API's sendPhoto caption cap.
+const telegramCaptionMaxChars = 1024
+
+// photoCaption derives the sendPhoto caption for msg: Body, falling back to
+// Title when Body is empty (so an image sent with only a title still gets a
+// caption), truncated to telegramCaptionMaxChars. Caption is optional —
+// msg with neither Body nor Title yields "".
+func photoCaption(msg transport.OutboundMessage) string {
+	caption := msg.Body
+	if caption == "" {
+		caption = msg.Title
+	}
+	return truncateChars(caption, telegramCaptionMaxChars)
 }
 
 // chatFromRef decodes and AUTHORIZES the destination named by an
@@ -763,6 +837,44 @@ func (t *Telegram) sendMessage(chatID, threadRef, text string) error {
 	return nil
 }
 
+// sendPhoto posts the local image file at imagePath into chatID as a photo —
+// a forum topic within it when threadRef is non-empty, otherwise the chat
+// itself — with an optional caption. Mirrors sendMessage's chat_id/
+// message_thread_id handling: a non-empty threadRef sets message_thread_id,
+// an empty one omits the key entirely (see sendMessage).
+func (t *Telegram) sendPhoto(chatID, threadRef, caption, imagePath string) error {
+	data, err := os.ReadFile(imagePath)
+	if err != nil {
+		return fmt.Errorf("read image %s: %w", imagePath, err)
+	}
+
+	fields := map[string]string{"chat_id": chatID}
+	if caption != "" {
+		fields["caption"] = caption
+	}
+	if threadRef != "" {
+		fields["message_thread_id"] = threadRef
+	}
+
+	resp, err := t.httpClient.PostMultipart(t.apiURL("sendPhoto"), fields, "photo", filepath.Base(imagePath), data)
+	if err != nil {
+		return t.sanitizeTransportErr(err)
+	}
+	defer resp.Body.Close()
+
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(resp.Body, &r); err != nil {
+		return err
+	}
+	if !r.OK {
+		return fmt.Errorf("API error: %s", r.Description)
+	}
+	return nil
+}
+
 // getUpdates long-polls for updates starting at offset.
 func (t *Telegram) getUpdates(offset int) ([]update, error) {
 	endpoint := fmt.Sprintf("%s?offset=%d&timeout=%d&allowed_updates=%s",
@@ -977,4 +1089,16 @@ func truncateUTF8(s string, maxBytes int) string {
 		cut = i
 	}
 	return s[:cut]
+}
+
+// truncateChars truncates s to at most maxChars runes. Telegram's sendPhoto
+// caption cap is stated in characters, not bytes (contrast truncateUTF8,
+// used for the byte-bounded topic name), so this counts runes to avoid
+// cutting a caption short for non-ASCII text.
+func truncateChars(s string, maxChars int) string {
+	runes := []rune(s)
+	if len(runes) <= maxChars {
+		return s
+	}
+	return string(runes[:maxChars])
 }
