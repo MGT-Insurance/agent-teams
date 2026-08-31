@@ -120,8 +120,9 @@ Never duplicate work merely because an old child no longer exists.
 
 ## Phase 5: deliver
 
-Run the full quality gates, including a real build and live behavior check.
-Resolve reviewer findings, commit, pull/rebase as appropriate, and push. Open a
+Run the full quality gates, including a real build and live behavior check,
+and confirm the live-test-review gate has cleared. Resolve reviewer findings,
+commit, pull/rebase as appropriate, and push. Open a
 ready-for-review PR unless the human asked for a draft. Write for an outside
 reader: describe the work, not Bead ids; ids may appear only as skippable
 trailers or parentheticals.

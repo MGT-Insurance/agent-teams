@@ -51,3 +51,7 @@
 - Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification; routes back to the implementer only genuinely implementer-owned core-path gaps. Only the DRI starts a dev server; testers never start one — they drive and observe an instance the DRI has already brought up.
 - Reviewer never fixes; the DRI routes its findings to fresh implementers.
 - All roles file discovery beads; the DRI triages them.
+
+## Live-test-review gate (decision 5)
+
+Once the tester's live exercise passes, the tester — not the DRI — raises a `--kind=live-test-review` gate carrying proof (`--attach` for screenshots/files, `--file` for a short summary). Treat it exactly like any other human gate: it must be CLEARED (steward-forwarded to the human, the human's go received) before opening the PR in Phase 5. Never detect steward presence or fall back to Telegram yourself — with no steward running, the gate simply WAITS, same as a review or question gate.

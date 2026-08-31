@@ -51,3 +51,13 @@ implementers.
 
 After every integration ring, run the composed branch's full verification.
 Loop closure requires both integrated code and observable end-to-end behavior.
+
+## Live-test-review gate
+
+After the tester's live exercise passes, the tester — not the DRI — raises a
+`live-test-review` gate carrying proof: screenshots or files via `--attach`, a
+short summary via `--file`. Treat it like any other human gate: it must clear
+(steward-forwarded to the human, human's go received) before the PR opens in
+Phase 5. Never detect steward presence or fall back to a direct Telegram send
+yourself — with no steward running, the gate simply waits, as a review or
+question gate would.
