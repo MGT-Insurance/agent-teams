@@ -279,8 +279,9 @@ var saveHungState = func(path string, m map[string]hungAnchor) error {
 // catch):
 //  1. DEAD  — worktree directory missing (orphan).
 //  2. AWAITING-HUMAN — labels carry "human" AND ("gate:question" OR
-//     "gate:review") — checked regardless of PID presence, since a real gate
-//     means the initiative is waiting on the human, not hung.
+//     "gate:review" OR "gate:live-test-review") — checked regardless of PID
+//     presence, since a real gate means the initiative is waiting on the
+//     human, not hung.
 //  3. DEAD  — no tied session is alive (matchSessionsForInitiative returned
 //     no live entry) — reached only once a real gate has already been ruled
 //     out.
@@ -319,7 +320,7 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 	// false stall alert (agent-teams-ssib.22). Call the same predicate
 	// status.go uses for computeExecutionStatus's identical question rather
 	// than writing a second implementation of it.
-	hasGate := hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:review")
+	hasGate := hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:live-test-review")
 	if hasHuman && hasGate {
 		return hungClassAwaitingHuman, matched, cwdPresent
 	}
