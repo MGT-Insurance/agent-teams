@@ -79,6 +79,20 @@ type OutboundMessage struct {
 	// the single message, using Body (falling back to Title) as its caption;
 	// it does not also send a separate text message for the same send.
 	ImagePath string
+	// DocumentPath optionally names a LOCAL file to post as a document
+	// attachment instead of a text-only message — e.g. a JSON payload, a log
+	// excerpt, or a HAR file too large or too unstructured for the ~4096-char
+	// text limit. Empty means the existing behavior, unchanged. Mutually
+	// exclusive with ImagePath in practice — the steward and `ateam notify`
+	// make one call per attachment, so at most one of ImagePath/DocumentPath
+	// is ever set on a given send — but if a caller sets both anyway, a
+	// transport that supports both prefers ImagePath (mirroring
+	// sendMessageOrAttachment's routing order), never sends two messages for
+	// one OutboundMessage. When set, a transport that supports document
+	// uploads (e.g. Telegram's sendDocument) sends the file as the single
+	// message, using Body (falling back to Title) as its caption; it does
+	// not also send a separate text message for the same send.
+	DocumentPath string
 	// Sender is the compile-time-declared identity of the call site issuing
 	// this send (agent-teams-48dh, contract agent-teams-48dh.1 §1/§3).
 	// REQUIRED: every OutboundMessage{ literal in non-test Go must set this.

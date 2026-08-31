@@ -87,6 +87,18 @@ func TestClassifyInitiative(t *testing.T) {
 			wantCwd:   true,
 		},
 		{
+			// agent-teams-n0jt.5.1: a parked live-test-review gate is a real
+			// gate like gate:question/gate:review -- it must classify
+			// AWAITING-HUMAN, not HUNG, while the human reviews live-test
+			// proof.
+			name:      "waiting + human + gate:live-test-review => AWAITING-HUMAN",
+			labels:    []string{"human", "gate:live-test-review"},
+			sessions:  []agentSession{{CWD: wt, Status: "waiting", PID: &pid}},
+			dirExists: dirExists,
+			wantClass: hungClassAwaitingHuman,
+			wantCwd:   true,
+		},
+		{
 			// agent-teams-ssib.22: a per-PR-gated initiative's label is
 			// "gate:review:<pr-url>", not the bare "gate:review" hasLabel
 			// alone matches. Before this fix, this case misclassified DEAD

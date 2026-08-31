@@ -31,15 +31,6 @@ func RegisterNotifyKong(p *cli.Parser) {
 	})
 }
 
-// notifyForGate adapts notifyKong into the gateNotifyFunc signature so
-// `ateam gate` can fire a best-effort phone ping in-process after recording
-// the gate. kong has no runtime verb registry to look "notify" up by name
-// post-registration, so gate constructs and runs a notifyKong directly.
-func notifyForGate(ctx *cli.Context, id, file string) error {
-	cmd := &notifyKong{ID: id, File: file, transportFor: transport.For, labelAdd: defaultLabelAdd}
-	return cmd.Run(ctx)
-}
-
 // defaultLabelAdd runs `bd label add <id> <label>`.
 func defaultLabelAdd(b cli.BDRunner, id, label string) error {
 	_, err := b.Run("label", "add", id, label)
@@ -57,6 +48,13 @@ func defaultLabelAdd(b cli.BDRunner, id, label string) error {
 // legitimate General reply, and the failure this epic cares about becomes
 // undetectable.
 const generalDest = "general"
+
+// maxDocumentBytes caps a --document upload at 10 MiB (10,485,760 bytes).
+// Telegram's sendDocument itself allows far more, but the gate-side --attach
+// path (bead agent-teams-n0jt.1) enforces the same 10 MiB cap on proof
+// attachments, and this path enforces it independently rather than trusting
+// every caller to pre-check.
+const maxDocumentBytes = 10 * 1024 * 1024
 
 // notifyKong is the kong-native form of notifyCmd: `ateam notify <id> --file <path> [--title <t>] [--to <ref|general>]`.
 //
@@ -77,11 +75,12 @@ const generalDest = "general"
 // what makes a stray --to on an adjacent `ateam notify <initiative-id>` line
 // likely, so this is the muscle-memory slip that must not cost a message.
 type notifyKong struct {
-	ID    string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, the reserved ReviewsHandle for the shared PR-review topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
-	File  string `name:"file" help:"Path to the message body file (required)." required:""`
-	Title string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, \"Reviews\" for the reviews handle, or \"Steward\" for the direct handle)."`
-	To    string `name:"to" help:"Conversation to reply in: the opaque ref from a steward-direct envelope, or the literal \"general\" for the shared General channel. Required for the direct handle."`
-	Image string `name:"image" help:"Path to a local image file to post inline instead of a text-only message (e.g. a screenshot from local testing). The message body still becomes the photo's caption."`
+	ID       string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, the reserved ReviewsHandle for the shared PR-review topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
+	File     string `name:"file" help:"Path to the message body file (required)." required:""`
+	Title    string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, \"Reviews\" for the reviews handle, or \"Steward\" for the direct handle)."`
+	To       string `name:"to" help:"Conversation to reply in: the opaque ref from a steward-direct envelope, or the literal \"general\" for the shared General channel. Required for the direct handle."`
+	Image    string `name:"image" help:"Path to a local image file to post inline instead of a text-only message (e.g. a screenshot from local testing). The message body still becomes the photo's caption."`
+	Document string `name:"document" help:"Path to a local file (up to 10 MB) to post as a document attachment instead of a text-only message — for non-image proof (JSON, logs, HAR). The message body still becomes the document's caption. Mutually exclusive with --image."`
 
 	transportFor transportForFunc `kong:"-"`
 	labelAdd     labelAddFunc     `kong:"-"`
@@ -110,6 +109,18 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 	if c.Image != "" {
 		if _, err := os.Stat(c.Image); err != nil {
 			return cli.Usagef("ateam notify: image not found: %s", c.Image)
+		}
+	}
+	if c.Document != "" && c.Image != "" {
+		return cli.Usagef("ateam notify: --image and --document are mutually exclusive — pass at most one attachment per call")
+	}
+	if c.Document != "" {
+		info, err := os.Stat(c.Document)
+		if err != nil {
+			return cli.Usagef("ateam notify: document not found: %s", c.Document)
+		}
+		if info.Size() > maxDocumentBytes {
+			return cli.Usagef("ateam notify: document %s is %d bytes, exceeding the %d-byte (10 MB) limit", c.Document, info.Size(), maxDocumentBytes)
 		}
 	}
 
@@ -167,6 +178,7 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 		Title:        title,
 		Body:         string(body),
 		ImagePath:    c.Image,
+		DocumentPath: c.Document,
 		Sender:       sentlog.KindNotify,
 	}
 
@@ -320,6 +332,7 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 		Title:        title,
 		Body:         body,
 		ImagePath:    c.Image,
+		DocumentPath: c.Document,
 		Sender:       sentlog.KindNotifyBriefing,
 	}
 
@@ -355,6 +368,7 @@ func (c *notifyKong) runReviews(ctx *cli.Context, body string) error {
 		Title:        title,
 		Body:         body,
 		ImagePath:    c.Image,
+		DocumentPath: c.Document,
 		Sender:       sentlog.KindNotifyReviews,
 	}
 
@@ -424,6 +438,7 @@ func (c *notifyKong) runDirect(ctx *cli.Context, body string) error {
 		General:      general,
 		ChatRef:      chatRef,
 		ImagePath:    c.Image,
+		DocumentPath: c.Document,
 		Sender:       sentlog.KindNotifyDirect,
 	}
 

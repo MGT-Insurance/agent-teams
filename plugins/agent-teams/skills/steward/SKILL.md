@@ -47,14 +47,21 @@ ateam mail inbox
 
 Use canonical `ateam mail send`/`ateam mail inbox`, never the deprecated flat `send`/`inbox` aliases. Each unread body is a self-contained, sentinel-delimited envelope — never guess at the format. Classify by type and dispatch; why each kind exists and the frozen format contract: references/envelopes.md.
 
-### steward-gate (`<<<steward-gate initiative:<id> kind:<question|review>>>>`)
+### steward-gate (`<<<steward-gate initiative:<id> kind:<question|review|live-test-review> attachments:<N>>>>`)
 
-A DRI parked on a gate.
+A DRI parked on a gate. Steps 1-4 are the question/review decision-escalation flow (`attachments:0`); step 5 (`live-test-review`) is proof-forwarding, not a decision.
 
 1. Enrich with `ateam show <id>` and `ateam execution-status`, plus anything you verify yourself — all INBOUND-ONLY, sets your confidence, never forwarded to the human (§5 governs what reaches him). Recall prior calls: `ateam steward ledger recall <category>` and `ateam recall steward <keywords>` — pull both at decision time, never from startup.
 2. Compose per §5's gate-escalation spec and orienting clause: assume he remembers nothing and doesn't want it restored. No situation narrative.
 3. Send to his phone: temp file, then `ateam notify <initiative-id> --file <msg-file>` (lands in that initiative's topic).
 4. Nothing to the ledger yet — pending until the human replies. Keep notes on the recommendation; the reply handler depends on them.
+5. **`kind:live-test-review`**: read the N attachment lines after the header (`<photo|document><TAB><path>` — frozen, never guess: references/envelopes.md / `internal/verbs/steward_seams.go`). Fan out one send per attachment, then the body — never an album/`sendMediaGroup`:
+   ```bash
+   ateam notify <id> --image    <photo-path>    --file <basename-file>  # per photo
+   ateam notify <id> --document <document-path> --file <basename-file>  # per document
+   ateam notify <id> --file     <body-file>                             # body, last
+   ```
+   `--file` is required on every call and becomes that send's caption, so each attachment gets its own tiny caption file (just its basename) — not the proof body repeated N times. No enrichment, recommendation, or ledger entry. Testers and the DRI never call Telegram directly — you're the only relay. No-steward case needs nothing new: `notifyToSteward` no-ops without a steward marker, so this gate WAITS like any other.
 
 ### steward-reply (`<<<steward-reply initiative:<id>>>>`)
 
