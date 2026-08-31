@@ -253,7 +253,7 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 		// Empty thread ref: sendMessage/sendPhoto omits message_thread_id
 		// entirely, which is required for a private chat and is already what
 		// a General send does. No new branch, and no empty-string thread id.
-		if err := t.sendText(chatID, "", msg); err != nil {
+		if err := t.sendMessageOrPhoto(chatID, "", msg); err != nil {
 			return "", err
 		}
 		return "", nil
@@ -283,18 +283,18 @@ func (t *Telegram) Send(msg transport.OutboundMessage) (string, error) {
 	// empty ChatRef, and forum topics exist only in the configured
 	// supergroup — createForumTopic and CloseTopic stay group-only for the
 	// same reason.
-	if err := t.sendText(t.chatID, threadRef, msg); err != nil {
+	if err := t.sendMessageOrPhoto(t.chatID, threadRef, msg); err != nil {
 		return "", err
 	}
 	return threadRef, nil
 }
 
-// sendText posts msg into chatID/threadRef: sendPhoto (with a caption) when
+// sendMessageOrPhoto posts msg into chatID/threadRef: sendPhoto (with a caption) when
 // msg.ImagePath is set, sendMessage (text-only) otherwise. The two Bot API
 // calls are mutually exclusive per send — an image paired with a body is
 // delivered as one photo message with the body as its caption, never a photo
 // followed by a redundant text message (agent-teams-bfw3.1).
-func (t *Telegram) sendText(chatID, threadRef string, msg transport.OutboundMessage) error {
+func (t *Telegram) sendMessageOrPhoto(chatID, threadRef string, msg transport.OutboundMessage) error {
 	if msg.ImagePath != "" {
 		if err := t.sendPhoto(chatID, threadRef, photoCaption(msg), msg.ImagePath); err != nil {
 			return fmt.Errorf("telegram: sendPhoto: %w", err)
