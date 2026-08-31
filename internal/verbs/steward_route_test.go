@@ -188,6 +188,114 @@ func TestNotifyToSteward_NoReviewLabel_DefaultsToQuestionKind(t *testing.T) {
 	}
 }
 
+// TestNotifyToSteward_LiveTestReviewLabel_YieldsLiveTestReviewKindWithAttachments
+// is the live-test-review analog of TestNotifyToSteward_PerPRReviewLabel_YieldsReviewKind
+// above: a "gate:live-test-review" label must derive StewardGateKindLiveTestReview
+// (not fall through to the question default), and the attachments passed in
+// by the caller (as gateKong.Run does, classified from --attach) must ride the
+// built envelope unchanged — the multi-attachment fan-out proof at the
+// notifyToSteward level, with two photos and one document.
+func TestNotifyToSteward_LiveTestReviewLabel_YieldsLiveTestReviewKindWithAttachments(t *testing.T) {
+	initiativeID := "at-ltr-fanout"
+	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:live-test-review"}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
+
+	attachments := []Attachment{
+		{Path: "/tmp/login-flow.png", Kind: "photo"},
+		{Path: "/tmp/checkout-flow.jpg", Kind: "photo"},
+		{Path: "/tmp/network.har", Kind: "document"},
+	}
+	askFile := makeTempFile(t, "live-verified: login and checkout both work")
+	if err := notifyToSteward(ctx, initiativeID, askFile, attachments); err != nil {
+		t.Fatalf("notifyToSteward: unexpected error: %v", err)
+	}
+
+	env, ok := ParseStewardGateEnvelope(fbd.createBody)
+	if !ok {
+		t.Fatalf("message body is not a well-formed steward-gate envelope:\n%s", fbd.createBody)
+	}
+	if env.Kind != StewardGateKindLiveTestReview {
+		t.Errorf("envelope Kind = %q, want %q", env.Kind, StewardGateKindLiveTestReview)
+	}
+	if len(env.Attachments) != len(attachments) {
+		t.Fatalf("envelope Attachments = %+v, want %+v", env.Attachments, attachments)
+	}
+	for i := range attachments {
+		if env.Attachments[i] != attachments[i] {
+			t.Errorf("envelope Attachments[%d] = %+v, want %+v", i, env.Attachments[i], attachments[i])
+		}
+	}
+}
+
+// TestNotifyToSteward_LiveTestReviewLabel_NoAttach_AttachmentsZero is the
+// text-only proof (decision-adjacent case in agent-teams-n0jt.5.6): a
+// live-test-review gate raised with no --attach carries an empty attachment
+// list all the way through the built-and-reparsed envelope, so the Steward
+// forwards the body as plain text rather than fanning out any attachment
+// notify calls.
+func TestNotifyToSteward_LiveTestReviewLabel_NoAttach_AttachmentsZero(t *testing.T) {
+	initiativeID := "at-ltr-textonly"
+	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:live-test-review"}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	requireStewardMarker(t, ctx)
+
+	askFile := makeTempFile(t, "live-verified: no proof attachments this time")
+	if err := notifyToSteward(ctx, initiativeID, askFile, nil); err != nil {
+		t.Fatalf("notifyToSteward: unexpected error: %v", err)
+	}
+
+	env, ok := ParseStewardGateEnvelope(fbd.createBody)
+	if !ok {
+		t.Fatalf("message body is not a well-formed steward-gate envelope:\n%s", fbd.createBody)
+	}
+	if env.Kind != StewardGateKindLiveTestReview {
+		t.Errorf("envelope Kind = %q, want %q", env.Kind, StewardGateKindLiveTestReview)
+	}
+	if len(env.Attachments) != 0 {
+		t.Errorf("envelope Attachments = %+v, want empty (attachments:0)", env.Attachments)
+	}
+	if !strings.Contains(fbd.createBody, "attachments:0") {
+		t.Errorf("envelope header missing attachments:0, got:\n%s", fbd.createBody)
+	}
+	if env.Body != "live-verified: no proof attachments this time" {
+		t.Errorf("envelope Body = %q, want the plain-text ask body unchanged", env.Body)
+	}
+}
+
+// TestNotifyToSteward_LiveTestReviewKind_NoMarker_NoOpsWithoutBuildingOrSending
+// is the no-steward proof (decision 4) specifically for the live-test-review
+// kind, WITH attachments in hand: with no steward marker on this machine,
+// notifyToSteward must no-op before ever reading the ask file, looking up the
+// initiative, or building an envelope — the gate is recorded (by gateKong.Run,
+// not exercised here) and simply WAITS. Mirrors
+// TestNotifyToSteward_NoMarker_NoOpsWithoutBuildingOrSending above (question
+// kind, no attachments); this variant proves the guard fires identically when
+// the kind is live-test-review and attachments are present, ruling out a
+// kind- or attachment-count-conditioned bypass of the presence check.
+func TestNotifyToSteward_LiveTestReviewKind_NoMarker_NoOpsWithoutBuildingOrSending(t *testing.T) {
+	initiativeID := "at-ltr-nomarker"
+	fbd := &stewardRouteFakeBD{initiativeID: initiativeID, issueLabels: []string{"human", "gate:live-test-review"}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	// No requireStewardMarker call: this machine has no steward configured.
+
+	attachments := []Attachment{{Path: "/tmp/proof.png", Kind: "photo"}}
+	// A nonexistent ask file: if notifyToSteward read past the marker guard,
+	// this would surface as a "read file" error rather than a clean nil —
+	// so a nil return here is also proof the read never happened.
+	if err := notifyToSteward(ctx, initiativeID, "/no/such/ask-file.txt", attachments); err != nil {
+		t.Fatalf("notifyToSteward: expected nil (no-op) with no marker, got: %v", err)
+	}
+
+	if fbd.createArgs != nil {
+		t.Errorf("expected no bd create call with no steward marker, got args: %v", fbd.createArgs)
+	}
+	doorbell := StewardDoorbellPath(ctx)
+	if _, err := os.Stat(doorbell); !os.IsNotExist(err) {
+		t.Errorf("expected doorbell NOT touched with no steward marker, stat: %v", err)
+	}
+}
+
 func TestNotifyToSteward_FileNotFound_ReturnsError(t *testing.T) {
 	fbd := &stewardRouteFakeBD{initiativeID: "at-x11"}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
