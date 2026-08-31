@@ -63,6 +63,21 @@ func TestComputeExecutionStatus(t *testing.T) {
 			want:     "NEEDS-DECISION",
 		},
 
+		{
+			name:     "needs-decision: human+gate:live-test-review, no session",
+			labels:   []string{"human", "gate:live-test-review"},
+			sessions: noSession,
+			wt:       wt,
+			want:     "NEEDS-DECISION",
+		},
+		{
+			name:     "needs-decision: human+gate:live-test-review, busy session",
+			labels:   []string{"human", "gate:live-test-review"},
+			sessions: busySession,
+			wt:       wt,
+			want:     "NEEDS-DECISION",
+		},
+
 		// IN-PROGRESS (rule 2): actively working OVERRIDES gate:review.
 		{
 			name:     "working session with gate:review => IN-PROGRESS not REVIEWABLE",
