@@ -120,6 +120,14 @@ type Record struct {
 	General bool   `json:"general"` // OutboundMessage.General
 	Title   string `json:"title"`   // OutboundMessage.Title
 	Body    string `json:"body"`    // OutboundMessage.Body, FULL, never truncated
+	// Image mirrors OutboundMessage.ImagePath verbatim — the local image path
+	// a sendPhoto-capable transport uploaded, not message content (that's
+	// already in Body as the caption). "" for every record predating this
+	// field and for every text-only send, old or new: neither ever set
+	// ImagePath, so decoding an old JSONL line with no "image" key leaves
+	// this at its zero value with no version branch required. Addition to
+	// §2, contract agent-teams-48dh.1 (agent-teams-bfw3.2).
+	Image   string `json:"image"`   // OutboundMessage.ImagePath, or "" for a text-only send
 	Outcome string `json:"outcome"` // "sent" | "failed" ONLY
 	Error   string `json:"error"`   // "" on success; on failure, RedactError(sendErr) — embedded URLs reduced to scheme://host (§6, amended)
 

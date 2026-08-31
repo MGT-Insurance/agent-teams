@@ -483,6 +483,105 @@ func TestSend_WithImagePath_ExistingThread_PostsPhotoWithCaptionInsteadOfText(t 
 	}
 }
 
+// ── sendPhoto: caption derivation (photoCaption, agent-teams-bfw3.2) ─────────
+
+// TestPhotoCaption_TruncatesAtExactly1024Runes confirms photoCaption enforces
+// telegramCaptionMaxChars on plain ASCII text: a caption 2000 runes long is
+// cut to exactly the first 1024.
+func TestPhotoCaption_TruncatesAtExactly1024Runes(t *testing.T) {
+	body := strings.Repeat("a", 2000)
+	caption := photoCaption(transport.OutboundMessage{Body: body})
+
+	if got := len([]rune(caption)); got != telegramCaptionMaxChars {
+		t.Errorf("caption rune count: got %d, want %d", got, telegramCaptionMaxChars)
+	}
+	if caption != body[:telegramCaptionMaxChars] {
+		t.Errorf("caption: got %q, want the first %d bytes of body", caption, telegramCaptionMaxChars)
+	}
+}
+
+// TestPhotoCaption_MultiByteRuneTruncationStaysValid confirms truncateChars
+// counts RUNES, not bytes: 1023 ASCII characters followed by multi-byte
+// emoji straddling the 1024-rune cut point must truncate at the rune
+// boundary, never mid-rune. A byte-based truncation at 1024 bytes would
+// instead cut partway through the first emoji's 4-byte encoding, producing
+// invalid UTF-8.
+func TestPhotoCaption_MultiByteRuneTruncationStaysValid(t *testing.T) {
+	const asciiPrefixLen = telegramCaptionMaxChars - 1
+	body := strings.Repeat("x", asciiPrefixLen) + strings.Repeat("😀", 10)
+	caption := photoCaption(transport.OutboundMessage{Body: body})
+
+	if !utf8.ValidString(caption) {
+		t.Fatalf("caption is not valid UTF-8: %q", caption)
+	}
+	if got := len([]rune(caption)); got != telegramCaptionMaxChars {
+		t.Errorf("caption rune count: got %d, want %d", got, telegramCaptionMaxChars)
+	}
+	wantCaption := strings.Repeat("x", asciiPrefixLen) + "😀"
+	if caption != wantCaption {
+		t.Errorf("caption: got %q, want %q (exactly one emoji admitted, not split)", caption, wantCaption)
+	}
+}
+
+// TestPhotoCaption_FallsBackToTitleWhenBodyEmpty confirms an image sent with
+// only a title still gets a caption.
+func TestPhotoCaption_FallsBackToTitleWhenBodyEmpty(t *testing.T) {
+	caption := photoCaption(transport.OutboundMessage{Title: "Status update"})
+	if caption != "Status update" {
+		t.Errorf("caption: got %q, want %q", caption, "Status update")
+	}
+}
+
+// TestPhotoCaption_OmittedWhenBodyAndTitleEmpty confirms a caption is
+// optional: an OutboundMessage with neither Body nor Title yields "".
+func TestPhotoCaption_OmittedWhenBodyAndTitleEmpty(t *testing.T) {
+	caption := photoCaption(transport.OutboundMessage{})
+	if caption != "" {
+		t.Errorf("caption: got %q, want empty", caption)
+	}
+}
+
+// TestSend_WithImagePath_NoBodyNoTitle_OmitsCaptionFieldEntirely confirms
+// sendPhoto drops the caption FIELD from the multipart request entirely when
+// photoCaption returns "" — not merely sends it as an empty value — mirroring
+// sendMessage/sendPhoto's message_thread_id omission (see sendMessage's doc
+// comment).
+func TestSend_WithImagePath_NoBodyNoTitle_OmitsCaptionFieldEntirely(t *testing.T) {
+	const chatID = "-100123456789"
+
+	imagePath := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(imagePath, []byte("fake-png-bytes"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var captionFieldPresent bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/sendPhoto") {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		_, captionFieldPresent = r.MultipartForm.Value["caption"]
+		jsonResponse(w, 200, map[string]any{"ok": true, "result": map[string]any{}})
+	}))
+	defer srv.Close()
+
+	tg := newTestTelegram(t, srv, chatID)
+	if _, err := tg.Send(transport.OutboundMessage{
+		InitiativeID: "at-00o",
+		ThreadRef:    "7",
+		ImagePath:    imagePath,
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if captionFieldPresent {
+		t.Error("caption field present in the multipart form with no Body/Title set; want it omitted entirely")
+	}
+}
+
 // ── CloseTopic ────────────────────────────────────────────────────────────────
 
 func TestCloseTopic_Success(t *testing.T) {
