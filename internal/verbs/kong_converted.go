@@ -186,11 +186,43 @@ func (c *noteKong) Run(ctx *cli.Context) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
-// gateNotifyFunc is called after gate labels are set to route the ask to
-// the Steward. Injected so tests can verify invocations and simulate
-// failures without a real transport. nil means skip notify (zero-value
-// gateKong, test usage).
-type gateNotifyFunc func(ctx *cli.Context, id, file string) error
+// Attachment is one proof file a gate carries to the Steward alongside its
+// ask body — a screenshot, HAR, log, or other file passed via repeatable
+// --attach. Kind is "photo" (png/jpg/jpeg/gif/webp, case-insensitive
+// extension) or "document" (everything else), classified ONCE by
+// classifyAttachment at gate time so the classification rides the envelope
+// and the Steward never re-derives it — see steward_seams.go's Gate→Steward
+// envelope for the wire format.
+type Attachment struct {
+	Path string
+	Kind string // "photo" or "document"
+}
+
+// maxAttachmentBytes is the size cap a single --attach file must not exceed
+// (Eric, agent-teams-n0jt.1 notes: "must reject any file > 10 MB
+// (10,485,760 bytes) at gate time, failing loudly at the gate site").
+const maxAttachmentBytes = 10 * 1024 * 1024
+
+// classifyAttachment routes path to "photo" (case-insensitive
+// png/jpg/jpeg/gif/webp extension) or "document" (everything else) — the
+// one place a gate attachment is classified, so it can ride the envelope
+// as a typed value instead of every downstream reader re-deriving it from
+// the path.
+func classifyAttachment(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return "photo"
+	default:
+		return "document"
+	}
+}
+
+// gateNotifyFunc is called after gate labels are set to route the ask —
+// plus any --attach proof attachments, already classified — to the
+// Steward. Injected so tests can verify invocations and simulate failures
+// without a real transport. nil means skip notify (zero-value gateKong,
+// test usage).
+type gateNotifyFunc func(ctx *cli.Context, id, file string, attachments []Attachment) error
 
 // gateKong is the kong-converted form of gate.
 // Two mutually-exclusive entry paths: prose (--file) vs structured
@@ -218,7 +250,17 @@ type gateKong struct {
 	ContextFile    string `name:"context-file"                  help:"Path to optional context file (content ≤280 chars)."`
 
 	// Kind applies to both forms.
-	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`
+	Kind string `name:"kind" enum:"review,question,live-test-review" default:"question" help:"Gate kind: review, question, or live-test-review."`
+
+	// Attach is a repeatable proof-attachment path (screenshot, HAR, log,
+	// etc.), independent of which body form (--file or --decision) is used.
+	// Every path is validated in Validate (exists, ≤10 MB, no TAB/newline —
+	// TAB and newline are the envelope's own delimiters, steward_seams.go)
+	// and classified in Run by classifyAttachment into "photo" or
+	// "document" before riding the Gate→Steward envelope. sep:"none" keeps
+	// a comma inside a path from being mistaken for a second attachment —
+	// repeated `--attach` flags still append normally.
+	Attach []string `name:"attach" sep:"none" help:"Path to a proof attachment (repeatable): screenshot, HAR, log, etc. Auto-routed as a photo (png/jpg/jpeg/gif/webp) or document; rejected if missing, over 10 MB, or the path contains a TAB or newline."`
 
 	// PR scopes the gate to one PR, per the frozen grammar
 	// "<base>:<pr-url>" (docs/multi-pr-contract.md §3): the emitted label
@@ -237,10 +279,25 @@ type gateKong struct {
 }
 
 // Validate enforces constraints not expressible as tags:
+//   - Every --attach path: no TAB/newline (breaks the envelope's own
+//     delimiters), must exist, must not exceed maxAttachmentBytes.
 //   - If structured flags are used: --decision required; --decision ≤120 chars; context-file content ≤280 chars.
 //   - If neither form is provided: --file required error.
 //   - Prose form: file must exist.
 func (c *gateKong) Validate(_ *kong.Context) error {
+	for _, p := range c.Attach {
+		if strings.ContainsAny(p, "\t\n") {
+			return cli.Usagef("ateam gate: --attach path contains a tab or newline (breaks the envelope encoding): %q", p)
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			return cli.Usagef("ateam gate: --attach file not found: %s", p)
+		}
+		if info.Size() > maxAttachmentBytes {
+			return cli.Usagef("ateam gate: --attach file exceeds %d bytes (10 MB cap): %s (%d bytes)", maxAttachmentBytes, p, info.Size())
+		}
+	}
+
 	structuredUsed := c.Decision != "" || c.Recommendation != "" ||
 		c.Alternative != "" || c.ContextFile != ""
 
@@ -399,7 +456,11 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 			}
 			// On any temp-file failure, fall back to noteFile (sentinel block).
 		}
-		if notifyErr := c.notify(ctx, c.ID, notifyFile); notifyErr != nil {
+		attachments := make([]Attachment, len(c.Attach))
+		for i, p := range c.Attach {
+			attachments[i] = Attachment{Path: p, Kind: classifyAttachment(p)}
+		}
+		if notifyErr := c.notify(ctx, c.ID, notifyFile, attachments); notifyErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
 		}
 	}
@@ -480,7 +541,7 @@ func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
 		extra = perPRGateLabels(issue.Labels)
 	}
 
-	labels := append([]string{"human", "gate:review", "gate:question", externalReviewLabel}, extra...)
+	labels := append([]string{"human", "gate:review", "gate:question", "gate:live-test-review", externalReviewLabel}, extra...)
 	for _, label := range labels {
 		out, err := ctx.BD.Run("label", "remove", c.ID, label)
 		if out != "" {
@@ -499,6 +560,13 @@ func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
 // are handled separately by clearBareLegacy's always-attempted four-label
 // removal, so this only needs to find the per-PR additions a --pr gate call
 // may have left behind.
+//
+// Deliberately does NOT include "gate:live-test-review:" — that kind is
+// bare-only (raised pre-PR, agent-teams-n0jt.1), so a bare clear-gate never
+// needs to hunt for a per-PR-suffixed stray of it. clearOnePR's removal
+// loop below still covers the defensive case where one was created anyway
+// (e.g. a `gate --kind=live-test-review --pr <url>` call, which nothing
+// currently rejects).
 func perPRGateLabels(labels []string) []string {
 	var found []string
 	for _, l := range labels {
@@ -544,12 +612,12 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 	hasOwnPerPRLabel := hasLabel(issue.Labels, "gate:review:"+pr) ||
 		hasLabel(issue.Labels, "gate:question:"+pr) ||
 		hasLabel(issue.Labels, externalReviewLabel+":"+pr)
-	hasBareGate := hasLabel(issue.Labels, "gate:review") || hasLabel(issue.Labels, "gate:question")
+	hasBareGate := hasLabel(issue.Labels, "gate:review") || hasLabel(issue.Labels, "gate:question") || hasLabel(issue.Labels, "gate:live-test-review")
 	if !hasOwnPerPRLabel && hasBareGate {
 		return cli.Usagef("ateam clear-gate: %s's gate is initiative-wide, not per-PR — run `ateam clear-gate %s` without --pr to clear it", c.ID, c.ID)
 	}
 
-	for _, base := range []string{"gate:review", "gate:question", externalReviewLabel} {
+	for _, base := range []string{"gate:review", "gate:question", "gate:live-test-review", externalReviewLabel} {
 		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+pr)
 		if out != "" {
 			fmt.Fprintln(ctx.Stdout, out)
@@ -579,15 +647,15 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 	return err
 }
 
-// anyGateLabelRemains reports whether labels still contain a review or
-// question gate for any PR — bare, legacy form, or per-PR "<base>:<url>"
-// suffixed form (docs/multi-pr-contract.md §3). Used by clear-gate to decide
-// whether the shared "human" label is safe to remove once one PR's gate is
-// cleared. external-review is deliberately excluded: it is additive on top
-// of a review gate (external_review.go §2), never a gate on its own, so it
-// carries no signal here.
+// anyGateLabelRemains reports whether labels still contain a review,
+// question, or live-test-review gate for any PR — bare, legacy form, or
+// per-PR "<base>:<url>" suffixed form (docs/multi-pr-contract.md §3). Used
+// by clear-gate to decide whether the shared "human" label is safe to
+// remove once one PR's gate is cleared. external-review is deliberately
+// excluded: it is additive on top of a review gate (external_review.go §2),
+// never a gate on its own, so it carries no signal here.
 func anyGateLabelRemains(labels []string) bool {
-	return hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:question")
+	return hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:live-test-review")
 }
 
 // ── learn ─────────────────────────────────────────────────────────────────────

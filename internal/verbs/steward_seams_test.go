@@ -46,12 +46,12 @@ func TestStewardPaths(t *testing.T) {
 
 func TestStewardGateEnvelope_RoundTrip(t *testing.T) {
 	body := "Which design to pick?\n\nRecommended: A\nAlternative: B"
-	text, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, body)
+	text, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, nil, body)
 	if err != nil {
 		t.Fatalf("BuildStewardGateEnvelope: %v", err)
 	}
 
-	want := "<<<steward-gate initiative:agent-teams-e3mq kind:question>>>\n" + body + "\n>>>"
+	want := "<<<steward-gate initiative:agent-teams-e3mq kind:question attachments:0>>>\n" + body + "\n>>>"
 	if text != want {
 		t.Fatalf("BuildStewardGateEnvelope =\n%q\nwant\n%q", text, want)
 	}
@@ -66,14 +66,104 @@ func TestStewardGateEnvelope_RoundTrip(t *testing.T) {
 	if got.Kind != verbs.StewardGateKindQuestion {
 		t.Errorf("Kind = %q, want %q", got.Kind, verbs.StewardGateKindQuestion)
 	}
+	if len(got.Attachments) != 0 {
+		t.Errorf("Attachments = %+v, want empty", got.Attachments)
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+// TestStewardGateEnvelope_LegacyNoAttachmentsField pins backward
+// compatibility with the pre-agent-teams-n0jt.1 wire format, which had no
+// " attachments:<N>" header segment at all: an envelope built by an older
+// binary (or already in flight across a rolling deploy) must still parse,
+// with Attachments empty rather than ok=false. The literal text here is
+// deliberately hardcoded, not built via BuildStewardGateEnvelope — that is
+// the whole point of the check.
+func TestStewardGateEnvelope_LegacyNoAttachmentsField(t *testing.T) {
+	body := "Should we ship the release?"
+	text := "<<<steward-gate initiative:agent-teams-e3mq kind:review>>>\n" + body + "\n>>>"
+
+	got, ok := verbs.ParseStewardGateEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardGateEnvelope: ok=false for a legacy envelope, want true")
+	}
+	if got.Kind != verbs.StewardGateKindReview {
+		t.Errorf("Kind = %q, want %q", got.Kind, verbs.StewardGateKindReview)
+	}
+	if len(got.Attachments) != 0 {
+		t.Errorf("Attachments = %+v, want empty", got.Attachments)
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
+// TestStewardGateEnvelope_MultiAttachment_RoundTrips is the core-path proof
+// for agent-teams-n0jt.1's ACCEPTANCE: a live-test-review gate carrying two
+// --attach files (one photo, one document) round-trips through
+// Build/Parse with the header's attachments:2 count, a photo line and a
+// document line in order, and — since the encoding is TAB-delimited, not
+// space-delimited — a path containing a space survives unchanged.
+func TestStewardGateEnvelope_MultiAttachment_RoundTrips(t *testing.T) {
+	attachments := []verbs.Attachment{
+		{Path: "/tmp/proof screenshot.png", Kind: "photo"},
+		{Path: "/tmp/network.har", Kind: "document"},
+	}
+	body := "live test verified end to end"
+	text, err := verbs.BuildStewardGateEnvelope("agent-teams-n0jt", verbs.StewardGateKindLiveTestReview, attachments, body)
+	if err != nil {
+		t.Fatalf("BuildStewardGateEnvelope: %v", err)
+	}
+
+	wantHeader := "<<<steward-gate initiative:agent-teams-n0jt kind:live-test-review attachments:2>>>"
+	if !strings.HasPrefix(text, wantHeader+"\n") {
+		t.Fatalf("BuildStewardGateEnvelope header = %q, want prefix %q", text, wantHeader)
+	}
+
+	got, ok := verbs.ParseStewardGateEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardGateEnvelope: ok=false, want true (envelope: %q)", text)
+	}
+	if got.Kind != verbs.StewardGateKindLiveTestReview {
+		t.Errorf("Kind = %q, want %q", got.Kind, verbs.StewardGateKindLiveTestReview)
+	}
+	if len(got.Attachments) != 2 {
+		t.Fatalf("Attachments = %+v, want 2 entries", got.Attachments)
+	}
+	if got.Attachments[0] != attachments[0] {
+		t.Errorf("Attachments[0] = %+v, want %+v", got.Attachments[0], attachments[0])
+	}
+	if got.Attachments[1] != attachments[1] {
+		t.Errorf("Attachments[1] = %+v, want %+v", got.Attachments[1], attachments[1])
+	}
 	if got.Body != body {
 		t.Errorf("Body = %q, want %q", got.Body, body)
 	}
 }
 
 func TestStewardGateEnvelope_InvalidKind(t *testing.T) {
-	if _, err := verbs.BuildStewardGateEnvelope("id", verbs.StewardGateKind("bogus"), "body"); err == nil {
+	if _, err := verbs.BuildStewardGateEnvelope("id", verbs.StewardGateKind("bogus"), nil, "body"); err == nil {
 		t.Fatal("BuildStewardGateEnvelope: expected error for invalid kind, got nil")
+	}
+}
+
+// TestStewardGateEnvelope_InvalidAttachment verifies Build rejects a
+// malformed attachment before rendering: an empty path, a path containing
+// the envelope's own TAB/newline delimiters, and an unrecognized kind.
+func TestStewardGateEnvelope_InvalidAttachment(t *testing.T) {
+	for name, attachments := range map[string][]verbs.Attachment{
+		"empty path":        {{Path: "", Kind: "photo"}},
+		"tab in path":       {{Path: "a\tb.png", Kind: "photo"}},
+		"newline in path":   {{Path: "a\nb.png", Kind: "photo"}},
+		"unrecognized kind": {{Path: "a.png", Kind: "bogus"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := verbs.BuildStewardGateEnvelope("id", verbs.StewardGateKindLiveTestReview, attachments, "body"); err == nil {
+				t.Errorf("BuildStewardGateEnvelope: expected error for %s, got nil", name)
+			}
+		})
 	}
 }
 
@@ -83,6 +173,15 @@ func TestParseStewardGateEnvelope_Malformed(t *testing.T) {
 	}
 	if _, ok := verbs.ParseStewardGateEnvelope("<<<steward-gate initiative:x kind:question>>>\nbody with no closer"); ok {
 		t.Error("ParseStewardGateEnvelope: expected ok=false for missing closing sentinel")
+	}
+	if _, ok := verbs.ParseStewardGateEnvelope("<<<steward-gate initiative:x kind:question attachments:bogus>>>\nbody\n>>>"); ok {
+		t.Error("ParseStewardGateEnvelope: expected ok=false for non-numeric attachments count")
+	}
+	if _, ok := verbs.ParseStewardGateEnvelope("<<<steward-gate initiative:x kind:question attachments:1>>>\nbody\n>>>"); ok {
+		t.Error("ParseStewardGateEnvelope: expected ok=false when fewer attachment lines than declared")
+	}
+	if _, ok := verbs.ParseStewardGateEnvelope("<<<steward-gate initiative:x kind:question attachments:1>>>\nbogus-no-tab\nbody\n>>>"); ok {
+		t.Error("ParseStewardGateEnvelope: expected ok=false for an attachment line missing its TAB")
 	}
 }
 
@@ -388,7 +487,7 @@ func TestParseStewardDirectEnvelope_Malformed(t *testing.T) {
 // formats to all five parsers and confirms only the matching parser accepts
 // — no cross-match between gate/reply/hung-wake/closed-initiative/direct.
 func TestStewardEnvelopes_CrossParserRejection(t *testing.T) {
-	gateText, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, "body")
+	gateText, err := verbs.BuildStewardGateEnvelope("agent-teams-e3mq", verbs.StewardGateKindQuestion, nil, "body")
 	if err != nil {
 		t.Fatalf("BuildStewardGateEnvelope: %v", err)
 	}

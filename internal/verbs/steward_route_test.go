@@ -91,7 +91,7 @@ func TestNotifyToSteward_NoMarker_NoOpsWithoutBuildingOrSending(t *testing.T) {
 	// No requireStewardMarker call: this machine has no steward configured.
 
 	askFile := makeTempFile(t, "Should we ship the release?")
-	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
+	if err := notifyToSteward(ctx, initiativeID, askFile, nil); err != nil {
 		t.Fatalf("notifyToSteward: expected nil (no-op) with no marker, got: %v", err)
 	}
 
@@ -113,7 +113,7 @@ func TestNotifyToSteward_ReviewKind_BuildsEnvelopeAndRoutesToSteward(t *testing.
 	requireStewardMarker(t, ctx)
 
 	askFile := makeTempFile(t, "Should we ship the release?")
-	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
+	if err := notifyToSteward(ctx, initiativeID, askFile, nil); err != nil {
 		t.Fatalf("notifyToSteward: unexpected error: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestNotifyToSteward_PerPRReviewLabel_YieldsReviewKind(t *testing.T) {
 	requireStewardMarker(t, ctx)
 
 	askFile := makeTempFile(t, "Should we ship the release?")
-	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
+	if err := notifyToSteward(ctx, initiativeID, askFile, nil); err != nil {
 		t.Fatalf("notifyToSteward: unexpected error: %v", err)
 	}
 
@@ -175,7 +175,7 @@ func TestNotifyToSteward_NoReviewLabel_DefaultsToQuestionKind(t *testing.T) {
 	requireStewardMarker(t, ctx)
 
 	askFile := makeTempFile(t, "what should we name it?")
-	if err := notifyToSteward(ctx, initiativeID, askFile); err != nil {
+	if err := notifyToSteward(ctx, initiativeID, askFile, nil); err != nil {
 		t.Fatalf("notifyToSteward: unexpected error: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestNotifyToSteward_FileNotFound_ReturnsError(t *testing.T) {
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 	requireStewardMarker(t, ctx)
 
-	if err := notifyToSteward(ctx, "at-x11", "/no/such/file"); err == nil {
+	if err := notifyToSteward(ctx, "at-x11", "/no/such/file", nil); err == nil {
 		t.Fatal("expected error for missing ask file, got nil")
 	}
 }

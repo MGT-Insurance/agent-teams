@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,56 +174,107 @@ const stewardEnvelopeClose = ">>>"
 
 // ── Gate→Steward envelope ────────────────────────────────────────────────────
 
-// StewardGateKind enumerates the two structured-ask kinds a gate can send to
-// the Steward. Mirrors gateKind's QUESTION|REVIEW resolution in query.go,
-// lower-cased for on-the-wire use.
+// StewardGateKind enumerates the structured-ask kinds a gate can send to
+// the Steward. Question and Review mirror gateKind's QUESTION|REVIEW
+// resolution in query.go, lower-cased for on-the-wire use. LiveTestReview
+// (agent-teams-n0jt.1) is bare-only (raised pre-PR) and always carries one
+// or more Attachments (below) — proof of a tester's live verification.
 type StewardGateKind string
 
 const (
-	StewardGateKindQuestion StewardGateKind = "question"
-	StewardGateKindReview   StewardGateKind = "review"
+	StewardGateKindQuestion       StewardGateKind = "question"
+	StewardGateKindReview         StewardGateKind = "review"
+	StewardGateKindLiveTestReview StewardGateKind = "live-test-review"
 )
 
 // Valid reports whether k is a recognized StewardGateKind.
 func (k StewardGateKind) Valid() bool {
-	return k == StewardGateKindQuestion || k == StewardGateKindReview
+	return k == StewardGateKindQuestion || k == StewardGateKindReview || k == StewardGateKindLiveTestReview
 }
 
 const stewardGateOpenPrefix = "<<<steward-gate initiative:"
+
+// Attachment.Kind values recognized on the wire — see the Attachment type
+// (kong_converted.go), which is classified once at gate time and rides the
+// envelope unchanged.
+const (
+	attachmentKindPhoto    = "photo"
+	attachmentKindDocument = "document"
+)
 
 // StewardGateEnvelope holds the parsed fields of a Gate→Steward envelope.
 type StewardGateEnvelope struct {
 	InitiativeID string
 	Kind         StewardGateKind
-	Body         string
+	// Attachments is the ordered list of proof files (Attachment,
+	// kong_converted.go) the gate carried, empty for the common
+	// review/question case that carries none.
+	Attachments []Attachment
+	Body        string
 }
 
 // BuildStewardGateEnvelope renders the self-contained Gate→Steward envelope:
 //
-//	<<<steward-gate initiative:<id> kind:<question|review>>>>
+//	<<<steward-gate initiative:<id> kind:<question|review|live-test-review> attachments:<N>>>>
+//	<kind>\t<path>   (repeated N times, in order; kind = photo|document)
 //	<body>
 //	>>>
 //
 // body is typically buildAskMessage's output (write.go) — the full
-// human-readable ask, carried in full so the Steward needs no further lookup.
-func BuildStewardGateEnvelope(initiativeID string, kind StewardGateKind, body string) (string, error) {
+// human-readable ask, carried in full so the Steward needs no further
+// lookup. attachments rides as a typed, ordered list rather than folded
+// into body so the Steward can forward each file (`ateam notify --image` /
+// `--document`) without re-parsing prose.
+//
+// The attachment-line encoding is TAB-delimited — kind, then a single TAB,
+// then the remainder of the line — specifically so a path containing
+// spaces survives untouched; gate-time validation (gateKong.Validate)
+// rejects any path containing a TAB or newline, since either would corrupt
+// this encoding. attachments always renders (even attachments:0) so every
+// envelope this function produces is self-describing; ParseStewardGateEnvelope
+// below still accepts an OLDER envelope with no "attachments:" field at all
+// (built by a pre-agent-teams-n0jt.1 binary, or already in flight across a
+// rolling deploy) as the zero-attachment case — see its doc comment.
+func BuildStewardGateEnvelope(initiativeID string, kind StewardGateKind, attachments []Attachment, body string) (string, error) {
 	if initiativeID == "" {
 		return "", fmt.Errorf("steward gate envelope: initiative id is empty")
 	}
 	if !kind.Valid() {
 		return "", fmt.Errorf("steward gate envelope: invalid kind %q", kind)
 	}
+	for _, a := range attachments {
+		if a.Path == "" {
+			return "", fmt.Errorf("steward gate envelope: attachment path is empty")
+		}
+		if strings.ContainsAny(a.Path, "\t\n") {
+			return "", fmt.Errorf("steward gate envelope: attachment path contains a tab or newline: %q", a.Path)
+		}
+		if a.Kind != attachmentKindPhoto && a.Kind != attachmentKindDocument {
+			return "", fmt.Errorf("steward gate envelope: invalid attachment kind %q for %s", a.Kind, a.Path)
+		}
+	}
+
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s%s kind:%s%s\n", stewardGateOpenPrefix, initiativeID, kind, stewardEnvelopeClose)
+	fmt.Fprintf(&b, "%s%s kind:%s attachments:%d%s\n", stewardGateOpenPrefix, initiativeID, kind, len(attachments), stewardEnvelopeClose)
+	for _, a := range attachments {
+		fmt.Fprintf(&b, "%s\t%s\n", a.Kind, a.Path)
+	}
 	b.WriteString(body)
 	b.WriteString("\n" + stewardEnvelopeClose)
 	return b.String(), nil
 }
 
 // ParseStewardGateEnvelope parses an envelope produced by
-// BuildStewardGateEnvelope. Returns false when text isn't well-formed: no
-// header, no " kind:" separator, an unrecognized kind, or a missing closing
-// sentinel line.
+// BuildStewardGateEnvelope. The header's " attachments:<N>" segment is
+// OPTIONAL — absent parses identically to attachments:0 — which keeps an
+// envelope built by an older binary (predating agent-teams-n0jt.1, or still
+// in flight across a rolling deploy) readable unchanged. When present, N
+// attachment lines (each "<kind>\t<path>") are read immediately after the
+// header line, before the body. Returns false when text isn't well-formed:
+// no header, no " kind:" separator, an unrecognized kind, a malformed or
+// negative attachments count, an attachment line missing its TAB or
+// carrying an unrecognized kind, fewer attachment lines than declared, or a
+// missing closing sentinel line.
 func ParseStewardGateEnvelope(text string) (StewardGateEnvelope, bool) {
 	if !strings.HasPrefix(text, stewardGateOpenPrefix) {
 		return StewardGateEnvelope{}, false
@@ -237,8 +289,22 @@ func ParseStewardGateEnvelope(text string) (StewardGateEnvelope, bool) {
 	if !ok {
 		return StewardGateEnvelope{}, false
 	}
-	idPart, kindPart, ok := strings.Cut(fields, " kind:")
-	if !ok || idPart == "" || kindPart == "" {
+	idPart, kindFields, ok := strings.Cut(fields, " kind:")
+	if !ok || idPart == "" || kindFields == "" {
+		return StewardGateEnvelope{}, false
+	}
+
+	kindPart := kindFields
+	attachCount := 0
+	if kp, countStr, found := strings.Cut(kindFields, " attachments:"); found {
+		n, err := strconv.Atoi(countStr)
+		if err != nil || n < 0 {
+			return StewardGateEnvelope{}, false
+		}
+		kindPart = kp
+		attachCount = n
+	}
+	if kindPart == "" {
 		return StewardGateEnvelope{}, false
 	}
 	kind := StewardGateKind(kindPart)
@@ -246,12 +312,30 @@ func ParseStewardGateEnvelope(text string) (StewardGateEnvelope, bool) {
 		return StewardGateEnvelope{}, false
 	}
 
+	var attachments []Attachment
+	for i := 0; i < attachCount; i++ {
+		lineEnd := strings.IndexByte(rest, '\n')
+		if lineEnd == -1 {
+			return StewardGateEnvelope{}, false
+		}
+		line := rest[:lineEnd]
+		rest = rest[lineEnd+1:]
+		attKind, path, ok := strings.Cut(line, "\t")
+		if !ok || path == "" {
+			return StewardGateEnvelope{}, false
+		}
+		if attKind != attachmentKindPhoto && attKind != attachmentKindDocument {
+			return StewardGateEnvelope{}, false
+		}
+		attachments = append(attachments, Attachment{Path: path, Kind: attKind})
+	}
+
 	body, ok := strings.CutSuffix(rest, "\n"+stewardEnvelopeClose)
 	if !ok {
 		return StewardGateEnvelope{}, false
 	}
 
-	return StewardGateEnvelope{InitiativeID: idPart, Kind: kind, Body: body}, true
+	return StewardGateEnvelope{InitiativeID: idPart, Kind: kind, Attachments: attachments, Body: body}, true
 }
 
 // ── Relay→Steward envelope ───────────────────────────────────────────────────
