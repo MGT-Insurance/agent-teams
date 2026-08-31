@@ -909,6 +909,54 @@ func TestGate_Attach_RejectsMissingFile(t *testing.T) {
 	}
 }
 
+// TestGate_Attach_RejectsPathWithTabOrNewline confirms Validate rejects an
+// --attach path containing a TAB or a newline BEFORE ever stat'ing it — either
+// character would corrupt the Gate->Steward envelope's own TAB-delimited
+// attachment-line encoding (steward_seams.go's "<kind>\t<path>" lines). Proven
+// against a path that does NOT exist on disk, so a pass here can only be the
+// tab/newline check firing, never the (also-would-fire) missing-file check
+// from TestGate_Attach_RejectsMissingFile above.
+func TestGate_Attach_RejectsPathWithTabOrNewline(t *testing.T) {
+	f := makeTempFile(t, "question")
+	for name, path := range map[string]string{
+		"tab":     "proof\tscreenshot.png",
+		"newline": "proof\nscreenshot.png",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := &gateKong{ID: "at-2", File: f, Kind: "question", Attach: []string{path}}
+			err := g.Validate(nil)
+			assertUsageError(t, err, "tab or newline")
+		})
+	}
+}
+
+// TestClassifyAttachment_ExtensionRouting pins classifyAttachment's frozen
+// routing (agent-teams-n0jt.1): png/jpg/jpeg/gif/webp, case-insensitively,
+// route to "photo"; every other extension routes to "document". Covers the
+// case-insensitive uppercase forms and the non-image extensions the bead
+// calls out (.har/.json/.log/.txt) explicitly, alongside a no-extension
+// control.
+func TestClassifyAttachment_ExtensionRouting(t *testing.T) {
+	cases := map[string]string{
+		"proof.PNG":        "photo",
+		"proof.JPG":        "photo",
+		"proof.Png":        "photo",
+		"proof.jpeg":       "photo",
+		"proof.GIF":        "photo",
+		"proof.webp":       "photo",
+		"network.har":      "document",
+		"payload.json":     "document",
+		"output.log":       "document",
+		"notes.txt":        "document",
+		"no-extension-bin": "document",
+	}
+	for path, want := range cases {
+		if got := classifyAttachment(path); got != want {
+			t.Errorf("classifyAttachment(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 // ── gate: structured-ask notify body (agent-teams-lbxl) ──────────────────────
 
 // TestGate_StructuredAsk_NotifyGetsHumanReadable confirms that when a
@@ -1091,6 +1139,30 @@ func TestGate_NoPR_StaysBare(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertArgs(t, *calls, 2, []string{"label", "add", "at-single", "gate:review"})
+}
+
+// TestGate_LiveTestReviewKind_WithPR_DocumentsCurrentUnrejectedBehavior pins
+// CURRENT behavior for --kind=live-test-review combined with --pr: the kind
+// is documented bare-only (raised pre-PR, agent-teams-n0jt.1) — perPRGateLabels
+// deliberately excludes "gate:live-test-review:" and its own doc comment says
+// so ("a `gate --kind=live-test-review --pr <url>` call, which nothing
+// currently rejects") — but gateKong.Run has no --pr/--kind cross-check, so
+// the call is NOT rejected: it succeeds and writes the per-PR-suffixed label
+// same as review/question would. This is "documented unsupported," not
+// "rejected" — a future bead tightening this must update this test, not
+// silently break it.
+func TestGate_LiveTestReviewKind_WithPR_DocumentsCurrentUnrejectedBehavior(t *testing.T) {
+	f := makeTempFile(t, "live-verified: login flow works")
+	const pr = "https://github.com/erlloyd/pr-shepherd/pull/4"
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-ltr-pr", []string{pr}), // resolvePR's bd show
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
+	err := (&gateKong{ID: "at-ltr-pr", File: f, Kind: "live-test-review", PR: pr}).Run(ctx)
+	if err != nil {
+		t.Fatalf("gate --kind=live-test-review --pr: expected current behavior to succeed (nothing rejects this yet), got error: %v", err)
+	}
+	assertArgs(t, *calls, 3, []string{"label", "add", "at-ltr-pr", "gate:live-test-review:" + pr})
 }
 
 // ── clear-gate ────────────────────────────────────────────────────────────────

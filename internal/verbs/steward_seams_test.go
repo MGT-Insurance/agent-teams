@@ -143,6 +143,47 @@ func TestStewardGateEnvelope_MultiAttachment_RoundTrips(t *testing.T) {
 	}
 }
 
+// TestStewardGateEnvelope_MultiAttachment_TwoPhotosOneDocument_RoundTrips is
+// the multi-attachment fan-out proof for agent-teams-n0jt.5.6: a bundle of
+// THREE attachments — two photos, one document — round-trips through
+// Build/Parse with the header's attachments:3 count and all three lines
+// recovered in order, extending TestStewardGateEnvelope_MultiAttachment_RoundTrips
+// above (which covers exactly one photo + one document) to the specific
+// composition the bead calls out.
+func TestStewardGateEnvelope_MultiAttachment_TwoPhotosOneDocument_RoundTrips(t *testing.T) {
+	attachments := []verbs.Attachment{
+		{Path: "/tmp/login-flow.png", Kind: "photo"},
+		{Path: "/tmp/checkout-flow.jpg", Kind: "photo"},
+		{Path: "/tmp/network.har", Kind: "document"},
+	}
+	body := "live test verified: login and checkout flows both work"
+	text, err := verbs.BuildStewardGateEnvelope("agent-teams-n0jt", verbs.StewardGateKindLiveTestReview, attachments, body)
+	if err != nil {
+		t.Fatalf("BuildStewardGateEnvelope: %v", err)
+	}
+
+	wantHeader := "<<<steward-gate initiative:agent-teams-n0jt kind:live-test-review attachments:3>>>"
+	if !strings.HasPrefix(text, wantHeader+"\n") {
+		t.Fatalf("BuildStewardGateEnvelope header = %q, want prefix %q", text, wantHeader)
+	}
+
+	got, ok := verbs.ParseStewardGateEnvelope(text)
+	if !ok {
+		t.Fatalf("ParseStewardGateEnvelope: ok=false, want true (envelope: %q)", text)
+	}
+	if len(got.Attachments) != 3 {
+		t.Fatalf("Attachments = %+v, want 3 entries", got.Attachments)
+	}
+	for i := range attachments {
+		if got.Attachments[i] != attachments[i] {
+			t.Errorf("Attachments[%d] = %+v, want %+v", i, got.Attachments[i], attachments[i])
+		}
+	}
+	if got.Body != body {
+		t.Errorf("Body = %q, want %q", got.Body, body)
+	}
+}
+
 func TestStewardGateEnvelope_InvalidKind(t *testing.T) {
 	if _, err := verbs.BuildStewardGateEnvelope("id", verbs.StewardGateKind("bogus"), nil, "body"); err == nil {
 		t.Fatal("BuildStewardGateEnvelope: expected error for invalid kind, got nil")
