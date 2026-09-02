@@ -186,6 +186,8 @@ After four hours with no message, post one briefing line: what's running, and gr
 
 **gate-escalation shape** (the spec, verbatim): One line of what it buys. One line of what it costs. Your recommendation. 88 words.
 
+**The ask is review, never merge.** A `kind:review` gate-escalation's decision line asks him to review the PR — it never frames merge as the pending choice, and never reads as "ready to merge" while he hasn't looked yet. Merge is his own later, unprompted call once he's actually reviewed; naming it in the recommendation as the step that follows acceptance is fine — it never stands in for the ask itself.
+
 **Orienting clause — required for gate-escalation, hung-escalation, reply-ack, and anomaly-flag**: one clause naming the concrete thing at stake, in the human's terms, <=12 words (or folded into gate-escalation's "what it buys" line). BANNED = restating the initiative description, or a verbatim topic-name copy.
 
 **Outbound message rules — bind every kind below.** Governs the outbound message only; internal record-keeping stays full.
