@@ -90,6 +90,14 @@ if grep -q '^tie-session --session-id sess-abc123$' "$CALL_LOG"; then
 else
   fail "case1: expected tie-session call not found in log: $(cat "$CALL_LOG")"
 fi
+# resolve-initiative also gets --session-id when known (agent-teams-y814.4.3,
+# at-1k234) so a launch-cwd-mismatched session still resolves via its durable
+# session tie instead of going deaf.
+if grep -q "^resolve-initiative $T/wt --session-id sess-abc123\$" "$CALL_LOG"; then
+  pass "case1: ateam resolve-initiative called with --session-id passthrough"
+else
+  fail "case1: expected resolve-initiative --session-id call not found in log: $(cat "$CALL_LOG")"
+fi
 
 # ── Case 2: ateam tie-session fails -> hook is fail-soft, still exits 0 and
 # still gets to the mail-peek call ──────────────────────────────────────────
@@ -147,6 +155,14 @@ if [ -f "$HOOKS_LOG" ] && grep -q 'tie-session:' "$HOOKS_LOG"; then
   fail "case3: expected no tie-session note logged for a silent no-op, found: $(grep 'tie-session:' "$HOOKS_LOG")"
 else
   pass "case3: no tie-session note logged when the call produced no output"
+fi
+# resolve-initiative must NOT get --session-id when HOOK_SESSION_ID resolved
+# to the "unknown" sentinel (agent-teams-y814.4.3) — omitting it preserves
+# today's cwd-only behavior instead of passing the literal string "unknown".
+if grep -q "^resolve-initiative $T/wt\$" "$CALL_LOG"; then
+  pass "case3: ateam resolve-initiative called with no --session-id for the unknown sentinel"
+else
+  fail "case3: expected plain resolve-initiative call (no --session-id) not found in log: $(cat "$CALL_LOG")"
 fi
 
 # ── Case 4: tie-session emits a cross-open-initiative conflict warning ─────

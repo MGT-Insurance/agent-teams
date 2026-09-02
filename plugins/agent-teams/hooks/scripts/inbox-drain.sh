@@ -23,6 +23,16 @@ HOOK_STDIN=$(cat 2>/dev/null || true)
 HOOK_SESSION_ID=$(printf '%s' "$HOOK_STDIN" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 export HOOK_SESSION_ID
 
+# Extra arg for `ateam hook-scan`: pass the session id when known, so a
+# launch-cwd-mismatched session (cwd doesn't match its registered worktree)
+# still resolves via its durable session tie instead of going deaf
+# (agent-teams-y814.4, at-1k234). "unknown" is the stdin-parse-failure
+# sentinel above, not a real session id — omit it too, same as an empty id.
+session_id_flag=""
+if [ -n "$HOOK_SESSION_ID" ] && [ "$HOOK_SESSION_ID" != "unknown" ]; then
+  session_id_flag="$HOOK_SESSION_ID"
+fi
+
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$(dirname "$0")/lib/hook-debug-log.sh"
 
@@ -52,8 +62,10 @@ else
   # ── Resolve initiative id for $PWD (the worktree root OR any subdir) AND ───
   # check unread mail, both from ONE combined bd call. `ateam hook-scan` owns
   # the matching rule (internal/verbs/match.go via internal/verbs/hookscan.go);
-  # this script must not re-derive it.
-  scan_out=$("$ATEAM" hook-scan "$PWD" 2>/dev/null || true)
+  # this script must not re-derive it. --session-id (session_id_flag, computed
+  # above) lets it resolve via the durable session tie first when cwd alone
+  # would find nothing.
+  scan_out=$("$ATEAM" hook-scan "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
   match_id=$(printf '%s\n' "$scan_out" | sed -n 's/^id: //p')
   if [ -z "$match_id" ]; then
     HOOK_EXIT_REASON="no-open-match"
