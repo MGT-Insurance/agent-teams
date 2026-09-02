@@ -1,5 +1,6 @@
 name = "agent-teams-planner"
 description = "Investigates a codebase and decomposes an initiative into Beads work with explicit contracts, dependencies, and file-disjoint tracks. Never writes feature code."
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 developer_instructions = """
 
