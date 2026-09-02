@@ -63,15 +63,28 @@ func ParseKind(value string) (Kind, error) {
 	}
 }
 
+// DefaultResolver lazily reads a selected dispatch-class runtime default.
+// The bool reports whether that class has a configured value.
+type DefaultResolver func() (string, bool, error)
+
 // ResolveNew chooses the concrete runtime for a newly dispatched initiative.
-// The explicit value wins; empty and "auto" consult ATEAM_RUNTIME and then
-// preserve the legacy Claude default.
-func ResolveNew(explicit, machineDefault string) (Kind, error) {
+// The explicit value wins; empty and "auto" consult ATEAM_RUNTIME, the lazy
+// selected config default, and then preserve the legacy Claude default.
+func ResolveNew(explicit, machineDefault string, configDefault DefaultResolver) (Kind, error) {
 	if explicit != "" && explicit != "auto" {
 		return ParseKind(explicit)
 	}
 	if machineDefault != "" {
 		return ParseKind(machineDefault)
+	}
+	if configDefault != nil {
+		value, configured, err := configDefault()
+		if err != nil {
+			return "", err
+		}
+		if configured {
+			return ParseKind(value)
+		}
 	}
 	return Claude, nil
 }

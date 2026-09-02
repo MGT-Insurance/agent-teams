@@ -97,12 +97,31 @@ New dispatches resolve a concrete runtime and always write it, including
 
 Resolution for a new dispatch is:
 
-1. an explicit `--runtime claude|codex`;
-2. `ATEAM_RUNTIME`, when set to `claude` or `codex`;
-3. `claude`.
+1. an explicit `--runtime claude|codex`.
+2. `ATEAM_RUNTIME`, when set to `claude` or `codex`.
+3. the selected key from `$AGENT_TEAMS_HOME/config.toml`.
+4. `claude`.
 
-`--runtime auto` follows steps 2 and 3. An invalid explicitly selected value
-or invalid `ATEAM_RUNTIME` is an error; it must not silently launch Claude.
+`--runtime auto` follows steps 2 through 4. A valid higher-priority value
+prevents lower tiers from being read. An invalid explicit value or invalid
+`ATEAM_RUNTIME` is an error. It must not silently launch Claude.
+
+The machine-local config is strict, flat TOML with exactly two optional keys:
+
+```toml
+work_runtime = "codex"
+review_runtime = "claude"
+```
+
+Those values are the initial recommended split. An exact `--topic reviews`
+dispatch selects `review_runtime`. Every other dispatch selects
+`work_runtime`. Each present value must be exactly lowercase `claude` or
+`codex`, and no table or unknown key is accepted. A missing file or missing
+selected key falls through to step 4. Once this tier is consulted, an
+unreadable present file, malformed TOML, unknown or non-flat key, empty value,
+or other invalid value fails before any dispatch side effect. The error names
+the config path and relevant key or parse context without printing unrelated
+config contents. This selection does not add Codex PR-review execution.
 
 For backward compatibility, a missing `runtime:` on an existing initiative
 resolves to `claude` without rewriting the initiative on read. A non-empty,
@@ -111,7 +130,10 @@ display it as unknown, but must not act through the Claude adapter.
 
 Resume and wake always use the durable initiative runtime. A runtime flag on
 resume is an assertion: it must match the stored or legacy-resolved runtime
-and cannot migrate the initiative.
+and cannot migrate the initiative. Machine-local config likewise cannot
+override or migrate an existing initiative. Session-first mailbox and hook
+lookup continue to use the durable recorded runtime/session identity described
+below.
 
 ### 2.2 Session fields
 
