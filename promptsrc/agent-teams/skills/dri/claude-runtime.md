@@ -52,7 +52,7 @@ Spawn one or more `agent-teams-planner` agents (persistent, background) — ring
 
 Drive ONLY the loop-closing set first. Before opening any enhancement ring, the loop must be closed.
 
-- Spawn role agents background + team-joined: `agent-teams-implementer` (one per track, own worktree, branched at contract tip), `agent-teams-tester`, `agent-teams-reviewer` when there's code to review, `agent-teams-investigator` for a bounded question — ephemeral, fanned out on disjoint charges, and its spawn prompt MUST name SendMessage to team-lead as the delivery channel or the brief dies in an empty idle. Always `run_in_background: true` + `mode: bypassPermissions`; every spawn prompt carries `EPIC_ID` (`--parent <EPIC_ID>` or ring epic). Live-env worktrees provision via `ateam worktree-setup <path>` — never a raw script from memory. Mechanics + guardrails: references/execution.md.
+- Spawn role agents background + team-joined: `agent-teams-implementer` (one per track, own worktree, branched at contract tip), `agent-teams-tester`, `agent-teams-investigator` for a bounded question — ephemeral, fanned out on disjoint charges; its spawn prompt MUST name SendMessage to team-lead as the delivery channel or the brief dies in an empty idle. Always `run_in_background: true` + `mode: bypassPermissions`; every spawn prompt carries `EPIC_ID` (`--parent <EPIC_ID>` or ring epic). Live-env worktrees: `ateam worktree-setup <path>` — never a raw script. Mechanics: references/execution.md.
 - Implementers are EPHEMERAL — shut down (SendMessage shutdown_request) once work is verified merged; spawn fresh ones for fixes (references/execution.md).
 - Own integration: merge each track into the integration branch as it lands, resolve conflicts, advance worktrees as the contract moves (references/execution.md, "Integration (DRI-owned)").
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files (spawn agents, often a planner, to investigate) — this is how the team converges on a PR that solves the problem. Discovery invalidating the framing is a pivot, not just a finding — triggers the mandatory design-pivot gate (Phase 3), never silent redesign.
@@ -62,13 +62,17 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 
 **Live verification is mandatory** — tests alone never substitute. Spawn an `agent-teams-tester` (provisioning its worktree via `ateam worktree-setup` if needed) to drive the feature live: `npx @playwright/cli` for web/UI (REQUIRED), an endpoint hit for API, a command run for CLI. The loop is NOT closed until the tester reports pass with evidence — never on tests-passing alone. Hardcoded values/stubs/deferred edges are fine in code; verification itself isn't skippable. Procedure: references/execution.md.
 
-Only after the loop closes: open enhancement rings — unblock the gated beads and resume the plan/execute cycle for ring N.
+Only after the loop closes: open the next ring; otherwise move to delivery. **A tester live pass closes the ENGINEERING loop; it does NOT clear delivery.** Before any reviewer spawn or Phase 5 prep, raise a human-cleared **live-test-review gate** with the tester's proof, then PARK (BIG gates; SMALL skips — execution.md, "Live-test-review gate"):
+
+```bash
+ateam gate <initiative-id> --kind=live-test-review --attach <proof-path> --file <summary-file>
+```
 
 ## Phase 5 — Deliver
 
 **A PR's readers have no bead DB or initiative registry — write for them.** Describe the WORK, not the ticket ("Fixes silently dropped replies", not "implements agent-teams-ully.7"). Keep every id out of prose, title, and headings — subject, possessive, or passing mention all count. Ids only where skippable: parenthetical, table cell, footnote, trailer. Worked specimens: references/pr-text.md.
 
-Quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors); reviewer findings triaged and resolved (fresh implementers); the live-test-review gate cleared. Push the branch; open the PR **ready for review by default** — draft only if asked or deliberately incomplete. **Never merge autonomously**, but you MAY once the human confirms (`--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing (`merged: <PR URL>`); after closing, run the local-main helper (fail-soft):
+With live-test-review cleared (Phase 4): spawn `agent-teams-reviewer`, triage/resolve findings (fresh implementers); quality gates green INCLUDING A REAL BUILD (typecheck alone misses bundler-level errors). Push; open the PR **ready for review by default** — draft only if asked or deliberately incomplete. **Never merge autonomously**, but you MAY once the human confirms (`--squash` for a WIP-heavy branch), then `ateam clear-gate <id>` before closing (`merged: <PR URL>`); after closing, run the local-main helper (fail-soft):
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/update-local-main.sh" "$PWD"
@@ -81,7 +85,7 @@ Absent confirmation: status note `delivered` with the PR link, leave the initiat
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This is the DRI's explicit "ready for you" bit — it makes the initiative *eligible* for REVIEWABLE; the dashboard derives actual status from execution-state (gate + session run/park state), so raising it early is safe. Model: references/gate-protocol.md ("The review gate and execution-state").
+This makes it *eligible* for REVIEWABLE — the dashboard derives actual status from execution-state, so raising it early is safe (model: references/gate-protocol.md, "The review gate and execution-state").
 
 **Never run `ateam handoff`.** Only the human may assert that review is finished. Opening a PR without the REVIEW gate is incomplete; leave the initiative open until merge or explicit human closure (references/gate-protocol.md, "The review gate and execution-state").
 

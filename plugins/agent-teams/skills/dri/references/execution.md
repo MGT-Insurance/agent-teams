@@ -46,6 +46,20 @@ Implementers add code and core-path tests but never push, merge, or deploy. Test
 - After the loop-closing set's tracks merge, run an integration verification pass (full typecheck + the feature's suites on the composed branch) independently of what tracks reported — this is Step 1 of the two-step gate at SKILL.md's **LOOP CLOSED checkpoint** (the canonical loop-closure definition; not restated here — necessary but not sufficient on its own). Re-run this same pass after each subsequent ring's tracks merge.
 - Remove worktrees and delete track branches at wind-down, not before.
 
+## Live-test-review gate
+
+A tester live pass closes the ENGINEERING loop (SKILL.md's LOOP CLOSED checkpoint) — it does not clear delivery. Before spawning `agent-teams-reviewer` or starting Phase 5 PR prep, the DRI raises a `--kind=live-test-review` gate carrying the tester's proof — gates are DRI-owned; the tester never raises one:
+
+```bash
+ateam gate <initiative-id> --kind=live-test-review --attach <path> [--attach <path> ...] --file <summary-file>
+```
+
+The tester hands its proof (screenshots, payload/log files, a short summary) to the DRI via SendMessage rather than raising anything itself. Treat the gate exactly like review or question: CLEARED (steward-forwarded, human's go received) before proceeding, PARK while it waits. Never detect steward presence or fall back to Telegram directly — with no steward running, it simply WAITS.
+
+**BIG vs SMALL.** BIG — observable behavior (UI, API response, CLI output, user-facing flow), decomposed into multiple tracks/implementers, or a changed default/durable state/user-facing message — always gates. SMALL — single-track, few-item, linear, nothing observable, no load-bearing human decision — skips it: reading the diff against criteria IS the verification, the same bar as the team/plan-gate skip. A cleared (or skipped) plan gate is NOT itself a trigger either way.
+
+**Feedback loop.** A requested change can pull in any mix of investigator/implementer/planner — a fresh plan gate if it reshapes the work — then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped for the PR before approval. The ask stays REVIEW throughout — never frame this as "ready to merge."
+
 ## Lifecycle
 
 - Implementers: ephemeral — shutdown_request once their work is VERIFIED merged (checked the commits, not just the report). Fresh implementer per fix batch.
@@ -58,7 +72,3 @@ Implementers add code and core-path tests but never push, merge, or deploy. Test
 - Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification; routes back to the implementer only genuinely implementer-owned core-path gaps. Only the DRI starts a dev server; testers never start one — they drive and observe an instance the DRI has already brought up.
 - Reviewer never fixes; the DRI routes its findings to fresh implementers.
 - All roles file discovery beads; the DRI triages them.
-
-## Live-test-review gate (decision 5)
-
-Once the tester's live exercise passes, the tester — not the DRI — raises a `--kind=live-test-review` gate carrying proof (`--attach` for screenshots/files, `--file` for a short summary). Treat it exactly like any other human gate: it must be CLEARED (steward-forwarded to the human, the human's go received) before opening the PR in Phase 5. Never detect steward presence or fall back to Telegram yourself — with no steward running, the gate simply WAITS, same as a review or question gate.
