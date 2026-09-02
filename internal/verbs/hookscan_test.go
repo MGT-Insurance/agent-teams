@@ -272,6 +272,64 @@ func TestHookScanRepoDisabledSuppressed(t *testing.T) {
 	}
 }
 
+// TestHookScanSessionFirstHitFromNonMatchingCwd is the hook-scan half of ring
+// .4 (at-1k234): a session tied to an initiative via "session: <id>" resolves
+// that initiative — and its unread count — even when the path being scanned
+// matches no registered worktree, restoring the mail signal for a session
+// whose launch cwd doesn't match its registered worktree.
+func TestHookScanSessionFirstHitFromNonMatchingCwd(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-mine", Title: "Mine", Description: "worktree: /a/b/wt\nsession: sess-mine\n"},
+		{ID: "msg-1", IssueType: "message", Assignee: "at-mine", Status: "open"},
+	}
+	stdout, stderr, code := runHookScan(t, issues, []string{"/no/such/path", "--session-id", "sess-mine"})
+	if code != 0 {
+		t.Errorf("exit code %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "id: at-mine") {
+		t.Errorf("stdout %q missing id line (session tie must win over a non-matching path)", stdout)
+	}
+	if !strings.Contains(stdout, "unread: 1") {
+		t.Errorf("stdout %q missing unread:1", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("unexpected stderr %q", stderr)
+	}
+}
+
+// TestHookScanEmptySessionIDUsesPathResolution verifies an empty
+// --session-id (flag omitted, or passed as "") leaves path resolution exactly
+// as before this field existed.
+func TestHookScanEmptySessionIDUsesPathResolution(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "worktree: " + path},
+	}
+	stdout, _, code := runHookScan(t, issues, []string{path, "--session-id="})
+	if code != 0 {
+		t.Errorf("exit code %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "id: at-111") {
+		t.Errorf("stdout %q missing id line", stdout)
+	}
+}
+
+// TestHookScanSessionIDNoTieFallsBackToPath verifies a --session-id that ties
+// to no open initiative falls through to path resolution unchanged.
+func TestHookScanSessionIDNoTieFallsBackToPath(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "worktree: " + path},
+	}
+	stdout, _, code := runHookScan(t, issues, []string{path, "--session-id", "sess-untied"})
+	if code != 0 {
+		t.Errorf("exit code %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "id: at-111") {
+		t.Errorf("stdout %q missing id line (path fallback)", stdout)
+	}
+}
+
 // TestHookScanBDErrorPropagates verifies FIX 1: an infrastructure (bd list)
 // failure now propagates as a non-zero exit instead of being silently
 // swallowed as exit 0. inbox-drain.sh's `2>/dev/null || true` capture at the

@@ -25,6 +25,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
+	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 )
 
 // RegisterHookScanKong registers the hook-scan verb onto p using native kong
@@ -48,10 +49,13 @@ func RegisterHookScanKong(p *cli.Parser) {
 //     id directly.
 //
 // Both branches read the SAME single issue list fetched at the top of Run,
-// so either way this verb makes exactly one bd invocation.
+// so either way this verb makes exactly one bd invocation — except when
+// SessionID resolves a match (see SessionID doc below), which costs one
+// additional bd call inside resolveInitiativeBySession.
 type hookScanKong struct {
-	Path string `arg:"" optional:"" name:"path" help:"Absolute path to resolve to its owning initiative, ancestor-or-self. Mutually exclusive with --id."`
-	ID   string `name:"id" help:"Skip path/worktree resolution; check unread mail directly for this already-known recipient id."`
+	Path      string `arg:"" optional:"" name:"path" help:"Absolute path to resolve to its owning initiative, ancestor-or-self. Mutually exclusive with --id."`
+	ID        string `name:"id" help:"Skip path/worktree resolution; check unread mail directly for this already-known recipient id."`
+	SessionID string `name:"session-id" help:"Current Claude session id — when Path resolution is in play, tried first via its durable initiative tie before falling back to Path. Ignored when --id is given."`
 }
 
 // Validate enforces the Path/ID exclusivity — exactly one must be given.
@@ -88,16 +92,33 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 
 	id := c.ID
 	if id == "" {
-		// Match candidates exclude message-type beads: --include-infra widens
-		// the list beyond the plain --status=open resolveInitiativeKong used,
-		// and a message body containing a literal "worktree: <path>" line
-		// could otherwise misroute to the message bead instead of the
-		// initiative that actually owns that worktree. Only initiatives carry
-		// a worktree: line, so excluding message-type is sufficient — other
-		// non-initiative beads (agent/role) have no worktree: line to match.
-		match := matchByWorktreeOrAncestor(excludeMessageType(issues), c.Path)
+		var match *bd.Issue
+		// Session-first, Claude runtime only: hook-scan serves the
+		// Claude-plugin shell hooks exclusively (wake-watcher.sh,
+		// inbox-drain.sh) — the Codex plugin resolves unread mail via its own
+		// codex-hook path (resolveCodexHookInitiative), never this verb. This
+		// restores signaling for a session whose launch cwd doesn't match its
+		// registered worktree (at-0xnp1): its durable session tie still
+		// resolves it even though the path-only match below would find
+		// nothing.
+		if c.SessionID != "" {
+			if issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID); err == nil && found {
+				match = &issue
+			}
+		}
 		if match == nil {
-			return nil
+			// Match candidates exclude message-type beads: --include-infra
+			// widens the list beyond the plain --status=open
+			// resolveInitiativeKong used, and a message body containing a
+			// literal "worktree: <path>" line could otherwise misroute to
+			// the message bead instead of the initiative that actually owns
+			// that worktree. Only initiatives carry a worktree: line, so
+			// excluding message-type is sufficient — other non-initiative
+			// beads (agent/role) have no worktree: line to match.
+			match = matchByWorktreeOrAncestor(excludeMessageType(issues), c.Path)
+			if match == nil {
+				return nil
+			}
 		}
 		if repo := initiative.Of(*match).Repo; repo != "" && !repoconfig.Enabled(repo) {
 			return nil
