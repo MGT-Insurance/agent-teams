@@ -68,7 +68,7 @@ user-facing flow), decomposed into multiple tracks/implementers, or a changed
 default/durable state/user-facing message — always gates. SMALL —
 single-track, few-item, linear, nothing observable, no load-bearing human
 decision — skips it: reading the diff against criteria IS the verification,
-the same bar as the plan-gate skip. A cleared or skipped plan gate is not
+the same bar as the team/plan-gate skip. A cleared or skipped plan gate is not
 itself a trigger either way.
 
 **Feedback loop.** A requested change can pull in any mix of

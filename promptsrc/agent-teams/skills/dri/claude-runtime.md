@@ -62,7 +62,7 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 
 **Live verification is mandatory** — tests alone never substitute. Spawn an `agent-teams-tester` (provisioning its worktree via `ateam worktree-setup` if needed) to drive the feature live: `npx @playwright/cli` for web/UI (REQUIRED), an endpoint hit for API, a command run for CLI. The loop is NOT closed until the tester reports pass with evidence — never on tests-passing alone. Hardcoded values/stubs/deferred edges are fine in code; verification itself isn't skippable. Procedure: references/execution.md.
 
-Only after the loop closes: open the next ring; otherwise move to delivery. **A tester live pass closes the ENGINEERING loop; it does NOT clear delivery.** Before any reviewer spawn or Phase 5 prep, raise a human-cleared **live-test-review gate** with the tester's proof, then PARK (BIG gates; SMALL skips — execution.md, "Live-test-review gate"):
+Only after the loop closes: open the next ring; otherwise move to delivery. **A tester live pass closes the ENGINEERING loop; it does NOT clear delivery.** Before any reviewer spawn or Phase 5 prep, raise a human-cleared **live-test-review gate** with the tester's proof, then PARK (BIG gates; SMALL skips — references/execution.md, "Live-test-review gate"):
 
 ```bash
 ateam gate <initiative-id> --kind=live-test-review --attach <proof-path> --file <summary-file>
