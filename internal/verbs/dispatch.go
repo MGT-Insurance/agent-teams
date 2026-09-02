@@ -22,6 +22,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
 
 // RegisterDispatchKong registers dispatch verbs onto p using native kong structs.
@@ -135,7 +136,7 @@ type dispatchKong struct {
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
 	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
-	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto (default: $ATEAM_RUNTIME, then claude)."`
+	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
 	git          gitRunner                           `kong:"-"`
 	launch       launchFunc                          `kong:"-"`
@@ -195,7 +196,13 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam dispatch: not implemented")
 	}
-	runtimeKind, err := sessionruntime.ResolveNew(c.Runtime, os.Getenv("ATEAM_RUNTIME"))
+	runtimeClass := workspaceconfig.WorkRuntime
+	if c.Topic == ReviewsHandle {
+		runtimeClass = workspaceconfig.ReviewRuntime
+	}
+	runtimeKind, err := sessionruntime.ResolveNew(c.Runtime, os.Getenv("ATEAM_RUNTIME"), func() (string, bool, error) {
+		return workspaceconfig.RuntimeDefault(ctx.Home, runtimeClass)
+	})
 	if err != nil {
 		return cli.Usagef("dispatch: %v", err)
 	}

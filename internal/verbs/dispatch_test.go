@@ -284,6 +284,155 @@ func TestDispatch_RuntimeResolutionAndValidation(t *testing.T) {
 	})
 }
 
+func TestDispatch_ConfigRuntimeDefaultsByClass(t *testing.T) {
+	t.Setenv("ATEAM_RUNTIME", "")
+	tests := []struct {
+		name, topic, explicit, want string
+		withConfig                  bool
+	}{
+		{name: "ordinary work uses work runtime", explicit: "auto", want: "codex", withConfig: true},
+		{name: "review uses review runtime", topic: ReviewsHandle, want: "claude", withConfig: true},
+		{name: "review without config preserves Claude", topic: ReviewsHandle, want: "claude"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := newEnabledRepoDir(t)
+			home := t.TempDir()
+			if tt.withConfig {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("work_runtime = \"codex\"\nreview_runtime = \"claude\"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var body string
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--body-file=") {
+						data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+						if err != nil {
+							return err
+						}
+						body = string(data)
+					}
+				}
+				dst.(*bd.Issue).ID = "at-config1"
+				return nil
+			}}
+			ctx, _, _ := makeCtx(fbd, home)
+			cmd := &dispatchKong{
+				Problem:  "configured runtime",
+				Repo:     repoDir,
+				NoLaunch: true,
+				Topic:    tt.topic,
+				Runtime:  tt.explicit,
+				git:      &fakeGit{repoRootFn: func(string) (string, error) { return repoDir, nil }},
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(body, "runtime: "+tt.want+"\n") {
+				t.Fatalf("initiative body does not persist %s runtime:\n%s", tt.want, body)
+			}
+		})
+	}
+}
+
+func TestDispatch_HigherRuntimeTiersBypassInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name, explicit, environment, want string
+	}{
+		{name: "explicit beats environment and config", explicit: "claude", environment: "codex", want: "claude"},
+		{name: "environment beats config", environment: "codex", want: "codex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ATEAM_RUNTIME", tt.environment)
+			repoDir := newEnabledRepoDir(t)
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var body string
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--body-file=") {
+						data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+						if err != nil {
+							return err
+						}
+						body = string(data)
+					}
+				}
+				dst.(*bd.Issue).ID = "at-bypass1"
+				return nil
+			}}
+			ctx, _, _ := makeCtx(fbd, home)
+			cmd := &dispatchKong{
+				Problem:  "higher tier",
+				Repo:     repoDir,
+				NoLaunch: true,
+				Runtime:  tt.explicit,
+				git:      &fakeGit{repoRootFn: func(string) (string, error) { return repoDir, nil }},
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(body, "runtime: "+tt.want+"\n") {
+				t.Fatalf("initiative body does not persist %s runtime:\n%s", tt.want, body)
+			}
+		})
+	}
+}
+
+func TestDispatch_InvalidConfigFailsBeforeSideEffects(t *testing.T) {
+	t.Setenv("ATEAM_RUNTIME", "")
+	home := t.TempDir()
+	path := filepath.Join(home, "config.toml")
+	if err := os.WriteFile(path, []byte("work_runtime = \"other\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sideEffects := 0
+	cmd := &dispatchKong{
+		Problem: "invalid config",
+		git: &fakeGit{repoRootFn: func(string) (string, error) {
+			sideEffects++
+			return "", nil
+		}},
+		createEpic: func(string, string) (string, error) {
+			sideEffects++
+			return "", nil
+		},
+		transportEnabled: func(string) bool {
+			sideEffects++
+			return true
+		},
+		codexCheck: func(context.Context, string) error {
+			sideEffects++
+			return nil
+		},
+		runtimeStart: func(*cli.Context, runtimeStartRequest) error {
+			sideEffects++
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(&fakeBD{
+		runFn: func(...string) (string, error) {
+			sideEffects++
+			return "", nil
+		},
+		runJSONFn: func(any, ...string) error {
+			sideEffects++
+			return nil
+		},
+	}, home)
+	err := cmd.Run(ctx)
+	if err == nil || cli.ExitCode(err) != 2 || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "work_runtime") {
+		t.Fatalf("Run() error = %v, want usage error naming path and key", err)
+	}
+	if sideEffects != 0 {
+		t.Fatalf("invalid config invoked %d dispatch side effects", sideEffects)
+	}
+}
+
 // ---- dispatch: not a repo --------------------------------------------------
 
 func TestDispatch_NotARepo(t *testing.T) {

@@ -66,6 +66,32 @@ ateam resume <id>                                 # relaunch an existing initiat
 
 Both launch the background session with `--permission-mode bypassPermissions` for hands-off operation: the DRI runs without permission prompts and spawns teammates with `mode: bypassPermissions`. **Safety note:** bypass means agents run commands unprompted — the guardrails are worktree isolation (each teammate is confined to its own worktree) and role boundaries (teammates only commit to their own track; the DRI owns branch integration and opens the PR; merging stays a human decision). The DRI skill enforces these.
 
+### Machine-local runtime defaults
+
+`ateam dispatch` can select a machine-local runtime default from
+`$AGENT_TEAMS_HOME/config.toml` (normally `~/.agent-teams/config.toml`). The
+initial recommended file is:
+
+```toml
+work_runtime = "codex"
+review_runtime = "claude"
+```
+
+An exact `--topic reviews` dispatch selects `review_runtime`. Every other
+dispatch selects `work_runtime`. Resolution is an explicit concrete
+`--runtime`, then `ATEAM_RUNTIME`, then the selected config key, then the
+legacy `claude` fallback. `--runtime auto` skips only the explicit tier. A
+valid flag or environment value does not read the config file.
+
+The file is strict, flat TOML. Both keys are optional. They are the only
+accepted keys. Each present value must be exactly lowercase `claude` or
+`codex`. A missing file or missing selected key falls through. If the config
+tier is consulted, an unreadable present file, malformed TOML, a table or
+unknown key, an empty value, or another invalid value fails before dispatch
+creates anything. The selected concrete runtime is stored on the new
+initiative. This config never changes the runtime of an existing initiative.
+Codex PR-review execution is not added by this config.
+
 Open the native session view with `ateam runtime open claude`; attach to answer gates (`claude attach <id>` — the short id from that listing, not the session name, which does not resolve), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 
 ## Eval suite
