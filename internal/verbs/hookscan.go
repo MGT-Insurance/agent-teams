@@ -102,7 +102,11 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		// resolves it even though the path-only match below would find
 		// nothing.
 		if c.SessionID != "" {
-			if issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID); err == nil && found {
+			issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID)
+			if err != nil {
+				return err
+			}
+			if found {
 				match = &issue
 			}
 		}

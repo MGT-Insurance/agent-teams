@@ -141,7 +141,11 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 // function only adds session-first-then-cwd, matching the ring's scope.
 func resolveCodexHookInitiative(ctx *cli.Context, cwd, sessionID string) (bd.Issue, error) {
 	if sessionID != "" {
-		if issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Codex, sessionID); err == nil && found {
+		issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Codex, sessionID)
+		if err != nil {
+			return bd.Issue{}, err
+		}
+		if found {
 			return issue, nil
 		}
 	}

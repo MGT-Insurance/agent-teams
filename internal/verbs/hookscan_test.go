@@ -2,6 +2,7 @@ package verbs_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -341,6 +342,63 @@ func TestHookScanBDErrorPropagates(t *testing.T) {
 	}
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("stdout %q, want empty", stdout)
+	}
+}
+
+// fakeExecOKThenErrSessionList succeeds for hook-scan's own top-of-Run list
+// (`bd list --status=open --include-infra --json`) but fails for the
+// distinct, --include-infra-less list resolveInitiativeBySession issues
+// (`bd list --status=open --json`) — letting a test drive a bd failure
+// specifically on the session-first lookup while path resolution's own list
+// call keeps succeeding.
+func fakeExecOKThenErrSessionList(payload []bd.Issue) bd.ExecFunc {
+	return func(_ string, args ...string) ([]byte, []byte, error) {
+		for _, a := range args {
+			if a == "--include-infra" {
+				out, err := json.Marshal(payload)
+				if err != nil {
+					panic(err)
+				}
+				return out, nil, nil
+			}
+		}
+		return nil, []byte("bd: something went wrong"), &testExecError{}
+	}
+}
+
+// TestHookScanSessionFirstBDErrorPropagates verifies the ring .4 review fix
+// (agent-teams-y814.8, at-1k234): a bd error from the session-first
+// resolveInitiativeBySession call now propagates as a non-zero exit instead
+// of being silently swallowed via `err == nil && found` and falling through
+// to path resolution — matching hook-scan's documented contract that bd
+// failures return the error (hookscan.go's doc comment above Run).
+func TestHookScanSessionFirstBDErrorPropagates(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-111", Title: "Mine", Description: "worktree: /a/b/wt"},
+	}
+	var outBuf, errBuf bytes.Buffer
+	client := bd.NewClientWithExec("/fake/home", fakeExecOKThenErrSessionList(issues))
+	ctx := &cli.Context{
+		Home:   "/fake/home",
+		BD:     client,
+		Stdout: &outBuf,
+		Stderr: &errBuf,
+	}
+	p, err := cli.NewParser()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	verbs.RegisterHookScanKong(p)
+	kctx, parseErr := p.Parse([]string{"hook-scan", "/a/b/wt", "--session-id", "sess-any"})
+	if parseErr != nil {
+		t.Fatalf("parse: %v", parseErr)
+	}
+	kctx.Bind(ctx)
+	if runErr := kctx.Run(ctx); runErr == nil {
+		t.Fatalf("hook-scan: err = nil, want a propagated bd error from the session-first lookup")
+	}
+	if strings.TrimSpace(outBuf.String()) != "" {
+		t.Errorf("stdout %q, want empty", outBuf.String())
 	}
 }
 

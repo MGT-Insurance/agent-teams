@@ -174,6 +174,44 @@ func TestResolveCodexHookInitiativeNoMatchAnywhere(t *testing.T) {
 	}
 }
 
+// TestResolveCodexHookInitiativeSessionFirstErrorPropagates verifies the ring
+// .4 review fix (agent-teams-y814.8, at-1k234): a bd error from the
+// session-first resolveInitiativeBySession call must propagate, matching
+// this function's own cwd-fallback contract just below it (which already
+// does `return bd.Issue{}, err` on a bd failure) — it must not be silently
+// swallowed via `err == nil && found` and fall through to the cwd match.
+func TestResolveCodexHookInitiativeSessionFirstErrorPropagates(t *testing.T) {
+	// The session-first list call (inside resolveInitiativeBySession) and the
+	// cwd-fallback list call issue the IDENTICAL bd args ("list",
+	// "--status=open", "--json"), so a swallow-and-fall-through bug can't be
+	// caught by inspecting args the way hook-scan's test does — it has to be
+	// caught by call ORDER: fail only the first call (session-first) and
+	// succeed the second (cwd fallback, matching cwd) with a real issue. A
+	// swallowing implementation reaches the second call and returns that
+	// issue with no error; the fixed implementation returns the first call's
+	// error and never makes a second call.
+	wantErr := errors.New("bd list: boom")
+	calls := 0
+	f := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			calls++
+			if calls == 1 {
+				return wantErr
+			}
+			return unmarshalIssues(dst, bd.Issue{ID: "at-codex-mine", Status: "open", Description: "worktree: /a/b/wt\nruntime: codex\n"})
+		},
+	}
+	ctx, _, _ := makeCtx(f, t.TempDir())
+
+	_, err := resolveCodexHookInitiative(ctx, "/a/b/wt", "thread-mine")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("resolveCodexHookInitiative: err = %v, want it to wrap %v (session-first bd error must propagate, not fall through to a second cwd-fallback bd call)", err, wantErr)
+	}
+	if calls != 1 {
+		t.Errorf("resolveCodexHookInitiative: made %d bd calls, want exactly 1 (must return on the session-first error, never reach cwd fallback)", calls)
+	}
+}
+
 func TestCodexHookDiagnosticsAndNonInitiativeNoop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
