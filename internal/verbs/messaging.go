@@ -591,10 +591,30 @@ func resolveInboxRecipient(ctx *cli.Context, cwd string) (string, error) {
 // resolveInboxRecipientRuntime returns whether the resolved recipient is a
 // Codex initiative. Legacy or invalid runtime metadata still permits inbox
 // consumption; it simply does not opt into the Codex doorbell contract.
+//
+// Resolution order: the Steward's own session (isStewardSession) always wins
+// first. Next, a durable session tie (resolveInitiativeBySession), keyed on
+// the CURRENT session's runtime-native id — this is what lets `ateam mail
+// inbox` resolve correctly from a cwd that doesn't match any registered
+// worktree (e.g. a nested subshell, or a session whose worktree moved), which
+// the cwd-only path below cannot do. Only when no session id is available, or
+// no open initiative is tied to it, does this fall through to
+// resolveMyInitiativeIssue's pure-cwd match — UNCHANGED, since tie-session
+// (SessionStart) depends on that resolution staying cwd-only.
 func resolveInboxRecipientRuntime(ctx *cli.Context, cwd string) (string, bool, error) {
 	if isStewardSession(ctx, cwd) {
 		return StewardHandle, false, nil
 	}
+
+	if runtimeKind, sessionID, ok := currentRuntimeSessionID(); ok {
+		if issue, found, err := resolveInitiativeBySession(ctx, runtimeKind, sessionID); err != nil {
+			return "", false, err
+		} else if found {
+			resolvedKind, runtimeErr := sessionruntime.ResolveStored(initiative.Of(issue).Runtime)
+			return issue.ID, runtimeErr == nil && resolvedKind == sessionruntime.Codex, nil
+		}
+	}
+
 	issue, err := resolveMyInitiativeIssue(ctx, cwd)
 	if err != nil {
 		return "", false, err
@@ -603,11 +623,42 @@ func resolveInboxRecipientRuntime(ctx *cli.Context, cwd string) (string, bool, e
 	return issue.ID, runtimeErr == nil && runtimeKind == sessionruntime.Codex, nil
 }
 
+// currentRuntimeSessionID returns the calling process's own runtime kind and
+// session id, read from whichever runtime-native env var is set — CODEX-FIRST.
+//
+// codexSessionIDEnvVar (CODEX_THREAD_ID) is checked before sessionIDEnvVar
+// (CLAUDE_CODE_SESSION_ID) because CLAUDE_CODE_SESSION_ID has been observed,
+// live, to LEAK into Codex tool subprocesses (inherited from a parent Claude
+// process — see hung_tick.go:297's hazard note for the same leak surfacing
+// elsewhere). CODEX_THREAD_ID's presence is therefore the reliable "I am
+// Codex" signal: a Codex subprocess may have both set, but only
+// CODEX_THREAD_ID identifies which session it actually is. If neither is
+// set, ok is false and callers fall back to cwd-based resolution.
+func currentRuntimeSessionID() (kind sessionruntime.Kind, sessionID string, ok bool) {
+	if id := os.Getenv(codexSessionIDEnvVar); id != "" {
+		return sessionruntime.Codex, id, true
+	}
+	if id := os.Getenv(sessionIDEnvVar); id != "" {
+		return sessionruntime.Claude, id, true
+	}
+	return "", "", false
+}
+
 // sessionIDEnvVar is the env var Claude Code exports into every session's
 // Bash env carrying that session's id (verified live against the
 // steward-duplicate incident that motivated agent-teams-e3mq.31).
 // checkStewardInboxGuard reads it to identify the calling session.
 const sessionIDEnvVar = "CLAUDE_CODE_SESSION_ID"
+
+// codexSessionIDEnvVar is the env var the Codex CLI injects, codex-native,
+// into every tool subprocess it spawns, carrying that thread's id (the same
+// value stored on the initiative's "session:" line for a Codex session — see
+// docs/codex-runtime-contract.md §2.2). currentRuntimeSessionID checks this
+// BEFORE sessionIDEnvVar (codex-first) because CLAUDE_CODE_SESSION_ID has
+// been confirmed, live, to leak into Codex tool subprocesses inherited from a
+// parent Claude process, which would otherwise misidentify a Codex session as
+// Claude.
+const codexSessionIDEnvVar = "CODEX_THREAD_ID"
 
 // pidfileEntryPid and pidfileEntrySession parse a watcher pidfile entry of
 // the form "pid<TAB>session_id" (or a bare pid for a pre-e3mq.30 entry,
