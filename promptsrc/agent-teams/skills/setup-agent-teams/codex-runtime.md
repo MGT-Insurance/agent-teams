@@ -88,23 +88,67 @@
    ```
 
    Do not use `--force` when a definition has local changes unless the human
-   explicitly approves replacing those changes.
-5. Verify all five files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
+   explicitly approves replacing those changes. Setup also seeds the top-level
+   user setting `model_auto_compact_token_limit = 300000` only when that key is
+   absent. If the user already set a threshold, setup preserves that override.
+   It does not write `model_auto_compact_token_limit_scope`; an explicit scope
+   remains untouched, and the absent-key Codex default is `total`. The human
+   selected 300000 as approximately 29% of the official 1,050,000-token Sol
+   and Terra context capacity. This limits active history; it is not a hard
+   size limit for persisted rollout files.
+
+   The root Codex DRI and all five custom agent roles inherit this user-level
+   configuration; setup does not copy the setting into role TOMLs. Native
+   higher-precedence Codex configuration can still override this default.
+5. Verify the compaction configuration without dumping unrelated configuration
+   or secrets. This check prints only the threshold and scope:
+
+   ```bash
+   CODEX_CONFIG="${CODEX_HOME:-$HOME/.codex}/config.toml"
+   python3 - "$CODEX_CONFIG" <<'PY'
+   import json
+   import sys
+   import tomllib
+
+   path = sys.argv[1]
+   try:
+       with open(path, "rb") as stream:
+           config = tomllib.load(stream)
+   except (OSError, tomllib.TOMLDecodeError) as error:
+       raise SystemExit(f"agent-teams: could not read {path}: {error}")
+
+   limit = config.get("model_auto_compact_token_limit")
+   scope = config.get("model_auto_compact_token_limit_scope")
+   if not isinstance(limit, int) or isinstance(limit, bool):
+       raise SystemExit("agent-teams: model_auto_compact_token_limit is missing or invalid")
+
+   limit_status = "setup default" if limit == 300000 else "preserved user override"
+   print(f"model_auto_compact_token_limit = {limit} ({limit_status})")
+   if scope is None:
+       print('model_auto_compact_token_limit_scope = "total" (Codex default; user key absent)')
+   elif isinstance(scope, str):
+       print(f"model_auto_compact_token_limit_scope = {json.dumps(scope)} (preserved user override)")
+   else:
+       raise SystemExit("agent-teams: model_auto_compact_token_limit_scope is invalid")
+   PY
+   ```
+
+6. Verify all five files exist under `${CODEX_HOME:-$HOME/.codex}/agents/`:
    `agent-teams-planner.toml`, `agent-teams-implementer.toml`,
    `agent-teams-tester.toml`, `agent-teams-reviewer.toml`, and
    `agent-teams-investigator.toml`.
-6. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
+7. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
    Trust its current `SessionStart`, `UserPromptSubmit`, and `Stop` command-hook
    definitions if they are marked for review. Do not claim mail wake is ready
    while the source is skipped, disabled, or awaiting trust. Codex reports a
    changed hook hash at startup and in `/hooks`; after every plugin hook update,
    review the new definition rather than bypassing trust permanently.
-7. Tell the human to start a new Codex session. Custom agent, skill, and trusted
-   hook discovery occur at the session boundary. Because these hooks are
-   plugin-scoped, an untrusted project does not hide them; project-scoped
-   `.codex` components still require project trust and must be diagnosed
-   separately.
+8. Tell the human to start a new Codex session. A new session is required before
+   Codex loads the compaction setting, custom agents, skills, and trusted hooks.
+   Because these hooks are plugin-scoped, an untrusted project does not hide
+   them; project-scoped `.codex` components still require project trust and
+   must be diagnosed separately.
 
 Report the workspace path, Codex compatibility/version, each installed or
-up-to-date definition, hook enabled/trusted status, and whether a new session
-is still required.
+up-to-date definition, the compaction threshold and scope status, hook
+enabled/trusted status, and whether a new session is still required.

@@ -47,6 +47,46 @@ func TestCodexPromptsIncludeInvestigatorContracts(t *testing.T) {
 			"`agent-teams-investigator.toml`",
 		)
 	})
+
+	t.Run("setup documents and safely verifies inherited compaction configuration", func(t *testing.T) {
+		paths := []string{
+			"promptsrc/agent-teams/skills/setup-agent-teams/codex-runtime.md",
+			"plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md",
+		}
+		assertPromptClauses(t, root, paths,
+			"`model_auto_compact_token_limit = 300000` only when that key is absent",
+			"preserves that override",
+			"an explicit scope remains untouched",
+			"approximately 29% of the official 1,050,000-token Sol and Terra context capacity",
+			"The root Codex DRI and all five custom agent roles inherit this user-level configuration",
+			"prints only the threshold and scope",
+			`config.get("model_auto_compact_token_limit")`,
+			`config.get("model_auto_compact_token_limit_scope")`,
+			"A new session is required before Codex loads the compaction setting",
+		)
+		assertPromptOmits(t, root, paths,
+			`cat "$CODEX_CONFIG"`,
+			"print(config)",
+			"model_context_window",
+		)
+
+		rolePaths, err := filepath.Glob(filepath.Join(root, "internal", "verbs", "codex_agents", "*.toml"))
+		if err != nil {
+			t.Fatalf("glob Codex role definitions: %v", err)
+		}
+		if len(rolePaths) != 5 {
+			t.Fatalf("found %d Codex role definitions, want 5", len(rolePaths))
+		}
+		for _, path := range rolePaths {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if strings.Contains(string(body), "model_auto_compact_token_limit") {
+				t.Errorf("%s unexpectedly contains a compaction override", path)
+			}
+		}
+	})
 }
 
 func TestCodexSetupPreservesOccupiedAteamPath(t *testing.T) {
