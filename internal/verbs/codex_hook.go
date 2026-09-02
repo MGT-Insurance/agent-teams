@@ -36,7 +36,7 @@ type codexHookOutput struct {
 }
 
 type codexHookDeps struct {
-	resolve func(*cli.Context, string) (bd.Issue, error)
+	resolve func(*cli.Context, string, string) (bd.Issue, error)
 	tie     func(*cli.Context, string, string) error
 	unread  func(*cli.Context, string) ([]bd.Issue, error)
 	repair  func(*cli.Context, string) error
@@ -80,7 +80,7 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 	if deps.repair == nil {
 		deps.repair = repairCodexDoorbell
 	}
-	issue, err := deps.resolve(ctx, hookInput.CWD)
+	issue, err := deps.resolve(ctx, hookInput.CWD, hookInput.SessionID)
 	if errors.Is(err, errCodexHookNoInitiative) {
 		return writeCodexHookOutput(ctx, codexHookOutput{})
 	}
@@ -118,7 +118,38 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 	return writeCodexHookOutput(ctx, output)
 }
 
-func resolveCodexHookInitiative(ctx *cli.Context, cwd string) (bd.Issue, error) {
+// resolveCodexHookInitiative resolves the Codex initiative for this hook
+// call. sessionID, when non-empty (the hook's stdin .session_id, decoded into
+// hookInput.SessionID and threaded straight through by runCodexHook — no env
+// read, fully contract-compliant), is tried FIRST via
+// resolveInitiativeBySession(ctx, sessionruntime.Codex, sessionID): the
+// durable session tie, independent of cwd. This is what lets a Codex session
+// whose cwd has drifted mid-session, or whose FIRST hook call after a tie
+// already exists lands with a mismatched cwd, still count unread mail
+// correctly instead of erroring out as errCodexHookNoInitiative (at-0xnp1's
+// "deaf session" case, Codex side). A miss (no tie, or sessionID empty) falls
+// through to the pre-existing matchByWorktreeOrAncestor(cwd) resolution,
+// unchanged, including its own runtime==Codex guard below — resolution via
+// the session tie above already guarantees Codex runtime (resolveInitiativeBySession
+// only matches issues whose stored runtime resolves to the requested Kind),
+// so that guard applies only to the cwd fallback path.
+//
+// NOT in scope here (tracked separately as agent-teams-y814.6): the
+// first-launch bootstrap gap, where NO tie exists yet AND cwd also mismatches
+// — there sessionID is set but resolveInitiativeBySession has nothing to
+// find, and the cwd fallback also can't find the wrong-cwd initiative. This
+// function only adds session-first-then-cwd, matching the ring's scope.
+func resolveCodexHookInitiative(ctx *cli.Context, cwd, sessionID string) (bd.Issue, error) {
+	if sessionID != "" {
+		issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Codex, sessionID)
+		if err != nil {
+			return bd.Issue{}, err
+		}
+		if found {
+			return issue, nil
+		}
+	}
+
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
 		return bd.Issue{}, err

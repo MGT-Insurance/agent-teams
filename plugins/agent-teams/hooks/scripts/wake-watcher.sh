@@ -32,6 +32,18 @@ HOOK_STDIN=$(cat 2>/dev/null || true)
 HOOK_SESSION_ID=$(printf '%s' "$HOOK_STDIN" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 export HOOK_SESSION_ID
 
+# Extra arg for `ateam resolve-initiative`: pass the session id when known, so
+# a launch-cwd-mismatched session (cwd doesn't match its registered worktree)
+# still resolves via its durable session tie instead of going deaf
+# (agent-teams-y814.4, at-1k234). "unknown" is the stdin-parse-failure
+# sentinel above, not a real session id — omit it too, same as an empty id.
+# Used at both call sites below: arm-time and still_open_and_enabled's
+# re-validation.
+session_id_flag=""
+if [ -n "$HOOK_SESSION_ID" ] && [ "$HOOK_SESSION_ID" != "unknown" ]; then
+  session_id_flag="$HOOK_SESSION_ID"
+fi
+
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$(dirname "$0")/lib/hook-debug-log.sh"
 
@@ -75,7 +87,7 @@ else
     HOOK_EXIT_REASON="missing-deps"
     exit 0
   fi
-  match_id=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
+  match_id=$("$ATEAM" resolve-initiative "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
   if [ -z "$match_id" ]; then
     HOOK_EXIT_REASON="no-open-match"
     exit 0
@@ -168,7 +180,7 @@ still_open_and_enabled() {
   if [ "$is_steward_session" = 1 ]; then
     return 0
   fi
-  current_match=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
+  current_match=$("$ATEAM" resolve-initiative "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
   [ "$current_match" = "$match_id" ]
 }
 

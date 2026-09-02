@@ -401,6 +401,62 @@ func TestResolveInitiativeRepoDisabled(t *testing.T) {
 	}
 }
 
+// TestResolveInitiativeSessionFirstHitFromNonMatchingCwd is the whole point of
+// ring .4 (at-1k234): a session tied to an initiative via "session: <id>"
+// resolves that initiative even when the cwd being resolved matches no
+// registered worktree at all — the launch-cwd-mismatch case that otherwise
+// leaves the session "deaf" (its watcher never arms because path resolution
+// alone finds nothing).
+func TestResolveInitiativeSessionFirstHitFromNonMatchingCwd(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-mine", Title: "Mine", Description: "worktree: /a/b/wt\nsession: sess-mine\n"},
+		{ID: "at-other", Title: "Other", Description: "worktree: /x/y/wt\nsession: sess-other\n"},
+	}
+	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{"/no/such/path", "--session-id", "sess-mine"})
+	if code != 0 {
+		t.Errorf("resolve-initiative session-hit: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-mine" {
+		t.Errorf("resolve-initiative session-hit: got %q, want at-mine (session tie must win over a non-matching cwd)", strings.TrimSpace(stdout))
+	}
+	if stderr != "" {
+		t.Errorf("resolve-initiative session-hit: unexpected stderr %q", stderr)
+	}
+}
+
+// TestResolveInitiativeEmptySessionIDUsesCwdPath verifies an empty
+// --session-id (the default when the flag is omitted, or passed as "")
+// behaves exactly as before this field existed: cwd-only resolution, ignoring
+// any session ties entirely.
+func TestResolveInitiativeEmptySessionIDUsesCwdPath(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cwd-match", Title: "By cwd", Description: "worktree: /a/b/wt\n"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt", "--session-id="})
+	if code != 0 {
+		t.Errorf("resolve-initiative empty session-id: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-cwd-match" {
+		t.Errorf("resolve-initiative empty session-id: got %q, want at-cwd-match", strings.TrimSpace(stdout))
+	}
+}
+
+// TestResolveInitiativeSessionIDNoTieFallsBackToCwd verifies a --session-id
+// that ties to no open initiative falls through to the cwd path unchanged,
+// rather than treating a miss as a hard failure.
+func TestResolveInitiativeSessionIDNoTieFallsBackToCwd(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cwd-match", Title: "By cwd", Description: "worktree: /a/b/wt\n"},
+	}
+	stdout, _, code := runVerb(t, "resolve-initiative", issues, []string{"/a/b/wt", "--session-id", "sess-untied"})
+	if code != 0 {
+		t.Errorf("resolve-initiative session-id no-tie: exit code %d, want 0", code)
+	}
+	if strings.TrimSpace(stdout) != "at-cwd-match" {
+		t.Errorf("resolve-initiative session-id no-tie: got %q, want at-cwd-match (cwd fallback)", strings.TrimSpace(stdout))
+	}
+}
+
 func TestResolveInitiativeBDError(t *testing.T) {
 	stdout, stderr, code := runVerbErr(t, "resolve-initiative", []string{"/any/path"})
 	if code != 0 {

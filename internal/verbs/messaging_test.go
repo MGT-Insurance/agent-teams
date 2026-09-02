@@ -447,6 +447,144 @@ func TestResolveInboxRecipient_NoMarker_FallsBackToInitiative(t *testing.T) {
 	}
 }
 
+// TestResolveInboxRecipientRuntime_SessionTieResolvesFromUnregisteredCwd is
+// the loop-closing witness (agent-teams-y814.3): before .1/.2 this fails,
+// because resolveInboxRecipientRuntime only ever looked at cwd — a cwd that
+// matches no registered worktree could never resolve, no matter what session
+// tie the caller carries. Every open initiative here has a worktree that does
+// NOT match unregisteredCwd, so the cwd fallback alone can never resolve any
+// of them; only the session-tie path (or, in case d, nothing) can.
+func TestResolveInboxRecipientRuntime_SessionTieResolvesFromUnregisteredCwd(t *testing.T) {
+	const unregisteredCwd = "/unregistered/cwd"
+
+	claudeInitiative := bd.Issue{
+		ID: "at-claude-init", Status: "open",
+		Description: "worktree: /other/claude-wt\nsession: sess-c\n",
+	}
+	codexInitiative := bd.Issue{
+		ID: "at-codex-init", Status: "open",
+		Description: "worktree: /other/codex-wt\nruntime: codex\nsession: thr-x\n",
+	}
+	// A different Claude initiative carrying the STALE (leaked) env value —
+	// case (c) must NOT resolve to this one.
+	staleClaudeInitiative := bd.Issue{
+		ID: "at-stale-claude", Status: "open",
+		Description: "worktree: /other/stale-wt\nsession: other\n",
+	}
+
+	for _, tc := range []struct {
+		name        string
+		codexEnv    string
+		claudeEnv   string
+		issues      []bd.Issue
+		wantErr     bool
+		wantID      string
+		wantIsCodex bool
+	}{
+		{
+			name:      "a_claude_session_tie_resolves",
+			claudeEnv: "sess-c",
+			issues:    []bd.Issue{claudeInitiative},
+			wantID:    "at-claude-init",
+		},
+		{
+			name:        "b_codex_session_tie_resolves",
+			codexEnv:    "thr-x",
+			issues:      []bd.Issue{codexInitiative},
+			wantID:      "at-codex-init",
+			wantIsCodex: true,
+		},
+		{
+			name:        "c_codex_first_precedence_beats_leaked_claude_env",
+			codexEnv:    "thr-x",
+			claudeEnv:   "other",
+			issues:      []bd.Issue{codexInitiative, staleClaudeInitiative},
+			wantID:      "at-codex-init",
+			wantIsCodex: true,
+		},
+		{
+			name:    "d_neither_env_set_falls_back_to_cwd_no_match_errors",
+			issues:  []bd.Issue{claudeInitiative, codexInitiative},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Always set both — t.Setenv auto-restores after the subtest, and
+			// an explicit "" (rather than leaving a real ambient value, e.g.
+			// this very process's own CLAUDE_CODE_SESSION_ID) is what keeps
+			// cases from leaking into each other or into the host session.
+			t.Setenv(codexSessionIDEnvVar, tc.codexEnv)
+			t.Setenv(sessionIDEnvVar, tc.claudeEnv)
+
+			fbd := &fakeBD{
+				runJSONFn: func(dst any, args ...string) error {
+					return json.Unmarshal(mustMarshal(tc.issues), dst)
+				},
+				runFn: func(args ...string) (string, error) { return "", nil },
+			}
+			ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+			id, isCodex, err := resolveInboxRecipientRuntime(ctx, unregisteredCwd)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveInboxRecipientRuntime: expected an error (no cwd match), got id=%q", id)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveInboxRecipientRuntime: unexpected error: %v", err)
+			}
+			if id != tc.wantID {
+				t.Errorf("resolveInboxRecipientRuntime id = %q, want %q", id, tc.wantID)
+			}
+			if isCodex != tc.wantIsCodex {
+				t.Errorf("resolveInboxRecipientRuntime isCodex = %v, want %v", isCodex, tc.wantIsCodex)
+			}
+
+			// Ack side-effect: the resolved recipient must be usable end to
+			// end through markMessageRead — same assertions as
+			// TestInbox_DrainAndMark (messaging_test.go ~255-322).
+			var labelCalls [][]string
+			ackBD := &fakeBD{
+				runJSONFn: fbd.runJSONFn,
+				runFn: func(args ...string) (string, error) {
+					labelCalls = append(labelCalls, args)
+					return "", nil
+				},
+			}
+			ackCtx, _, _ := makeCtx(ackBD, t.TempDir())
+			if err := markMessageRead(ackCtx, "at-msg-1", id, "2026-09-02T00:00:00Z"); err != nil {
+				t.Fatalf("markMessageRead: %v", err)
+			}
+
+			var added, removed []string
+			for _, call := range labelCalls {
+				if len(call) >= 4 && call[0] == "label" && call[1] == "add" {
+					added = append(added, call[3])
+				}
+				if len(call) >= 4 && call[0] == "label" && call[1] == "remove" {
+					removed = append(removed, call[3])
+				}
+			}
+			if !containsAll(added, "read", "delivery:acked") {
+				t.Errorf("markMessageRead: added labels %v missing read/delivery:acked", added)
+			}
+			if !containsAll(removed, "delivery:pending") {
+				t.Errorf("markMessageRead: removed labels %v missing delivery:pending", removed)
+			}
+			closeCalled := false
+			for _, call := range labelCalls {
+				if len(call) == 2 && call[0] == "close" && call[1] == "at-msg-1" {
+					closeCalled = true
+				}
+			}
+			if !closeCalled {
+				t.Errorf("markMessageRead: expected close call for at-msg-1; calls: %v", labelCalls)
+			}
+		})
+	}
+}
+
 func TestResolveMyInitiative_ResolvesFromSubdirectory(t *testing.T) {
 	root := t.TempDir()
 	myID := "at-inbox-subdir"

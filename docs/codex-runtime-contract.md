@@ -135,6 +135,15 @@ boundary. Claude hooks may continue using `CLAUDE_CODE_SESSION_ID` as a
 compatibility fallback. Codex code must pass the captured thread ID
 explicitly; the domain must not invent a Codex environment-variable contract.
 
+A running agent's own mailbox resolution (`ateam mail inbox`) may consume the
+runtime-native session-id env var it is already given — `CLAUDE_CODE_SESSION_ID`
+for Claude, `CODEX_THREAD_ID` for Codex — to resolve its initiative
+independently of cwd, by matching it against the initiative's recorded
+`session:` values. This is distinct from the two things this section still
+bars: inventing an ateam-defined Codex env var, and passing the session tie
+itself through the environment. Consuming a variable the runtime already
+sets is not inventing one, and resolving a lookup is not writing a tie.
+
 If a Codex thread cannot be durably tied to its initiative, the coordinator
 interrupts its verified active turn when possible and reports an error. It must
 not acknowledge mail or leave an active, unrouteable thread intentionally.
