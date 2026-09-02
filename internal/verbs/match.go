@@ -107,20 +107,17 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		if other.ID == initiativeID {
 			continue
 		}
-		otherFields := initiative.Of(other)
-		for _, id := range otherFields.Sessions {
-			if id != sessionID {
-				continue
-			}
-			otherRuntime, err := sessionruntime.ResolveStored(otherFields.Runtime)
-			if err != nil {
-				return fmt.Errorf("appendSessionID: matching open initiative %s: %w", other.ID, err)
-			}
-			if otherRuntime == targetRuntime {
-				return fmt.Errorf(
-					"appendSessionID: %s session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
-					targetRuntime, sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
-			}
+		if !issueHasSession(other, sessionID) {
+			continue
+		}
+		otherRuntime, err := sessionruntime.ResolveStored(initiative.Of(other).Runtime)
+		if err != nil {
+			return fmt.Errorf("appendSessionID: matching open initiative %s: %w", other.ID, err)
+		}
+		if otherRuntime == targetRuntime {
+			return fmt.Errorf(
+				"appendSessionID: %s session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
+				targetRuntime, sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
 		}
 	}
 
@@ -146,6 +143,71 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		return fmt.Errorf("appendSessionID: bd update %s: %w", initiativeID, err)
 	}
 	return nil
+}
+
+// issueHasSession reports whether iss's "session:" lines include sessionID.
+// This is the pure inner scan shared by appendSessionID's cross-initiative
+// guard and resolveInitiativeBySession: both need the same membership check,
+// but layer different policy on top (appendSessionID errors on a same-runtime
+// conflict; resolveInitiativeBySession collects every runtime-matching hit to
+// enforce uniqueness), so only this innermost check is factored out.
+func issueHasSession(iss bd.Issue, sessionID string) bool {
+	for _, id := range initiative.Of(iss).Sessions {
+		if id == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveInitiativeBySession finds the open initiative durably tied to the
+// current session, independent of cwd — the session-tie counterpart to
+// matchByWorktreeOrAncestor. It scans open initiatives for the ones whose
+// runtime (sessionruntime.ResolveStored(initiative.Of(iss).Runtime)) equals
+// runtime AND whose Sessions (initiative.Of(iss).Sessions) contains
+// sessionID, keyed on {runtime, id} per docs/codex-runtime-contract.md §2.2's
+// uniqueness rule.
+//
+// Deliberately conservative: an empty sessionID, zero matches, or more than
+// one match all return (bd.Issue{}, false, nil) — this never guesses. A
+// >1 match should not happen given the {runtime, id} uniqueness rule
+// appendSessionID's own guard enforces at write time, but resolution must not
+// assume that invariant holds (e.g. data written before the guard existed, or
+// written by a future caller that bypasses it) and silently pick one.
+//
+// An issue whose stored runtime fails to resolve (invalid non-empty value) is
+// skipped rather than erroring the whole scan: it cannot equal any valid Kind
+// anyway, so treating it as "not this runtime" is correct without forcing
+// every caller to handle a single bad issue's metadata as a hard failure.
+func resolveInitiativeBySession(ctx *cli.Context, runtime sessionruntime.Kind, sessionID string) (bd.Issue, bool, error) {
+	if sessionID == "" {
+		return bd.Issue{}, false, nil
+	}
+
+	var openIssues []bd.Issue
+	if err := ctx.BD.RunJSON(&openIssues, "list", "--status=open", "--json"); err != nil {
+		return bd.Issue{}, false, fmt.Errorf("resolveInitiativeBySession: list open initiatives: %w", err)
+	}
+
+	var match *bd.Issue
+	for i := range openIssues {
+		iss := &openIssues[i]
+		if !issueHasSession(*iss, sessionID) {
+			continue
+		}
+		issRuntime, err := sessionruntime.ResolveStored(initiative.Of(*iss).Runtime)
+		if err != nil || issRuntime != runtime {
+			continue
+		}
+		if match != nil {
+			return bd.Issue{}, false, nil // >1 match — never guess
+		}
+		match = iss
+	}
+	if match == nil {
+		return bd.Issue{}, false, nil
+	}
+	return *match, true, nil
 }
 
 // matchSessionsForInitiative returns the sessions tied to iss, ordered
