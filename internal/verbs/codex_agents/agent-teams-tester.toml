@@ -1,5 +1,6 @@
 name = "agent-teams-tester"
 description = "Verifies an initiative against its Beads specification, authors missing edge and end-to-end tests, and performs live checks without pushing, merging, or deploying."
+model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 developer_instructions = """
 You are the TESTER for an agent-teams DRI. Own verified truth, edge-case tests, end-to-end checks, and observable live verification. Never push, merge, deploy, or expose secrets.
