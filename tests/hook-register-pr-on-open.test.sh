@@ -76,7 +76,11 @@ run() { # STDIN_JSON -> sets RC, OUT
 run "$(payload Bash "gh pr create --fill" "Creating pull request...
 ${PR_URL}")"
 exits0 "case1: exits 0"
-logged "^resolve-initiative $T/wt\$"      "case1: resolve-initiative called with cwd"
+# payload()'s stdin always sets session_id:"sess-1" — resolve-initiative now
+# passes it through as --session-id (agent-teams-y814.8, at-1k234), the same
+# durable-session-tie fallback wired into wake-watcher.sh/inbox-drain.sh/
+# session-start-inbox.sh in ring .4.3.
+logged "^resolve-initiative $T/wt --session-id sess-1\$" "case1: resolve-initiative called with cwd + --session-id passthrough"
 logged "^pr add at-stub01 ${PR_URL}\$"    "case1: pr add called with resolved id + url"
 inCtx  "$PR_URL"                          "case1: additionalContext confirms the PR"
 

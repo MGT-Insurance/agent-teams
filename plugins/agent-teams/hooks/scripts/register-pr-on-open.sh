@@ -45,6 +45,16 @@ HOOK_STDIN=$(cat 2>/dev/null || true)
 HOOK_SESSION_ID=$(printf '%s' "$HOOK_STDIN" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 export HOOK_SESSION_ID
 
+# Extra arg for `ateam resolve-initiative`: pass the session id when known, so
+# a launch-cwd-mismatched session (cwd doesn't match its registered worktree)
+# still resolves via its durable session tie instead of going deaf
+# (agent-teams-y814.8, at-1k234). "unknown" is the stdin-parse-failure
+# sentinel above, not a real session id — omit it too, same as an empty id.
+session_id_flag=""
+if [ -n "$HOOK_SESSION_ID" ] && [ "$HOOK_SESSION_ID" != "unknown" ]; then
+  session_id_flag="$HOOK_SESSION_ID"
+fi
+
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$(dirname "$0")/lib/hook-debug-log.sh"
 
@@ -86,10 +96,12 @@ pr_url=$(printf '%s' "$output" | grep -oiE 'https://github\.com/[^/[:space:]]+/[
 # `ateam resolve-initiative` owns the matching rule (internal/verbs/match.go);
 # this script must not re-derive it. Empty output = cwd is not a registered
 # worktree = this is not an agent-teams initiative session -> silent no-op.
+# --session-id (session_id_flag, computed above) is a durable fallback beside
+# it, not a replacement.
 cwd=$(printf '%s' "$HOOK_STDIN" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -n "$cwd" ] || cwd="$PWD"
 
-initiative_id=$("$ATEAM" resolve-initiative "$cwd" 2>/dev/null || true)
+initiative_id=$("$ATEAM" resolve-initiative "$cwd" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
 if [ -z "$initiative_id" ]; then
   HOOK_EXIT_REASON="no-open-match"
   exit 0

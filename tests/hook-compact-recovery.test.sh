@@ -90,4 +90,17 @@ out=$(cd "$T/wt/inner/sub" && "$SCRIPT")
 echo "$out" | grep -q "Inner initiative" || { echo "FAIL case6: most-specific worktree did not win"; exit 1; }
 echo "$out" | grep -q "Second real initiative" && { echo "FAIL case6: outer initiative leaked"; exit 1; }
 
+# Case 7: cwd matches NO registered worktree, but the session is durably tied
+# via a "session: <id>" line to an open initiative (agent-teams-y814.8,
+# at-1k234) — --session-id passthrough, wired into compact-recovery.sh by
+# this fix (the same idiom ring .4.3 wired into wake-watcher.sh/inbox-drain.sh/
+# session-start-inbox.sh), still recovers it from stdin's .session_id even
+# though the path-only match below would find nothing. repo stays "$T/wt" (the
+# only directory carrying the .agent-teams enable marker) while worktree is a
+# distinct, never-visited path, so this case cannot pass via cwd matching.
+printf 'problem: session-tied\nrepo: %s\nworktree: %s/wt-tied\nbranch: feat/tied\nteam: t\nmode: interactive\nsession: sess-tie-1\n' "$T/wt" "$T/wt" > "$T/tied-body.md"
+bd -C "$AGENT_TEAMS_HOME" create --title="Session-tied initiative" --type=task --priority=2 --body-file="$T/tied-body.md" >/dev/null
+out=$(cd "$T" && echo '{"session_id":"sess-tie-1"}' | "$SCRIPT")
+echo "$out" | grep -q "Session-tied initiative" || { echo "FAIL case7: session tie did not recover from a non-matching cwd"; exit 1; }
+
 echo "PASS"
