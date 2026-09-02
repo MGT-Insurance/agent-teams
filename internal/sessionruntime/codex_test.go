@@ -146,21 +146,29 @@ func TestCodexAdapterResumeStartsIdleThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/read,turn/start" {
+	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/start" {
 		t.Fatalf("calls = %s", got)
 	}
-	config := server.calls[1].Params["config"].(map[string]any)
+	resume := server.calls[1].Params
+	if resume["excludeTurns"] != true {
+		t.Fatalf("thread/resume params = %#v, want excludeTurns:true", resume)
+	}
+	config := resume["config"].(map[string]any)
 	policy := config["shell_environment_policy"].(map[string]any)
 	set := policy["set"].(map[string]any)
 	if set["AGENT_TEAMS_HOME"] != "/workspace" {
 		t.Fatalf("thread/resume config = %#v", config)
 	}
+	turnsList := server.calls[2].Params
+	if turnsList["threadId"] != "thread-123" || turnsList["sortDirection"] != "desc" || turnsList["itemsView"] != "notLoaded" {
+		t.Fatalf("thread/turns/list params = %#v", turnsList)
+	}
 }
 
 func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	server := resumeServer(t, "active", []map[string]any{
-		{"id": "turn-done", "status": "completed"},
 		{"id": "turn-live", "status": "inProgress"},
+		{"id": "turn-done", "status": "completed"},
 	})
 	err := testAdapter(server).Resume(context.Background(), Request{
 		Worktree: "/worktree",
@@ -169,8 +177,58 @@ func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/read,turn/steer" {
+	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/steer" {
 		t.Fatalf("calls = %s", got)
+	}
+	steer := server.calls[len(server.calls)-1].Params
+	if steer["expectedTurnId"] != "turn-live" {
+		t.Fatalf("steer params = %#v", steer)
+	}
+}
+
+func TestCodexAdapterResumeFindsActiveTurnAcrossPages(t *testing.T) {
+	// The active turn is not on the first (newest-first) page; the adapter
+	// must follow nextCursor to find it rather than assuming a single page
+	// covers the whole thread.
+	pages := [][]map[string]any{
+		{{"id": "turn-newest", "status": "completed"}},
+		{{"id": "turn-live", "status": "inProgress"}, {"id": "turn-oldest", "status": "completed"}},
+	}
+	call := 0
+	server := &fakeAppServer{handle: func(method string, params map[string]any) (any, error) {
+		switch method {
+		case "initialize":
+			return map[string]any{}, nil
+		case "thread/resume":
+			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": "active"}}}, nil
+		case "thread/turns/list":
+			if params["itemsView"] != "notLoaded" || params["sortDirection"] != "desc" {
+				t.Fatalf("thread/turns/list params = %#v", params)
+			}
+			page := pages[call]
+			call++
+			resp := map[string]any{"data": page}
+			if call < len(pages) {
+				resp["nextCursor"] = "cursor-1"
+			} else {
+				resp["nextCursor"] = nil
+			}
+			return resp, nil
+		case "turn/steer":
+			return map[string]any{"turnId": params["expectedTurnId"]}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", method)
+		}
+	}}
+	err := testAdapter(server).Resume(context.Background(), Request{
+		Worktree: "/worktree",
+		Prompt:   "new mail",
+	}, SessionRef{Runtime: Codex, ID: "thread-123"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if call != 2 {
+		t.Fatalf("thread/turns/list called %d times, want 2 (pagination)", call)
 	}
 	steer := server.calls[len(server.calls)-1].Params
 	if steer["expectedTurnId"] != "turn-live" {
@@ -269,6 +327,9 @@ func TestCodexAdapterFailures(t *testing.T) {
 	})
 }
 
+// resumeServer fakes an app-server for a resumed thread. turns is the page
+// of turn metadata thread/turns/list returns, already in the newest-first
+// order the real RPC uses with sortDirection "desc".
 func resumeServer(t *testing.T, status string, turns []map[string]any) *fakeAppServer {
 	t.Helper()
 	return &fakeAppServer{handle: func(method string, params map[string]any) (any, error) {
@@ -279,11 +340,15 @@ func resumeServer(t *testing.T, status string, turns []map[string]any) *fakeAppS
 			if params["threadId"] != "thread-123" {
 				t.Fatalf("thread/resume params = %#v", params)
 			}
+			if params["excludeTurns"] != true {
+				t.Fatalf("thread/resume params = %#v, want excludeTurns:true", params)
+			}
 			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": status}}}, nil
-		case "thread/read":
-			return map[string]any{"thread": map[string]any{
-				"id": "thread-123", "status": map[string]any{"type": status}, "turns": turns,
-			}}, nil
+		case "thread/turns/list":
+			if params["threadId"] != "thread-123" || params["sortDirection"] != "desc" || params["itemsView"] != "notLoaded" {
+				t.Fatalf("thread/turns/list params = %#v", params)
+			}
+			return map[string]any{"data": turns, "nextCursor": nil}, nil
 		case "turn/start":
 			return map[string]any{"turn": map[string]any{"id": "turn-new", "status": "inProgress"}}, nil
 		case "turn/steer":
