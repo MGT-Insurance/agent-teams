@@ -108,24 +108,31 @@ Follow [execution.md](references/execution.md). In short:
    instruction to return via its final response. Do not pass a model override;
    the custom definition owns role configuration.
 3. Verify claims in Beads, git, diffs, and test output. Integrate tracks on the
-   DRI branch. Route reviewer or tester findings to fresh implementers.
-4. Spawn `agent-teams-tester` for non-happy-path tests and live verification,
-   and `agent-teams-reviewer` for an independent diff review.
+   DRI branch. Route tester findings to fresh implementers.
+4. Spawn `agent-teams-tester` for non-happy-path tests and live verification.
+   Do not spawn `agent-teams-reviewer` here — it moves to Phase 5, after the
+   live-test-review gate clears.
 5. The loop closes only when the complete loop-closing set is merged and a
    real end-to-end exercise passes on the integrated branch. Unit tests alone
-   are not loop closure. Open enhancement rings only afterward.
+   are not loop closure. A tester live pass closes this engineering loop but
+   does not clear delivery: before any reviewer spawn or Phase 5 PR prep, the
+   DRI raises a `live-test-review` gate carrying the tester's proof and parks
+   (see [execution.md](references/execution.md), "Live-test-review gate", for
+   the BIG-vs-SMALL skip criteria). Open enhancement rings only after the loop
+   closes.
 
 If this turn is interrupted, simply reconstruct from Beads and git next turn.
 Never duplicate work merely because an old child no longer exists.
 
 ## Phase 5: deliver
 
-Run the full quality gates, including a real build and live behavior check,
-and confirm the live-test-review gate has cleared. Resolve reviewer findings,
-commit, pull/rebase as appropriate, and push. Open a
-ready-for-review PR unless the human asked for a draft. Write for an outside
-reader: describe the work, not Bead ids; ids may appear only as skippable
-trailers or parentheticals.
+With the live-test-review gate cleared (or skipped, for SMALL work), spawn
+`agent-teams-reviewer` for an independent diff review and route its findings
+to fresh implementers. Then run the full quality gates, including a real
+build and live behavior check. Commit, pull/rebase as appropriate, and push.
+Open a ready-for-review PR unless the human asked for a draft. Write for an
+outside reader: describe the work, not Bead ids; ids may appear only as
+skippable trailers or parentheticals.
 
 Never merge without explicit human confirmation. Immediately after opening
 the PR:

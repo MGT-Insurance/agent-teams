@@ -15,13 +15,17 @@ A "gate" is any point where you need the human: clarifications, plan approval, s
 `ateam gate` accepts an optional `--kind` flag:
 
 - `--kind=question` — (default, omitted) the initiative needs a human answer or decision.
-- `--kind=review` — the initiative delivered a PR and needs the human to review/merge it.
+- `--kind=review` — the initiative delivered a PR and needs the human's review.
+- `--kind=live-test-review` — a tester live pass closed the engineering loop; the DRI needs the human's review of that proof before any reviewer spawn or PR prep (references/execution.md, "Live-test-review gate").
 
-Both kinds set the `human` label. `kind=review` additionally sets `gate:review`; `kind=question` sets `gate:question`. The dashboard and `ateam human-list` derive the displayed kind from these labels via the **kind-resolution rule**:
+All three kinds set the `human` label plus their own `gate:<kind>` label (`gate:review`, `gate:question`, `gate:live-test-review`). The dashboard and `ateam human-list` derive the displayed kind from these labels via the **kind-resolution rule**:
 
-- `labels` contains `gate:review` → **REVIEW** (PR awaiting review/merge)
+- `labels` contains `gate:review` → **REVIEW** (PR awaiting review) — highest priority
+- else `labels` contains `gate:live-test-review` → **LIVE-TEST-REVIEW** (pre-PR proof awaiting review)
 - `labels` contains `gate:question`, OR contains `human` but no `gate:*` → **QUESTION** (backward-compat: pre-existing gated beads predate the `gate:*` label)
 - no `human` label → not gated
+
+None of these three kinds is ever an ask to merge — the ask is always review (live-test-review's proof, or the PR's code); merge is the human's own later call, never the DRI's or the gate's.
 
 ## The review gate and execution-state
 
@@ -99,6 +103,7 @@ Provenance: at-9qfb (2026-07-22) — a planner's mechanism-driven pivot was self
    ateam gate <initiative-id> --decision "..." --recommendation "..." --alternative "..."   # structured, preferred
    ateam gate <initiative-id> --file /tmp/gate-note.txt                                     # prose, question gate (default)
    ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review                        # prose, review gate — PR ready
+   ateam gate <initiative-id> --kind=live-test-review --attach <path> --file <summary-file>  # tester's live proof, pre-PR
    ```
 
    `bd human respond` and `bd human dismiss` do not work — they fail with "storage is nil" (confirmed on 1.0.4 and 1.1.0). Use the label-remove path below; it is the verified one. Re-test before assuming a newer bd has fixed it. `bd human list` / `ateam human-list` still works to enumerate flagged issues; see the framework repo's docs/verifications.md.
