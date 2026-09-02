@@ -186,6 +186,32 @@ func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	}
 }
 
+func TestCodexAdapterResumeSteersNewestOfTwoActiveTurns(t *testing.T) {
+	// thread/turns/list returns newest-first (sortDirection:"desc"). When two
+	// turns are simultaneously "inProgress" — a state the app-server should
+	// not normally produce, but the adapter must still handle deterministically
+	// — the MOST RECENT in-progress turn wins, matching activeTurn()'s
+	// documented "first match in newest-first order" semantics.
+	server := resumeServer(t, "active", []map[string]any{
+		{"id": "turn-newer", "status": "inProgress"},
+		{"id": "turn-older", "status": "inProgress"},
+	})
+	err := testAdapter(server).Resume(context.Background(), Request{
+		Worktree: "/worktree",
+		Prompt:   "new mail",
+	}, SessionRef{Runtime: Codex, ID: "thread-123"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/steer" {
+		t.Fatalf("calls = %s", got)
+	}
+	steer := server.calls[len(server.calls)-1].Params
+	if steer["expectedTurnId"] != "turn-newer" {
+		t.Fatalf("steer params = %#v, want expectedTurnId=turn-newer", steer)
+	}
+}
+
 func TestCodexAdapterResumeFindsActiveTurnAcrossPages(t *testing.T) {
 	// The active turn is not on the first (newest-first) page; the adapter
 	// must follow nextCursor to find it rather than assuming a single page
