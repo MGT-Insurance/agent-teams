@@ -38,7 +38,15 @@ func RuntimeDefault(home string, class RuntimeClass) (string, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", false, nil
+			_, lstatErr := os.Lstat(path)
+			switch {
+			case lstatErr == nil:
+				return "", false, fmt.Errorf("read runtime config %s: %w", path, err)
+			case errors.Is(lstatErr, os.ErrNotExist):
+				return "", false, nil
+			default:
+				return "", false, fmt.Errorf("inspect runtime config %s after read failure: %w", path, lstatErr)
+			}
 		}
 		return "", false, fmt.Errorf("read runtime config %s: %w", path, err)
 	}

@@ -80,6 +80,29 @@ func TestRuntimeDefaultRejectsUnreadablePresentPath(t *testing.T) {
 	}
 }
 
+func TestRuntimeDefaultDistinguishesMissingFromDanglingSymlink(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		home := t.TempDir()
+		got, set, err := RuntimeDefault(home, WorkRuntime)
+		if err != nil || got != "" || set {
+			t.Fatalf("RuntimeDefault() = %q, %v, %v; want empty unset default without error", got, set, err)
+		}
+	})
+
+	t.Run("dangling symlink", func(t *testing.T) {
+		home := t.TempDir()
+		path := filepath.Join(home, FileName)
+		if err := os.Symlink(filepath.Join(home, "missing-target"), path); err != nil {
+			t.Fatal(err)
+		}
+
+		_, _, err := RuntimeDefault(home, WorkRuntime)
+		if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "read runtime config") {
+			t.Fatalf("RuntimeDefault() error = %v, want read error naming %s", err, path)
+		}
+	})
+}
+
 func stringPointer(value string) *string {
 	return &value
 }
