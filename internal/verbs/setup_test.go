@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,11 @@ func TestSetupCodexInstallsDefinitionsAndDetectsDrift(t *testing.T) {
 	if !strings.Contains(stdout.String(), "start a new Codex session") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
+	configPath := filepath.Join(codexHome, "config.toml")
+	configOverride := []byte("# human setting\nmodel_auto_compact_token_limit_scope = \"body_after_prefix\"\nmodel_auto_compact_token_limit = 123456\n")
+	if err := os.WriteFile(configPath, configOverride, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	drifted := filepath.Join(codexHome, "agents", "agent-teams-planner.toml")
 	if err := os.WriteFile(drifted, []byte("local change\n"), 0o600); err != nil {
@@ -91,6 +97,209 @@ func TestSetupCodexInstallsDefinitionsAndDetectsDrift(t *testing.T) {
 	if strings.Contains(string(restored), "local change") {
 		t.Fatal("force did not restore bundled definition")
 	}
+	if got, err := os.ReadFile(configPath); err != nil || !bytes.Equal(got, configOverride) {
+		t.Fatalf("force changed config override: got %q, err %v", got, err)
+	}
+}
+
+func TestSetupCodexMergesConfigWithoutClobbering(t *testing.T) {
+	const wantDefault = "model_auto_compact_token_limit = 300000\n"
+	tests := []struct {
+		name       string
+		initial    *string
+		mode       os.FileMode
+		want       string
+		wantMode   os.FileMode
+		wantOutput string
+	}{
+		{
+			name:       "missing file",
+			want:       wantDefault,
+			wantMode:   0o600,
+			wantOutput: "installed default:",
+		},
+		{
+			name:       "comments root keys and trailing table",
+			initial:    stringPointer("# keep this comment\nmodel = \"gpt-5.6-sol\"\n\n[tools]\nweb_search = true\n"),
+			mode:       0o640,
+			want:       wantDefault + "# keep this comment\nmodel = \"gpt-5.6-sol\"\n\n[tools]\nweb_search = true\n",
+			wantMode:   0o640,
+			wantOutput: "installed default:",
+		},
+		{
+			name:       "explicit scope without threshold",
+			initial:    stringPointer("model_auto_compact_token_limit_scope = \"body_after_prefix\"\n[profile.long]\nmodel = \"gpt-5.6-terra\"\n"),
+			mode:       0o600,
+			want:       wantDefault + "model_auto_compact_token_limit_scope = \"body_after_prefix\"\n[profile.long]\nmodel = \"gpt-5.6-terra\"\n",
+			wantMode:   0o600,
+			wantOutput: "installed default:",
+		},
+		{
+			name:       "custom threshold and scope",
+			initial:    stringPointer("# user override\nmodel_auto_compact_token_limit = 123456\nmodel_auto_compact_token_limit_scope = \"body_after_prefix\"\n"),
+			mode:       0o600,
+			want:       "# user override\nmodel_auto_compact_token_limit = 123456\nmodel_auto_compact_token_limit_scope = \"body_after_prefix\"\n",
+			wantMode:   0o600,
+			wantOutput: "preserved override:",
+		},
+		{
+			name:       "same key inside table does not mask root default",
+			initial:    stringPointer("[profile.custom]\nmodel_auto_compact_token_limit = 999999\n"),
+			mode:       0o600,
+			want:       wantDefault + "[profile.custom]\nmodel_auto_compact_token_limit = 999999\n",
+			wantMode:   0o600,
+			wantOutput: "installed default:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codexHome := t.TempDir()
+			configPath := filepath.Join(codexHome, "config.toml")
+			if tt.initial != nil {
+				if err := os.WriteFile(configPath, []byte(*tt.initial), tt.mode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(configPath, tt.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
+			cmd := &setupCodexKong{executable: compatibleCodexFixture(t), codexHome: codexHome}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("first setup: %v", err)
+			}
+			got, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("config = %q, want %q", got, tt.want)
+			}
+			info, err := os.Stat(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotMode := info.Mode().Perm(); gotMode != tt.wantMode {
+				t.Fatalf("config mode = %o, want %o", gotMode, tt.wantMode)
+			}
+			if !strings.Contains(stdout.String(), tt.wantOutput) {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), tt.wantOutput)
+			}
+
+			first := append([]byte(nil), got...)
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("second setup: %v", err)
+			}
+			second, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(second, first) {
+				t.Fatalf("second setup changed config: first %q, second %q", first, second)
+			}
+			temps, err := filepath.Glob(filepath.Join(codexHome, ".config.toml.tmp-*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(temps) != 0 {
+				t.Fatalf("atomic-write temp files remain: %v", temps)
+			}
+		})
+	}
+}
+
+func TestSetupCodexConfigPreflightFailuresDoNotWrite(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, path string)
+	}{
+		{
+			name: "malformed",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("model = [\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unreadable",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codexHome := t.TempDir()
+			configPath := filepath.Join(codexHome, "config.toml")
+			tt.setup(t, configPath)
+			ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+			err := (&setupCodexKong{executable: compatibleCodexFixture(t), codexHome: codexHome}).Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), configPath) {
+				t.Fatalf("error = %v, want config path %s", err, configPath)
+			}
+			if _, err := os.Stat(filepath.Join(codexHome, "agents")); !os.IsNotExist(err) {
+				t.Fatalf("agents directory should not be created, stat err = %v", err)
+			}
+			info, statErr := os.Stat(configPath)
+			if statErr != nil {
+				t.Fatalf("config changed or disappeared: %v", statErr)
+			}
+			if tt.name == "unreadable" {
+				if !info.IsDir() {
+					t.Fatalf("unreadable config was replaced: mode %v", info.Mode())
+				}
+				return
+			}
+			got, readErr := os.ReadFile(configPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != "model = [\n" {
+				t.Fatalf("malformed config changed: %q", got)
+			}
+		})
+	}
+}
+
+func TestSetupCodexAgentConflictDoesNotWriteConfig(t *testing.T) {
+	codexHome := t.TempDir()
+	configPath := filepath.Join(codexHome, "config.toml")
+	initial := []byte("# untouched until all preflight checks pass\n")
+	if err := os.WriteFile(configPath, initial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agentsDir := filepath.Join(codexHome, "agents")
+	if err := os.Mkdir(agentsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conflict := filepath.Join(agentsDir, "agent-teams-planner.toml")
+	if err := os.WriteFile(conflict, []byte("local change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+	err := (&setupCodexKong{executable: compatibleCodexFixture(t), codexHome: codexHome}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "local changes") {
+		t.Fatalf("error = %v", err)
+	}
+	got, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, initial) {
+		t.Fatalf("config changed before conflict error: got %q, want %q", got, initial)
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func TestSetupCodexFailsBeforeWritingWhenInstallIsIncompatible(t *testing.T) {

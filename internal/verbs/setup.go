@@ -5,15 +5,29 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/pelletier/go-toml/v2"
 )
 
 //go:embed codex_agents/*.toml
 var codexAgentDefinitions embed.FS
+
+const (
+	codexCompactionKey     = "model_auto_compact_token_limit"
+	codexCompactionDefault = codexCompactionKey + " = 300000\n"
+)
+
+type codexConfigPlan struct {
+	path    string
+	body    []byte
+	mode    os.FileMode
+	install bool
+}
 
 type setupCmd struct {
 	Codex setupCodexKong `cmd:"" help:"Install and verify Codex-specific agent-teams components."`
@@ -48,6 +62,10 @@ func (c *setupCodexKong) Run(ctx *cli.Context) error {
 		}
 		home = filepath.Join(userHome, ".codex")
 	}
+	configPlan, err := planCodexConfig(home)
+	if err != nil {
+		return fmt.Errorf("ateam setup codex: %w", err)
+	}
 	targetDir := filepath.Join(home, "agents")
 	entries, err := codexAgentDefinitions.ReadDir("codex_agents")
 	if err != nil {
@@ -80,6 +98,14 @@ func (c *setupCodexKong) Run(ctx *cli.Context) error {
 	if err := os.MkdirAll(targetDir, 0o700); err != nil {
 		return fmt.Errorf("ateam setup codex: create agents directory: %w", err)
 	}
+	if configPlan.install {
+		if err := writeFileAtomic(configPlan.path, configPlan.body, configPlan.mode); err != nil {
+			return fmt.Errorf("ateam setup codex: write %s: %w", configPlan.path, err)
+		}
+		fmt.Fprintf(ctx.Stdout, "installed default: %s\n", configPlan.path)
+	} else {
+		fmt.Fprintf(ctx.Stdout, "preserved override: %s\n", configPlan.path)
+	}
 	for _, definition := range definitions {
 		target := filepath.Join(targetDir, definition.name)
 		current, _ := os.ReadFile(target)
@@ -95,4 +121,73 @@ func (c *setupCodexKong) Run(ctx *cli.Context) error {
 	fmt.Fprintln(ctx.Stdout, "in the Codex CLI, open /hooks and trust the agent-teams-codex lifecycle hooks")
 	fmt.Fprintln(ctx.Stdout, "start a new Codex session before testing the installed agent types")
 	return nil
+}
+
+func planCodexConfig(home string) (codexConfigPlan, error) {
+	path := filepath.Join(home, "config.toml")
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return codexConfigPlan{
+				path:    path,
+				body:    []byte(codexCompactionDefault),
+				mode:    0o600,
+				install: true,
+			}, nil
+		}
+		return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	body, err := io.ReadAll(file)
+	if err != nil {
+		return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var document map[string]any
+	if err := toml.Unmarshal(body, &document); err != nil {
+		return codexConfigPlan{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if _, exists := document[codexCompactionKey]; exists {
+		return codexConfigPlan{path: path}, nil
+	}
+
+	merged := make([]byte, 0, len(codexCompactionDefault)+len(body))
+	merged = append(merged, codexCompactionDefault...)
+	merged = append(merged, body...)
+	return codexConfigPlan{
+		path:    path,
+		body:    merged,
+		mode:    info.Mode().Perm(),
+		install: true,
+	}, nil
+}
+
+func writeFileAtomic(path string, body []byte, mode os.FileMode) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".config.toml.tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+
+	if err := temp.Chmod(mode); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(body); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }

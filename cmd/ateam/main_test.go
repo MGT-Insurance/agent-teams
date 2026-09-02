@@ -100,6 +100,13 @@ func TestRunSetupCodexPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
 	if code := run([]string{"setup", "codex"}); code != 0 {
 		t.Fatalf("run([setup codex]) with no bd or workspace = %d, want 0", code)
 	}
+	config, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("setup codex did not install config default: %v", err)
+	}
+	if got, want := string(config), "model_auto_compact_token_limit = 300000\n"; got != want {
+		t.Fatalf("installed config = %q, want %q", got, want)
+	}
 	distinctiveRules := map[string]string{
 		"planner":      "Decompose in concentric circles",
 		"implementer":  "Never guess on design",
