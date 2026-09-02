@@ -431,8 +431,21 @@ func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 // re-arming hooks for it, the same as if the initiative had never resolved. A
 // missing "repo:" field (legacy data) skips this check rather than resolving
 // a marker file against an empty/relative path.
+//
+// SessionID, when non-empty, is tried FIRST via resolveInitiativeBySession —
+// the durable session tie, independent of cwd — before falling back to the
+// cwd-based matchByWorktreeOrAncestor below. This is what restores wake/mail
+// signaling for a session whose launch cwd doesn't match its registered
+// worktree (at-0xnp1): its SessionStart tie still resolves it even though the
+// path-only match would find nothing. Hardcoded to sessionruntime.Claude
+// because this verb serves the Claude-plugin shell hooks exclusively — the
+// Codex plugin resolves via its own codex-hook path
+// (resolveCodexHookInitiative), never this verb. An empty SessionID (or one
+// with no tie) falls through to the cwd path exactly as before this field
+// existed.
 type resolveInitiativeKong struct {
-	Path string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
+	Path      string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
+	SessionID string `name:"session-id" help:"Current Claude session id — tried first via its durable initiative tie before falling back to path resolution."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -441,15 +454,24 @@ func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam resolve-initiative: nil context")
 	}
 
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
-		return nil
+	var match *bd.Issue
+	if c.SessionID != "" {
+		if issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID); err == nil && found {
+			match = &issue
+		}
 	}
 
-	match := matchByWorktreeOrAncestor(issues, c.Path)
 	if match == nil {
-		return nil
+		var issues []bd.Issue
+		if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+			return nil
+		}
+		match = matchByWorktreeOrAncestor(issues, c.Path)
+		if match == nil {
+			return nil
+		}
 	}
+
 	if repo := initiative.Of(*match).Repo; repo != "" && !repoconfig.Enabled(repo) {
 		return nil
 	}
