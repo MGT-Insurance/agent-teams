@@ -103,10 +103,11 @@ Resolution for a new dispatch is:
 4. `claude`.
 
 `--runtime auto` follows steps 2 through 4. A valid higher-priority value
-prevents lower tiers from being read. An invalid explicit value or invalid
-`ATEAM_RUNTIME` is an error. It must not silently launch Claude.
+prevents lower tiers from selecting the runtime. An invalid explicit value or
+invalid `ATEAM_RUNTIME` is an error. It must not silently launch Claude.
 
-The machine-local config is strict, flat TOML with exactly two optional keys:
+The machine-local config is strict, flat TOML with exactly three optional keys.
+The two runtime-selection keys are:
 
 ```toml
 work_runtime = "codex"
@@ -122,6 +123,43 @@ unreadable present file, malformed TOML, unknown or non-flat key, empty value,
 or other invalid value fails before any dispatch side effect. The error names
 the config path and relevant key or parse context without printing unrelated
 config contents. This selection does not add Codex PR-review execution.
+
+The third key is an optional integer token count:
+
+```toml
+auto_compact_window = 300000
+```
+
+There is no default. `ateam setup codex` does not add the key. When it is
+absent, agent-teams does not send `model_auto_compact_token_limit`, so native
+Codex behavior is unchanged. When present, the value must be positive and fit
+a signed 64-bit integer. Invalid config stops the attempted Codex launch or
+resume before an app-server thread or turn request. Invalid config includes
+malformed TOML, the wrong type, zero, a negative value, overflow, a table, or
+an unknown key. The error gives the config path and the relevant key or parse
+context.
+
+For Codex requests, a non-empty
+`CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW` is an explicit cross-runtime
+compatibility input. It takes precedence over the workspace key. Existing
+numeric forms resolve to an integer: plain tokens, `k` or `m` suffixes, and the
+documented bare 100–1000 thousands shorthand. The explicit value `auto` also
+takes precedence, but it emits no Codex limit. Any other non-empty value fails
+the Codex request instead of falling through. This precedence does not change
+existing Claude launch behavior.
+
+The override applies only to agent-teams-managed Codex threads. Fresh dispatch,
+explicit resume or cold reload, and mail wake use the same request construction.
+The value is supplied on `thread/start` and `thread/resume`. Updating the
+key does not retrofit a thread that the managed app server already loaded. For
+that case, the contract only requires agent-teams to send the current override.
+Codex child role agents inherit the root thread config natively. Thus, the five
+role TOMLs do not copy this key.
+
+Agent-teams never creates, edits, reads, or validates the user-owned Codex
+`config.toml` for this feature. It does not affect ordinary Codex threads or set
+`model_context_window`, `model_auto_compact_token_limit_scope`, or any native
+internal scope key.
 
 For backward compatibility, a missing `runtime:` on an existing initiative
 resolves to `claude` without rewriting the initiative on read. A non-empty,

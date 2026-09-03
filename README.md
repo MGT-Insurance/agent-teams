@@ -81,16 +81,41 @@ An exact `--topic reviews` dispatch selects `review_runtime`. Every other
 dispatch selects `work_runtime`. Resolution is an explicit concrete
 `--runtime`, then `ATEAM_RUNTIME`, then the selected config key, then the
 legacy `claude` fallback. `--runtime auto` skips only the explicit tier. A
-valid flag or environment value does not read the config file.
+valid flag or environment value does not read the config for runtime selection.
 
-The file is strict, flat TOML. Both keys are optional. They are the only
-accepted keys. Each present value must be exactly lowercase `claude` or
-`codex`. A missing file or missing selected key falls through. If the config
-tier is consulted, an unreadable present file, malformed TOML, a table or
-unknown key, an empty value, or another invalid value fails before dispatch
-creates anything. The selected concrete runtime is stored on the new
-initiative. This config never changes the runtime of an existing initiative.
-Codex PR-review execution is not added by this config.
+The file is strict, flat TOML with three optional keys. `work_runtime` and
+`review_runtime` must each be exactly lowercase `claude` or `codex` when
+present. A missing file or missing selected runtime key falls through. When
+agent-teams reads this config, an invalid file stops the operation before a
+side effect. Invalid files include unreadable files, malformed TOML, tables,
+unknown keys, empty values, and invalid runtime values. The selected concrete
+runtime is stored on the new initiative. This config never changes the runtime
+of an existing initiative. Codex PR-review execution is not added by this
+config.
+
+The third key is an optional integer token count for agent-teams-managed Codex
+threads. For example:
+
+```toml
+auto_compact_window = 300000
+```
+
+There is no default, and `ateam setup codex` does not add the key. When it is
+absent, agent-teams sends no Codex compaction override. A present value must be
+positive and fit a signed 64-bit integer. An invalid value stops the attempted
+Codex launch or resume before an app-server request. A non-empty
+`CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW` is a cross-runtime compatibility
+input that wins over this file for Codex requests. It accepts plain tokens, `k`
+or `m` suffixes, and a bare 100–1000 as thousands shorthand. The explicit value
+`auto` suppresses the workspace value and sends no override. Any other
+non-empty value fails the Codex request instead of falling through to the file.
+
+The resolved value applies to fresh Codex dispatches, explicit resumes and cold
+reloads, and mail wakes. Agent-teams supplies it on thread start and resume. A
+change does not retrofit a thread already loaded by the managed app server.
+Codex child role agents inherit the root thread config natively. The five role
+TOMLs do not copy the key. This key never edits the user-owned Codex config,
+changes ordinary Codex sessions, or sets the native Codex compaction scope.
 
 Open the native session view with `ateam runtime open claude`; attach to answer gates (`claude attach <id>` — the short id from that listing, not the session name, which does not resolve), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 
