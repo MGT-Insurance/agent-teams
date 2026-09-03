@@ -209,6 +209,156 @@ func TestSetupCodexMergesConfigWithoutClobbering(t *testing.T) {
 	}
 }
 
+func TestSetupCodexPreservesSymlinkedConfig(t *testing.T) {
+	const wantDefault = "model_auto_compact_token_limit = 300000\n"
+	tests := []struct {
+		name       string
+		initial    string
+		want       string
+		wantOutput string
+	}{
+		{
+			name:       "inserts missing root default into target",
+			initial:    "# keep this comment\nmodel = \"gpt-5.6-sol\"\n\n[tools]\nweb_search = true\n",
+			want:       wantDefault + "# keep this comment\nmodel = \"gpt-5.6-sol\"\n\n[tools]\nweb_search = true\n",
+			wantOutput: "installed default:",
+		},
+		{
+			name:       "preserves existing override",
+			initial:    "# user override\nmodel_auto_compact_token_limit = 123456\nmodel_auto_compact_token_limit_scope = \"body_after_prefix\"\n",
+			want:       "# user override\nmodel_auto_compact_token_limit = 123456\nmodel_auto_compact_token_limit_scope = \"body_after_prefix\"\n",
+			wantOutput: "preserved override:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codexHome := t.TempDir()
+			targetDir := t.TempDir()
+			targetPath := filepath.Join(targetDir, "shared-config.toml")
+			if err := os.WriteFile(targetPath, []byte(tt.initial), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(targetPath, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(codexHome, "config.toml")
+			linkTarget, err := filepath.Rel(codexHome, targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(linkTarget, configPath); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
+			cmd := &setupCodexKong{executable: compatibleCodexFixture(t), codexHome: codexHome}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("first setup: %v", err)
+			}
+			assertSymlinkTarget(t, configPath, linkTarget)
+			got, err := os.ReadFile(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("target config = %q, want %q", got, tt.want)
+			}
+			if count := strings.Count(string(got), codexCompactionKey+" = "); count != 1 {
+				t.Fatalf("root default assignments = %d, want exactly 1 in %q", count, got)
+			}
+			info, err := os.Stat(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotMode := info.Mode().Perm(); gotMode != 0o640 {
+				t.Fatalf("target mode = %o, want 640", gotMode)
+			}
+			if !strings.Contains(stdout.String(), tt.wantOutput) {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), tt.wantOutput)
+			}
+
+			first := append([]byte(nil), got...)
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("second setup: %v", err)
+			}
+			assertSymlinkTarget(t, configPath, linkTarget)
+			second, err := os.ReadFile(targetPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(second, first) {
+				t.Fatalf("second setup changed target: first %q, second %q", first, second)
+			}
+		})
+	}
+}
+
+func TestSetupCodexRejectsInvalidSymlinkTargetsBeforeWrites(t *testing.T) {
+	tests := []struct {
+		name       string
+		makeTarget func(t *testing.T, codexHome string) string
+	}{
+		{
+			name: "dangling",
+			makeTarget: func(t *testing.T, codexHome string) string {
+				t.Helper()
+				return filepath.Join(codexHome, "missing-config.toml")
+			},
+		},
+		{
+			name: "non-regular",
+			makeTarget: func(t *testing.T, codexHome string) string {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "config-directory")
+				if err := os.Mkdir(target, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return target
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codexHome := t.TempDir()
+			configPath := filepath.Join(codexHome, "config.toml")
+			linkTarget := tt.makeTarget(t, codexHome)
+			if err := os.Symlink(linkTarget, configPath); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+			err := (&setupCodexKong{executable: compatibleCodexFixture(t), codexHome: codexHome}).Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), configPath) {
+				t.Fatalf("error = %v, want config path %s", err, configPath)
+			}
+			assertSymlinkTarget(t, configPath, linkTarget)
+			if _, err := os.Stat(filepath.Join(codexHome, "agents")); !os.IsNotExist(err) {
+				t.Fatalf("agents directory should not be created, stat err = %v", err)
+			}
+		})
+	}
+}
+
+func assertSymlinkTarget(t *testing.T, path, wantTarget string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s mode = %v, want symlink", path, info.Mode())
+	}
+	gotTarget, err := os.Readlink(path)
+	if err != nil {
+		t.Fatalf("read symlink: %v", err)
+	}
+	if gotTarget != wantTarget {
+		t.Fatalf("symlink target = %q, want %q", gotTarget, wantTarget)
+	}
+}
+
 func TestSetupCodexConfigPreflightFailuresDoNotWrite(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -23,10 +23,11 @@ const (
 )
 
 type codexConfigPlan struct {
-	path    string
-	body    []byte
-	mode    os.FileMode
-	install bool
+	path      string
+	writePath string
+	body      []byte
+	mode      os.FileMode
+	install   bool
 }
 
 type setupCmd struct {
@@ -99,7 +100,7 @@ func (c *setupCodexKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam setup codex: create agents directory: %w", err)
 	}
 	if configPlan.install {
-		if err := writeFileAtomic(configPlan.path, configPlan.body, configPlan.mode); err != nil {
+		if err := writeFileAtomic(configPlan.writePath, configPlan.body, configPlan.mode); err != nil {
 			return fmt.Errorf("ateam setup codex: write %s: %w", configPlan.path, err)
 		}
 		fmt.Fprintf(ctx.Stdout, "installed default: %s\n", configPlan.path)
@@ -125,23 +126,43 @@ func (c *setupCodexKong) Run(ctx *cli.Context) error {
 
 func planCodexConfig(home string) (codexConfigPlan, error) {
 	path := filepath.Join(home, "config.toml")
-	file, err := os.Open(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return codexConfigPlan{
-				path:    path,
-				body:    []byte(codexCompactionDefault),
-				mode:    0o600,
-				install: true,
+				path:      path,
+				writePath: path,
+				body:      []byte(codexCompactionDefault),
+				mode:      0o600,
+				install:   true,
 			}, nil
 		}
 		return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	defer file.Close()
 
-	info, err := file.Stat()
+	writePath := path
+	if info.Mode()&os.ModeSymlink != 0 {
+		writePath, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return codexConfigPlan{}, fmt.Errorf("resolve %s: %w", path, err)
+		}
+	}
+
+	file, err := os.Open(writePath)
 	if err != nil {
 		return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	defer file.Close()
+
+	info, err = file.Stat()
+	if err != nil {
+		return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		if writePath != path {
+			return codexConfigPlan{}, fmt.Errorf("read %s: resolved target %s is not a regular file", path, writePath)
+		}
+		return codexConfigPlan{}, fmt.Errorf("read %s: not a regular file", path)
 	}
 	body, err := io.ReadAll(file)
 	if err != nil {
@@ -152,17 +173,18 @@ func planCodexConfig(home string) (codexConfigPlan, error) {
 		return codexConfigPlan{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if _, exists := document[codexCompactionKey]; exists {
-		return codexConfigPlan{path: path}, nil
+		return codexConfigPlan{path: path, writePath: writePath}, nil
 	}
 
 	merged := make([]byte, 0, len(codexCompactionDefault)+len(body))
 	merged = append(merged, codexCompactionDefault...)
 	merged = append(merged, body...)
 	return codexConfigPlan{
-		path:    path,
-		body:    merged,
-		mode:    info.Mode().Perm(),
-		install: true,
+		path:      path,
+		writePath: writePath,
+		body:      merged,
+		mode:      info.Mode().Perm(),
+		install:   true,
 	}, nil
 }
 
