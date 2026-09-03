@@ -96,7 +96,10 @@ func readConfig(home string) (config, string, error) {
 		var decodeErr *toml.DecodeError
 		if errors.As(err, &decodeErr) {
 			line, column := decodeErr.Position()
-			return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML at line %d, column %d: %s", path, line, column, decodeErr.String())
+			if keys := knownKeyContext(data); keys != "" {
+				return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML at line %d, column %d near known key %q", path, line, column, keys)
+			}
+			return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML at line %d, column %d", path, line, column)
 		}
 		if keys := knownKeyContext(data); keys != "" {
 			return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML near key %q", path, keys)

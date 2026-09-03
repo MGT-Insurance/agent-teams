@@ -128,6 +128,41 @@ func TestAutoCompactWindowRejectsInvalidStrictDocument(t *testing.T) {
 	}
 }
 
+func TestMalformedConfigErrorDoesNotExposeSource(t *testing.T) {
+	const (
+		adjacentBeforeSentinel = "ADJACENT_BEFORE_SECRET_7f31"
+		faultingSentinel       = "FAULTING_SECRET_8a42"
+		adjacentAfterSentinel  = "ADJACENT_AFTER_SECRET_9b53"
+	)
+	home := t.TempDir()
+	path := writeConfig(t, home, "work_runtime = \"codex\" # "+adjacentBeforeSentinel+"\n"+
+		"auto_compact_window = ["+faultingSentinel+"\n"+
+		"review_runtime = \"claude\" # "+adjacentAfterSentinel+"\n")
+
+	_, _, err := RuntimeDefault(home, WorkRuntime)
+	if err == nil {
+		t.Fatal("RuntimeDefault() must reject malformed config")
+	}
+	message := err.Error()
+	for _, want := range []string{path, "line 2", "column", "auto_compact_window"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error %q must contain safe context %q", message, want)
+		}
+	}
+	for _, forbidden := range []string{
+		adjacentBeforeSentinel,
+		faultingSentinel,
+		adjacentAfterSentinel,
+		`work_runtime = "codex"`,
+		"auto_compact_window = [",
+		`review_runtime = "claude"`,
+	} {
+		if strings.Contains(message, forbidden) {
+			t.Errorf("error exposed config source %q: %q", forbidden, message)
+		}
+	}
+}
+
 func TestAutoCompactWindowRejectsUnreadablePresentPath(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, FileName)
