@@ -1712,6 +1712,9 @@ func TestParseAutoCompactWindowTokens(t *testing.T) {
 		{name: "literal_auto", value: "auto", wantOK: false},
 		{name: "auto_uppercase", value: "AUTO", wantOK: false},
 		{name: "empty", value: "", wantOK: false},
+		{name: "zero", value: "0", wantOK: false},
+		{name: "negative", value: "-1", wantOK: false},
+		{name: "overflow", value: "9223372036854775807m", wantOK: false},
 		{name: "garbage", value: "banana", wantOK: false},
 	}
 	for _, tc := range cases {
@@ -1722,6 +1725,40 @@ func TestParseAutoCompactWindowTokens(t *testing.T) {
 			}
 			if gotOK && gotTokens != tc.wantTokens {
 				t.Errorf("parseAutoCompactWindowTokens(%q) tokens = %d, want %d", tc.value, gotTokens, tc.wantTokens)
+			}
+		})
+	}
+}
+
+func TestParseAutoCompactWindowValueDistinguishesAutoFromInvalid(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		want      int64
+		wantAuto  bool
+		wantError bool
+	}{
+		{name: "plain tokens", value: "300000", want: 300000},
+		{name: "thousands shorthand", value: "300", want: 300000},
+		{name: "k suffix", value: "300k", want: 300000},
+		{name: "m suffix", value: "1M", want: 1000000},
+		{name: "auto", value: " AUTO ", wantAuto: true},
+		{name: "empty", value: " ", wantError: true},
+		{name: "wrong suffix", value: "300g", wantError: true},
+		{name: "zero", value: "0", wantError: true},
+		{name: "negative", value: "-300k", wantError: true},
+		{name: "parse overflow", value: "9223372036854775808", wantError: true},
+		{name: "multiply overflow", value: "9223372036854775807m", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, automatic, err := parseAutoCompactWindowValue(tt.value)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("parseAutoCompactWindowValue(%q) error = %v, wantError %v", tt.value, err, tt.wantError)
+			}
+			if got != tt.want || automatic != tt.wantAuto {
+				t.Fatalf("parseAutoCompactWindowValue(%q) = %d, %v; want %d, %v", tt.value, got, automatic, tt.want, tt.wantAuto)
 			}
 		})
 	}
