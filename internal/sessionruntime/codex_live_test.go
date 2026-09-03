@@ -93,6 +93,13 @@ func waitForLiveThreadText(t *testing.T, ctx context.Context, adapter CodexAdapt
 		t.Fatalf("initialized notification: %v", err)
 	}
 
+	// This poll deliberately keeps includeTurns:true: it needs the actual
+	// message text to confirm the nonce landed, not just turn metadata, and
+	// this test's threads stay tiny (a handful of turns). It is independent
+	// of CodexAdapter.Resume, which now avoids full-history hydration on
+	// resume (excludeTurns:true + paginated thread/turns/list) so a
+	// long-running thread's rollout doesn't blow the app-server's 4MB read
+	// limit.
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var result json.RawMessage
