@@ -73,8 +73,8 @@ func (a CodexAdapter) Launch(ctx context.Context, req Request, sink SessionSink)
 		"sandbox":        "danger-full-access",
 		"serviceName":    appServerServiceName,
 	}
-	if req.AgentTeamsHome != "" {
-		params["config"] = codexThreadConfig(req.AgentTeamsHome)
+	if req.AgentTeamsHome != "" || req.AutoCompactWindow != nil {
+		params["config"] = codexThreadConfig(req)
 	}
 	if req.Model != "" {
 		params["model"] = req.Model
@@ -121,11 +121,12 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 		// thread/turns/list, which returns metadata only.
 		"excludeTurns": true,
 	}
-	if req.AgentTeamsHome != "" {
-		// Re-apply the sticky override on every resume. Besides making the
-		// contract explicit, this repairs threads first created by an older
-		// ateam that relied on the managed daemon's process environment.
-		resumeParams["config"] = codexThreadConfig(req.AgentTeamsHome)
+	if req.AgentTeamsHome != "" || req.AutoCompactWindow != nil {
+		// Send the current per-thread config on every resume. This repairs the
+		// sticky workspace env for older threads and gives cold reloads request
+		// parity with start. An already loaded thread may retain its active
+		// compaction setting even though the current value is sent here.
+		resumeParams["config"] = codexThreadConfig(req)
 	}
 	if req.Model != "" {
 		resumeParams["model"] = req.Model
@@ -162,12 +163,17 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 	return nil
 }
 
-func codexThreadConfig(agentTeamsHome string) map[string]any {
-	return map[string]any{
-		"shell_environment_policy": map[string]any{
-			"set": map[string]string{"AGENT_TEAMS_HOME": agentTeamsHome},
-		},
+func codexThreadConfig(req Request) map[string]any {
+	config := make(map[string]any, 2)
+	if req.AgentTeamsHome != "" {
+		config["shell_environment_policy"] = map[string]any{
+			"set": map[string]string{"AGENT_TEAMS_HOME": req.AgentTeamsHome},
+		}
 	}
+	if req.AutoCompactWindow != nil {
+		config["model_auto_compact_token_limit"] = *req.AutoCompactWindow
+	}
+	return config
 }
 
 func validateCodexRequest(req Request) error {

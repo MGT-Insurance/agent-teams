@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
 
 type fakeRuntimeAdapter struct {
@@ -100,4 +102,141 @@ func TestRuntimeWorkerResumeDoesNotRetieSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+}
+
+func TestRuntimeWorkerResolvesCodexAutoCompactWindowPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     string
+		explicit   string
+		wantWindow *int64
+	}{
+		{name: "unset"},
+		{name: "workspace config", config: "auto_compact_window = 300000\n", wantWindow: testInt64Pointer(300000)},
+		{name: "environment wins", config: "auto_compact_window = 300000\n", explicit: "400k", wantWindow: testInt64Pointer(400000)},
+		{name: "environment shorthand wins", config: "auto_compact_window = 300000\n", explicit: "500", wantWindow: testInt64Pointer(500000)},
+		{name: "environment auto suppresses workspace", config: "auto_compact_window = 300000\n", explicit: "auto"},
+	}
+
+	for _, tt := range tests {
+		for _, resume := range []bool{false, true} {
+			mode := "launch"
+			if resume {
+				mode = "resume"
+			}
+			t.Run(tt.name+" "+mode, func(t *testing.T) {
+				home := t.TempDir()
+				if tt.config != "" {
+					if err := os.WriteFile(filepath.Join(home, workspaceconfig.FileName), []byte(tt.config), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Setenv(autoCompactWindowEnv, tt.explicit)
+
+				var captured sessionruntime.Request
+				calls := 0
+				adapter := fakeRuntimeAdapter{
+					launchFn: func(req sessionruntime.Request, _ sessionruntime.SessionSink) error {
+						calls++
+						captured = req
+						return nil
+					},
+					resumeFn: func(req sessionruntime.Request, _ sessionruntime.SessionRef) error {
+						calls++
+						captured = req
+						return nil
+					},
+				}
+				ctx, _, _ := makeCtx(&fakeBD{}, home)
+				cmd := &runtimeWorkerKong{
+					Runtime:      "codex",
+					InitiativeID: "at-window",
+					Worktree:     "/worktree",
+					Prompt:       "work",
+					codex:        adapter,
+				}
+				if resume {
+					cmd.ResumeID = "thread-123"
+				}
+				if err := cmd.Run(ctx); err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+				if calls != 1 {
+					t.Fatalf("adapter calls = %d, want 1", calls)
+				}
+				assertOptionalInt64(t, captured.AutoCompactWindow, tt.wantWindow)
+				if captured.AgentTeamsHome != home || captured.InitiativeID != "at-window" || captured.Worktree != "/worktree" || captured.Prompt != "work" {
+					t.Fatalf("request = %+v", captured)
+				}
+			})
+		}
+	}
+}
+
+func TestRuntimeWorkerRejectsInvalidAutoCompactWindowBeforeAdapter(t *testing.T) {
+	tests := []struct {
+		name, config, explicit, wantContext string
+	}{
+		{name: "invalid environment", config: "auto_compact_window = 300000\n", explicit: "banana", wantContext: autoCompactWindowEnv},
+		{name: "invalid workspace config", config: "auto_compact_window = 0\n", wantContext: "auto_compact_window"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, workspaceconfig.FileName)
+			if err := os.WriteFile(path, []byte(tt.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(autoCompactWindowEnv, tt.explicit)
+			calls := 0
+			adapter := fakeRuntimeAdapter{
+				launchFn: func(sessionruntime.Request, sessionruntime.SessionSink) error {
+					calls++
+					return nil
+				},
+				resumeFn: func(sessionruntime.Request, sessionruntime.SessionRef) error {
+					calls++
+					return nil
+				},
+			}
+			ctx, _, _ := makeCtx(&fakeBD{}, home)
+			err := (&runtimeWorkerKong{
+				Runtime:      "codex",
+				InitiativeID: "at-invalid",
+				Worktree:     "/worktree",
+				Prompt:       "work",
+				codex:        adapter,
+			}).Run(ctx)
+			if err == nil || !strings.Contains(err.Error(), tt.wantContext) {
+				t.Fatalf("Run error = %v, want context %q", err, tt.wantContext)
+			}
+			if tt.explicit == "" && !strings.Contains(err.Error(), path) {
+				t.Fatalf("Run error = %v, want config path %q", err, path)
+			}
+			if calls != 0 {
+				t.Fatalf("adapter calls = %d, want 0", calls)
+			}
+			if _, statErr := os.Stat(sessionruntime.EventLogPath(home, "at-invalid")); !os.IsNotExist(statErr) {
+				t.Fatalf("event log created before validation: %v", statErr)
+			}
+		})
+	}
+}
+
+func assertOptionalInt64(t *testing.T, got, want *int64) {
+	t.Helper()
+	if got == nil || want == nil {
+		if got != nil || want != nil {
+			t.Fatalf("optional int64 = %v, want %v", got, want)
+		}
+		return
+	}
+	if *got != *want {
+		t.Fatalf("optional int64 = %d, want %d", *got, *want)
+	}
+}
+
+func testInt64Pointer(value int64) *int64 {
+	return &value
 }

@@ -945,12 +945,27 @@ type bgSessionSettings struct {
 // return ok=false ("no window" — omit both settings keys and the flag, i.e.
 // today's default).
 func parseAutoCompactWindowTokens(value string) (tokens int, ok bool) {
-	v := strings.TrimSpace(value)
-	if v == "" || strings.EqualFold(v, "auto") {
+	tokens64, automatic, err := parseAutoCompactWindowValue(value)
+	if err != nil || automatic || (strconv.IntSize == 32 && tokens64 > 1<<31-1) {
 		return 0, false
 	}
+	return int(tokens64), true
+}
+
+// parseAutoCompactWindowValue is the shared strict parser for the Claude
+// --autocompact forms. The Claude settings wrapper above deliberately folds
+// both "auto" and invalid values into omission, while Codex callers use the
+// distinct automatic result and error to implement explicit precedence.
+func parseAutoCompactWindowValue(value string) (tokens int64, automatic bool, err error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return 0, false, fmt.Errorf("empty auto-compact window")
+	}
+	if strings.EqualFold(v, "auto") {
+		return 0, true, nil
+	}
 	lower := strings.ToLower(v)
-	multiplier := 1
+	multiplier := int64(1)
 	numPart := lower
 	switch {
 	case strings.HasSuffix(lower, "k"):
@@ -960,15 +975,19 @@ func parseAutoCompactWindowTokens(value string) (tokens int, ok bool) {
 		multiplier = 1_000_000
 		numPart = strings.TrimSuffix(lower, "m")
 	}
-	n, err := strconv.Atoi(numPart)
+	n, err := strconv.ParseInt(numPart, 10, 64)
 	if err != nil || n <= 0 {
-		return 0, false
+		return 0, false, fmt.Errorf("invalid auto-compact window %q", value)
 	}
 	if multiplier == 1 && n >= 100 && n <= 1000 {
 		// Bare number in the CLI's thousands-shorthand range.
-		return n * 1000, true
+		multiplier = 1000
 	}
-	return n * multiplier, true
+	const maxInt64 = int64(1<<63 - 1)
+	if n > maxInt64/multiplier {
+		return 0, false, fmt.Errorf("auto-compact window %q overflows signed 64-bit tokens", value)
+	}
+	return n * multiplier, false, nil
 }
 
 // bgSessionSettingsJSON builds the --settings JSON argument for a background

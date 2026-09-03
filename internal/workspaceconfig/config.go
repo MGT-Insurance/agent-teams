@@ -25,8 +25,9 @@ const (
 )
 
 type config struct {
-	WorkRuntime   *string `toml:"work_runtime"`
-	ReviewRuntime *string `toml:"review_runtime"`
+	WorkRuntime       *string `toml:"work_runtime"`
+	ReviewRuntime     *string `toml:"review_runtime"`
+	AutoCompactWindow *int64  `toml:"auto_compact_window"`
 }
 
 // RuntimeDefault reads config.toml beneath home and returns the selected
@@ -34,6 +35,36 @@ type config struct {
 // default. Every present key is validated so an invalid strict document never
 // becomes usable merely because the invalid key was not selected.
 func RuntimeDefault(home string, class RuntimeClass) (string, bool, error) {
+	cfg, path, err := readConfig(home)
+	if err != nil {
+		return "", false, err
+	}
+
+	switch class {
+	case WorkRuntime:
+		return validateRuntime(path, WorkRuntime, cfg.WorkRuntime)
+	case ReviewRuntime:
+		return validateRuntime(path, ReviewRuntime, cfg.ReviewRuntime)
+	default:
+		return "", false, fmt.Errorf("runtime config %s: unknown dispatch class %q", path, class)
+	}
+}
+
+// AutoCompactWindow reads config.toml beneath home and returns the optional
+// token limit for managed Codex threads. The value must be a positive signed
+// 64-bit TOML integer. As with RuntimeDefault, every present key is validated.
+func AutoCompactWindow(home string) (int64, bool, error) {
+	cfg, _, err := readConfig(home)
+	if err != nil {
+		return 0, false, err
+	}
+	if cfg.AutoCompactWindow == nil {
+		return 0, false, nil
+	}
+	return *cfg.AutoCompactWindow, true, nil
+}
+
+func readConfig(home string) (config, string, error) {
 	path := filepath.Join(home, FileName)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -41,14 +72,14 @@ func RuntimeDefault(home string, class RuntimeClass) (string, bool, error) {
 			_, lstatErr := os.Lstat(path)
 			switch {
 			case lstatErr == nil:
-				return "", false, fmt.Errorf("read runtime config %s: %w", path, err)
+				return config{}, path, fmt.Errorf("read runtime config %s: %w", path, err)
 			case errors.Is(lstatErr, os.ErrNotExist):
-				return "", false, nil
+				return config{}, path, nil
 			default:
-				return "", false, fmt.Errorf("inspect runtime config %s after read failure: %w", path, lstatErr)
+				return config{}, path, fmt.Errorf("inspect runtime config %s after read failure: %w", path, lstatErr)
 			}
 		}
-		return "", false, fmt.Errorf("read runtime config %s: %w", path, err)
+		return config{}, path, fmt.Errorf("read runtime config %s: %w", path, err)
 	}
 
 	var cfg config
@@ -60,33 +91,42 @@ func RuntimeDefault(home string, class RuntimeClass) (string, bool, error) {
 			for _, field := range unknown.Errors {
 				keys = append(keys, strings.Join(field.Key(), "."))
 			}
-			return "", false, fmt.Errorf("parse runtime config %s: unknown key or table %q", path, strings.Join(keys, ", "))
+			return config{}, path, fmt.Errorf("parse runtime config %s: unknown key or table %q", path, strings.Join(keys, ", "))
 		}
 		var decodeErr *toml.DecodeError
 		if errors.As(err, &decodeErr) {
 			line, column := decodeErr.Position()
-			return "", false, fmt.Errorf("parse runtime config %s: invalid strict TOML at line %d, column %d", path, line, column)
+			if keys := knownKeyContext(data); keys != "" {
+				return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML at line %d, column %d near known key %q", path, line, column, keys)
+			}
+			return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML at line %d, column %d", path, line, column)
 		}
-		return "", false, fmt.Errorf("parse runtime config %s: invalid strict TOML", path)
+		if keys := knownKeyContext(data); keys != "" {
+			return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML near key %q", path, keys)
+		}
+		return config{}, path, fmt.Errorf("parse runtime config %s: invalid strict TOML", path)
 	}
 
-	work, workSet, err := validateRuntime(path, WorkRuntime, cfg.WorkRuntime)
-	if err != nil {
-		return "", false, err
+	if _, _, err := validateRuntime(path, WorkRuntime, cfg.WorkRuntime); err != nil {
+		return config{}, path, err
 	}
-	review, reviewSet, err := validateRuntime(path, ReviewRuntime, cfg.ReviewRuntime)
-	if err != nil {
-		return "", false, err
+	if _, _, err := validateRuntime(path, ReviewRuntime, cfg.ReviewRuntime); err != nil {
+		return config{}, path, err
 	}
+	if cfg.AutoCompactWindow != nil && *cfg.AutoCompactWindow <= 0 {
+		return config{}, path, fmt.Errorf("runtime config %s: auto_compact_window must be a positive signed 64-bit integer", path)
+	}
+	return cfg, path, nil
+}
 
-	switch class {
-	case WorkRuntime:
-		return work, workSet, nil
-	case ReviewRuntime:
-		return review, reviewSet, nil
-	default:
-		return "", false, fmt.Errorf("runtime config %s: unknown dispatch class %q", path, class)
+func knownKeyContext(data []byte) string {
+	var keys []string
+	for _, key := range []string{string(WorkRuntime), string(ReviewRuntime), "auto_compact_window"} {
+		if bytes.Contains(data, []byte(key)) {
+			keys = append(keys, key)
+		}
 	}
+	return strings.Join(keys, ", ")
 }
 
 func validateRuntime(path string, key RuntimeClass, value *string) (string, bool, error) {

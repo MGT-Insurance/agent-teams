@@ -31,11 +31,14 @@ type Request struct {
 	// Managed Codex threads outlive the submitting ateam process, so this value
 	// must be made sticky on the thread instead of relying on daemon process env.
 	AgentTeamsHome string
-	Worktree       string
-	Prompt         string
-	Model          string
-	Events         io.Writer
-	Stderr         io.Writer
+	// AutoCompactWindow is the optional per-thread Codex compaction token limit
+	// resolved by the runtime worker. Nil preserves Codex's native model default.
+	AutoCompactWindow *int64
+	Worktree          string
+	Prompt            string
+	Model             string
+	Events            io.Writer
+	Stderr            io.Writer
 }
 
 // SessionSink durably binds a newly observed session to its initiative.

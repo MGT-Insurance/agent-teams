@@ -85,12 +85,7 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 			if params["cwd"] != "/worktree" || params["model"] != "gpt-test" {
 				t.Fatalf("thread/start params = %#v", params)
 			}
-			config := params["config"].(map[string]any)
-			policy := config["shell_environment_policy"].(map[string]any)
-			set := policy["set"].(map[string]any)
-			if set["AGENT_TEAMS_HOME"] != "/workspace" {
-				t.Fatalf("thread/start config = %#v", config)
-			}
+			assertCodexThreadConfig(t, params, "/workspace", int64Pointer(300000))
 			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": "idle"}}}, nil
 		case "turn/start":
 			if params["threadId"] != "thread-123" || params["cwd"] != "/worktree" || params["model"] != "gpt-test" {
@@ -107,11 +102,12 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 	}}
 	var bound SessionRef
 	err := testAdapter(server).Launch(context.Background(), Request{
-		InitiativeID:   "at-1",
-		AgentTeamsHome: "/workspace",
-		Worktree:       "/worktree",
-		Prompt:         "$dri at-1",
-		Model:          "gpt-test",
+		InitiativeID:      "at-1",
+		AgentTeamsHome:    "/workspace",
+		AutoCompactWindow: int64Pointer(300000),
+		Worktree:          "/worktree",
+		Prompt:            "$dri at-1",
+		Model:             "gpt-test",
 	}, func(ref SessionRef) error {
 		bound = ref
 		if len(server.calls) != 2 || server.calls[1].Method != "thread/start" {
@@ -139,9 +135,10 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 func TestCodexAdapterResumeStartsIdleThread(t *testing.T) {
 	server := resumeServer(t, "idle", nil)
 	err := testAdapter(server).Resume(context.Background(), Request{
-		AgentTeamsHome: "/workspace",
-		Worktree:       "/worktree",
-		Prompt:         "wake",
+		AgentTeamsHome:    "/workspace",
+		AutoCompactWindow: int64Pointer(300000),
+		Worktree:          "/worktree",
+		Prompt:            "wake",
 	}, SessionRef{Runtime: Codex, ID: "thread-123"})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -153,12 +150,7 @@ func TestCodexAdapterResumeStartsIdleThread(t *testing.T) {
 	if resume["excludeTurns"] != true {
 		t.Fatalf("thread/resume params = %#v, want excludeTurns:true", resume)
 	}
-	config := resume["config"].(map[string]any)
-	policy := config["shell_environment_policy"].(map[string]any)
-	set := policy["set"].(map[string]any)
-	if set["AGENT_TEAMS_HOME"] != "/workspace" {
-		t.Fatalf("thread/resume config = %#v", config)
-	}
+	assertCodexThreadConfig(t, resume, "/workspace", int64Pointer(300000))
 	turnsList := server.calls[2].Params
 	if turnsList["threadId"] != "thread-123" || turnsList["sortDirection"] != "desc" || turnsList["itemsView"] != "notLoaded" {
 		t.Fatalf("thread/turns/list params = %#v", turnsList)
@@ -171,8 +163,10 @@ func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 		{"id": "turn-done", "status": "completed"},
 	})
 	err := testAdapter(server).Resume(context.Background(), Request{
-		Worktree: "/worktree",
-		Prompt:   "new mail",
+		AgentTeamsHome:    "/workspace",
+		AutoCompactWindow: int64Pointer(300000),
+		Worktree:          "/worktree",
+		Prompt:            "new mail",
 	}, SessionRef{Runtime: Codex, ID: "thread-123"})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -180,10 +174,50 @@ func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/steer" {
 		t.Fatalf("calls = %s", got)
 	}
+	assertCodexThreadConfig(t, server.calls[1].Params, "/workspace", int64Pointer(300000))
 	steer := server.calls[len(server.calls)-1].Params
 	if steer["expectedTurnId"] != "turn-live" {
 		t.Fatalf("steer params = %#v", steer)
 	}
+}
+
+func TestCodexAdapterOmitsAutoCompactWindowWhenUnset(t *testing.T) {
+	t.Run("thread start", func(t *testing.T) {
+		server := &fakeAppServer{handle: func(method string, params map[string]any) (any, error) {
+			switch method {
+			case "initialize":
+				return map[string]any{}, nil
+			case "thread/start":
+				assertCodexThreadConfig(t, params, "/workspace", nil)
+				return map[string]any{"thread": map[string]any{"id": "thread-123"}}, nil
+			case "turn/start":
+				return map[string]any{"turn": map[string]any{"id": "turn-1"}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected method %s", method)
+			}
+		}}
+		err := testAdapter(server).Launch(context.Background(), Request{
+			AgentTeamsHome: "/workspace",
+			Worktree:       "/worktree",
+			Prompt:         "work",
+		}, func(SessionRef) error { return nil })
+		if err != nil {
+			t.Fatalf("Launch: %v", err)
+		}
+	})
+
+	t.Run("thread resume", func(t *testing.T) {
+		server := resumeServer(t, "idle", nil)
+		err := testAdapter(server).Resume(context.Background(), Request{
+			AgentTeamsHome: "/workspace",
+			Worktree:       "/worktree",
+			Prompt:         "wake",
+		}, SessionRef{Runtime: Codex, ID: "thread-123"})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		assertCodexThreadConfig(t, server.calls[1].Params, "/workspace", nil)
+	})
 }
 
 func TestCodexAdapterResumeSteersNewestOfTwoActiveTurns(t *testing.T) {
@@ -391,6 +425,47 @@ func callMethods(calls []rpcCall) string {
 		methods = append(methods, call.Method)
 	}
 	return strings.Join(methods, ",")
+}
+
+func assertCodexThreadConfig(t *testing.T, params map[string]any, wantHome string, wantWindow *int64) {
+	t.Helper()
+	config, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("params config = %#v, want object", params["config"])
+	}
+	policy, ok := config["shell_environment_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread config = %#v, want shell_environment_policy", config)
+	}
+	set, ok := policy["set"].(map[string]any)
+	if !ok || set["AGENT_TEAMS_HOME"] != wantHome {
+		t.Fatalf("thread config = %#v, want AGENT_TEAMS_HOME %q", config, wantHome)
+	}
+
+	gotWindow, present := config["model_auto_compact_token_limit"]
+	if wantWindow == nil {
+		if present {
+			t.Fatalf("thread config = %#v, model_auto_compact_token_limit must be absent", config)
+		}
+	} else if !present || gotWindow != float64(*wantWindow) {
+		t.Fatalf("thread config = %#v, want integer model_auto_compact_token_limit %d", config, *wantWindow)
+	}
+	for _, forbidden := range []string{"model_context_window", "model_auto_compact_token_limit_scope", "_scope"} {
+		if _, present := config[forbidden]; present {
+			t.Fatalf("thread config = %#v, forbidden key %q is present", config, forbidden)
+		}
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal thread config: %v", err)
+	}
+	if wantWindow != nil && !strings.Contains(string(encoded), fmt.Sprintf(`"model_auto_compact_token_limit":%d`, *wantWindow)) {
+		t.Fatalf("serialized thread config = %s, want integer token limit", encoded)
+	}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func TestWebsocketRPCHandlesInterleavedNotification(t *testing.T) {

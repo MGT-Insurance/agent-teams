@@ -12,7 +12,10 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
+
+const autoCompactWindowEnv = "CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW"
 
 type runtimeStartRequest struct {
 	Runtime      sessionruntime.Kind
@@ -52,6 +55,10 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 	if kind != sessionruntime.Codex {
 		return fmt.Errorf("ateam runtime-worker: runtime %q is not supported by the app-server submitter", kind)
 	}
+	autoCompactWindow, err := resolveCodexAutoCompactWindow(ctx.Home)
+	if err != nil {
+		return fmt.Errorf("ateam runtime-worker: %w", err)
+	}
 
 	adapter := c.codex
 	if adapter == nil {
@@ -68,13 +75,14 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 	defer events.Close()
 
 	req := sessionruntime.Request{
-		InitiativeID:   c.InitiativeID,
-		AgentTeamsHome: ctx.Home,
-		Worktree:       c.Worktree,
-		Prompt:         c.Prompt,
-		Model:          c.Model,
-		Events:         events,
-		Stderr:         ctx.Stderr,
+		InitiativeID:      c.InitiativeID,
+		AgentTeamsHome:    ctx.Home,
+		AutoCompactWindow: autoCompactWindow,
+		Worktree:          c.Worktree,
+		Prompt:            c.Prompt,
+		Model:             c.Model,
+		Events:            events,
+		Stderr:            ctx.Stderr,
 	}
 	workerCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -86,6 +94,28 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 	return adapter.Launch(workerCtx, req, func(ref sessionruntime.SessionRef) error {
 		return appendSessionID(ctx, c.InitiativeID, ref.ID)
 	})
+}
+
+func resolveCodexAutoCompactWindow(home string) (*int64, error) {
+	if explicit := os.Getenv(autoCompactWindowEnv); explicit != "" {
+		tokens, automatic, err := parseAutoCompactWindowValue(explicit)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", autoCompactWindowEnv, err)
+		}
+		if automatic {
+			return nil, nil
+		}
+		return &tokens, nil
+	}
+
+	tokens, configured, err := workspaceconfig.AutoCompactWindow(home)
+	if err != nil {
+		return nil, err
+	}
+	if !configured {
+		return nil, nil
+	}
+	return &tokens, nil
 }
 
 // startRuntimeWorker submits directly to the managed app-server. The name is
