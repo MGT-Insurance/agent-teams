@@ -2,10 +2,14 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func compatibleCodexFixture(t *testing.T) string {
@@ -339,6 +343,99 @@ func TestSetupCodexRejectsInvalidSymlinkTargetsBeforeWrites(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSetupCodexRejectsFIFOConfigBeforeWrites(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, codexHome string) (configPath string, fifoPath string, linkTarget string)
+	}{
+		{
+			name: "direct",
+			prepare: func(t *testing.T, codexHome string) (string, string, string) {
+				t.Helper()
+				configPath := filepath.Join(codexHome, "config.toml")
+				if err := syscall.Mkfifo(configPath, 0o600); err != nil {
+					t.Fatalf("create FIFO: %v", err)
+				}
+				return configPath, configPath, ""
+			},
+		},
+		{
+			name: "symlinked",
+			prepare: func(t *testing.T, codexHome string) (string, string, string) {
+				t.Helper()
+				fifoPath := filepath.Join(t.TempDir(), "shared-config.toml")
+				if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+					t.Fatalf("create FIFO: %v", err)
+				}
+				configPath := filepath.Join(codexHome, "config.toml")
+				linkTarget, err := filepath.Rel(codexHome, fifoPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(linkTarget, configPath); err != nil {
+					t.Fatal(err)
+				}
+				return configPath, fifoPath, linkTarget
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			codexHome := t.TempDir()
+			configPath, fifoPath, linkTarget := tt.prepare(t, codexHome)
+			executable := compatibleCodexFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSetupCodexFIFOHelper$", "-test.v")
+			cmd.Env = append(os.Environ(),
+				"ATEAM_SETUP_FIFO_HELPER=1",
+				"ATEAM_SETUP_FIFO_HOME="+codexHome,
+				"ATEAM_SETUP_FIFO_EXECUTABLE="+executable,
+			)
+			output, err := cmd.CombinedOutput()
+			if ctx.Err() == context.DeadlineExceeded {
+				t.Fatalf("setup blocked while opening FIFO; helper was killed and reaped after timeout")
+			}
+			if err != nil {
+				t.Fatalf("setup helper: %v\n%s", err, output)
+			}
+			if got := string(output); !strings.Contains(got, configPath) || !strings.Contains(got, "not a regular file") {
+				t.Fatalf("error output = %q, want config path %q and non-regular-file error", got, configPath)
+			}
+
+			info, err := os.Lstat(fifoPath)
+			if err != nil {
+				t.Fatalf("lstat FIFO: %v", err)
+			}
+			if info.Mode()&os.ModeNamedPipe == 0 {
+				t.Fatalf("FIFO mode = %v, want named pipe", info.Mode())
+			}
+			if linkTarget != "" {
+				assertSymlinkTarget(t, configPath, linkTarget)
+			}
+			if _, err := os.Stat(filepath.Join(codexHome, "agents")); !os.IsNotExist(err) {
+				t.Fatalf("agents directory should not be created, stat err = %v", err)
+			}
+		})
+	}
+}
+
+func TestSetupCodexFIFOHelper(t *testing.T) {
+	if os.Getenv("ATEAM_SETUP_FIFO_HELPER") != "1" {
+		return
+	}
+	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+	err := (&setupCodexKong{
+		executable: os.Getenv("ATEAM_SETUP_FIFO_EXECUTABLE"),
+		codexHome:  os.Getenv("ATEAM_SETUP_FIFO_HOME"),
+	}).Run(ctx)
+	if err == nil {
+		t.Fatal("setup succeeded, want FIFO rejection")
+	}
+	t.Log(err)
 }
 
 func assertSymlinkTarget(t *testing.T, path, wantTarget string) {

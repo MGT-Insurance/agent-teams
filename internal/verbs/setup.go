@@ -146,6 +146,16 @@ func planCodexConfig(home string) (codexConfigPlan, error) {
 		if err != nil {
 			return codexConfigPlan{}, fmt.Errorf("resolve %s: %w", path, err)
 		}
+		info, err = os.Stat(writePath)
+		if err != nil {
+			return codexConfigPlan{}, fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	if !info.Mode().IsRegular() {
+		if writePath != path {
+			return codexConfigPlan{}, fmt.Errorf("read %s: resolved target %s is not a regular file", path, writePath)
+		}
+		return codexConfigPlan{}, fmt.Errorf("read %s: not a regular file", path)
 	}
 
 	file, err := os.Open(writePath)
