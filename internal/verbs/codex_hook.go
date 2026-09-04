@@ -84,6 +84,10 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 			output.SystemMessage = "agent-teams could not tie this Codex thread to initiative " + issue.ID + ": " + err.Error()
 		}
 	}
+	if hookInput.Source == "compact" {
+		output.HookSpecificOutput = &codexHookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: driGuardrails}
+		return writeCodexHookOutput(ctx, output)
+	}
 	if hookInput.Source != "startup" && hookInput.Source != "resume" {
 		return writeCodexHookOutput(ctx, output)
 	}

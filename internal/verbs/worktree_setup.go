@@ -105,15 +105,21 @@ func (c *worktreeSetupKong) run(ctx *cli.Context) (worktreeSetupResult, error) {
 	hookFile := filepath.Join(ctx.Home, "worktree-hooks", repoKey)
 	data, err := os.ReadFile(hookFile)
 	if err != nil {
-		fmt.Fprintf(ctx.Stdout, "no worktree-setup hook configured for %s\n", repoKey)
-		return worktreeSetupResult{}, nil
+		if os.IsNotExist(err) {
+			fmt.Fprintf(ctx.Stdout, "no worktree-setup hook configured for %s\n", repoKey)
+			return worktreeSetupResult{}, nil
+		}
+		return worktreeSetupResult{}, fmt.Errorf("worktree-setup: cannot read configured hook %q: %w", hookFile, err)
 	}
 
 	scriptPath := strings.TrimSpace(string(data))
 
 	if _, statErr := os.Stat(scriptPath); statErr != nil {
-		loudHookWarning(ctx.Stderr, scriptPath, -1, "script not found at configured path")
-		return worktreeSetupResult{Path: wtPath, Hook: scriptPath, Outcome: "missing"}, &cli.SilentError{Code: 1}
+		if os.IsNotExist(statErr) {
+			loudHookWarning(ctx.Stderr, scriptPath, -1, "script not found at configured path")
+			return worktreeSetupResult{Path: wtPath, Hook: scriptPath, Outcome: "missing"}, &cli.SilentError{Code: 1}
+		}
+		return worktreeSetupResult{}, fmt.Errorf("worktree-setup: cannot stat configured hook script %q: %w", scriptPath, statErr)
 	}
 
 	runErr := c.runner(scriptPath, []string{wtPath, srcCheckout}, ctx.Stdout, ctx.Stderr)

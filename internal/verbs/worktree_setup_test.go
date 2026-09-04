@@ -296,6 +296,73 @@ func TestWorktreeSetup_ConfiguredScriptMissing(t *testing.T) {
 	}
 }
 
+func TestWorktreeSetup_UnexpectedHookFilesystemErrorsHardFail(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(t *testing.T, home, repoKey string) string
+		wantError string
+	}{
+		{
+			name: "hook registry is a directory",
+			configure: func(t *testing.T, home, repoKey string) string {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(home, "worktree-hooks", repoKey), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return ""
+			},
+			wantError: "cannot read configured hook",
+		},
+		{
+			name: "hook script stat is not ENOENT",
+			configure: func(t *testing.T, home, repoKey string) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "not-a-directory")
+				if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				writeHookFile(t, home, repoKey, filepath.Join(path, "child"))
+				return ""
+			},
+			wantError: "cannot stat configured hook script",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			repoRoot := t.TempDir()
+			wtDir := t.TempDir()
+			repoKey := slugifyBasename(repoRoot)
+			tt.configure(t, home, repoKey)
+
+			ctx, stdout, stderr := makeWTCtx(home)
+			cmd := &worktreeSetupKong{
+				git: &fakeWTGit{
+					repoRootFn:  func(string) (string, error) { return repoRoot, nil },
+					commonDirFn: func(string) (string, error) { return filepath.Join(repoRoot, ".git"), nil },
+				},
+				runner: func(string, []string, interface{ Write([]byte) (int, error) }, interface{ Write([]byte) (int, error) }) error {
+					t.Fatal("runner must not start after an unexpected hook filesystem error")
+					return nil
+				},
+				WtPath: wtDir,
+			}
+
+			result, err := cmd.run(ctx)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("run error = %v, want hard error containing %q", err, tt.wantError)
+			}
+			if result != (worktreeSetupResult{}) {
+				t.Fatalf("unexpected filesystem error result = %+v, want no configured-hook failure result", result)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("unexpected filesystem error output stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 // ---- (e) wtPath is not a git worktree ----------------------------------------
 
 func TestWorktreeSetup_NotAGitWorktree(t *testing.T) {

@@ -171,12 +171,14 @@ type dispatchKong struct {
 type worktreeSetupFunc func(*cli.Context, string) (worktreeSetupResult, error)
 
 // runWorktreeSetup reuses the standalone verb implementation while keeping
-// setup status and hook stdout out of dispatch stdout. In particular, --id-only
-// must print only the initiative id; setup warnings and diagnostics belong on
-// stderr.
+// arbitrary hook output out of primary dispatch. Dispatch emits only its
+// normalized warning after receiving the structured failure result; in
+// particular, hook stdout/stderr must never leak credentials into --id-only or
+// regular dispatch output.
 func runWorktreeSetup(ctx *cli.Context, wtPath string) (worktreeSetupResult, error) {
 	setupCtx := *ctx
 	setupCtx.Stdout = io.Discard
+	setupCtx.Stderr = io.Discard
 	return (&worktreeSetupKong{
 		git:    gitutil.New(),
 		runner: defaultCmdRunner,

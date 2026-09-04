@@ -300,6 +300,68 @@ func TestDispatch_WorktreeSetupFailureContinuesLifecycle(t *testing.T) {
 	}
 }
 
+func TestDispatch_WorktreeSetupUnexpectedErrorStopsLifecycle(t *testing.T) {
+	home := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
+	var events []string
+	ctx, _, _ := makeCtx(&fakeBD{runJSONFn: func(any, ...string) error {
+		events = append(events, "register")
+		return nil
+	}}, home)
+	cmd := &dispatchKong{
+		Problem:  "unexpected setup error",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git: &fakeGit{
+			repoRootFn: func(string) (string, error) { return repoDir, nil },
+			addWorktreeFn: func(string, string, string, string) error {
+				events = append(events, "add-worktree")
+				return nil
+			},
+		},
+		setup: func(*cli.Context, string) (worktreeSetupResult, error) {
+			events = append(events, "setup")
+			return worktreeSetupResult{}, errors.New("hook registry is a directory")
+		},
+		createEpic: func(string, string) (string, error) {
+			events = append(events, "epic")
+			return "", nil
+		},
+		launch: func(*cli.Context, string, string, string, string) error {
+			events = append(events, "launch")
+			return nil
+		},
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "worktree setup") {
+		t.Fatalf("Run error = %v, want unexpected setup error", err)
+	}
+	if got, want := strings.Join(events, ","), "add-worktree,setup"; got != want {
+		t.Fatalf("lifecycle events = %q, want %q (must not register or launch)", got, want)
+	}
+}
+
+func TestRunWorktreeSetup_SuppressesHookOutputAtDispatchBoundary(t *testing.T) {
+	home := t.TempDir()
+	repoRoot := initGitWorktree(t)
+	scriptPath := filepath.Join(t.TempDir(), "leaky-setup.sh")
+	const stdoutMarker = "dispatch-hook-stdout-secret"
+	const stderrMarker = "dispatch-hook-stderr-secret"
+	writeTinyScript(t, scriptPath, "#!/bin/sh\nprintf '%s\\n' "+stdoutMarker+"\nprintf '%s\\n' "+stderrMarker+" >&2\nexit 17\n")
+	writeHookFile(t, home, slugifyBasename(repoRoot), scriptPath)
+
+	ctx, stdout, stderr := makeCtx(&fakeBD{}, home)
+	result, err := runWorktreeSetup(ctx, repoRoot)
+	if err == nil || result.Outcome != "exit-17" {
+		t.Fatalf("runWorktreeSetup result=%+v err=%v, want exit-17 failure from real hook runner", result, err)
+	}
+	if strings.Contains(stdout.String(), stdoutMarker) || strings.Contains(stdout.String(), stderrMarker) ||
+		strings.Contains(stderr.String(), stdoutMarker) || strings.Contains(stderr.String(), stderrMarker) {
+		t.Fatalf("hook output leaked through primary dispatch boundary: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestDispatch_CodexPersistsRuntimeAndStartsWorker(t *testing.T) {
 	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
