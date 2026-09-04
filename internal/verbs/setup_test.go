@@ -72,7 +72,8 @@ func TestSetupCodexInstallsDefinitionsAndDetectsDrift(t *testing.T) {
 			t.Errorf("%s reasoning effort assignments = %d, want exactly 1", role, reasoningEffortAssignments)
 		}
 	}
-	if !strings.Contains(stdout.String(), "start a new Codex session") {
+	if !strings.Contains(stdout.String(), "trust the agent-teams-codex SessionStart hook") ||
+		!strings.Contains(stdout.String(), "start a new Codex session") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 
