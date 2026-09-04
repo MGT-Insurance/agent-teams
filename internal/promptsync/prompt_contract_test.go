@@ -66,6 +66,50 @@ func TestCodexSetupPreservesOccupiedAteamPath(t *testing.T) {
 	assertPromptOmits(t, root, paths, "ln -sf", "ln -sfn")
 }
 
+func TestCodexPromptSourcesPreserveSessionStartOnlyMailContract(t *testing.T) {
+	root := filepath.Join("..", "..")
+
+	t.Run("setup uses SessionStart only", func(t *testing.T) {
+		paths := []string{
+			"promptsrc/agent-teams/skills/setup-agent-teams/codex-runtime.md",
+			"plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md",
+		}
+		assertPromptClauses(t, root, paths,
+			"Trust only its current `SessionStart` command-hook definition",
+			"Managed app-server delivery is the Codex mail wake path",
+			"`SessionStart` binds the session and catches up queued unread mail only on startup or resume",
+			"On clear or compact, it binds without an unread-mail query or catch-up context",
+		)
+		assertPromptOmits(t, root, paths,
+			"UserPromptSubmit",
+			"`Stop` command-hook",
+			"doorbell repair",
+			"poll for mail",
+			"watch for mail",
+		)
+	})
+
+	t.Run("DRI treats app-server delivery as authoritative", func(t *testing.T) {
+		paths := []string{
+			"promptsrc/agent-teams/skills/dri/codex-runtime.md",
+			"plugins/agent-teams-codex/skills/dri/SKILL.md",
+		}
+		assertPromptClauses(t, root, paths,
+			"Managed app-server delivery wakes this durable Codex thread when mail arrives",
+			"`SessionStart` only binds the session and catches up queued unread mail on startup or resume",
+			"On clear or compact, it binds without an unread-mail query or catch-up context",
+		)
+		assertPromptOmits(t, root, paths,
+			"Mail and lifecycle hooks wake this same durable thread",
+			"UserPromptSubmit",
+			"Stop enforcement",
+			"doorbell repair",
+			"poll for mail",
+			"watch for mail",
+		)
+	})
+}
+
 func assertPromptClauses(t *testing.T, root string, paths []string, clauses ...string) {
 	t.Helper()
 	for _, path := range paths {

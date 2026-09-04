@@ -136,7 +136,8 @@ The Git remote carries repository files; the Dolt remote carries Beads data unde
    Trust only its current `SessionStart` command-hook definition if it is marked
    for review. Managed app-server delivery is the Codex mail wake path;
    `SessionStart` binds the session and catches up queued unread mail only on
-   startup or resume. Do not claim session binding or queued-mail catch-up is
+   startup or resume. On clear or compact, it binds without an unread-mail query
+   or catch-up context. Do not claim session binding or queued-mail catch-up is
    ready while the source is skipped, disabled, or awaiting trust. Codex reports
    a changed hook hash at startup and in `/hooks`; after every plugin hook update,
    review the new definition rather than bypassing trust permanently.

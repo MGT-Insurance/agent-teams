@@ -46,8 +46,8 @@ beads in the global workspace.
    session's working directory into another worktree; use absolute paths and
    `git -C` / `bd -C` for other checkouts.
 3. Do not rely on conversation history for initiative state. Reconstruct it.
-4. If lifecycle context reports unread mail, run `ateam mail inbox` immediately
-   and act on every message before continuing the phase flow.
+4. If startup or resume lifecycle context reports unread mail, run `ateam mail
+   inbox` immediately and act on every message before continuing the phase flow.
 
 ## Phase 1: register or resume
 
@@ -76,7 +76,8 @@ the design, with a recommendation and one meaningful alternative. Every human
 pause follows [gates.md](references/gates.md): record an atomic global gate,
 state the question, then end the turn. Managed app-server delivery wakes this
 durable Codex thread when mail arrives. `SessionStart` only binds the session
-and catches up queued unread mail on startup or resume.
+and catches up queued unread mail on startup or resume. On clear or compact,
+it binds without an unread-mail query or catch-up context.
 
 Any departure from the human's mechanism, named reuse path, or scope class is
 a design pivot. Raise a QUESTION gate at the moment of divergence with the
