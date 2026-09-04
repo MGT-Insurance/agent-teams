@@ -133,13 +133,15 @@ The Git remote carries repository files; the Dolt remote carries Beads data unde
    `agent-teams-tester.toml`, `agent-teams-reviewer.toml`, and
    `agent-teams-investigator.toml`.
 6. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
-   Trust its current `SessionStart`, `UserPromptSubmit`, and `Stop` command-hook
-   definitions if they are marked for review. Do not claim mail wake is ready
-   while the source is skipped, disabled, or awaiting trust. Codex reports a
-   changed hook hash at startup and in `/hooks`; after every plugin hook update,
+   Trust only its current `SessionStart` command-hook definition if it is marked
+   for review. Managed app-server delivery is the Codex mail wake path;
+   `SessionStart` binds the session and catches up queued unread mail only on
+   startup or resume. Do not claim session binding or queued-mail catch-up is
+   ready while the source is skipped, disabled, or awaiting trust. Codex reports
+   a changed hook hash at startup and in `/hooks`; after every plugin hook update,
    review the new definition rather than bypassing trust permanently.
 7. Tell the human to start a new Codex session. Custom agent, skill, and trusted
-   hook discovery occur at the session boundary. Because these hooks are
+   hook discovery occur at the session boundary. Because this hook is
    plugin-scoped, an untrusted project does not hide them; project-scoped
    `.codex` components still require project trust and must be diagnosed
    separately.

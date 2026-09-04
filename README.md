@@ -31,7 +31,7 @@ A missing file has the identical effect to `disabled: true`: not enabled. `disab
 
 Commit the file. It's read straight off disk, so an untracked `.agent-teams` enables only the checkout it's sitting in, not the repo. Nothing creates it for you.
 
-When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative, mail wakeups, and PR-event routing all skip without erroring. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
+When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative and PR-event routing skip without erroring. Codex mail delivery also skips because it requires the enabled session binding. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
 
 ## Machine-local instructions
 
@@ -111,8 +111,9 @@ or `m` suffixes, and a bare 100–1000 as thousands shorthand. The explicit valu
 non-empty value fails the Codex request instead of falling through to the file.
 
 The resolved value applies to fresh Codex dispatches, explicit resumes and cold
-reloads, and mail wakes. Agent-teams supplies it on thread start and resume. A
-change does not retrofit a thread already loaded by the managed app server.
+reloads, and managed app-server mail delivery. Agent-teams supplies it on thread
+start and resume. A change does not retrofit a thread already loaded by the
+managed app server.
 Codex child role agents inherit the root thread config natively. The five role
 TOMLs do not copy the key. This key never edits the user-owned Codex config,
 changes ordinary Codex sessions, or sets the native Codex compaction scope.
@@ -143,8 +144,8 @@ Start or act as it with `/agent-teams:steward`, or manage it directly with `atea
 
 Sessions message each other through a durable, Dolt-synced mailbox — a message survives a crash and reaches a recipient on another machine after `bd dolt pull`.
 
-- **Send** — `ateam mail send <recipient-id> --file <body>` writes the message and rings a doorbell that wakes the recipient if it has gone idle. The recipient is an **initiative id**, or the reserved handle `steward`. If no live session exists, it escalates to `ateam resume` — except `steward`, which has no resume path and just queues the mail.
-- **Receive** — `ateam mail inbox` consumes unread messages for the current initiative; you do run it by hand. A hook peeks (`ateam mail inbox --peek`) on each prompt and at session start and, if mail is waiting, tells you to run it — the hook only signals, it never drains.
+- **Send** — `ateam mail send <recipient-id> --file <body>` writes the message and rings a doorbell. The recipient is an **initiative id**, or the reserved handle `steward`. For an active Codex thread, managed app-server delivery is the authoritative mail wake path. If no live session exists, it escalates to `ateam resume` — except `steward`, which has no resume path and just queues the mail.
+- **Receive** — `ateam mail inbox` consumes unread messages for the current initiative; you do run it by hand. Codex `SessionStart` binds the session and peeks only during startup or resume to catch up queued mail; it only signals, never drains. Claude retains its existing hook behavior: it peeks on each prompt and at session start and, if mail is waiting, tells you to run `ateam mail inbox`.
 - **List / close / purge** — `ateam mail list` is a read-only table of every initiative's recent mail, including closed (does not mark anything read); `ateam mail close <id>` closes a message bead; `ateam mail purge` deletes old closed ones.
 - Bare `send` / `inbox` / `debug-mail` still work as deprecated aliases — older role learnings and installed hooks still call them. Each prints a deprecation note to stderr and delegates to the `ateam mail` equivalent.
 
