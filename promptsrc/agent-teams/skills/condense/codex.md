@@ -82,4 +82,5 @@ Compare CLI `hot_approx_tokens` with packet `hot_budget_tokens`; if over, merge 
 
 ## Memory routing
 
-Never write harness memory files. Persist only through `ateam learn` and `ateam forget`; project facts remain outside this workflow.
+Never write `MEMORY.md` or Codex harness memory files. Persist only through
+`ateam learn` and `ateam forget`; project facts remain outside this workflow.

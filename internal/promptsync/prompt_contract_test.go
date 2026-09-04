@@ -190,18 +190,15 @@ func TestCodexCondenseContract(t *testing.T) {
 func TestCodexCondenseOrderingGuardRejectsDrainBeforeBatch(t *testing.T) {
 	fixture := strings.Join([]string{
 		"ateam condense <role>",
-		"This emits a JSON packet to stdout.",
-		"IMPORTANT ORDERING: do not create any <role>:hot:* key until the full hot set is decided.",
 		"ateam learn <role> hot:<slug> --file <file>",
-		"After ALL hot entries are written, handle cold cleanup.",
-		"### Drain fresh — AFTER the batch write, never before",
+		"Only after the complete hot batch and cleanup, you MUST drain fresh:",
 		"ateam fresh-drain <role>",
 	}, "\n")
 	if err := condenseOrderingError(fixture); err != nil {
 		t.Fatalf("control fixture rejected: %v", err)
 	}
 
-	mutated := strings.Replace(fixture, "After ALL hot entries are written, handle cold cleanup.\n### Drain fresh — AFTER the batch write, never before\nateam fresh-drain <role>", "ateam fresh-drain <role>\nAfter ALL hot entries are written, handle cold cleanup.", 1)
+	mutated := strings.Replace(fixture, "ateam learn <role> hot:<slug> --file <file>\nOnly after the complete hot batch and cleanup, you MUST drain fresh:\nateam fresh-drain <role>", "ateam fresh-drain <role>\nOnly after the complete hot batch and cleanup, you MUST drain fresh:\nateam learn <role> hot:<slug> --file <file>", 1)
 	if err := condenseOrderingError(mutated); err == nil {
 		t.Fatal("drain-before-batch mutation was accepted")
 	}
@@ -303,24 +300,23 @@ func assertCodexCondenseMain(t *testing.T, label, body string) {
 		"agent-teams-codex:condense <role>",
 		"agent-teams-codex:condense",
 		"agent-teams-codex:setup-agent-teams",
-		"Single-role form",
-		"All-roles sweep",
+		"always processes exactly that role after acquiring the lock",
+		"runs one all-role, gate-controlled sweep",
 		"ateam condense-lock acquire",
 		"code 5",
 		"ateam condense-lock release",
-		"Release on error paths",
-		"Gate every role with ONE call",
+		"release it on every success and error exit",
+		"run this once after acquiring the lock",
 		"ateam condense-check",
-		"Do NOT recompute it",
-		"verdict is data, not an exit status",
-		"The verb writes nothing",
-		"skipping `user` and `applied` unconditionally",
+		"It is read-only, owns the verdict",
+		"Never recompute its threshold",
+		"excludes `user` and `applied`",
 		"user",
 		"applied",
 		"PURE READ",
-		"then write all hot keys as a batch",
-		"After ALL hot entries are written",
-		"iterate — do not accept-and-report",
+		"Design the complete hot set before writing",
+		"Only after the complete hot batch and cleanup, you MUST drain fresh",
+		"if over, merge and repeat rather than report success",
 		"<role>: promoted N / merged M / evicted K / hot now X tokens / hot∪fresh Y tokens",
 		"MEMORY.md",
 		"Codex harness memory",
@@ -336,7 +332,7 @@ func assertCodexCondenseMain(t *testing.T, label, body string) {
 }
 
 func condenseOrderingError(body string) error {
-	packet := strings.Index(body, "This emits a JSON packet to stdout.")
+	packet := strings.Index(body, "ateam condense <role>")
 	batch := strings.Index(body, "ateam learn <role> hot:<slug>")
 	drain := strings.LastIndex(body, "ateam fresh-drain <role>")
 	if packet < 0 || batch < 0 || drain < 0 {
@@ -345,7 +341,7 @@ func condenseOrderingError(body string) error {
 	if packet >= batch || batch >= drain {
 		return fmt.Errorf("want packet before full batch write before drain (positions %d, %d, %d)", packet, batch, drain)
 	}
-	if !strings.Contains(body, "Drain fresh — AFTER the batch write, never before") {
+	if !strings.Contains(body, "Only after the complete hot batch and cleanup, you MUST drain fresh") {
 		return fmt.Errorf("missing explicit drain-after-batch rule")
 	}
 	return nil
@@ -364,10 +360,22 @@ func assertCodexDRIWindDown(t *testing.T, root string, canonicalPath, renderedPa
 	t.Helper()
 	for _, path := range []string{canonicalPath, renderedPath} {
 		body := readPrompt(t, root, path)
-		learnings := strings.Index(body, "ateam learn")
-		condense := strings.Index(body, "agent-teams-codex:condense")
-		finalNote := strings.Index(body, "final initiative note")
-		endTurn := strings.Index(body, "End the turn")
+		section := body
+		learningsAnchor := "After contributing durable learnings"
+		if strings.Contains(path, "wind-down") {
+			section = windDownChecklist(body)
+			learningsAnchor = "Route any durable learning through `ateam learn`"
+		}
+		normalized := strings.Join(strings.Fields(section), " ")
+		learnings := strings.Index(normalized, learningsAnchor)
+		condense := strings.Index(normalized, "agent-teams-codex:condense")
+		finalNote := strings.Index(normalized, "final initiative note")
+		endTurn := -1
+		if finalNote >= 0 {
+			if afterFinalNote := strings.Index(strings.ToLower(normalized[finalNote:]), "end the turn"); afterFinalNote >= 0 {
+				endTurn = finalNote + afterFinalNote
+			}
+		}
 		if learnings < 0 || condense < 0 || finalNote < 0 || endTurn < 0 {
 			t.Errorf("%s must include learnings, no-role condense, final note, and end-turn", path)
 			continue
@@ -375,10 +383,17 @@ func assertCodexDRIWindDown(t *testing.T, root string, canonicalPath, renderedPa
 		if !(learnings < condense && condense < finalNote && finalNote < endTurn) {
 			t.Errorf("%s must order learnings -> condense -> final note -> end turn", path)
 		}
-		if strings.Contains(body, "ateam condense <role>") {
+		if strings.Contains(section, "ateam condense <role>") {
 			t.Errorf("%s replaces the all-role skill with a direct role condense call", path)
 		}
 	}
+}
+
+func windDownChecklist(body string) string {
+	if start := strings.Index(body, "# Wind-down"); start >= 0 {
+		return body[start:]
+	}
+	return body
 }
 
 func assertPromptClauses(t *testing.T, root string, paths []string, clauses ...string) {
