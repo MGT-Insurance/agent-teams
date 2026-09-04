@@ -375,30 +375,71 @@
     {
       "id": "skill.condense",
       "kind": "skill",
-      "status": "runtime-only",
-      "reason": "Claude conversation-condensation workflow depends on Claude session mechanics.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [
+        {"id": "claude-header", "path": "promptsrc/agent-teams/skills/condense/claude-header.md"},
+        {"id": "shared-single-role", "path": "promptsrc/agent-teams/skills/condense/shared-single-role.md"},
+        {"id": "claude-all-role-heading", "path": "promptsrc/agent-teams/skills/condense/claude-all-role-heading.md"},
+        {"id": "shared-all-role-lock", "path": "promptsrc/agent-teams/skills/condense/shared-all-role-lock.md"},
+        {"id": "shared-gate", "path": "promptsrc/agent-teams/skills/condense/shared-gate.md"},
+        {"id": "claude-gate-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-gate-explanation.md"},
+        {"id": "shared-skip", "path": "promptsrc/agent-teams/skills/condense/shared-skip.md"},
+        {"id": "claude-sweep-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-sweep-explanation.md"},
+        {"id": "shared-packet-order", "path": "promptsrc/agent-teams/skills/condense/shared-packet-order.md"},
+        {"id": "claude-packet-order-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-packet-order-explanation.md"},
+        {"id": "shared-packet-order-reference", "path": "promptsrc/agent-teams/skills/condense/shared-packet-order-reference.md"},
+        {"id": "shared-packet-example", "path": "promptsrc/agent-teams/skills/condense/shared-packet-example.md"},
+        {"id": "shared-packet-semantics", "path": "promptsrc/agent-teams/skills/condense/shared-packet-semantics.md"},
+        {"id": "shared-all-role-release", "path": "promptsrc/agent-teams/skills/condense/shared-all-role-release.md"},
+        {"id": "claude-procedure-heading", "path": "promptsrc/agent-teams/skills/condense/claude-procedure-heading.md"},
+        {"id": "shared-design-order", "path": "promptsrc/agent-teams/skills/condense/shared-design-order.md"},
+        {"id": "claude-design-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-design-explanation.md"},
+        {"id": "shared-promotion", "path": "promptsrc/agent-teams/skills/condense/shared-promotion.md"},
+        {"id": "shared-apply", "path": "promptsrc/agent-teams/skills/condense/shared-apply.md"},
+        {"id": "claude-apply-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-apply-explanation.md"},
+        {"id": "shared-apply-maintenance", "path": "promptsrc/agent-teams/skills/condense/shared-apply-maintenance.md"},
+        {"id": "shared-drain", "path": "promptsrc/agent-teams/skills/condense/shared-drain.md"},
+        {"id": "shared-verify", "path": "promptsrc/agent-teams/skills/condense/shared-verify.md"},
+        {"id": "claude-memory", "path": "promptsrc/agent-teams/skills/condense/claude-memory.md"},
+        {"id": "codex-header", "path": "promptsrc/agent-teams/skills/condense/codex-header.md"},
+        {"id": "codex-all-role-heading", "path": "promptsrc/agent-teams/skills/condense/codex-all-role-heading.md"},
+        {"id": "codex-procedure-heading", "path": "promptsrc/agent-teams/skills/condense/codex-procedure-heading.md"},
+        {"id": "codex-memory", "path": "promptsrc/agent-teams/skills/condense/codex-memory.md"}
+      ],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown", "parts": ["claude-header", "shared-single-role", "claude-all-role-heading", "shared-all-role-lock", "shared-gate", "claude-gate-explanation", "shared-skip", "claude-sweep-explanation", "shared-packet-order", "claude-packet-order-explanation", "shared-packet-order-reference", "shared-packet-example", "shared-packet-semantics", "shared-all-role-release", "claude-procedure-heading", "shared-design-order", "claude-design-explanation", "shared-promotion", "shared-apply", "claude-apply-explanation", "shared-apply-maintenance", "shared-drain", "shared-verify", "claude-memory"], "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/condense", "min_headroom": 600}},
+        {"path": "plugins/agent-teams-codex/skills/condense/SKILL.md", "format": "markdown", "parts": ["codex-header", "shared-single-role", "codex-all-role-heading", "shared-all-role-lock", "shared-gate", "shared-skip", "shared-packet-order", "shared-packet-order-reference", "shared-packet-example", "shared-packet-semantics", "codex-procedure-heading", "shared-design-order", "shared-promotion", "shared-apply", "shared-apply-maintenance", "shared-drain", "shared-verify", "shared-all-role-release", "codex-memory"], "skill_budget": {"base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/condense", "min_headroom": 4000}}
+      ]
     },
     {
       "id": "reference.condense.drain-ordering",
       "kind": "reference",
-      "status": "runtime-only",
-      "reason": "Reference supports only the Claude conversation-condensation workflow.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/references/drain-ordering.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/drain-ordering.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/drain-ordering.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/drain-ordering.md", "format": "markdown", "parts": ["shared"]}
+      ]
     },
     {
       "id": "reference.condense.recall-verification",
       "kind": "reference",
-      "status": "runtime-only",
-      "reason": "Reference supports only the Claude conversation-condensation workflow.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/references/recall-verification.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/recall-verification.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/recall-verification.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/recall-verification.md", "format": "markdown", "parts": ["shared"]}
+      ]
     },
     {
       "id": "reference.condense.trigger-design",
       "kind": "reference",
-      "status": "runtime-only",
-      "reason": "Reference supports only the Claude conversation-condensation workflow.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/references/trigger-design.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/trigger-design.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/trigger-design.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/trigger-design.md", "format": "markdown", "parts": ["shared"]}
+      ]
     },
     {
       "id": "skill.dispatch-review-pr",
