@@ -10,98 +10,106 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-func TestCodexHooksTieAndSurfaceUnreadMail(t *testing.T) {
+func TestCodexHookSessionStartTiesAllSourcesAndSurfacesUnreadOnlyOnColdCatchup(t *testing.T) {
 	for _, tc := range []struct {
-		event, wireEvent, wantHook string
-		wantTie                    bool
+		name        string
+		sourceJSON  string
+		wantUnread  bool
+		wantContext bool
 	}{
-		{event: "session-start", wireEvent: "SessionStart", wantHook: "SessionStart", wantTie: true},
-		{event: "user-prompt-submit", wireEvent: "UserPromptSubmit", wantHook: "UserPromptSubmit"},
+		{name: "startup", sourceJSON: `,"source":"startup"`, wantUnread: true, wantContext: true},
+		{name: "resume", sourceJSON: `,"source":"resume"`, wantUnread: true, wantContext: true},
+		{name: "clear", sourceJSON: `,"source":"clear"`},
+		{name: "compact", sourceJSON: `,"source":"compact"`},
+		{name: "missing"},
+		{name: "unknown", sourceJSON: `,"source":"unknown"`},
 	} {
-		t.Run(tc.event, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
-			tied := false
+			tied := 0
+			unread := 0
 			deps := codexHookDeps{
 				resolve: func(*cli.Context, string, string) (bd.Issue, error) { return bd.Issue{ID: "at-codex"}, nil },
 				tie: func(_ *cli.Context, id, session string) error {
-					tied = id == "at-codex" && session == "thread-1"
+					if id == "at-codex" && session == "thread-1" {
+						tied++
+					}
 					return nil
 				},
-				unread: func(*cli.Context, string) ([]bd.Issue, error) { return []bd.Issue{{ID: "msg-1"}}, nil },
-				repair: func(*cli.Context, string) error { return nil },
+				unread: func(*cli.Context, string) ([]bd.Issue, error) {
+					unread++
+					return []bd.Issue{{ID: "msg-1"}}, nil
+				},
 			}
-			input := strings.NewReader(`{"session_id":"thread-1","cwd":"/w","hook_event_name":"` + tc.wireEvent + `"}`)
-			if err := runCodexHook(ctx, tc.event, input, deps); err != nil {
+			input := strings.NewReader(`{"session_id":"thread-1","cwd":"/w","hook_event_name":"SessionStart"` + tc.sourceJSON + `}`)
+			if err := runCodexHook(ctx, "session-start", input, deps); err != nil {
 				t.Fatal(err)
 			}
-			if tied != tc.wantTie {
-				t.Fatalf("tied = %v, want %v", tied, tc.wantTie)
+			if tied != 1 {
+				t.Fatalf("tie calls = %d, want 1", tied)
 			}
-			if !strings.Contains(stdout.String(), `"hookEventName":"`+tc.wantHook+`"`) || !strings.Contains(stdout.String(), "ateam mail inbox") {
+			if got := unread == 1; got != tc.wantUnread {
+				t.Fatalf("unread called = %v, want %v", got, tc.wantUnread)
+			}
+			if got := strings.Contains(stdout.String(), "ateam mail inbox"); got != tc.wantContext {
 				t.Fatalf("output = %s", stdout.String())
 			}
+			if tc.wantContext && !strings.Contains(stdout.String(), `"hookEventName":"SessionStart"`) {
+				t.Fatalf("output = %s, want SessionStart hook-specific context", stdout.String())
+			}
 		})
 	}
 }
 
-// TestRunCodexHookThreadsSessionIDToResolve verifies runCodexHook passes
-// hookInput.SessionID (stdin .session_id) through to deps.resolve for every
-// supported event, not just session-start — the mid-drift and later-start
-// parity ring .4 asks for, since a later hook call may be the first chance to
-// resolve a session tie made earlier.
+// TestRunCodexHookThreadsSessionIDToResolve verifies runCodexHook passes the
+// hook input session ID through to initiative resolution.
 func TestRunCodexHookThreadsSessionIDToResolve(t *testing.T) {
-	for _, tc := range []struct{ event, wireEvent string }{
-		{event: "session-start", wireEvent: "SessionStart"},
-		{event: "user-prompt-submit", wireEvent: "UserPromptSubmit"},
-		{event: "stop", wireEvent: "Stop"},
-	} {
-		t.Run(tc.event, func(t *testing.T) {
-			var gotCWD, gotSessionID string
-			deps := codexHookDeps{
-				resolve: func(_ *cli.Context, cwd, sessionID string) (bd.Issue, error) {
-					gotCWD, gotSessionID = cwd, sessionID
-					return bd.Issue{ID: "at-codex"}, nil
-				},
-				tie:    func(*cli.Context, string, string) error { return nil },
-				unread: func(*cli.Context, string) ([]bd.Issue, error) { return nil, nil },
-				repair: func(*cli.Context, string) error { return nil },
-			}
-			ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
-			input := strings.NewReader(`{"session_id":"thread-9","cwd":"/w","hook_event_name":"` + tc.wireEvent + `"}`)
-			if err := runCodexHook(ctx, tc.event, input, deps); err != nil {
-				t.Fatal(err)
-			}
-			if gotCWD != "/w" || gotSessionID != "thread-9" {
-				t.Errorf("deps.resolve called with cwd=%q sessionID=%q, want cwd=/w sessionID=thread-9", gotCWD, gotSessionID)
-			}
-		})
-	}
-}
-
-func TestCodexStopContinuesExactlyOnce(t *testing.T) {
-	resolveCalls := 0
+	var gotCWD, gotSessionID string
 	deps := codexHookDeps{
-		resolve: func(*cli.Context, string, string) (bd.Issue, error) {
-			resolveCalls++
+		resolve: func(_ *cli.Context, cwd, sessionID string) (bd.Issue, error) {
+			gotCWD, gotSessionID = cwd, sessionID
 			return bd.Issue{ID: "at-codex"}, nil
 		},
-		unread: func(*cli.Context, string) ([]bd.Issue, error) { return []bd.Issue{{ID: "msg-1"}}, nil },
-		repair: func(*cli.Context, string) error { return nil },
+		tie:    func(*cli.Context, string, string) error { return nil },
+		unread: func(*cli.Context, string) ([]bd.Issue, error) { return nil, nil },
 	}
-	ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
-	if err := runCodexHook(ctx, "stop", strings.NewReader(`{"cwd":"/w","hook_event_name":"Stop","stop_hook_active":false}`), deps); err != nil {
+	ctx, _, _ := makeCtx(&fakeBD{}, t.TempDir())
+	input := strings.NewReader(`{"session_id":"thread-9","cwd":"/w","hook_event_name":"SessionStart"}`)
+	if err := runCodexHook(ctx, "session-start", input, deps); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `"decision":"block"`) || !strings.Contains(stdout.String(), "ateam mail inbox") {
-		t.Fatalf("first output = %s", stdout.String())
+	if gotCWD != "/w" || gotSessionID != "thread-9" {
+		t.Errorf("deps.resolve called with cwd=%q sessionID=%q, want cwd=/w sessionID=thread-9", gotCWD, gotSessionID)
 	}
+}
 
-	ctx, stdout, _ = makeCtx(&fakeBD{}, t.TempDir())
-	if err := runCodexHook(ctx, "stop", strings.NewReader(`{"cwd":"/w","hook_event_name":"Stop","stop_hook_active":true}`), deps); err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(stdout.String()) != "{}" || resolveCalls != 1 {
-		t.Fatalf("second output = %q, resolve calls = %d", stdout.String(), resolveCalls)
+func TestCodexHookRejectsRemovedEventsWithoutSideEffects(t *testing.T) {
+	for _, event := range []string{"user-prompt-submit", "stop"} {
+		t.Run(event, func(t *testing.T) {
+			calls := 0
+			deps := codexHookDeps{
+				resolve: func(*cli.Context, string, string) (bd.Issue, error) {
+					calls++
+					return bd.Issue{ID: "at-codex"}, nil
+				},
+				tie: func(*cli.Context, string, string) error {
+					calls++
+					return nil
+				},
+				unread: func(*cli.Context, string) ([]bd.Issue, error) {
+					calls++
+					return nil, nil
+				},
+			}
+			ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
+			err := runCodexHook(ctx, event, strings.NewReader(`{"session_id":"thread-1","cwd":"/w","source":"startup"}`), deps)
+			if err == nil || !strings.Contains(err.Error(), `unsupported event "`+event+`"`) {
+				t.Fatalf("runCodexHook error = %v, want unsupported event", err)
+			}
+			if calls != 0 || stdout.Len() != 0 {
+				t.Fatalf("side effects = %d, output = %q; want neither", calls, stdout.String())
+			}
+		})
 	}
 }
 
