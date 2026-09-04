@@ -1,6 +1,6 @@
 ---
 name: condense
-description: Curate role learnings manually or at wind-down. Condense before draining fresh; this order is load-bearing. A lock prevents concurrent runs.
+description: Curate learnings. Condense before draining fresh; this order is load-bearing. A lock prevents concurrent runs.
 ---
 
 Use bare `ateam`; setup: `agent-teams-codex:setup-agent-teams`.
@@ -41,6 +41,16 @@ ateam condense-lock release
 
 Release in ALL exit paths (success and error). The held-skip path (Step 0 exit-5) never acquired the lock, so no release is needed there.
 
+### Step 0 — Acquire the condense lock
+
+```bash
+ateam condense-lock acquire
+```
+
+Same code-5 handling as **Step 0** in the single-role form above: on exit code 5, log the line shown there and exit cleanly — do NOT block or retry.
+
+If acquisition succeeds, proceed and ensure the lock is released in every exit path (success, error). The lock window covers all role processing and any `ateam sync` at the end.
+
 ### Step 1 — Gate every role with ONE call
 
 ```bash
@@ -52,8 +62,6 @@ That single read-only call enumerates every learning role — skipping `user` an
 (`user:` is served by `ateam prime`, not part of the hot/cold learnings model; `applied:` holds per-slug counters, not learnings, and must never be condensed.)
 
 **Defer to the printed verdict. Do NOT recompute it.** The trigger and its threshold are defined exactly ONCE, in Go — see contract `agent-teams-0yd3.1`, SEAM 2. This file deliberately does not restate the arithmetic, and neither should you: no `wc -c`, no divisor, no threshold comparison of your own. **Prose restatements of a constant desynchronise from it; a printed verdict cannot.** Every token number here is a CLI-computed approximation (divisor frozen by contract `agent-teams-b2xr.2`) — read them off the tool, never re-derive them. (Why hand-recomputing this has already failed in practice: references/trigger-design.md.)
-
-**What the gate measures: NEW MATERIAL, not total size.** A role fires on accumulation in its **fresh tier** — un-curated learnings written since the last condense. Total `hot ∪ fresh` size is **NOT** a trigger. It survives only as a reported number (see **Emit summary line** in the condense procedure below) and must never be branched on. A role whose reported union sits persistently high is an aggregate-hot-set problem, not a condense-frequency problem: surface it, do not condense at it. (Why total size cannot be a trigger — the clearability test, for anyone reconsidering this: references/trigger-design.md.)
 
 Log one line for each `SKIP` role — the verb's own line is the note — and do no further work for it:
 
@@ -71,9 +79,22 @@ ateam condense <role>
 
 > **⚠️ Ordering is load-bearing — `ateam condense` runs FIRST, and `ateam fresh-drain` runs LATER, inside the procedure, after the batch write.**
 >
-> The packet ships FULL bodies only for entries still tagged `hot:`/`fresh:`; cold entries arrive as key + summary only. So draining first destroys the one signal that separates just-served, un-curated material from long-settled archive: those entries would arrive as summaries, shape-identical to cold, and you would be making the promote-vs-archive call on the highest-stakes entries in the packet without ever seeing their bodies. That is drain-then-stop — the exact failure the promotion rule below exists to prevent. Do not "tidy" this ordering back.
->
 > Full mechanism and why printing the drain's key list wouldn't rescue a drain-first order: references/drain-ordering.md.
+
+This emits a JSON packet to stdout:
+
+```json
+{
+  "role": "<role>",
+  "memories": [
+    {"key": "hot:<slug>", "body": "...", "applied_count": 3, "last_applied": "2026-07-20"},
+    {"key": "fresh:<slug>", "body": "..."},
+    {"key": "<slug>", "summary": "..."}
+  ],
+  "hot_budget_tokens": 6000,
+  "instruction_contract": "..."
+}
+```
 
 Field semantics (`instruction_contract` is the schema authority; the sample above is illustrative, one per tier, not exhaustive): `key` is always present and role-relative (`hot:`/`fresh:` prefix, or a bare slug for cold — never the full `<role>:...` form). `body` appears on hot/fresh, never on cold; `summary` appears on cold only — **do not assume every entry carries a body**, and if a promotion decision turns on an elided body, fetch it on demand — `ateam recall <role> <term>`, passing that entry's own `key` verbatim as `<term>` (pass the key, never a description — see “spot-check cold” below for why a descriptive query proves nothing) — rather than deciding blind or promoting a summary as if it were the learning. `applied_count`/`last_applied` can appear on ANY tier but are each omitted — not zero-valued — when absent: a missing `applied_count` means 0, a missing `last_applied` means never applied.
 
@@ -180,5 +201,17 @@ Where:
 - Y = `approx_tokens` (the `hot ∪ fresh` union) from that same output. **REPORTED ONLY — never branched on.** It is here so a persistently-high union is visible instead of silent — that condition routes to the aggregate hot-set problem, not to another condense run.
 
 If a role returned zero memories from `ateam condense <role>`, skip it with: `<role>: no memories — skipped`.
-Never write `MEMORY.md` or Codex harness memory files. Persist only through
+
+### Step 3 — Release the lock
+
+After ALL role processing is complete (whether roles were skipped or condensed), release the lock:
+
+```bash
+ateam condense-lock release
+```
+
+Release on error paths too — do not leave the lock held. (Exception: the held-skip path in Step 0 never acquired the lock, so no release is needed there.)
+
+If you performed an `ateam sync` (Dolt push) at any point, that sync must also occur within the lock window, before release.
+Never write `MEMORY.md` or Codex harness memory. Persist only through
 `ateam learn` and `ateam forget`; project facts remain outside this workflow.

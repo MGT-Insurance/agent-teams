@@ -1,6 +1,6 @@
 ---
 name: condense
-description: Curate role learnings manually or at wind-down. Condense before draining fresh; this order is load-bearing. A lock prevents concurrent runs.
+description: Curate learnings. Condense before draining fresh; this order is load-bearing. A lock prevents concurrent runs.
 ---
 
 Use bare `ateam`; setup: `agent-teams-codex:setup-agent-teams`.

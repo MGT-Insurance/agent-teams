@@ -386,6 +386,8 @@
         {"id": "shared-skip", "path": "promptsrc/agent-teams/skills/condense/shared-skip.md"},
         {"id": "claude-sweep-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-sweep-explanation.md"},
         {"id": "shared-packet-order", "path": "promptsrc/agent-teams/skills/condense/shared-packet-order.md"},
+        {"id": "claude-packet-order-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-packet-order-explanation.md"},
+        {"id": "shared-packet-order-reference", "path": "promptsrc/agent-teams/skills/condense/shared-packet-order-reference.md"},
         {"id": "shared-packet-example", "path": "promptsrc/agent-teams/skills/condense/shared-packet-example.md"},
         {"id": "shared-packet-semantics", "path": "promptsrc/agent-teams/skills/condense/shared-packet-semantics.md"},
         {"id": "shared-all-role-release", "path": "promptsrc/agent-teams/skills/condense/shared-all-role-release.md"},
@@ -405,8 +407,8 @@
         {"id": "codex-memory", "path": "promptsrc/agent-teams/skills/condense/codex-memory.md"}
       ],
       "outputs": [
-        {"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown", "parts": ["claude-header", "shared-single-role", "claude-all-role-heading", "shared-all-role-lock", "shared-gate", "claude-gate-explanation", "shared-skip", "claude-sweep-explanation", "shared-packet-order", "shared-packet-example", "shared-packet-semantics", "shared-all-role-release", "claude-procedure-heading", "shared-design-order", "claude-design-explanation", "shared-promotion", "shared-apply", "claude-apply-explanation", "shared-apply-maintenance", "shared-drain", "shared-verify", "claude-memory"], "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/condense", "min_headroom": 600}},
-        {"path": "plugins/agent-teams-codex/skills/condense/SKILL.md", "format": "markdown", "parts": ["codex-header", "shared-single-role", "codex-all-role-heading", "shared-gate", "shared-skip", "shared-packet-order", "shared-packet-semantics", "codex-procedure-heading", "shared-design-order", "shared-promotion", "shared-apply", "shared-apply-maintenance", "shared-drain", "shared-verify", "codex-memory"], "skill_budget": {"base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/condense", "min_headroom": 4000}}
+        {"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown", "parts": ["claude-header", "shared-single-role", "claude-all-role-heading", "shared-all-role-lock", "shared-gate", "claude-gate-explanation", "shared-skip", "claude-sweep-explanation", "shared-packet-order", "claude-packet-order-explanation", "shared-packet-order-reference", "shared-packet-example", "shared-packet-semantics", "shared-all-role-release", "claude-procedure-heading", "shared-design-order", "claude-design-explanation", "shared-promotion", "shared-apply", "claude-apply-explanation", "shared-apply-maintenance", "shared-drain", "shared-verify", "claude-memory"], "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/condense", "min_headroom": 600}},
+        {"path": "plugins/agent-teams-codex/skills/condense/SKILL.md", "format": "markdown", "parts": ["codex-header", "shared-single-role", "codex-all-role-heading", "shared-all-role-lock", "shared-gate", "shared-skip", "shared-packet-order", "shared-packet-order-reference", "shared-packet-example", "shared-packet-semantics", "codex-procedure-heading", "shared-design-order", "shared-promotion", "shared-apply", "shared-apply-maintenance", "shared-drain", "shared-verify", "shared-all-role-release", "codex-memory"], "skill_budget": {"base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/condense", "min_headroom": 4000}}
       ]
     },
     {
