@@ -3,6 +3,7 @@ package promptsync
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -619,11 +620,182 @@ func TestWorktreeSetupPromptContract(t *testing.T) {
 			`ateam worktree-setup "$track_worktree" || setup_status=$?`,
 			`if [ "$setup_status" -ne 0 ]; then`,
 			`path="%s" hook="%s" outcome="%s" lifecycle=continued`,
-			`ateam note "$initiative_id" --file "$warning_file" ||`,
-			"A note failure is visibly reported but nonblocking.",
+			`if warning_file=$(mktemp); then`,
+			`if print_setup_warning > "$warning_file"; then`,
+			`if ! cat "$warning_file"; then`,
+			`if ! ateam note "$initiative_id" --file "$warning_file"; then`,
+			`if ! rm -f "$warning_file"; then`,
+			"Every reporting primitive is nonblocking",
 			"then record `track-worktree:` and spawn.",
 		)
 	})
+}
+
+func TestDelegatedSetupReportingProcedureFailsOpen(t *testing.T) {
+	root := filepath.Join("..", "..")
+	block := delegatedSetupReportingBlock(t, filepath.Join(root,
+		"promptsrc/agent-teams/skills/dri/references/execution-shared.md"))
+
+	cases := []struct {
+		name       string
+		failure    string
+		fallback   string
+		noteCalled bool
+	}{
+		{name: "normal reporting", noteCalled: true},
+		{name: "mktemp failure", failure: "mktemp", fallback: "worktree-setup-report-warning", noteCalled: false},
+		{name: "warning-file write failure", failure: "write", fallback: "worktree-setup-report-warning", noteCalled: false},
+		{name: "visible display failure", failure: "cat", fallback: "worktree-setup-display-warning", noteCalled: true},
+		{name: "durable note failure", failure: "note", fallback: "worktree-setup-note-warning", noteCalled: true},
+		{name: "cleanup failure", failure: "cleanup", fallback: "worktree-setup-cleanup-warning", noteCalled: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runDelegatedSetupReportingProcedure(t, block, tc.failure)
+			if result.err != nil {
+				t.Fatalf("procedure exited nonzero: %v\n%s", result.err, result.output)
+			}
+			const normalized = `worktree-setup-warning: path="/tmp/track with spaces" hook="/tmp/hook with spaces" outcome="exit-1" lifecycle=continued`
+			if !strings.Contains(result.output, normalized) {
+				t.Errorf("normalized warning missing from output: %s", result.output)
+			}
+			if !strings.Contains(result.output, "TRACK-RECORDED") || !strings.Contains(result.output, "AGENT-SPAWNED") {
+				t.Errorf("reporting failure stopped track/spawn continuation: %s", result.output)
+			}
+			if tc.fallback != "" && !strings.Contains(result.output, tc.fallback) {
+				t.Errorf("fallback %q missing from output: %s", tc.fallback, result.output)
+			}
+			noteCalled := strings.Contains(result.calls, "note\n")
+			if noteCalled != tc.noteCalled {
+				t.Errorf("note called = %t, want %t; calls: %s", noteCalled, tc.noteCalled, result.calls)
+			}
+			if tc.failure == "" {
+				entries, err := os.ReadDir(result.scratch)
+				if err != nil {
+					t.Fatalf("read scratch directory: %v", err)
+				}
+				if len(entries) != 0 {
+					t.Errorf("successful reporting left temporary files: %v", entries)
+				}
+			}
+		})
+	}
+
+	t.Run("mktemp guard is mutation-proven", func(t *testing.T) {
+		mutated := strings.Replace(block, "if warning_file=$(mktemp); then", "warning_file=$(mktemp)\n  if false; then", 1)
+		if mutated == block {
+			t.Fatal("test fixture did not mutate the mktemp guard")
+		}
+		result := runDelegatedSetupReportingProcedure(t, mutated, "mktemp")
+		if result.err == nil {
+			t.Fatalf("unguarded mktemp mutation unexpectedly succeeded: %s", result.output)
+		}
+		if strings.Contains(result.output, "TRACK-RECORDED") {
+			t.Errorf("unguarded mktemp mutation continued unexpectedly: %s", result.output)
+		}
+	})
+}
+
+type delegatedReportingResult struct {
+	output  string
+	calls   string
+	scratch string
+	err     error
+}
+
+func runDelegatedSetupReportingProcedure(t *testing.T, block, failure string) delegatedReportingResult {
+	t.Helper()
+	temporary := t.TempDir()
+	bin := filepath.Join(temporary, "bin")
+	scratch := filepath.Join(temporary, "scratch")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("create fake bin: %v", err)
+	}
+	if err := os.Mkdir(scratch, 0o755); err != nil {
+		t.Fatalf("create scratch directory: %v", err)
+	}
+
+	writeExecutable(t, filepath.Join(bin, "ateam"), `#!/bin/sh
+printf '%s\n' "$1" >> "$CALL_LOG"
+case "$1" in
+  worktree-setup) exit 1 ;;
+  note) [ "$REPORT_FAILURE" = note ] && exit 1 ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(bin, "mktemp"), `#!/bin/sh
+case "$REPORT_FAILURE" in
+  mktemp) exit 1 ;;
+  write) printf '%s/missing/warning\n' "$TMPDIR"; exit 0 ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+`)
+	writeExecutable(t, filepath.Join(bin, "cat"), `#!/bin/sh
+[ "$REPORT_FAILURE" = cat ] && exit 1
+exec "$REAL_CAT" "$@"
+`)
+	writeExecutable(t, filepath.Join(bin, "rm"), `#!/bin/sh
+[ "$REPORT_FAILURE" = cleanup ] && exit 1
+exec "$REAL_RM" "$@"
+`)
+
+	script := "set -e\n" +
+		"track_worktree='/tmp/track with spaces'\n" +
+		"hook_path='/tmp/hook with spaces'\n" +
+		"outcome=exit-1\n" +
+		"initiative_id=initiative-123\n" +
+		block + "\nprintf 'TRACK-RECORDED\\n'\nprintf 'AGENT-SPAWNED\\n'\n"
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TMPDIR="+scratch,
+		"CALL_LOG="+filepath.Join(temporary, "calls"),
+		"REPORT_FAILURE="+failure,
+		"REAL_MKTEMP="+lookPath(t, "mktemp"),
+		"REAL_CAT="+lookPath(t, "cat"),
+		"REAL_RM="+lookPath(t, "rm"),
+	)
+	output, err := cmd.CombinedOutput()
+	calls, readErr := os.ReadFile(filepath.Join(temporary, "calls"))
+	if readErr != nil {
+		t.Fatalf("read fake ateam calls: %v", readErr)
+	}
+	return delegatedReportingResult{output: string(output), calls: string(calls), scratch: scratch, err: err}
+}
+
+func delegatedSetupReportingBlock(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read execution contract: %v", err)
+	}
+	const startMarker = "```sh\n"
+	start := strings.Index(string(body), startMarker)
+	if start < 0 {
+		t.Fatal("execution contract does not contain a shell block")
+	}
+	start += len(startMarker)
+	end := strings.Index(string(body)[start:], "\n```")
+	if end < 0 {
+		t.Fatal("execution contract shell block is unterminated")
+	}
+	return string(body)[start : start+end]
+}
+
+func lookPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("find %s: %v", name, err)
+	}
+	return path
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func assertPromptClauses(t *testing.T, root string, paths []string, clauses ...string) {
