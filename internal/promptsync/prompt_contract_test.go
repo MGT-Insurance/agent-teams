@@ -566,6 +566,48 @@ func windDownChecklist(body string) string {
 	return body
 }
 
+func TestWorktreeSetupPromptContract(t *testing.T) {
+	root := filepath.Join("..", "..")
+
+	t.Run("standalone semantics distinguish no hook from configured failure", func(t *testing.T) {
+		assertPromptClauses(t, root,
+			[]string{
+				"README.md",
+				"promptsrc/agent-teams/skills/setup-agent-teams/claude-runtime.md",
+				"plugins/agent-teams/skills/setup-agent-teams/SKILL.md",
+			},
+			"No registered hook is an exit-0 no-op",
+			"configured hook that is missing or fails",
+			"standalone `ateam worktree-setup` exit 1",
+		)
+		assertPromptOmits(t, root,
+			[]string{
+				"README.md",
+				"promptsrc/agent-teams/skills/setup-agent-teams/claude-runtime.md",
+				"plugins/agent-teams/skills/setup-agent-teams/SKILL.md",
+			},
+			"with no hook (or a configured script that is missing)",
+			"A missing or failing hook is non-fatal.",
+		)
+	})
+
+	t.Run("delegated setup captures failure without stopping the lifecycle", func(t *testing.T) {
+		paths := []string{
+			"promptsrc/agent-teams/skills/dri/references/execution-shared.md",
+			"plugins/agent-teams/skills/dri/references/execution.md",
+			"plugins/agent-teams-codex/skills/dri/references/execution.md",
+		}
+		assertPromptClauses(t, root, paths,
+			`ateam worktree-setup "$track_worktree" || setup_status=$?`,
+			`if [ "$setup_status" -ne 0 ]; then`,
+			`path="%s" hook="%s" outcome="%s" lifecycle=continued`,
+			`ateam note "$initiative_id" --file "$warning_file" ||`,
+			"A note failure is visibly reported but nonblocking.",
+			"then record `track-worktree:` and spawn.",
+		)
+	})
+}
+
 func assertPromptClauses(t *testing.T, root string, paths []string, clauses ...string) {
 	t.Helper()
 	for _, path := range paths {

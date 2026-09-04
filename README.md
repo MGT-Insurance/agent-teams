@@ -161,7 +161,7 @@ When an agent creates a fresh track worktree, gitignored files (env files, creds
 ateam worktree-setup [abs-worktree-path]   # defaults to cwd
 ```
 
-The hook is registered once per repo by dropping a file at `$AGENT_TEAMS_HOME/worktree-hooks/<repo-slug>` whose contents are the absolute path to the setup script; the reference implementation is `scripts/midgard-worktree-setup.sh`. A missing or failing hook is non-fatal.
+The hook is registered once per repo by dropping a file at `$AGENT_TEAMS_HOME/worktree-hooks/<repo-slug>` whose contents are the absolute path to the setup script; the reference implementation is `scripts/midgard-worktree-setup.sh`. No registered hook is an exit-0 no-op. A configured hook that is missing or fails is loud and makes standalone `ateam worktree-setup` exit 1; managed callers report that failure and continue their lifecycle.
 
 ## Development / Contributing
 
