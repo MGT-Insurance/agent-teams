@@ -375,30 +375,45 @@
     {
       "id": "skill.condense",
       "kind": "skill",
-      "status": "runtime-only",
-      "reason": "Claude conversation-condensation workflow depends on Claude session mechanics.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [
+        {"id": "claude", "path": "promptsrc/agent-teams/skills/condense/claude.md"},
+        {"id": "codex", "path": "promptsrc/agent-teams/skills/condense/codex.md"}
+      ],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown", "parts": ["claude"], "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/condense", "min_headroom": 600}},
+        {"path": "plugins/agent-teams-codex/skills/condense/SKILL.md", "format": "markdown", "parts": ["codex"], "skill_budget": {"base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/condense", "min_headroom": 4000}}
+      ]
     },
     {
       "id": "reference.condense.drain-ordering",
       "kind": "reference",
-      "status": "runtime-only",
-      "reason": "Reference supports only the Claude conversation-condensation workflow.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/references/drain-ordering.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/drain-ordering.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/drain-ordering.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/drain-ordering.md", "format": "markdown", "parts": ["shared"]}
+      ]
     },
     {
       "id": "reference.condense.recall-verification",
       "kind": "reference",
-      "status": "runtime-only",
-      "reason": "Reference supports only the Claude conversation-condensation workflow.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/references/recall-verification.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/recall-verification.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/recall-verification.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/recall-verification.md", "format": "markdown", "parts": ["shared"]}
+      ]
     },
     {
       "id": "reference.condense.trigger-design",
       "kind": "reference",
-      "status": "runtime-only",
-      "reason": "Reference supports only the Claude conversation-condensation workflow.",
-      "outputs": [{"path": "plugins/agent-teams/skills/condense/references/trigger-design.md", "format": "markdown"}]
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/trigger-design.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/trigger-design.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/trigger-design.md", "format": "markdown", "parts": ["shared"]}
+      ]
     },
     {
       "id": "skill.dispatch-review-pr",

@@ -152,9 +152,11 @@ On confirmed merge: `ateam clear-gate <id>`, then
 
 Follow [wind-down.md](references/wind-down.md). Remove only worktrees and
 processes created by this initiative, close or annotate project beads, push the
-project branch, run `ateam audit`, and `ateam sync`. A delivered but unmerged
-initiative remains open. End the turn; do not try to terminate the managed
-Codex daemon or your own thread.
+project branch, run `ateam audit`, and `ateam sync`. After contributing durable
+learnings, invoke `agent-teams-codex:condense` with no role argument, then
+record the final initiative note and end the turn. A delivered but unmerged
+initiative remains open. Do not try to terminate the managed Codex daemon or
+your own thread.
 
 ## Memory routing
 
