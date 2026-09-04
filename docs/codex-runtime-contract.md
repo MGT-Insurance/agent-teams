@@ -32,11 +32,17 @@ The selected deployment contract is:
 - A short-lived per-initiative delivery coordinator serializes state
   inspection and one delivery decision. It uses `turn/steer` for the actual
   active turn, or `thread/resume` plus `turn/start` when idle/not loaded.
+- `ateam mail send` invokes that coordinator. For Codex, it is the only active
+  delivery and wake authority; there is no background Codex mail watcher.
 - Codex owns turn lifetime. Client death does not stop an active turn. Daemon
   death makes that turn interrupted; a later coordinator restarts the daemon,
   resumes the same thread, and retries still-unread durable mail.
 - Beads unread messages remain the delivery truth. An accepted JSON-RPC call,
   thread status, or completed model turn does not itself acknowledge mail.
+
+This current contract supersedes the lifecycle spikes' former hook-delivery
+conclusion. Those historical spike documents remain historical evidence and
+are not rewritten by this amendment.
 
 The managed daemon detached under parent PID 1, treated duplicate start as
 idempotent, drained an active turn during supported stop, and recovered the
@@ -274,8 +280,8 @@ Interface semantics:
 
 The delivery-coordinator implementation may extend the internal app-server
 client with list, interrupt, and completion observation. Public dispatch,
-resume, mail, and hook paths request coordination; they do not construct
-app-server requests themselves.
+resume, and mail paths request coordination; they do not construct app-server
+requests themselves. Codex lifecycle hooks do not request coordination.
 
 ## 4. Machine-local delivery state
 
@@ -360,8 +366,10 @@ The durable-message-first behavior remains unchanged:
 3. It requests a runtime-neutral wake for the target initiative.
 
 For Claude, wake delegates to the existing watcher/respawn behavior. For
-Codex, wake invokes a delivery attempt. A busy lock is success: durable mail
-and the doorbell remain pending for the winning or next coordinator.
+Codex, that wake invokes the app-server delivery coordinator. This coordinator
+is the only Codex active-delivery and wake authority. A busy lock is success:
+durable mail and the doorbell remain pending for the winning or next
+coordinator.
 
 The Codex coordinator performs:
 
@@ -375,7 +383,8 @@ otherwise: turn/start
 record the delivery observation, then release the lock
 ```
 
-Notifications, later senders, and optional thin hooks cover race windows:
+Later senders and the coordinator's durable-state reconciliation cover race
+windows:
 
 - Mail arriving during an active turn is delivered with `turn/steer`.
 - Mail arriving after a turn becomes idle starts a new turn.
@@ -403,6 +412,11 @@ Consequences:
 - a failed resume leaves mail retriable;
 - a client or daemon crash does not acknowledge mail; and
 - relayed and Telegram-originated messages use the same send/wake path.
+
+Sender-side doorbell creation and inbox-side reconciliation remain owned by the
+existing messaging domain. Codex lifecycle hooks never wake, steer, start,
+block, acknowledge, create, clear, or repair a doorbell; the hook adapter does
+not access `$AGENT_TEAMS_HOME/mailbox/*.wake`.
 
 An initiative that is closed, abandoned, or at an unresolved human gate is
 not blindly resumed. The doorbell and unread mail remain visible; status
@@ -433,9 +447,10 @@ ateam runtime stop <initiative-id>
 - Monitoring instructions come from `Adapter.Controls`, so dispatch and resume
   output contains no hard-coded Claude commands for a Codex initiative.
 
-An internal delivery entry point may be added for hooks and senders. It is not
-a skill-facing API and may change as long as serialization and durable-mail
-semantics above remain intact.
+An internal delivery entry point may be added for senders. It is not a
+skill-facing API and may change as long as serialization and durable-mail
+semantics above remain intact. Codex lifecycle hooks use only their separate
+session-binding and cold-catch-up surface.
 
 ## 8. Lifecycle and role startup boundaries
 
@@ -452,9 +467,21 @@ Each Codex role definition must, in its own startup instructions:
 4. use durable Beads/mail for handoff rather than assuming a persistent child
    thread.
 
-Hooks remain optional optimization and lifecycle glue. The mail Stop hook must
-be thin: inspect delivery state, request at most one continuation, and leave
-durable consumption to `ateam mail inbox`.
+The Codex plugin retains exactly one mail/lifecycle adapter invocation: a
+`SessionStart` hook with matcher `startup|resume|clear|compact`.
+`ensure-ateam-link.sh` remains in that `SessionStart` hook group. The manifest
+contains no `UserPromptSubmit` or `Stop` entry, and
+`user-prompt-submit` and `stop` are not supported `ateam codex-hook` event
+arguments.
+
+For every retained `SessionStart` invocation, the adapter resolves the Codex
+initiative from the session first, with cwd fallback, and attempts the existing
+idempotent `session:` binding. The adapter has no doorbell-repair dependency
+and does not deliver or wake mail. Only payload
+`source=startup` or `source=resume` queries unread mail and may return
+`SessionStart` `additionalContext` instructing `ateam mail inbox`. For
+`clear`, `compact`, a missing source, or an unknown source, the adapter still
+binds but neither queries unread mail nor injects mail context.
 
 ## 9. Ownership map
 
@@ -466,7 +493,9 @@ durable consumption to `ateam mail inbox`.
 | Durable messages and doorbell reconciliation | existing messaging domain |
 | Dispatch/resume/status/stop orchestration | CLI verbs using adapter registry and coordinator |
 | Managed lifecycle, app-server protocol, event parsing | Codex adapter/client |
-| Stop continuation decision | thin Codex lifecycle hook |
+| Active Codex mail delivery and wake | app-server delivery coordinator invoked by `ateam mail send` |
+| Sender doorbell creation; inbox doorbell reconciliation | existing messaging domain |
+| SessionStart session binding and source-scoped cold catch-up | Codex lifecycle adapter |
 | Role memory freshness and assignment reconstruction | Codex role definitions themselves |
 
 Skills invoke public `ateam` commands. They do not read runtime JSON, inspect
@@ -505,6 +534,19 @@ except where an explicit manual spike is noted:
     their existing behavior.
 18. Codex role startup succeeds without SubagentStart by pulling and fetching
     its own learnings.
+19. In a fresh session with the integrated plugin installed, a uniquely tagged
+    `ateam mail send` to the bound Codex initiative produces exactly one
+    app-server unread-mail user prompt and a real `ateam mail inbox`
+    consumption/read marker.
+20. That direct-delivery proof records no duplicate hook-generated developer
+    reminder and no hook-created follow-up turn when the turn stops.
+21. A SessionStart `startup` or `resume` invocation binds and can provide the
+    unread-mail `additionalContext`; `clear`, `compact`, missing, and unknown
+    sources bind without an unread query or injected mail context.
+22. Manifest and unit tests prove that the retained `SessionStart` surface has
+    no `UserPromptSubmit` or `Stop` registration, that the adapter has no
+    doorbell-repair dependency, and that it does not access
+    `$AGENT_TEAMS_HOME/mailbox/*.wake`.
 
 ## 11. Explicit non-goals for this slice
 
