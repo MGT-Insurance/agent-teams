@@ -1,0 +1,2 @@
+
+**Do not "normalize" the two forms above.** `learn` takes `cold:<slug>` while `forget` takes a bare `<slug>` for the same cold entry — that reads like an inconsistency and is not one (`instruction_contract` carries the mechanism). The two errors are not symmetric: adding `cold:` to `forget` fails loudly with `No memory with key` and exit 1, but dropping `cold:` from `learn` **succeeds silently into the wrong tier**, writing a new fresh duplicate and leaving the stale cold entry in place. Only one of these edits announces itself.

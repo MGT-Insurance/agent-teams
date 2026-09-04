@@ -1,0 +1,2 @@
+
+> **STATED ASSUMPTION — the fresh-tier trigger is complete only because normal contribution routes to fresh; a direct `hot:` write bypasses it invisibly.** `ateam learn <role> hot:<slug>` writes straight to hot, bypassing fresh entirely — a first-class, publicly documented affordance, not an internal path, so nothing in the CLI restricts it to condense. The gate holds by convention, not by construction: add a code path that writes `hot:` directly and you have silently broken it, with no failure to observe. Full mechanism and code pointers: references/trigger-design.md.

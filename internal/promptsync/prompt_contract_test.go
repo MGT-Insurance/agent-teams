@@ -143,6 +143,7 @@ func TestCodexCondenseContract(t *testing.T) {
 	}
 
 	skill := promptEntry(t, entries, "skill.condense")
+	assertCondenseSharedOperationalPart(t, skill)
 	codexSkill := outputForRuntime(t, skill, "codex")
 	if codexSkill.Path == "" {
 		// The paired surface is the prerequisite for the remaining rendered and
@@ -191,14 +192,14 @@ func TestCodexCondenseOrderingGuardRejectsDrainBeforeBatch(t *testing.T) {
 	fixture := strings.Join([]string{
 		"ateam condense <role>",
 		"ateam learn <role> hot:<slug> --file <file>",
-		"Only after the complete hot batch and cleanup, you MUST drain fresh:",
+		"Run it HERE, once the hot set has been written.",
 		"ateam fresh-drain <role>",
 	}, "\n")
 	if err := condenseOrderingError(fixture); err != nil {
 		t.Fatalf("control fixture rejected: %v", err)
 	}
 
-	mutated := strings.Replace(fixture, "ateam learn <role> hot:<slug> --file <file>\nOnly after the complete hot batch and cleanup, you MUST drain fresh:\nateam fresh-drain <role>", "ateam fresh-drain <role>\nOnly after the complete hot batch and cleanup, you MUST drain fresh:\nateam learn <role> hot:<slug> --file <file>", 1)
+	mutated := strings.Replace(fixture, "ateam learn <role> hot:<slug> --file <file>\nRun it HERE, once the hot set has been written.\nateam fresh-drain <role>", "ateam fresh-drain <role>\nRun it HERE, once the hot set has been written.\nateam learn <role> hot:<slug> --file <file>", 1)
 	if err := condenseOrderingError(mutated); err == nil {
 		t.Fatal("drain-before-batch mutation was accepted")
 	}
@@ -305,18 +306,17 @@ func assertCodexCondenseMain(t *testing.T, label, body string) {
 		"ateam condense-lock acquire",
 		"code 5",
 		"ateam condense-lock release",
-		"release it on every success and error exit",
-		"run this once after acquiring the lock",
+		"Release in ALL exit paths (success and error)",
 		"ateam condense-check",
-		"It is read-only, owns the verdict",
-		"Never recompute its threshold",
-		"excludes `user` and `applied`",
+		"That single read-only call enumerates every learning role",
+		"Defer to the printed verdict. Do NOT recompute it.",
+		"skipping `user` and `applied` unconditionally",
 		"user",
 		"applied",
 		"PURE READ",
-		"Design the complete hot set before writing",
-		"Only after the complete hot batch and cleanup, you MUST drain fresh",
-		"if over, merge and repeat rather than report success",
+		"do not create any `<role>:hot:*` key until the full hot set is decided",
+		"Run it HERE, once the hot set has been written",
+		"If the role is still over budget, **iterate — do not accept-and-report**",
 		"<role>: promoted N / merged M / evicted K / hot now X tokens / hot∪fresh Y tokens",
 		"MEMORY.md",
 		"Codex harness memory",
@@ -341,10 +341,55 @@ func condenseOrderingError(body string) error {
 	if packet >= batch || batch >= drain {
 		return fmt.Errorf("want packet before full batch write before drain (positions %d, %d, %d)", packet, batch, drain)
 	}
-	if !strings.Contains(body, "Only after the complete hot batch and cleanup, you MUST drain fresh") {
+	if !strings.Contains(body, "Run it HERE, once the hot set has been written") {
 		return fmt.Errorf("missing explicit drain-after-batch rule")
 	}
 	return nil
+}
+
+func assertCondenseSharedOperationalPart(t *testing.T, entry Entry) {
+	t.Helper()
+	inputs := make(map[string]Input, len(entry.Inputs))
+	for _, input := range entry.Inputs {
+		inputs[input.ID] = input
+	}
+	claude := outputForRuntime(t, entry, "claude")
+	codex := outputForRuntime(t, entry, "codex")
+	shared := make(map[string]bool)
+	for _, part := range claude.Parts {
+		if strings.HasPrefix(part, "shared-") {
+			shared[part] = true
+		}
+	}
+	for _, part := range []string{
+		"shared-single-role",
+		"shared-gate",
+		"shared-packet-order",
+		"shared-packet-semantics",
+		"shared-design-order",
+		"shared-promotion",
+		"shared-apply",
+		"shared-drain",
+		"shared-verify",
+	} {
+		if !shared[part] || !containsPart(codex.Parts, part) {
+			t.Errorf("Claude and Codex condense outputs must both consume shared operational part %q", part)
+			continue
+		}
+		input := inputs[part]
+		if !strings.Contains(input.Path, "/shared-") {
+			t.Errorf("shared condense part %q has non-shared source %q", part, input.Path)
+		}
+	}
+}
+
+func containsPart(parts []string, want string) bool {
+	for _, part := range parts {
+		if part == want {
+			return true
+		}
+	}
+	return false
 }
 
 func skillMeasurement(report Report, path string) (SkillMeasurement, bool) {
