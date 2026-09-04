@@ -591,6 +591,21 @@ func TestWorktreeSetupPromptContract(t *testing.T) {
 		)
 	})
 
+	t.Run("setup distinguishes managed fresh worktrees from on-demand usage", func(t *testing.T) {
+		paths := []string{
+			"promptsrc/agent-teams/skills/setup-agent-teams/claude-runtime.md",
+			"plugins/agent-teams/skills/setup-agent-teams/SKILL.md",
+		}
+		assertPromptClauses(t, root, paths,
+			"Manual usage and pre-existing or resumed worktrees remain on-demand.",
+			"every fresh agent-teams-managed primary or delegated worktree gets a mandatory automatic setup attempt before its agent runs Node tooling",
+			"a failed attempt is reported and does not block the later managed lifecycle.",
+		)
+		assertPromptOmits(t, root, paths,
+			"It is invoked on-demand, not on every worktree.",
+		)
+	})
+
 	t.Run("delegated setup captures failure without stopping the lifecycle", func(t *testing.T) {
 		paths := []string{
 			"promptsrc/agent-teams/skills/dri/references/execution-shared.md",
