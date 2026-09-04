@@ -16,6 +16,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -179,6 +180,123 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(capturedBody, "runtime: claude\n") {
 		t.Errorf("new dispatch must persist its concrete default runtime:\n%s", capturedBody)
+	}
+}
+
+func TestDispatch_WorktreeSetupFailureContinuesLifecycle(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtime    string
+		noLaunch   bool
+		idOnly     bool
+		outcome    string
+		wantLaunch bool
+	}{
+		{name: "claude missing hook", outcome: "missing", wantLaunch: true},
+		{name: "codex failed hook", runtime: "codex", outcome: "exit-42", wantLaunch: true},
+		{name: "no launch missing hook", noLaunch: true, idOnly: true, outcome: "missing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			repoDir := newEnabledRepoDir(t)
+			slug := "setup-order"
+			wtPath := filepath.Join(home+"-worktrees", slug)
+			result := worktreeSetupResult{Path: wtPath, Hook: "/configured/setup.sh", Outcome: tt.outcome}
+			warning := result.warningLine()
+			var events []string
+			var body string
+			var removed bool
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				events = append(events, "register")
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--body-file=") {
+						data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+						if err != nil {
+							return err
+						}
+						body = string(data)
+					}
+				}
+				issue := dst.(*bd.Issue)
+				issue.ID = "at-setup-order"
+				issue.Title = "setup order"
+				return nil
+			}}
+			fg := &fakeGit{
+				repoRootFn: func(string) (string, error) { return repoDir, nil },
+				addWorktreeFn: func(_, _, _, _ string) error {
+					events = append(events, "add-worktree")
+					return nil
+				},
+				removeWorktreeFn: func(_, _ string) error {
+					removed = true
+					return nil
+				},
+			}
+			ctx, stdout, stderr := makeCtx(fbd, home)
+			cmd := &dispatchKong{
+				Problem:  "setup order",
+				Slug:     slug,
+				Repo:     repoDir,
+				Runtime:  tt.runtime,
+				NoLaunch: tt.noLaunch,
+				IDOnly:   tt.idOnly,
+				git:      fg,
+				setup: func(_ *cli.Context, gotPath string) (worktreeSetupResult, error) {
+					if gotPath != wtPath {
+						t.Fatalf("setup path = %q, want %q", gotPath, wtPath)
+					}
+					events = append(events, "setup")
+					return result, &cli.SilentError{Code: 1}
+				},
+				createEpic: func(_, _ string) (string, error) {
+					events = append(events, "epic")
+					return "project-epic", nil
+				},
+				transportEnabled: func(string) bool { return true },
+				transportFor: func(string) (transport.Transport, error) {
+					events = append(events, "transport")
+					return &fakeTransport{returnRef: "setup-topic"}, nil
+				},
+				labelAdd: func(cli.BDRunner, string, string) error {
+					events = append(events, "topic-recorded")
+					return nil
+				},
+				launch: func(*cli.Context, string, string, string, string) error {
+					events = append(events, "launch")
+					return nil
+				},
+				runtimeStart: func(*cli.Context, runtimeStartRequest) error {
+					events = append(events, "launch")
+					return nil
+				},
+			}
+
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("dispatch should continue after configured hook failure: %v", err)
+			}
+			wantEvents := []string{"add-worktree", "setup", "epic", "register", "transport", "topic-recorded"}
+			if tt.wantLaunch {
+				wantEvents = append(wantEvents, "launch")
+			}
+			if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
+				t.Fatalf("lifecycle order = %v, want %v", events, wantEvents)
+			}
+			if removed {
+				t.Fatal("configured setup failure must retain the worktree")
+			}
+			if !strings.Contains(stderr.String(), "WARNING") || !strings.Contains(stderr.String(), warning) {
+				t.Fatalf("stderr must contain loud normalized warning %q:\n%s", warning, stderr.String())
+			}
+			if !strings.Contains(body, warning) {
+				t.Fatalf("registered initiative body missing normalized warning %q:\n%s", warning, body)
+			}
+			if tt.idOnly && stdout.String() != "at-setup-order\n" {
+				t.Fatalf("--id-only stdout = %q, want initiative id only", stdout.String())
+			}
+		})
 	}
 }
 
@@ -590,6 +708,7 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	repoDir := newEnabledRepoDir(t)
 
 	var removedRepo, removedWt string
+	setupRan := false
 	fg := &fakeGit{
 		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
 		removeWorktreeFn: func(repoRoot, wtPath string) error {
@@ -612,7 +731,11 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		setup: func(_ *cli.Context, _ string) (worktreeSetupResult, error) {
+			setupRan = true
+			return worktreeSetupResult{}, nil
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -630,6 +753,9 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	}
 	if removedRepo != repoDir {
 		t.Errorf("RemoveWorktree called with repo=%q, want %q", removedRepo, repoDir)
+	}
+	if !setupRan {
+		t.Error("successful setup must run before an independent registration failure")
 	}
 }
 

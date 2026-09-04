@@ -50,10 +50,31 @@ type worktreeSetupKong struct {
 	WtPath string `arg:"" name:"wtPath" optional:"" help:"Worktree path (defaults to cwd)."`
 }
 
+// worktreeSetupResult describes a configured hook failure without requiring a
+// caller to parse human-facing stderr. Empty Hook and Outcome mean no
+// configured-hook failure occurred.
+type worktreeSetupResult struct {
+	Path    string
+	Hook    string
+	Outcome string
+}
+
+func (r worktreeSetupResult) warningLine() string {
+	return fmt.Sprintf("worktree-setup-warning: path=%q hook=%q outcome=%q lifecycle=continued", r.Path, r.Hook, r.Outcome)
+}
+
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
+	_, err := c.run(ctx)
+	return err
+}
+
+// run is shared by the standalone verb and primary dispatch. It preserves the
+// standalone diagnostics while exposing configured-hook failures structurally
+// to dispatch, which must record them without parsing those diagnostics.
+func (c *worktreeSetupKong) run(ctx *cli.Context) (worktreeSetupResult, error) {
 	if ctx == nil {
-		return fmt.Errorf("ateam worktree-setup: not implemented")
+		return worktreeSetupResult{}, fmt.Errorf("ateam worktree-setup: not implemented")
 	}
 
 	wtPath := c.WtPath
@@ -61,21 +82,21 @@ func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
 		var err error
 		wtPath, err = os.Getwd()
 		if err != nil {
-			return fmt.Errorf("worktree-setup: cannot determine cwd: %w", err)
+			return worktreeSetupResult{}, fmt.Errorf("worktree-setup: cannot determine cwd: %w", err)
 		}
 	}
 	absWtPath, err := filepath.Abs(wtPath)
 	if err != nil {
-		return fmt.Errorf("worktree-setup: cannot resolve path %q: %w", wtPath, err)
+		return worktreeSetupResult{}, fmt.Errorf("worktree-setup: cannot resolve path %q: %w", wtPath, err)
 	}
 	wtPath = absWtPath
 
 	if _, err := c.git.RepoRoot(wtPath); err != nil {
-		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
+		return worktreeSetupResult{}, cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
 	}
 	commonDir, err := c.git.CommonDir(wtPath)
 	if err != nil {
-		return cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
+		return worktreeSetupResult{}, cli.Usagef("worktree-setup: not a git worktree: %s", wtPath)
 	}
 	srcCheckout := filepath.Dir(commonDir)
 
@@ -85,14 +106,14 @@ func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
 	data, err := os.ReadFile(hookFile)
 	if err != nil {
 		fmt.Fprintf(ctx.Stdout, "no worktree-setup hook configured for %s\n", repoKey)
-		return nil
+		return worktreeSetupResult{}, nil
 	}
 
 	scriptPath := strings.TrimSpace(string(data))
 
 	if _, statErr := os.Stat(scriptPath); statErr != nil {
 		loudHookWarning(ctx.Stderr, scriptPath, -1, "script not found at configured path")
-		return nil
+		return worktreeSetupResult{Path: wtPath, Hook: scriptPath, Outcome: "missing"}, &cli.SilentError{Code: 1}
 	}
 
 	runErr := c.runner(scriptPath, []string{wtPath, srcCheckout}, ctx.Stdout, ctx.Stderr)
@@ -106,9 +127,9 @@ func (c *worktreeSetupKong) Run(ctx *cli.Context) error {
 		// so main does not print a second, near-duplicate line. Exit 1 marks the
 		// worktree as possibly-not-provisioned without colliding with the usage
 		// (2) / dep (3) / workspace (4) exit codes.
-		return &cli.SilentError{Code: 1}
+		return worktreeSetupResult{Path: wtPath, Hook: scriptPath, Outcome: fmt.Sprintf("exit-%d", exitCode)}, &cli.SilentError{Code: 1}
 	}
-	return nil
+	return worktreeSetupResult{}, nil
 }
 
 // loudHookWarning writes a clearly-marked multi-line warning to w. exitCode -1

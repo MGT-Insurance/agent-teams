@@ -223,7 +223,7 @@ func TestWorktreeSetup_ScriptFails(t *testing.T) {
 
 	// A hook that ran and failed must propagate as a nonzero exit — the
 	// worktree may not be fully provisioned.
-	err := cmd.Run(ctx)
+	result, err := cmd.run(ctx)
 	if err == nil {
 		t.Fatal("expected non-nil error when hook script exits nonzero, got nil")
 	}
@@ -231,6 +231,13 @@ func TestWorktreeSetup_ScriptFails(t *testing.T) {
 	// usage-error path's exit 2, and silent so main does not double-print.
 	if code := cli.ExitCode(err); code != 1 {
 		t.Errorf("expected exit 1, got %d", code)
+	}
+	absWtDir, absErr := filepath.Abs(wtDir)
+	if absErr != nil {
+		t.Fatalf("abs worktree path: %v", absErr)
+	}
+	if result.Path != absWtDir || result.Hook != scriptPath || result.Outcome != "exit-42" {
+		t.Fatalf("failed-hook result = %+v, want path=%q hook=%q outcome=exit-42", result, absWtDir, scriptPath)
 	}
 
 	errOut := stderr.String()
@@ -265,8 +272,19 @@ func TestWorktreeSetup_ConfiguredScriptMissing(t *testing.T) {
 	ctx, _, stderr := makeWTCtx(home)
 	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("expected nil (missing script is non-fatal), got: %v", err)
+	result, err := cmd.run(ctx)
+	if err == nil {
+		t.Fatal("expected configured missing script to return exit 1")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Fatalf("configured missing script exit code = %d, want 1", code)
+	}
+	absWtDir, err := filepath.Abs(wtDir)
+	if err != nil {
+		t.Fatalf("abs worktree path: %v", err)
+	}
+	if result.Path != absWtDir || result.Hook != missingScript || result.Outcome != "missing" {
+		t.Fatalf("missing-hook result = %+v, want path=%q hook=%q outcome=missing", result, absWtDir, missingScript)
 	}
 
 	errOut := stderr.String()

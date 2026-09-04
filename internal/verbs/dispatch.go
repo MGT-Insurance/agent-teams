@@ -41,6 +41,7 @@ func RegisterDispatchKong(p *cli.Parser) {
 		prTitle:          defaultPRTitle,
 		runtimeStart:     startRuntimeWorker,
 		codexCheck:       sessionruntime.RequireCompatibleCodex,
+		setup:            runWorktreeSetup,
 	})
 	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
 		launch:       launchBGSession,
@@ -144,6 +145,7 @@ type dispatchKong struct {
 	launchRaw    rawLaunchFunc                       `kong:"-"`
 	runtimeStart runtimeStartFunc                    `kong:"-"`
 	codexCheck   func(context.Context, string) error `kong:"-"`
+	setup        worktreeSetupFunc                   `kong:"-"`
 
 	// transportFor, transportEnabled, and labelAdd back the eager Telegram
 	// (or configured transport) topic creation below. Injected at
@@ -161,6 +163,25 @@ type dispatchKong struct {
 	// its title segment, which is the same fail-soft outcome as a failed
 	// fetch.
 	prTitle prTitleFunc `kong:"-"`
+}
+
+// worktreeSetupFunc is the injected dispatch seam for the shared
+// worktree-setup implementation. It returns a populated result only for a
+// configured hook that could not be provisioned.
+type worktreeSetupFunc func(*cli.Context, string) (worktreeSetupResult, error)
+
+// runWorktreeSetup reuses the standalone verb implementation while keeping
+// setup status and hook stdout out of dispatch stdout. In particular, --id-only
+// must print only the initiative id; setup warnings and diagnostics belong on
+// stderr.
+func runWorktreeSetup(ctx *cli.Context, wtPath string) (worktreeSetupResult, error) {
+	setupCtx := *ctx
+	setupCtx.Stdout = io.Discard
+	return (&worktreeSetupKong{
+		git:    gitutil.New(),
+		runner: defaultCmdRunner,
+		WtPath: wtPath,
+	}).run(&setupCtx)
 }
 
 // codexDRIPrompt names the installed skill explicitly. Codex exposes plugin
@@ -279,7 +300,22 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("dispatch: %w", err)
 	}
 
-	// 7. Register the initiative via bd.
+	// 7. Attempt setup before every later primary lifecycle side effect. A
+	// configured hook failure is reported and durably recorded, but intentionally
+	// does not undo the new worktree or block registration, topic creation, or
+	// launch. Unexpected setup precondition errors remain dispatch errors.
+	var setupWarning string
+	if c.setup != nil {
+		if result, setupErr := c.setup(ctx, wtPath); setupErr != nil {
+			if result.Outcome == "" {
+				return fmt.Errorf("dispatch: worktree setup: %w", setupErr)
+			}
+			setupWarning = result.warningLine()
+			fmt.Fprintf(ctx.Stderr, "dispatch: WARNING: worktree setup failed; lifecycle continues\n%s\n", setupWarning)
+		}
+	}
+
+	// 8. Register the initiative via bd.
 	team := gitutil.Slugify(filepath.Base(repoRoot)) + "-" + resolvedSlug
 	shortTitle := c.Problem
 	if len(shortTitle) > 72 {
@@ -322,6 +358,9 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("dispatch: %w", err)
 	}
 	body := plan.Description
+	if setupWarning != "" {
+		body += "\n" + setupWarning + "\n"
+	}
 
 	if c.BodyFile != "" {
 		extra, err := os.ReadFile(c.BodyFile)
@@ -386,14 +425,14 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		}
 	}
 
-	// 7.5. Eagerly create the initiative's Telegram topic (fail-soft): best-
+	// 8.5. Eagerly create the initiative's Telegram topic (fail-soft): best-
 	// effort, mirrors the epic-creation fail-soft above. A machine with no
 	// transport configured, or any error along the way, must not fail dispatch.
 	if c.transportEnabled != nil && c.transportFor != nil && c.labelAdd != nil {
 		c.createInitialTopic(ctx, issue, body)
 	}
 
-	// 8. Launch background DRI unless --no-launch.
+	// 9. Launch background DRI unless --no-launch.
 	if !c.NoLaunch {
 		if runtimeKind == sessionruntime.Codex {
 			prompt := c.LaunchPrompt
@@ -434,7 +473,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		}
 	}
 
-	// 9. Output.
+	// 10. Output.
 	if c.IDOnly {
 		fmt.Fprintln(ctx.Stdout, issue.ID)
 		return nil
@@ -828,7 +867,7 @@ Default to ateam learn. Use bd remember only for repo-shared project facts. Neve
 const driGuardrails = "DRI HARD GUARDRAILS (floor — re-invoke the /dri skill to restore full guidance):\n" +
 	"- If the /dri skill is not in your context (after compaction), re-invoke it via the Skill tool BEFORE any orchestration action.\n" +
 	"- You ORCHESTRATE; never implement and never run live verification yourself — delegate to role subagents.\n" +
-	"- This checkout IS your isolation: never EnterWorktree, never dirty it. Provision delegate worktrees via `ateam worktree-setup`, never a hand-rolled script.\n" +
+	"- This checkout IS your isolation: never EnterWorktree, never dirty it. For every delegated worktree: create it, attempt `ateam worktree-setup <absolute-path>` to completion, report any failure (echo and durable initiative note), record the track, then spawn; setup/report failure is fail-open, so continue and include the warning in the spawn brief. Never use a hand-rolled script.\n" +
 	"- Never merge without explicit human confirmation; leave delivered work OPEN and review-gated.\n" +
 	"- Work beads live in the project repo under the epic; the global workspace (ateam) is initiative tracking only."
 
