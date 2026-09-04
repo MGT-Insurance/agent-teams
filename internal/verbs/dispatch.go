@@ -846,8 +846,10 @@ const driSystemPromptAppend = memoryRoutingRule + "\n\n" + driGuardrails
 // not change the context window. The suffix is a second route to the same
 // window, and it does not survive the one case that really does clamp to 200000
 // (long-context credits exhausted), so it buys nothing here.
-// Kept as a constant so this default and the export-plugin-options.sh hook
-// default cannot drift apart (tests/hook-export-plugin-options.test.sh).
+// Kept as a constant so this default stays in sync with the mirrored
+// claudeDriModelDefault literal in internal/workspaceconfig/config.go
+// (config.go:39-43) — that package keeps its own separate literal rather than
+// importing internal/verbs, so the two constants must be updated together.
 const driDefaultModel = "claude-opus-4-8"
 
 // bgSessionEnv is the "env" map merged into a background session's --settings
