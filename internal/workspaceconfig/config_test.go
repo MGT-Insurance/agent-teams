@@ -70,6 +70,122 @@ func TestAutoCompactWindowSelection(t *testing.T) {
 	}
 }
 
+func TestUseAdvisorsSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *string
+		want    bool
+		wantSet bool
+	}{
+		{name: "missing file", want: false, wantSet: false},
+		{name: "empty document", content: stringPointer(""), want: false, wantSet: false},
+		{name: "missing key", content: stringPointer("work_runtime = \"codex\"\n"), want: false, wantSet: false},
+		{name: "configured true", content: stringPointer("use_advisors = true\n"), want: true, wantSet: true},
+		{name: "configured false", content: stringPointer("use_advisors = false\n"), want: false, wantSet: true},
+		{name: "coexists with other keys", content: stringPointer("work_runtime = \"codex\"\nauto_compact_window = 300000\nuse_advisors = true\n"), want: true, wantSet: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tt.content != nil {
+				writeConfig(t, home, *tt.content)
+			}
+			got, set, err := UseAdvisors(home)
+			if err != nil {
+				t.Fatalf("UseAdvisors() error = %v", err)
+			}
+			if got != tt.want || set != tt.wantSet {
+				t.Fatalf("UseAdvisors() = %v, %v; want %v, %v", got, set, tt.want, tt.wantSet)
+			}
+		})
+	}
+}
+
+func TestUseAdvisorsRejectsInvalidStrictDocument(t *testing.T) {
+	tests := []struct {
+		name, content, wantContext string
+	}{
+		{name: "malformed TOML", content: "use_advisors = [", wantContext: "use_advisors"},
+		{name: "unknown key", content: "advisors = true\n", wantContext: "advisors"},
+		{name: "table", content: "[use_advisors]\nvalue = true\n", wantContext: "use_advisors"},
+		{name: "wrong type", content: "use_advisors = \"true\"\n", wantContext: "use_advisors"},
+		{name: "invalid unrelated key", content: "use_advisors = true\nwork_runtime = \"other\"\n", wantContext: "work_runtime"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := writeConfig(t, home, tt.content)
+			_, _, err := UseAdvisors(home)
+			if err == nil {
+				t.Fatal("UseAdvisors() must reject invalid config")
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tt.wantContext) {
+				t.Fatalf("error %q must contain path %q and context %q", err, path, tt.wantContext)
+			}
+		})
+	}
+}
+
+func TestClaudeDriModelSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *string
+		want    string
+		wantSet bool
+	}{
+		{name: "missing file", want: claudeDriModelDefault, wantSet: false},
+		{name: "empty document", content: stringPointer(""), want: claudeDriModelDefault, wantSet: false},
+		{name: "missing key", content: stringPointer("work_runtime = \"codex\"\n"), want: claudeDriModelDefault, wantSet: false},
+		{name: "configured", content: stringPointer("claude_dri_model = \"claude-sonnet-4-5\"\n"), want: "claude-sonnet-4-5", wantSet: true},
+		{name: "coexists with other keys", content: stringPointer("work_runtime = \"codex\"\nuse_advisors = true\nclaude_dri_model = \"claude-sonnet-4-5\"\n"), want: "claude-sonnet-4-5", wantSet: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tt.content != nil {
+				writeConfig(t, home, *tt.content)
+			}
+			got, set, err := ClaudeDriModel(home)
+			if err != nil {
+				t.Fatalf("ClaudeDriModel() error = %v", err)
+			}
+			if got != tt.want || set != tt.wantSet {
+				t.Fatalf("ClaudeDriModel() = %q, %v; want %q, %v", got, set, tt.want, tt.wantSet)
+			}
+		})
+	}
+}
+
+func TestClaudeDriModelRejectsInvalidStrictDocument(t *testing.T) {
+	tests := []struct {
+		name, content, wantContext string
+	}{
+		{name: "malformed TOML", content: "claude_dri_model = [", wantContext: "claude_dri_model"},
+		{name: "unknown key", content: "dri_model = \"claude-opus-4-8\"\n", wantContext: "dri_model"},
+		{name: "table", content: "[claude_dri_model]\nvalue = \"claude-opus-4-8\"\n", wantContext: "claude_dri_model"},
+		{name: "empty value", content: "claude_dri_model = \"\"\n", wantContext: "claude_dri_model"},
+		{name: "wrong type", content: "claude_dri_model = 1\n", wantContext: "claude_dri_model"},
+		{name: "invalid unrelated key", content: "claude_dri_model = \"claude-opus-4-8\"\nwork_runtime = \"other\"\n", wantContext: "work_runtime"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := writeConfig(t, home, tt.content)
+			_, _, err := ClaudeDriModel(home)
+			if err == nil {
+				t.Fatal("ClaudeDriModel() must reject invalid config")
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tt.wantContext) {
+				t.Fatalf("error %q must contain path %q and context %q", err, path, tt.wantContext)
+			}
+		})
+	}
+}
+
 func TestRuntimeDefaultRejectsInvalidStrictDocument(t *testing.T) {
 	tests := []struct {
 		name, content, wantContext string
