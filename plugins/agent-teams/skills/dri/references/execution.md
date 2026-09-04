@@ -13,7 +13,7 @@ print_setup_warning() {
 }
 
 setup_status=0
-ateam worktree-setup "$track_worktree" || setup_status=$?
+ateam worktree-setup "$track_worktree" > /dev/null 2>&1 || setup_status=$?
 if [ "$setup_status" -ne 0 ]; then
   if warning_file=$(mktemp); then
     if print_setup_warning > "$warning_file"; then

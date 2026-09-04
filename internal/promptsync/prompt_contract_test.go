@@ -617,7 +617,7 @@ func TestWorktreeSetupPromptContract(t *testing.T) {
 			"plugins/agent-teams-codex/skills/dri/references/execution.md",
 		}
 		assertPromptClauses(t, root, paths,
-			`ateam worktree-setup "$track_worktree" || setup_status=$?`,
+			`ateam worktree-setup "$track_worktree" > /dev/null 2>&1 || setup_status=$?`,
 			`if [ "$setup_status" -ne 0 ]; then`,
 			`path="%s" hook="%s" outcome="%s" lifecycle=continued`,
 			`if warning_file=$(mktemp); then`,
@@ -655,6 +655,11 @@ func TestDelegatedSetupReportingProcedureFailsOpen(t *testing.T) {
 			result := runDelegatedSetupReportingProcedure(t, block, tc.failure)
 			if result.err != nil {
 				t.Fatalf("procedure exited nonzero: %v\n%s", result.err, result.output)
+			}
+			for _, marker := range setupSecretMarkers {
+				if strings.Contains(result.output, marker) {
+					t.Errorf("worktree setup output leaked marker %q into procedure output: %s", marker, result.output)
+				}
 			}
 			const normalized = `worktree-setup-warning: path="/tmp/track with spaces" hook="/tmp/hook with spaces" outcome="exit-1" lifecycle=continued`
 			if !strings.Contains(result.output, normalized) {
@@ -695,7 +700,34 @@ func TestDelegatedSetupReportingProcedureFailsOpen(t *testing.T) {
 			t.Errorf("unguarded mktemp mutation continued unexpectedly: %s", result.output)
 		}
 	})
+
+	t.Run("setup output redaction is mutation-proven", func(t *testing.T) {
+		mutated := strings.Replace(block,
+			`ateam worktree-setup "$track_worktree" > /dev/null 2>&1 || setup_status=$?`,
+			`ateam worktree-setup "$track_worktree" || setup_status=$?`, 1)
+		if mutated == block {
+			t.Fatal("test fixture did not mutate the setup output redirection")
+		}
+		result := runDelegatedSetupReportingProcedure(t, mutated, "")
+		if result.err != nil {
+			t.Fatalf("unredirected setup mutation exited nonzero: %v\n%s", result.err, result.output)
+		}
+		if !setupSecretsLeaked(result.output) {
+			t.Errorf("unredirected setup mutation unexpectedly hid hook output: %s", result.output)
+		}
+	})
 }
+
+func setupSecretsLeaked(output string) bool {
+	for _, marker := range setupSecretMarkers {
+		if strings.Contains(output, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+var setupSecretMarkers = []string{"SETUP-STDOUT-SECRET", "SETUP-STDERR-SECRET"}
 
 type delegatedReportingResult struct {
 	output  string
@@ -719,7 +751,11 @@ func runDelegatedSetupReportingProcedure(t *testing.T, block, failure string) de
 	writeExecutable(t, filepath.Join(bin, "ateam"), `#!/bin/sh
 printf '%s\n' "$1" >> "$CALL_LOG"
 case "$1" in
-  worktree-setup) exit 1 ;;
+  worktree-setup)
+    printf '%s\n' 'SETUP-STDOUT-SECRET'
+    printf '%s\n' 'SETUP-STDERR-SECRET' >&2
+    exit 1
+    ;;
   note) [ "$REPORT_FAILURE" = note ] && exit 1 ;;
 esac
 `)
