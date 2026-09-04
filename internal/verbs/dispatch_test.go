@@ -1591,105 +1591,156 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 	}
 }
 
-// ---- driAdvisorSettings: env-reading helper --------------------------------
+// ---- driAdvisorSettings: config.toml-reading helper ------------------------
 
-// TestDriAdvisorSettings verifies driAdvisorSettings() returns ("sonnet",
-// driModel) only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true",
-// and (driModel, "") for every other value, including unset, empty, "false",
-// and any casing/value other than the exact string "true". driModel comes
-// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "claude-opus-4-8" when unset or
-// empty. Cases with an explicit non-default dri_model ("haiku") in both the
-// advisor-on and advisor-off branches prove the env var actually threads
-// through, not just the default.
+// TestDriAdvisorSettings verifies driAdvisorSettings(home) returns ("sonnet",
+// claudeDriModel) only when config.toml's use_advisors key is true, and
+// (claudeDriModel, "") otherwise — including when config.toml is absent
+// entirely, which must resolve to the hardcoded defaults (claude-opus-4-8,
+// no advisor) with NO env involved. Cases with an explicit non-default
+// claude_dri_model ("haiku") in both the advisor-on and advisor-off branches
+// prove the config key actually threads through, not just the default.
 func TestDriAdvisorSettings(t *testing.T) {
-	const advisorsKey = "CLAUDE_PLUGIN_OPTION_USE_ADVISORS"
-	const modelKey = "CLAUDE_PLUGIN_OPTION_DRI_MODEL"
-
 	cases := []struct {
-		name           string
-		setAdvisorsEnv bool
-		advisorsValue  string
-		setModelEnv    bool
-		modelValue     string
-		wantModel      string
-		wantAdvisor    string
+		name        string
+		config      string // "" means no config.toml file at all
+		wantModel   string
+		wantAdvisor string
 	}{
-		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "claude-opus-4-8"},
-		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "true_nondefault_model", setAdvisorsEnv: true, advisorsValue: "true", setModelEnv: true, modelValue: "haiku", wantModel: "sonnet", wantAdvisor: "haiku"},
-		{name: "false_nondefault_model", setAdvisorsEnv: true, advisorsValue: "false", setModelEnv: true, modelValue: "haiku", wantModel: "haiku", wantAdvisor: ""},
+		{name: "absent_config_defaults", config: "", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "advisors_true_default_model", config: "use_advisors = true\n", wantModel: "sonnet", wantAdvisor: "claude-opus-4-8"},
+		{name: "advisors_false_default_model", config: "use_advisors = false\n", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "advisors_true_nondefault_model", config: "use_advisors = true\nclaude_dri_model = \"haiku\"\n", wantModel: "sonnet", wantAdvisor: "haiku"},
+		{name: "advisors_false_nondefault_model", config: "use_advisors = false\nclaude_dri_model = \"haiku\"\n", wantModel: "haiku", wantAdvisor: ""},
+		{name: "model_only_no_advisors_key", config: "claude_dri_model = \"haiku\"\n", wantModel: "haiku", wantAdvisor: ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setAdvisorsEnv {
-				t.Setenv(advisorsKey, tc.advisorsValue)
-			} else {
-				// Ensure the var is unset for this subtest, in case the outer
-				// test process inherited it from the environment.
-				t.Setenv(advisorsKey, "")
-				os.Unsetenv(advisorsKey)
-			}
-			if tc.setModelEnv {
-				t.Setenv(modelKey, tc.modelValue)
-			} else {
-				// Ensure the var is unset for this subtest, in case the outer
-				// test process inherited it from the environment.
-				t.Setenv(modelKey, "")
-				os.Unsetenv(modelKey)
+			home := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 
-			gotModel, gotAdvisor := driAdvisorSettings()
+			gotModel, gotAdvisor, err := driAdvisorSettings(home)
+			if err != nil {
+				t.Fatalf("driAdvisorSettings(%q) unexpected error: %v", home, err)
+			}
 			if gotModel != tc.wantModel || gotAdvisor != tc.wantAdvisor {
-				t.Errorf("driAdvisorSettings() = (%q, %q), want (%q, %q)", gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
+				t.Errorf("driAdvisorSettings(%q) = (%q, %q), want (%q, %q)", home, gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
 			}
 		})
 	}
 }
 
-// ---- driAutoCompactWindow: env-reading helper ------------------------------
+// TestDriAdvisorSettings_InvalidConfigPropagatesError verifies a malformed
+// config.toml surfaces as an error rather than silently falling back to
+// defaults — readers must never swallow a reader error (agent-teams-qox8.2).
+func TestDriAdvisorSettings_InvalidConfigPropagatesError(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := driAdvisorSettings(home); err == nil {
+		t.Fatal("driAdvisorSettings: want error for invalid config.toml, got nil")
+	}
+}
 
-// TestDriAutoCompactWindow verifies driAutoCompactWindow() returns
-// CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW verbatim — empty when unset, and
-// unmodified otherwise, including a non-numeric CLI shorthand and the literal
-// "auto". The helper must NOT reject or normalize any value: validation is
-// the claude CLI's job (bgSessionArgs), not this helper's.
+// ---- driAutoCompactWindow: config.toml-reading helper ----------------------
+
+// TestDriAutoCompactWindow verifies driAutoCompactWindow(home) resolves
+// config.toml's auto_compact_window key (a positive integer token count) to
+// its decimal string form, and returns "" when the key or the file is
+// absent — the unchanged empty-default contract. No env var is read at all:
+// the free-form CLI shorthand ("500k", "auto") the old env-backed helper
+// passed through verbatim no longer applies, since config.toml only ever
+// carries a plain positive int64.
 func TestDriAutoCompactWindow(t *testing.T) {
-	const key = "CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW"
-
 	cases := []struct {
 		name   string
-		setEnv bool
-		value  string
+		config string // "" means no config.toml file at all
 		want   string
 	}{
-		{name: "unset", setEnv: false, want: ""},
-		{name: "empty", setEnv: true, value: "", want: ""},
-		{name: "numeric", setEnv: true, value: "450000", want: "450000"},
-		{name: "shorthand", setEnv: true, value: "500k", want: "500k"},
-		{name: "literal_auto", setEnv: true, value: "auto", want: "auto"},
-		{name: "non_numeric_garbage", setEnv: true, value: "banana", want: "banana"},
+		{name: "absent_config", config: "", want: ""},
+		{name: "configured", config: "auto_compact_window = 450000\n", want: "450000"},
+		{name: "regression_witness_300k", config: "auto_compact_window = 300000\n", want: "300000"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setEnv {
-				t.Setenv(key, tc.value)
-			} else {
-				// Ensure the var is unset for this subtest, in case the outer
-				// test process inherited it from the environment.
-				t.Setenv(key, "")
-				os.Unsetenv(key)
+			home := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 
-			if got := driAutoCompactWindow(); got != tc.want {
-				t.Errorf("driAutoCompactWindow() = %q, want %q", got, tc.want)
+			got, err := driAutoCompactWindow(home)
+			if err != nil {
+				t.Fatalf("driAutoCompactWindow(%q) unexpected error: %v", home, err)
+			}
+			if got != tc.want {
+				t.Errorf("driAutoCompactWindow(%q) = %q, want %q", home, got, tc.want)
 			}
 		})
 	}
+}
+
+// TestDriAutoCompactWindow_InvalidConfigPropagatesError verifies a malformed
+// config.toml surfaces as an error rather than silently resolving to "".
+func TestDriAutoCompactWindow_InvalidConfigPropagatesError(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driAutoCompactWindow(home); err == nil {
+		t.Fatal("driAutoCompactWindow: want error for invalid config.toml, got nil")
+	}
+}
+
+// TestDriAutoCompactWindow_RegressionWitness_ArgvCarriesFormattedTokens is the
+// end-to-end regression witness (agent-teams-qox8.2): a bare, no-env temp
+// home whose config.toml sets auto_compact_window = 300000 must produce
+// "--autocompact 300000" (strconv.FormatInt of the configured int) in BOTH
+// the dispatch producer's argv (bgSessionArgs) and the steward producer's
+// argv (stewardLaunchArgs) — proving config.toml alone, with no plugin-option
+// env var present, drives the flag on a bare-terminal launch.
+func TestDriAutoCompactWindow_RegressionWitness_ArgvCarriesFormattedTokens(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("auto_compact_window = 300000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	window, err := driAutoCompactWindow(home)
+	if err != nil {
+		t.Fatalf("driAutoCompactWindow(%q) unexpected error: %v", home, err)
+	}
+	if window != "300000" {
+		t.Fatalf("driAutoCompactWindow(%q) = %q, want %q", home, window, "300000")
+	}
+
+	dispatchArgs := bgSessionArgs("sess", "/dri at-abc", "", "", "", "", "{}", window)
+	if !argvContainsSequence(dispatchArgs, "--autocompact", "300000") {
+		t.Errorf("bgSessionArgs argv missing \"--autocompact 300000\": %v", dispatchArgs)
+	}
+
+	stewardArgs := stewardLaunchArgs(window)
+	if !argvContainsSequence(stewardArgs, "--autocompact", "300000") {
+		t.Errorf("stewardLaunchArgs argv missing \"--autocompact 300000\": %v", stewardArgs)
+	}
+}
+
+// argvContainsSequence reports whether args contains flag immediately
+// followed by value at some position i, i+1.
+func argvContainsSequence(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- parseAutoCompactWindowTokens: value parser ---------------------------

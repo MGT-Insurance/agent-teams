@@ -108,14 +108,10 @@ func TestRuntimeWorkerResolvesCodexAutoCompactWindowPrecedence(t *testing.T) {
 	tests := []struct {
 		name       string
 		config     string
-		explicit   string
 		wantWindow *int64
 	}{
 		{name: "unset"},
 		{name: "workspace config", config: "auto_compact_window = 300000\n", wantWindow: testInt64Pointer(300000)},
-		{name: "environment wins", config: "auto_compact_window = 300000\n", explicit: "400k", wantWindow: testInt64Pointer(400000)},
-		{name: "environment shorthand wins", config: "auto_compact_window = 300000\n", explicit: "500", wantWindow: testInt64Pointer(500000)},
-		{name: "environment auto suppresses workspace", config: "auto_compact_window = 300000\n", explicit: "auto"},
 	}
 
 	for _, tt := range tests {
@@ -131,7 +127,6 @@ func TestRuntimeWorkerResolvesCodexAutoCompactWindowPrecedence(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				t.Setenv(autoCompactWindowEnv, tt.explicit)
 
 				var captured sessionruntime.Request
 				calls := 0
@@ -175,9 +170,8 @@ func TestRuntimeWorkerResolvesCodexAutoCompactWindowPrecedence(t *testing.T) {
 
 func TestRuntimeWorkerRejectsInvalidAutoCompactWindowBeforeAdapter(t *testing.T) {
 	tests := []struct {
-		name, config, explicit, wantContext string
+		name, config, wantContext string
 	}{
-		{name: "invalid environment", config: "auto_compact_window = 300000\n", explicit: "banana", wantContext: autoCompactWindowEnv},
 		{name: "invalid workspace config", config: "auto_compact_window = 0\n", wantContext: "auto_compact_window"},
 	}
 
@@ -188,7 +182,6 @@ func TestRuntimeWorkerRejectsInvalidAutoCompactWindowBeforeAdapter(t *testing.T)
 			if err := os.WriteFile(path, []byte(tt.config), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			t.Setenv(autoCompactWindowEnv, tt.explicit)
 			calls := 0
 			adapter := fakeRuntimeAdapter{
 				launchFn: func(sessionruntime.Request, sessionruntime.SessionSink) error {
@@ -211,7 +204,7 @@ func TestRuntimeWorkerRejectsInvalidAutoCompactWindowBeforeAdapter(t *testing.T)
 			if err == nil || !strings.Contains(err.Error(), tt.wantContext) {
 				t.Fatalf("Run error = %v, want context %q", err, tt.wantContext)
 			}
-			if tt.explicit == "" && !strings.Contains(err.Error(), path) {
+			if !strings.Contains(err.Error(), path) {
 				t.Fatalf("Run error = %v, want config path %q", err, path)
 			}
 			if calls != 0 {

@@ -868,9 +868,9 @@ type bgSessionEnv struct {
 //
 // autoCompactWindow ALSO rides here now (agent-teams-4pc5.3), not only as the
 // claude CLI's own --autocompact flag (still appended to argv by bgSessionArgs
-// whenever CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW is non-empty — see
-// driAutoCompactWindow). Both are needed, for two independent reasons proven
-// empirically on real claimed-spare bg sessions:
+// whenever the resolved window is non-empty — see driAutoCompactWindow, which
+// reads config.toml's auto_compact_window key). Both are needed, for two
+// independent reasons proven empirically on real claimed-spare bg sessions:
 //
 //  1. Most bg launches are served by the daemon's pre-warmed spare pool
 //     (`claude bg-spare`), not a fresh exec from this argv. A claimed spare's
@@ -1088,40 +1088,54 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON,
 	return append(args, prompt)
 }
 
-// driAdvisorSettings reads CLAUDE_PLUGIN_OPTION_USE_ADVISORS and
-// CLAUDE_PLUGIN_OPTION_DRI_MODEL and returns the (model, advisor) pair for DRI
-// session launches. CLAUDE_PLUGIN_OPTION_DRI_MODEL (default driDefaultModel
-// when unset or empty — the hook that publishes this var defaults it to the
-// same value, so the two layers agree) is the "strong model" slot: when
-// advisors are enabled (the env var is exactly "true"), it becomes the advisor
-// model and the DRI session worker stays "sonnet"; when advisors are disabled —
-// any other value (unset, "", "false", or anything not exactly "true") — it
-// becomes the DRI session's own model and there is no advisor. Unit testable
-// via t.Setenv.
+// driAdvisorSettings reads config.toml's use_advisors and claude_dri_model
+// keys (workspaceconfig.UseAdvisors / workspaceconfig.ClaudeDriModel) and
+// returns the (model, advisor) pair for DRI session launches. claude_dri_model
+// (default claude-opus-4-8 when absent from config.toml — ClaudeDriModel's own
+// hardcoded default) is the "strong model" slot: when advisors are enabled
+// (use_advisors is true), it becomes the advisor model and the DRI session
+// worker stays "sonnet"; when advisors are disabled (the config.toml default),
+// it becomes the DRI session's own model and there is no advisor. Any reader
+// error (e.g. a malformed config.toml) is propagated, never swallowed — same
+// precedent as workspaceconfig.RuntimeDefault's callers (dispatchKong.Run) and
+// resolveCodexAutoCompactWindow's use of workspaceconfig.AutoCompactWindow.
 // Only launchBGSession (the /dri path) calls this; the raw --launch-prompt
-// path does not read these env vars — it defaults to advisor "" unless the
+// path does not read config.toml here — it defaults to advisor "" unless the
 // caller explicitly passes --advisor (dispatchKong.Advisor).
-func driAdvisorSettings() (model, advisor string) {
-	driModel := os.Getenv("CLAUDE_PLUGIN_OPTION_DRI_MODEL")
-	if driModel == "" {
-		driModel = driDefaultModel
+func driAdvisorSettings(home string) (model, advisor string, err error) {
+	driModel, _, err := workspaceconfig.ClaudeDriModel(home)
+	if err != nil {
+		return "", "", err
 	}
-	if os.Getenv("CLAUDE_PLUGIN_OPTION_USE_ADVISORS") == "true" {
-		return "sonnet", driModel
+	useAdvisors, _, err := workspaceconfig.UseAdvisors(home)
+	if err != nil {
+		return "", "", err
 	}
-	return driModel, ""
+	if useAdvisors {
+		return "sonnet", driModel, nil
+	}
+	return driModel, "", nil
 }
 
-// driAutoCompactWindow reads CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW and
-// returns it verbatim — empty when unset, unparsed and unvalidated otherwise.
-// The claude CLI's own --autocompact flag (bgSessionArgs) owns validation;
-// see bgSessionSettings for why this helper must not duplicate it. Unlike
+// driAutoCompactWindow reads config.toml's auto_compact_window key
+// (workspaceconfig.AutoCompactWindow) and returns it formatted as a decimal
+// string — empty when the key is absent, strconv.FormatInt(v, 10) otherwise.
+// The claude CLI's own --autocompact flag (bgSessionArgs) owns validation of
+// the resulting string; see bgSessionSettings for why this helper must not
+// duplicate it. Any reader error is propagated, never swallowed, mirroring
+// resolveCodexAutoCompactWindow's handling of the same config key. Unlike
 // driAdvisorSettings, this is read by rawLaunchBGSession rather than
 // launchBGSession, so it covers every session this producer launches,
-// including the raw --launch-prompt path, not just /dri. Unit testable via
-// t.Setenv.
-func driAutoCompactWindow() string {
-	return os.Getenv("CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW")
+// including the raw --launch-prompt path, not just /dri.
+func driAutoCompactWindow(home string) (string, error) {
+	window, configured, err := workspaceconfig.AutoCompactWindow(home)
+	if err != nil {
+		return "", err
+	}
+	if !configured {
+		return "", nil
+	}
+	return strconv.FormatInt(window, 10), nil
 }
 
 // launchFunc is the function type for launching a background DRI session.
@@ -1164,8 +1178,12 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, ini
 	if err != nil {
 		return fmt.Errorf("ateam: build --agents payload: %w", err)
 	}
+	autoCompactWindow, err := driAutoCompactWindow(ctx.Home)
+	if err != nil {
+		return fmt.Errorf("ateam: %w", err)
+	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, driAutoCompactWindow())
+	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, autoCompactWindow)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout
@@ -1184,7 +1202,10 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, ini
 // through here, per the advisor-mode-toggle contract (agent-teams-wvx2.1).
 // role and initiativeID flow straight through to --settings.
 func launchBGSession(ctx *cli.Context, dir, driArg, role, initiativeID string) error {
-	model, advisor := driAdvisorSettings()
+	model, advisor, err := driAdvisorSettings(ctx.Home)
+	if err != nil {
+		return fmt.Errorf("ateam: %w", err)
+	}
 	return rawLaunchBGSession(ctx, dir, "/dri "+driArg, model, advisor, role, initiativeID)
 }
 
