@@ -155,7 +155,7 @@ A local, single-user web UI for watching every initiative on the machine — an 
 
 ## Worktree setup hooks
 
-When an agent creates a fresh track worktree, gitignored files (env files, creds, local config) are not present. Most work doesn't need them. When a worktree does need live env (running a dev server, creds-dependent validation), run:
+Manual usage and pre-existing or resumed worktrees remain on-demand. By contrast, every fresh agent-teams-managed primary or delegated worktree gets a mandatory automatic setup attempt before its agent runs Node tooling; a failed attempt is reported and does not block the later managed lifecycle. Gitignored files (env files, creds, local config) are not present in a fresh worktree:
 
 ```bash
 ateam worktree-setup [abs-worktree-path]   # defaults to cwd

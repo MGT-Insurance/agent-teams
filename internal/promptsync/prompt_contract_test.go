@@ -593,6 +593,7 @@ func TestWorktreeSetupPromptContract(t *testing.T) {
 
 	t.Run("setup distinguishes managed fresh worktrees from on-demand usage", func(t *testing.T) {
 		paths := []string{
+			"README.md",
 			"promptsrc/agent-teams/skills/setup-agent-teams/claude-runtime.md",
 			"plugins/agent-teams/skills/setup-agent-teams/SKILL.md",
 		}
@@ -603,6 +604,8 @@ func TestWorktreeSetupPromptContract(t *testing.T) {
 		)
 		assertPromptOmits(t, root, paths,
 			"It is invoked on-demand, not on every worktree.",
+			"Most work doesn't need them.",
+			"When a worktree does need live env",
 		)
 	})
 
