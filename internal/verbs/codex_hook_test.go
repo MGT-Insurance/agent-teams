@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -15,12 +16,12 @@ func TestCodexHookSessionStartTiesAllSourcesAndSurfacesUnreadOnlyOnColdCatchup(t
 		name        string
 		sourceJSON  string
 		wantUnread  bool
-		wantContext bool
+		wantContext string
 	}{
-		{name: "startup", sourceJSON: `,"source":"startup"`, wantUnread: true, wantContext: true},
-		{name: "resume", sourceJSON: `,"source":"resume"`, wantUnread: true, wantContext: true},
+		{name: "startup", sourceJSON: `,"source":"startup"`, wantUnread: true, wantContext: "You have 1 unread agent-teams message(s). Run `ateam mail inbox` now and act on every message."},
+		{name: "resume", sourceJSON: `,"source":"resume"`, wantUnread: true, wantContext: "You have 1 unread agent-teams message(s). Run `ateam mail inbox` now and act on every message."},
 		{name: "clear", sourceJSON: `,"source":"clear"`},
-		{name: "compact", sourceJSON: `,"source":"compact"`},
+		{name: "compact", sourceJSON: `,"source":"compact"`, wantContext: driGuardrails},
 		{name: "missing"},
 		{name: "unknown", sourceJSON: `,"source":"unknown"`},
 	} {
@@ -51,13 +52,28 @@ func TestCodexHookSessionStartTiesAllSourcesAndSurfacesUnreadOnlyOnColdCatchup(t
 			if got := unread == 1; got != tc.wantUnread {
 				t.Fatalf("unread called = %v, want %v", got, tc.wantUnread)
 			}
-			if got := strings.Contains(stdout.String(), "ateam mail inbox"); got != tc.wantContext {
-				t.Fatalf("output = %s", stdout.String())
+			var output codexHookOutput
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+				t.Fatalf("decode output: %v\n%s", err, stdout.String())
 			}
-			if tc.wantContext && !strings.Contains(stdout.String(), `"hookEventName":"SessionStart"`) {
-				t.Fatalf("output = %s, want SessionStart hook-specific context", stdout.String())
+			gotContext := ""
+			if output.HookSpecificOutput != nil {
+				if output.HookSpecificOutput.HookEventName != "SessionStart" {
+					t.Fatalf("hook event = %q, want SessionStart", output.HookSpecificOutput.HookEventName)
+				}
+				gotContext = output.HookSpecificOutput.AdditionalContext
+			}
+			if gotContext != tc.wantContext {
+				t.Fatalf("additional context = %q, want %q", gotContext, tc.wantContext)
 			}
 		})
+	}
+}
+
+func TestCodexHookCompactGuardrailsFitAdditionalContextLimit(t *testing.T) {
+	const additionalContextLimit = 1000
+	if got := len(driGuardrails); got > additionalContextLimit {
+		t.Fatalf("compact guardrails are %d bytes, exceeding the configured %d-byte AdditionalContext limit", got, additionalContextLimit)
 	}
 }
 
