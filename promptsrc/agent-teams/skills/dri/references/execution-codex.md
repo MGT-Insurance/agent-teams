@@ -20,6 +20,7 @@ Every prompt includes:
 - instructions to load `ateam learnings <role>` and
   `ateam instructions <role>`;
 - project work beads must use `--parent <EPIC_ID>`;
+- the normalized `worktree-setup-warning` when the DRI's required pre-spawn setup attempt failed;
 - report through the final response; urgent blockers may message the parent.
 
 Wait for the child, then independently inspect its Beads, commits, diff, and
@@ -33,9 +34,12 @@ The DRI never changes its session cwd. Create track worktrees below
 when available, and operate through absolute paths or `git -C` / `bd -C`.
 Never create independent clones.
 
-Append `track-worktree: <absolute-path>` to the initiative before spawning its
-implementer. Provision live environment only when needed, through
-`ateam worktree-setup <absolute-path>`.
+Immediately after creating every fresh track worktree, attempt the exact command
+`ateam worktree-setup <absolute-path>` to completion. Follow the shared
+execution contract's fail-open reporting procedure when it exits nonzero, then
+append `track-worktree: <absolute-path>` to the initiative and spawn its
+implementer. Never call a project setup script directly or install dependencies
+before this attempt; the registered hook owns dependency installation.
 
 Implementers never push, merge, or deploy. The DRI inspects and integrates,
 preferring `git merge --ff-only <track-branch>`. The tester owns edge cases and

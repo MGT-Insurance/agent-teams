@@ -166,13 +166,13 @@ A local, single-user web UI for watching every initiative on the machine — an 
 
 ## Worktree setup hooks
 
-When an agent creates a fresh track worktree, gitignored files (env files, creds, local config) are not present. Most work doesn't need them. When a worktree does need live env (running a dev server, creds-dependent validation), run:
+Manual usage and pre-existing or resumed worktrees remain on-demand. By contrast, every fresh agent-teams-managed primary or delegated worktree gets a mandatory automatic setup attempt before its agent runs Node tooling; a failed attempt is reported and does not block the later managed lifecycle. Gitignored files (env files, creds, local config) are not present in a fresh worktree:
 
 ```bash
 ateam worktree-setup [abs-worktree-path]   # defaults to cwd
 ```
 
-The hook is registered once per repo by dropping a file at `$AGENT_TEAMS_HOME/worktree-hooks/<repo-slug>` whose contents are the absolute path to the setup script; the reference implementation is `scripts/midgard-worktree-setup.sh`. A missing or failing hook is non-fatal.
+The hook is registered once per repo by dropping a file at `$AGENT_TEAMS_HOME/worktree-hooks/<repo-slug>` whose contents are the absolute path to the setup script; the reference implementation is `scripts/midgard-worktree-setup.sh`. No registered hook is an exit-0 no-op. A configured hook that is missing or fails is loud and makes standalone `ateam worktree-setup` exit 1; managed callers report that failure and continue their lifecycle.
 
 ## Development / Contributing
 

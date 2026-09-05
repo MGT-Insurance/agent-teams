@@ -103,8 +103,10 @@ specified. A pivot always invalidates any earlier gate skip.
 Follow [execution.md](references/execution.md). In short:
 
 1. Assign each implementation track to a fresh `agent-teams-implementer` in an
-   isolated git worktree, based on the approved contract commit. Record every
-   track worktree on the initiative before spawning.
+   isolated git worktree, based on the approved contract commit. Before every
+   spawn, complete the required `ateam worktree-setup <absolute-path>` attempt
+   and fail-open reporting procedure, then record the track worktree on the
+   initiative.
 2. Every spawn uses `fork_turns="none"` and carries all durable identifiers,
    paths, bead ids, ownership boundaries, verification expectations, and the
    instruction to return via its final response. Do not pass a model override;
@@ -152,9 +154,11 @@ On confirmed merge: `ateam clear-gate <id>`, then
 
 Follow [wind-down.md](references/wind-down.md). Remove only worktrees and
 processes created by this initiative, close or annotate project beads, push the
-project branch, run `ateam audit`, and `ateam sync`. A delivered but unmerged
-initiative remains open. End the turn; do not try to terminate the managed
-Codex daemon or your own thread.
+project branch, run `ateam audit`, and `ateam sync`. After contributing durable
+learnings, invoke `agent-teams-codex:condense` with no role argument, then
+record the final initiative note and end the turn. A delivered but unmerged
+initiative remains open. Do not try to terminate the managed Codex daemon or
+your own thread.
 
 ## Memory routing
 

@@ -11,7 +11,8 @@
 6. Run `ateam audit`, then `ateam sync`.
 7. Route any durable learning through `ateam learn` or `bd remember`, never a
    harness memory file.
-8. Record the final initiative note. Leave delivered work open until merge;
+8. Invoke `agent-teams-codex:condense` with no role argument.
+9. Record the final initiative note. Leave delivered work open until merge;
    on merge clear its gate before closing it.
-9. End the turn. Do not stop the managed app-server daemon or delete the Codex
+10. End the turn. Do not stop the managed app-server daemon or delete the Codex
    thread.
