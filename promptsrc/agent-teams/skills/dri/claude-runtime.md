@@ -1,7 +1,7 @@
 
 # Consulting your advisor
 
-If `${user_config.use_advisors}` is `true`, consult per references/advisor.md; otherwise decide every call yourself.
+If `use_advisors = true` in config.toml, consult per references/advisor.md; otherwise decide every call yourself.
 
 # Setup
 

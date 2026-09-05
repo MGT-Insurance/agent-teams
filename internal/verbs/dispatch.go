@@ -134,7 +134,7 @@ type dispatchKong struct {
 	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
 	Model        string `name:"model"         help:"Model override for the background session (Claude default: claude-opus-4-8; Codex default: user config)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
-	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, env-derived for the /dri path)."`
+	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, config.toml-derived for the /dri path)."`
 	Topic        string `name:"topic"         help:"Post the registration line into a reserved shared topic (only \"reviews\") instead of opening a per-initiative topic. No thread: label is written on the initiative bead."`
 	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
@@ -1200,8 +1200,9 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, ini
 // driArg and delegates to rawLaunchBGSession. Reads driAdvisorSettings() to
 // decide whether the session runs sonnet+opus-advisor (use_advisors enabled)
 // or the default opus-only. This is the ONLY launch path that reads the
-// advisor env var — dispatch /dri, new-initiative, and resume all flow
-// through here, per the advisor-mode-toggle contract (agent-teams-wvx2.1).
+// advisor settings from config.toml — dispatch /dri, new-initiative, and
+// resume all flow through here, per the advisor-mode-toggle contract
+// (agent-teams-wvx2.1).
 // role and initiativeID flow straight through to --settings.
 func launchBGSession(ctx *cli.Context, dir, driArg, role, initiativeID string) error {
 	model, advisor, err := driAdvisorSettings(ctx.Home)
