@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Agent memory landscape recommendation</title>
+  <style>
+
+    :root {
+      color-scheme: light;
+      --page: #f1f3f2;
+      --paper: #ffffff;
+      --ink: #18201d;
+      --muted: #5d6762;
+      --line: #d7ddda;
+      --strong-line: #aeb9b3;
+      --green: #176b52;
+      --green-bg: #e9f4ef;
+      --amber: #835c0b;
+      --amber-bg: #fff5d8;
+      --red: #9b322b;
+      --red-bg: #fff0ee;
+      --blue: #285c85;
+      --blue-bg: #edf5fb;
+      --code-bg: #f4f6f5;
+      --max: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font: 16px/1.58 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--green); text-underline-offset: 0.16em; }
+    code, kbd {
+      padding: 0.1rem 0.3rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--code-bg);
+      font: 0.88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    pre {
+      overflow-x: auto;
+      margin: 1rem 0;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--code-bg);
+      font: 0.84rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      gap: 2rem;
+      width: min(var(--max), calc(100% - 2rem));
+      margin: 0 auto;
+      padding: 1.5rem 0 4rem;
+    }
+    nav {
+      position: sticky;
+      top: 1rem;
+      align-self: start;
+      max-height: calc(100vh - 2rem);
+      overflow: auto;
+      padding: 1rem 0;
+      border-top: 3px solid var(--green);
+    }
+    nav strong {
+      display: block;
+      margin-bottom: 0.65rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    nav ol { margin: 0; padding: 0; list-style: none; }
+    nav li { margin: 0.18rem 0; }
+    nav a {
+      display: block;
+      padding: 0.25rem 0.35rem;
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.3;
+      text-decoration: none;
+    }
+    nav a:hover, nav a:focus-visible { background: var(--green-bg); color: var(--ink); }
+
+    main {
+      min-width: 0;
+      padding: clamp(1.25rem, 4vw, 3.75rem);
+      border: 1px solid var(--line);
+      background: var(--paper);
+    }
+    header { padding-bottom: 2rem; border-bottom: 1px solid var(--strong-line); }
+    .kicker {
+      margin: 0 0 0.65rem;
+      color: var(--green);
+      font-size: 0.8rem;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 19ch;
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 3.6rem);
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+    .lede { max-width: 72ch; margin: 1.1rem 0 0; color: var(--muted); font-size: 1.08rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-top: 1.25rem; color: var(--muted); font-size: 0.84rem; }
+    .status {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border: 1px solid #dfbd60;
+      border-radius: 4px;
+      background: var(--amber-bg);
+      color: var(--amber);
+      font-weight: 750;
+    }
+
+    section { padding-top: 2.7rem; }
+    h2 {
+      margin: 0 0 1rem;
+      padding-bottom: 0.45rem;
+      border-bottom: 1px solid var(--line);
+      font-size: 1.55rem;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    h3 { margin: 1.7rem 0 0.55rem; font-size: 1.08rem; line-height: 1.3; letter-spacing: 0; }
+    p { margin: 0.75rem 0; }
+    ul, ol { padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    .compact li { margin: 0.2rem 0; }
+
+    .notice, .question, .candidate {
+      margin: 1rem 0;
+      padding: 0.9rem 1rem;
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+      border-radius: 6px;
+    }
+    .notice { border-left-color: var(--amber); background: var(--amber-bg); }
+    .question { border-left-color: var(--blue); background: var(--blue-bg); }
+    .candidate { border-left-color: var(--green); background: var(--green-bg); }
+    .candidate h3, .question h3 { margin-top: 0; }
+    .label {
+      display: inline-block;
+      margin-bottom: 0.35rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .grid-2, .grid-3 {
+      display: grid;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .panel {
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper);
+    }
+    .panel h3 { margin-top: 0; }
+
+    .table-wrap { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.7rem 0.75rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--code-bg); font-size: 0.78rem; letter-spacing: 0.03em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .nowrap { white-space: nowrap; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.7rem;
+      margin: 1.25rem 0;
+    }
+    .flow div {
+      position: relative;
+      min-height: 7.5rem;
+      padding: 0.85rem;
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--green);
+      background: var(--paper);
+      font-size: 0.86rem;
+    }
+    .flow div:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -0.58rem;
+      z-index: 2;
+      color: var(--green);
+      content: "›";
+      font-size: 1.5rem;
+      font-weight: 800;
+      transform: translateY(-55%);
+    }
+    .flow strong { display: block; margin-bottom: 0.35rem; }
+
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--strong-line); color: var(--muted); font-size: 0.84rem; }
+
+    @media (max-width: 900px) {
+      .page { display: block; width: min(100% - 1rem, 820px); padding-top: 0.5rem; }
+      nav { position: static; max-height: none; margin-bottom: 0.5rem; }
+      nav ol { columns: 2; }
+      main { padding: 1.25rem; }
+      .grid-3, .flow { grid-template-columns: 1fr 1fr; }
+      .flow div:not(:last-child)::after { content: ""; }
+    }
+    @media (max-width: 620px) {
+      nav ol { columns: 1; }
+      .grid-2, .grid-3, .flow { grid-template-columns: 1fr; }
+      th, td { padding: 0.55rem; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --page: #111715;
+        --paper: #18201d;
+        --ink: #edf2ef;
+        --muted: #a9b3ae;
+        --line: #36413c;
+        --strong-line: #59665f;
+        --green: #73d3ad;
+        --green-bg: #17372b;
+        --amber: #f0cd75;
+        --amber-bg: #3a3018;
+        --red: #f0958f;
+        --red-bg: #3a211f;
+        --blue: #99c8ee;
+        --blue-bg: #1c3040;
+        --code-bg: #202925;
+      }
+      .status { border-color: #796328; }
+    }
+    @media print {
+      body { background: #fff; color: #000; font-size: 10.5pt; }
+      .page { display: block; width: auto; padding: 0; }
+      nav { display: none; }
+      main { padding: 0; border: 0; }
+      section, table, .panel, .candidate, .question { break-inside: avoid; }
+      a { color: #000; }
+    }
+  
+    article > h2 { margin-top: 0; padding-top: 2.7rem; }
+    article > h3 { scroll-margin-top: 1rem; }
+    article blockquote { margin: 1rem 0; padding: 0.1rem 1rem; border-left: 4px solid var(--strong-line); color: var(--muted); }
+    article img { max-width: 100%; height: auto; }
+    .recommendation { margin: 1.5rem 0 0; }
+    .recommendation h2 { margin: 0.2rem 0 0.5rem; padding: 0; border: 0; font-size: 1.35rem; }
+    h2, h3 { scroll-margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <nav aria-label="Report sections">
+      <strong>Agent memory report</strong>
+      <ol>
+        <li><a href="#executive-recommendation">Executive Recommendation</a></li>
+        <li><a href="#decision">Decision</a></li>
+        <li><a href="#required-capabilities">Required Capabilities</a></li>
+        <li><a href="#current-system">Current System</a></li>
+        <li><a href="#landscape-findings">Landscape Findings</a></li>
+        <li><a href="#gate-results">Gate Results</a></li>
+        <li><a href="#recommended-incremental-target">Recommended Incremental Target</a></li>
+        <li><a href="#external-comparator-conditions">External Comparator Conditions</a></li>
+        <li><a href="#migration-and-rollback">Migration And Rollback</a></li>
+        <li><a href="#maintenance-and-operating-model">Maintenance And Operating Model</a></li>
+        <li><a href="#cost-licensing-and-privacy">Cost, Licensing, And Privacy</a></li>
+        <li><a href="#risks-and-unknowns">Risks And Unknowns</a></li>
+        <li><a href="#rejected-decisions">Rejected Decisions</a></li>
+        <li><a href="#reconsideration-triggers">Reconsideration Triggers</a></li>
+        <li><a href="#evidence-index">Evidence Index</a></li>
+        <li><a href="#final-status">Final Status</a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <header>
+        <p class="kicker">agent-teams / research report / 26 August 2026</p>
+        <h1>Agent memory landscape recommendation</h1>
+        <p class="lede">Decision evidence for whether agent-teams must keep, improve, replace, or combine its current memory system.</p>
+        <div class="meta">
+          <span class="status">Final research recommendation</span>
+          <span>Initiative: <code>at-jo7h</code></span>
+          <span>Repository baseline: <code>e028082e9f8de49342dc6d5b9106af2b7c4b44da</code></span>
+        </div>
+        <div class="candidate recommendation">
+          <span class="label">Recommendation</span>
+          <h2>Retain Dolt/Beads as the authority</h2>
+          <p>Run a bounded incremental validation program. Use Mem0 Platform and a PostgreSQL/LangGraph hybrid only as comparators.</p>
+        </div>
+      </header>
+
+      <article>
+<p><strong>Initiative:</strong> <code>at-jo7h</code></p>
+<p><strong>Research date:</strong> 2026-08-26</p>
+<p><strong>Repository baseline:</strong> <code>e028082e9f8de49342dc6d5b9106af2b7c4b44da</code></p>
+<p><strong>Plan:</strong> <a href="../2026-08-26-agent-memory-research-plan.html">Agent memory research plan</a></p>
+<p><strong>Independent review:</strong> <a href="agent-memory/evidence-review.md">Passed after correction</a></p>
+<h2 id="executive-recommendation">Executive Recommendation</h2>
+<p>Keep the current Dolt/Beads memory system as the production authority and rollback path.</p>
+<p>Do not replace it with a platform or a new service stack now. No evaluated architecture clears all seven required capability gates with sufficient evidence.</p>
+<p>Run a bounded incremental validation program inside the current architecture. The program must address four measured weaknesses first:</p>
+<ol>
+<li>Retrieval returns broad false positives and has no reliable abstention behavior.</li>
+<li>Hot-memory budgets are not enforced in current role sets.</li>
+<li>Applied counters cannot prove exposure, application, outcome, or causal usefulness.</li>
+<li>Claude Code and Codex use different lifecycle paths, with weaker recovery evidence in Codex.</li>
+</ol>
+<p>The incremental program must preserve Dolt/Beads as the source of truth. New indexes, events, and curation proposals must be rebuildable or reversible.</p>
+<p>Use two external architectures as research comparators during the pilot:</p>
+<ul>
+<li><strong>Mem0 Platform</strong> is the strongest screened managed option.</li>
+<li><strong>PostgreSQL/pgvector with LangGraph, LangMem, and OpenTelemetry</strong> is the strongest screened component hybrid.</li>
+</ul>
+<p>Neither comparator is an adoption recommendation. Both retain substantial agent-teams-specific adapters and have unresolved required-capability evidence.</p>
+<h2 id="decision">Decision</h2>
+<p>The decision is to validate bounded incremental improvement, not to approve a replacement architecture.</p>
+<p>This decision has three boundaries:</p>
+<ul>
+<li>The current system remains authoritative during validation.</li>
+<li>No destructive curation or data migration occurs during the research follow-up.</li>
+<li>Architecture selection resumes only after a candidate clears R1-R7 and has measurable maintenance inputs.</li>
+</ul>
+<p>The approved scoring weights remain dormant. The research did not calculate a winner because every candidate failed the gate-before-score rule.</p>
+<h2 id="required-capabilities">Required Capabilities</h2>
+<p>The research evaluated each option against the same contract:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Required behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>R1</strong></td>
+<td>Role-scoped memory shared by all instances of that role.</td>
+</tr>
+<tr>
+<td><strong>R2</strong></td>
+<td>Contributions across sessions and machines with defined concurrency and synchronization.</td>
+</tr>
+<tr>
+<td><strong>R3</strong></td>
+<td>Automatic availability at startup, resume, compaction, clear recovery, and subagent creation.</td>
+</tr>
+<tr>
+<td><strong>R4</strong></td>
+<td>Bounded curation with duplicate handling, conflict handling, provenance, and recovery.</td>
+</tr>
+<tr>
+<td><strong>R5</strong></td>
+<td>A token-budgeted hot set and a larger searchable pool.</td>
+</tr>
+<tr>
+<td><strong>R6</strong></td>
+<td>One stable CLI, API, or protocol contract works through Claude Code, Codex, and a generic client or fixture.</td>
+</tr>
+<tr>
+<td><strong>R7</strong></td>
+<td>Evidence that a memory was exposed, applied, and associated with an independent outcome.</td>
+</tr>
+</tbody></table></div>
+<p>A partial, failed, or unknown required capability blocks adoption. Weighted strengths cannot cancel a required-capability gap.</p>
+<h2 id="current-system">Current System</h2>
+<p>The current implementation stores role memories in the global Dolt-backed Beads workspace. Dolt remote references synchronize that workspace across machines.</p>
+<p>The system uses three memory tiers:</p>
+<ul>
+<li><code>fresh</code> contains new, uncurated memories.</li>
+<li><code>hot</code> contains curated memories that load automatically.</li>
+<li><code>cold</code> contains searchable memories that do not load automatically.</li>
+</ul>
+<p>The <code>ateam</code> CLI owns writes, reads, recall, applied counters, and curation checks. Claude Code and Codex add runtime-specific hooks, skills, and role definitions.</p>
+<p>The current system has two strong properties:</p>
+<ul>
+<li>Role isolation is concrete and directly reproduced.</li>
+<li>The CLI provides a neutral cross-harness access boundary.</li>
+</ul>
+<p>The <a href="agent-memory/current-system.md">current-system baseline</a> found partial behavior for R2-R5 and R7. Important observed results include:</p>
+<ul>
+<li>The live snapshot contained 1,842 memories during the research run.</li>
+<li>All seven role sets exceeded the procedural hot-memory budget during validation.</li>
+<li>A representative lexical recall query matched all 64 tester memories.</li>
+<li>The mutable applied counter can lose concurrent increments.</li>
+<li>The current store lacks a complete, tested logical export and clean-target restore path.</li>
+<li>Claude Code has stronger pull and recovery hooks than the current Codex path.</li>
+</ul>
+<p>These weaknesses are reasons to improve the system. They are not evidence that an external replacement is safer.</p>
+<h2 id="landscape-findings">Landscape Findings</h2>
+<h3 id="turnkey-platforms">Turnkey Platforms</h3>
+<p>The <a href="agent-memory/turnkey-platforms.md">turnkey-platform study</a> screened Mem0, Zep/Graphiti, Letta, Supermemory, and Cognee.</p>
+<p>No platform provides the full agent-teams R1-R7 lifecycle without custom adapters.</p>
+<p><strong>Mem0 Platform</strong> provides the broadest documented managed surface. It includes scoped memory, filtered search, reranking, history, export jobs, SDKs, CLI access, MCP access, feedback, and webhooks.</p>
+<p>Mem0 still needs project-owned controls for role authorization, lifecycle delivery, token budgets, conflict authority, usefulness lineage, migration, rollback, and outage behavior. Credentialed role-isolation and complete export/re-import checks were not available.</p>
+<p>Mem0 OSS <code>v2.0.19</code> is not equivalent to Mem0 Platform. Its public mock configuration and documented search call did not reproduce cleanly. The final evidence grade is B, not A.</p>
+<p><strong>Zep/Graphiti</strong> has strong temporal provenance and graph behavior. Its export, concurrency, hot-context, and complete lifecycle evidence did not satisfy the contract.</p>
+<p><strong>Letta</strong> owns more agent lifecycle behavior than the other platforms. That strength comes with full-runtime coupling and material differences between cloud and local memory behavior.</p>
+<p>Supermemory and Cognee remained screened candidates. Their evidence did not justify deep adoption scoring.</p>
+<h3 id="framework-libraries">Framework Libraries</h3>
+<p>The <a href="agent-memory/framework-libraries.md">framework study</a> evaluated LangGraph/LangMem, LlamaIndex, Semantic Kernel, AutoGen, and provider-native memory.</p>
+<p><strong>LangGraph/LangMem</strong> has the broadest library surface for CRUD, namespaces, search, and background reflection. Applications still own concurrency policy, provenance, curation authority, lifecycle delivery, and usefulness telemetry.</p>
+<p><strong>LlamaIndex</strong> has explicit context budgets and block orchestration. It lacks a uniform memory-entry lifecycle and applied-memory events.</p>
+<p><strong>AutoGen</strong> has a compact protocol and useful retrieval events. Its base contract lacks update, selective deletion, and bounded curation.</p>
+<p><strong>Semantic Kernel</strong> has broad connector support. Its APIs differ by language and maturity.</p>
+<p>OpenAI Conversations and Claude Code auto memory provide session or harness continuity. They do not provide portable role memory for agent-teams.</p>
+<h3 id="composable-components">Composable Components</h3>
+<p>The <a href="agent-memory/composable-components.md">component study</a> evaluated local search, vector stores, graph stores, shared databases, protocols, embeddings, and rerankers.</p>
+<p>SQLite FTS5 with <code>sqlite-vec</code> had the smallest reproduced local footprint. It retains single-writer and vector-migration constraints.</p>
+<p>LanceDB and Chroma reproduced filtered local search and export behavior. Their Python dependency footprints are materially larger.</p>
+<p>PostgreSQL/pgvector and Qdrant provide stronger shared-service concurrency. They add backup, upgrade, monitoring, and consistency responsibilities.</p>
+<p>A canonical CLI or API improves portability. MCP is useful as an adapter to that boundary. MCP does not guarantee lifecycle calls or generic-client conformance.</p>
+<p>No component owns agent-teams role authority, lifecycle delivery, curation judgment, hot-context budgeting, or usefulness semantics.</p>
+<h3 id="curation-and-usefulness">Curation And Usefulness</h3>
+<p>The <a href="agent-memory/quality-observability.md">quality and observability study</a> found that usefulness needs separate immutable events:</p>
+<ul>
+<li>Exposure: the memory was available to the agent.</li>
+<li>Retrieval: the system selected the memory.</li>
+<li>Application: the agent used the memory in an action or decision.</li>
+<li>Outcome: an independent signal described what happened next.</li>
+<li>Feedback: a human or evaluator assessed the result.</li>
+<li>Curation: the system promoted, demoted, merged, or removed the memory.</li>
+</ul>
+<p>One mutable applied counter cannot provide this evidence.</p>
+<p>Exact duplicates and typed temporal conflicts can use deterministic rules. Semantic merges and ambiguous conflicts need model assistance plus human approval.</p>
+<p>Promotion based only on use count creates popularity bias. Reliable evaluation needs exposure denominators, holdouts or randomized eligibility, immutable events, and structured application receipts.</p>
+<p>OpenTelemetry provides a useful transport surface. Its current memory conventions do not define role, tier, revision, exposure, application, outcome, or retention semantics for agent-teams.</p>
+<h2 id="gate-results">Gate Results</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Architecture</th>
+<th>R1</th>
+<th>R2</th>
+<th>R3</th>
+<th>R4</th>
+<th>R5</th>
+<th>R6</th>
+<th>R7</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Current unchanged</td>
+<td>Pass</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Pass</td>
+<td>Partial</td>
+<td>Blocked</td>
+</tr>
+<tr>
+<td>Bounded incremental</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Unknown</td>
+<td>Unknown</td>
+<td>Unknown</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Blocked</td>
+</tr>
+<tr>
+<td>Mem0 Platform</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Pass for access</td>
+<td>Partial</td>
+<td>Blocked</td>
+</tr>
+<tr>
+<td>PostgreSQL/LangGraph hybrid</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Partial</td>
+<td>Blocked</td>
+</tr>
+</tbody></table></div>
+<p>The <a href="agent-memory/validation-and-migration.md">validation report</a> applied ten common scenarios. None of the four options passed the full set.</p>
+<p>The <a href="agent-memory/decision-matrix.md">decision matrix</a> therefore contains no candidate scores, totals, intervals, rankings, or sensitivity winner.</p>
+<h2 id="recommended-incremental-target">Recommended Incremental Target</h2>
+<p>The recommended target is a bounded improvement layer around the current authority.</p>
+<h3 id="1-freeze-a-neutral-record-contract">1. Freeze A Neutral Record Contract</h3>
+<p>Define stable memory IDs, revisions, role scope, tier, provenance, source references, and timestamps.</p>
+<p>Add complete logical export and clean-target import before changing storage or retrieval. Round-trip tests must prove fidelity.</p>
+<p>The current Dolt records remain authoritative.</p>
+<h3 id="2-add-receipt-bearing-context-delivery">2. Add Receipt-Bearing Context Delivery</h3>
+<p>Make each startup, resume, compaction, clear recovery, and subagent load return a receipt. The receipt must identify the harness, role, memory revisions, token budget, and truncation state.</p>
+<p>Claude Code and Codex can keep separate lifecycle adapters. Both adapters and one generic client fixture must satisfy the same conformance contract.</p>
+<h3 id="3-replace-broad-lexical-recall-in-shadow-mode">3. Replace Broad Lexical Recall In Shadow Mode</h3>
+<p>Build a rebuildable local index from authoritative records. Start with deterministic lexical retrieval and a strict token budget.</p>
+<p>SQLite FTS5 is the lowest-footprint initial candidate. <code>sqlite-vec</code> can remain an optional experiment until it improves the fixed evaluation corpus.</p>
+<p>The shadow index must never become a second writable authority.</p>
+<h3 id="4-make-curation-reviewable-and-reversible">4. Make Curation Reviewable And Reversible</h3>
+<p>Separate curation into proposal and apply stages.</p>
+<p>Deterministic duplicate rules can apply automatically when provenance remains intact. Semantic merges, conflict resolution, and destructive eviction require reviewable changesets during the pilot.</p>
+<p>Each changeset must name source revisions and support rollback.</p>
+<h3 id="5-replace-applied-counters-with-immutable-events">5. Replace Applied Counters With Immutable Events</h3>
+<p>Record exposure, retrieval, application, outcome, feedback, and curation as separate events.</p>
+<p>Use stable IDs and idempotency keys. Do not store raw content in telemetry by default.</p>
+<p>Build derived counters from events. Do not update counters through read-modify-write operations.</p>
+<h3 id="6-measure-maintenance-before-selecting-a-replacement">6. Measure Maintenance Before Selecting A Replacement</h3>
+<p>Record current maintenance work by layer. Include development, debugging, release parity, operations, and incident recovery.</p>
+<p>Measure the incremental pilot with the same workload categories. A component counts as an improvement only when it retires measured work.</p>
+<h2 id="external-comparator-conditions">External Comparator Conditions</h2>
+<h3 id="mem0-platform">Mem0 Platform</h3>
+<p>Do not promote Mem0 Platform beyond comparator status until a credentialed pilot proves:</p>
+<ul>
+<li>Role authorization and isolation under actual entity and filter semantics.</li>
+<li>Concurrent writes, idempotency, history, and conflict behavior.</li>
+<li>Complete export, clean-target import, deletion verification, and reverse replay.</li>
+<li>Token-bounded hot selection and Claude/Codex lifecycle delivery.</li>
+<li>Outage behavior and an encrypted local continuity policy.</li>
+<li>Privacy, retention, processor, pricing, and contractual acceptability.</li>
+<li>Fewer measured project-owned maintenance layers after all adapters are counted.</li>
+</ul>
+<h3 id="postgresql-langgraph-hybrid">PostgreSQL/LangGraph Hybrid</h3>
+<p>Do not promote the hybrid beyond comparator status until an integrated deployment proves:</p>
+<ul>
+<li>Role isolation through schema and database policy.</li>
+<li>Concurrent revision checks, outbox recovery, and idempotency.</li>
+<li>Backup, restore, logical export, and reverse import.</li>
+<li>Model-free lexical fallback and bounded vector retrieval.</li>
+<li>Proposal-only LangMem curation with human conflict authority.</li>
+<li>Complete event capture and independent outcomes.</li>
+<li>Lower measured maintenance after database, Python, model, and telemetry operations are included.</li>
+</ul>
+<h2 id="migration-and-rollback">Migration And Rollback</h2>
+<p>The incremental path uses staged, reversible changes:</p>
+<ol>
+<li>Freeze the neutral schema and prove export/import round trips.</li>
+<li>Add context receipts, shadow retrieval, and immutable events without changing authoritative reads.</li>
+<li>Compare shadow results against the fixed evaluation corpus.</li>
+<li>Run curation in proposal-only mode.</li>
+<li>Activate one role at a time only after its V1-V8 scenarios pass.</li>
+<li>Keep old reads and the neutral event journal through the rollback period.</li>
+</ol>
+<p>Rollback disables new delivery and curation paths, returns reads to existing <code>ateam</code> verbs, and rebuilds derived indexes from Dolt.</p>
+<p>Unmatched or malformed records go to quarantine. Rollback must never silently discard them.</p>
+<h2 id="maintenance-and-operating-model">Maintenance And Operating Model</h2>
+<p>The unchanged system retains eight inventoried maintenance layers. The bounded incremental path adds six improved surfaces while consolidating some current behavior.</p>
+<p>No quantitative maintenance reduction is supported yet. The independent review rejected unsupported percentages and numerical maintenance scores.</p>
+<p>The pilot must measure:</p>
+<ul>
+<li>Time spent on memory contract changes.</li>
+<li>Time spent maintaining Claude and Codex parity.</li>
+<li>Retrieval defects and evaluation work.</li>
+<li>Curation review and recovery work.</li>
+<li>Synchronization and concurrency incidents.</li>
+<li>Release, binary, dashboard, and migration work.</li>
+<li>New index, event, model, database, or vendor operations.</li>
+</ul>
+<p>Stop the pilot when added work exceeds retired work or when a required capability remains structurally unresolved.</p>
+<h2 id="cost-licensing-and-privacy">Cost, Licensing, And Privacy</h2>
+<p>The incremental path has no required vendor subscription. Its costs are engineering, event storage, evaluation, optional embeddings, model-assisted proposals, and human review.</p>
+<p>Mem0 public pricing is a dated snapshot. The research observed free limits, a <code>$19/month</code> Starter tier, and a <code>$249/month</code> Pro tier. Enterprise, overage, retention, and contractual costs need a current workload quote.</p>
+<p>The screened hybrid components use documented open-source licenses. Self-hosting still adds database, backup, monitoring, model, telemetry, migration, and on-call costs.</p>
+<p>Telemetry must use IDs by default. Session content, memory text, model inputs, and outcomes require explicit retention, deletion, and access policies.</p>
+<h2 id="risks-and-unknowns">Risks And Unknowns</h2>
+<p>The recommendation retains these unresolved risks:</p>
+<ul>
+<li>Same-memory convergence across machines.</li>
+<li>Reliable delivery during resume, compaction, clear recovery, and subagent creation.</li>
+<li>Complete export, restore, and reverse replay.</li>
+<li>Retrieval precision, latency, token cost, and abstention on representative data.</li>
+<li>Trustworthy application capture and independent outcome joins.</li>
+<li>Exposure bias and popularity feedback loops.</li>
+<li>Model-assisted curation quality and review workload.</li>
+<li>Mem0 hosted authorization, privacy, outage, export, deletion, and cost behavior.</li>
+<li>Integrated PostgreSQL/LangGraph reliability and operating burden.</li>
+<li>A measured maintenance baseline for every current layer.</li>
+</ul>
+<p>Unknown remains unknown. It does not count as failure, absence, zero, or an optimistic midpoint.</p>
+<h2 id="rejected-decisions">Rejected Decisions</h2>
+<h3 id="keep-the-current-system-unchanged-indefinitely">Keep The Current System Unchanged Indefinitely</h3>
+<p>Rejected as the improvement direction. It preserves known retrieval, budget, telemetry, lifecycle, and export weaknesses.</p>
+<p>It remains the production authority and rollback path during validation.</p>
+<h3 id="adopt-mem0-platform-now">Adopt Mem0 Platform Now</h3>
+<p>Rejected for current adoption. The hosted service has the strongest managed feature surface, but required credentialed and migration evidence is missing.</p>
+<h3 id="replace-memory-with-letta">Replace Memory With Letta</h3>
+<p>Rejected for current adoption. Letta owns more lifecycle behavior, but replacing agent-teams runtime boundaries creates substantial coupling and migration scope.</p>
+<h3 id="build-the-full-postgresql-langgraph-hybrid-now">Build The Full PostgreSQL/LangGraph Hybrid Now</h3>
+<p>Rejected for current adoption. The stack is unintegrated and adds several operating systems before proving that it retires measured maintenance.</p>
+<h3 id="use-mcp-as-the-memory-architecture">Use MCP As The Memory Architecture</h3>
+<p>Rejected as a complete architecture. MCP is an interface adapter. It does not guarantee lifecycle invocation, curation policy, role authority, storage, or usefulness semantics.</p>
+<h2 id="reconsideration-triggers">Reconsideration Triggers</h2>
+<p>Reopen architecture selection when one option satisfies all of these conditions:</p>
+<ul>
+<li>R1-R7 pass with grade A or B evidence.</li>
+<li>Export, clean-target import, and rollback are reproduced.</li>
+<li>Concurrent writes and role isolation are reproduced.</li>
+<li>Claude Code, Codex, and a generic client fixture pass the same access contract.</li>
+<li>Claude Code and Codex lifecycle delivery passes startup, resume, compaction, clear recovery, and subagent scenarios.</li>
+<li>Usefulness events include exposure and independent outcomes.</li>
+<li>Destructive curation remains reviewable and reversible.</li>
+<li>Maintenance inputs use a measured baseline and a stated workload.</li>
+<li>Privacy, cost, licensing, and operating ownership are accepted.</li>
+</ul>
+<p>At that point, execute the frozen weighted matrix and sensitivity analysis. Do not execute it before gate clearance.</p>
+<h2 id="evidence-index">Evidence Index</h2>
+<ul>
+<li><a href="agent-memory/current-system.md">Current system and internal candidates</a></li>
+<li><a href="agent-memory/turnkey-platforms.md">Turnkey memory platforms</a></li>
+<li><a href="agent-memory/framework-libraries.md">Framework and harness libraries</a></li>
+<li><a href="agent-memory/composable-components.md">Composable components and protocols</a></li>
+<li><a href="agent-memory/quality-observability.md">Curation, evaluation, and observability</a></li>
+<li><a href="agent-memory/validation-and-migration.md">Validation and migration</a></li>
+<li><a href="agent-memory/decision-matrix.md">Corrected decision matrix</a></li>
+<li><a href="agent-memory/evidence-review.md">Independent evidence review</a></li>
+</ul>
+<h2 id="final-status">Final Status</h2>
+<p>The research supports a specific next direction: retain the current authority and validate bounded incremental improvement.</p>
+<p>The research does not support a platform purchase, full replacement, or new service stack today.</p>
+
+      </article>
+
+      <footer>
+        This HTML document is the human-review copy. The Markdown report remains the durable research source.
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
