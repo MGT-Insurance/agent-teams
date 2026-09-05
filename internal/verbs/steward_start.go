@@ -249,9 +249,9 @@ func stewardLaunchArgs(autoCompactWindow string) []string {
 // defaultStewardLaunch execs the sanctioned Steward launch command —
 // `claude --bg --permission-mode bypassPermissions --settings
 // '{"env":{"ATEAM_ROLE":"steward"}}' /agent-teams:steward` by default, plus
-// "--autocompact <window>" when CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW is
-// set (driAutoCompactWindow, shared with the dispatch producer in
-// dispatch.go) — in which case the --settings payload also gains
+// "--autocompact <window>" when config.toml's auto_compact_window key is set
+// (driAutoCompactWindow, shared with the dispatch producer in dispatch.go) —
+// in which case the --settings payload also gains
 // autoCompactEnabled/autoCompactWindow (see stewardSettingsJSON) — with its
 // working directory set to dir via exec.Command's .Dir (never os.Chdir, which
 // would change the whole ateam process's cwd). claude's own stdout/stderr,
@@ -261,7 +261,11 @@ func defaultStewardLaunch(ctx *cli.Context, dir string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam steward start: 'claude' not found in PATH")
 	}
-	cmd := exec.Command("claude", stewardLaunchArgs(driAutoCompactWindow())...)
+	autoCompactWindow, err := driAutoCompactWindow(ctx.Home)
+	if err != nil {
+		return fmt.Errorf("ateam steward start: %w", err)
+	}
+	cmd := exec.Command("claude", stewardLaunchArgs(autoCompactWindow)...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout
 	cmd.Stderr = ctx.Stderr

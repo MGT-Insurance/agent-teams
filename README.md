@@ -19,9 +19,7 @@ New to agent-teams? Start with [GETTING-STARTED.md](GETTING-STARTED.md) for an e
 
 (For local development: `/plugin marketplace add /path/to/agent-teams`.)
 
-The plugin also declares two config options in its manifest (`use_advisors`, `dri_model`; see the `userConfig` block in `plugins/agent-teams/.claude-plugin/plugin.json`) that pick which model a background DRI actually runs on — `dri_model` (default `claude-opus-4-8`) is the DRI's model; `use_advisors` (default off) instead runs the DRI on sonnet with `dri_model` attached as an advisor.
-
-A third option, `auto_compact_window`, sets the token window agent-teams asks Claude Code to use for the background sessions it launches (DRI and steward). Left empty (the default), agent-teams sends nothing — Claude Code picks the window from the model, which is today's behavior, unchanged. Set it to lower that window: a plain number (`450000`), a `k`/`m` suffix (`500k`, `1m`), a bare `100`–`1000` as thousands shorthand (`200` means `200000`), or the literal `auto`. It can only lower the window — it can never raise it above the model's real context window. Note this sets the *window*, not the point where compaction actually fires: compaction kicks in roughly 33,000 tokens below it, so `500000` means compaction fires near `467000`. A bad value fails the launch loudly with Claude Code's own error message; agent-teams doesn't validate it itself.
+`$AGENT_TEAMS_HOME/config.toml` is the single source of truth for all agent-teams machine configuration, including which model a background DRI runs on and the auto-compact window it and the steward request — see [Machine-local runtime defaults](#machine-local-runtime-defaults).
 
 ## Enable a repo
 
@@ -69,8 +67,10 @@ Both launch the background session with `--permission-mode bypassPermissions` fo
 ### Machine-local runtime defaults
 
 `ateam dispatch` can select a machine-local runtime default from
-`$AGENT_TEAMS_HOME/config.toml` (normally `~/.agent-teams/config.toml`). The
-initial recommended file is:
+`$AGENT_TEAMS_HOME/config.toml` (normally `~/.agent-teams/config.toml`). This
+file is the single source of truth for agent-teams machine configuration —
+nothing else (a plugin option, an environment variable) also feeds these
+settings. The initial recommended file is:
 
 ```toml
 work_runtime = "codex"
@@ -83,7 +83,7 @@ dispatch selects `work_runtime`. Resolution is an explicit concrete
 legacy `claude` fallback. `--runtime auto` skips only the explicit tier. A
 valid flag or environment value does not read the config for runtime selection.
 
-The file is strict, flat TOML with three optional keys. `work_runtime` and
+The file is strict, flat TOML with five optional keys. `work_runtime` and
 `review_runtime` must each be exactly lowercase `claude` or `codex` when
 present. A missing file or missing selected runtime key falls through. When
 agent-teams reads this config, an invalid file stops the operation before a
@@ -93,30 +93,41 @@ runtime is stored on the new initiative. This config never changes the runtime
 of an existing initiative. Codex PR-review execution is not added by this
 config.
 
-The third key is an optional integer token count for agent-teams-managed Codex
-threads. For example:
+`auto_compact_window` is an optional positive integer token count, applied to
+the background sessions agent-teams launches (DRI and steward) on both
+runtimes. For example:
 
 ```toml
 auto_compact_window = 300000
 ```
 
 There is no default, and `ateam setup codex` does not add the key. When it is
-absent, agent-teams sends no Codex compaction override. A present value must be
-positive and fit a signed 64-bit integer. An invalid value stops the attempted
-Codex launch or resume before an app-server request. A non-empty
-`CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW` is a cross-runtime compatibility
-input that wins over this file for Codex requests. It accepts plain tokens, `k`
-or `m` suffixes, and a bare 100–1000 as thousands shorthand. The explicit value
-`auto` suppresses the workspace value and sends no override. Any other
-non-empty value fails the Codex request instead of falling through to the file.
+absent, agent-teams sends no compaction override on either runtime: Claude
+Code picks the window from the model (today's behavior, unchanged), and Codex
+gets no `model_auto_compact_token_limit`. A present value must be positive and
+fit a signed 64-bit integer; an invalid value stops the attempted launch or
+resume before a side effect, on either runtime. On Claude, a configured value
+can only lower the window — it can never raise it above the model's real
+context window. Note this sets the *window*, not the point where compaction
+actually fires: compaction kicks in roughly 33,000 tokens below it, so
+`300000` means compaction fires near `267000`.
 
-The resolved value applies to fresh Codex dispatches, explicit resumes and cold
-reloads, and managed app-server mail delivery. Agent-teams supplies it on thread
-start and resume. A change does not retrofit a thread already loaded by the
-managed app server.
+For Codex, the resolved value applies to fresh dispatches, explicit resumes
+and cold reloads, and managed app-server mail delivery. Agent-teams supplies
+it on thread start and resume. A change does not retrofit a thread already
+loaded by the managed app server.
 Codex child role agents inherit the root thread config natively. The five role
 TOMLs do not copy the key. This key never edits the user-owned Codex config,
 changes ordinary Codex sessions, or sets the native Codex compaction scope.
+
+`use_advisors` (boolean, default `false`) and `claude_dri_model` (string,
+default `claude-opus-4-8`) together pick which model a background DRI runs
+on. Both are Claude-only: the Codex DRI's model comes from the user's own
+Codex config, not from this file. `claude_dri_model` is the "strong model"
+slot — with `use_advisors` left `false` (the default), it's the DRI session's
+own model; with `use_advisors` set `true`, the DRI session worker runs on
+`sonnet` instead, with `claude_dri_model` attached as its advisor
+(`--model sonnet --advisor <claude_dri_model>`).
 
 Open the native session view with `ateam runtime open claude`; attach to answer gates (`claude attach <id>` — the short id from that listing, not the session name, which does not resolve), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 

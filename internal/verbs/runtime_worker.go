@@ -15,8 +15,6 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
 
-const autoCompactWindowEnv = "CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW"
-
 type runtimeStartRequest struct {
 	Runtime      sessionruntime.Kind
 	InitiativeID string
@@ -97,17 +95,6 @@ func (c *runtimeWorkerKong) Run(ctx *cli.Context) error {
 }
 
 func resolveCodexAutoCompactWindow(home string) (*int64, error) {
-	if explicit := os.Getenv(autoCompactWindowEnv); explicit != "" {
-		tokens, automatic, err := parseAutoCompactWindowValue(explicit)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", autoCompactWindowEnv, err)
-		}
-		if automatic {
-			return nil, nil
-		}
-		return &tokens, nil
-	}
-
 	tokens, configured, err := workspaceconfig.AutoCompactWindow(home)
 	if err != nil {
 		return nil, err
