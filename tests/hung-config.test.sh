@@ -8,8 +8,9 @@
 # with NO Claude Code environment at all. This is the only layer that does
 # what an operator does — a real OS process, a real AGENT_TEAMS_HOME, a real
 # config file on disk. Note there is deliberately no Claude Code environment
-# here: nothing exports CLAUDE_PLUGIN_OPTION_* or reads plugin.json, which is
-# the point — the file tier must work without any of it.
+# here: nothing exports CLAUDE_PLUGIN_OPTION_* or reads plugin.json — that
+# chain no longer exists at all (config.toml is now the sole source), and
+# this test confirms the file tier works standalone, without any of it.
 #
 # This asserts on the resolved-config STARTUP LOG, not on tick behaviour. With
 # the stub transport, Stub.Receive drains its reply-file glob and RETURNS, so

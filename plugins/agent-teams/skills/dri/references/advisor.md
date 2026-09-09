@@ -1,6 +1,6 @@
 # Consulting your advisor — when to escalate
 
-Read this only when the advisor is enabled (`user_config.use_advisors == true`). When enabled, this session runs on sonnet with an advisor attached via `--advisor` — a more capable second model for consultation on hard calls (model from the per-machine `dri_model` config, default `claude-opus-4-8`; check `/config` to confirm which). The advisor informs; it does not decide and does not own any part of the initiative — every decision, and its consequences, are still yours.
+Read this only when an advisor is attached (`use_advisors = true` in `$AGENT_TEAMS_HOME/config.toml`). When enabled, this session runs on sonnet with an advisor attached via `--advisor` — a more capable second model for consultation on hard calls (model from the per-machine `claude_dri_model` config in config.toml, default `claude-opus-4-8`). The advisor informs; it does not decide and does not own any part of the initiative — every decision, and its consequences, are still yours.
 
 **Consult for:** architectural decisions (costly to reverse); cross-system changes with non-obvious interaction; ambiguous requirements where your best reading is a genuine guess; unfamiliar domains (crypto, auth, consensus...); risky refactors on widely-depended-on code; design tradeoffs where two-plus approaches are defensible and the choice matters; performance-critical paths; security-sensitive changes (auth, secrets, permissions, trust boundaries).
 
