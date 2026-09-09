@@ -28,7 +28,19 @@ type config struct {
 	WorkRuntime       *string `toml:"work_runtime"`
 	ReviewRuntime     *string `toml:"review_runtime"`
 	AutoCompactWindow *int64  `toml:"auto_compact_window"`
+	UseAdvisors       *bool   `toml:"use_advisors"`
+	ClaudeDriModel    *string `toml:"claude_dri_model"`
 }
+
+// useAdvisorsDefault is the hardcoded value UseAdvisors returns when
+// use_advisors is absent from config.toml.
+const useAdvisorsDefault = false
+
+// claudeDriModelDefault is the hardcoded value ClaudeDriModel returns when
+// claude_dri_model is absent from config.toml. It mirrors the
+// driDefaultModel constant in internal/verbs (kept as a separate literal
+// here so this package does not import internal/verbs).
+const claudeDriModelDefault = "claude-opus-4-8"
 
 // RuntimeDefault reads config.toml beneath home and returns the selected
 // dispatch-class default. Missing files and missing selected keys have no
@@ -62,6 +74,38 @@ func AutoCompactWindow(home string) (int64, bool, error) {
 		return 0, false, nil
 	}
 	return *cfg.AutoCompactWindow, true, nil
+}
+
+// UseAdvisors reads config.toml beneath home and returns whether advisor
+// sessions are enabled. Missing files and a missing key both resolve to the
+// hardcoded default (false) with configured=false. As with RuntimeDefault,
+// every present key is validated.
+func UseAdvisors(home string) (bool, bool, error) {
+	cfg, _, err := readConfig(home)
+	if err != nil {
+		return false, false, err
+	}
+	if cfg.UseAdvisors == nil {
+		return useAdvisorsDefault, false, nil
+	}
+	return *cfg.UseAdvisors, true, nil
+}
+
+// ClaudeDriModel reads config.toml beneath home and returns the model the
+// Claude-runtime DRI launches on. Missing files and a missing key both
+// resolve to the hardcoded default (claudeDriModelDefault) with
+// configured=false. This option is Claude-only: the Codex DRI derives its
+// model from the user's Codex config, not from config.toml. As with
+// RuntimeDefault, every present key is validated.
+func ClaudeDriModel(home string) (string, bool, error) {
+	cfg, _, err := readConfig(home)
+	if err != nil {
+		return "", false, err
+	}
+	if cfg.ClaudeDriModel == nil {
+		return claudeDriModelDefault, false, nil
+	}
+	return *cfg.ClaudeDriModel, true, nil
 }
 
 func readConfig(home string) (config, string, error) {
@@ -116,12 +160,15 @@ func readConfig(home string) (config, string, error) {
 	if cfg.AutoCompactWindow != nil && *cfg.AutoCompactWindow <= 0 {
 		return config{}, path, fmt.Errorf("runtime config %s: auto_compact_window must be a positive signed 64-bit integer", path)
 	}
+	if cfg.ClaudeDriModel != nil && *cfg.ClaudeDriModel == "" {
+		return config{}, path, fmt.Errorf("runtime config %s: claude_dri_model must not be empty", path)
+	}
 	return cfg, path, nil
 }
 
 func knownKeyContext(data []byte) string {
 	var keys []string
-	for _, key := range []string{string(WorkRuntime), string(ReviewRuntime), "auto_compact_window"} {
+	for _, key := range []string{string(WorkRuntime), string(ReviewRuntime), "auto_compact_window", "use_advisors", "claude_dri_model"} {
 		if bytes.Contains(data, []byte(key)) {
 			keys = append(keys, key)
 		}

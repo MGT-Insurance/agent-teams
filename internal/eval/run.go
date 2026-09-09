@@ -90,10 +90,13 @@ func Run(task TaskSpec, cfg ConfigFingerprint) (RunManifest, error) {
 //
 // --launch-prompt is required for --model/--advisor to actually reach the
 // launched session: ateam dispatch's default /dri path ignores both flags and
-// derives model/advisor from CLAUDE_PLUGIN_OPTION_USE_ADVISORS instead, so
-// every run would launch under the same ambient config regardless of cfg
-// (same discovery bead). The prompt substituted here is byte-identical to
-// what the default path sends: "/dri " + the initiative id.
+// derives model/advisor from config.toml instead (workspaceconfig.ClaudeDriModel,
+// workspaceconfig.UseAdvisors), so every run would launch under the same
+// ambient machine config regardless of cfg (same discovery bead). Eval
+// deliberately bypasses that machine config so an A/B comparison reflects cfg,
+// not whatever a human happened to set in $AGENT_TEAMS_HOME/config.toml. The
+// prompt substituted here is byte-identical to what the default path sends:
+// "/dri " + the initiative id.
 //
 // --runtime claude is required because the evaluated model/advisor axes and
 // ExtractMetrics session discovery are Claude-only. The explicit runtime also

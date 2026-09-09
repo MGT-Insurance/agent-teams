@@ -145,14 +145,8 @@ malformed TOML, the wrong type, zero, a negative value, overflow, a table, or
 an unknown key. The error gives the config path and the relevant key or parse
 context.
 
-For Codex requests, a non-empty
-`CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW` is an explicit cross-runtime
-compatibility input. It takes precedence over the workspace key. Existing
-numeric forms resolve to an integer: plain tokens, `k` or `m` suffixes, and the
-documented bare 100–1000 thousands shorthand. The explicit value `auto` also
-takes precedence, but it emits no Codex limit. Any other non-empty value fails
-the Codex request instead of falling through. This precedence does not change
-existing Claude launch behavior.
+Codex reads this value from `$AGENT_TEAMS_HOME/config.toml` only; there is no
+other input that overrides or bypasses it for a Codex request.
 
 The override applies only to agent-teams-managed Codex threads. Fresh dispatch,
 explicit resume or cold reload, and mail wake use the same request construction.
