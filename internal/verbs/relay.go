@@ -413,15 +413,24 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	if untied {
 		// Untied (agent-teams-5y8a.5): only the designated fallback
-		// responder attempts the freshen-then-safety-net path below — every
-		// other machine sees the same untied reply and must suppress it
-		// rather than also routing it.
+		// responder attempts the freshen path below. After a successful
+		// zero-OPEN query, every machine checks the CLOSED safety net before
+		// suppressing or forwarding its terminal result.
 		if !c.isFallbackResponder(ctx) {
 			if queryErr != nil {
 				transport.Logf(ctx.Stderr, 2, "not fallback responder — skipping unrouted reply")
-			} else {
-				transport.Logf(ctx.Stderr, 2, "not fallback responder — skipping untied reply (thread %q)", reply.ThreadRef)
+				return nil
 			}
+
+			// A successful zero-OPEN result may still be tied to exactly one
+			// CLOSED initiative. Unlike the fallback responder, this machine
+			// does not freshen first; it checks the closed safety net before
+			// suppressing otherwise-untied traffic.
+			handled, _ := c.routeClosedInitiativeSafetyNet(ctx, home, label, reply)
+			if handled {
+				return nil
+			}
+			transport.Logf(ctx.Stderr, 2, "not fallback responder — skipping untied reply (thread %q)", reply.ThreadRef)
 			return nil
 		}
 
@@ -447,8 +456,8 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 			c.sendUnroutedToSteward(ctx, reply.MessageRef, reply.ThreadRef, fmt.Sprintf("bd query error: %v", queryErr), reply.Text)
 			return nil
 		}
-		routed, reason := c.routeClosedInitiativeSafetyNet(ctx, home, label, reply)
-		if routed {
+		handled, reason := c.routeClosedInitiativeSafetyNet(ctx, home, label, reply)
+		if handled {
 			return nil
 		}
 		transport.Logf(ctx.Stderr, 2, "no open initiative found for label %q — skipping", label)
@@ -552,12 +561,14 @@ func (c *relayKong) freshenBeforeUntied(ctx *cli.Context, home, label string) []
 // forever (agent-teams-7dup, the bug this safety net closes). If exactly one
 // CLOSED initiative owns the label, the reply is routed to the Steward as a
 // steward-closed-initiative envelope carrying the closed initiative's id,
-// and (true, "") is returned so the caller skips its own "no open
-// initiative" log. Zero or ambiguous (2+) closed matches, a query error, or
-// no bdQueryClosed seam configured, all fall through to (false, reason) —
-// the caller logs its existing message AND (agent-teams-8beo.2) routes the
-// reply to the Steward as a steward-unrouted envelope carrying reason so the
-// message still reaches the Steward instead of being dropped.
+// but only on the machine that claims that initiative locally. A unique
+// CLOSED match that is not claimed locally is terminal: it is skipped rather
+// than falling through to fallback-owned unrouted handling. In both cases,
+// (true, "") is returned. Zero or ambiguous (2+) closed matches, a query
+// error, or no bdQueryClosed seam configured all fall through to (false,
+// reason) — the caller logs its existing message AND (agent-teams-8beo.2)
+// routes the reply to the Steward as a steward-unrouted envelope carrying
+// reason so the message still reaches the Steward instead of being dropped.
 func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label string, reply transport.Reply) (bool, string) {
 	if c.bdQueryClosed == nil {
 		return false, "closed-initiative safety net not configured"
@@ -581,7 +592,13 @@ func (c *relayKong) routeClosedInitiativeSafetyNet(ctx *cli.Context, home, label
 	case 0:
 		return false, "no open or closed initiative found"
 	case 1:
-		// Exactly one match — route below.
+		// Exactly one CLOSED match is tied traffic. It must only be
+		// forwarded by the local checkout owner; even the fallback responder
+		// cannot rescue a non-local owner without risking duplicate delivery.
+		if !c.claimsLocally(closed[0]) {
+			transport.Logf(ctx.Stderr, 2, "not claimed locally — skipping closed reply for %s (thread %q)", closed[0].ID, reply.ThreadRef)
+			return true, ""
+		}
 	default:
 		return false, fmt.Sprintf("ambiguous: %d closed initiatives", len(closed))
 	}
