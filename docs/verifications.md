@@ -313,8 +313,26 @@ Independent CLONES each get their own separate `.beads/` — there is no shared 
 ### Bottom-line facts
 
 - **Embedded mode is safe for agent-teams.** Every high-concurrency write targets a DISTINCT record: distinct learning keys, distinct beads. Every same-record write stream (a given initiative, a given bead) has a single sequential owner (the DRI or the assigned agent). The one lossy case — concurrent annotation of the same bead — does not occur by design; it is rare and always routed through the DRI.
-- **Server mode is not needed and was rejected.** It would add a daemon to keep running AND would not fix the app-layer RMW race anyway.
+- **Server mode is not needed and was rejected.** It would add a daemon to keep running AND would not fix the app-layer RMW race anyway. **⚠️ Superseded 2026-09-15 for the global `~/.agent-teams` workspace — see the amendment below.** The rejection analyzed write correctness (the RMW race), which still holds; it did not weigh call serialization under high session concurrency, which is the actual ceiling.
 - **Use worktrees, not clones.** Worktrees share the project's single `.beads/` issue DB. Clones fragment it into disconnected copies.
+
+### Amendment (2026-09-15): server mode adopted for the global workspace
+
+The 2026-06-11 conclusion above ("server mode is not needed and was rejected") analyzed **write correctness** — the same-record RMW race — and remains accurate on that axis: server mode does not fix that race, and the race is avoided by design regardless.
+
+What that analysis did not weigh is **call serialization**. Embedded Dolt takes an exclusive lock at storage-open, before any query, so every concurrent `bd`/`ateam` call — reads included — serializes. Under 15 or more concurrent sessions whose hooks each invoke `ateam`, that lock is what pushed per-prompt hooks past their 30-second timeout.
+
+The global `~/.agent-teams` workspace was migrated embedded to server on 2026-09-15 (bd 1.1.0 + standalone dolt 2.1.10). Benchmark on this machine (`bd list`, 100 issues, median of 3, warm-up discarded):
+
+| N concurrent | embedded wall | server wall | speedup |
+|---|---|---|---|
+| 8 | 3.22s | 0.28s | 11.4x |
+| 16 | 6.01s | 0.53s | 11.3x |
+| 24 | 8.46s | 0.80s | 10.6x |
+
+The serialization ratio wall(N)/wall(1) is close to N for embedded (fully serial) and stays flat for server. Server mode raised the parallel-call ceiling roughly 10–11x at the concurrency agent teams reach. It is auto-started by bd on demand, not a supervised daemon, so the original "adds a daemon to keep running" objection does not apply.
+
+**Project repos remain embedded** — their per-repo concurrency is far lower and has not been measured to contend. See `docs/beads-server-mode.md` for the migration runbook and operating notes.
 
 ---
 
