@@ -185,8 +185,9 @@ Post the review using the GitHub API. Build the inline comments from the reviewe
 **Every successful review body opens with `## Summary` and contains its own
 `Reviewed commit: <reviewed-sha>` line.** Use the full captured SHA, never an
 abbreviation. Normal reviews then carry the reviewer's parity/overlap
-enumeration and identifiability answer verbatim, even when "none"; re-review
-does not request those lens conclusions.
+enumeration and identifiability answer verbatim, even when "none". Re-reviews
+carry the same risk-scaled audit record: its compact audit line when eligible,
+or its full per-path rows otherwise.
 
 #### Handle the no-findings case
 

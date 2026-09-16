@@ -54,7 +54,11 @@ Replace the review instructions above with:
   then `addressed` / `out of scope` / `not addressed`, with a terse reason.
   Carry each original label unchanged; the orchestrator's original-severity
   gate keys off it, so do not re-classify it. Append any required newly
-  confirmed defect after those carried lines.
+  confirmed defect after those carried lines. Separately include the same
+  labeled audit-record section as normal mode: the compact audit line when
+  eligible, or the full per-path parity/overlap rows plus identifiability
+  answer otherwise. The orchestrator renders this section verbatim in the
+  re-review body.
 - **BREVITY:** keep every per-finding line and its reason terse — one clause
   each, no restating the code back, no padding. Cut words, never rows —
   every prior finding still gets its own line.

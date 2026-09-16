@@ -11,6 +11,7 @@ import (
 )
 
 var requestChangesEvent = regexp.MustCompile("(?m)\\bevent\\s*=\\s*[`\\\"]?REQUEST_CHANGES[`\\\"]?")
+var mergeEnforcementInstruction = regexp.MustCompile(`(?is)(?:\b(?:require|must|shall|ensure|enforce|block|gate|prevent)\b.{0,120}\b(?:unresolved-at-merge|merge)\b|\bunresolved-at-merge\b.{0,120}\b(?:require|must|shall|ensure|enforce|block|gate|prevent)\b|\b(?:add|create|post|emit)\b.{0,120}\b(?:unresolved-at-merge|merge warning)\b)`)
 
 func TestReviewerRefinementSharedContract(t *testing.T) {
 	root := filepath.Join("..", "..")
@@ -62,6 +63,7 @@ func TestReviewerRefinementReviewPRContract(t *testing.T) {
 				"Record `.headRefOid` as `<reviewed-sha>`",
 				"`Reviewed commit: <reviewed-sha>` (the full captured `headRefOid`)",
 				"Every successful review body opens with `## Summary` and contains its own `Reviewed commit: <reviewed-sha>` line.",
+				"Re-reviews carry the same risk-scaled audit record: its compact audit line when eligible, or its full per-path rows otherwise.",
 				"one line per PRIOR finding, same order as step 5",
 				"restatement covers every carried finding, in original order",
 				"reviewed-sha: <reviewed-sha>",
@@ -82,6 +84,8 @@ func TestReviewerRefinementReviewPRContract(t *testing.T) {
 				"Carry each original label unchanged",
 				"sibling-guard parity (both directions)",
 				"risk-scaled parity/identifiability audit as normal mode",
+				"Separately include the same labeled audit-record section as normal mode: the compact audit line when eligible, or the full per-path parity/overlap rows plus identifiability answer otherwise.",
+				"The orchestrator renders this section verbatim in the re-review body.",
 			},
 		},
 	} {
@@ -141,6 +145,10 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 	if err := reviewerRefinementAdvisoryError(strings.Replace(skill, "-f event=COMMENT", "-f event=REQUEST_CHANGES", 1)); err == nil {
 		t.Fatal("REQUEST_CHANGES advisory regression was accepted")
 	}
+	contradictoryMergeEnforcement := skill + "\n- Require an unresolved-at-merge enforcement mechanism before merge.\n"
+	if err := reviewerRefinementAdvisoryError(contradictoryMergeEnforcement); err == nil {
+		t.Fatal("unresolved-at-merge enforcement was accepted alongside the COMMENT mapping and advisory-only sentence")
+	}
 }
 
 func readReviewerRefinementFile(t *testing.T, root, path string) string {
@@ -169,6 +177,10 @@ func reviewerRefinementAdvisoryError(body string) error {
 	advisoryOnly := "Post as `COMMENT`, never `REQUEST_CHANGES`; findings never create a merge warning, unresolved-at-merge mechanism, or other enforcement."
 	if err := reviewerRefinementClausesError("review-pr advisory contract", body, advisoryOnly); err != nil {
 		return err
+	}
+	withoutApprovedAdvisory := strings.Replace(body, advisoryOnly, "", 1)
+	if mergeEnforcementInstruction.MatchString(withoutApprovedAdvisory) {
+		return fmt.Errorf("review-pr skill contains a positive merge-enforcement instruction")
 	}
 	return nil
 }
