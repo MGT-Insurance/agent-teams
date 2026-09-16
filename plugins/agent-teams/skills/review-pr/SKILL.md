@@ -21,23 +21,18 @@ Do NOT:
 
 ## Steps
 
-**Wake invariant (read first if resuming).** If this session is woken (mail,
-resume, or heartbeat) believing the review is already done, re-run `ateam
-show <id>` before trusting that. If OPEN, you were reopened — re-derive the
-pending work from GitHub (comment-reply or re-review) and re-close
-idempotently exactly as step 11 / comment-reply step 4 (note + `ateam
-close`). NEVER end a turn with the initiative OPEN and no gate.
+**Wake invariant.** On a mail, resume, or heartbeat that says review is done,
+run `ateam show <id>`. If it is OPEN, re-derive GitHub work and re-close it
+idempotently under step 11 / comment-reply step 4. NEVER end OPEN without a
+gate.
 
 ### 1. Parse the argument
 
-First argument: an initiative id (e.g. `at-xxx`). Optional second argument
-`comment-reply` selects that mode. If no id was given, stop and tell the
-caller to re-invoke with one.
+First argument: initiative id (e.g. `at-xxx`). Optional `comment-reply`
+selects that mode. If no id was given, stop and request one.
 
 - No second argument → normal flow (steps 2–10).
-- `comment-reply` → read the initiative fields (step 2), then follow the
-  **Comment-reply mode** section at the end of this document and skip steps
-  3–10 entirely.
+- `comment-reply` → read step 2, follow **Comment-reply mode**, skip 3–10.
 
 ### 2. Read initiative details
 
@@ -65,10 +60,9 @@ gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid,baseRefOid
 ```
 
 Record `.headRefOid` as `<reviewed-sha>` and `.baseRefOid` as `<base-sha>`.
-They are immutable inputs, not branch names. If either is absent, stop, note
-the failure, and close without posting. Do not silently refresh either value
-later: if the PR advances before a review can be posted, restart the round
-from this step.
+They are immutable inputs, not branch names. If either is absent, note and
+close without posting. If the PR advances before posting, restart here; never
+silently refresh either value.
 
 ### 4. Determine authorship
 
@@ -79,20 +73,16 @@ gh pr view <pr-number> --repo <owner>/<repo> --json author,title
 gh api user -q .login
 ```
 
-Holds `.author.login` (compared below) and `.title` (step 11's completion
-line needs it — empty if this call fails).
+This yields `.author.login` and `.title` (empty on failure for step 11).
 
 This drives **two independent decisions** with **opposite safe defaults** —
 do not collapse them into one boolean:
 
-- **Approve gate (step 10):** matching logins = self-review, never
-  auto-approve (stay `COMMENT`). A failed check also defaults to
-  self-review.
-- **Design-commentary phrasing (step 8):** matching logins = the operator's
-  own work, so state design/approach findings directly. Differing logins OR
-  a failed check = someone else's work → curious-question phrasing. A
-  failed check must NOT flip phrasing to "the operator's own" — the exact
-  opposite default from the approve gate.
+- **Approve gate (step 10):** matching or failed identity = self-review;
+  stay `COMMENT`.
+- **Design commentary (step 8):** matching = operator's work, state findings
+  directly. Different or failed identity = someone else's work, use curious
+  questions. Its failed-check default is the opposite of the approve gate.
 
 ### 5. Detect re-review
 
@@ -107,22 +97,18 @@ gh pr view <pr-number> --repo <owner>/<repo> --json reviews \
 treat this as a first review.)
 
 - **0** → first review. Proceed with the normal flow.
-- **1+** → **re-review mode.** The author addressed our prior findings and
-  review was re-requested. Fetch the prior findings:
+- **1+** → **re-review mode.** Fetch prior findings:
 
 ```bash
 gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews    # review bodies
 gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate   # inline review comments
 ```
 
-Collect every finding from our most recent review (body + inline comments by
-`<our-login>`) as file:line + original severity/label + description. Label
-recovery: an inline comment prefixed `<severity>:` carries that severity
-(`critical`/`high`/`medium`); an unprefixed body finding is a `question`.
-Preserve it — step 10's gate keys off original severity, so a `question`
-never blocks on re-review. Re-review mode replaces the reviewer instructions
-in step 8 and changes the no-findings wording in step 10; checkout, diff,
-posting mechanics, and close are unchanged.
+Collect our latest body and inline findings as file:line, original label, and
+description. A `<severity>:` inline prefix is `critical`/`high`/`medium`; an
+unprefixed body finding is `question`. Preserve it: step 10 gates on original
+severity, so `question` never blocks. Re-review changes step 8 instructions
+and step 10 no-findings wording only.
 
 ### 6. Checkout the pinned PR code
 
@@ -133,11 +119,9 @@ gh pr checkout <pr-number>
 git rev-parse HEAD
 ```
 
-The checked-out `HEAD` must equal `<reviewed-sha>` exactly. If it does not,
-the PR advanced: stop this round, note it, and restart from step 3. Do not use
-the mutable worktree as citation evidence. If checkout fails (fork with a
-non-writable ref or unavailable local repo), continue only with the immutable
-API reads in steps 7–8.
+`HEAD` must equal `<reviewed-sha>` exactly; otherwise note and restart at 3.
+Never cite the mutable worktree. If checkout fails, use only immutable API
+reads in steps 7–8.
 
 ### 7. Get the pinned diff
 
@@ -148,46 +132,48 @@ gh api repos/<owner>/<repo>/compare/<base-sha>...<reviewed-sha> \
   -H 'Accept: application/vnd.github.diff'
 ```
 
-Capture the full output. If it is empty or fails, stop, note the error, and
-close without posting. This diff and every cited source read must remain tied
-to `<reviewed-sha>`.
+If empty or failed, note and close without posting. The diff and cited reads
+stay tied to `<reviewed-sha>`.
 
 ### 8. Spawn the reviewer subagent
 
-Spawn one `agent-teams-reviewer` subagent (`mode: bypassPermissions`, `run_in_background: true`). It self-fetches learnings on spawn — `ateam learnings reviewer`, step 1 of `roles/reviewer.md` — run BARE, never piped through `head`/`tail` (drops the fresh tier). SubagentStart can't do this for it (why: `references/mechanics-notes.md`).
+Spawn one `agent-teams-reviewer` (`mode: bypassPermissions`,
+`run_in_background: true`). It runs its own bare `ateam learnings reviewer`
+(step 1 of `roles/reviewer.md`); do not pipe it through `head`/`tail`.
 
 Include in the reviewer's prompt:
 
-- The PR URL (`<pr-url>`) and PR number (`<pr-number>`)
-- `Reviewed commit: <reviewed-sha>` (the full captured `headRefOid`) and the
-  full pinned diff from step 7
-- **Whose work this is** — step 4's phrasing determination, stated explicitly: "This is the operator's own work" or "This is someone else's work" (frames design commentary). Pass the phrasing value, NOT the approve-gate value.
-- For every reported `file:line`, require an immutable source read at
-  `<reviewed-sha>` before citing it: `git show <reviewed-sha>:<path>`, or,
-  when that object is unavailable locally, `gh api 'repos/<owner>/<repo>/contents/<path>?ref=<reviewed-sha>'`. A diff, search result, or mutable worktree
-  alone is never citation evidence.
-- The review instructions, verbatim from references/reviewer-prompt.md —
-  normal mode by default, or its re-review variant if step 5 detected a
-  prior review.
+- PR URL/number; `Reviewed commit: <reviewed-sha>` (full `headRefOid`); and
+  the full step-7 diff.
+- Step 4's explicit phrasing value — "This is the operator's own work" or
+  "This is someone else's work" — not its approve-gate value.
+- Before every `file:line`, an immutable `<reviewed-sha>` read: `git show
+  <reviewed-sha>:<path>`, or unavailable locally, `gh api
+  'repos/<owner>/<repo>/contents/<path>?ref=<reviewed-sha>'`. A diff, search,
+  or worktree alone is never evidence.
+- The verbatim normal/re-review instructions from `references/reviewer-prompt.md`.
 
 ### 9. Collect findings
 
 Wait for the reviewer's SendMessage with its findings list.
 
-If none arrives within a reasonable time, note the timeout in the initiative and proceed to step 11 (record and close) without posting a review — cite `<pr-url>` (no review URL exists in this path) and note the timeout in the close reason.
+On timeout, note it and perform step 11 without posting; cite `<pr-url>` and
+include timeout in the close reason.
 
 ### 10. Post the review to GitHub
 
-Post the review using the GitHub API. Build the inline comments from the reviewer's findings (one comment per finding at the reported `file:line`).
+Post through GitHub API; build one inline comment per reported `file:line`.
 
-**If the body is long or multiline, don't fight shell quoting — write it to a temp file and post its CONTENTS**, not its path: `gh pr review <pr-number> --body-file <file>`, or `gh api …/reviews -F body=@<file>`/`-F body=@-` (stdin). **Never** `-f body=@<file>`, `--raw-field body=@<file>`, or `--body @<file>` — those post the literal path text (why + the guard: `references/mechanics-notes.md`).
+For a long/multiline body, post temp-file **contents**, not its path: `gh pr
+review <pr-number> --body-file <file>` or `gh api …/reviews -F
+body=@<file>`/`-F body=@-`. Never `-f body=@<file>`, `--raw-field
+body=@<file>`, or `--body @<file>` (they post the path).
 
 **Every successful review body opens with `## Summary` and contains its own
-`Reviewed commit: <reviewed-sha>` line.** Use the full captured SHA, never an
-abbreviation. Normal reviews then carry the reviewer's parity/overlap
-enumeration and identifiability answer verbatim, even when "none". Re-reviews
-carry the same risk-scaled audit record: its compact audit line when eligible,
-or its full per-path rows otherwise.
+`Reviewed commit: <reviewed-sha>` line.** Use the full SHA. Normal and
+re-review bodies carry the reviewer's risk-scaled parity/overlap and
+identifiability record verbatim: compact line when eligible, otherwise full
+per-path rows.
 
 #### Recheck the PR head immediately before posting
 
@@ -202,10 +188,9 @@ if [ "$CURRENT_HEAD" != "<reviewed-sha>" ]; then
 fi
 ```
 
-Run it immediately before the selected POST; no intervening reviewer work. If
-lookup fails or differs, do not post (including retries): discard its
-body/comments and restart at step 3. The replacement round captures a new SHA
-and repeats. This binds event, not its body stamp.
+Run immediately before the selected POST, with no intervening reviewer work.
+On failed/different lookup, including retry, discard body/comments and restart
+at 3 with a new SHA. This binds the event, not only its body stamp.
 
 #### Handle the no-findings case
 
@@ -231,9 +216,13 @@ Reviewed commit: <reviewed-sha>
 
 #### Handle findings
 
-Inline comments only work on diff lines. Two kinds belong in the body instead: parity/overlap findings referencing a consumer line **outside the diff**, and `question`-labeled findings (post verbatim, no severity prefix — a prefix would read as a defect). Everything else posts inline.
+Only diff lines support inline comments. Put out-of-diff consumer
+parity/overlap and `question` findings in the body (verbatim, no severity
+prefix); put the rest inline.
 
-Build the `## Summary` list first — one line for **every** finding, including the `question` and out-of-diff parity/overlap findings that go in the body rather than inline: `` `file:line` — <severity|question> — <one clause> ``, no flowery language, no restating the finding's full detail. Then construct the inline comments (the diff-line subset only) and collect everything into a single review POST:
+Build `## Summary` first: one terse `` `file:line` — <severity|question> —
+<one clause> `` line for **every** finding, including body-only findings. Then
+collect the inline diff-line subset into one POST:
 
 ```bash
 REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
@@ -256,19 +245,17 @@ Reviewed commit: <reviewed-sha>
 
 The Summary carries a `-` line for **every** finding; the `-F 'comments[]…'` flags cover only the inline (diff-line) subset. Post as `COMMENT`, never `REQUEST_CHANGES`; findings never create a merge warning, unresolved-at-merge mechanism, or other enforcement.
 
-Every review POST, including retry, re-review, and fallback, must first pass
-the exact head-equality gate, bind `-f commit_id=<reviewed-sha>`, and append
-`--jq .html_url` into `REVIEW_URL`; step 11 cites it, falling back to
-`<pr-url>` if empty. A review-comment reply is not a top-level review POST: do
-not add `commit_id` to that reply endpoint.
+Every review POST — retry, re-review, fallback included — passes the exact
+head-equality gate, binds `-f commit_id=<reviewed-sha>`, and stores
+`--jq .html_url` in `REVIEW_URL`; step 11 falls back to `<pr-url>`. A reply
+is not a top-level POST: do not add `commit_id` to that reply endpoint.
 
 **One-round event invariant:** assemble the complete body and every eligible
 inline comment before one top-level `/reviews` POST. Never post one review per
-finding or a partial review. A failed atomic POST may be retried only after
-confirming it did not create a successful review event; rerun the head-equality
-gate immediately before the retry and preserve its `commit_id=<reviewed-sha>`.
-Preserve all body rows in their original order and move rejected inline content
-into that same retry body. An acknowledgement in an existing thread uses the
+finding or a partial review. Retry an atomic failure only after confirming no
+successful event; rerun the head-equality gate immediately before retry and
+preserve `commit_id=<reviewed-sha>`. Keep body rows ordered and move rejected
+inline content into that retry body. A thread acknowledgement uses the
 review-comment reply endpoint, never another top-level review event.
 
 **Re-review mode:** the gate keys off each finding's ORIGINAL severity, not
@@ -276,20 +263,16 @@ its resolution. Only `critical`/`high`/`medium` AND `not addressed` forces
 event=`COMMENT`. A `question` (or other non-blocking label) never forces
 `COMMENT`, regardless of resolution — it was never blocking.
 
-Post any blocking `not addressed` finding inline where its current line is in
-the pinned diff. The body opens with `## Summary`, then the tally line (`Re-review: N
-of M prior findings resolved`, N = non-blocking: `addressed`, `out of
-scope`, every `question` — or `Re-review: all blocking findings resolved`
-once none remain), then one line per PRIOR finding, same order as step 5:
-`` `file:line` — <original label> — <addressed|out of scope|not
-addressed>: <one clause> ``, then `Reviewed commit: <reviewed-sha>`. This
-restatement covers every carried finding, in original order, body-only except
-for eligible blocking inline comments. Append any new required F1–F5 defect
-after the carried rows, with its severity and current anchor. The original
-severity gate remains: any original `critical`/`high`/`medium` that is `not
-addressed` forces COMMENT; any newly confirmed correctness defect also keeps
-the event COMMENT. Otherwise event is APPROVE unless self-review. Use the same
-one-round event invariant and capture `REVIEW_URL`.
+Post blocking `not addressed` findings inline at their current pinned-diff
+line. Body: `## Summary`; tally (`Re-review: N of M prior findings resolved`,
+where N is `addressed`, `out of scope`, or any `question`, or `Re-review: all
+blocking findings resolved`); then one line per PRIOR finding, same order as
+step 5: `` `file:line` — <original label> — <addressed|out of scope|not
+addressed>: <one clause> ``, then `Reviewed commit: <reviewed-sha>`. The
+restatement covers every carried finding, in original order; append new F1–F5
+defects with severity/current anchor. Original `critical`/`high`/`medium` +
+`not addressed`, or a new correctness defect, forces COMMENT; otherwise
+APPROVE unless self-review. Use the one-round invariant and `REVIEW_URL`.
 
 ### 11. Record the outcome and close the initiative
 
