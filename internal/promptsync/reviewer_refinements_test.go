@@ -11,7 +11,16 @@ import (
 )
 
 var requestChangesEvent = regexp.MustCompile("(?m)\\bevent\\s*=\\s*[`\\\"]?REQUEST_CHANGES[`\\\"]?")
-var mergeEnforcementInstruction = regexp.MustCompile(`(?is)(?:\b(?:require|must|shall|ensure|enforce|block|gate|prevent)\b.{0,120}\b(?:unresolved-at-merge|merge)\b|\bunresolved-at-merge\b.{0,120}\b(?:require|must|shall|ensure|enforce|block|gate|prevent)\b|\b(?:add|create|post|emit)\b.{0,120}\b(?:unresolved-at-merge|merge warning)\b)`)
+
+var mergeEnforcementInstructions = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)\b(?:require|must|shall|ensure|enforce|add|create|post|emit)\b.{0,120}\bunresolved-at-merge\b`),
+	regexp.MustCompile(`(?is)\bunresolved-at-merge\b.{0,120}\b(?:require|must|shall|ensure|enforce|add|create|post|emit)\b`),
+	regexp.MustCompile(`(?i)\bdo not (?:allow|permit)\s+(?:a\s+|the\s+)?merg(?:e|ing)\b`),
+	regexp.MustCompile(`(?i)\b(?:block|prevent|gate)\s+(?:a\s+|the\s+)?merg(?:e|ing)\b`),
+	regexp.MustCompile(`(?is)\b(?:require|must|shall|ensure)\b.{0,120}\bfindings?\b.{0,80}\bresolved\b.{0,80}\b(?:before|prior to)\s+merg(?:e|ing)\b`),
+	regexp.MustCompile(`(?i)\b(?:create|post|emit)\s+(?:a\s+)?merge warning\b`),
+}
+var negatedMergeInstruction = regexp.MustCompile(`(?i)(?:\bnever|\bdo not|\bdon't)\s*$`)
 
 func TestReviewerRefinementSharedContract(t *testing.T) {
 	root := filepath.Join("..", "..")
@@ -145,9 +154,35 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 	if err := reviewerRefinementAdvisoryError(strings.Replace(skill, "-f event=COMMENT", "-f event=REQUEST_CHANGES", 1)); err == nil {
 		t.Fatal("REQUEST_CHANGES advisory regression was accepted")
 	}
-	contradictoryMergeEnforcement := skill + "\n- Require an unresolved-at-merge enforcement mechanism before merge.\n"
-	if err := reviewerRefinementAdvisoryError(contradictoryMergeEnforcement); err == nil {
-		t.Fatal("unresolved-at-merge enforcement was accepted alongside the COMMENT mapping and advisory-only sentence")
+	for _, tt := range []struct {
+		name        string
+		instruction string
+	}{
+		{"unresolved-at-merge requirement", "Require an unresolved-at-merge enforcement mechanism before merge."},
+		{"do not permit merging", "Do not permit merging while findings remain."},
+		{"block merge", "Block merging until all findings are resolved."},
+		{"prevent merge", "Prevent a merge when findings remain unresolved."},
+		{"require findings resolved", "Require findings to be resolved before merge."},
+		{"create merge warning", "Create a merge warning for unresolved findings."},
+		{"post merge warning", "Post a merge warning for unresolved findings."},
+		{"emit merge warning", "Emit a merge warning for unresolved findings."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := skill + "\n- " + tt.instruction + "\n"
+			if err := reviewerRefinementAdvisoryError(mutated); err == nil {
+				t.Fatalf("positive merge enforcement %q was accepted alongside the COMMENT mapping and approved advisory sentence", tt.instruction)
+			}
+		})
+	}
+
+	for _, advisory := range []string{
+		"Never use REQUEST_CHANGES for a review event.",
+		"Never create a merge warning.",
+		"No merge enforcement is permitted.",
+	} {
+		if err := reviewerRefinementAdvisoryError(skill + "\n- " + advisory + "\n"); err != nil {
+			t.Fatalf("approved advisory prose %q was rejected: %v", advisory, err)
+		}
 	}
 }
 
@@ -179,8 +214,23 @@ func reviewerRefinementAdvisoryError(body string) error {
 		return err
 	}
 	withoutApprovedAdvisory := strings.Replace(body, advisoryOnly, "", 1)
-	if mergeEnforcementInstruction.MatchString(withoutApprovedAdvisory) {
+	if positiveMergeEnforcementInstruction(withoutApprovedAdvisory) {
 		return fmt.Errorf("review-pr skill contains a positive merge-enforcement instruction")
 	}
 	return nil
+}
+
+func positiveMergeEnforcementInstruction(body string) bool {
+	for _, clause := range strings.FieldsFunc(body, func(r rune) bool {
+		return r == '.' || r == '!' || r == '?' || r == ';' || r == '\n'
+	}) {
+		for _, instruction := range mergeEnforcementInstructions {
+			for _, match := range instruction.FindAllStringIndex(clause, -1) {
+				if !negatedMergeInstruction.MatchString(clause[:match[0]]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
