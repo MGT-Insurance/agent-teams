@@ -181,16 +181,25 @@ Immediately before every top-level `/reviews` POST, fetch the current head and
 compare it exactly to this round's full `<reviewed-sha>`:
 
 ```bash
-CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)
+if ! CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid); then
+  printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: lookup failed\n' \
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  exit 0
+fi
 if [ "$CURRENT_HEAD" != "<reviewed-sha>" ]; then
+  printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s\n' "$CURRENT_HEAD" \
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
   # Do not POST; discard this round and restart at step 3.
   exit 0
 fi
 ```
 
 Run immediately before the selected POST, with no intervening reviewer work.
-On failed/different lookup, including retry, discard body/comments and restart
-at 3 with a new SHA. This binds the event, not only its body stamp.
+On failed/different lookup, including retry, record this durable restart note,
+discard body/comments, and restart at 3 with a new SHA. This binds the event,
+not only its body stamp.
 
 #### Handle the no-findings case
 

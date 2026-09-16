@@ -16,11 +16,14 @@ var mergeEnforcementInstructions = []*regexp.Regexp{
 	regexp.MustCompile(`(?is)\b(?:require|must|shall|ensure|enforce|add|create|post|emit)\b.{0,120}\bunresolved-at-merge\b`),
 	regexp.MustCompile(`(?is)\bunresolved-at-merge\b.{0,120}\b(?:require|must|shall|ensure|enforce|add|create|post|emit)\b`),
 	regexp.MustCompile(`(?i)\bdo not (?:allow|permit)\s+(?:a\s+|the\s+)?merg(?:e|ing)\b`),
-	regexp.MustCompile(`(?i)\b(?:block|prevent|gate)\s+(?:a\s+|the\s+)?merg(?:e|ing)\b`),
+	regexp.MustCompile(`(?i)\b(?:block|prevent|gate|forbid|prohibit|deny)\s+(?:a\s+|the\s+)?merg(?:e|ing)\b`),
+	regexp.MustCompile(`(?i)\bmerg(?:e|ing)\s+(?:is\s+)?(?:forbidden|prohibited|denied)\b`),
 	regexp.MustCompile(`(?is)\b(?:require|must|shall|ensure)\b.{0,120}\bfindings?\b.{0,80}\bresolved\b.{0,80}\b(?:before|prior to)\s+merg(?:e|ing)\b`),
 	regexp.MustCompile(`(?i)\b(?:create|post|emit)\s+(?:a\s+)?merge warning\b`),
 }
-var negatedMergeInstruction = regexp.MustCompile(`(?i)(?:\bnever|\bdo not|\bdon't)\s*$`)
+var negatedMergeInstruction = regexp.MustCompile(`(?i)(?:\bnever|\bno|\bdo not|\bdon't)\s*$`)
+
+const reviewerSkillMinimumHeadroom = 1300
 
 func TestReviewerRefinementSharedContract(t *testing.T) {
 	root := filepath.Join("..", "..")
@@ -128,8 +131,17 @@ func TestReviewerRefinementReviewPRRenderedUTF16Budget(t *testing.T) {
 	rendered := "Base directory for this skill: " + filepath.ToSlash(filepath.Dir(path)) + "\n\n" + string(body)
 	units := len(utf16.Encode([]rune(rendered)))
 	headroom := SkillUTF16Limit - units
-	if units >= SkillUTF16Limit || headroom < 1000 {
-		t.Fatalf("%s rendered prompt = %d UTF-16 units, headroom = %d; want < %d and >= 1000 headroom (frontmatter stripped; loader base-directory line included)", path, units, headroom, SkillUTF16Limit)
+	if units >= SkillUTF16Limit || !reviewerSkillHasRequiredHeadroom(headroom) {
+		t.Fatalf("%s rendered prompt = %d UTF-16 units, headroom = %d; want < %d and >= %d headroom (frontmatter stripped; loader base-directory line included)", path, units, headroom, SkillUTF16Limit, reviewerSkillMinimumHeadroom)
+	}
+}
+
+func TestReviewerRefinementSkillHeadroomBoundary(t *testing.T) {
+	if !reviewerSkillHasRequiredHeadroom(reviewerSkillMinimumHeadroom) {
+		t.Fatalf("%d headroom was rejected", reviewerSkillMinimumHeadroom)
+	}
+	if reviewerSkillHasRequiredHeadroom(1200) {
+		t.Fatal("hypothetical 1200 headroom was accepted; want it below the required boundary")
 	}
 }
 
@@ -173,12 +185,24 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 			body: reviewerReviewPostCommitIDRemoved(skill, 1),
 		},
 		{
+			name: "failed-head lookup guard removed",
+			body: strings.Replace(skill, "if ! CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid); then", "if false; then", 1),
+		},
+		{
 			name: "head equality guard removed",
 			body: strings.Replace(skill, "if [ \"$CURRENT_HEAD\" != \"<reviewed-sha>\" ]; then", "if false; then", 1),
 		},
 		{
 			name: "round restart guard removed",
-			body: strings.Replace(skill, "  exit 0\nfi", "fi", 1),
+			body: strings.Replace(skill, "  exit 0\nfi\nif [ \"$CURRENT_HEAD\" != \"<reviewed-sha>\" ]; then", "fi\nif [ \"$CURRENT_HEAD\" != \"<reviewed-sha>\" ]; then", 1),
+		},
+		{
+			name: "lookup-failure restart note removed",
+			body: strings.Replace(skill, "review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: lookup failed", "", 1),
+		},
+		{
+			name: "different-head restart note removed",
+			body: strings.Replace(skill, "review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s", "", 1),
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -195,6 +219,12 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 		{"do not permit merging", "Do not permit merging while findings remain."},
 		{"block merge", "Block merging until all findings are resolved."},
 		{"prevent merge", "Prevent a merge when findings remain unresolved."},
+		{"forbid merge", "Forbid merging while findings remain."},
+		{"prohibit merge", "Prohibit a merge while findings remain."},
+		{"deny merge", "Deny merging while findings remain."},
+		{"passive forbidden merge", "Merging is forbidden while findings remain."},
+		{"passive prohibited merge", "A merge is prohibited while findings remain."},
+		{"passive denied merge", "Merging is denied while findings remain."},
 		{"require findings resolved", "Require findings to be resolved before merge."},
 		{"create merge warning", "Create a merge warning for unresolved findings."},
 		{"post merge warning", "Post a merge warning for unresolved findings."},
@@ -212,6 +242,7 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 		"Never use REQUEST_CHANGES for a review event.",
 		"Never create a merge warning.",
 		"No merge enforcement is permitted.",
+		"Do not forbid merging while findings remain.",
 	} {
 		if err := reviewerRefinementAdvisoryError(skill + "\n- " + advisory + "\n"); err != nil {
 			t.Fatalf("approved advisory prose %q was rejected: %v", advisory, err)
@@ -254,18 +285,25 @@ func reviewerRefinementAdvisoryError(body string) error {
 }
 
 func reviewerReviewPostBindingError(body string) error {
+	const lookup = "if ! CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid); then"
 	const guard = "if [ \"$CURRENT_HEAD\" != \"<reviewed-sha>\" ]; then"
 	const restart = "# Do not POST; discard this round and restart at step 3."
 	if err := reviewerRefinementClausesError("review-pr review-post binding", body,
 		"#### Recheck the PR head immediately before posting",
-		"CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)",
+		lookup,
 		guard,
+		"review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: lookup failed",
+		"review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s",
+		"ateam note <id> --file \"${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt\"",
 		restart,
 		"exit 0",
 		"Run immediately before the selected POST, with no intervening reviewer work.",
-		"On failed/different lookup, including retry, discard body/comments and restart at 3 with a new SHA.",
+		"On failed/different lookup, including retry, record this durable restart note, discard body/comments, and restart at 3 with a new SHA.",
 		"do not add `commit_id` to that reply endpoint.",
 	); err != nil {
+		return err
+	}
+	if err := reviewerPrePostHeadCheckError(body); err != nil {
 		return err
 	}
 
@@ -290,6 +328,44 @@ func reviewerReviewPostBindingError(body string) error {
 	}
 	if strings.Contains(reply, "commit_id") {
 		return fmt.Errorf("review-comment reply POST must not bind commit_id")
+	}
+	return nil
+}
+
+func reviewerSkillHasRequiredHeadroom(headroom int) bool {
+	return headroom >= reviewerSkillMinimumHeadroom
+}
+
+func reviewerPrePostHeadCheckError(body string) error {
+	const heading = "#### Recheck the PR head immediately before posting"
+	const nextSection = "#### Handle the no-findings case"
+	const lookupFailureRestart = `if ! CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid); then
+  printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: lookup failed\n' \
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  exit 0
+fi`
+	const differentHeadRestart = `if [ "$CURRENT_HEAD" != "<reviewed-sha>" ]; then
+  printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s\n' "$CURRENT_HEAD" \
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+  # Do not POST; discard this round and restart at step 3.
+  exit 0
+fi`
+	start := strings.Index(body, heading)
+	end := strings.Index(body, nextSection)
+	if start < 0 || end < 0 || end <= start {
+		return fmt.Errorf("review-pr pre-POST head check section is missing")
+	}
+	section := body[start:end]
+	if strings.Contains(section, "gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews") {
+		return fmt.Errorf("review-pr pre-POST head check must not POST a review")
+	}
+	if !strings.Contains(section, lookupFailureRestart) {
+		return fmt.Errorf("review-pr pre-POST failed-head restart must durably note the lookup failure before exit")
+	}
+	if !strings.Contains(section, differentHeadRestart) {
+		return fmt.Errorf("review-pr pre-POST different-head restart must durably note both SHAs before exit")
 	}
 	return nil
 }
