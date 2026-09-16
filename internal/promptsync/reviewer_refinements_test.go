@@ -3,6 +3,7 @@ package promptsync
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -145,6 +146,81 @@ func TestReviewerRefinementSkillHeadroomBoundary(t *testing.T) {
 	}
 }
 
+func TestReviewerPrePostHeadCheckFailsClosedWhenNotePersistenceFails(t *testing.T) {
+	root := filepath.Join("..", "..")
+	skill := readReviewerRefinementFile(t, root, "plugins/agent-teams/skills/review-pr/SKILL.md")
+	block, err := reviewerPrePostHeadCheckScript(skill)
+	if err != nil {
+		t.Fatalf("extract pre-POST head-check script: %v", err)
+	}
+	block = strings.NewReplacer(
+		"<pr-number>", "1",
+		"<owner>/<repo>", "owner/repo",
+		"<id>", "initiative",
+		"<reviewed-sha>", "reviewed-sha",
+	).Replace(block)
+
+	for _, tt := range []struct {
+		name      string
+		jobDir    string
+		ghStatus  string
+		ghOutput  string
+		wantAteam bool
+	}{
+		{
+			name:     "note-file write fails after lookup failure",
+			jobDir:   filepath.Join(t.TempDir(), "missing-job-dir"),
+			ghStatus: "1",
+		},
+		{
+			name:      "note persistence fails after lookup failure",
+			jobDir:    t.TempDir(),
+			ghStatus:  "1",
+			wantAteam: true,
+		},
+		{
+			name:      "note persistence fails after head changes",
+			jobDir:    t.TempDir(),
+			ghStatus:  "0",
+			ghOutput:  "different-head",
+			wantAteam: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantAteam {
+				if err := os.Mkdir(filepath.Join(tt.jobDir, "tmp"), 0o755); err != nil {
+					t.Fatalf("create job temp directory: %v", err)
+				}
+			}
+			postMarker := filepath.Join(t.TempDir(), "review-posted")
+			ateamMarker := filepath.Join(t.TempDir(), "ateam-note-called")
+			script := "gh() { if [ \"$GH_STATUS\" -eq 0 ]; then printf '%s\\n' \"$GH_OUTPUT\"; fi; return \"$GH_STATUS\"; }\n" +
+				"ateam() { touch \"$ATEAM_MARKER\"; return 1; }\n" +
+				block +
+				"\nprintf 'review POST reached\\n' > \"$POST_MARKER\"\n"
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Env = append(os.Environ(),
+				"CLAUDE_JOB_DIR="+tt.jobDir,
+				"GH_STATUS="+tt.ghStatus,
+				"GH_OUTPUT="+tt.ghOutput,
+				"ATEAM_MARKER="+ateamMarker,
+				"POST_MARKER="+postMarker,
+			)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatal("failed restart-note persistence exited successfully")
+			}
+			if _, err := os.Stat(postMarker); !os.IsNotExist(err) {
+				t.Fatalf("failed restart-note persistence reached a review POST: %v", err)
+			}
+			_, statErr := os.Stat(ateamMarker)
+			if tt.wantAteam != !os.IsNotExist(statErr) {
+				t.Fatalf("ateam note invocation = %t, want %t (stat error: %v; shell output: %s)", !os.IsNotExist(statErr), tt.wantAteam, statErr, output)
+			}
+		})
+	}
+}
+
 func TestReviewerRefinementMutationGuards(t *testing.T) {
 	root := filepath.Join("..", "..")
 	sharedPath := "promptsrc/agent-teams/roles/reviewer/shared-core.md"
@@ -203,6 +279,18 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 		{
 			name: "different-head restart note removed",
 			body: strings.Replace(skill, "review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s", "", 1),
+		},
+		{
+			name: "lookup-failure note-file write may restart successfully",
+			body: strings.Replace(skill, `> "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1`, `> "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"`, 1),
+		},
+		{
+			name: "lookup-failure note persistence may restart successfully",
+			body: strings.Replace(skill, `ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1`, `ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"`, 1),
+		},
+		{
+			name: "different-head note persistence may restart successfully",
+			body: strings.Replace(skill, `ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1`, `ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"`, 2),
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -341,14 +429,14 @@ func reviewerPrePostHeadCheckError(body string) error {
 	const nextSection = "#### Handle the no-findings case"
 	const lookupFailureRestart = `if ! CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid); then
   printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: lookup failed\n' \
-    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
-  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
   exit 0
 fi`
 	const differentHeadRestart = `if [ "$CURRENT_HEAD" != "<reviewed-sha>" ]; then
   printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s\n' "$CURRENT_HEAD" \
-    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
-  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
   # Do not POST; discard this round and restart at step 3.
   exit 0
 fi`
@@ -368,6 +456,27 @@ fi`
 		return fmt.Errorf("review-pr pre-POST different-head restart must durably note both SHAs before exit")
 	}
 	return nil
+}
+
+func reviewerPrePostHeadCheckScript(body string) (string, error) {
+	const heading = "#### Recheck the PR head immediately before posting"
+	const nextSection = "#### Handle the no-findings case"
+	sectionStart := strings.Index(body, heading)
+	sectionEnd := strings.Index(body, nextSection)
+	if sectionStart < 0 || sectionEnd < 0 || sectionEnd <= sectionStart {
+		return "", fmt.Errorf("review-pr pre-POST head check section is missing")
+	}
+	section := body[sectionStart:sectionEnd]
+	start := strings.Index(section, "```bash\n")
+	if start < 0 {
+		return "", fmt.Errorf("review-pr pre-POST head check shell template is missing")
+	}
+	start += len("```bash\n")
+	end := strings.Index(section[start:], "\n```")
+	if end < 0 {
+		return "", fmt.Errorf("review-pr pre-POST head check shell template is unterminated")
+	}
+	return section[start : start+end], nil
 }
 
 func reviewerReviewPostCommitIDRemoved(body string, occurrence int) string {

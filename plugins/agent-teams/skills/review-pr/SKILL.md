@@ -183,14 +183,14 @@ compare it exactly to this round's full `<reviewed-sha>`:
 ```bash
 if ! CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid); then
   printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: lookup failed\n' \
-    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
-  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
   exit 0
 fi
 if [ "$CURRENT_HEAD" != "<reviewed-sha>" ]; then
   printf 'review-round-restarted: PR #<pr-number> — reviewed-sha: <reviewed-sha>; current-sha: %s\n' "$CURRENT_HEAD" \
-    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
-  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+    > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
+  ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt" || exit 1
   # Do not POST; discard this round and restart at step 3.
   exit 0
 fi
@@ -198,8 +198,9 @@ fi
 
 Run immediately before the selected POST, with no intervening reviewer work.
 On failed/different lookup, including retry, record this durable restart note,
-discard body/comments, and restart at 3 with a new SHA. This binds the event,
-not only its body stamp.
+discard body/comments, and restart at 3 with a new SHA. If note-file writing
+or `ateam note` fails, exit nonzero: do not silently restart or POST. This
+binds the event, not only its body stamp.
 
 #### Handle the no-findings case
 
