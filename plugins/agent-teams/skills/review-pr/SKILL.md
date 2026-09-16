@@ -189,6 +189,24 @@ enumeration and identifiability answer verbatim, even when "none". Re-reviews
 carry the same risk-scaled audit record: its compact audit line when eligible,
 or its full per-path rows otherwise.
 
+#### Recheck the PR head immediately before posting
+
+Immediately before every top-level `/reviews` POST, fetch the current head and
+compare it exactly to this round's full `<reviewed-sha>`:
+
+```bash
+CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)
+if [ "$CURRENT_HEAD" != "<reviewed-sha>" ]; then
+  # Do not POST; discard this round and restart at step 3.
+  exit 0
+fi
+```
+
+Run it immediately before the selected POST; no intervening reviewer work. If
+lookup fails or differs, do not post (including retries): discard its
+body/comments and restart at step 3. The replacement round captures a new SHA
+and repeats. This binds event, not its body stamp.
+
 #### Handle the no-findings case
 
 If the reviewer reported no substantive findings, post:
@@ -196,6 +214,7 @@ If the reviewer reported no substantive findings, post:
 ```bash
 REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --method POST \
+  -f commit_id=<reviewed-sha> \
   -f event=<APPROVE|COMMENT> \
   -f body="## Summary
 
@@ -219,6 +238,7 @@ Build the `## Summary` list first — one line for **every** finding, including 
 ```bash
 REVIEW_URL=$(gh api repos/<owner>/<repo>/pulls/<pr-number>/reviews \
   --method POST \
+  -f commit_id=<reviewed-sha> \
   -f event=COMMENT \
   -f body="## Summary
 
@@ -236,17 +256,20 @@ Reviewed commit: <reviewed-sha>
 
 The Summary carries a `-` line for **every** finding; the `-F 'comments[]…'` flags cover only the inline (diff-line) subset. Post as `COMMENT`, never `REQUEST_CHANGES`; findings never create a merge warning, unresolved-at-merge mechanism, or other enforcement.
 
-Every review POST above (every variant, including retry and re-review) must
-append `--jq .html_url` into `REVIEW_URL`; step 11 cites it, falling back to
-`<pr-url>` if empty.
+Every review POST, including retry, re-review, and fallback, must first pass
+the exact head-equality gate, bind `-f commit_id=<reviewed-sha>`, and append
+`--jq .html_url` into `REVIEW_URL`; step 11 cites it, falling back to
+`<pr-url>` if empty. A review-comment reply is not a top-level review POST: do
+not add `commit_id` to that reply endpoint.
 
 **One-round event invariant:** assemble the complete body and every eligible
 inline comment before one top-level `/reviews` POST. Never post one review per
 finding or a partial review. A failed atomic POST may be retried only after
-confirming it did not create a successful review event; preserve all body rows
-in their original order and move rejected inline content into that same retry
-body. An acknowledgement in an existing thread uses the review-comment reply
-endpoint, never another top-level review event.
+confirming it did not create a successful review event; rerun the head-equality
+gate immediately before the retry and preserve its `commit_id=<reviewed-sha>`.
+Preserve all body rows in their original order and move rejected inline content
+into that same retry body. An acknowledgement in an existing thread uses the
+review-comment reply endpoint, never another top-level review event.
 
 **Re-review mode:** the gate keys off each finding's ORIGINAL severity, not
 its resolution. Only `critical`/`high`/`medium` AND `not addressed` forces

@@ -102,6 +102,9 @@ func TestReviewerRefinementReviewPRContract(t *testing.T) {
 			t.Error(err)
 		}
 	}
+	if err := reviewerReviewPostBindingError(skill); err != nil {
+		t.Error(err)
+	}
 
 	if err := reviewerRefinementAdvisoryError(skill); err != nil {
 		t.Error(err)
@@ -153,6 +156,36 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 	}
 	if err := reviewerRefinementAdvisoryError(strings.Replace(skill, "-f event=COMMENT", "-f event=REQUEST_CHANGES", 1)); err == nil {
 		t.Fatal("REQUEST_CHANGES advisory regression was accepted")
+	}
+	if err := reviewerReviewPostBindingError(skill); err != nil {
+		t.Fatalf("control review-post SHA binding rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "no-findings commit_id removed",
+			body: reviewerReviewPostCommitIDRemoved(skill, 0),
+		},
+		{
+			name: "findings commit_id removed",
+			body: reviewerReviewPostCommitIDRemoved(skill, 1),
+		},
+		{
+			name: "head equality guard removed",
+			body: strings.Replace(skill, "if [ \"$CURRENT_HEAD\" != \"<reviewed-sha>\" ]; then", "if false; then", 1),
+		},
+		{
+			name: "round restart guard removed",
+			body: strings.Replace(skill, "  exit 0\nfi", "fi", 1),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := reviewerReviewPostBindingError(tt.body); err == nil {
+				t.Fatal("review-post SHA binding mutation was accepted")
+			}
+		})
 	}
 	for _, tt := range []struct {
 		name        string
@@ -218,6 +251,84 @@ func reviewerRefinementAdvisoryError(body string) error {
 		return fmt.Errorf("review-pr skill contains a positive merge-enforcement instruction")
 	}
 	return nil
+}
+
+func reviewerReviewPostBindingError(body string) error {
+	const guard = "if [ \"$CURRENT_HEAD\" != \"<reviewed-sha>\" ]; then"
+	const restart = "# Do not POST; discard this round and restart at step 3."
+	if err := reviewerRefinementClausesError("review-pr review-post binding", body,
+		"#### Recheck the PR head immediately before posting",
+		"CURRENT_HEAD=$(gh pr view <pr-number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)",
+		guard,
+		restart,
+		"exit 0",
+		"Run it immediately before the selected POST; no intervening reviewer work.",
+		"If lookup fails or differs, do not post (including retries): discard its body/comments and restart at step 3.",
+		"do not add `commit_id` to that reply endpoint.",
+	); err != nil {
+		return err
+	}
+
+	for _, template := range []struct {
+		name   string
+		marker string
+	}{
+		{"no-findings", "#### Handle the no-findings case"},
+		{"findings", "#### Handle findings"},
+	} {
+		post, err := reviewerTopLevelReviewPostTemplate(body, template.marker)
+		if err != nil {
+			return fmt.Errorf("%s review POST: %w", template.name, err)
+		}
+		if !strings.Contains(post, "-f commit_id=<reviewed-sha> \\") {
+			return fmt.Errorf("%s review POST is missing -f commit_id=<reviewed-sha>", template.name)
+		}
+	}
+	reply, err := reviewerTopLevelReviewPostTemplate(body, "2. **Respond to each thread")
+	if err != nil {
+		return fmt.Errorf("review-comment reply POST: %w", err)
+	}
+	if strings.Contains(reply, "commit_id") {
+		return fmt.Errorf("review-comment reply POST must not bind commit_id")
+	}
+	return nil
+}
+
+func reviewerReviewPostCommitIDRemoved(body string, occurrence int) string {
+	const commitID = "-f commit_id=<reviewed-sha>"
+	start := 0
+	for i := 0; i <= occurrence; i++ {
+		index := strings.Index(body[start:], commitID)
+		if index < 0 {
+			return body
+		}
+		index += start
+		if i == occurrence {
+			return body[:index] + body[index+len(commitID):]
+		}
+		start = index + len(commitID)
+	}
+	return body
+}
+
+func reviewerTopLevelReviewPostTemplate(body, marker string) (string, error) {
+	section := strings.Index(body, marker)
+	if section < 0 {
+		return "", fmt.Errorf("missing %q section", marker)
+	}
+	start := strings.Index(body[section:], "```bash\n")
+	if start < 0 {
+		return "", fmt.Errorf("missing shell template")
+	}
+	start += section + len("```bash\n")
+	end := strings.Index(body[start:], "\n```")
+	if end < 0 {
+		end = strings.Index(body[start:], "\n   ```")
+	}
+	if end < 0 {
+		return "", fmt.Errorf("unterminated shell template")
+	}
+	return body[start : start+end], nil
 }
 
 func positiveMergeEnforcementInstruction(body string) bool {
