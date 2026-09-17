@@ -27,19 +27,22 @@ var negatedMergeInstruction = regexp.MustCompile(`(?i)(?:\bnever|\bno|\bdo not|\
 const reviewerSkillMinimumHeadroom = 1300
 
 const (
-	reviewerF7Heading             = "F7 — Executable caller compatibility"
-	reviewerF7Trigger             = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
-	reviewerF7Trace               = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
-	reviewerF7Comparison          = "Compare each caller's produced contract with the target's accepted contract."
-	reviewerF7TraceRecord         = "Report a terse explicit F7 trace record for every affected retained public caller in this exact form: `caller=... | invocation=... | argv=... | cwd=... | required-env/state=... | target=... | accepted-contract=... | verdict=...`."
-	reviewerF7EmptyArgv           = "Render an empty argv as `argv=[]`."
-	reviewerF7RequiredEnvState    = "In `required-env/state`, state what environment/state is required or present and whether any environment/state is read or consumed before an early rejection."
-	reviewerF7Evidence            = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit; the record's caller, target, and accepted-contract values carry those pinned anchors."
-	reviewerF7RecordModes         = "Require this record in normal review and when re-verifying a carried F7 finding."
-	reviewerF7RejectedCaller      = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
-	reviewerF7AntiRationalization = "A caller still present in a package manifest, command registry, retained documentation, or equivalent public surface is not removed/deprecated for F7. Intentional fail-closed rejection, PR disclosure, or tests that encode/assert the mismatch do not waive the correctness finding. The exception requires actual caller removal or an explicit deprecation/migration whose retained public surfaces no longer advertise an invocation the target rejects."
-	reviewerF7Probe               = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
-	reviewerF7ReviewPRModes       = "Apply F7 in normal review and when re-verifying a carried F7 finding."
+	reviewerF7Heading                  = "F7 — Executable caller compatibility"
+	reviewerF7Trigger                  = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
+	reviewerF7Trace                    = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
+	reviewerF7Comparison               = "Compare each caller's produced contract with the target's accepted contract."
+	reviewerF7TraceRecord              = "Report a terse explicit F7 trace record for every affected retained public caller in this exact form: `caller=... | invocation=... | argv=... | cwd=... | required-env/state=... | target=... | accepted-contract=... | verdict=...`."
+	reviewerF7EmptyArgv                = "Render an empty argv as `argv=[]`."
+	reviewerF7RequiredEnvState         = "In `required-env/state`, state what environment/state is required or present and whether any environment/state is read or consumed before an early rejection."
+	reviewerF7Evidence                 = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit; the record's caller, target, and accepted-contract values carry those pinned anchors."
+	reviewerF7CallerTraceReconcile     = "Reconcile final F7 output against every affected retained public caller in the candidate/audit enumeration: each has exactly one trace record."
+	reviewerF7RejectedFindingReconcile = "Every trace with a target-rejected verdict has exactly one structured finding labeled at least medium."
+	reviewerF7CompletenessLine         = "End F7 with `F7 completeness: callers=traces=<count> | rejected=findings=<count>`."
+	reviewerF7RecordModes              = "Require this record in normal review and when re-verifying a carried F7 finding."
+	reviewerF7RejectedCaller           = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
+	reviewerF7AntiRationalization      = "A caller still present in a package manifest, command registry, retained documentation, or equivalent public surface is not removed/deprecated for F7. Intentional fail-closed rejection, PR disclosure, or tests that encode/assert the mismatch do not waive the correctness finding. The exception requires actual caller removal or an explicit deprecation/migration whose retained public surfaces no longer advertise an invocation the target rejects."
+	reviewerF7Probe                    = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
+	reviewerF7ReviewPRModes            = "Apply F7 in normal review and when re-verifying a carried F7 finding."
 )
 
 var reviewerF7TraceLabels = []string{
@@ -406,6 +409,18 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 			body: strings.Replace(shared, reviewerF7Evidence, "", 1),
 		},
 		{
+			name: "caller trace reconciliation removed",
+			body: strings.Replace(shared, reviewerF7CallerTraceReconcile, "", 1),
+		},
+		{
+			name: "rejected trace finding reconciliation removed",
+			body: strings.Replace(shared, reviewerF7RejectedFindingReconcile, "", 1),
+		},
+		{
+			name: "completeness equality line removed",
+			body: strings.Replace(shared, reviewerF7CompletenessLine, "", 1),
+		},
+		{
 			name: "rejected retained default caller weakened below medium",
 			body: strings.Replace(shared, "labeled at least medium", "labeled low", 1),
 		},
@@ -470,7 +485,7 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 			})
 		}
 	}
-	for _, clause := range []string{reviewerF7EmptyArgv, reviewerF7RequiredEnvState} {
+	for _, clause := range []string{reviewerF7EmptyArgv, reviewerF7RequiredEnvState, reviewerF7CallerTraceReconcile, reviewerF7RejectedFindingReconcile, reviewerF7CompletenessLine} {
 		if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, clause, "", 1)); err == nil {
 			t.Fatalf("F7 review-pr contract accepted a normal-review deletion of %q", clause)
 		}
@@ -512,6 +527,9 @@ func reviewerF7SharedContractError(path, body string) error {
 		reviewerF7EmptyArgv,
 		reviewerF7RequiredEnvState,
 		reviewerF7Evidence,
+		reviewerF7CallerTraceReconcile,
+		reviewerF7RejectedFindingReconcile,
+		reviewerF7CompletenessLine,
 		reviewerF7RecordModes,
 		reviewerF7RejectedCaller,
 		reviewerF7AntiRationalization,
@@ -547,7 +565,7 @@ func reviewerF7ReviewPRContractError(path, body string) error {
 	if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7TraceRecord), " ")) != 2 {
 		return fmt.Errorf("%s must require the explicit F7 trace record in both normal review and re-review", path)
 	}
-	for _, clause := range []string{reviewerF7EmptyArgv, reviewerF7RequiredEnvState} {
+	for _, clause := range []string{reviewerF7EmptyArgv, reviewerF7RequiredEnvState, reviewerF7CallerTraceReconcile, reviewerF7RejectedFindingReconcile, reviewerF7CompletenessLine} {
 		if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(clause), " ")) != 2 {
 			return fmt.Errorf("%s must require %q in both normal review and re-review", path, clause)
 		}
