@@ -31,6 +31,9 @@ const (
 	reviewerF7Trigger        = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
 	reviewerF7Trace          = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
 	reviewerF7Comparison     = "Compare each caller's produced contract with the target's accepted contract."
+	reviewerF7TraceRecord    = "Report a terse explicit F7 trace record for every affected retained public caller: caller anchor and invocation; exact argv; cwd; required environment/state; target anchor and accepted contract; verdict."
+	reviewerF7Evidence       = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit."
+	reviewerF7RecordModes    = "Require this record in normal review and when re-verifying a carried F7 finding."
 	reviewerF7RejectedCaller = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
 	reviewerF7Probe          = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
 	reviewerF7ReviewPRModes  = "Apply F7 in normal review and when re-verifying a carried F7 finding."
@@ -385,8 +388,16 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 				"", 1),
 		},
 		{
-			name: "caller trace weakened to omit cwd and required environment",
-			body: strings.Replace(shared, "argv, cwd, and required environment", "argv", 1),
+			name: "explicit trace record omits cwd",
+			body: strings.Replace(shared, "exact argv; cwd; required environment/state;", "exact argv; required environment/state;", 1),
+		},
+		{
+			name: "explicit trace record omits required environment state",
+			body: strings.Replace(shared, "cwd; required environment/state; target anchor", "cwd; target anchor", 1),
+		},
+		{
+			name: "explicit trace record omits target contract evidence",
+			body: strings.Replace(shared, reviewerF7Evidence, "", 1),
 		},
 		{
 			name: "rejected retained default caller weakened below medium",
@@ -398,6 +409,15 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 				t.Fatal("F7 executable-caller contract mutation was accepted")
 			}
 		})
+	}
+
+	reviewPRPath := "plugins/agent-teams/skills/review-pr/references/reviewer-prompt.md"
+	reviewPR := readReviewerRefinementFile(t, root, reviewPRPath)
+	if err := reviewerF7ReviewPRContractError(reviewPRPath, reviewPR); err != nil {
+		t.Fatalf("control F7 review-pr contract rejected: %v", err)
+	}
+	if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, reviewerF7TraceRecord, "", 1)); err == nil {
+		t.Fatal("F7 review-pr contract accepted a normal or re-review trace-record deletion")
 	}
 }
 
@@ -426,6 +446,9 @@ func reviewerF7SharedContractError(path, body string) error {
 		reviewerF7Trigger,
 		reviewerF7Trace,
 		reviewerF7Comparison,
+		reviewerF7TraceRecord,
+		reviewerF7Evidence,
+		reviewerF7RecordModes,
 		reviewerF7RejectedCaller,
 		reviewerF7Probe,
 	} {
@@ -439,6 +462,9 @@ func reviewerF7SharedContractError(path, body string) error {
 func reviewerF7ReviewPRContractError(path, body string) error {
 	if err := reviewerF7SharedContractError(path, body); err != nil {
 		return err
+	}
+	if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7TraceRecord), " ")) != 2 {
+		return fmt.Errorf("%s must require the explicit F7 trace record in both normal review and re-review", path)
 	}
 	if !strings.Contains(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7ReviewPRModes), " ")) {
 		return fmt.Errorf("%s is missing F7 normal-review and re-review contract: %q", path, reviewerF7ReviewPRModes)
