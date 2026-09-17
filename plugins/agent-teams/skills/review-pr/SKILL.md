@@ -31,7 +31,7 @@ gate.
 First argument: initiative id (e.g. `at-xxx`). Optional `comment-reply`
 selects that mode. If no id was given, stop and request one.
 
-- No second argument → normal flow (steps 2–10).
+- No second argument → normal flow (steps 2–11).
 - `comment-reply` → read step 2, follow **Comment-reply mode**, skip 3–10.
 
 ### 2. Read initiative details

@@ -1,10 +1,10 @@
 # Why these review-pr mechanics work the way they do
 
-Background for step 7's subagent self-fetch, step 9's temp-file-not-path
-rule, and step 10's completion line. SKILL.md keeps the actionable commands
-and format inline; this file holds the rationale.
+Background for reviewer learning self-fetch, review-body file-content
+handling, and completion-line notification. SKILL.md keeps the actionable
+commands and format inline; this file holds the rationale.
 
-## Step 7: why the SubagentStart hook can't fetch learnings for the reviewer
+## Reviewer learning self-fetch: why the SubagentStart hook can't fetch it
 
 The reviewer subagent is told to run `ateam learnings reviewer` itself,
 bare, rather than have the SubagentStart hook do it and hand the result

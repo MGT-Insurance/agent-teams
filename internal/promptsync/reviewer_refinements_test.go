@@ -145,6 +145,45 @@ func TestReviewerRefinementReviewPRContract(t *testing.T) {
 	}
 }
 
+func TestReviewerReferencePathsAvoidStaleCoordinates(t *testing.T) {
+	root := filepath.Join("..", "..")
+	skillPath := "plugins/agent-teams/skills/review-pr/SKILL.md"
+	mechanicsPath := "plugins/agent-teams/skills/review-pr/references/mechanics-notes.md"
+	hungScanPath := "internal/verbs/hung_scan.go"
+
+	skill := readReviewerRefinementFile(t, root, skillPath)
+	if err := reviewerRefinementClausesError(skillPath, skill, "No second argument → normal flow (steps 2–11)."); err != nil {
+		t.Fatal(err)
+	}
+
+	mechanics := readReviewerRefinementFile(t, root, mechanicsPath)
+	if err := reviewerRefinementClausesError(mechanicsPath, mechanics,
+		"Background for reviewer learning self-fetch, review-body file-content",
+		"handling, and completion-line notification.",
+		"## Reviewer learning self-fetch: why the SubagentStart hook can't fetch it",
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, stale := range []string{"step 7", "step 9", "step 10"} {
+		if strings.Contains(strings.ToLower(mechanics), stale) {
+			t.Fatalf("%s retains stale coordinate %q", mechanicsPath, stale)
+		}
+	}
+
+	hungScan := readReviewerRefinementFile(t, root, hungScanPath)
+	if err := reviewerRefinementClausesError(hungScanPath, hungScan,
+		"the review-pr normal-review outcome-note path and comment-reply",
+		"note path write via `ateam note`",
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, stale := range []string{"SKILL.md's step 10", "comment-reply step 4", "(L228)", "(L339)"} {
+		if strings.Contains(hungScan, stale) {
+			t.Fatalf("%s retains stale coordinate %q", hungScanPath, stale)
+		}
+	}
+}
+
 func TestReviewerF7ExecutableCallerContract(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, path := range []string{
