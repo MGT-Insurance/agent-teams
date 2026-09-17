@@ -26,6 +26,16 @@ var negatedMergeInstruction = regexp.MustCompile(`(?i)(?:\bnever|\bno|\bdo not|\
 
 const reviewerSkillMinimumHeadroom = 1300
 
+const (
+	reviewerF7Heading        = "F7 — Executable caller compatibility"
+	reviewerF7Trigger        = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
+	reviewerF7Trace          = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
+	reviewerF7Comparison     = "Compare each caller's produced contract with the target's accepted contract."
+	reviewerF7RejectedCaller = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
+	reviewerF7Probe          = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
+	reviewerF7ReviewPRModes  = "Apply F7 in normal review and when re-verifying a carried F7 finding."
+)
+
 func TestReviewerRefinementSharedContract(t *testing.T) {
 	root := filepath.Join("..", "..")
 	paths := []string{
@@ -111,6 +121,24 @@ func TestReviewerRefinementReviewPRContract(t *testing.T) {
 	}
 
 	if err := reviewerRefinementAdvisoryError(skill); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestReviewerF7ExecutableCallerContract(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, path := range []string{
+		"promptsrc/agent-teams/roles/reviewer/shared-core.md",
+		"plugins/agent-teams/roles/reviewer.md",
+		"internal/verbs/codex_agents/agent-teams-reviewer.toml",
+	} {
+		if err := reviewerF7SharedContractError(path, readReviewerRefinementFile(t, root, path)); err != nil {
+			t.Error(err)
+		}
+	}
+
+	reviewPRPath := "plugins/agent-teams/skills/review-pr/references/reviewer-prompt.md"
+	if err := reviewerF7ReviewPRContractError(reviewPRPath, readReviewerRefinementFile(t, root, reviewPRPath)); err != nil {
 		t.Error(err)
 	}
 }
@@ -338,6 +366,41 @@ func TestReviewerRefinementMutationGuards(t *testing.T) {
 	}
 }
 
+func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
+	root := filepath.Join("..", "..")
+	sharedPath := "promptsrc/agent-teams/roles/reviewer/shared-core.md"
+	shared := readReviewerRefinementFile(t, root, sharedPath)
+	if err := reviewerF7SharedContractError(sharedPath, shared); err != nil {
+		t.Fatalf("control F7 executable-caller contract rejected: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "retained public caller enumeration removed",
+			body: strings.Replace(shared,
+				"Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases.",
+				"", 1),
+		},
+		{
+			name: "caller trace weakened to omit cwd and required environment",
+			body: strings.Replace(shared, "argv, cwd, and required environment", "argv", 1),
+		},
+		{
+			name: "rejected retained default caller weakened below medium",
+			body: strings.Replace(shared, "labeled at least medium", "labeled low", 1),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := reviewerF7SharedContractError(sharedPath, tt.body); err == nil {
+				t.Fatal("F7 executable-caller contract mutation was accepted")
+			}
+		})
+	}
+}
+
 func readReviewerRefinementFile(t *testing.T, root, path string) string {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
@@ -353,6 +416,32 @@ func reviewerRefinementClausesError(path, body string, clauses ...string) error 
 		if !strings.Contains(normalized, strings.Join(strings.Fields(clause), " ")) {
 			return fmt.Errorf("%s is missing reviewer refinement contract clause %q", path, clause)
 		}
+	}
+	return nil
+}
+
+func reviewerF7SharedContractError(path, body string) error {
+	for _, clause := range []string{
+		reviewerF7Heading,
+		reviewerF7Trigger,
+		reviewerF7Trace,
+		reviewerF7Comparison,
+		reviewerF7RejectedCaller,
+		reviewerF7Probe,
+	} {
+		if !strings.Contains(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(clause), " ")) {
+			return fmt.Errorf("%s is missing F7 executable-caller contract: %q", path, clause)
+		}
+	}
+	return nil
+}
+
+func reviewerF7ReviewPRContractError(path, body string) error {
+	if err := reviewerF7SharedContractError(path, body); err != nil {
+		return err
+	}
+	if !strings.Contains(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7ReviewPRModes), " ")) {
+		return fmt.Errorf("%s is missing F7 normal-review and re-review contract: %q", path, reviewerF7ReviewPRModes)
 	}
 	return nil
 }
