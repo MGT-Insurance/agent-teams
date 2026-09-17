@@ -27,16 +27,17 @@ var negatedMergeInstruction = regexp.MustCompile(`(?i)(?:\bnever|\bno|\bdo not|\
 const reviewerSkillMinimumHeadroom = 1300
 
 const (
-	reviewerF7Heading        = "F7 — Executable caller compatibility"
-	reviewerF7Trigger        = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
-	reviewerF7Trace          = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
-	reviewerF7Comparison     = "Compare each caller's produced contract with the target's accepted contract."
-	reviewerF7TraceRecord    = "Report a terse explicit F7 trace record for every affected retained public caller: caller anchor and invocation; exact argv; cwd; required environment/state; target anchor and accepted contract; verdict."
-	reviewerF7Evidence       = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit."
-	reviewerF7RecordModes    = "Require this record in normal review and when re-verifying a carried F7 finding."
-	reviewerF7RejectedCaller = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
-	reviewerF7Probe          = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
-	reviewerF7ReviewPRModes  = "Apply F7 in normal review and when re-verifying a carried F7 finding."
+	reviewerF7Heading             = "F7 — Executable caller compatibility"
+	reviewerF7Trigger             = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
+	reviewerF7Trace               = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
+	reviewerF7Comparison          = "Compare each caller's produced contract with the target's accepted contract."
+	reviewerF7TraceRecord         = "Report a terse explicit F7 trace record for every affected retained public caller: caller anchor and invocation; exact argv; cwd; required environment/state; target anchor and accepted contract; verdict."
+	reviewerF7Evidence            = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit."
+	reviewerF7RecordModes         = "Require this record in normal review and when re-verifying a carried F7 finding."
+	reviewerF7RejectedCaller      = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
+	reviewerF7AntiRationalization = "A caller still present in a package manifest, command registry, retained documentation, or equivalent public surface is not removed/deprecated for F7. Intentional fail-closed rejection, PR disclosure, or tests that encode/assert the mismatch do not waive the correctness finding. The exception requires actual caller removal or an explicit deprecation/migration whose retained public surfaces no longer advertise an invocation the target rejects."
+	reviewerF7Probe               = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
+	reviewerF7ReviewPRModes       = "Apply F7 in normal review and when re-verifying a carried F7 finding."
 )
 
 func TestReviewerRefinementSharedContract(t *testing.T) {
@@ -403,6 +404,14 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 			name: "rejected retained default caller weakened below medium",
 			body: strings.Replace(shared, "labeled at least medium", "labeled low", 1),
 		},
+		{
+			name: "retained manifest caller is rationalized as intentionally deprecated",
+			body: strings.Replace(shared, reviewerF7AntiRationalization, "A retained package-manifest caller may be treated as deprecated when its target intentionally rejects it.", 1),
+		},
+		{
+			name: "PR disclosure or mismatch test waives retained caller finding",
+			body: strings.Replace(shared, reviewerF7AntiRationalization, "PR disclosure or tests that encode/assert a retained caller mismatch waive the correctness finding.", 1),
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := reviewerF7SharedContractError(sharedPath, tt.body); err == nil {
@@ -418,6 +427,9 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 	}
 	if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, reviewerF7TraceRecord, "", 1)); err == nil {
 		t.Fatal("F7 review-pr contract accepted a normal or re-review trace-record deletion")
+	}
+	if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, reviewerF7AntiRationalization, "", 1)); err == nil {
+		t.Fatal("F7 review-pr contract accepted an anti-rationalization deletion in normal or re-review")
 	}
 }
 
@@ -450,6 +462,7 @@ func reviewerF7SharedContractError(path, body string) error {
 		reviewerF7Evidence,
 		reviewerF7RecordModes,
 		reviewerF7RejectedCaller,
+		reviewerF7AntiRationalization,
 		reviewerF7Probe,
 	} {
 		if !strings.Contains(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(clause), " ")) {
@@ -465,6 +478,9 @@ func reviewerF7ReviewPRContractError(path, body string) error {
 	}
 	if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7TraceRecord), " ")) != 2 {
 		return fmt.Errorf("%s must require the explicit F7 trace record in both normal review and re-review", path)
+	}
+	if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7AntiRationalization), " ")) != 2 {
+		return fmt.Errorf("%s must require F7 anti-rationalization in both normal review and re-review", path)
 	}
 	if !strings.Contains(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7ReviewPRModes), " ")) {
 		return fmt.Errorf("%s is missing F7 normal-review and re-review contract: %q", path, reviewerF7ReviewPRModes)
