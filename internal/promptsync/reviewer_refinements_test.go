@@ -31,14 +31,27 @@ const (
 	reviewerF7Trigger             = "Trigger when a diff changes a documented or default executable entrypoint, launcher, or startup configuration."
 	reviewerF7Trace               = "Enumerate every retained public invocation affected by that change, including default scripts/commands and documented aliases. For each, trace the exact argv, cwd, and required environment through each launcher/wrapper to the new target."
 	reviewerF7Comparison          = "Compare each caller's produced contract with the target's accepted contract."
-	reviewerF7TraceRecord         = "Report a terse explicit F7 trace record for every affected retained public caller: caller anchor and invocation; exact argv; cwd; required environment/state; target anchor and accepted contract; verdict."
-	reviewerF7Evidence            = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit."
+	reviewerF7TraceRecord         = "Report a terse explicit F7 trace record for every affected retained public caller in this exact form: `caller=... | invocation=... | argv=... | cwd=... | required-env/state=... | target=... | accepted-contract=... | verdict=...`."
+	reviewerF7EmptyArgv           = "Render an empty argv as `argv=[]`."
+	reviewerF7RequiredEnvState    = "In `required-env/state`, state what environment/state is required or present and whether any environment/state is read or consumed before an early rejection."
+	reviewerF7Evidence            = "The caller and target-contract evidence must each be anchored at the pinned reviewed commit; the record's caller, target, and accepted-contract values carry those pinned anchors."
 	reviewerF7RecordModes         = "Require this record in normal review and when re-verifying a carried F7 finding."
 	reviewerF7RejectedCaller      = "A retained default/public caller that the target rejects is a confirmed correctness finding labeled at least medium, unless removal or deprecation is explicit and verified across the retained public surfaces."
 	reviewerF7AntiRationalization = "A caller still present in a package manifest, command registry, retained documentation, or equivalent public surface is not removed/deprecated for F7. Intentional fail-closed rejection, PR disclosure, or tests that encode/assert the mismatch do not waive the correctness finding. The exception requires actual caller removal or an explicit deprecation/migration whose retained public surfaces no longer advertise an invocation the target rejects."
 	reviewerF7Probe               = "When execution adds evidence safely, use a bounded early-fail probe or a fake-child/spawn-capture boundary. Do not start or require a long-running server."
 	reviewerF7ReviewPRModes       = "Apply F7 in normal review and when re-verifying a carried F7 finding."
 )
+
+var reviewerF7TraceLabels = []string{
+	"caller=...",
+	"invocation=...",
+	"argv=...",
+	"cwd=...",
+	"required-env/state=...",
+	"target=...",
+	"accepted-contract=...",
+	"verdict=...",
+}
 
 func TestReviewerRefinementSharedContract(t *testing.T) {
 	root := filepath.Join("..", "..")
@@ -389,14 +402,6 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 				"", 1),
 		},
 		{
-			name: "explicit trace record omits cwd",
-			body: strings.Replace(shared, "exact argv; cwd; required environment/state;", "exact argv; required environment/state;", 1),
-		},
-		{
-			name: "explicit trace record omits required environment state",
-			body: strings.Replace(shared, "cwd; required environment/state; target anchor", "cwd; target anchor", 1),
-		},
-		{
 			name: "explicit trace record omits target contract evidence",
 			body: strings.Replace(shared, reviewerF7Evidence, "", 1),
 		},
@@ -420,13 +425,58 @@ func TestReviewerF7ExecutableCallerMutationGuards(t *testing.T) {
 		})
 	}
 
+	for _, label := range reviewerF7TraceLabels {
+		t.Run("literal trace schema omits "+label, func(t *testing.T) {
+			mutated := strings.Replace(shared, label, "omitted-"+label, 1)
+			if err := reviewerF7SharedContractError(sharedPath, mutated); err == nil {
+				t.Fatalf("F7 executable-caller contract accepted trace schema without %q", label)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "empty argv is not rendered as an empty list",
+			body: strings.Replace(shared, reviewerF7EmptyArgv, "Render an empty argv as `argv=none`.", 1),
+		},
+		{
+			name: "required environment state omits pre-rejection consumption",
+			body: strings.Replace(shared, reviewerF7RequiredEnvState, "In `required-env/state`, state what environment/state is required or present.", 1),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := reviewerF7SharedContractError(sharedPath, tt.body); err == nil {
+				t.Fatal("F7 executable-caller contract accepted missing trace-state detail")
+			}
+		})
+	}
+
 	reviewPRPath := "plugins/agent-teams/skills/review-pr/references/reviewer-prompt.md"
 	reviewPR := readReviewerRefinementFile(t, root, reviewPRPath)
 	if err := reviewerF7ReviewPRContractError(reviewPRPath, reviewPR); err != nil {
 		t.Fatalf("control F7 review-pr contract rejected: %v", err)
 	}
-	if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, reviewerF7TraceRecord, "", 1)); err == nil {
-		t.Fatal("F7 review-pr contract accepted a normal or re-review trace-record deletion")
+	for _, label := range reviewerF7TraceLabels {
+		for _, occurrence := range []int{1, 2} {
+			t.Run(fmt.Sprintf("review-pr trace schema omits %s in occurrence %d", label, occurrence), func(t *testing.T) {
+				mutatedRecord := strings.Replace(reviewerF7TraceRecord, label, "omitted-"+label, 1)
+				mutated := replaceNth(reviewPR, reviewerF7TraceRecord, mutatedRecord, occurrence)
+				if err := reviewerF7ReviewPRContractError(reviewPRPath, mutated); err == nil {
+					t.Fatalf("F7 review-pr contract accepted trace schema without %q in occurrence %d", label, occurrence)
+				}
+			})
+		}
+	}
+	for _, clause := range []string{reviewerF7EmptyArgv, reviewerF7RequiredEnvState} {
+		if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, clause, "", 1)); err == nil {
+			t.Fatalf("F7 review-pr contract accepted a normal-review deletion of %q", clause)
+		}
+		if err := reviewerF7ReviewPRContractError(reviewPRPath, replaceNth(reviewPR, clause, "", 2)); err == nil {
+			t.Fatalf("F7 review-pr contract accepted a re-review deletion of %q", clause)
+		}
 	}
 	if err := reviewerF7ReviewPRContractError(reviewPRPath, strings.Replace(reviewPR, reviewerF7AntiRationalization, "", 1)); err == nil {
 		t.Fatal("F7 review-pr contract accepted an anti-rationalization deletion in normal or re-review")
@@ -459,6 +509,8 @@ func reviewerF7SharedContractError(path, body string) error {
 		reviewerF7Trace,
 		reviewerF7Comparison,
 		reviewerF7TraceRecord,
+		reviewerF7EmptyArgv,
+		reviewerF7RequiredEnvState,
 		reviewerF7Evidence,
 		reviewerF7RecordModes,
 		reviewerF7RejectedCaller,
@@ -472,12 +524,33 @@ func reviewerF7SharedContractError(path, body string) error {
 	return nil
 }
 
+func replaceNth(body, old, replacement string, occurrence int) string {
+	start := 0
+	for i := 0; i < occurrence; i++ {
+		index := strings.Index(body[start:], old)
+		if index < 0 {
+			return body
+		}
+		start += index
+		if i == occurrence-1 {
+			return body[:start] + replacement + body[start+len(old):]
+		}
+		start += len(old)
+	}
+	return body
+}
+
 func reviewerF7ReviewPRContractError(path, body string) error {
 	if err := reviewerF7SharedContractError(path, body); err != nil {
 		return err
 	}
 	if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7TraceRecord), " ")) != 2 {
 		return fmt.Errorf("%s must require the explicit F7 trace record in both normal review and re-review", path)
+	}
+	for _, clause := range []string{reviewerF7EmptyArgv, reviewerF7RequiredEnvState} {
+		if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(clause), " ")) != 2 {
+			return fmt.Errorf("%s must require %q in both normal review and re-review", path, clause)
+		}
 	}
 	if strings.Count(strings.Join(strings.Fields(body), " "), strings.Join(strings.Fields(reviewerF7AntiRationalization), " ")) != 2 {
 		return fmt.Errorf("%s must require F7 anti-rationalization in both normal review and re-review", path)
