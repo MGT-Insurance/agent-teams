@@ -3,6 +3,9 @@ package verbs
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -503,6 +506,111 @@ func TestReap_NilContext(t *testing.T) {
 }
 
 // ── hasReapedNote ────────────────────────────────────────────────────────────
+
+// ── defaultWorktreeClean (real git, upstream-agnostic clean-check) ──────────
+// (runGit lives in routing_ownership_test.go)
+
+// TestReap_DefaultWorktreeClean_LocalOnlyCommit covers case (b) from the bead: a
+// commit that exists on no remote-tracking ref must never be treated as
+// clean, since removing the worktree would lose it permanently.
+func TestReap_DefaultWorktreeClean_LocalOnlyCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+
+	exists, clean, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if clean {
+		t.Fatal("expected clean=false: HEAD has a commit absent from every remote")
+	}
+}
+
+// TestReap_DefaultWorktreeClean_UncommittedChange covers case (c): an uncommitted
+// change must block removal regardless of the commit history.
+func TestReap_DefaultWorktreeClean_UncommittedChange(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("uncommitted"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	exists, clean, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if clean {
+		t.Fatal("expected clean=false for an uncommitted change")
+	}
+}
+
+// TestReap_DefaultWorktreeClean_MissingDirectory covers case (d): a worktree path
+// that no longer exists on disk reports exists=false, never an error.
+func TestReap_DefaultWorktreeClean_MissingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	exists, clean, err := defaultWorktreeClean(missing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exists {
+		t.Fatal("expected exists=false for a missing directory")
+	}
+	if clean {
+		t.Fatal("expected clean=false for a missing directory")
+	}
+}
+
+// TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef covers case (a): once a
+// commit is reachable from a remote-tracking ref, it is provably not
+// local-only, so a clean tree on top of it reports clean=true. This is the
+// upstream-agnostic replacement for the old "@{u}..HEAD" check — it works
+// even though this branch has no configured upstream, matching the
+// review-pr-<N> branches this fix targets (also proven live against the
+// review-pr-8285 worktree: status-clean, HEAD an ancestor of origin/main,
+// `rev-list --count HEAD --not --remotes` == 0).
+func TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	remoteDir := t.TempDir()
+	runGit(t, remoteDir, "init", "--bare")
+
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+	runGit(t, dir, "remote", "add", "origin", remoteDir)
+	runGit(t, dir, "push", "origin", "HEAD:refs/heads/main")
+	// A plain push does not reliably update the local remote-tracking ref
+	// across all git versions/configs; fetch to make refs/remotes/origin/main
+	// unambiguous before asserting on it.
+	runGit(t, dir, "fetch", "origin")
+
+	exists, clean, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if !clean {
+		t.Fatal("expected clean=true: HEAD is reachable from a remote-tracking ref and the tree is clean")
+	}
+}
 
 func TestHasReapedNote(t *testing.T) {
 	cases := []struct {
