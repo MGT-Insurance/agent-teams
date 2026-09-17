@@ -408,13 +408,15 @@ func defaultReapRemoveWorktree(worktree string) error {
 }
 
 // defaultWorktreeClean reports whether worktree has no uncommitted changes
-// (`git status --porcelain` empty) and its branch is not ahead of its
-// upstream (`git rev-list --count @{u}..HEAD` == "0"). A missing directory
-// reports exists=false. Any inconclusive result — the status/rev-list
-// subprocess itself failing, most commonly because the branch has no
-// upstream configured at all — reports clean=false: the contract requires
-// PROOF of no unpushed work before a force-remove, not merely absence of
-// proof of some.
+// (`git status --porcelain` empty) and no commits reachable from HEAD that
+// are absent from every remote-tracking ref (`git rev-list --count HEAD
+// --not --remotes` == "0"). This is upstream-agnostic: it catches any
+// commit missing from ALL remotes, not just a single configured upstream,
+// so it also works on branches with no upstream configured at all (for
+// example local-only review-pr-<N> branches). A missing directory reports
+// exists=false. Any inconclusive result — the status/rev-list subprocess
+// itself failing — reports clean=false: the contract requires PROOF of no
+// unpushed work before a force-remove, not merely absence of proof of some.
 func defaultWorktreeClean(worktree string) (exists bool, clean bool, err error) {
 	info, statErr := os.Stat(worktree)
 	if statErr != nil || !info.IsDir() {
@@ -431,15 +433,14 @@ func defaultWorktreeClean(worktree string) (exists bool, clean bool, err error) 
 		return true, false, nil
 	}
 
-	aheadCtx, aheadCancel := context.WithTimeout(context.Background(), reapGitTimeout)
-	defer aheadCancel()
-	aheadOut, err := exec.CommandContext(aheadCtx, "git", "-C", worktree, "rev-list", "--count", "@{u}..HEAD").Output()
+	localOnlyCtx, localOnlyCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+	defer localOnlyCancel()
+	localOnlyOut, err := exec.CommandContext(localOnlyCtx, "git", "-C", worktree, "rev-list", "--count", "HEAD", "--not", "--remotes").Output()
 	if err != nil {
-		// No upstream (or another rev-list failure): cannot prove the
-		// branch has been pushed anywhere else.
+		// Cannot prove every commit exists on some remote.
 		return true, false, nil
 	}
-	if strings.TrimSpace(string(aheadOut)) != "0" {
+	if strings.TrimSpace(string(localOnlyOut)) != "0" {
 		return true, false, nil
 	}
 	return true, true, nil
