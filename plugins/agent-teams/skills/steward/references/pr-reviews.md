@@ -37,7 +37,7 @@ gh api repos/<owner>/<repo>/pulls/<pr-number>/comments --paginate \
   --jq '.[] | "\(.user.login) \(.path):\(.line // .original_line)\n\(.body)\n"'
 ```
 
-**Run both.** The reviews endpoint alone will make a substantive review look thin: `review-pr` posts one comment per finding at its reported `file:line` and opens the review body with a `## Summary` (one concise line per finding, no full detail) rather than the finding's full description (`skills/review-pr/SKILL.md`, step 9). Verified live on `MGT-Insurance/midgard#4408` — the reviews endpoint returned four bodies, but the critical finding on that PR (server actions shipped with no auth wrapper) exists only as an inline comment.
+**Run both.** The reviews endpoint alone will make a substantive review look thin: all GitHub review writes route through `review-pr`'s posting flow (`skills/review-pr/SKILL.md`), which posts one comment per finding at its reported `file:line` and opens the review body with a `## Summary` (one concise line per finding, no full detail) rather than the finding's full description. Verified live on `MGT-Insurance/midgard#4408` — the reviews endpoint returned four bodies, but the critical finding on that PR (server actions shipped with no auth wrapper) exists only as an inline comment.
 
 Both endpoints return every review by every author, ours and the humans'. That is a feature, not noise: "what did that review find" usually means the whole conversation on the PR, not just our bot's part. Attribute by `.user.login`; ours is whatever `gh api user -q .login` returns.
 

@@ -340,9 +340,9 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 
 // hasReviewPostedNote reports whether notes (an initiative's bd Notes text)
 // has a line beginning "review-posted:" or "comment-replies:" — the exact
-// markers plugins/agent-teams/skills/review-pr/SKILL.md's step 10 (L228) and
-// comment-reply step 4 (L339) write via `ateam note` once a review or a
-// comment-reply round has actually been posted to GitHub. This is the LOCAL,
+// markers the review-pr normal-review outcome-note path and comment-reply
+// note path write via `ateam note` once a review or a comment-reply round has
+// actually been posted to GitHub. This is the LOCAL,
 // no-network S2 signal (agent-teams-huq7.1 S2): the note is the
 // authoritative record that WE did our job, so the hung-tick backstop never
 // needs to ask GitHub whether a review exists at all — only (via the
