@@ -110,25 +110,9 @@ func (f *fakeNoter) fn() reapNoteFunc {
 func alwaysClean(string) (bool, bool, error) { return true, true, nil }
 func alwaysDirty(string) (bool, bool, error) { return true, false, nil }
 
-// fakePending returns a pendingReviewCommentFunc yielding a fixed answer.
-func fakePending(pending bool, err error) pendingReviewCommentFunc {
-	return func(string, int) (bool, error) { return pending, err }
-}
-
-// failIfCalledPending fails the test if the pending-comment probe is
-// invoked at all — used to prove a gate (already-reaped, codex-runtime)
-// short-circuits before ever reaching gh.
-func failIfCalledPending(t *testing.T) pendingReviewCommentFunc {
-	return func(string, int) (bool, error) {
-		t.Helper()
-		t.Fatal("pending-comment probe must not be called")
-		return false, nil
-	}
-}
-
 // newReapVerb builds a reapKong with every DI seam wired to the given fakes,
 // grace defaulted to defaultReapGrace unless overridden by the caller.
-func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover *fakeWorktreeRemover, noter *fakeNoter, clean worktreeCleanFunc, pending pendingReviewCommentFunc) *reapKong {
+func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover *fakeWorktreeRemover, noter *fakeNoter, clean worktreeCleanFunc) *reapKong {
 	return &reapKong{
 		Grace:          defaultReapGrace,
 		agentsFunc:     reapFakeAgents(sessions),
@@ -137,15 +121,14 @@ func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover
 		rmSession:      rms.fn(),
 		removeWorktree: remover.fn(),
 		worktreeClean:  clean,
-		pendingComment: pending,
 		noteFunc:       noter.fn(),
 	}
 }
 
 // ── SCAN mode ────────────────────────────────────────────────────────────────
 
-// (1) closed review past grace, live session, no pending comment => stop+rm
-// with the SHORT id, clean worktree removed, reaped note written.
+// (1) closed review past grace, live session => stop+rm with the SHORT id,
+// clean worktree removed, reaped note written.
 func TestReap_Scan_ReapsPastGraceCleanWorktree(t *testing.T) {
 	worktree := "/tmp/reap-wt-1"
 	sessionID := "sess-uuid-1"
@@ -156,7 +139,7 @@ func TestReap_Scan_ReapsPastGraceCleanWorktree(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -188,7 +171,7 @@ func TestReap_Scan_WithinGraceSkipped(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, failIfCalledPending(t))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -199,30 +182,8 @@ func TestReap_Scan_WithinGraceSkipped(t *testing.T) {
 	}
 }
 
-// (3) pending comment => skipped.
-func TestReap_Scan_PendingCommentSkipped(t *testing.T) {
-	worktree := "/tmp/reap-wt-3"
-	sessionID := "sess-uuid-3"
-	iss := reapReviewIssue("at-3", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
-	sessions := []agentSession{{ID: "abc789", SessionID: sessionID, CWD: worktree}}
-
-	var stops fakeStops
-	var rms fakeRm
-	var remover fakeWorktreeRemover
-	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(true, nil))
-
-	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
-	if err := verb.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
-		t.Errorf("expected no action with a pending comment; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
-	}
-}
-
-// (4) already reaped:-noted => skipped, no gh probe.
-func TestReap_Scan_AlreadyReapedSkipped_NoGhProbe(t *testing.T) {
+// (4) already reaped:-noted => skipped, idempotent.
+func TestReap_Scan_AlreadyReapedSkipped(t *testing.T) {
 	worktree := "/tmp/reap-wt-4"
 	sessionID := "sess-uuid-4"
 	iss := reapReviewIssue("at-4", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-17T10:00:00Z", worktree, sessionID, "")
@@ -232,7 +193,7 @@ func TestReap_Scan_AlreadyReapedSkipped_NoGhProbe(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, failIfCalledPending(t))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -255,7 +216,7 @@ func TestReap_Scan_NoMatchingSession_WorktreeStillRemoved_NoteWritten(t *testing
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -284,7 +245,7 @@ func TestReap_Scan_DirtyWorktree_SessionTornDown_WorktreeSkipped(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -301,8 +262,8 @@ func TestReap_Scan_DirtyWorktree_SessionTornDown_WorktreeSkipped(t *testing.T) {
 	}
 }
 
-// (7) f.Runtime == "codex" => untouched (Ring 1; no gh probe, no session/
-// worktree/note action).
+// (7) f.Runtime == "codex" => untouched (Ring 1; no session/worktree/note
+// action).
 func TestReap_Scan_CodexRuntimeUntouched(t *testing.T) {
 	worktree := "/tmp/reap-wt-7"
 	iss := reapReviewIssue("at-7", "closed", reapFixedNow.Add(-time.Hour), "", worktree, "sess-uuid-7", "codex")
@@ -312,7 +273,7 @@ func TestReap_Scan_CodexRuntimeUntouched(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, failIfCalledPending(t))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -337,7 +298,7 @@ func TestReap_Scan_NonReviewInitiativeUntouched(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, failIfCalledPending(t))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -364,7 +325,7 @@ func TestReap_Scan_NeverTearsDownCallingSession(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -401,7 +362,7 @@ func TestReap_Scan_OtherInitiativeWorktree_StillRemovedWhileCallerSessionPresent
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
 	if err := verb.Run(ctx); err != nil {
@@ -418,13 +379,12 @@ func TestReap_Scan_OtherInitiativeWorktree_StillRemovedWhileCallerSessionPresent
 // ── ONE-OFF mode ─────────────────────────────────────────────────────────────
 
 // (10) target = initiative id => session + clean worktree removed, EVERY
-// gate bypassed (open status, within grace, pending comment all true), note
-// written.
+// gate bypassed (open status, within grace), note written.
 func TestReap_OneOff_TargetInitiativeID_GatesBypassed(t *testing.T) {
 	worktree := "/tmp/reap-wt-10"
 	sessionID := "sess-uuid-10"
-	// Open (not closed), just closed a second ago, with a pending comment —
-	// every scan-mode gate would block this; one-off must bypass all of them.
+	// Open (not closed), just closed a second ago — every scan-mode gate
+	// would block this; one-off must bypass all of them.
 	iss := reapReviewIssue("at-10", "open", reapFixedNow, "", worktree, sessionID, "")
 	sessions := []agentSession{{ID: "abchhh", SessionID: sessionID, CWD: worktree}}
 
@@ -432,7 +392,7 @@ func TestReap_OneOff_TargetInitiativeID_GatesBypassed(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(true, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapShowFakeBD("at-10", iss), t.TempDir())
 	verb.Target = "at-10"
@@ -464,7 +424,7 @@ func TestReap_OneOff_TargetBareShortID_NoNote(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	// No initiative resolves this id: bd show errors for anything.
 	ctx, _, _ := makeCtx(reapShowFakeBD("no-such-id", bd.Issue{}), t.TempDir())
@@ -495,7 +455,7 @@ func TestReap_OneOff_UnresolvableTarget_Error(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapShowFakeBD("no-such-id", bd.Issue{}), t.TempDir())
 	verb.Target = "totally-unresolvable-target"
@@ -519,7 +479,7 @@ func TestReap_OneOff_DirtyWorktree_SessionGone_WorktreeSkipped(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty, fakePending(true, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty)
 
 	ctx, _, _ := makeCtx(reapShowFakeBD("at-13", iss), t.TempDir())
 	verb.Target = "at-13"
@@ -549,7 +509,7 @@ func TestReap_OneOff_TargetInitiativeID_NeverRemovesCallerOwnWorktree(t *testing
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(reapShowFakeBD("at-14", iss), t.TempDir())
 	verb.Target = "at-14"
@@ -753,7 +713,7 @@ func TestReap_Scan_ListClosedFails(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
-	verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+	verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean)
 
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 	if err := verb.Run(ctx); err == nil {

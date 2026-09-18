@@ -7,9 +7,11 @@
 // modes, selected by the optional positional target:
 //
 //   - SCAN mode (no target): what pr-shepherd calls every tick. Enumerates
-//     CLOSED initiatives, applies the review-shape / grace / pending-comment /
-//     already-reaped gates, and tears down each survivor (session + clean-only
-//     worktree removal).
+//     CLOSED initiatives, applies the review-shape / grace / already-reaped
+//     gates, and tears down each survivor (session + clean-only worktree
+//     removal). Gating trusts the initiative's own closed state — reap never
+//     probes session status or liveness itself (contract: agent-teams-sbh8.15,
+//     "trust the initiative state").
 //   - ONE-OFF mode (a target given): reaps exactly that one target right now,
 //     bypassing every gate — an explicit human action, not necessarily a
 //     review-pr one.
@@ -57,7 +59,6 @@ func RegisterReapKong(p *cli.Parser) {
 		rmSession:      defaultRmSession,
 		removeWorktree: defaultReapRemoveWorktree,
 		worktreeClean:  defaultWorktreeClean,
-		pendingComment: defaultPendingReviewComment,
 		noteFunc:       defaultReapNote,
 	})
 }
@@ -87,17 +88,16 @@ type reapNoteFunc func(ctx *cli.Context, id string, at time.Time) error
 // kong:"-" so kong ignores them; tests substitute fakes without touching the
 // struct registration — same pattern as reapOrphansKong.
 type reapKong struct {
-	Target string        `arg:"" name:"target" optional:"" help:"Initiative id or a bare Claude short session id to reap right now, bypassing the grace/pending/reaped-note gates. Omit to scan every closed review initiative (what pr-shepherd calls every tick)."`
+	Target string        `arg:"" name:"target" optional:"" help:"Initiative id or a bare Claude short session id to reap right now, bypassing the grace/reaped-note gates. Omit to scan every closed review initiative (what pr-shepherd calls every tick)."`
 	Grace  time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
 
-	agentsFunc     agentsJSONFunc           `kong:"-"`
-	now            func() time.Time         `kong:"-"`
-	stopSession    stopSessionFunc          `kong:"-"`
-	rmSession      rmSessionFunc            `kong:"-"`
-	removeWorktree reapRemoveWorktreeFunc   `kong:"-"`
-	worktreeClean  worktreeCleanFunc        `kong:"-"`
-	pendingComment pendingReviewCommentFunc `kong:"-"`
-	noteFunc       reapNoteFunc             `kong:"-"`
+	agentsFunc     agentsJSONFunc         `kong:"-"`
+	now            func() time.Time       `kong:"-"`
+	stopSession    stopSessionFunc        `kong:"-"`
+	rmSession      rmSessionFunc          `kong:"-"`
+	removeWorktree reapRemoveWorktreeFunc `kong:"-"`
+	worktreeClean  worktreeCleanFunc      `kong:"-"`
+	noteFunc       reapNoteFunc           `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -123,9 +123,9 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 
 // runScan enumerates closed initiatives via ctx.BD (the global initiative
 // registry) and reaps every review-shaped, not-yet-reaped survivor past
-// grace with no pending comment. Never hard-errors on a single initiative
-// (log + continue) — only a whole-scan failure (the bd list call itself)
-// returns non-nil, per the contract's exit rule.
+// grace. Never hard-errors on a single initiative (log + continue) — only a
+// whole-scan failure (the bd list call itself) returns non-nil, per the
+// contract's exit rule.
 func (c *reapKong) runScan(ctx *cli.Context) error {
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=closed", "--json"); err != nil {
@@ -136,7 +136,7 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 	callerID := os.Getenv("CLAUDE_SESSION_ID")
 
 	for _, iss := range issues {
-		prURL, ok := initiative.ReviewPRURL(iss)
+		_, ok := initiative.ReviewPRURL(iss)
 		if !ok {
 			continue // not review-shaped: untouched, never reap's concern
 		}
@@ -163,11 +163,6 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 			continue
 		}
 
-		if c.hasPendingComment(prURL) {
-			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-pending", "")
-			continue
-		}
-
 		sessions, sessErr := c.agentsFunc()
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
 		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
@@ -184,25 +179,6 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 		}
 	}
 	return nil
-}
-
-// hasPendingComment probes whether prURL has a pending unanswered inline
-// review comment, treating any unparseable URL, probe error, or nil probe
-// func as pending — S3(d)'s "proof of absence required" contract (mirrors
-// hung_tick's conservative default).
-func (c *reapKong) hasPendingComment(prURL string) bool {
-	if c.pendingComment == nil {
-		return true
-	}
-	ownerRepo, prNumber, ok := parsePrURL(prURL)
-	if !ok {
-		return true
-	}
-	pending, err := c.pendingComment(ownerRepo, prNumber)
-	if err != nil {
-		return true
-	}
-	return pending
 }
 
 // callerWorktreeCWD resolves callerID's own cwd from sessions (the live
