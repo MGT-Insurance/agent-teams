@@ -142,6 +142,7 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 		}
 		f := initiative.Of(iss)
 		if f.Runtime == "codex" {
+			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-codex-ring1", "")
 			continue // Ring 1: codex teardown is not implemented by this verb
 		}
 		if hasReapedNote(iss.Notes) {
@@ -150,8 +151,11 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 
 		closedAt, err := time.Parse(time.RFC3339, iss.ClosedAt)
 		if iss.ClosedAt == "" || err != nil {
+			// Distinct from "skip-grace" below: this initiative is
+			// permanently stuck (closed_at will never become parseable on a
+			// later tick), whereas "skip-grace" self-resolves.
 			fmt.Fprintf(ctx.Stderr, "reap: %s: closed_at missing or unparseable (%q), skipping\n", iss.ID, iss.ClosedAt)
-			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-grace", "")
+			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-bad-closedat", "")
 			continue
 		}
 		if now.Sub(closedAt) < c.Grace {
@@ -166,7 +170,7 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 
 		sessions, sessErr := c.agentsFunc()
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree)
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
 		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
 
 		if action != "failed" {
@@ -199,6 +203,26 @@ func (c *reapKong) hasPendingComment(prURL string) bool {
 		return true
 	}
 	return pending
+}
+
+// callerWorktreeCWD resolves callerID's own cwd from sessions (the live
+// `claude agents` list), so scan mode and one-off form-1 can spare the
+// calling session's worktree the same way teardownClaudeSession already
+// spares its process (contract: "WORKTREE REMOVAL" footgun — force-removing
+// the caller's own cwd worktree breaks the live session, ENOENT /bin/sh).
+// Returns "" when callerID is empty or no session matches it — matched the
+// same three-way id comparison teardownClaudeSession uses.
+func callerWorktreeCWD(sessions []agentSession, callerID string) string {
+	if callerID == "" {
+		return ""
+	}
+	for _, s := range sessions {
+		id := sessionStopID(s)
+		if id == callerID || s.SessionID == callerID || s.ID == callerID {
+			return s.CWD
+		}
+	}
+	return ""
 }
 
 // matchInitiativeSession returns the predicate for finding the claude
@@ -239,14 +263,14 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 			// contract: "the ONLY form that gives codex a removable
 			// worktree" / "To reap a codex worktree one-off, pass the
 			// INITIATIVE ID". Remove it if clean; leave the session alone.
-			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree)
+			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "")
 			c.journal(ctx, now, iss.ID, target, "codex", "one-off", "skip-codex-ring1", wtOutcome)
 			return fmt.Errorf("ateam reap: %s is a codex initiative; codex session teardown is not implemented (Ring 1) — worktree outcome: %s", target, wtOutcome)
 		}
 
 		sessions, sessErr := c.agentsFunc()
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree)
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
 		c.journal(ctx, now, iss.ID, target, "claude", "one-off", action, wtOutcome)
 
 		if action != "failed" {
@@ -278,7 +302,9 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 			return fmt.Errorf("ateam reap: refusing to reap the calling session")
 		}
 		action := c.stopAndRm(ctx, id)
-		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD)
+		// No caller-cwd guard needed here: the explicit refusal above already
+		// rejects this whole form when matched is the calling session.
+		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "")
 		// No bead was resolved for a bare session id, so no reaped note.
 		c.journal(ctx, now, "", target, "claude", "one-off", action, wtOutcome)
 		if action == "failed" {
@@ -341,14 +367,23 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 }
 
 // removeWorktreeIfClean removes worktree from disk when it is clean, per the
-// contract's clean-only safety rule. Returns the journal outcome string:
-// "worktree-unknown" (no worktree path resolved at all), "worktree-absent"
-// (nothing on disk to remove — a clean no-op), "worktree-dirty-skipped"
-// (uncommitted or unpushed work, or the clean-check itself failed — never
-// force-delete on an inconclusive check), or "worktree-removed".
-func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree string) string {
+// contract's clean-only safety rule. callerWorktree is the calling session's
+// own cwd (from callerWorktreeCWD; "" when unknown) — when worktree matches
+// it, removal is skipped unconditionally, since force-removing the running
+// caller's own cwd worktree breaks the live session. Returns the journal
+// outcome string: "worktree-unknown" (no worktree path resolved at all),
+// "worktree-skipped-caller-cwd" (worktree is the calling session's own cwd),
+// "worktree-absent" (nothing on disk to remove — a clean no-op),
+// "worktree-dirty-skipped" (uncommitted or unpushed work, or the clean-check
+// itself failed — never force-delete on an inconclusive check), or
+// "worktree-removed".
+func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree string) string {
 	if worktree == "" {
 		return "worktree-unknown"
+	}
+	if callerWorktree != "" && worktree == callerWorktree {
+		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is the calling session's own cwd, skipping removal\n", worktree)
+		return "worktree-skipped-caller-cwd"
 	}
 	exists, clean, err := c.worktreeClean(worktree)
 	if err != nil {
@@ -503,9 +538,29 @@ type reapJournalEntry struct {
 	WorktreeOutcome string `json:"worktree_outcome,omitempty"`
 }
 
+// reapJournalMaxBytes caps the journal file's size; rotateReapJournalIfNeeded
+// moves the file aside to a single ".1" backup once it's exceeded, mirroring
+// hungJournalMaxBytes/rotateHungJournalIfNeeded (hung_workproduct.go) — scan
+// mode appends to this file every tick forever, so without a cap it grows
+// unbounded. A var (not a const) so tests can shrink it rather than writing
+// 5 MiB of fixtures to exercise rotation.
+var reapJournalMaxBytes int64 = 5 * 1024 * 1024 // 5 MiB
+
 // reapJournalPath returns <ctx.Home>/reap-journal.jsonl.
 func reapJournalPath(home string) string {
 	return filepath.Join(home, reapJournalFileName)
+}
+
+// rotateReapJournalIfNeeded moves path aside to path+".1" (best-effort,
+// overwriting any previous backup) once it exceeds reapJournalMaxBytes. A
+// stat/rename failure is swallowed — the journal is diagnostic, never load-
+// bearing for reap's own correctness.
+func rotateReapJournalIfNeeded(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < reapJournalMaxBytes {
+		return
+	}
+	_ = os.Rename(path, path+".1")
 }
 
 // journal builds and appends one reapJournalEntry, logging (never failing
@@ -526,14 +581,16 @@ func (c *reapKong) journal(ctx *cli.Context, now time.Time, initiativeID, target
 }
 
 // appendReapJournal appends one JSON-marshaled line to path, creating the
-// parent directory and file as needed. Best-effort: an I/O error here must
-// never block or fail reap itself, so this returns an error for the caller
-// to log, not to abort on.
+// parent directory and file as needed, rotating first if the file has grown
+// past the cap. Best-effort: an I/O error here must never block or fail reap
+// itself, so this returns an error for the caller to log, not to abort on.
 func appendReapJournal(path string, entry reapJournalEntry) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	rotateReapJournalIfNeeded(path)
+
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
