@@ -1515,6 +1515,7 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterHungScanKong(p)
 	RegisterWatchersKong(p)
 	RegisterReapOrphansKong(p)
+	RegisterReapKong(p)
 	RegisterNotifyKong(p)
 	RegisterRelayKong(p)
 	RegisterStewardKong(p)

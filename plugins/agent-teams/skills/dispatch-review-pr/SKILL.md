@@ -102,10 +102,10 @@ Relay the output `ateam dispatch` printed. Tell the human:
 ateam runtime open claude      # open the native agents view
 claude logs <session-id>        # recent output without attaching
 claude attach <session-id>      # open it in this terminal
-claude stop <session-id>        # abort early OR reap a finished idle session
+claude stop <session-id>        # abort early
 ```
 
-When the background review finishes, it closes its initiative and the session stays idle — use `claude stop <session-id>` to reap it.
+When the background review finishes, it closes its initiative and the session stays idle. An automatic `ateam reap` backstop tears down the idle session (`claude stop` plus `claude rm`) and removes its worktree about 20 minutes after the initiative closes — no human action needed. To remove it immediately instead, run: `ateam reap <initiative-id>`.
 
 ## Key constraints
 
