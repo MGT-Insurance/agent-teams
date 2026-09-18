@@ -1,0 +1,725 @@
+package verbs
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
+)
+
+// ── test helpers (reap-specific; fakeBD/makeCtx come from dispatch_test.go,
+// reapFakeAgents/makeReapCtx/fakeStops come from reap_orphans_test.go) ───────
+
+// reapFixedNow pins the clock reap tests reason against.
+var reapFixedNow = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+
+// reapReviewIssue builds a review-shaped bd.Issue: a "pr-url:" line makes
+// initiative.ReviewPRURL(iss) succeed, and worktree/session/runtime lines
+// feed initiative.Of. runtime "" is omitted so f.Runtime defaults to "" (the
+// contract's "empty runtime defaults to claude" case).
+func reapReviewIssue(id, status string, closedAt time.Time, notes, worktree, sessionID, runtime string) bd.Issue {
+	desc := fmt.Sprintf("worktree: %s\nsession: %s\npr-url: https://github.com/owner/repo/pull/42\n", worktree, sessionID)
+	if runtime != "" {
+		desc += "runtime: " + runtime + "\n"
+	}
+	return bd.Issue{
+		ID:          id,
+		Status:      status,
+		Description: desc,
+		Notes:       notes,
+		ClosedAt:    closedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// reapScanFakeBD returns a fakeBD whose RunJSON serves issues for the
+// `list --status=closed --json` call reap's scan mode makes.
+func reapScanFakeBD(issues []bd.Issue) *fakeBD {
+	return &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			if len(args) == 0 || args[0] != "list" {
+				return fmt.Errorf("reapScanFakeBD: unexpected RunJSON args %v", args)
+			}
+			out, ok := dst.(*[]bd.Issue)
+			if !ok {
+				return fmt.Errorf("reapScanFakeBD: unexpected dst type %T", dst)
+			}
+			*out = issues
+			return nil
+		},
+	}
+}
+
+// reapShowFakeBD returns a fakeBD whose Run serves `bd show <id> --json` for
+// one-off mode's initiative-id resolution (form 1). If id doesn't match, Run
+// errors — bd.ShowIssue then reports not-found, and runOneOff falls through
+// to form 2/3.
+func reapShowFakeBD(id string, iss bd.Issue) *fakeBD {
+	return &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if len(args) < 2 || args[0] != "show" || args[1] != id {
+				return "", fmt.Errorf("reapShowFakeBD: not found: %v", args)
+			}
+			out, err := json.Marshal([]bd.Issue{iss})
+			if err != nil {
+				return "", err
+			}
+			return string(out), nil
+		},
+	}
+}
+
+// fakeRm records ids passed to `claude rm`.
+type fakeRm struct{ removed []string }
+
+func (f *fakeRm) fn() rmSessionFunc {
+	return func(id string) error {
+		f.removed = append(f.removed, id)
+		return nil
+	}
+}
+
+// fakeWorktreeRemover records worktrees passed to the removeWorktree seam.
+type fakeWorktreeRemover struct{ removed []string }
+
+func (f *fakeWorktreeRemover) fn() reapRemoveWorktreeFunc {
+	return func(worktree string) error {
+		f.removed = append(f.removed, worktree)
+		return nil
+	}
+}
+
+// fakeNoter records initiative ids the reaped-note seam was called for.
+type fakeNoter struct{ noted []string }
+
+func (f *fakeNoter) fn() reapNoteFunc {
+	return func(ctx *cli.Context, id string, at time.Time) error {
+		f.noted = append(f.noted, id)
+		return nil
+	}
+}
+
+// alwaysClean/alwaysDirty are worktreeCleanFunc stand-ins for the common
+// cases; exists is always true (the worktree is present on disk).
+func alwaysClean(string) (bool, bool, error) { return true, true, nil }
+func alwaysDirty(string) (bool, bool, error) { return true, false, nil }
+
+// newReapVerb builds a reapKong with every DI seam wired to the given fakes,
+// grace defaulted to defaultReapGrace unless overridden by the caller.
+func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover *fakeWorktreeRemover, noter *fakeNoter, clean worktreeCleanFunc) *reapKong {
+	return &reapKong{
+		Grace:          defaultReapGrace,
+		agentsFunc:     reapFakeAgents(sessions),
+		now:            func() time.Time { return reapFixedNow },
+		stopSession:    stops.stopFunc(),
+		rmSession:      rms.fn(),
+		removeWorktree: remover.fn(),
+		worktreeClean:  clean,
+		noteFunc:       noter.fn(),
+	}
+}
+
+// ── SCAN mode ────────────────────────────────────────────────────────────────
+
+// (1) closed review past grace, live session => stop+rm with the SHORT id,
+// clean worktree removed, reaped note written.
+func TestReap_Scan_ReapsPastGraceCleanWorktree(t *testing.T) {
+	worktree := "/tmp/reap-wt-1"
+	sessionID := "sess-uuid-1"
+	iss := reapReviewIssue("at-1", "closed", reapFixedNow.Add(-30*time.Minute), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc123", SessionID: sessionID, CWD: worktree, Kind: "background"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(stops.stopped) != 1 || stops.stopped[0] != "abc123" {
+		t.Errorf("expected stop(abc123); got %v", stops.stopped)
+	}
+	if len(rms.removed) != 1 || rms.removed[0] != "abc123" {
+		t.Errorf("expected rm(abc123); got %v", rms.removed)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected worktree %s removed; got %v", worktree, remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-1" {
+		t.Errorf("expected reaped note on at-1; got %v", noter.noted)
+	}
+}
+
+// (2) within grace => skipped entirely (no session/worktree/note action).
+func TestReap_Scan_WithinGraceSkipped(t *testing.T) {
+	worktree := "/tmp/reap-wt-2"
+	sessionID := "sess-uuid-2"
+	iss := reapReviewIssue("at-2", "closed", reapFixedNow.Add(-5*time.Minute), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc456", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected no action within grace; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
+
+// (4) already reaped:-noted => skipped, idempotent.
+func TestReap_Scan_AlreadyReapedSkipped(t *testing.T) {
+	worktree := "/tmp/reap-wt-4"
+	sessionID := "sess-uuid-4"
+	iss := reapReviewIssue("at-4", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-17T10:00:00Z", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abcaaa", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected no action on an already-reaped initiative; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
+
+// (5) no matching session => no-op on the session, but the worktree is still
+// removed if clean and the note is still written.
+func TestReap_Scan_NoMatchingSession_WorktreeStillRemoved_NoteWritten(t *testing.T) {
+	worktree := "/tmp/reap-wt-5"
+	iss := reapReviewIssue("at-5", "closed", reapFixedNow.Add(-time.Hour), "", worktree, "sess-uuid-5", "")
+	// No session in the live list matches this initiative at all.
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-uuid-unrelated", CWD: "/tmp/other"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 {
+		t.Errorf("expected no session teardown; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected worktree %s removed despite no-session; got %v", worktree, remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-5" {
+		t.Errorf("expected reaped note despite no-session; got %v", noter.noted)
+	}
+}
+
+// (6) DIRTY worktree => session torn down, worktree removal SKIPPED
+// (never forced), note still written.
+func TestReap_Scan_DirtyWorktree_SessionTornDown_WorktreeSkipped(t *testing.T) {
+	worktree := "/tmp/reap-wt-6"
+	sessionID := "sess-uuid-6"
+	iss := reapReviewIssue("at-6", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abcddd", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
+		t.Errorf("expected session torn down despite dirty worktree; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected worktree removal skipped for a dirty worktree; got %v", remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-6" {
+		t.Errorf("expected reaped note written despite dirty-worktree skip; got %v", noter.noted)
+	}
+}
+
+// (7) f.Runtime == "codex" => untouched (Ring 1; no session/worktree/note
+// action).
+func TestReap_Scan_CodexRuntimeUntouched(t *testing.T) {
+	worktree := "/tmp/reap-wt-7"
+	iss := reapReviewIssue("at-7", "closed", reapFixedNow.Add(-time.Hour), "", worktree, "sess-uuid-7", "codex")
+	sessions := []agentSession{{ID: "abceee", SessionID: "sess-uuid-7", CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected a codex-runtime initiative untouched; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
+
+// (8) non-review closed initiative (no pr-url) => untouched.
+func TestReap_Scan_NonReviewInitiativeUntouched(t *testing.T) {
+	iss := bd.Issue{
+		ID:          "at-8",
+		Status:      "closed",
+		Description: "worktree: /tmp/reap-wt-8\nsession: sess-uuid-8\n",
+		ClosedAt:    reapFixedNow.Add(-time.Hour).UTC().Format(time.RFC3339),
+	}
+	sessions := []agentSession{{ID: "abcfff", SessionID: "sess-uuid-8", CWD: "/tmp/reap-wt-8"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected a non-review initiative untouched; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
+
+// (9) the calling session is never torn down, even when it matches — and
+// since its worktree is also the caller's own cwd, that worktree must NOT be
+// removed either (F4: force-removing the caller's own cwd worktree breaks
+// the live session out from under it).
+func TestReap_Scan_NeverTearsDownCallingSession(t *testing.T) {
+	worktree := "/tmp/reap-wt-9"
+	callerID := "caller-sess-9"
+	t.Setenv("CLAUDE_SESSION_ID", callerID)
+
+	iss := reapReviewIssue("at-9", "closed", reapFixedNow.Add(-time.Hour), "", worktree, callerID, "")
+	sessions := []agentSession{{ID: "abcggg", SessionID: callerID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 {
+		t.Errorf("expected the calling session never torn down; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	// The worktree IS the calling session's own cwd, so it must be spared —
+	// the old assertion here (worktree still removed) is exactly the footgun
+	// F4 fixes: with the guard reverted, this fails.
+	if len(remover.removed) != 0 {
+		t.Errorf("expected worktree NOT removed when it is the calling session's own cwd; got %v", remover.removed)
+	}
+}
+
+// (9b) a DIFFERENT initiative's worktree is still removed as normal even
+// though the calling session is present (and resolvable) in the sessions
+// list — the caller-cwd guard is scoped to the caller's OWN cwd, not to
+// "any scan while a caller session exists".
+func TestReap_Scan_OtherInitiativeWorktree_StillRemovedWhileCallerSessionPresent(t *testing.T) {
+	callerID := "caller-sess-9b"
+	t.Setenv("CLAUDE_SESSION_ID", callerID)
+
+	targetWorktree := "/tmp/reap-wt-9b-target"
+	targetSessionID := "sess-uuid-9b-target"
+	iss := reapReviewIssue("at-9b", "closed", reapFixedNow.Add(-time.Hour), "", targetWorktree, targetSessionID, "")
+	sessions := []agentSession{
+		{ID: "abc9b1", SessionID: targetSessionID, CWD: targetWorktree},
+		{ID: "abc9b2", SessionID: callerID, CWD: "/tmp/caller-own-wt"},
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || stops.stopped[0] != "abc9b1" {
+		t.Errorf("expected the target (non-caller) session torn down; got %v", stops.stopped)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != targetWorktree {
+		t.Errorf("expected the target worktree removed despite a caller session being present elsewhere; got %v", remover.removed)
+	}
+}
+
+// ── ONE-OFF mode ─────────────────────────────────────────────────────────────
+
+// (10) target = initiative id => session + clean worktree removed, EVERY
+// gate bypassed (open status, within grace), note written.
+func TestReap_OneOff_TargetInitiativeID_GatesBypassed(t *testing.T) {
+	worktree := "/tmp/reap-wt-10"
+	sessionID := "sess-uuid-10"
+	// Open (not closed), just closed a second ago — every scan-mode gate
+	// would block this; one-off must bypass all of them.
+	iss := reapReviewIssue("at-10", "open", reapFixedNow, "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abchhh", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapShowFakeBD("at-10", iss), t.TempDir())
+	verb.Target = "at-10"
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || stops.stopped[0] != "abchhh" {
+		t.Errorf("expected stop(abchhh); got %v", stops.stopped)
+	}
+	if len(rms.removed) != 1 || rms.removed[0] != "abchhh" {
+		t.Errorf("expected rm(abchhh); got %v", rms.removed)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected worktree %s removed; got %v", worktree, remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-10" {
+		t.Errorf("expected reaped note on at-10; got %v", noter.noted)
+	}
+}
+
+// (11) target = bare claude short id (no matching initiative) => resolved
+// via the session's own cwd, session + worktree gone, no note (no bead to
+// note against).
+func TestReap_OneOff_TargetBareShortID_NoNote(t *testing.T) {
+	worktree := "/tmp/reap-wt-11"
+	sessions := []agentSession{{ID: "shortid11", SessionID: "sess-uuid-11", CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	// No initiative resolves this id: bd show errors for anything.
+	ctx, _, _ := makeCtx(reapShowFakeBD("no-such-id", bd.Issue{}), t.TempDir())
+	verb.Target = "shortid11"
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || stops.stopped[0] != "shortid11" {
+		t.Errorf("expected stop(shortid11); got %v", stops.stopped)
+	}
+	if len(rms.removed) != 1 || rms.removed[0] != "shortid11" {
+		t.Errorf("expected rm(shortid11); got %v", rms.removed)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected worktree %s removed; got %v", worktree, remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no reaped note for a bare session id (no bead); got %v", noter.noted)
+	}
+}
+
+// (12) an unresolvable target (no initiative, no claude session) returns a
+// non-nil error and takes no teardown action.
+func TestReap_OneOff_UnresolvableTarget_Error(t *testing.T) {
+	sessions := []agentSession{{ID: "someone-else", SessionID: "sess-uuid-other", CWD: "/tmp/other"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapShowFakeBD("no-such-id", bd.Issue{}), t.TempDir())
+	verb.Target = "totally-unresolvable-target"
+	if err := verb.Run(ctx); err == nil {
+		t.Fatal("expected a non-nil error for an unresolvable target")
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected no teardown action for an unresolvable target; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
+
+// (13) DIRTY worktree in one-off mode => session torn down, worktree
+// removal skipped (never forced), gates bypassed as in (10).
+func TestReap_OneOff_DirtyWorktree_SessionGone_WorktreeSkipped(t *testing.T) {
+	worktree := "/tmp/reap-wt-13"
+	sessionID := "sess-uuid-13"
+	iss := reapReviewIssue("at-13", "closed", reapFixedNow, "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abciii", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty)
+
+	ctx, _, _ := makeCtx(reapShowFakeBD("at-13", iss), t.TempDir())
+	verb.Target = "at-13"
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
+		t.Errorf("expected session torn down despite dirty worktree; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected worktree removal skipped for a dirty worktree; got %v", remover.removed)
+	}
+}
+
+// (14) one-off form-1 (target = initiative id) must also spare a worktree
+// that is the calling session's own cwd — the same F4 guard as scan mode,
+// applied at the other call site the bead names (reap.go one-off form-1).
+func TestReap_OneOff_TargetInitiativeID_NeverRemovesCallerOwnWorktree(t *testing.T) {
+	worktree := "/tmp/reap-wt-14"
+	callerID := "caller-sess-14"
+	t.Setenv("CLAUDE_SESSION_ID", callerID)
+
+	iss := reapReviewIssue("at-14", "closed", reapFixedNow, "", worktree, callerID, "")
+	sessions := []agentSession{{ID: "abcjjj", SessionID: callerID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapShowFakeBD("at-14", iss), t.TempDir())
+	verb.Target = "at-14"
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 {
+		t.Errorf("expected the calling session never torn down; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected worktree NOT removed when it is the calling session's own cwd (one-off form-1); got %v", remover.removed)
+	}
+}
+
+// ── dependency guard ─────────────────────────────────────────────────────────
+
+// TestReap_NilContext verifies the nil-context guard mirrored from
+// reapOrphansKong.Run.
+func TestReap_NilContext(t *testing.T) {
+	verb := &reapKong{}
+	if err := verb.Run(nil); err == nil {
+		t.Fatal("expected an error for a nil context")
+	}
+}
+
+// ── hasReapedNote ────────────────────────────────────────────────────────────
+
+// ── defaultWorktreeClean (real git, upstream-agnostic clean-check) ──────────
+// (runGit lives in routing_ownership_test.go)
+
+// TestReap_DefaultWorktreeClean_LocalOnlyCommit covers case (b) from the bead: a
+// commit that exists on no remote-tracking ref must never be treated as
+// clean, since removing the worktree would lose it permanently.
+func TestReap_DefaultWorktreeClean_LocalOnlyCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+
+	exists, clean, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if clean {
+		t.Fatal("expected clean=false: HEAD has a commit absent from every remote")
+	}
+}
+
+// TestReap_DefaultWorktreeClean_UncommittedChange covers case (c): an uncommitted
+// change must block removal regardless of the commit history.
+func TestReap_DefaultWorktreeClean_UncommittedChange(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("uncommitted"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	exists, clean, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if clean {
+		t.Fatal("expected clean=false for an uncommitted change")
+	}
+}
+
+// TestReap_DefaultWorktreeClean_MissingDirectory covers case (d): a worktree path
+// that no longer exists on disk reports exists=false, never an error.
+func TestReap_DefaultWorktreeClean_MissingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	exists, clean, err := defaultWorktreeClean(missing)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exists {
+		t.Fatal("expected exists=false for a missing directory")
+	}
+	if clean {
+		t.Fatal("expected clean=false for a missing directory")
+	}
+}
+
+// TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef covers case (a): once a
+// commit is reachable from a remote-tracking ref, it is provably not
+// local-only, so a clean tree on top of it reports clean=true. This is the
+// upstream-agnostic replacement for the old "@{u}..HEAD" check — it works
+// even though this branch has no configured upstream, matching the
+// review-pr-<N> branches this fix targets (also proven live against the
+// review-pr-8285 worktree: status-clean, HEAD an ancestor of origin/main,
+// `rev-list --count HEAD --not --remotes` == 0).
+func TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	remoteDir := t.TempDir()
+	runGit(t, remoteDir, "init", "--bare")
+
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+	runGit(t, dir, "remote", "add", "origin", remoteDir)
+	runGit(t, dir, "push", "origin", "HEAD:refs/heads/main")
+	// A plain push does not reliably update the local remote-tracking ref
+	// across all git versions/configs; fetch to make refs/remotes/origin/main
+	// unambiguous before asserting on it.
+	runGit(t, dir, "fetch", "origin")
+
+	exists, clean, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if !clean {
+		t.Fatal("expected clean=true: HEAD is reachable from a remote-tracking ref and the tree is clean")
+	}
+}
+
+func TestHasReapedNote(t *testing.T) {
+	cases := []struct {
+		notes string
+		want  bool
+	}{
+		{"", false},
+		{"some other note", false},
+		{"reaped: 2026-09-17T10:00:00Z", true},
+		{"first note\nreaped: 2026-09-17T10:00:00Z\n", true},
+		{"  reaped: 2026-09-17T10:00:00Z", true},
+	}
+	for _, c := range cases {
+		if got := hasReapedNote(c.notes); got != c.want {
+			t.Errorf("hasReapedNote(%q) = %v, want %v", c.notes, got, c.want)
+		}
+	}
+}
+
+// ── appendReapJournal / rotation (F1) ───────────────────────────────────────
+// Mirrors TestAppendHungJournal_RotatesPastCap (hung_workproduct_test.go):
+// scan mode appends to reap-journal.jsonl every tick forever, so without a
+// size cap the file grows unbounded.
+
+func TestAppendReapJournal_RotatesPastCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reap-journal.jsonl")
+
+	origCap := reapJournalMaxBytes
+	reapJournalMaxBytes = 10 // trivially small so one write already exceeds it on the next append
+	defer func() { reapJournalMaxBytes = origCap }()
+
+	if err := appendReapJournal(path, reapJournalEntry{InitiativeID: "at-1"}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if err := appendReapJournal(path, reapJournalEntry{InitiativeID: "at-2"}); err != nil {
+		t.Fatalf("second append (should rotate first): %v", err)
+	}
+
+	backup := path + ".1"
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("expected rotated backup %s to exist: %v", backup, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read post-rotation journal: %v", err)
+	}
+	if !strings.Contains(string(data), "at-2") {
+		t.Errorf("expected the post-rotation journal to contain the second entry, got %q", data)
+	}
+	if strings.Contains(string(data), "at-1") {
+		t.Errorf("expected the pre-rotation entry to have moved to the backup, not stayed in the live file: %q", data)
+	}
+}
+
+// ── whole-scan failure (F6) ─────────────────────────────────────────────────
+
+// TestReap_Scan_ListClosedFails covers the whole-scan failure path: when the
+// `list --status=closed` bd call itself errors, runScan must return non-nil
+// (distinct from a single initiative's teardown failing, which logs and
+// continues per the contract's exit rule).
+func TestReap_Scan_ListClosedFails(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			return fmt.Errorf("simulated bd list failure")
+		},
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	if err := verb.Run(ctx); err == nil {
+		t.Fatal("expected a non-nil error when list --status=closed itself fails")
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected no teardown action on a whole-scan failure; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
