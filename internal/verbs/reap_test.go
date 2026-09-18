@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,7 +348,10 @@ func TestReap_Scan_NonReviewInitiativeUntouched(t *testing.T) {
 	}
 }
 
-// (9) the calling session is never torn down, even when it matches.
+// (9) the calling session is never torn down, even when it matches — and
+// since its worktree is also the caller's own cwd, that worktree must NOT be
+// removed either (F4: force-removing the caller's own cwd worktree breaks
+// the live session out from under it).
 func TestReap_Scan_NeverTearsDownCallingSession(t *testing.T) {
 	worktree := "/tmp/reap-wt-9"
 	callerID := "caller-sess-9"
@@ -369,9 +373,45 @@ func TestReap_Scan_NeverTearsDownCallingSession(t *testing.T) {
 	if len(stops.stopped) != 0 || len(rms.removed) != 0 {
 		t.Errorf("expected the calling session never torn down; got stops=%v rms=%v", stops.stopped, rms.removed)
 	}
-	// The worktree is still processed independently of the session guard.
-	if len(remover.removed) != 1 || remover.removed[0] != worktree {
-		t.Errorf("expected worktree still removed when only the calling session matched; got %v", remover.removed)
+	// The worktree IS the calling session's own cwd, so it must be spared —
+	// the old assertion here (worktree still removed) is exactly the footgun
+	// F4 fixes: with the guard reverted, this fails.
+	if len(remover.removed) != 0 {
+		t.Errorf("expected worktree NOT removed when it is the calling session's own cwd; got %v", remover.removed)
+	}
+}
+
+// (9b) a DIFFERENT initiative's worktree is still removed as normal even
+// though the calling session is present (and resolvable) in the sessions
+// list — the caller-cwd guard is scoped to the caller's OWN cwd, not to
+// "any scan while a caller session exists".
+func TestReap_Scan_OtherInitiativeWorktree_StillRemovedWhileCallerSessionPresent(t *testing.T) {
+	callerID := "caller-sess-9b"
+	t.Setenv("CLAUDE_SESSION_ID", callerID)
+
+	targetWorktree := "/tmp/reap-wt-9b-target"
+	targetSessionID := "sess-uuid-9b-target"
+	iss := reapReviewIssue("at-9b", "closed", reapFixedNow.Add(-time.Hour), "", targetWorktree, targetSessionID, "")
+	sessions := []agentSession{
+		{ID: "abc9b1", SessionID: targetSessionID, CWD: targetWorktree},
+		{ID: "abc9b2", SessionID: callerID, CWD: "/tmp/caller-own-wt"},
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || stops.stopped[0] != "abc9b1" {
+		t.Errorf("expected the target (non-caller) session torn down; got %v", stops.stopped)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != targetWorktree {
+		t.Errorf("expected the target worktree removed despite a caller session being present elsewhere; got %v", remover.removed)
 	}
 }
 
@@ -491,6 +531,36 @@ func TestReap_OneOff_DirtyWorktree_SessionGone_WorktreeSkipped(t *testing.T) {
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected worktree removal skipped for a dirty worktree; got %v", remover.removed)
+	}
+}
+
+// (14) one-off form-1 (target = initiative id) must also spare a worktree
+// that is the calling session's own cwd — the same F4 guard as scan mode,
+// applied at the other call site the bead names (reap.go one-off form-1).
+func TestReap_OneOff_TargetInitiativeID_NeverRemovesCallerOwnWorktree(t *testing.T) {
+	worktree := "/tmp/reap-wt-14"
+	callerID := "caller-sess-14"
+	t.Setenv("CLAUDE_SESSION_ID", callerID)
+
+	iss := reapReviewIssue("at-14", "closed", reapFixedNow, "", worktree, callerID, "")
+	sessions := []agentSession{{ID: "abcjjj", SessionID: callerID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+
+	ctx, _, _ := makeCtx(reapShowFakeBD("at-14", iss), t.TempDir())
+	verb.Target = "at-14"
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 {
+		t.Errorf("expected the calling session never torn down; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected worktree NOT removed when it is the calling session's own cwd (one-off form-1); got %v", remover.removed)
 	}
 }
 
@@ -627,5 +697,69 @@ func TestHasReapedNote(t *testing.T) {
 		if got := hasReapedNote(c.notes); got != c.want {
 			t.Errorf("hasReapedNote(%q) = %v, want %v", c.notes, got, c.want)
 		}
+	}
+}
+
+// ── appendReapJournal / rotation (F1) ───────────────────────────────────────
+// Mirrors TestAppendHungJournal_RotatesPastCap (hung_workproduct_test.go):
+// scan mode appends to reap-journal.jsonl every tick forever, so without a
+// size cap the file grows unbounded.
+
+func TestAppendReapJournal_RotatesPastCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reap-journal.jsonl")
+
+	origCap := reapJournalMaxBytes
+	reapJournalMaxBytes = 10 // trivially small so one write already exceeds it on the next append
+	defer func() { reapJournalMaxBytes = origCap }()
+
+	if err := appendReapJournal(path, reapJournalEntry{InitiativeID: "at-1"}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if err := appendReapJournal(path, reapJournalEntry{InitiativeID: "at-2"}); err != nil {
+		t.Fatalf("second append (should rotate first): %v", err)
+	}
+
+	backup := path + ".1"
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("expected rotated backup %s to exist: %v", backup, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read post-rotation journal: %v", err)
+	}
+	if !strings.Contains(string(data), "at-2") {
+		t.Errorf("expected the post-rotation journal to contain the second entry, got %q", data)
+	}
+	if strings.Contains(string(data), "at-1") {
+		t.Errorf("expected the pre-rotation entry to have moved to the backup, not stayed in the live file: %q", data)
+	}
+}
+
+// ── whole-scan failure (F6) ─────────────────────────────────────────────────
+
+// TestReap_Scan_ListClosedFails covers the whole-scan failure path: when the
+// `list --status=closed` bd call itself errors, runScan must return non-nil
+// (distinct from a single initiative's teardown failing, which logs and
+// continues per the contract's exit rule).
+func TestReap_Scan_ListClosedFails(t *testing.T) {
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			return fmt.Errorf("simulated bd list failure")
+		},
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean, fakePending(false, nil))
+
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	if err := verb.Run(ctx); err == nil {
+		t.Fatal("expected a non-nil error when list --status=closed itself fails")
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected no teardown action on a whole-scan failure; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
 	}
 }
