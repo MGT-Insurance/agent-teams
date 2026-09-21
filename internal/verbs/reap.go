@@ -38,7 +38,6 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
-	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
@@ -47,11 +46,20 @@ import (
 // given in ONE-OFF mode ignores this entirely.
 const defaultReapGrace = 20 * time.Minute
 
-// reapGitTimeout bounds every git subprocess reap itself runs (worktree
-// clean-check, removal, prune) so a wedged git can't stall a scan tick —
-// mirrors gitProbeTimeout's reasoning (hung_workproduct.go). Reduced from the
-// original 10s so soft-deadline + worst-case single-survivor teardown (stop +
-// rm + 2 git ops) stays comfortably under pr-shepherd's 30s hard budget.
+// reapGitTimeout bounds every OTHER git subprocess reap itself runs directly
+// — the worktree clean-check's own git calls (defaultWorktreeClean) and the
+// best-effort `git worktree prune` after a successful removal — so a wedged
+// git can't stall a scan tick. Mirrors gitProbeTimeout's reasoning
+// (hung_workproduct.go). It does NOT bound the actual `git worktree remove`
+// (nor its git-common-dir resolve): those run under the separate, longer
+// reapWorktreeRemoveTimeout below, because a legitimate large-worktree
+// removal can take longer than this constant allows. (This comment used to
+// claim reapGitTimeout bounded removal too — false: that path ran through
+// gitutil's plain exec.Command with no context or timeout at all, review
+// finding agent-teams-442q.9/F1. See reapWorktreeRemoveTimeout's doc comment
+// for the fix and the combined-tick timing arithmetic, including the
+// current 90s pr-shepherd hard budget — PR #5, up from the 30s this comment
+// used to assume.)
 const reapGitTimeout = 5 * time.Second
 
 // RegisterReapKong registers the reap verb onto p.
@@ -671,6 +679,39 @@ func defaultRmSession(id string) error {
 	return err
 }
 
+// reapWorktreeRemoveTimeout bounds reapRemoveWorktreeWithTimeout's
+// git-common-dir resolve AND the actual `git worktree remove` as ONE shared,
+// combined deadline — not one timeout per call. A single
+// context.WithTimeout(_, reapWorktreeRemoveTimeout) is threaded through both
+// git.CommonDir and git.RemoveWorktree via boundedGitRunner
+// (bounded_exec.go), so together they get this budget once, not twice. On
+// expiry the whole process group is killed (same pattern as
+// runBoundedClaude) and the call returns an error rather than falsely
+// reporting the worktree removed — the caller's best-effort `git worktree
+// prune` cleans up any partial removal, and the survivor is simply retried
+// on the next tick instead of silently marked done.
+//
+// Sized to satisfy two constraints at once. First, it must never interrupt a
+// legitimate large-worktree removal: observed ~15s for a large worktree
+// (contract agent-teams-442q.3 live-verify), so 45s leaves 3x margin.
+// Second, it must still keep a worst-case scan tick under pr-shepherd's 90s
+// hard SIGTERM budget (pr-shepherd PR #5), even when the survivor that trips
+// this timeout starts right at the edge of the 15s soft ScanDeadline. This
+// is the steady-state, non-bulk path pr-shepherd actually runs under budget
+// — --bulk forces ScanDeadline=0 and is an unbudgeted human-run drain, not
+// subject to this at all. Summing every sequential bounded call on that one
+// survivor's teardown path:
+//
+//	15s  ScanDeadline slop (survivor starts just under the soft deadline)
+//	 5s  stop                                          (claudeCallTimeout)
+//	 5s  rm                                             (claudeCallTimeout)
+//	 5s  worktreeClean's `git status --porcelain`         (reapGitTimeout)
+//	 5s  worktreeClean's `git rev-list --count ...`       (reapGitTimeout)
+//	45s  this timeout                          (reapWorktreeRemoveTimeout)
+//	 5s  `git worktree prune`, best-effort                (reapGitTimeout)
+//	== 85s total, a 5s margin under the 90s hard budget.
+const reapWorktreeRemoveTimeout = 45 * time.Second
+
 // defaultReapRemoveWorktree removes worktree, resolving its owning repo root
 // via git's common-dir (the shared .git directory every linked worktree
 // points back to) so the caller never needs to separately track or pass the
@@ -678,7 +719,27 @@ func defaultRmSession(id string) error {
 // live (contract, "WORKTREE REMOVAL") — so this explicit step is mandatory
 // for actually reclaiming the disk space and `git worktree list` entry.
 func defaultReapRemoveWorktree(worktree string) error {
-	git := gitutil.New()
+	return reapRemoveWorktreeWithTimeout(worktree, reapWorktreeRemoveTimeout)
+}
+
+// reapRemoveWorktreeWithTimeout is defaultReapRemoveWorktree's real
+// implementation, taking the removal timeout as a parameter so a test can
+// exercise the real timeout/process-group-kill behavior on a short fuse
+// without waiting out reapWorktreeRemoveTimeout for real — the same shape
+// runBoundedClaude's own tests use, calling it directly with a short custom
+// timeout rather than going through a production wrapper.
+func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error {
+	// ONE shared deadline across both the git-common-dir resolve and the
+	// actual `git worktree remove` — see reapWorktreeRemoveTimeout's doc
+	// comment for why a combined budget, not one timeout per call, is what
+	// the arithmetic above assumes. boundedGitRunner also kills the whole
+	// process group on expiry, closing review finding F1 (agent-teams-
+	// 442q.9): this path previously ran through gitutil's plain
+	// exec.Command with no context or timeout at all.
+	cctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	git := boundedGitRunner(cctx)
+
 	commonDir, err := git.CommonDir(worktree)
 	if err != nil {
 		return fmt.Errorf("resolve repo root for worktree %s: %w", worktree, err)
@@ -689,10 +750,11 @@ func defaultReapRemoveWorktree(worktree string) error {
 	}
 	// Best-effort prune of any stale worktree administrative entries left
 	// behind; the worktree itself is already gone at this point, so a prune
-	// failure here never fails the reap.
-	cctx, cancel := context.WithTimeout(context.Background(), reapGitTimeout)
-	defer cancel()
-	_ = exec.CommandContext(cctx, "git", "-C", repoRoot, "worktree", "prune").Run()
+	// failure here never fails the reap. Its own timeout (reapGitTimeout) is
+	// independent of the combined removal budget above.
+	pruneCtx, pruneCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+	defer pruneCancel()
+	_ = exec.CommandContext(pruneCtx, "git", "-C", repoRoot, "worktree", "prune").Run()
 	return nil
 }
 

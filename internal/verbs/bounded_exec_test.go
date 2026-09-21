@@ -118,3 +118,80 @@ func TestRunBoundedClaude_NonZeroExit_ErrorEmbedsOutput(t *testing.T) {
 		t.Fatalf("expected the error to embed stderr output; got %v", err)
 	}
 }
+
+// ── runBoundedExec (the generalized helper boundedGitRunner uses for git) ───
+
+// writeFakeBinary writes an executable shell script to a fresh temp dir and
+// returns its absolute path. Unlike writeFakeClaude, runBoundedExec takes
+// name as a literal exec target, so tests can pass this path directly
+// without touching PATH.
+func writeFakeBinary(t *testing.T, name, script string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatalf("write fake %s script: %v", name, err)
+	}
+	return path
+}
+
+// TestRunBoundedExec_KillsWholeProcessGroup proves runBoundedExec gives any
+// binary the same whole-process-group kill on timeout that runBoundedClaude
+// gives `claude` calls: a grandchild the command itself spawned dies too,
+// not just the direct child. This is the primitive boundedGitRunner wires
+// into gitutil for reap's own worktree removal (reapWorktreeRemoveTimeout,
+// reap.go) — see TestReapRemoveWorktreeWithTimeout_RemovalHangReturnsErrorAndKillsGroup
+// (reap_test.go) for that end-to-end proof through git specifically.
+func TestRunBoundedExec_KillsWholeProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	// Background a long sleep (the grandchild), record its pid, then have
+	// the fake binary itself also outlive the timeout so the call is still
+	// in-flight when the group kill fires.
+	bin := writeFakeBinary(t, "fakebin", fmt.Sprintf("sleep 5 &\necho $! > %s\nsleep 5\n", pidFile))
+
+	// A 1s budget (not a tighter one) for the same reason
+	// TestRunBoundedClaude_KillsWholeProcessGroup uses one: under heavy
+	// machine load a sub-second budget can kill the shell mid-startup,
+	// before it records the grandchild's pid.
+	cctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	_, _, err := runBoundedExec(cctx, bin)
+	if err == nil {
+		t.Fatal("expected an error from a call that outlives its timeout")
+	}
+
+	var pidBytes []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, readErr := os.ReadFile(pidFile); readErr == nil && len(strings.TrimSpace(string(b))) > 0 {
+			pidBytes = b
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(pidBytes) == 0 {
+		t.Fatal("grandchild never wrote its pid — test setup is broken")
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if parseErr != nil {
+		t.Fatalf("parse grandchild pid %q: %v", pidBytes, parseErr)
+	}
+	if !processGoneWithin(pid, 2*time.Second) {
+		t.Fatalf("grandchild pid %d is still alive after the timed-out call returned — the process group was not fully killed", pid)
+	}
+}
+
+// TestRunBoundedExec_SuccessReturnsStdout proves the happy path: a call well
+// under its deadline returns its stdout with a nil error.
+func TestRunBoundedExec_SuccessReturnsStdout(t *testing.T) {
+	bin := writeFakeBinary(t, "fakebin", "printf hello")
+
+	out, _, err := runBoundedExec(context.Background(), bin)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != "hello" {
+		t.Fatalf("expected stdout %q, got %q", "hello", out)
+	}
+}

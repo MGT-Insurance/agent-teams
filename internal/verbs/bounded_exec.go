@@ -2,7 +2,10 @@
 
 // Package verbs — bounded_exec.go is the shared bounded-exec helper for every
 // `claude` CLI subprocess reap (and its sibling verbs) shell out to, plus the
-// tunables that bound a reap scan tick.
+// tunables that bound a reap scan tick. It also provides a generalized
+// process-group-kill-on-timeout exec (runBoundedExec) reused for git —
+// boundedGitRunner wires it into a gitutil.Runner for reap's own worktree
+// removal (see reap.go's reapWorktreeRemoveTimeout).
 //
 // WHY: reap's three claude-CLI subprocesses (`claude agents`, `claude stop`,
 // `claude rm`) used to run with no timeout and no process group. pr-shepherd
@@ -24,6 +27,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 )
 
 // claudeCallTimeout bounds every `claude` subprocess reap (and its siblings)
@@ -100,4 +105,56 @@ func combinedOutput(stdout, stderr []byte) string {
 		return string(stderr)
 	}
 	return string(stdout) + string(stderr)
+}
+
+// runBoundedExec runs name(args...), killing the WHOLE process group on
+// ctx's cancellation/timeout — the same protection runBoundedClaude gives
+// `claude` calls (see the package doc comment for why exec.CommandContext's
+// default direct-child-only kill isn't enough), generalized to any binary
+// and returning split stdout/stderr so it plugs directly into
+// gitutil.ExecFunc via boundedGitRunner below. ctx already carries whatever
+// deadline the caller wants: passing the SAME already-deadlined ctx into
+// several sequential calls gives them one shared combined budget rather than
+// a fresh full budget each — see reapWorktreeRemoveTimeout (reap.go) for why
+// that combined-budget shape matters for git worktree removal.
+func runBoundedExec(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error) {
+	cmd := exec.Command(name, args...)
+	// Setpgid makes this child the leader of its own process group (pgid ==
+	// its own pid), so -pid below targets the whole group, not just it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	if startErr := cmd.Start(); startErr != nil {
+		return nil, nil, startErr
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case waitErr := <-done:
+		return outBuf.Bytes(), errBuf.Bytes(), waitErr
+	case <-ctx.Done():
+		// Kill the whole process group: a bare cmd.Process.Kill() only
+		// signals the direct child, leaving any grandchild orphaned — the
+		// same gap runBoundedClaude closes for `claude`.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done // reap the process so cmd.Wait's goroutine never leaks
+		return outBuf.Bytes(), errBuf.Bytes(), ctx.Err()
+	}
+}
+
+// boundedGitRunner returns a gitutil.Runner whose exec is bounded by ctx and
+// kills the whole process group on cancel/timeout — used by
+// reapRemoveWorktreeWithTimeout (reap.go) so a wedged `git worktree remove`
+// can't hang a scan tick indefinitely. ctx carries the caller's deadline;
+// see reapWorktreeRemoveTimeout's doc comment (reap.go) for the timeout
+// value and the arithmetic behind it.
+func boundedGitRunner(ctx context.Context) *gitutil.Runner {
+	return gitutil.NewWithExec(func(name string, args ...string) ([]byte, []byte, error) {
+		return runBoundedExec(ctx, name, args...)
+	})
 }

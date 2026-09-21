@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1178,6 +1179,106 @@ func TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef(t *testing.T) {
 	}
 	if status != wtClean {
 		t.Fatalf("expected status=wtClean: HEAD is reachable from a remote-tracking ref and the tree is clean; got %v", status)
+	}
+}
+
+// ── reapRemoveWorktreeWithTimeout / defaultReapRemoveWorktree (F1 fix) ──────
+
+// writeFakeGit writes an executable shell script named "git" into a fresh
+// temp dir and prepends that dir to PATH. reapRemoveWorktreeWithTimeout
+// (via boundedGitRunner/gitutil) always invokes the literal "git" binary, so
+// this makes it exercise the fake script instead of a real git.
+func writeFakeGit(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "git")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatalf("write fake git script: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestReapRemoveWorktreeWithTimeout_RemovalHangReturnsErrorAndKillsGroup
+// proves the fix for review finding agent-teams-442q.9/F1: `git worktree
+// remove` (and its git-common-dir resolve) previously ran through gitutil's
+// plain exec.Command with no context or timeout at all — the SECOND root
+// cause named in the parent contract's WHY, never fixed until now. With the
+// fix, a wedged removal times out (rather than hanging a scan tick
+// indefinitely) and the whole process group is killed, not just the direct
+// git process.
+func TestReapRemoveWorktreeWithTimeout_RemovalHangReturnsErrorAndKillsGroup(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
+
+	// rev-parse --git-common-dir succeeds fast; `worktree remove` hangs,
+	// backgrounding a grandchild first so the test can prove it gets killed
+	// too, not just the direct git process.
+	writeFakeGit(t, fmt.Sprintf(`case "$*" in
+  *"rev-parse --git-common-dir"*)
+    echo ".git"
+    ;;
+  *"worktree remove"*)
+    sleep 5 &
+    echo $! > %s
+    sleep 5
+    ;;
+esac
+`, pidFile))
+
+	worktree := t.TempDir()
+
+	// A 1s budget for the same load-tolerance reason
+	// TestRunBoundedClaude_KillsWholeProcessGroup (bounded_exec_test.go)
+	// uses one, not reapWorktreeRemoveTimeout's real 45s.
+	err := reapRemoveWorktreeWithTimeout(worktree, 1*time.Second)
+	if err == nil {
+		t.Fatal("expected an error from a removal that outlives its timeout")
+	}
+
+	var pidBytes []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, readErr := os.ReadFile(pidFile); readErr == nil && len(strings.TrimSpace(string(b))) > 0 {
+			pidBytes = b
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(pidBytes) == 0 {
+		t.Fatal("grandchild never wrote its pid — test setup is broken")
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if parseErr != nil {
+		t.Fatalf("parse grandchild pid %q: %v", pidBytes, parseErr)
+	}
+	if !processGoneWithin(pid, 2*time.Second) {
+		t.Fatalf("grandchild pid %d is still alive after the timed-out removal returned — the process group was not fully killed", pid)
+	}
+}
+
+// TestDefaultReapRemoveWorktree_RealWorktree_Succeeds is the happy-path
+// proof that switching to a shared bounded context (boundedGitRunner)
+// didn't break real removal: a real worktree, removed through the
+// production constant (reapWorktreeRemoveTimeout), actually disappears from
+// disk and from `git worktree list`.
+func TestDefaultReapRemoveWorktree_RealWorktree_Succeeds(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repoRoot, wtPath := initRepoWithWorktree(t, "reap-remove-test")
+
+	if err := defaultReapRemoveWorktree(wtPath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected worktree path to be gone; stat err = %v", statErr)
+	}
+	out, err := exec.Command("git", "-C", repoRoot, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("git worktree list: %v", err)
+	}
+	if strings.Contains(string(out), wtPath) {
+		t.Fatalf("expected %s to be gone from git worktree list; got:\n%s", wtPath, out)
 	}
 }
 
