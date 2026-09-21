@@ -112,6 +112,8 @@ type reapKong struct {
 	Grace        time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
 	ScanDeadline time.Duration `name:"scan-deadline" default:"15s" help:"Scan mode only: soft wall-clock budget — stop starting new survivors once elapsed exceeds this, so the tick exits cleanly under pr-shepherd's 30s hard budget. 0 = unbounded (for an unbudgeted human-run bulk clear)."`
 	Max          int           `name:"max" default:"0" help:"Scan mode only: max survivors to tear down in one tick. 0 = unbounded (the soft deadline governs steady-state ticks)."`
+	Bulk         bool          `name:"bulk" help:"Scan mode only: one-time human-invoked unbudgeted drain. Forces --scan-deadline=0 and --max=0, also re-sweeps already-reaped initiatives whose worktree is still present on disk (clean-only, never forced), and prints running progress to stderr. Pair with --dry-run to preview first."`
+	DryRun       bool          `name:"dry-run" help:"Scan mode only: report what would be torn down without stopping any session, removing any worktree, or writing any reaped note."`
 
 	agentsFunc     agentsJSONFunc         `kong:"-"`
 	now            func() time.Time       `kong:"-"`
@@ -134,6 +136,14 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 	// itself is Ring 1 and not implemented here (see resolveOneOffTarget).
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam reap: 'claude' not found in PATH")
+	}
+	if c.Target != "" && (c.Bulk || c.DryRun) {
+		return fmt.Errorf("ateam reap: --bulk and --dry-run are scan-mode only; omit the target")
+	}
+	if c.Bulk {
+		// Bulk-clear implies an unbounded scan: no soft deadline, no batch cap.
+		c.ScanDeadline = 0
+		c.Max = 0
 	}
 
 	if c.Target == "" {
@@ -179,6 +189,19 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	// subsequent survivor before any of them could be marked reaped.
 	sessions, sessErr := c.agentsFunc()
 
+	// Bulk-clear only: an upfront count (same gates the loop below applies)
+	// so a human watching stderr sees the drain's size before minutes of
+	// per-worktree removal work, plus a running "N/M" line per survivor.
+	var total, processed int
+	if c.Bulk {
+		total = c.bulkEligibleCount(issues, now)
+		verb := "reaping"
+		if c.DryRun {
+			verb = "would reap"
+		}
+		fmt.Fprintf(ctx.Stderr, "reap --bulk: %d eligible survivor(s), %s\n", total, verb)
+	}
+
 	scanStart := time.Now()
 	var reaped int
 
@@ -192,7 +215,15 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-codex-ring1", "")
 			continue // Ring 1: codex teardown is not implemented by this verb
 		}
-		if hasReapedNote(iss.Notes) {
+		// In bulk mode ONLY, an already-reaped initiative is not skipped
+		// outright: a prior scan may have torn down its session but left a
+		// clean worktree on disk (the plain gate below never re-visits a
+		// noted initiative). alreadyReaped gates the note-write below so
+		// it stays a write-once note even though this sweep can revisit the
+		// same initiative on every bulk run until its worktree is finally
+		// gone.
+		alreadyReaped := hasReapedNote(iss.Notes)
+		if alreadyReaped && !c.Bulk {
 			continue // already reaped: at-most-once, no repeat gh probe
 		}
 
@@ -225,6 +256,18 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			return nil
 		}
 
+		if c.DryRun {
+			// Read-only preview: query session/worktree state through the
+			// same seams but never call stop/rm/remove/note.
+			sessOutcome := c.previewSessionOutcome(sessions, sessErr, matchInitiativeSession(f), callerID)
+			wtOutcome := c.previewWorktreeOutcome(f.Worktree, callerWorktreeCWD(sessions, callerID))
+			processed++
+			if c.Bulk {
+				fmt.Fprintf(ctx.Stderr, "reap --bulk --dry-run: [%d/%d] %s session=%s worktree=%s (%s)\n", processed, total, iss.ID, sessOutcome, wtOutcome, f.Worktree)
+			}
+			continue
+		}
+
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
 		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
 		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
@@ -233,14 +276,101 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			// Written after teardown (or when the session was already gone,
 			// action=="no-session") — never on a genuine teardown failure,
 			// so a failing stop/rm is retried on the next tick rather than
-			// silently marked done.
-			if err := c.noteFunc(ctx, iss.ID, now); err != nil {
-				fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
+			// silently marked done. Skipped when alreadyReaped: the note is
+			// write-once, so a bulk re-sweep that only finishes removing a
+			// leftover worktree never appends a duplicate.
+			if !alreadyReaped {
+				if err := c.noteFunc(ctx, iss.ID, now); err != nil {
+					fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
+				}
 			}
 			reaped++
 		}
+
+		if c.Bulk {
+			processed++
+			fmt.Fprintf(ctx.Stderr, "reap --bulk: [%d/%d] %s session=%s worktree=%s\n", processed, total, iss.ID, action, wtOutcome)
+		}
+	}
+
+	if c.Bulk {
+		fmt.Fprintf(ctx.Stderr, "reap --bulk: done — %d/%d processed\n", processed, total)
 	}
 	return nil
+}
+
+// bulkEligibleCount reports how many issues would be attempted in bulk-clear
+// mode — review-shaped, non-codex, and either not-yet-reaped-past-grace or
+// already reaped (bulk mode's reaped-but-present sweep revisits those to
+// catch a worktree a prior scan left behind). Used only for the upfront
+// progress line; the loop in runScan applies the identical gates issue by
+// issue as it goes, so this can never authorize an action the loop wouldn't.
+func (c *reapKong) bulkEligibleCount(issues []bd.Issue, now time.Time) int {
+	n := 0
+	for _, iss := range issues {
+		if _, ok := initiative.ReviewPRURL(iss); !ok {
+			continue
+		}
+		f := initiative.Of(iss)
+		if f.Runtime == "codex" {
+			continue
+		}
+		if hasReapedNote(iss.Notes) {
+			n++
+			continue
+		}
+		closedAt, err := time.Parse(time.RFC3339, iss.ClosedAt)
+		if iss.ClosedAt == "" || err != nil {
+			continue
+		}
+		if now.Sub(closedAt) < c.Grace {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// previewSessionOutcome reports, for --dry-run, what teardownClaudeSession
+// would do without stopping or removing anything: "would-stop" when a
+// matching non-caller session exists, "no-session" when none matches, or
+// "failed" when listing sessions itself errored.
+func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error, match func(agentSession) bool, callerID string) string {
+	if sessErr != nil {
+		return "failed"
+	}
+	for i := range sessions {
+		s := sessions[i]
+		if !match(s) {
+			continue
+		}
+		id := sessionStopID(s)
+		if callerID != "" && (id == callerID || s.SessionID == callerID || s.ID == callerID) {
+			continue
+		}
+		return "would-stop"
+	}
+	return "no-session"
+}
+
+// previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
+// would do without touching disk — the same outcome vocabulary, substituting
+// "worktree-would-remove" for the mutating "worktree-removed".
+func (c *reapKong) previewWorktreeOutcome(worktree, callerWorktree string) string {
+	if worktree == "" {
+		return "worktree-unknown"
+	}
+	if callerWorktree != "" && worktree == callerWorktree {
+		return "worktree-skipped-caller-cwd"
+	}
+	exists, clean, _ := c.worktreeClean(worktree)
+	if !exists {
+		return "worktree-absent"
+	}
+	if !clean {
+		return "worktree-dirty-skipped"
+	}
+	return "worktree-would-remove"
 }
 
 // callerWorktreeCWD resolves callerID's own cwd from sessions (the live

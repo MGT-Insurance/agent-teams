@@ -528,6 +528,164 @@ func TestReap_OneOff_TargetInitiativeID_NeverRemovesCallerOwnWorktree(t *testing
 	}
 }
 
+// ── bulk-clear mode (agent-teams-442q.5) ────────────────────────────────────
+
+// (19) Bulk mode's reaped-but-present sweep: an already-reaped initiative
+// whose worktree is STILL on disk gets that worktree removed when Bulk=true
+// (session teardown still attempted — here it's a no-op, no matching
+// session), but the reaped note is NOT written again (write-once).
+func TestReap_Bulk_RemovesReapedButPresentWorktree_NoDuplicateNote(t *testing.T) {
+	worktree := "/tmp/reap-wt-19"
+	iss := reapReviewIssue("at-19", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-16T10:00:00Z", worktree, "sess-uuid-19", "")
+	// No live session left — it was already stopped by a prior scan.
+	sessions := []agentSession{}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Bulk = true
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the leftover worktree %s removed in bulk mode; got %v", worktree, remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no duplicate reaped note for an already-reaped initiative; got %v", noter.noted)
+	}
+}
+
+// (20) The same already-reaped-but-present initiative, run WITHOUT --bulk,
+// stays untouched — confirms bulk mode is additive, never the default.
+func TestReap_NoBulk_AlreadyReapedPresentWorktree_StillSkipped(t *testing.T) {
+	worktree := "/tmp/reap-wt-20"
+	iss := reapReviewIssue("at-20", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-16T10:00:00Z", worktree, "sess-uuid-20", "")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected the leftover worktree left alone without --bulk; got %v", remover.removed)
+	}
+}
+
+// (21) --bulk forces an unbounded scan even if ScanDeadline/Max were set to
+// tiny values: all survivors get processed in one tick.
+func TestReap_Bulk_ForcesUnboundedDeadlineAndMax(t *testing.T) {
+	issues, sessions := reapSurvivorFixture(5, "bulkforce")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Bulk = true
+	verb.ScanDeadline = time.Nanosecond // would trip immediately if honored
+	verb.Max = 1                        // would stop after 1 if honored
+
+	ctx, _, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 5 {
+		t.Errorf("expected --bulk to force scan-deadline=0 and max=0, processing all 5 survivors; got %v", stops.stopped)
+	}
+}
+
+// (22) --dry-run performs zero mutations: no stop, no rm, no worktree
+// removal, no reaped note — for a normal not-yet-reaped survivor.
+func TestReap_DryRun_NoMutations(t *testing.T) {
+	worktree := "/tmp/reap-wt-22"
+	sessionID := "sess-uuid-22"
+	iss := reapReviewIssue("at-22", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc22", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Bulk = true
+	verb.DryRun = true
+
+	ctx, _, stderr := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Errorf("expected zero mutations under --dry-run; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+	if !strings.Contains(stderr.String(), "would-stop") || !strings.Contains(stderr.String(), "worktree-would-remove") {
+		t.Errorf("expected the dry-run preview to report would-stop/worktree-would-remove; got %q", stderr.String())
+	}
+}
+
+// (23) Bulk mode prints an upfront eligible count and a final "done" summary
+// to stderr, so a human isn't staring at silence for minutes.
+func TestReap_Bulk_PrintsProgressToStderr(t *testing.T) {
+	issues, sessions := reapSurvivorFixture(3, "progress")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Bulk = true
+
+	ctx, _, stderr := makeCtx(reapScanFakeBD(issues), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "3 eligible") {
+		t.Errorf("expected the upfront eligible count in stderr; got %q", out)
+	}
+	if !strings.Contains(out, "done — 3/3 processed") {
+		t.Errorf("expected a final done/processed summary in stderr; got %q", out)
+	}
+}
+
+// (24) --bulk and --dry-run are rejected in one-off mode (a target given) —
+// they only make sense scanning the whole backlog.
+func TestReap_BulkOrDryRun_WithTarget_Errors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bulk bool
+		dry  bool
+	}{
+		{"bulk", true, false},
+		{"dryrun", false, true},
+		{"both", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stops fakeStops
+			var rms fakeRm
+			var remover fakeWorktreeRemover
+			var noter fakeNoter
+			verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean)
+			verb.Bulk = tc.bulk
+			verb.DryRun = tc.dry
+			verb.Target = "at-24"
+
+			ctx, _, _ := makeCtx(reapShowFakeBD("no-such-id", bd.Issue{}), t.TempDir())
+			if err := verb.Run(ctx); err == nil {
+				t.Fatal("expected an error combining --bulk/--dry-run with a one-off target")
+			}
+		})
+	}
+}
+
 // ── hoist / soft deadline / batch bound / scan cancellation ─────────────────
 // Covers the impl bead's own acceptance criteria: the hoisted agentsFunc call,
 // the soft wall-clock deadline that lets one tick exit cleanly under budget,
