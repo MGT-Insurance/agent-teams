@@ -79,6 +79,7 @@ fi
 #    Paths are relative to the repo root. Add new entries here as needed.
 LOCAL_ENV_FILES=(
   "apps/shadowfax/.env.development.local"
+  "apps/mithril/.env.development.local"
   "packages/socotra-config/.env.local"
   "packages/ngrok/.env.local"
 )
