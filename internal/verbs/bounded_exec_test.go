@@ -43,7 +43,13 @@ func TestRunBoundedClaude_KillsWholeProcessGroup(t *testing.T) {
 	// timeout so the call is still in-flight when the group kill fires.
 	writeFakeClaude(t, fmt.Sprintf("sleep 5 &\necho $! > %s\nsleep 5\n", pidFile))
 
-	_, err := runBoundedClaude(context.Background(), 150*time.Millisecond, "agents", "--json")
+	// A 1s budget (not a tighter one) so the fake "claude" reliably reaches
+	// `echo $! > pidFile` and records the grandchild before the group kill
+	// fires — under heavy machine load a sub-second budget kills the shell
+	// mid-startup, before it writes the pid, and the test cannot observe the
+	// grandchild it means to assert on. The grandchild sleeps 5s, so a 1s
+	// budget still leaves the call in-flight when the timeout kills the group.
+	_, err := runBoundedClaude(context.Background(), 1*time.Second, "agents", "--json")
 	if err == nil {
 		t.Fatal("expected an error from a call that outlives its timeout")
 	}
