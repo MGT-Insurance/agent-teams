@@ -106,10 +106,31 @@ func (f *fakeNoter) fn() reapNoteFunc {
 	}
 }
 
-// alwaysClean/alwaysDirty are worktreeCleanFunc stand-ins for the common
-// cases; exists is always true (the worktree is present on disk).
-func alwaysClean(string) (bool, bool, error) { return true, true, nil }
-func alwaysDirty(string) (bool, bool, error) { return true, false, nil }
+// alwaysClean/alwaysDirty/alwaysUnpushed are worktreeCleanFunc stand-ins for
+// the common cases; exists is always true (the worktree is present on
+// disk). alwaysUnpushed carries a fixed HEAD sha so bulk-mode gh-verify
+// tests have something to feed the ghCommitPresent seam.
+func alwaysClean(string) (bool, worktreeGitStatus, string, error) { return true, wtClean, "", nil }
+func alwaysDirty(string) (bool, worktreeGitStatus, string, error) { return true, wtDirty, "", nil }
+func alwaysUnpushed(string) (bool, worktreeGitStatus, string, error) {
+	return true, wtUnpushed, "deadbeefcafef00d", nil
+}
+
+// fakeGHCommitPresent returns a ghCommitPresentFunc that records every
+// (ownerRepo, sha) it was asked about and answers per the fixed present/err
+// given, without shelling to a real gh binary.
+type fakeGHCommitPresent struct {
+	calls   [][2]string
+	present bool
+	err     error
+}
+
+func (f *fakeGHCommitPresent) fn() ghCommitPresentFunc {
+	return func(ownerRepo, sha string) (bool, error) {
+		f.calls = append(f.calls, [2]string{ownerRepo, sha})
+		return f.present, f.err
+	}
+}
 
 // newReapVerb builds a reapKong with every DI seam wired to the given fakes,
 // grace defaulted to defaultReapGrace unless overridden by the caller.
@@ -124,8 +145,12 @@ func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover
 		rmSession:      rms.fn(),
 		removeWorktree: remover.fn(),
 		worktreeClean:  clean,
-		noteFunc:       noter.fn(),
-		notifyCtx:      defaultReapNotifyCtx,
+		// Safe default: no test relies on this without overriding it
+		// explicitly (verb.ghCommitPresent = ...fn()) — inconclusive must
+		// always protect, so an un-overridden seam never authorizes removal.
+		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
+		noteFunc:        noter.fn(),
+		notifyCtx:       defaultReapNotifyCtx,
 	}
 }
 
@@ -686,6 +711,181 @@ func TestReap_BulkOrDryRun_WithTarget_Errors(t *testing.T) {
 	}
 }
 
+// ── bulk gh-verify override (Option C) ──────────────────────────────────────
+// A checked-out review-pr worktree with no uncommitted changes, but whose
+// HEAD carries commits absent from every local remote-tracking ref
+// (worktreeClean's wtUnpushed), is a false positive when its PR branch was
+// deleted on GitHub after merge — GitHub still has the commit, only the
+// local tracking ref was pruned. --bulk alone may verify this via gh and
+// remove the worktree anyway; every other mode/status always skips.
+
+// reapGHVerifyIssue is reapReviewIssue with a fixed worktree/session so every
+// gh-verify test below shares the same owner/repo (from reapReviewIssue's
+// hardcoded "https://github.com/owner/repo/pull/42") and HEAD sha (from
+// alwaysUnpushed's fixed "deadbeefcafef00d").
+func reapGHVerifyIssue(id string) (bd.Issue, []agentSession) {
+	worktree := "/tmp/reap-wt-" + id
+	sessionID := "sess-uuid-" + id
+	iss := reapReviewIssue(id, "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc-" + id, SessionID: sessionID, CWD: worktree}}
+	return iss, sessions
+}
+
+// (25) bulk + porcelain-clean + unpushed + gh HAS the commit => removed, and
+// the gh-verify seam is called exactly once with the initiative's owner/repo
+// and resolved HEAD sha.
+func TestReap_Bulk_UnpushedWorktree_GHHasCommit_Removed(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh25")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysUnpushed)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh25" {
+		t.Errorf("expected the gh-verified worktree removed; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 1 || fakeGH.calls[0] != [2]string{"owner/repo", "deadbeefcafef00d"} {
+		t.Errorf("expected exactly one gh-verify call for owner/repo@deadbeefcafef00d; got %v", fakeGH.calls)
+	}
+}
+
+// (26) bulk + porcelain-clean + unpushed + gh reports the commit MISSING =>
+// skipped: no proof, no removal.
+func TestReap_Bulk_UnpushedWorktree_GHMissing_Skipped(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh26")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysUnpushed)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: false}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected no removal when gh reports the commit missing; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 1 {
+		t.Errorf("expected the gh-verify seam still called exactly once; got %v", fakeGH.calls)
+	}
+}
+
+// (27) bulk + porcelain-clean + unpushed + the gh call itself ERRORS =>
+// skipped — inconclusive always protects, same as a missing commit.
+func TestReap_Bulk_UnpushedWorktree_GHErrors_Skipped(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh27")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysUnpushed)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: false, err: fmt.Errorf("simulated gh api failure")}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected no removal when the gh call itself errors; got %v", remover.removed)
+	}
+}
+
+// (28) bulk + porcelain-DIRTY (real uncommitted/untracked changes), even with
+// gh ready to report the commit present => skipped, and the gh seam is NEVER
+// called: working-tree changes always win over any gh-verify override.
+func TestReap_Bulk_DirtyWorktree_NeverGHOverridden(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh28")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected a dirty worktree never removed, gh notwithstanding; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called for a dirty worktree; got %v", fakeGH.calls)
+	}
+}
+
+// (29) the identical unpushed worktree WITHOUT --bulk => skipped, and the
+// gh-verify seam is NEVER called — the steady-state (non-bulk) gate is
+// unchanged by this override.
+func TestReap_NoBulk_UnpushedWorktree_GHNeverCalled(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh29")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysUnpushed)
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected no removal without --bulk; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called outside --bulk; got %v", fakeGH.calls)
+	}
+}
+
+// (30) bulk + already-clean (rev-list==0) => removed WITHOUT ever calling
+// gh — a provably clean worktree needs no gh-verify override.
+func TestReap_Bulk_AlreadyCleanWorktree_RemovedWithoutGH(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh30")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh30" {
+		t.Errorf("expected the already-clean worktree removed; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called for an already-clean worktree; got %v", fakeGH.calls)
+	}
+}
+
 // ── hoist / soft deadline / batch bound / scan cancellation ─────────────────
 // Covers the impl bead's own acceptance criteria: the hoisted agentsFunc call,
 // the soft wall-clock deadline that lets one tick exit cleanly under budget,
@@ -871,7 +1071,9 @@ func TestReap_NilContext(t *testing.T) {
 
 // TestReap_DefaultWorktreeClean_LocalOnlyCommit covers case (b) from the bead: a
 // commit that exists on no remote-tracking ref must never be treated as
-// clean, since removing the worktree would lose it permanently.
+// clean, since removing the worktree would lose it permanently. It reports
+// wtUnpushed (not wtDirty) with the resolved HEAD sha, so a bulk-mode
+// gh-verify override has something to check.
 func TestReap_DefaultWorktreeClean_LocalOnlyCommit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -879,16 +1081,24 @@ func TestReap_DefaultWorktreeClean_LocalOnlyCommit(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init")
 	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+	shaOut, shaErr := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if shaErr != nil {
+		t.Fatalf("git rev-parse HEAD: %v", shaErr)
+	}
+	wantSHA := strings.TrimSpace(string(shaOut))
 
-	exists, clean, err := defaultWorktreeClean(dir)
+	exists, status, headSHA, err := defaultWorktreeClean(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !exists {
 		t.Fatal("expected exists=true for a real directory")
 	}
-	if clean {
-		t.Fatal("expected clean=false: HEAD has a commit absent from every remote")
+	if status != wtUnpushed {
+		t.Fatalf("expected status=wtUnpushed: HEAD has a commit absent from every remote; got %v", status)
+	}
+	if headSHA != wantSHA {
+		t.Errorf("expected headSHA %q; got %q", wantSHA, headSHA)
 	}
 }
 
@@ -905,15 +1115,15 @@ func TestReap_DefaultWorktreeClean_UncommittedChange(t *testing.T) {
 		t.Fatalf("write dirty file: %v", err)
 	}
 
-	exists, clean, err := defaultWorktreeClean(dir)
+	exists, status, _, err := defaultWorktreeClean(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !exists {
 		t.Fatal("expected exists=true for a real directory")
 	}
-	if clean {
-		t.Fatal("expected clean=false for an uncommitted change")
+	if status != wtDirty {
+		t.Fatalf("expected status=wtDirty for an uncommitted change; got %v", status)
 	}
 }
 
@@ -922,15 +1132,15 @@ func TestReap_DefaultWorktreeClean_UncommittedChange(t *testing.T) {
 func TestReap_DefaultWorktreeClean_MissingDirectory(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
-	exists, clean, err := defaultWorktreeClean(missing)
+	exists, status, _, err := defaultWorktreeClean(missing)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if exists {
 		t.Fatal("expected exists=false for a missing directory")
 	}
-	if clean {
-		t.Fatal("expected clean=false for a missing directory")
+	if status == wtClean {
+		t.Fatal("expected a non-clean status for a missing directory")
 	}
 }
 
@@ -959,15 +1169,15 @@ func TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef(t *testing.T) {
 	// unambiguous before asserting on it.
 	runGit(t, dir, "fetch", "origin")
 
-	exists, clean, err := defaultWorktreeClean(dir)
+	exists, status, _, err := defaultWorktreeClean(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !exists {
 		t.Fatal("expected exists=true for a real directory")
 	}
-	if !clean {
-		t.Fatal("expected clean=true: HEAD is reachable from a remote-tracking ref and the tree is clean")
+	if status != wtClean {
+		t.Fatalf("expected status=wtClean: HEAD is reachable from a remote-tracking ref and the tree is clean; got %v", status)
 	}
 }
 

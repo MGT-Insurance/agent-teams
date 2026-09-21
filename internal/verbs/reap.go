@@ -57,14 +57,15 @@ const reapGitTimeout = 5 * time.Second
 // RegisterReapKong registers the reap verb onto p.
 func RegisterReapKong(p *cli.Parser) {
 	p.AddVerb("reap", "Tear down closed review sessions past grace (scan mode, what pr-shepherd calls every tick) or one target right now (one-off mode); see reap-orphans for stop-only cwd-missing cleanup.", &reapKong{
-		agentsFunc:     defaultAgentsJSONAll,
-		now:            time.Now,
-		stopSession:    defaultStopSession,
-		rmSession:      defaultRmSession,
-		removeWorktree: defaultReapRemoveWorktree,
-		worktreeClean:  defaultWorktreeClean,
-		noteFunc:       defaultReapNote,
-		notifyCtx:      defaultReapNotifyCtx,
+		agentsFunc:      defaultAgentsJSONAll,
+		now:             time.Now,
+		stopSession:     defaultStopSession,
+		rmSession:       defaultRmSession,
+		removeWorktree:  defaultReapRemoveWorktree,
+		worktreeClean:   defaultWorktreeClean,
+		ghCommitPresent: defaultGHCommitPresent,
+		noteFunc:        defaultReapNote,
+		notifyCtx:       defaultReapNotifyCtx,
 	})
 }
 
@@ -77,12 +78,48 @@ type rmSessionFunc func(id string) error
 // tests substitute a fake without a real git subprocess.
 type reapRemoveWorktreeFunc func(worktree string) error
 
-// worktreeCleanFunc reports whether worktree is safe to remove: exists is
-// false when the path is not present on disk at all (a missing worktree is a
-// clean no-op, never dirty); clean is only meaningful when exists is true and
-// means no uncommitted changes AND the branch is not ahead of its upstream.
-// Injected so tests substitute a fake without a real git subprocess.
-type worktreeCleanFunc func(worktree string) (exists bool, clean bool, err error)
+// worktreeGitStatus classifies a worktree's git-inspection result — the ONE
+// git-inspection path shared by the steady-state clean-only gate
+// (removeWorktreeIfClean) and the bulk-mode gh-verify override
+// (bulkGHVerifyRemovable), so neither re-runs `git status --porcelain` /
+// `git rev-list` separately for the same worktree.
+type worktreeGitStatus int
+
+const (
+	// wtDirty: porcelain non-empty (real uncommitted/untracked changes), or
+	// the git inspection itself was inconclusive (a status/rev-list
+	// subprocess failure). ALWAYS skipped, bulk mode included — working-tree
+	// changes, or an unresolvable check, always win over any gh-verify
+	// override; the contract requires PROOF of no unpushed work, not merely
+	// absence of proof of some.
+	wtDirty worktreeGitStatus = iota
+	// wtUnpushed: porcelain empty, but HEAD carries commits absent from
+	// every local remote-tracking ref. Steady-state (non-bulk) treats this
+	// exactly like wtDirty — skip, no gh call. Bulk mode alone may override
+	// it via bulkGHVerifyRemovable: this is the false-positive case a
+	// checked-out PR branch produces once its branch is deleted on GitHub
+	// after merge, pruning the local tracking ref even though GitHub's own
+	// history still has the commit.
+	wtUnpushed
+	// wtClean: porcelain empty AND every HEAD commit is reachable from some
+	// remote-tracking ref. Always safe to remove — no gh check needed.
+	wtClean
+)
+
+// worktreeCleanFunc classifies worktree's git state: exists is false when the
+// path is not present on disk at all (a missing worktree is a clean no-op,
+// never dirty). When exists is true, status is one of wtDirty/wtUnpushed/
+// wtClean (meaningless when exists is false); headSHA is worktree's resolved
+// HEAD commit, populated only for status==wtUnpushed — the one case a caller
+// might need it for a gh-verify override — and empty otherwise. Injected so
+// tests substitute a fake without a real git subprocess.
+type worktreeCleanFunc func(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error)
+
+// ghCommitPresentFunc reports whether GitHub still retains commit sha in
+// ownerRepo (owner/repo, lower-cased, as parsePrURL returns it) — the bulk
+// mode gh-verify override's sole probe. Injected so tests substitute a fake
+// without shelling to a real gh binary.
+type ghCommitPresentFunc func(ownerRepo, sha string) (present bool, err error)
 
 // reapNoteFunc writes the durable "reaped: <RFC3339>" bd note on id that
 // makes reap at-most-once per initiative. Injected so tests substitute a
@@ -112,17 +149,18 @@ type reapKong struct {
 	Grace        time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
 	ScanDeadline time.Duration `name:"scan-deadline" default:"15s" help:"Scan mode only: soft wall-clock budget — stop starting new survivors once elapsed exceeds this, so the tick exits cleanly under pr-shepherd's 30s hard budget. 0 = unbounded (for an unbudgeted human-run bulk clear)."`
 	Max          int           `name:"max" default:"0" help:"Scan mode only: max survivors to tear down in one tick. 0 = unbounded (the soft deadline governs steady-state ticks)."`
-	Bulk         bool          `name:"bulk" help:"Scan mode only: one-time human-invoked unbudgeted drain. Forces --scan-deadline=0 and --max=0, also re-sweeps already-reaped initiatives whose worktree is still present on disk (clean-only, never forced), and prints running progress to stderr. Pair with --dry-run to preview first."`
+	Bulk         bool          `name:"bulk" help:"Scan mode only: one-time human-invoked unbudgeted drain. Forces --scan-deadline=0 and --max=0, also re-sweeps already-reaped initiatives whose worktree is still present on disk, and prints running progress to stderr. A clean worktree whose HEAD is missing from every local remote (its PR branch deleted on GitHub after merge) is verified via gh before removal, never forced. Pair with --dry-run to preview first."`
 	DryRun       bool          `name:"dry-run" help:"Scan mode only: report what would be torn down without stopping any session, removing any worktree, or writing any reaped note."`
 
-	agentsFunc     agentsJSONFunc         `kong:"-"`
-	now            func() time.Time       `kong:"-"`
-	stopSession    stopSessionFunc        `kong:"-"`
-	rmSession      rmSessionFunc          `kong:"-"`
-	removeWorktree reapRemoveWorktreeFunc `kong:"-"`
-	worktreeClean  worktreeCleanFunc      `kong:"-"`
-	noteFunc       reapNoteFunc           `kong:"-"`
-	notifyCtx      reapNotifyCtxFunc      `kong:"-"`
+	agentsFunc      agentsJSONFunc         `kong:"-"`
+	now             func() time.Time       `kong:"-"`
+	stopSession     stopSessionFunc        `kong:"-"`
+	rmSession       rmSessionFunc          `kong:"-"`
+	removeWorktree  reapRemoveWorktreeFunc `kong:"-"`
+	worktreeClean   worktreeCleanFunc      `kong:"-"`
+	ghCommitPresent ghCommitPresentFunc    `kong:"-"`
+	noteFunc        reapNoteFunc           `kong:"-"`
+	notifyCtx       reapNotifyCtxFunc      `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -206,7 +244,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	var reaped int
 
 	for _, iss := range issues {
-		_, ok := initiative.ReviewPRURL(iss)
+		prURL, ok := initiative.ReviewPRURL(iss)
 		if !ok {
 			continue // not review-shaped: untouched, never reap's concern
 		}
@@ -260,7 +298,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			// Read-only preview: query session/worktree state through the
 			// same seams but never call stop/rm/remove/note.
 			sessOutcome := c.previewSessionOutcome(sessions, sessErr, matchInitiativeSession(f), callerID)
-			wtOutcome := c.previewWorktreeOutcome(f.Worktree, callerWorktreeCWD(sessions, callerID))
+			wtOutcome := c.previewWorktreeOutcome(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
 			processed++
 			if c.Bulk {
 				fmt.Fprintf(ctx.Stderr, "reap --bulk --dry-run: [%d/%d] %s session=%s worktree=%s (%s)\n", processed, total, iss.ID, sessOutcome, wtOutcome, f.Worktree)
@@ -269,7 +307,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 		}
 
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
 		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
 
 		if action != "failed" {
@@ -355,22 +393,32 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 
 // previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
 // would do without touching disk — the same outcome vocabulary, substituting
-// "worktree-would-remove" for the mutating "worktree-removed".
-func (c *reapKong) previewWorktreeOutcome(worktree, callerWorktree string) string {
+// "worktree-would-remove"/"worktree-would-remove-gh-verified" for the
+// mutating "worktree-removed"/"worktree-removed-gh-verified". prURL is the
+// initiative's own review PR URL (empty in one-off mode, which never sets
+// c.Bulk); it is only consulted for the bulk gh-verify override (wtUnpushed).
+func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
 	}
 	if callerWorktree != "" && worktree == callerWorktree {
 		return "worktree-skipped-caller-cwd"
 	}
-	exists, clean, _ := c.worktreeClean(worktree)
+	exists, status, headSHA, _ := c.worktreeClean(worktree)
 	if !exists {
 		return "worktree-absent"
 	}
-	if !clean {
+	switch status {
+	case wtClean:
+		return "worktree-would-remove"
+	case wtUnpushed:
+		if c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+			return "worktree-would-remove-gh-verified"
+		}
+		return "worktree-dirty-skipped"
+	default: // wtDirty
 		return "worktree-dirty-skipped"
 	}
-	return "worktree-would-remove"
 }
 
 // callerWorktreeCWD resolves callerID's own cwd from sessions (the live
@@ -431,14 +479,14 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 			// contract: "the ONLY form that gives codex a removable
 			// worktree" / "To reap a codex worktree one-off, pass the
 			// INITIATIVE ID". Remove it if clean; leave the session alone.
-			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "")
+			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "", "")
 			c.journal(ctx, now, iss.ID, target, "codex", "one-off", "skip-codex-ring1", wtOutcome)
 			return fmt.Errorf("ateam reap: %s is a codex initiative; codex session teardown is not implemented (Ring 1) — worktree outcome: %s", target, wtOutcome)
 		}
 
 		sessions, sessErr := c.agentsFunc()
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), "")
 		c.journal(ctx, now, iss.ID, target, "claude", "one-off", action, wtOutcome)
 
 		if action != "failed" {
@@ -472,7 +520,7 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 		action := c.stopAndRm(ctx, id)
 		// No caller-cwd guard needed here: the explicit refusal above already
 		// rejects this whole form when matched is the calling session.
-		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "")
+		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "", "")
 		// No bead was resolved for a bare session id, so no reaped note.
 		c.journal(ctx, now, "", target, "claude", "one-off", action, wtOutcome)
 		if action == "failed" {
@@ -538,14 +586,19 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // contract's clean-only safety rule. callerWorktree is the calling session's
 // own cwd (from callerWorktreeCWD; "" when unknown) — when worktree matches
 // it, removal is skipped unconditionally, since force-removing the running
-// caller's own cwd worktree breaks the live session. Returns the journal
-// outcome string: "worktree-unknown" (no worktree path resolved at all),
+// caller's own cwd worktree breaks the live session. prURL is the
+// initiative's own review PR URL (empty in one-off mode, which never sets
+// c.Bulk); it is only consulted for the bulk-mode gh-verify override, when
+// worktreeClean reports wtUnpushed (real, uncommitted/untracked changes
+// always win — see wtDirty's doc comment). Returns the journal outcome
+// string: "worktree-unknown" (no worktree path resolved at all),
 // "worktree-skipped-caller-cwd" (worktree is the calling session's own cwd),
 // "worktree-absent" (nothing on disk to remove — a clean no-op),
-// "worktree-dirty-skipped" (uncommitted or unpushed work, or the clean-check
-// itself failed — never force-delete on an inconclusive check), or
-// "worktree-removed".
-func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree string) string {
+// "worktree-dirty-skipped" (uncommitted changes, unpushed work not overridden
+// by a bulk gh-verify, or the clean-check itself failed — never force-delete
+// on an inconclusive check), "worktree-removed", or (bulk mode's gh-verify
+// override fired) "worktree-removed-gh-verified".
+func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
 	}
@@ -553,14 +606,21 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is the calling session's own cwd, skipping removal\n", worktree)
 		return "worktree-skipped-caller-cwd"
 	}
-	exists, clean, err := c.worktreeClean(worktree)
+	exists, status, headSHA, err := c.worktreeClean(worktree)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "reap: check worktree %s: %v\n", worktree, err)
 	}
 	if !exists {
 		return "worktree-absent"
 	}
-	if !clean {
+
+	ghVerified := false
+	removable := status == wtClean
+	if status == wtUnpushed && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+		removable = true
+		ghVerified = true
+	}
+	if !removable {
 		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is not provably clean, skipping removal\n", worktree)
 		return "worktree-dirty-skipped"
 	}
@@ -568,7 +628,37 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
 		return "worktree-dirty-skipped"
 	}
+	if ghVerified {
+		return "worktree-removed-gh-verified"
+	}
 	return "worktree-removed"
+}
+
+// bulkGHVerifyRemovable is the bulk-mode-only override for a worktree whose
+// HEAD carries commits absent from every LOCAL remote-tracking ref
+// (worktreeClean reported wtUnpushed): this is a false positive when the
+// worktree's PR branch was deleted on GitHub after merge, pruning the local
+// tracking ref, even though GitHub's own history still has the commit.
+// Returns false — never remove — whenever proof is missing: no PR URL, no
+// resolvable HEAD sha, an unparsable PR URL, or the gh call itself erroring
+// or reporting the commit absent. Inconclusive always protects.
+func (c *reapKong) bulkGHVerifyRemovable(ctx *cli.Context, worktree, prURL, headSHA string) bool {
+	if prURL == "" || headSHA == "" {
+		return false
+	}
+	ownerRepo, _, ok := parsePrURL(prURL)
+	if !ok {
+		return false
+	}
+	present, err := c.ghCommitPresent(ownerRepo, headSHA)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "reap: gh-verify worktree %s (%s@%s): %v\n", worktree, ownerRepo, headSHA, err)
+		return false
+	}
+	if !present {
+		fmt.Fprintf(ctx.Stdout, "reap: gh-verify worktree %s: %s@%s not found on GitHub, skipping removal\n", worktree, ownerRepo, headSHA)
+	}
+	return present
 }
 
 // ── real implementations ─────────────────────────────────────────────────────
@@ -614,22 +704,26 @@ func defaultReapRemoveWorktree(worktree string) error {
 // so it also works on branches with no upstream configured at all (for
 // example local-only review-pr-<N> branches). A missing directory reports
 // exists=false. Any inconclusive result — the status/rev-list subprocess
-// itself failing — reports clean=false: the contract requires PROOF of no
-// unpushed work before a force-remove, not merely absence of proof of some.
-func defaultWorktreeClean(worktree string) (exists bool, clean bool, err error) {
+// itself failing, or a resolvable-but-unresolved HEAD sha — reports
+// status=wtDirty: the contract requires PROOF of no unpushed work before a
+// force-remove, not merely absence of proof of some. When the rev-list count
+// is non-zero, status is wtUnpushed and headSHA is resolved via `git
+// rev-parse HEAD` for a caller's own gh-verify override (bulkGHVerifyRemovable)
+// — the one case that needs it.
+func defaultWorktreeClean(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error) {
 	info, statErr := os.Stat(worktree)
 	if statErr != nil || !info.IsDir() {
-		return false, false, nil
+		return false, wtDirty, "", nil
 	}
 
 	statusCtx, statusCancel := context.WithTimeout(context.Background(), reapGitTimeout)
 	defer statusCancel()
 	statusOut, err := exec.CommandContext(statusCtx, "git", "-C", worktree, "status", "--porcelain").Output()
 	if err != nil {
-		return true, false, fmt.Errorf("git status --porcelain: %w", err)
+		return true, wtDirty, "", fmt.Errorf("git status --porcelain: %w", err)
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
-		return true, false, nil
+		return true, wtDirty, "", nil
 	}
 
 	localOnlyCtx, localOnlyCancel := context.WithTimeout(context.Background(), reapGitTimeout)
@@ -637,12 +731,43 @@ func defaultWorktreeClean(worktree string) (exists bool, clean bool, err error) 
 	localOnlyOut, err := exec.CommandContext(localOnlyCtx, "git", "-C", worktree, "rev-list", "--count", "HEAD", "--not", "--remotes").Output()
 	if err != nil {
 		// Cannot prove every commit exists on some remote.
-		return true, false, nil
+		return true, wtDirty, "", nil
 	}
-	if strings.TrimSpace(string(localOnlyOut)) != "0" {
-		return true, false, nil
+	if strings.TrimSpace(string(localOnlyOut)) == "0" {
+		return true, wtClean, "", nil
 	}
-	return true, true, nil
+
+	shaCtx, shaCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+	defer shaCancel()
+	shaOut, shaErr := exec.CommandContext(shaCtx, "git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if shaErr != nil {
+		// Can't resolve the sha a gh-verify override would need — no proof
+		// possible, degrade to the same "never force-delete" bucket as any
+		// other inconclusive check.
+		return true, wtDirty, "", nil
+	}
+	return true, wtUnpushed, strings.TrimSpace(string(shaOut)), nil
+}
+
+// reapGHVerifyTimeout bounds the bulk-mode gh commit-presence probe
+// (defaultGHCommitPresent) so a hanging gh can't stall a bulk-clear run —
+// mirrors reapGitTimeout's reasoning for reap's git subprocesses, sized like
+// the existing gh probes elsewhere in this package (hungReviewCommentProbeTimeout).
+const reapGHVerifyTimeout = 10 * time.Second
+
+// defaultGHCommitPresent runs `gh api repos/<owner>/<repo>/commits/<sha>`,
+// bounded by reapGHVerifyTimeout, and reports whether GitHub has the commit:
+// present=true only on a zero exit (gh reports 404 as a non-zero exit for a
+// missing commit, which this folds into present=false with the error
+// attached for the caller to log — the bulk gh-verify override treats a
+// missing commit and a gh error identically: inconclusive protects).
+func defaultGHCommitPresent(ownerRepo, sha string) (present bool, err error) {
+	cctx, cancel := context.WithTimeout(context.Background(), reapGHVerifyTimeout)
+	defer cancel()
+	if err := exec.CommandContext(cctx, "gh", "api", fmt.Sprintf("repos/%s/commits/%s", ownerRepo, sha)).Run(); err != nil {
+		return false, fmt.Errorf("gh api commits/%s: %w", sha, err)
+	}
+	return true, nil
 }
 
 // defaultReapNote writes the durable "reaped: <RFC3339>" bd note that makes
