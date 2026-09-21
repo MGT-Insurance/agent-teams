@@ -30,8 +30,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -47,8 +49,10 @@ const defaultReapGrace = 20 * time.Minute
 
 // reapGitTimeout bounds every git subprocess reap itself runs (worktree
 // clean-check, removal, prune) so a wedged git can't stall a scan tick —
-// mirrors gitProbeTimeout's reasoning (hung_workproduct.go).
-const reapGitTimeout = 10 * time.Second
+// mirrors gitProbeTimeout's reasoning (hung_workproduct.go). Reduced from the
+// original 10s so soft-deadline + worst-case single-survivor teardown (stop +
+// rm + 2 git ops) stays comfortably under pr-shepherd's 30s hard budget.
+const reapGitTimeout = 5 * time.Second
 
 // RegisterReapKong registers the reap verb onto p.
 func RegisterReapKong(p *cli.Parser) {
@@ -60,6 +64,7 @@ func RegisterReapKong(p *cli.Parser) {
 		removeWorktree: defaultReapRemoveWorktree,
 		worktreeClean:  defaultWorktreeClean,
 		noteFunc:       defaultReapNote,
+		notifyCtx:      defaultReapNotifyCtx,
 	})
 }
 
@@ -84,12 +89,29 @@ type worktreeCleanFunc func(worktree string) (exists bool, clean bool, err error
 // fake instead of shelling to a real bd binary.
 type reapNoteFunc func(ctx *cli.Context, id string, at time.Time) error
 
+// reapNotifyCtxFunc returns the context SCAN mode runs under and its cancel
+// func. Injected so tests can simulate a mid-scan cancellation (a SIGTERM
+// arriving) deterministically, without sending a real OS signal to the test
+// process — that would risk killing the whole `go test` run.
+type reapNotifyCtxFunc func() (context.Context, context.CancelFunc)
+
+// defaultReapNotifyCtx is the production reapNotifyCtxFunc: a context
+// cancelled when the process receives SIGTERM (pr-shepherd's own hard-budget
+// kill signal), so runScan's loop can notice and stop starting new survivors
+// — and, in the steady state, so it never needs to: the soft scan deadline
+// below already exits well before pr-shepherd's 30s budget fires.
+func defaultReapNotifyCtx() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGTERM)
+}
+
 // reapKong implements `ateam reap [target]`. The DI fields are tagged
 // kong:"-" so kong ignores them; tests substitute fakes without touching the
 // struct registration — same pattern as reapOrphansKong.
 type reapKong struct {
-	Target string        `arg:"" name:"target" optional:"" help:"Initiative id or a bare Claude short session id to reap right now, bypassing the grace/reaped-note gates. Omit to scan every closed review initiative (what pr-shepherd calls every tick)."`
-	Grace  time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
+	Target       string        `arg:"" name:"target" optional:"" help:"Initiative id or a bare Claude short session id to reap right now, bypassing the grace/reaped-note gates. Omit to scan every closed review initiative (what pr-shepherd calls every tick)."`
+	Grace        time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
+	ScanDeadline time.Duration `name:"scan-deadline" default:"15s" help:"Scan mode only: soft wall-clock budget — stop starting new survivors once elapsed exceeds this, so the tick exits cleanly under pr-shepherd's 30s hard budget. 0 = unbounded (for an unbudgeted human-run bulk clear)."`
+	Max          int           `name:"max" default:"0" help:"Scan mode only: max survivors to tear down in one tick. 0 = unbounded (the soft deadline governs steady-state ticks)."`
 
 	agentsFunc     agentsJSONFunc         `kong:"-"`
 	now            func() time.Time       `kong:"-"`
@@ -98,6 +120,7 @@ type reapKong struct {
 	removeWorktree reapRemoveWorktreeFunc `kong:"-"`
 	worktreeClean  worktreeCleanFunc      `kong:"-"`
 	noteFunc       reapNoteFunc           `kong:"-"`
+	notifyCtx      reapNotifyCtxFunc      `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -114,7 +137,13 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 	}
 
 	if c.Target == "" {
-		return c.runScan(ctx)
+		// SCAN mode only: a context cancelled on SIGTERM — pr-shepherd's own
+		// hard-budget kill signal — so runScan's loop can notice and stop
+		// starting new survivors instead of being killed mid-teardown and
+		// orphaning a grandchild `claude` process.
+		scanCtx, cancel := c.notifyCtx()
+		defer cancel()
+		return c.runScan(ctx, scanCtx)
 	}
 	return c.runOneOff(ctx, c.Target)
 }
@@ -126,7 +155,15 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 // grace. Never hard-errors on a single initiative (log + continue) — only a
 // whole-scan failure (the bd list call itself) returns non-nil, per the
 // contract's exit rule.
-func (c *reapKong) runScan(ctx *cli.Context) error {
+//
+// scanCtx is checked before starting each survivor's teardown, alongside the
+// wall-clock soft deadline and batch bound: once any of the three trips, the
+// loop stops STARTING new work and returns — the survivor already in flight
+// finishes (each of its own subprocess calls is separately bounded by
+// runBoundedClaude), but no further one starts. This is what lets one tick
+// exit cleanly under pr-shepherd's 30s hard budget no matter how large the
+// backlog is, leaving the rest for the next tick.
+func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=closed", "--json"); err != nil {
 		return fmt.Errorf("ateam reap: list closed initiatives: %w", err)
@@ -134,6 +171,16 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 
 	now := c.now()
 	callerID := os.Getenv("CLAUDE_SESSION_ID")
+
+	// Hoisted OUT of the loop: one `claude agents` call serves every survivor
+	// this tick, reused below for both the teardown match and the
+	// caller-cwd guard. Previously called once PER survivor — the dominant
+	// cause of a tick never finishing, since a single hang stalled every
+	// subsequent survivor before any of them could be marked reaped.
+	sessions, sessErr := c.agentsFunc()
+
+	scanStart := time.Now()
+	var reaped int
 
 	for _, iss := range issues {
 		_, ok := initiative.ReviewPRURL(iss)
@@ -163,7 +210,21 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 			continue
 		}
 
-		sessions, sessErr := c.agentsFunc()
+		// Soft budget check, right before the expensive part (teardown):
+		// skip-only iterations above never cost meaningful wall-clock time,
+		// so they don't count against it.
+		select {
+		case <-scanCtx.Done():
+			return nil
+		default:
+		}
+		if c.ScanDeadline > 0 && time.Since(scanStart) >= c.ScanDeadline {
+			return nil
+		}
+		if c.Max > 0 && reaped >= c.Max {
+			return nil
+		}
+
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
 		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
 		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
@@ -176,6 +237,7 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 			if err := c.noteFunc(ctx, iss.ID, now); err != nil {
 				fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
 			}
+			reaped++
 		}
 	}
 	return nil
@@ -381,16 +443,12 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 
 // ── real implementations ─────────────────────────────────────────────────────
 
-// defaultRmSession runs `claude rm <id>`. reap_orphans.go only wraps `claude
-// stop`; reap additionally needs `claude rm` to actually clear the session
-// from the agents view.
+// defaultRmSession runs `claude rm <id>`, bounded via runBoundedClaude.
+// reap_orphans.go only wraps `claude stop`; reap additionally needs `claude
+// rm` to actually clear the session from the agents view.
 func defaultRmSession(id string) error {
-	cmd := exec.Command("claude", "rm", id)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("claude rm %s: %w (output: %s)", id, err, string(out))
-	}
-	return nil
+	_, err := runBoundedClaude(context.Background(), claudeCallTimeout, "rm", id)
+	return err
 }
 
 // defaultReapRemoveWorktree removes worktree, resolving its owning repo root

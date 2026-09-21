@@ -2,6 +2,7 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -358,11 +359,14 @@ func defaultAgentsJSONAll() ([]agentSession, error) {
 }
 
 // runAgentsJSON runs `claude agents <args...>` and parses the JSON result.
+// Producer-level fix: bounded via runBoundedClaude (context.Background(), a
+// self-contained per-call timeout — this DI seam's signature is shared by
+// send/hung/reap-orphans/reap and stays unchanged), so an unbounded `claude
+// agents` hang can no longer stall any of its callers.
 func runAgentsJSON(args ...string) ([]agentSession, error) {
-	cmd := exec.Command("claude", append([]string{"agents"}, args...)...)
-	out, err := cmd.Output()
+	out, err := runBoundedClaude(context.Background(), claudeCallTimeout, append([]string{"agents"}, args...)...)
 	if err != nil {
-		return nil, fmt.Errorf("claude agents %s: %w", strings.Join(args, " "), err)
+		return nil, err
 	}
 	var sessions []agentSession
 	if err := json.Unmarshal(out, &sessions); err != nil {

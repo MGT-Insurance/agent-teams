@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -115,6 +116,8 @@ func alwaysDirty(string) (bool, bool, error) { return true, false, nil }
 func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover *fakeWorktreeRemover, noter *fakeNoter, clean worktreeCleanFunc) *reapKong {
 	return &reapKong{
 		Grace:          defaultReapGrace,
+		ScanDeadline:   reapScanSoftDeadlineDefault,
+		Max:            reapScanBatchDefault,
 		agentsFunc:     reapFakeAgents(sessions),
 		now:            func() time.Time { return reapFixedNow },
 		stopSession:    stops.stopFunc(),
@@ -122,6 +125,7 @@ func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover
 		removeWorktree: remover.fn(),
 		worktreeClean:  clean,
 		noteFunc:       noter.fn(),
+		notifyCtx:      defaultReapNotifyCtx,
 	}
 }
 
@@ -521,6 +525,173 @@ func TestReap_OneOff_TargetInitiativeID_NeverRemovesCallerOwnWorktree(t *testing
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected worktree NOT removed when it is the calling session's own cwd (one-off form-1); got %v", remover.removed)
+	}
+}
+
+// ── hoist / soft deadline / batch bound / scan cancellation ─────────────────
+// Covers the impl bead's own acceptance criteria: the hoisted agentsFunc call,
+// the soft wall-clock deadline that lets one tick exit cleanly under budget,
+// and a cancelled scan context aborting further teardown.
+
+// reapSurvivorFixture builds n review-shaped, past-grace, distinct closed
+// initiatives, each with its own matching live session — a fixture for
+// exercising the hoist/deadline/cancellation tests below, where every
+// survivor is independently eligible for teardown.
+func reapSurvivorFixture(n int, prefix string) ([]bd.Issue, []agentSession) {
+	issues := make([]bd.Issue, 0, n)
+	sessions := make([]agentSession, 0, n)
+	for i := 1; i <= n; i++ {
+		id := fmt.Sprintf("at-%s-%d", prefix, i)
+		wt := fmt.Sprintf("/tmp/reap-wt-%s-%d", prefix, i)
+		sess := fmt.Sprintf("sess-%s-%d", prefix, i)
+		issues = append(issues, reapReviewIssue(id, "closed", reapFixedNow.Add(-time.Hour), "", wt, sess, ""))
+		sessions = append(sessions, agentSession{ID: fmt.Sprintf("abc-%s-%d", prefix, i), SessionID: sess, CWD: wt})
+	}
+	return issues, sessions
+}
+
+// countingAgents wraps sessions in an agentsJSONFunc that also counts calls.
+func countingAgents(sessions []agentSession, calls *int) agentsJSONFunc {
+	return func() ([]agentSession, error) {
+		*calls++
+		return sessions, nil
+	}
+}
+
+// (15) agentsFunc must be hoisted out of the survivor loop: one `claude
+// agents` call serves every survivor in the tick, not one per survivor.
+func TestReap_Scan_AgentsFuncHoisted_CalledAtMostOnce(t *testing.T) {
+	issues, sessions := reapSurvivorFixture(3, "hoist")
+
+	var calls int
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.agentsFunc = countingAgents(sessions, &calls)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected agentsFunc called exactly once for the whole scan; got %d calls", calls)
+	}
+	if len(stops.stopped) != 3 {
+		t.Errorf("expected all 3 survivors torn down using the single hoisted call; got %v", stops.stopped)
+	}
+}
+
+// (16) a soft scan deadline stops STARTING new survivors once elapsed
+// wall-clock time exceeds it, so a tick exits well before processing the
+// whole backlog — while durably marking (reaped note) every survivor it did
+// start, never one it skipped.
+func TestReap_Scan_SoftDeadline_ExitsCleanlyAndMarksOnlyStartedSurvivors(t *testing.T) {
+	const perSurvivor = 50 * time.Millisecond
+	const deadline = 70 * time.Millisecond
+
+	issues, sessions := reapSurvivorFixture(5, "deadline")
+
+	var stops fakeStops
+	slowStop := func(id string) error {
+		time.Sleep(perSurvivor) // simulates a slow (but still bounded) claude stop
+		stops.stopped = append(stops.stopped, id)
+		return nil
+	}
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.stopSession = slowStop
+	verb.ScanDeadline = deadline
+
+	ctx, _, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+
+	start := time.Now()
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if len(stops.stopped) == 0 {
+		t.Fatal("expected at least one survivor processed before the deadline tripped")
+	}
+	if len(stops.stopped) >= 5 {
+		t.Fatalf("expected the soft deadline to stop the scan before all 5 survivors were processed; got %v", stops.stopped)
+	}
+	if len(noter.noted) != len(stops.stopped) {
+		t.Errorf("expected a durable reaped note for exactly the survivors actually started; stopped=%v noted=%v", stops.stopped, noter.noted)
+	}
+	if elapsed >= 4*perSurvivor {
+		t.Errorf("expected the scan to exit well before processing every survivor (5*%v); took %v", perSurvivor, elapsed)
+	}
+}
+
+// (17) a batch bound (Max) stops STARTING new survivors once that many have
+// been torn down in the tick, independent of the soft deadline.
+func TestReap_Scan_BatchBound_StopsAfterMaxSurvivors(t *testing.T) {
+	issues, sessions := reapSurvivorFixture(5, "batch")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Max = 2
+
+	ctx, _, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 2 {
+		t.Errorf("expected exactly Max=2 survivors torn down; got %v", stops.stopped)
+	}
+	if len(noter.noted) != 2 {
+		t.Errorf("expected exactly 2 durable reaped notes; got %v", noter.noted)
+	}
+}
+
+// (18) a cancelled scan context (simulating a SIGTERM arriving mid-scan)
+// aborts further teardown: the survivor already in flight finishes and is
+// durably marked, but no new one starts, and Run returns promptly (no
+// goroutine or process leak).
+func TestReap_Scan_CancelledScanContext_StopsStartingFurtherSurvivors(t *testing.T) {
+	issues, sessions := reapSurvivorFixture(3, "cancel")
+
+	scanCtx, cancel := context.WithCancel(context.Background())
+	var stops fakeStops
+	cancelAfterFirst := func(id string) error {
+		stops.stopped = append(stops.stopped, id)
+		cancel() // simulate a SIGTERM landing right after the first teardown
+		return nil
+	}
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.stopSession = cancelAfterFirst
+	verb.notifyCtx = func() (context.Context, context.CancelFunc) { return scanCtx, cancel }
+
+	ctx, _, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+
+	done := make(chan error, 1)
+	go func() { done <- verb.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly after the scan context was cancelled — possible goroutine/process leak")
+	}
+
+	if len(stops.stopped) != 1 {
+		t.Errorf("expected exactly 1 survivor processed before the cancelled context stopped the scan; got %v", stops.stopped)
+	}
+	if len(noter.noted) != 1 {
+		t.Errorf("expected exactly 1 durable reaped note for the survivor actually started; got %v", noter.noted)
 	}
 }
 
