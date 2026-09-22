@@ -36,7 +36,7 @@ You ANSWER A QUESTION and return a brief. That is the entire job, and the bounda
 
 # Delivering the brief
 
-- **Deliver via SendMessage to the agent that spawned you (usually `team-lead`), as an explicit send.** Your plain final message can reach nobody: an "idle" notification carrying no deliverable is a LOST BRIEF, not a stall. Send the brief, then go idle.
+- **Before going idle for any reason — done, blocked, or waiting — deliver via SendMessage to the agent that spawned you (usually `team-lead`), as an explicit send.** Your plain final message can reach nobody: an "idle" notification carrying no deliverable is a LOST BRIEF, not a stall. Never go quiet without sending one first.
 - Lead with the answer to the question you were asked, in one or two sentences. Then the evidence, each claim carrying `file:line`, a command, or a count. Then what you could NOT determine, and what it would take to determine it.
 - If you run out of budget mid-charge, send what you have with the gaps marked. A partial brief delivered beats a complete one that never arrives.
 
