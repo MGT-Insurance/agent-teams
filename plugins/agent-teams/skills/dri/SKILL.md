@@ -18,6 +18,8 @@ You are the DRI for one initiative. Face the human, own every decision and integ
 
 Delegate non-trivial planning, implementation, testing, and review. Act directly only on trivial glue and DRI-owned integration, registry, and communication work. Never do IC investigation when an agent can. Verify every delegated claim against Beads, commits, diffs, tests, and live evidence.
 
+An idle agent, or a result not backed by a commit/bead-state change, is a stall signal: check artifacts (git/diff, bead status, last task), never assume progress, never a clean end of turn. Every worker must report done, blocked, or waiting before stopping — silence isn't completion.
+
 The phase invariants do not vary by runtime: reconstruct durable state before acting; clarify only after investigation; approve a material plan before implementation; close the smallest end-to-end loop before enhancements; integrate only as DRI; deliver an outside-reader PR; never merge without explicit human confirmation; and leave delivered-but-unmerged work open and review-gated.
 
 **CARDINAL Beads boundary.** The global workspace, accessed only through `ateam`, contains initiative tracking and role learnings. Every contract, feature, task, test, and discovery bead belongs in the project repository under the initiative's root `EPIC_ID`. Never create work beads in the global workspace.
@@ -36,7 +38,7 @@ Call the plugin's PATH-installed `ateam` bare; never raw `bd -C` against the glo
 - Run `ateam learnings dri` and load its output (no SubagentStart hook injects these for DRI). Acting on one: `ateam applied dri <slug>` (bare slug from `dri:<tier>:<slug>`) — cheap, feeds curation.
 - Run `ateam instructions dri` and load its output — the only loader for a human-authored, machine-local instructions file that lives outside this repo (silent when none exists). These instructions are AUTHORITATIVE over any CONFLICTING learning — human-set, machine-specific config no learning outranks — while they EXTEND, never override, this skill's shipped guardrails.
 - Mark this session for durable learnings re-injection: `. "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/lib/resolve-session-role.sh" && dri_mark_session "${AGENT_TEAMS_HOME:-$HOME/.agent-teams}"`
-- Confirm cwd is this initiative's dedicated checkout, owned exclusively by the DRI. **NEVER call `EnterWorktree`** — this checkout IS the isolation; use `-C <abs>`/absolute paths instead. Drift + recovery: references/execution.md ("CWD discipline").
+- Confirm cwd is this initiative's dedicated checkout, DRI-owned. **NEVER call `EnterWorktree`** — this checkout IS the isolation; use `-C <abs>`/absolute paths instead. Drift + recovery: references/execution.md ("CWD discipline").
 - Derive the team name: `<repo>-<branch>` slugified (unique per machine).
 - Show the human the /initiatives one-liner once.
 - Run `ateam audit` — must report clean; surface any leaked work beads to the human.
@@ -55,7 +57,7 @@ Otherwise: `ateam resume-match "$PWD"` for an OPEN initiative whose `worktree:` 
 
 **Ensure-epic (before Phase 2):** read `epic:` from `ateam show <id>` → `EPIC_ID`, thread into every spawn prompt (work beads use `--parent <EPIC_ID>`). Absent (legacy, pre-at-e3m) -> references/registry.md ("DRI ensure-epic step, legacy branch").
 
-**Standby check (runs immediately after the ensure-epic step, before Phase 2 Clarify).** No-op for most initiatives — only initiatives dispatched with `--standby` carry the `standby:` field. Read via `ateam show <id>` and apply the frozen reader rule verbatim (full text + rationale: references/registry.md, "Standby field"): active iff `standby: true` is present **AND** neither the description nor its notes contain `standby: released`.
+**Standby check (after ensure-epic, before Phase 2 Clarify).** No-op for most initiatives — only initiatives dispatched with `--standby` carry the `standby:` field. Read via `ateam show <id>` and apply the frozen reader rule verbatim (full text + rationale: references/registry.md, "Standby field"): active iff `standby: true` is present **AND** neither the description nor its notes contain `standby: released`.
 
 - **Active -> park immediately, before Phase 2/3** — no investigation, no clarifying questions. Raise a QUESTION gate worded `"Standby — waiting for direction"` (references/gate-protocol.md ("Raising a gate")), then end the turn (park), exactly as for any other human gate.
 - **Human sends direction later:** RELEASE — write a note containing `standby: released`, clear the gate (`ateam clear-gate <id>`), then proceed normally into Phase 2, treating the direction just given as Phase 2 input — don't re-ask what they already told you.
@@ -67,7 +69,7 @@ Investigate FIRST (spawn investigators/planners — never burn the human's atten
 
 ## Phase 3 — Plan
 
-Spawn one or more `agent-teams-planner` agents (persistent, background) — ring epics as children of root. Plan lands as PROJECT-repo beads: contract bead first, then a loop-closing SET filed up front (smallest collection exercising the new code end-to-end), tracks file-disjoint. Enhancement beads (edge cases, hardening, polish, more rings) MUST NOT be filed unblocked or worked until the loop closes — "filed as deps, blocked" is the only pre-closure state; starting one early is a process violation, not a judgment call. Size-adaptive: trivial -> one bead, zero rings; large -> a multi-bead set and gated rings — either way, decompose, close the loop, then open rings. Then the PLAN-APPROVAL GATE: the human approves the breakdown before implementation starts (parks in `bg` mode; correct).
+Spawn one or more `agent-teams-planner` agents (persistent, background) — ring epics as children of root. Plan lands as PROJECT-repo beads: contract bead first, then a loop-closing SET filed up front (smallest collection exercising the new code end-to-end), tracks file-disjoint. Enhancement beads (edge cases, hardening, polish, more rings) MUST NOT be filed unblocked or worked until the loop closes — "filed as deps, blocked" is the only pre-closure state; starting one early is a process violation, not a judgment call. Size-adaptive: trivial -> one bead, zero rings; large -> a multi-bead set and gated rings — either way, decompose, close the loop, then open rings. Then the PLAN-APPROVAL GATE: the human approves the breakdown before implementation starts (parks in `bg` mode).
 
 **Design-pivot gate:** any pivot from the dispatched framing — a different mechanism, a new code path instead of a named reuse, or minor -> major scope escalation — is a MANDATORY QUESTION gate at the divergence moment: mechanism evidence + recommendation + literal-reading alternative. A skip that held for the ORIGINAL framing is void once the design diverges — neither you nor the planner may self-ratify a pivot, however strong the evidence. Full rule: references/gate-protocol.md ("The design-pivot gate").
 
@@ -79,7 +81,7 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 - Implementers are EPHEMERAL — shut down (SendMessage shutdown_request) once work is verified merged; spawn fresh ones for fixes (references/execution.md).
 - Own integration: merge each track into the integration branch as it lands, resolve conflicts, advance worktrees as the contract moves (references/execution.md, "Integration (DRI-owned)").
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files (spawn agents, often a planner, to investigate) — this is how the team converges on a PR that solves the problem. Discovery invalidating the framing is a pivot, not just a finding — triggers the mandatory design-pivot gate (Phase 3), never silent redesign.
-- **Verify, don't trust:** check every agent claim against artifacts (`bd show`, `git log`, the diff) before acting; proactively inspect in-progress work other tracks depend on rather than waiting for completion reports. Expect crossed messages: idle isn't done, "fixed" means nothing until you see the commit.
+- **Verify, don't trust:** check every agent claim against artifacts (`bd show`, `git log`, the diff) before acting; proactively inspect in-progress work other tracks depend on rather than waiting for completion reports. Idle = the stall signal above: verify, nudge. Crossed messages: idle isn't done, "fixed" means nothing until you see the commit.
 
 **LOOP CLOSED checkpoint (required before opening any enhancement ring):** LOOP CLOSED = the loop-closing bead set is fully merged into the integration branch AND a verified end-to-end exercise of the new code passes on that branch. Unit tests and typecheck are NECESSARY but NOT SUFFICIENT. "I ran the tests and they pass" is explicitly NOT loop closure for any change with observable behavior.
 
@@ -118,7 +120,7 @@ This makes it *eligible* for REVIEWABLE — the dashboard derives actual status 
 ateam pr add <initiative-id> https://github.com/<owner>/<repo>/pull/<n>
 ```
 
-Do NOT skip this step; without it the pr-shepherd cannot route events for this initiative. If the DRI opens a **second or third PR** for this same initiative (multi-PR), call `ateam pr add` again for each one — the rail is multi-valued by design, not one-shot.
+Do NOT skip this step — the pr-shepherd needs it to route events. Multi-PR: call `ateam pr add` again for each additional PR; the rail is multi-valued, not one-shot.
 
 ## Phase 6 — Wind-down
 
@@ -128,7 +130,7 @@ Follow references/wind-down.md exactly: shut down teammates -> remove worktrees 
 
 # Memory routing
 
-**MEMORY ROUTING (agent-teams).** Ignore the harness's built-in file-based memory — never write MEMORY.md or a Claude memory/ file. Persistent memory routes by kind:
+**MEMORY ROUTING.** Never write MEMORY.md or a Claude memory/ file. Persistent memory routes by kind:
 
 - Role/process learnings (transferable across repos) → `ateam learn <role> <slug> --file <tmpfile>` (`<role>` = `dri|planner|implementer|tester|reviewer|investigator`). Upsert-by-key. Body shape (RULE/TRIGGER/APPLY/PROVENANCE): references/memory.md.
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
@@ -138,14 +140,14 @@ Default to `ateam learn`; `bd remember` only for repo-shared project facts. Cont
 
 # Spawning a sibling initiative
 
-Dispatch scope-expanding work through **`/agent-teams:dispatch-dri`** with its problem statement; never hand-roll `claude --bg`. Re-launch an existing initiative with `ateam resume <id>` (use `--supersede` only to replace a live session).
+Dispatch scope-expanding work through **`/agent-teams:dispatch-dri`**; never hand-roll `claude --bg`. Re-launch an existing initiative with `ateam resume <id>` (`--supersede` only to replace a live session).
 
 # References (read when you reach them)
 
-- references/registry.md — initiative schema, standby field, audit enforcement, registry commands
-- references/gate-protocol.md — every gate's exact sequence (never varies) + the review/execution-state model
-- references/execution.md — spawn/worktree/merge/integration mechanics, role-division detail
-- references/wind-down.md — wind-down checklist (close-out + condense sweep)
-- references/advisor.md — advisor consult criteria (when `use_advisors == true`)
+- references/registry.md — schema, standby field, audit, commands
+- references/gate-protocol.md — gate sequence + review/execution-state model
+- references/execution.md — spawn/worktree/merge/integration, role-division
+- references/wind-down.md — checklist (close-out + condense sweep)
+- references/advisor.md — consult criteria (`use_advisors == true`)
 - references/memory.md — three-tier memory mechanics
-- references/pr-text.md — PR outside-reader rule, worked before/after
+- references/pr-text.md — outside-reader rule, worked before/after
