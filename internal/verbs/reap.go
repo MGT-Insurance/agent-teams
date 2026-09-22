@@ -30,13 +30,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
-	"github.com/mgt-insurance/agent-teams/internal/gitutil"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
@@ -45,21 +46,34 @@ import (
 // given in ONE-OFF mode ignores this entirely.
 const defaultReapGrace = 20 * time.Minute
 
-// reapGitTimeout bounds every git subprocess reap itself runs (worktree
-// clean-check, removal, prune) so a wedged git can't stall a scan tick —
-// mirrors gitProbeTimeout's reasoning (hung_workproduct.go).
-const reapGitTimeout = 10 * time.Second
+// reapGitTimeout bounds every OTHER git subprocess reap itself runs directly
+// — the worktree clean-check's own git calls (defaultWorktreeClean) and the
+// best-effort `git worktree prune` after a successful removal — so a wedged
+// git can't stall a scan tick. Mirrors gitProbeTimeout's reasoning
+// (hung_workproduct.go). It does NOT bound the actual `git worktree remove`
+// (nor its git-common-dir resolve): those run under the separate, longer
+// reapWorktreeRemoveTimeout below, because a legitimate large-worktree
+// removal can take longer than this constant allows. (This comment used to
+// claim reapGitTimeout bounded removal too — false: that path ran through
+// gitutil's plain exec.Command with no context or timeout at all, review
+// finding agent-teams-442q.9/F1. See reapWorktreeRemoveTimeout's doc comment
+// for the fix and the combined-tick timing arithmetic, including the
+// current 90s pr-shepherd hard budget — PR #5, up from the 30s this comment
+// used to assume.)
+const reapGitTimeout = 5 * time.Second
 
 // RegisterReapKong registers the reap verb onto p.
 func RegisterReapKong(p *cli.Parser) {
 	p.AddVerb("reap", "Tear down closed review sessions past grace (scan mode, what pr-shepherd calls every tick) or one target right now (one-off mode); see reap-orphans for stop-only cwd-missing cleanup.", &reapKong{
-		agentsFunc:     defaultAgentsJSONAll,
-		now:            time.Now,
-		stopSession:    defaultStopSession,
-		rmSession:      defaultRmSession,
-		removeWorktree: defaultReapRemoveWorktree,
-		worktreeClean:  defaultWorktreeClean,
-		noteFunc:       defaultReapNote,
+		agentsFunc:      defaultAgentsJSONAll,
+		now:             time.Now,
+		stopSession:     defaultStopSession,
+		rmSession:       defaultRmSession,
+		removeWorktree:  reapRemoveWorktreeWithTimeout,
+		worktreeClean:   defaultWorktreeClean,
+		ghCommitPresent: defaultGHCommitPresent,
+		noteFunc:        defaultReapNote,
+		notifyCtx:       defaultReapNotifyCtx,
 	})
 }
 
@@ -68,36 +82,117 @@ func RegisterReapKong(p *cli.Parser) {
 type rmSessionFunc func(id string) error
 
 // reapRemoveWorktreeFunc removes worktree from disk, resolving its owning
-// repo root itself so callers never need to know or pass it. Injected so
-// tests substitute a fake without a real git subprocess.
-type reapRemoveWorktreeFunc func(worktree string) error
+// repo root itself so callers never need to know or pass it, bounded by the
+// given timeout. Injected so tests substitute a fake without a real git
+// subprocess, and so removeWorktreeIfClean can choose a mode-aware bound —
+// short for steady-state, generous for --bulk (agent-teams-442q.13; see
+// reapWorktreeRemoveTimeout/reapBulkWorktreeRemoveTimeout).
+type reapRemoveWorktreeFunc func(worktree string, timeout time.Duration) error
 
-// worktreeCleanFunc reports whether worktree is safe to remove: exists is
-// false when the path is not present on disk at all (a missing worktree is a
-// clean no-op, never dirty); clean is only meaningful when exists is true and
-// means no uncommitted changes AND the branch is not ahead of its upstream.
-// Injected so tests substitute a fake without a real git subprocess.
-type worktreeCleanFunc func(worktree string) (exists bool, clean bool, err error)
+// worktreeGitStatus classifies a worktree's git-inspection result — the ONE
+// git-inspection path shared by the steady-state clean-only gate
+// (removeWorktreeIfClean) and the bulk-mode gh-verify override
+// (bulkGHVerifyRemovable), so neither re-runs `git status --porcelain` /
+// `git rev-list` separately for the same worktree.
+type worktreeGitStatus int
+
+const (
+	// wtDirty: porcelain non-empty with at least one change that is not a
+	// pure tracked-file deletion (an untracked file, a staged add/modify, a
+	// rename/copy, or an unmerged conflict — see wtDirtyRecoverable for the
+	// deletions-only case), or the git inspection itself was inconclusive (a
+	// status/rev-list subprocess failure, or an unresolvable HEAD sha).
+	// ALWAYS skipped, bulk mode included — any non-deletion working-tree
+	// change, or an unresolvable check, always wins over any gh-verify
+	// override; the contract requires PROOF of no unpushed/uncommitted work,
+	// not merely absence of proof of some.
+	wtDirty worktreeGitStatus = iota
+	// wtDirtyRecoverable: porcelain non-empty, but EVERY line is a pure,
+	// UNSTAGED tracked-file deletion (" D" only — never "D ") — no
+	// untracked, staged, modify, rename, copy, or unmerged entry. This is
+	// the signature a `git worktree remove` leaves when killed
+	// mid-operation (see reapWorktreeRemoveTimeout's doc comment): it is a
+	// recursive unlink of working-tree files that never touches the index,
+	// so it can only ever produce unstaged deletions, then aborts, leaving
+	// HEAD and the index intact. Every "missing" file is still in HEAD, so
+	// once gh-verify (bulkGHVerifyRemovable) proves HEAD is on GitHub,
+	// removing the rest of this corpse loses nothing. A STAGED deletion
+	// ("D ") is deliberately excluded (agent-teams-442q.14/Finding 1): it
+	// means an agent ran `git rm` and never committed — real, uncommitted
+	// intent a killed `git worktree remove` cannot produce — so it stays
+	// wtDirty. Steady-state (non-bulk) treats this exactly like wtDirty —
+	// skip, no gh call; only bulk mode may override it, the same way it
+	// overrides wtUnpushed below.
+	wtDirtyRecoverable
+	// wtUnpushed: porcelain empty, but HEAD carries commits absent from
+	// every local remote-tracking ref. Steady-state (non-bulk) treats this
+	// exactly like wtDirty — skip, no gh call. Bulk mode alone may override
+	// it via bulkGHVerifyRemovable: this is the false-positive case a
+	// checked-out PR branch produces once its branch is deleted on GitHub
+	// after merge, pruning the local tracking ref even though GitHub's own
+	// history still has the commit.
+	wtUnpushed
+	// wtClean: porcelain empty AND every HEAD commit is reachable from some
+	// remote-tracking ref. Always safe to remove — no gh check needed.
+	wtClean
+)
+
+// worktreeCleanFunc classifies worktree's git state: exists is false when the
+// path is not present on disk at all (a missing worktree is a clean no-op,
+// never dirty). When exists is true, status is one of wtDirty/
+// wtDirtyRecoverable/wtUnpushed/wtClean (meaningless when exists is false);
+// headSHA is worktree's resolved HEAD commit, populated for
+// status==wtUnpushed and status==wtDirtyRecoverable — the two cases a caller
+// might need it for a gh-verify override — and empty otherwise. Injected so
+// tests substitute a fake without a real git subprocess.
+type worktreeCleanFunc func(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error)
+
+// ghCommitPresentFunc reports whether GitHub still retains commit sha in
+// ownerRepo (owner/repo, lower-cased, as parsePrURL returns it) — the bulk
+// mode gh-verify override's sole probe. Injected so tests substitute a fake
+// without shelling to a real gh binary.
+type ghCommitPresentFunc func(ownerRepo, sha string) (present bool, err error)
 
 // reapNoteFunc writes the durable "reaped: <RFC3339>" bd note on id that
 // makes reap at-most-once per initiative. Injected so tests substitute a
 // fake instead of shelling to a real bd binary.
 type reapNoteFunc func(ctx *cli.Context, id string, at time.Time) error
 
+// reapNotifyCtxFunc returns the context SCAN mode runs under and its cancel
+// func. Injected so tests can simulate a mid-scan cancellation (a SIGTERM
+// arriving) deterministically, without sending a real OS signal to the test
+// process — that would risk killing the whole `go test` run.
+type reapNotifyCtxFunc func() (context.Context, context.CancelFunc)
+
+// defaultReapNotifyCtx is the production reapNotifyCtxFunc: a context
+// cancelled when the process receives SIGTERM (pr-shepherd's own hard-budget
+// kill signal), so runScan's loop can notice and stop starting new survivors
+// — and, in the steady state, so it never needs to: the soft scan deadline
+// below already exits well before pr-shepherd's 30s budget fires.
+func defaultReapNotifyCtx() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGTERM)
+}
+
 // reapKong implements `ateam reap [target]`. The DI fields are tagged
 // kong:"-" so kong ignores them; tests substitute fakes without touching the
 // struct registration — same pattern as reapOrphansKong.
 type reapKong struct {
-	Target string        `arg:"" name:"target" optional:"" help:"Initiative id or a bare Claude short session id to reap right now, bypassing the grace/reaped-note gates. Omit to scan every closed review initiative (what pr-shepherd calls every tick)."`
-	Grace  time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
+	Target       string        `arg:"" name:"target" optional:"" help:"Initiative id or a bare Claude short session id to reap right now, bypassing the grace/reaped-note gates. Omit to scan every closed review initiative (what pr-shepherd calls every tick)."`
+	Grace        time.Duration `name:"grace" default:"20m" help:"Scan mode only: minimum time since bd close before an initiative becomes reap-eligible."`
+	ScanDeadline time.Duration `name:"scan-deadline" default:"15s" help:"Scan mode only: soft wall-clock budget — stop starting new survivors once elapsed exceeds this, so the tick exits cleanly under pr-shepherd's 30s hard budget. 0 = unbounded (for an unbudgeted human-run bulk clear)."`
+	Max          int           `name:"max" default:"0" help:"Scan mode only: max survivors to tear down in one tick. 0 = unbounded (the soft deadline governs steady-state ticks)."`
+	Bulk         bool          `name:"bulk" help:"Scan mode only: one-time human-invoked unbudgeted drain. Forces --scan-deadline=0 and --max=0, also re-sweeps already-reaped initiatives whose worktree is still present on disk, and prints running progress to stderr. A clean worktree whose HEAD is missing from every local remote (its PR branch deleted on GitHub after merge) is verified via gh before removal, never forced. Pair with --dry-run to preview first."`
+	DryRun       bool          `name:"dry-run" help:"Scan mode only: report what would be torn down without stopping any session, removing any worktree, or writing any reaped note."`
 
-	agentsFunc     agentsJSONFunc         `kong:"-"`
-	now            func() time.Time       `kong:"-"`
-	stopSession    stopSessionFunc        `kong:"-"`
-	rmSession      rmSessionFunc          `kong:"-"`
-	removeWorktree reapRemoveWorktreeFunc `kong:"-"`
-	worktreeClean  worktreeCleanFunc      `kong:"-"`
-	noteFunc       reapNoteFunc           `kong:"-"`
+	agentsFunc      agentsJSONFunc         `kong:"-"`
+	now             func() time.Time       `kong:"-"`
+	stopSession     stopSessionFunc        `kong:"-"`
+	rmSession       rmSessionFunc          `kong:"-"`
+	removeWorktree  reapRemoveWorktreeFunc `kong:"-"`
+	worktreeClean   worktreeCleanFunc      `kong:"-"`
+	ghCommitPresent ghCommitPresentFunc    `kong:"-"`
+	noteFunc        reapNoteFunc           `kong:"-"`
+	notifyCtx       reapNotifyCtxFunc      `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -112,9 +207,23 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam reap: 'claude' not found in PATH")
 	}
+	if c.Target != "" && (c.Bulk || c.DryRun) {
+		return fmt.Errorf("ateam reap: --bulk and --dry-run are scan-mode only; omit the target")
+	}
+	if c.Bulk {
+		// Bulk-clear implies an unbounded scan: no soft deadline, no batch cap.
+		c.ScanDeadline = 0
+		c.Max = 0
+	}
 
 	if c.Target == "" {
-		return c.runScan(ctx)
+		// SCAN mode only: a context cancelled on SIGTERM — pr-shepherd's own
+		// hard-budget kill signal — so runScan's loop can notice and stop
+		// starting new survivors instead of being killed mid-teardown and
+		// orphaning a grandchild `claude` process.
+		scanCtx, cancel := c.notifyCtx()
+		defer cancel()
+		return c.runScan(ctx, scanCtx)
 	}
 	return c.runOneOff(ctx, c.Target)
 }
@@ -126,7 +235,15 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 // grace. Never hard-errors on a single initiative (log + continue) — only a
 // whole-scan failure (the bd list call itself) returns non-nil, per the
 // contract's exit rule.
-func (c *reapKong) runScan(ctx *cli.Context) error {
+//
+// scanCtx is checked before starting each survivor's teardown, alongside the
+// wall-clock soft deadline and batch bound: once any of the three trips, the
+// loop stops STARTING new work and returns — the survivor already in flight
+// finishes (each of its own subprocess calls is separately bounded by
+// runBoundedClaude), but no further one starts. This is what lets one tick
+// exit cleanly under pr-shepherd's 30s hard budget no matter how large the
+// backlog is, leaving the rest for the next tick.
+func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=closed", "--json"); err != nil {
 		return fmt.Errorf("ateam reap: list closed initiatives: %w", err)
@@ -135,8 +252,31 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 	now := c.now()
 	callerID := os.Getenv("CLAUDE_SESSION_ID")
 
+	// Hoisted OUT of the loop: one `claude agents` call serves every survivor
+	// this tick, reused below for both the teardown match and the
+	// caller-cwd guard. Previously called once PER survivor — the dominant
+	// cause of a tick never finishing, since a single hang stalled every
+	// subsequent survivor before any of them could be marked reaped.
+	sessions, sessErr := c.agentsFunc()
+
+	// Bulk-clear only: an upfront count (same gates the loop below applies)
+	// so a human watching stderr sees the drain's size before minutes of
+	// per-worktree removal work, plus a running "N/M" line per survivor.
+	var total, processed int
+	if c.Bulk {
+		total = c.bulkEligibleCount(issues, now)
+		verb := "reaping"
+		if c.DryRun {
+			verb = "would reap"
+		}
+		fmt.Fprintf(ctx.Stderr, "reap --bulk: %d eligible survivor(s), %s\n", total, verb)
+	}
+
+	scanStart := time.Now()
+	var reaped int
+
 	for _, iss := range issues {
-		_, ok := initiative.ReviewPRURL(iss)
+		prURL, ok := initiative.ReviewPRURL(iss)
 		if !ok {
 			continue // not review-shaped: untouched, never reap's concern
 		}
@@ -145,7 +285,15 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-codex-ring1", "")
 			continue // Ring 1: codex teardown is not implemented by this verb
 		}
-		if hasReapedNote(iss.Notes) {
+		// In bulk mode ONLY, an already-reaped initiative is not skipped
+		// outright: a prior scan may have torn down its session but left a
+		// clean worktree on disk (the plain gate below never re-visits a
+		// noted initiative). alreadyReaped gates the note-write below so
+		// it stays a write-once note even though this sweep can revisit the
+		// same initiative on every bulk run until its worktree is finally
+		// gone.
+		alreadyReaped := hasReapedNote(iss.Notes)
+		if alreadyReaped && !c.Bulk {
 			continue // already reaped: at-most-once, no repeat gh probe
 		}
 
@@ -163,22 +311,159 @@ func (c *reapKong) runScan(ctx *cli.Context) error {
 			continue
 		}
 
-		sessions, sessErr := c.agentsFunc()
+		// Soft budget check, right before the expensive part (teardown):
+		// skip-only iterations above never cost meaningful wall-clock time,
+		// so they don't count against it.
+		select {
+		case <-scanCtx.Done():
+			return nil
+		default:
+		}
+		if c.ScanDeadline > 0 && time.Since(scanStart) >= c.ScanDeadline {
+			return nil
+		}
+		if c.Max > 0 && reaped >= c.Max {
+			return nil
+		}
+
+		if c.DryRun {
+			// Read-only preview: query session/worktree state through the
+			// same seams but never call stop/rm/remove/note.
+			sessOutcome := c.previewSessionOutcome(sessions, sessErr, matchInitiativeSession(f), callerID)
+			wtOutcome := c.previewWorktreeOutcome(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
+			processed++
+			if c.Bulk {
+				fmt.Fprintf(ctx.Stderr, "reap --bulk --dry-run: [%d/%d] %s session=%s worktree=%s (%s)\n", processed, total, iss.ID, sessOutcome, wtOutcome, f.Worktree)
+			}
+			continue
+		}
+
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
 		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
 
 		if action != "failed" {
 			// Written after teardown (or when the session was already gone,
 			// action=="no-session") — never on a genuine teardown failure,
 			// so a failing stop/rm is retried on the next tick rather than
-			// silently marked done.
-			if err := c.noteFunc(ctx, iss.ID, now); err != nil {
-				fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
+			// silently marked done. Skipped when alreadyReaped: the note is
+			// write-once, so a bulk re-sweep that only finishes removing a
+			// leftover worktree never appends a duplicate.
+			if !alreadyReaped {
+				if err := c.noteFunc(ctx, iss.ID, now); err != nil {
+					fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
+				}
 			}
+			reaped++
+		}
+
+		if c.Bulk {
+			processed++
+			fmt.Fprintf(ctx.Stderr, "reap --bulk: [%d/%d] %s session=%s worktree=%s\n", processed, total, iss.ID, action, wtOutcome)
 		}
 	}
+
+	if c.Bulk {
+		fmt.Fprintf(ctx.Stderr, "reap --bulk: done — %d/%d processed\n", processed, total)
+	}
 	return nil
+}
+
+// bulkEligibleCount reports how many issues would be attempted in bulk-clear
+// mode — review-shaped, non-codex, and either not-yet-reaped-past-grace or
+// already reaped (bulk mode's reaped-but-present sweep revisits those to
+// catch a worktree a prior scan left behind). Used only for the upfront
+// progress line; the loop in runScan applies the identical gates issue by
+// issue as it goes, so this can never authorize an action the loop wouldn't.
+func (c *reapKong) bulkEligibleCount(issues []bd.Issue, now time.Time) int {
+	n := 0
+	for _, iss := range issues {
+		if _, ok := initiative.ReviewPRURL(iss); !ok {
+			continue
+		}
+		f := initiative.Of(iss)
+		if f.Runtime == "codex" {
+			continue
+		}
+		if hasReapedNote(iss.Notes) {
+			n++
+			continue
+		}
+		closedAt, err := time.Parse(time.RFC3339, iss.ClosedAt)
+		if iss.ClosedAt == "" || err != nil {
+			continue
+		}
+		if now.Sub(closedAt) < c.Grace {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// previewSessionOutcome reports, for --dry-run, what teardownClaudeSession
+// would do without stopping or removing anything: "would-stop" when a
+// matching non-caller session exists, "no-session" when none matches, or
+// "failed" when listing sessions itself errored.
+func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error, match func(agentSession) bool, callerID string) string {
+	if sessErr != nil {
+		return "failed"
+	}
+	for i := range sessions {
+		s := sessions[i]
+		if !match(s) {
+			continue
+		}
+		id := sessionStopID(s)
+		if callerID != "" && (id == callerID || s.SessionID == callerID || s.ID == callerID) {
+			continue
+		}
+		return "would-stop"
+	}
+	return "no-session"
+}
+
+// previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
+// would do without touching disk — the same outcome vocabulary, substituting
+// "worktree-would-remove"/"worktree-would-remove-gh-verified"/
+// "worktree-would-remove-corpse-gh-verified" for the mutating
+// "worktree-removed"/"worktree-removed-gh-verified"/
+// "worktree-removed-corpse-gh-verified" (--dry-run never attempts a removal,
+// so it never reports worktree-remove-failed either). prURL is the
+// initiative's own review PR URL (empty in one-off mode, which never sets
+// c.Bulk); it is only consulted for the bulk gh-verify override, when
+// worktreeClean reports wtUnpushed or wtDirtyRecoverable — the same two
+// statuses removeWorktreeIfClean itself overrides (agent-teams-442q.11),
+// kept as separate outcome strings per status (agent-teams-442q.14/Finding
+// 2) so a dry-run preview distinguishes a reclaimable deletion corpse from a
+// reclaimable stale-remote-ref worktree exactly like the real run does.
+func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
+	if worktree == "" {
+		return "worktree-unknown"
+	}
+	if callerWorktree != "" && worktree == callerWorktree {
+		return "worktree-skipped-caller-cwd"
+	}
+	exists, status, headSHA, _ := c.worktreeClean(worktree)
+	if !exists {
+		return "worktree-absent"
+	}
+	switch status {
+	case wtClean:
+		return "worktree-would-remove"
+	case wtDirtyRecoverable:
+		if c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+			return "worktree-would-remove-corpse-gh-verified"
+		}
+		return "worktree-dirty-skipped"
+	case wtUnpushed:
+		if c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+			return "worktree-would-remove-gh-verified"
+		}
+		return "worktree-dirty-skipped"
+	default: // wtDirty
+		return "worktree-dirty-skipped"
+	}
 }
 
 // callerWorktreeCWD resolves callerID's own cwd from sessions (the live
@@ -239,14 +524,14 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 			// contract: "the ONLY form that gives codex a removable
 			// worktree" / "To reap a codex worktree one-off, pass the
 			// INITIATIVE ID". Remove it if clean; leave the session alone.
-			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "")
+			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "", "")
 			c.journal(ctx, now, iss.ID, target, "codex", "one-off", "skip-codex-ring1", wtOutcome)
 			return fmt.Errorf("ateam reap: %s is a codex initiative; codex session teardown is not implemented (Ring 1) — worktree outcome: %s", target, wtOutcome)
 		}
 
 		sessions, sessErr := c.agentsFunc()
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID))
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), "")
 		c.journal(ctx, now, iss.ID, target, "claude", "one-off", action, wtOutcome)
 
 		if action != "failed" {
@@ -280,7 +565,7 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 		action := c.stopAndRm(ctx, id)
 		// No caller-cwd guard needed here: the explicit refusal above already
 		// rejects this whole form when matched is the calling session.
-		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "")
+		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "", "")
 		// No bead was resolved for a bare session id, so no reaped note.
 		c.journal(ctx, now, "", target, "claude", "one-off", action, wtOutcome)
 		if action == "failed" {
@@ -346,14 +631,36 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // contract's clean-only safety rule. callerWorktree is the calling session's
 // own cwd (from callerWorktreeCWD; "" when unknown) — when worktree matches
 // it, removal is skipped unconditionally, since force-removing the running
-// caller's own cwd worktree breaks the live session. Returns the journal
-// outcome string: "worktree-unknown" (no worktree path resolved at all),
+// caller's own cwd worktree breaks the live session. prURL is the
+// initiative's own review PR URL (empty in one-off mode, which never sets
+// c.Bulk); it is only consulted for the bulk-mode gh-verify override, when
+// worktreeClean reports wtUnpushed or wtDirtyRecoverable (real, non-deletion
+// uncommitted/untracked changes always win — see wtDirty's doc comment). A
+// dirty worktree is reclaimed in --bulk ONLY when its dirt is exclusively
+// unstaged tracked-file deletions (wtDirtyRecoverable — every "missing" file
+// is still in HEAD) AND gh-verify confirms HEAD is on GitHub; every other
+// dirty state (any non-deletion change, untracked files, or an inconclusive
+// check) is still always skipped. The actual removal runs under a mode-aware
+// timeout — reapWorktreeRemoveTimeout steady-state, the far more generous
+// reapBulkWorktreeRemoveTimeout under --bulk (see their doc comments;
+// agent-teams-442q.13). Returns the journal outcome string:
+// "worktree-unknown" (no worktree path resolved at all),
 // "worktree-skipped-caller-cwd" (worktree is the calling session's own cwd),
 // "worktree-absent" (nothing on disk to remove — a clean no-op),
-// "worktree-dirty-skipped" (uncommitted or unpushed work, or the clean-check
-// itself failed — never force-delete on an inconclusive check), or
-// "worktree-removed".
-func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree string) string {
+// "worktree-dirty-skipped" (uncommitted/deleted changes not overridden by a
+// bulk gh-verify, or the clean-check itself failed — never force-delete on
+// an inconclusive check), "worktree-remove-failed" (removal was attempted —
+// clean or gh-verified — but the removeWorktree call itself errored or timed
+// out; kept distinct from worktree-dirty-skipped since this worktree was
+// NEVER dirty, only its removal failed, and it may now need manual attention
+// — agent-teams-442q.13/Finding 2), "worktree-removed", or (bulk mode's
+// gh-verify override fired) "worktree-removed-gh-verified" for a reclaimed
+// stale-remote-ref (wtUnpushed) worktree, or
+// "worktree-removed-corpse-gh-verified" for a reclaimed deletion-corpse
+// (wtDirtyRecoverable) worktree — kept distinct (agent-teams-442q.14/Finding
+// 2) since the journal is the only durable record of which force-removal
+// path fired.
+func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
 	}
@@ -361,46 +668,164 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is the calling session's own cwd, skipping removal\n", worktree)
 		return "worktree-skipped-caller-cwd"
 	}
-	exists, clean, err := c.worktreeClean(worktree)
+	exists, status, headSHA, err := c.worktreeClean(worktree)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "reap: check worktree %s: %v\n", worktree, err)
 	}
 	if !exists {
 		return "worktree-absent"
 	}
-	if !clean {
+
+	// ghVerifiedOutcome is "" when no override fired (plain wtClean, or not
+	// removable at all) or the specific "worktree-removed(-corpse)?-gh-
+	// verified" string this removal's override earned — decided up front so
+	// a later removal failure or success can each report the right outcome
+	// without re-deriving which status fired.
+	ghVerifiedOutcome := ""
+	removable := status == wtClean
+	if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+		removable = true
+		if status == wtDirtyRecoverable {
+			ghVerifiedOutcome = "worktree-removed-corpse-gh-verified"
+		} else {
+			ghVerifiedOutcome = "worktree-removed-gh-verified"
+		}
+	}
+	if !removable {
 		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is not provably clean, skipping removal\n", worktree)
 		return "worktree-dirty-skipped"
 	}
-	if err := c.removeWorktree(worktree); err != nil {
+
+	timeout := reapWorktreeRemoveTimeout
+	if c.Bulk {
+		timeout = reapBulkWorktreeRemoveTimeout
+	}
+	if err := c.removeWorktree(worktree, timeout); err != nil {
 		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
-		return "worktree-dirty-skipped"
+		return "worktree-remove-failed"
+	}
+	if ghVerifiedOutcome != "" {
+		return ghVerifiedOutcome
 	}
 	return "worktree-removed"
 }
 
-// ── real implementations ─────────────────────────────────────────────────────
-
-// defaultRmSession runs `claude rm <id>`. reap_orphans.go only wraps `claude
-// stop`; reap additionally needs `claude rm` to actually clear the session
-// from the agents view.
-func defaultRmSession(id string) error {
-	cmd := exec.Command("claude", "rm", id)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("claude rm %s: %w (output: %s)", id, err, string(out))
+// bulkGHVerifyRemovable is the bulk-mode-only override for a worktree whose
+// HEAD carries commits absent from every LOCAL remote-tracking ref
+// (worktreeClean reported wtUnpushed): this is a false positive when the
+// worktree's PR branch was deleted on GitHub after merge, pruning the local
+// tracking ref, even though GitHub's own history still has the commit.
+// Returns false — never remove — whenever proof is missing: no PR URL, no
+// resolvable HEAD sha, an unparsable PR URL, or the gh call itself erroring
+// or reporting the commit absent. Inconclusive always protects.
+func (c *reapKong) bulkGHVerifyRemovable(ctx *cli.Context, worktree, prURL, headSHA string) bool {
+	if prURL == "" || headSHA == "" {
+		return false
 	}
-	return nil
+	ownerRepo, _, ok := parsePrURL(prURL)
+	if !ok {
+		return false
+	}
+	present, err := c.ghCommitPresent(ownerRepo, headSHA)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "reap: gh-verify worktree %s (%s@%s): %v\n", worktree, ownerRepo, headSHA, err)
+		return false
+	}
+	if !present {
+		fmt.Fprintf(ctx.Stdout, "reap: gh-verify worktree %s: %s@%s not found on GitHub, skipping removal\n", worktree, ownerRepo, headSHA)
+	}
+	return present
 }
 
-// defaultReapRemoveWorktree removes worktree, resolving its owning repo root
-// via git's common-dir (the shared .git directory every linked worktree
-// points back to) so the caller never needs to separately track or pass the
-// main repo root. `claude rm` does NOT remove an ateam worktree — proven
-// live (contract, "WORKTREE REMOVAL") — so this explicit step is mandatory
-// for actually reclaiming the disk space and `git worktree list` entry.
-func defaultReapRemoveWorktree(worktree string) error {
-	git := gitutil.New()
+// ── real implementations ─────────────────────────────────────────────────────
+
+// defaultRmSession runs `claude rm <id>`, bounded via runBoundedClaude.
+// reap_orphans.go only wraps `claude stop`; reap additionally needs `claude
+// rm` to actually clear the session from the agents view.
+func defaultRmSession(id string) error {
+	_, err := runBoundedClaude(context.Background(), claudeCallTimeout, "rm", id)
+	return err
+}
+
+// reapWorktreeRemoveTimeout bounds reapRemoveWorktreeWithTimeout's
+// git-common-dir resolve AND the actual `git worktree remove` as ONE shared,
+// combined deadline — not one timeout per call — in STEADY-STATE (non-bulk)
+// mode only; --bulk uses the far more generous reapBulkWorktreeRemoveTimeout
+// instead (removeWorktreeIfClean selects between them on c.Bulk). A single
+// context.WithTimeout(_, reapWorktreeRemoveTimeout) is threaded through both
+// git.CommonDir and git.RemoveWorktree via boundedGitRunner
+// (bounded_exec.go), so together they get this budget once, not twice. On
+// expiry the whole process group is killed (same pattern as
+// runBoundedClaude) and the call returns an error rather than falsely
+// reporting the worktree removed — the caller's best-effort `git worktree
+// prune` cleans up any partial removal that reached it, though a removal
+// that times out INSIDE git.RemoveWorktree itself never reaches that prune
+// at all (reapBulkWorktreeRemoveTimeout's doc comment has the consequence);
+// either way the survivor is simply retried on the next tick instead of
+// silently marked done.
+//
+// Sized to satisfy two constraints at once. First, it must never interrupt a
+// legitimate large-worktree removal: observed ~15s for a large worktree
+// (contract agent-teams-442q.3 live-verify), so 45s leaves 3x margin.
+// Second, it must still keep a worst-case scan tick under pr-shepherd's 90s
+// hard SIGTERM budget (pr-shepherd PR #5), even when the survivor that trips
+// this timeout starts right at the edge of the 15s soft ScanDeadline. Summing
+// every sequential bounded call on that one survivor's teardown path:
+//
+//	15s  ScanDeadline slop (survivor starts just under the soft deadline)
+//	 5s  stop                                          (claudeCallTimeout)
+//	 5s  rm                                             (claudeCallTimeout)
+//	 5s  worktreeClean's `git status --porcelain`         (reapGitTimeout)
+//	 5s  worktreeClean's `git rev-list --count ...`       (reapGitTimeout)
+//	45s  this timeout                          (reapWorktreeRemoveTimeout)
+//	 5s  `git worktree prune`, best-effort                (reapGitTimeout)
+//	== 85s total, a 5s margin under the 90s hard budget.
+const reapWorktreeRemoveTimeout = 45 * time.Second
+
+// reapBulkWorktreeRemoveTimeout bounds `git worktree remove` in --bulk mode
+// only (removeWorktreeIfClean selects this over reapWorktreeRemoveTimeout
+// when c.Bulk is true). --bulk already forces ScanDeadline=0 and Max=0 — an
+// unbudgeted, human-invoked drain with no per-tick deadline to protect — so
+// unlike the steady-state bound above, this one only needs to be generous,
+// not tight. Sized from live evidence (agent-teams-442q.13): a production
+// --bulk run against 942 worktrees, applying reapWorktreeRemoveTimeout's own
+// 45s bound to every removal, timed out 31 of 72 gh-verified-safe removals
+// mid-delete under real disk/CPU load on a shared machine — and because the
+// best-effort `git worktree prune` in reapRemoveWorktreeWithTimeout only runs
+// AFTER git.RemoveWorktree returns nil, a removal that times out inside
+// RemoveWorktree itself never reaches that prune, so 7 of the 31 were left as
+// a permanent, git-invisible corpse no future reap can ever reach again. Ten
+// minutes leaves generous margin for the largest observed worktrees (~15s,
+// contract agent-teams-442q.3) while still bounding a genuine hang; a --bulk
+// run that outlives this on every survivor is a different problem this
+// timeout cannot solve.
+const reapBulkWorktreeRemoveTimeout = 10 * time.Minute
+
+// reapRemoveWorktreeWithTimeout removes worktree, resolving its owning repo
+// root via git's common-dir (the shared .git directory every linked
+// worktree points back to) so the caller never needs to separately track or
+// pass the main repo root. `claude rm` does NOT remove an ateam worktree —
+// proven live (contract, "WORKTREE REMOVAL") — so this explicit step is
+// mandatory for actually reclaiming the disk space and `git worktree list`
+// entry. This is the production reapRemoveWorktreeFunc, wired directly in
+// RegisterReapKong; taking timeout as a parameter lets removeWorktreeIfClean
+// choose a mode-aware bound (reapWorktreeRemoveTimeout steady-state,
+// reapBulkWorktreeRemoveTimeout for --bulk) and lets a test exercise the
+// real timeout/process-group-kill behavior on a short fuse without waiting
+// out either constant for real — the same shape runBoundedClaude's own tests
+// use, calling it directly with a short custom timeout.
+func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error {
+	// ONE shared deadline across both the git-common-dir resolve and the
+	// actual `git worktree remove` — see reapWorktreeRemoveTimeout's doc
+	// comment for why a combined budget, not one timeout per call, is what
+	// the arithmetic above assumes. boundedGitRunner also kills the whole
+	// process group on expiry, closing review finding F1 (agent-teams-
+	// 442q.9): this path previously ran through gitutil's plain
+	// exec.Command with no context or timeout at all.
+	cctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	git := boundedGitRunner(cctx)
+
 	commonDir, err := git.CommonDir(worktree)
 	if err != nil {
 		return fmt.Errorf("resolve repo root for worktree %s: %w", worktree, err)
@@ -411,10 +836,11 @@ func defaultReapRemoveWorktree(worktree string) error {
 	}
 	// Best-effort prune of any stale worktree administrative entries left
 	// behind; the worktree itself is already gone at this point, so a prune
-	// failure here never fails the reap.
-	cctx, cancel := context.WithTimeout(context.Background(), reapGitTimeout)
-	defer cancel()
-	_ = exec.CommandContext(cctx, "git", "-C", repoRoot, "worktree", "prune").Run()
+	// failure here never fails the reap. Its own timeout (reapGitTimeout) is
+	// independent of the combined removal budget above.
+	pruneCtx, pruneCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+	defer pruneCancel()
+	_ = exec.CommandContext(pruneCtx, "git", "-C", repoRoot, "worktree", "prune").Run()
 	return nil
 }
 
@@ -425,23 +851,53 @@ func defaultReapRemoveWorktree(worktree string) error {
 // commit missing from ALL remotes, not just a single configured upstream,
 // so it also works on branches with no upstream configured at all (for
 // example local-only review-pr-<N> branches). A missing directory reports
-// exists=false. Any inconclusive result — the status/rev-list subprocess
-// itself failing — reports clean=false: the contract requires PROOF of no
-// unpushed work before a force-remove, not merely absence of proof of some.
-func defaultWorktreeClean(worktree string) (exists bool, clean bool, err error) {
+// exists=false.
+//
+// Non-empty porcelain is not automatically wtDirty: when EVERY line is a
+// pure, UNSTAGED tracked-file deletion (allTrackedDeletions — " D" only, no
+// staged "D ", untracked, add, modify, rename, or unmerged entry), this is
+// the signature a `git worktree remove` leaves when killed mid-removal — a
+// recursive unlink that never touches the index, so the working-tree files
+// are gone from disk but HEAD and the index still have them intact. That
+// case resolves HEAD via `git rev-parse HEAD` and reports
+// wtDirtyRecoverable, falling back to wtDirty if the sha resolve itself
+// fails (proof required, same as any other inconclusive check). A staged
+// deletion ("D "), or any other non-empty porcelain, reports wtDirty
+// directly, no sha resolve attempted — real, uncommitted intent, not a
+// killed-removal corpse.
+//
+// Any other inconclusive result — the status/rev-list subprocess itself
+// failing — also reports status=wtDirty: the contract requires PROOF of no
+// unpushed/uncommitted work before a force-remove, not merely absence of
+// proof of some. When the rev-list count is non-zero, status is wtUnpushed
+// and headSHA is resolved via `git rev-parse HEAD` for a caller's own
+// gh-verify override (bulkGHVerifyRemovable) — the one other case (alongside
+// wtDirtyRecoverable) that needs it.
+func defaultWorktreeClean(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error) {
 	info, statErr := os.Stat(worktree)
 	if statErr != nil || !info.IsDir() {
-		return false, false, nil
+		return false, wtDirty, "", nil
 	}
 
 	statusCtx, statusCancel := context.WithTimeout(context.Background(), reapGitTimeout)
 	defer statusCancel()
 	statusOut, err := exec.CommandContext(statusCtx, "git", "-C", worktree, "status", "--porcelain").Output()
 	if err != nil {
-		return true, false, fmt.Errorf("git status --porcelain: %w", err)
+		return true, wtDirty, "", fmt.Errorf("git status --porcelain: %w", err)
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
-		return true, false, nil
+		if allTrackedDeletions(string(statusOut)) {
+			shaCtx, shaCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+			defer shaCancel()
+			shaOut, shaErr := exec.CommandContext(shaCtx, "git", "-C", worktree, "rev-parse", "HEAD").Output()
+			if shaErr == nil {
+				return true, wtDirtyRecoverable, strings.TrimSpace(string(shaOut)), nil
+			}
+			// Can't resolve the sha a gh-verify override would need — no
+			// proof possible, degrade to wtDirty like any other
+			// inconclusive check.
+		}
+		return true, wtDirty, "", nil
 	}
 
 	localOnlyCtx, localOnlyCancel := context.WithTimeout(context.Background(), reapGitTimeout)
@@ -449,12 +905,74 @@ func defaultWorktreeClean(worktree string) (exists bool, clean bool, err error) 
 	localOnlyOut, err := exec.CommandContext(localOnlyCtx, "git", "-C", worktree, "rev-list", "--count", "HEAD", "--not", "--remotes").Output()
 	if err != nil {
 		// Cannot prove every commit exists on some remote.
-		return true, false, nil
+		return true, wtDirty, "", nil
 	}
-	if strings.TrimSpace(string(localOnlyOut)) != "0" {
-		return true, false, nil
+	if strings.TrimSpace(string(localOnlyOut)) == "0" {
+		return true, wtClean, "", nil
 	}
-	return true, true, nil
+
+	shaCtx, shaCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+	defer shaCancel()
+	shaOut, shaErr := exec.CommandContext(shaCtx, "git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if shaErr != nil {
+		// Can't resolve the sha a gh-verify override would need — no proof
+		// possible, degrade to the same "never force-delete" bucket as any
+		// other inconclusive check.
+		return true, wtDirty, "", nil
+	}
+	return true, wtUnpushed, strings.TrimSpace(string(shaOut)), nil
+}
+
+// allTrackedDeletions reports whether every non-empty line of porcelain (raw
+// `git status --porcelain` output) is a pure, UNSTAGED tracked-file deletion:
+// status code " D" only, and nothing else. A single line with any other code
+// — "??" untracked, "D " staged deletion, "A " staged add, "M "/" M"
+// modified, "R "/"C " rename/copy, or an unmerged conflict marker like
+// "UU"/"AA"/"DD" — makes the whole worktree ineligible and returns false.
+// "D " is deliberately excluded, not merely another rejected code
+// (agent-teams-442q.14/Finding 1): a killed `git worktree remove` is a
+// recursive unlink of working-tree files that never touches the index, so it
+// can only ever leave unstaged deletions; a staged deletion instead means an
+// agent ran `git rm` and never committed — real, uncommitted intent this
+// predicate must not paper over. An empty or all-blank porcelain also
+// returns false (defaultWorktreeClean only calls this when porcelain is known
+// non-empty, but this stays conservative on its own regardless of caller).
+func allTrackedDeletions(porcelain string) bool {
+	sawDeletion := false
+	for _, line := range strings.Split(porcelain, "\n") {
+		if line == "" {
+			continue
+		}
+		if len(line) < 2 {
+			return false
+		}
+		if line[:2] != " D" {
+			return false
+		}
+		sawDeletion = true
+	}
+	return sawDeletion
+}
+
+// reapGHVerifyTimeout bounds the bulk-mode gh commit-presence probe
+// (defaultGHCommitPresent) so a hanging gh can't stall a bulk-clear run —
+// mirrors reapGitTimeout's reasoning for reap's git subprocesses, sized like
+// the existing gh probes elsewhere in this package (hungReviewCommentProbeTimeout).
+const reapGHVerifyTimeout = 10 * time.Second
+
+// defaultGHCommitPresent runs `gh api repos/<owner>/<repo>/commits/<sha>`,
+// bounded by reapGHVerifyTimeout, and reports whether GitHub has the commit:
+// present=true only on a zero exit (gh reports 404 as a non-zero exit for a
+// missing commit, which this folds into present=false with the error
+// attached for the caller to log — the bulk gh-verify override treats a
+// missing commit and a gh error identically: inconclusive protects).
+func defaultGHCommitPresent(ownerRepo, sha string) (present bool, err error) {
+	cctx, cancel := context.WithTimeout(context.Background(), reapGHVerifyTimeout)
+	defer cancel()
+	if err := exec.CommandContext(cctx, "gh", "api", fmt.Sprintf("repos/%s/commits/%s", ownerRepo, sha)).Run(); err != nil {
+		return false, fmt.Errorf("gh api commits/%s: %w", sha, err)
+	}
+	return true, nil
 }
 
 // defaultReapNote writes the durable "reaped: <RFC3339>" bd note that makes
