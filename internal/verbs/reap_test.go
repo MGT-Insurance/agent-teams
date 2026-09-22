@@ -117,6 +117,14 @@ func alwaysUnpushed(string) (bool, worktreeGitStatus, string, error) {
 	return true, wtUnpushed, "deadbeefcafef00d", nil
 }
 
+// alwaysDirtyRecoverable simulates a deletion-corpse worktree (agent-teams-
+// 442q.11): porcelain non-empty but every change is a pure tracked-file
+// deletion, HEAD intact — the same fixed sha as alwaysUnpushed so gh-verify
+// override tests share fixtures.
+func alwaysDirtyRecoverable(string) (bool, worktreeGitStatus, string, error) {
+	return true, wtDirtyRecoverable, "deadbeefcafef00d", nil
+}
+
 // fakeGHCommitPresent returns a ghCommitPresentFunc that records every
 // (ownerRepo, sha) it was asked about and answers per the fixed present/err
 // given, without shelling to a real gh binary.
@@ -131,6 +139,25 @@ func (f *fakeGHCommitPresent) fn() ghCommitPresentFunc {
 		f.calls = append(f.calls, [2]string{ownerRepo, sha})
 		return f.present, f.err
 	}
+}
+
+// lastReapJournalOutcome reads home's reap-journal.jsonl and returns the last
+// entry's WorktreeOutcome field, failing the test if the file is missing or
+// its last line doesn't parse — used to assert on the exact journal outcome
+// string a scan produced, not just on which fakes were called.
+func lastReapJournalOutcome(t *testing.T, home string) string {
+	t.Helper()
+	data, err := os.ReadFile(reapJournalPath(home))
+	if err != nil {
+		t.Fatalf("read reap journal: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var entry reapJournalEntry
+	last := lines[len(lines)-1]
+	if err := json.Unmarshal([]byte(last), &entry); err != nil {
+		t.Fatalf("unmarshal reap journal last line %q: %v", last, err)
+	}
+	return entry.WorktreeOutcome
 }
 
 // newReapVerb builds a reapKong with every DI seam wired to the given fakes,
@@ -887,6 +914,105 @@ func TestReap_Bulk_AlreadyCleanWorktree_RemovedWithoutGH(t *testing.T) {
 	}
 }
 
+// ── bulk gh-verify override for deletion-corpse worktrees (agent-teams-442q.11) ──
+// A worktree killed mid `git worktree remove` (wtDirtyRecoverable — porcelain
+// non-empty but every change is a pure tracked-file deletion, HEAD intact)
+// gets the identical --bulk-only gh-verify override as wtUnpushed above:
+// every "missing" file is still in HEAD, so proving HEAD is on GitHub proves
+// nothing is lost by finishing the removal.
+
+// (31) bulk + deletion-corpse (wtDirtyRecoverable) + gh HAS the commit =>
+// removed with journal outcome "worktree-removed-gh-verified", and the
+// gh-verify seam is called exactly once with the initiative's owner/repo and
+// resolved HEAD sha.
+func TestReap_Bulk_DirtyRecoverableWorktree_GHHasCommit_Removed(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh31")
+	home := t.TempDir()
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirtyRecoverable)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh31" {
+		t.Errorf("expected the gh-verified deletion-corpse worktree removed; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 1 || fakeGH.calls[0] != [2]string{"owner/repo", "deadbeefcafef00d"} {
+		t.Errorf("expected exactly one gh-verify call for owner/repo@deadbeefcafef00d; got %v", fakeGH.calls)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-gh-verified" {
+		t.Errorf("expected journal outcome worktree-removed-gh-verified; got %q", got)
+	}
+}
+
+// (32) bulk + deletion-corpse + gh reports the commit MISSING => skipped, no
+// removal, journal outcome worktree-dirty-skipped.
+func TestReap_Bulk_DirtyRecoverableWorktree_GHMissing_Skipped(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh32")
+	home := t.TempDir()
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirtyRecoverable)
+	verb.Bulk = true
+	fakeGH := &fakeGHCommitPresent{present: false}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected no removal when gh reports the commit missing; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 1 {
+		t.Errorf("expected the gh-verify seam still called exactly once; got %v", fakeGH.calls)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-dirty-skipped" {
+		t.Errorf("expected journal outcome worktree-dirty-skipped; got %q", got)
+	}
+}
+
+// (33) the identical deletion-corpse worktree WITHOUT --bulk => skipped, and
+// the gh-verify seam is NEVER called — steady-state is unchanged by this
+// override, exactly like wtUnpushed's non-bulk case above.
+func TestReap_NoBulk_DirtyRecoverableWorktree_Skipped(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh33")
+	home := t.TempDir()
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirtyRecoverable)
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected no removal without --bulk; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called outside --bulk; got %v", fakeGH.calls)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-dirty-skipped" {
+		t.Errorf("expected journal outcome worktree-dirty-skipped; got %q", got)
+	}
+}
+
 // ── hoist / soft deadline / batch bound / scan cancellation ─────────────────
 // Covers the impl bead's own acceptance criteria: the hoisted agentsFunc call,
 // the soft wall-clock deadline that lets one tick exit cleanly under budget,
@@ -1179,6 +1305,150 @@ func TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef(t *testing.T) {
 	}
 	if status != wtClean {
 		t.Fatalf("expected status=wtClean: HEAD is reachable from a remote-tracking ref and the tree is clean; got %v", status)
+	}
+}
+
+// ── defaultWorktreeClean: deletion-corpse classification (wtDirtyRecoverable, agent-teams-442q.11) ──
+// A `git worktree remove` killed mid-operation deletes the working-tree
+// files from disk, then aborts, leaving HEAD intact: git status --porcelain
+// shows only tracked-file deletions (" D"/"D "), never an untracked/add/
+// modify/rename/unmerged entry. These four cases prove defaultWorktreeClean
+// tells that exact signature apart from every other kind of "dirty".
+
+// TestReap_DefaultWorktreeClean_PureTrackedDeletion_Recoverable covers the
+// deletion-corpse signature itself: a tracked file deleted from disk (never
+// re-added or re-committed) reports wtDirtyRecoverable with HEAD's resolved
+// sha — every "missing" file is still in HEAD, so a caller's gh-verify
+// override has proof to check against.
+func TestReap_DefaultWorktreeClean_PureTrackedDeletion_Recoverable(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	filePath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGit(t, dir, "add", "tracked.txt")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "add tracked file")
+
+	shaOut, shaErr := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if shaErr != nil {
+		t.Fatalf("git rev-parse HEAD: %v", shaErr)
+	}
+	wantSHA := strings.TrimSpace(string(shaOut))
+
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("delete tracked file: %v", err)
+	}
+
+	exists, status, headSHA, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if status != wtDirtyRecoverable {
+		t.Fatalf("expected status=wtDirtyRecoverable for a pure tracked-file deletion; got %v", status)
+	}
+	if headSHA != wantSHA {
+		t.Errorf("expected headSHA %q; got %q", wantSHA, headSHA)
+	}
+}
+
+// TestReap_DefaultWorktreeClean_UntrackedFile_Dirty covers an untracked file
+// alone: never a pure deletion, so it must stay wtDirty even though nothing
+// tracked changed.
+func TestReap_DefaultWorktreeClean_UntrackedFile_Dirty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "--allow-empty", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	exists, status, _, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if status != wtDirty {
+		t.Fatalf("expected status=wtDirty for an untracked file (not a pure deletion); got %v", status)
+	}
+}
+
+// TestReap_DefaultWorktreeClean_StagedModification_Dirty covers a staged
+// modification: content NOT at HEAD, so it can never be proven recoverable
+// via gh-verify — this is exactly why the predicate is deletions-only.
+func TestReap_DefaultWorktreeClean_StagedModification_Dirty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	filePath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGit(t, dir, "add", "tracked.txt")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "add tracked file")
+
+	if err := os.WriteFile(filePath, []byte("modified\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+	runGit(t, dir, "add", "tracked.txt")
+
+	exists, status, _, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if status != wtDirty {
+		t.Fatalf("expected status=wtDirty for a staged modification; got %v", status)
+	}
+}
+
+// TestReap_DefaultWorktreeClean_DeletionPlusUntracked_Dirty covers a mix: one
+// pure tracked-file deletion PLUS one untracked file. A single non-deletion
+// line anywhere in the porcelain must disqualify the whole worktree.
+func TestReap_DefaultWorktreeClean_DeletionPlusUntracked_Dirty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	filePath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGit(t, dir, "add", "tracked.txt")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "add tracked file")
+
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("delete tracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	exists, status, _, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if status != wtDirty {
+		t.Fatalf("expected status=wtDirty for a deletion mixed with an untracked file; got %v", status)
 	}
 }
 

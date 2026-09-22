@@ -94,13 +94,29 @@ type reapRemoveWorktreeFunc func(worktree string) error
 type worktreeGitStatus int
 
 const (
-	// wtDirty: porcelain non-empty (real uncommitted/untracked changes), or
-	// the git inspection itself was inconclusive (a status/rev-list
-	// subprocess failure). ALWAYS skipped, bulk mode included — working-tree
-	// changes, or an unresolvable check, always win over any gh-verify
-	// override; the contract requires PROOF of no unpushed work, not merely
-	// absence of proof of some.
+	// wtDirty: porcelain non-empty with at least one change that is not a
+	// pure tracked-file deletion (an untracked file, a staged add/modify, a
+	// rename/copy, or an unmerged conflict — see wtDirtyRecoverable for the
+	// deletions-only case), or the git inspection itself was inconclusive (a
+	// status/rev-list subprocess failure, or an unresolvable HEAD sha).
+	// ALWAYS skipped, bulk mode included — any non-deletion working-tree
+	// change, or an unresolvable check, always wins over any gh-verify
+	// override; the contract requires PROOF of no unpushed/uncommitted work,
+	// not merely absence of proof of some.
 	wtDirty worktreeGitStatus = iota
+	// wtDirtyRecoverable: porcelain non-empty, but EVERY line is a pure
+	// tracked-file deletion (" D" unstaged or "D " staged) — no untracked,
+	// add, modify, rename, copy, or unmerged entry. This is the signature a
+	// `git worktree remove` leaves when killed mid-operation (see
+	// reapWorktreeRemoveTimeout's doc comment): it deletes the working-tree
+	// files from disk, then aborts, leaving HEAD intact. Every "missing"
+	// file is still in HEAD, so once gh-verify (bulkGHVerifyRemovable)
+	// proves HEAD is on GitHub, removing the rest of this corpse loses
+	// nothing — a staged addition/modification is content NOT at HEAD, which
+	// is exactly why this predicate is deletions-only. Steady-state
+	// (non-bulk) treats this exactly like wtDirty — skip, no gh call; only
+	// bulk mode may override it, the same way it overrides wtUnpushed below.
+	wtDirtyRecoverable
 	// wtUnpushed: porcelain empty, but HEAD carries commits absent from
 	// every local remote-tracking ref. Steady-state (non-bulk) treats this
 	// exactly like wtDirty — skip, no gh call. Bulk mode alone may override
@@ -116,9 +132,10 @@ const (
 
 // worktreeCleanFunc classifies worktree's git state: exists is false when the
 // path is not present on disk at all (a missing worktree is a clean no-op,
-// never dirty). When exists is true, status is one of wtDirty/wtUnpushed/
-// wtClean (meaningless when exists is false); headSHA is worktree's resolved
-// HEAD commit, populated only for status==wtUnpushed — the one case a caller
+// never dirty). When exists is true, status is one of wtDirty/
+// wtDirtyRecoverable/wtUnpushed/wtClean (meaningless when exists is false);
+// headSHA is worktree's resolved HEAD commit, populated for
+// status==wtUnpushed and status==wtDirtyRecoverable — the two cases a caller
 // might need it for a gh-verify override — and empty otherwise. Injected so
 // tests substitute a fake without a real git subprocess.
 type worktreeCleanFunc func(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error)
@@ -597,14 +614,19 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // caller's own cwd worktree breaks the live session. prURL is the
 // initiative's own review PR URL (empty in one-off mode, which never sets
 // c.Bulk); it is only consulted for the bulk-mode gh-verify override, when
-// worktreeClean reports wtUnpushed (real, uncommitted/untracked changes
-// always win — see wtDirty's doc comment). Returns the journal outcome
-// string: "worktree-unknown" (no worktree path resolved at all),
+// worktreeClean reports wtUnpushed or wtDirtyRecoverable (real, non-deletion
+// uncommitted/untracked changes always win — see wtDirty's doc comment). A
+// dirty worktree is reclaimed in --bulk ONLY when its dirt is exclusively
+// tracked-file deletions (wtDirtyRecoverable — every "missing" file is still
+// in HEAD) AND gh-verify confirms HEAD is on GitHub; every other dirty state
+// (any non-deletion change, untracked files, or an inconclusive check) is
+// still always skipped. Returns the journal outcome string:
+// "worktree-unknown" (no worktree path resolved at all),
 // "worktree-skipped-caller-cwd" (worktree is the calling session's own cwd),
 // "worktree-absent" (nothing on disk to remove — a clean no-op),
-// "worktree-dirty-skipped" (uncommitted changes, unpushed work not overridden
-// by a bulk gh-verify, or the clean-check itself failed — never force-delete
-// on an inconclusive check), "worktree-removed", or (bulk mode's gh-verify
+// "worktree-dirty-skipped" (uncommitted/deleted changes not overridden by a
+// bulk gh-verify, or the clean-check itself failed — never force-delete on
+// an inconclusive check), "worktree-removed", or (bulk mode's gh-verify
 // override fired) "worktree-removed-gh-verified".
 func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
@@ -624,7 +646,7 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 
 	ghVerified := false
 	removable := status == wtClean
-	if status == wtUnpushed && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+	if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
 		removable = true
 		ghVerified = true
 	}
@@ -765,13 +787,25 @@ func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error
 // commit missing from ALL remotes, not just a single configured upstream,
 // so it also works on branches with no upstream configured at all (for
 // example local-only review-pr-<N> branches). A missing directory reports
-// exists=false. Any inconclusive result — the status/rev-list subprocess
-// itself failing, or a resolvable-but-unresolved HEAD sha — reports
-// status=wtDirty: the contract requires PROOF of no unpushed work before a
-// force-remove, not merely absence of proof of some. When the rev-list count
-// is non-zero, status is wtUnpushed and headSHA is resolved via `git
-// rev-parse HEAD` for a caller's own gh-verify override (bulkGHVerifyRemovable)
-// — the one case that needs it.
+// exists=false.
+//
+// Non-empty porcelain is not automatically wtDirty: when EVERY line is a
+// pure tracked-file deletion (allTrackedDeletions — " D" unstaged or "D "
+// staged, no untracked/add/modify/rename/unmerged entry), this is the
+// signature a `git worktree remove` leaves when killed mid-removal — the
+// working-tree files are gone from disk but HEAD still has them intact. That
+// case resolves HEAD via `git rev-parse HEAD` and reports
+// wtDirtyRecoverable, falling back to wtDirty if the sha resolve itself
+// fails (proof required, same as any other inconclusive check). Any other
+// non-empty porcelain reports wtDirty directly, no sha resolve attempted.
+//
+// Any other inconclusive result — the status/rev-list subprocess itself
+// failing — also reports status=wtDirty: the contract requires PROOF of no
+// unpushed/uncommitted work before a force-remove, not merely absence of
+// proof of some. When the rev-list count is non-zero, status is wtUnpushed
+// and headSHA is resolved via `git rev-parse HEAD` for a caller's own
+// gh-verify override (bulkGHVerifyRemovable) — the one other case (alongside
+// wtDirtyRecoverable) that needs it.
 func defaultWorktreeClean(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error) {
 	info, statErr := os.Stat(worktree)
 	if statErr != nil || !info.IsDir() {
@@ -785,6 +819,17 @@ func defaultWorktreeClean(worktree string) (exists bool, status worktreeGitStatu
 		return true, wtDirty, "", fmt.Errorf("git status --porcelain: %w", err)
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
+		if allTrackedDeletions(string(statusOut)) {
+			shaCtx, shaCancel := context.WithTimeout(context.Background(), reapGitTimeout)
+			defer shaCancel()
+			shaOut, shaErr := exec.CommandContext(shaCtx, "git", "-C", worktree, "rev-parse", "HEAD").Output()
+			if shaErr == nil {
+				return true, wtDirtyRecoverable, strings.TrimSpace(string(shaOut)), nil
+			}
+			// Can't resolve the sha a gh-verify override would need — no
+			// proof possible, degrade to wtDirty like any other
+			// inconclusive check.
+		}
 		return true, wtDirty, "", nil
 	}
 
@@ -809,6 +854,34 @@ func defaultWorktreeClean(worktree string) (exists bool, status worktreeGitStatu
 		return true, wtDirty, "", nil
 	}
 	return true, wtUnpushed, strings.TrimSpace(string(shaOut)), nil
+}
+
+// allTrackedDeletions reports whether every non-empty line of porcelain (raw
+// `git status --porcelain` output) is a pure tracked-file deletion: status
+// code " D" (unstaged) or "D " (staged), and nothing else. A single line with
+// any other code — "??" untracked, "A " staged add, "M "/" M" modified,
+// "R "/"C " rename/copy, or an unmerged conflict marker like "UU"/"AA"/"DD"
+// — makes the whole worktree ineligible and returns false. An empty or
+// all-blank porcelain also returns false (defaultWorktreeClean only calls
+// this when porcelain is known non-empty, but this stays conservative on its
+// own regardless of caller).
+func allTrackedDeletions(porcelain string) bool {
+	sawDeletion := false
+	for _, line := range strings.Split(porcelain, "\n") {
+		if line == "" {
+			continue
+		}
+		if len(line) < 2 {
+			return false
+		}
+		switch line[:2] {
+		case " D", "D ":
+			sawDeletion = true
+		default:
+			return false
+		}
+	}
+	return sawDeletion
 }
 
 // reapGHVerifyTimeout bounds the bulk-mode gh commit-presence probe
