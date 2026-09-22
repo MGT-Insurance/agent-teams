@@ -46,3 +46,19 @@ fi
 The line from `print_setup_warning` is the exact normalized warning. When its temporary file is available, append that file to the existing initiative; always include the normalized warning in the spawn brief, then record `track-worktree:` and spawn. Every reporting primitive is nonblocking: a temporary-file, write, display, note, or cleanup failure emits a fallback warning without hook output or credentials and still continues. A successful setup skips this reporting path and continues directly to track recording and spawn.
 
 Implementers add code and core-path tests but never push, merge, or deploy. Testers own edge cases and live verification. Reviewers never fix. The DRI verifies artifacts, integrates the composed branch, routes findings to fresh implementers, and repeats integration verification after every ring. Loop closure requires both integrated code and an observable end-to-end exercise; tests alone are insufficient.
+
+## Never end a turn waiting on work
+
+Three yield states, not two:
+
+- **Nothing pending** -> a clean end of turn; the human reaps the idle session.
+- **A pending human gate** -> park; the human is the driver.
+- **A pending agent or machine dependency** (a spawned teammate still working, a build/CI/merge still running) -> NOT a clean end and NOT a park. Never end a turn to wait on it.
+
+For that third state, never end a turn to wait on a background command, a build, or a peer's message to finish. You may still launch independent work concurrently, but collect it within the same live turn — one blocking wait, never a turn-ending await. The simplest single-task form: run it in the foreground (one blocking call with an explicit timeout), get the result, then report and stop.
+
+This overrides, for any spawned teammate, the general "background it and wait for the finish notification" habit — that habit is written for a top-level session. A spawned teammate does not get the same re-wake.
+
+### Stall handling
+
+A teammate that has gone idle without delivering its committed artifact is a stall, not progress — never assume it is still working. On being re-woken by its idle notification with work still pending, do not re-yield on "still waiting": verify the artifact first (`bd show`, `git log`, the diff — never the claim alone), nudge the teammate (an `ateam mail` / SendMessage DOES wake it, unlike a background-task finish notification), and replace or take over the work if it stays unresponsive.

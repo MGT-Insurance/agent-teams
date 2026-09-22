@@ -155,10 +155,23 @@ Include in the reviewer's prompt:
 
 ### 9. Collect findings
 
-Wait for the reviewer's SendMessage with its findings list.
+The reviewer is a spawned teammate, not this session's own background task —
+a background task's completion does not reliably re-invoke an idle in-process
+subagent, so its finish notification can queue inertly forever. Never end
+this turn to wait for the reviewer's SendMessage: collect its findings list
+within a live turn. Because the reviewer's message is a genuine agent
+dependency, arm a bounded `ScheduleWakeup` self-re-check sized to the
+review's expected duration — not a tight poll — and re-arm it if the re-check
+still finds no findings.
 
-On timeout, note it and perform step 11 without posting; cite `<pr-url>` and
-include timeout in the close reason.
+On a re-wake with findings still not received, verify the reviewer's actual
+state before treating this as a stall: an idle notification with no findings
+message means it went idle without sending; still running means keep
+waiting. If it went idle without sending, nudge it — a SendMessage DOES wake
+an idle teammate, unlike a background-task finish notification. Only once
+the bounded backstop is genuinely exhausted and a nudge goes unanswered, fall
+back to timeout: note it and perform step 11 without posting; cite
+`<pr-url>` and include timeout in the close reason.
 
 ### 10. Post the review to GitHub
 
