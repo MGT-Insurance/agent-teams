@@ -47,6 +47,22 @@ The line from `print_setup_warning` is the exact normalized warning. When its te
 
 Implementers add code and core-path tests but never push, merge, or deploy. Testers own edge cases and live verification. Reviewers never fix. The DRI verifies artifacts, integrates the composed branch, routes findings to fresh implementers, and repeats integration verification after every ring. Loop closure requires both integrated code and an observable end-to-end exercise; tests alone are insufficient.
 
+## Never end a turn waiting on work
+
+Three yield states, not two:
+
+- **Nothing pending** -> a clean end of turn; the human reaps the idle session.
+- **A pending human gate** -> park; the human is the driver.
+- **A pending agent or machine dependency** (a spawned teammate still working, a build/CI/merge still running) -> NOT a clean end and NOT a park. Never end a turn to wait on it.
+
+For that third state, never end a turn to wait on a background command, a build, or a peer's message to finish. You may still launch independent work concurrently, but collect it within the same live turn — one blocking wait, never a turn-ending await. The simplest single-task form: run it in the foreground (one blocking call with an explicit timeout), get the result, then report and stop.
+
+This overrides, for any spawned teammate, the general "background it and wait for the finish notification" habit — that habit is written for a top-level session. A spawned teammate does not get the same re-wake.
+
+### Stall handling
+
+A teammate that has gone idle without delivering its committed artifact is a stall, not progress — never assume it is still working. On being re-woken by its idle notification with work still pending, do not re-yield on "still waiting": verify the artifact first (`bd show`, `git log`, the diff — never the claim alone), nudge the teammate (an `ateam mail` / SendMessage DOES wake it, unlike a background-task finish notification), and replace or take over the work if it stays unresponsive.
+
 # Execution mechanics — team, worktrees, integration
 
 ## Team
@@ -99,6 +115,14 @@ The tester hands its proof (screenshots, payload/log files, a short summary) to 
 **BIG vs SMALL.** BIG — observable behavior (UI, API response, CLI output, user-facing flow), decomposed into multiple tracks/implementers, or a changed default/durable state/user-facing message — always gates. SMALL — single-track, few-item, linear, nothing observable, no load-bearing human decision — skips it: reading the diff against criteria IS the verification, the same bar as the team/plan-gate skip. A cleared (or skipped) plan gate is NOT itself a trigger either way.
 
 **Feedback loop.** A requested change can pull in any mix of investigator/implementer/planner — a fresh plan gate if it reshapes the work — then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped for the PR before approval. The ask stays REVIEW throughout — never frame this as "ready to merge."
+
+## Why the background re-wake bug forces "never end a turn waiting on work"
+
+A background task's completion does not reliably re-invoke an idle in-process subagent in Claude Code — the finish notification queues but never starts a turn, and the subagent's own background task can be killed when its turn ends (Claude Code issues #92563, #83627, #87675, #76203, all open as of 2026-09-22). A top-level session gets a native re-wake; a spawned teammate does not. Treat "Never end a turn waiting on work" (shared execution contract, above) as unconditional for any teammate regardless of whether this bug is ever fixed — relax it only once those issues close.
+
+### Backstop: bounded self-re-check
+
+For the residual case where a teammate's report never arrives and no other confirmed re-wake path exists, arm a bounded self-re-check with `ScheduleWakeup`, sized to the dependency's expected duration — not a tight poll — and re-arm it if the wake finds the work still pending. `ScheduleWakeup` is confirmed to fire a real re-wake turn in a plain (non-`/loop`) session. Treat this as general robustness, not a permanent workaround for the bug above.
 
 ## Lifecycle
 

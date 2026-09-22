@@ -52,6 +52,14 @@ The tester hands its proof (screenshots, payload/log files, a short summary) to 
 
 **Feedback loop.** A requested change can pull in any mix of investigator/implementer/planner — a fresh plan gate if it reshapes the work — then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped for the PR before approval. The ask stays REVIEW throughout — never frame this as "ready to merge."
 
+## Why the background re-wake bug forces "never end a turn waiting on work"
+
+A background task's completion does not reliably re-invoke an idle in-process subagent in Claude Code — the finish notification queues but never starts a turn, and the subagent's own background task can be killed when its turn ends (Claude Code issues #92563, #83627, #87675, #76203, all open as of 2026-09-22). A top-level session gets a native re-wake; a spawned teammate does not. Treat "Never end a turn waiting on work" (shared execution contract, above) as unconditional for any teammate regardless of whether this bug is ever fixed — relax it only once those issues close.
+
+### Backstop: bounded self-re-check
+
+For the residual case where a teammate's report never arrives and no other confirmed re-wake path exists, arm a bounded self-re-check with `ScheduleWakeup`, sized to the dependency's expected duration — not a tight poll — and re-arm it if the wake finds the work still pending. `ScheduleWakeup` is confirmed to fire a real re-wake turn in a plain (non-`/loop`) session. Treat this as general robustness, not a permanent workaround for the bug above.
+
 ## Lifecycle
 
 - Implementers: ephemeral — shutdown_request once their work is VERIFIED merged (checked the commits, not just the report). Fresh implementer per fix batch.

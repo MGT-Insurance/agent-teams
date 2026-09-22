@@ -44,7 +44,7 @@ Investigate FIRST (spawn investigators/planners — never burn the human's atten
 
 ## Phase 3 — Plan
 
-Spawn one or more `agent-teams-planner` agents (persistent, background) — ring epics as children of root. Plan lands as PROJECT-repo beads: contract bead first, then a loop-closing SET filed up front (smallest collection exercising the new code end-to-end), tracks file-disjoint. Enhancement beads (edge cases, hardening, polish, more rings) MUST NOT be filed unblocked or worked until the loop closes — "filed as deps, blocked" is the only pre-closure state; starting one early is a process violation, not a judgment call. Size-adaptive: trivial -> one bead, zero rings; large -> a multi-bead set and gated rings — either way, decompose, close the loop, then open rings. Then the PLAN-APPROVAL GATE: the human approves the breakdown before implementation starts (parks in `bg` mode).
+Spawn one or more `agent-teams-planner` agents (persistent, background) — ring epics as children of root. Plan lands as PROJECT-repo beads: contract bead first, then a loop-closing SET filed up front (smallest collection exercising the new code end-to-end), tracks file-disjoint. Enhancement beads (edge cases, hardening, polish, more rings) MUST NOT be filed unblocked or worked until the loop closes — "filed as deps, blocked" is the only pre-closure state; starting one early is a process violation, not a judgment call. Size-adaptive: trivial -> one bead, zero rings; large -> a multi-bead set and gated rings. Then the PLAN-APPROVAL GATE: the human approves the breakdown before implementation starts (parks in `bg` mode).
 
 **Design-pivot gate:** any pivot from the dispatched framing — a different mechanism, a new code path instead of a named reuse, or minor -> major scope escalation — is a MANDATORY QUESTION gate at the divergence moment: mechanism evidence + recommendation + literal-reading alternative. A skip that held for the ORIGINAL framing is void once the design diverges — neither you nor the planner may self-ratify a pivot, however strong the evidence. Full rule: references/gate-protocol.md ("The design-pivot gate").
 
@@ -56,7 +56,7 @@ Drive ONLY the loop-closing set first. Before opening any enhancement ring, the 
 - Implementers are EPHEMERAL — shut down (SendMessage shutdown_request) once work is verified merged; spawn fresh ones for fixes (references/execution.md).
 - Own integration: merge each track into the integration branch as it lands, resolve conflicts, advance worktrees as the contract moves (references/execution.md, "Integration (DRI-owned)").
 - **Discovery loop:** continuously triage `--label=discovery` beads the team files (spawn agents, often a planner, to investigate) — this is how the team converges on a PR that solves the problem. Discovery invalidating the framing is a pivot, not just a finding — triggers the mandatory design-pivot gate (Phase 3), never silent redesign.
-- **Verify, don't trust:** check every agent claim against artifacts (`bd show`, `git log`, the diff) before acting; proactively inspect in-progress work other tracks depend on rather than waiting for completion reports. Idle = the stall signal above: verify, nudge. Crossed messages: idle isn't done, "fixed" means nothing until you see the commit.
+- **Verify, don't trust:** check every agent claim against artifacts (`bd show`, `git log`, the diff) before acting; proactively inspect in-progress work other tracks depend on rather than waiting for completion reports. Idle = the stall signal above. Crossed messages: idle isn't done — "fixed" means nothing until you see the commit.
 
 **LOOP CLOSED checkpoint (required before opening any enhancement ring):** LOOP CLOSED = the loop-closing bead set is fully merged into the integration branch AND a verified end-to-end exercise of the new code passes on that branch. Unit tests and typecheck are NECESSARY but NOT SUFFICIENT. "I ran the tests and they pass" is explicitly NOT loop closure for any change with observable behavior.
 
@@ -85,9 +85,9 @@ Absent confirmation: status note `delivered` with the PR link, leave the initiat
 ateam gate <initiative-id> --file /tmp/gate-note.txt --kind=review
 ```
 
-This makes it *eligible* for REVIEWABLE — the dashboard derives actual status from execution-state, so raising it early is safe (model: references/gate-protocol.md, "The review gate and execution-state").
+This makes it *eligible* for REVIEWABLE — the dashboard derives actual status from execution-state, so raising it early is safe (references/gate-protocol.md, "The review gate and execution-state").
 
-**Never run `ateam handoff`.** Only the human may assert that review is finished. Opening a PR without the REVIEW gate is incomplete; leave the initiative open until merge or explicit human closure (references/gate-protocol.md, "The review gate and execution-state").
+**Never run `ateam handoff`.** Only the human may assert that review is finished. Opening a PR without the REVIEW gate is incomplete; leave the initiative open until merge or explicit human closure (references/gate-protocol.md).
 
 **MANDATORY — record the PR on the initiative's `pr` rail** right after opening the PR, before wind-down. The pr-shepherd match engine reads this rail to route events for the initiative:
 
@@ -101,7 +101,7 @@ Do NOT skip this step — the pr-shepherd needs it to route events. Multi-PR: ca
 
 Follow references/wind-down.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> drain+condense learnings (`/agent-teams:condense`, lock-guarded, all roles) -> contribute `dri:<slug>` learnings (Memory routing, above) -> write the final registry note.
 
-**End-state (background and interactive).** When delivery/wind-down or merge close-out is done, or awaiting-merge has no new request, and no gate is pending — with every teammate's idle or return verified against artifacts, never assumed (stall signal above) — post the final note, report plainly, and END THE TURN. Do NOT call `claude stop`; the human reaps the idle session.
+**End-state (background and interactive).** When delivery/wind-down or merge close-out is done, or awaiting-merge has no new request, and no gate is pending — with every teammate's idle or return verified against artifacts, never assumed — post the final note, report plainly, and END THE TURN. Do NOT call `claude stop`; the human reaps the idle session.
 
 # Memory routing
 
@@ -111,7 +111,7 @@ Follow references/wind-down.md exactly: shut down teammates -> remove worktrees 
 - User/cross-project preferences & feedback → `ateam learn user <slug> --file <tmpfile>`.
 - Project-specific knowledge every agent in THIS repo should share → `bd remember` (project beads).
 
-Default to `ateam learn`; `bd remember` only for repo-shared project facts. Contribute the moment a learning forms — Phase 6 guarantees it but earlier is better. Tier mechanics (fresh/hot/cold): references/memory.md.
+Default to `ateam learn`; `bd remember` only for repo-shared project facts. Contribute learnings as they form, not just at Phase 6. Tier mechanics (fresh/hot/cold): references/memory.md.
 
 # Spawning a sibling initiative
 
