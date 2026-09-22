@@ -87,13 +87,22 @@ func (f *fakeRm) fn() rmSessionFunc {
 	}
 }
 
-// fakeWorktreeRemover records worktrees passed to the removeWorktree seam.
-type fakeWorktreeRemover struct{ removed []string }
+// fakeWorktreeRemover records worktrees (and the timeout each was called
+// with) passed to the removeWorktree seam. err, when set, is returned on
+// every call instead of nil — for asserting on removeWorktreeIfClean's
+// removal-failure path (agent-teams-442q.13/Finding 2) without waiting out a
+// real timeout.
+type fakeWorktreeRemover struct {
+	removed  []string
+	timeouts []time.Duration
+	err      error
+}
 
 func (f *fakeWorktreeRemover) fn() reapRemoveWorktreeFunc {
-	return func(worktree string) error {
+	return func(worktree string, timeout time.Duration) error {
 		f.removed = append(f.removed, worktree)
-		return nil
+		f.timeouts = append(f.timeouts, timeout)
+		return f.err
 	}
 }
 
@@ -922,9 +931,11 @@ func TestReap_Bulk_AlreadyCleanWorktree_RemovedWithoutGH(t *testing.T) {
 // nothing is lost by finishing the removal.
 
 // (31) bulk + deletion-corpse (wtDirtyRecoverable) + gh HAS the commit =>
-// removed with journal outcome "worktree-removed-gh-verified", and the
-// gh-verify seam is called exactly once with the initiative's owner/repo and
-// resolved HEAD sha.
+// removed with journal outcome "worktree-removed-corpse-gh-verified" —
+// distinct from wtUnpushed's "worktree-removed-gh-verified" so the journal
+// can tell which override path fired (agent-teams-442q.14/Finding 2) — and
+// the gh-verify seam is called exactly once with the initiative's owner/repo
+// and resolved HEAD sha.
 func TestReap_Bulk_DirtyRecoverableWorktree_GHHasCommit_Removed(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh31")
 	home := t.TempDir()
@@ -948,8 +959,8 @@ func TestReap_Bulk_DirtyRecoverableWorktree_GHHasCommit_Removed(t *testing.T) {
 	if len(fakeGH.calls) != 1 || fakeGH.calls[0] != [2]string{"owner/repo", "deadbeefcafef00d"} {
 		t.Errorf("expected exactly one gh-verify call for owner/repo@deadbeefcafef00d; got %v", fakeGH.calls)
 	}
-	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-gh-verified" {
-		t.Errorf("expected journal outcome worktree-removed-gh-verified; got %q", got)
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-corpse-gh-verified" {
+		t.Errorf("expected journal outcome worktree-removed-corpse-gh-verified; got %q", got)
 	}
 }
 
@@ -1014,13 +1025,14 @@ func TestReap_NoBulk_DirtyRecoverableWorktree_Skipped(t *testing.T) {
 }
 
 // (34) bulk + --dry-run + deletion-corpse (wtDirtyRecoverable) + gh HAS the
-// commit => the preview reports "worktree-would-remove-gh-verified", proving
-// --dry-run's read-only path (previewWorktreeOutcome) reflects the same
-// override removeWorktreeIfClean applies for real — agent-teams-442q.12, the
-// gap the .11 gh-verify override left behind (previewWorktreeOutcome's
+// commit => the preview reports "worktree-would-remove-corpse-gh-verified",
+// proving --dry-run's read-only path (previewWorktreeOutcome) reflects the
+// same override removeWorktreeIfClean applies for real — agent-teams-442q.12,
+// the gap the .11 gh-verify override left behind (previewWorktreeOutcome's
 // switch fell through wtDirtyRecoverable to its wtDirty default, so a
 // bulk --dry-run used to under-report a reclaimable deletion corpse as
-// staying dirty).
+// staying dirty) — and the corpse-specific string (agent-teams-442q.14/
+// Finding 2) rather than wtUnpushed's "worktree-would-remove-gh-verified".
 func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHHasCommit_WouldRemove(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh34")
 
@@ -1038,8 +1050,8 @@ func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHHasCommit_WouldRemove(t *te
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "worktree-would-remove-gh-verified") {
-		t.Errorf("expected the dry-run preview to report worktree-would-remove-gh-verified; got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "worktree-would-remove-corpse-gh-verified") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove-corpse-gh-verified; got %q", stderr.String())
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
@@ -1071,6 +1083,95 @@ func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHMissing_StaysSkipped(t *tes
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
+	}
+}
+
+// ── mode-aware bulk removal timeout & remove-failed outcome (agent-teams-442q.13) ──
+// A live production --bulk run against 942 worktrees applied
+// reapWorktreeRemoveTimeout's steady-state 45s bound to every removal
+// uniformly, timing out 31 of 72 gh-verified-safe removals under real
+// disk/CPU load — 7 of those became permanent, git-invisible corpses,
+// because the best-effort `git worktree prune` never runs when
+// git.RemoveWorktree itself times out. These cases prove
+// removeWorktreeIfClean now selects a mode-aware timeout, and that a
+// removal failure reports a distinct outcome instead of the misleading
+// "worktree-dirty-skipped" (this worktree was never dirty — only its
+// removal failed).
+
+// (36) steady-state (non-bulk): removeWorktreeIfClean passes
+// reapWorktreeRemoveTimeout to the removeWorktree seam.
+func TestReap_Scan_RemoveWorktreeTimeout_NonBulk_UsesSteadyStateConstant(t *testing.T) {
+	worktree := "/tmp/reap-wt-timeout-nonbulk"
+	sessionID := "sess-uuid-timeout-nonbulk"
+	iss := reapReviewIssue("at-timeout-nonbulk", "closed", reapFixedNow.Add(-30*time.Minute), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc-timeout-nonbulk", SessionID: sessionID, CWD: worktree, Kind: "background"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.timeouts) != 1 || remover.timeouts[0] != reapWorktreeRemoveTimeout {
+		t.Errorf("expected removeWorktree called with reapWorktreeRemoveTimeout (%v); got %v", reapWorktreeRemoveTimeout, remover.timeouts)
+	}
+}
+
+// (37) --bulk: removeWorktreeIfClean passes the far more generous
+// reapBulkWorktreeRemoveTimeout instead — the fix for the live-run timeout
+// storm above.
+func TestReap_Bulk_RemoveWorktreeTimeout_UsesBulkConstant(t *testing.T) {
+	worktree := "/tmp/reap-wt-timeout-bulk"
+	sessionID := "sess-uuid-timeout-bulk"
+	iss := reapReviewIssue("at-timeout-bulk", "closed", reapFixedNow.Add(-30*time.Minute), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc-timeout-bulk", SessionID: sessionID, CWD: worktree, Kind: "background"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.Bulk = true
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.timeouts) != 1 || remover.timeouts[0] != reapBulkWorktreeRemoveTimeout {
+		t.Errorf("expected removeWorktree called with reapBulkWorktreeRemoveTimeout (%v); got %v", reapBulkWorktreeRemoveTimeout, remover.timeouts)
+	}
+}
+
+// (38) removeWorktree itself errors (a timeout, in production) => the
+// journal records the distinct "worktree-remove-failed" outcome, not
+// "worktree-dirty-skipped" — this worktree was clean (alwaysClean), only its
+// removal attempt failed (agent-teams-442q.13/Finding 2).
+func TestReap_Scan_RemoveWorktreeFails_DistinctOutcome(t *testing.T) {
+	worktree := "/tmp/reap-wt-remove-failed"
+	sessionID := "sess-uuid-remove-failed"
+	iss := reapReviewIssue("at-remove-failed", "closed", reapFixedNow.Add(-30*time.Minute), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc-remove-failed", SessionID: sessionID, CWD: worktree, Kind: "background"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	remover := fakeWorktreeRemover{err: fmt.Errorf("simulated removal timeout")}
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected removal still attempted on the failing seam; got %v", remover.removed)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-remove-failed" {
+		t.Errorf("expected journal outcome worktree-remove-failed; got %q", got)
 	}
 }
 
@@ -1370,11 +1471,14 @@ func TestReap_DefaultWorktreeClean_CommitOnRemoteTrackingRef(t *testing.T) {
 }
 
 // ── defaultWorktreeClean: deletion-corpse classification (wtDirtyRecoverable, agent-teams-442q.11) ──
-// A `git worktree remove` killed mid-operation deletes the working-tree
-// files from disk, then aborts, leaving HEAD intact: git status --porcelain
-// shows only tracked-file deletions (" D"/"D "), never an untracked/add/
-// modify/rename/unmerged entry. These four cases prove defaultWorktreeClean
-// tells that exact signature apart from every other kind of "dirty".
+// A `git worktree remove` killed mid-operation is a recursive unlink of
+// working-tree files that never touches the index, then aborts, leaving HEAD
+// and the index intact: git status --porcelain shows only UNSTAGED
+// tracked-file deletions (" D"), never a staged deletion ("D "), untracked,
+// add, modify, rename, or unmerged entry. These five cases prove
+// defaultWorktreeClean tells that exact signature apart from every other
+// kind of "dirty", including the staged-deletion case a killed removal can
+// never produce (agent-teams-442q.14/Finding 1).
 
 // TestReap_DefaultWorktreeClean_PureTrackedDeletion_Recoverable covers the
 // deletion-corpse signature itself: a tracked file deleted from disk (never
@@ -1513,7 +1617,41 @@ func TestReap_DefaultWorktreeClean_DeletionPlusUntracked_Dirty(t *testing.T) {
 	}
 }
 
-// ── reapRemoveWorktreeWithTimeout / defaultReapRemoveWorktree (F1 fix) ──────
+// TestReap_DefaultWorktreeClean_StagedDeletion_Dirty covers a STAGED deletion
+// (`git rm`, never committed — porcelain "D ", not " D"): a killed `git
+// worktree remove` can never produce this (it never touches the index), so
+// it must NOT be classified as wtDirtyRecoverable — it means an agent
+// deliberately staged a removal and never committed, real uncommitted intent
+// that the deletion-corpse override must not paper over (agent-teams-
+// 442q.14/Finding 1).
+func TestReap_DefaultWorktreeClean_StagedDeletion_Dirty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init")
+	filePath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGit(t, dir, "add", "tracked.txt")
+	runGit(t, dir, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "add tracked file")
+
+	runGit(t, dir, "rm", "tracked.txt")
+
+	exists, status, _, err := defaultWorktreeClean(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected exists=true for a real directory")
+	}
+	if status != wtDirty {
+		t.Fatalf("expected status=wtDirty for a staged deletion (uncommitted intent, not the corpse signature); got %v", status)
+	}
+}
+
+// ── reapRemoveWorktreeWithTimeout (F1 fix) ──────────────────────────────────
 
 // writeFakeGit writes an executable shell script named "git" into a fresh
 // temp dir and prepends that dir to PATH. reapRemoveWorktreeWithTimeout
@@ -1587,18 +1725,18 @@ esac
 	}
 }
 
-// TestDefaultReapRemoveWorktree_RealWorktree_Succeeds is the happy-path
+// TestReapRemoveWorktreeWithTimeout_RealWorktree_Succeeds is the happy-path
 // proof that switching to a shared bounded context (boundedGitRunner)
 // didn't break real removal: a real worktree, removed through the
-// production constant (reapWorktreeRemoveTimeout), actually disappears from
-// disk and from `git worktree list`.
-func TestDefaultReapRemoveWorktree_RealWorktree_Succeeds(t *testing.T) {
+// production steady-state constant (reapWorktreeRemoveTimeout), actually
+// disappears from disk and from `git worktree list`.
+func TestReapRemoveWorktreeWithTimeout_RealWorktree_Succeeds(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	repoRoot, wtPath := initRepoWithWorktree(t, "reap-remove-test")
 
-	if err := defaultReapRemoveWorktree(wtPath); err != nil {
+	if err := reapRemoveWorktreeWithTimeout(wtPath, reapWorktreeRemoveTimeout); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {

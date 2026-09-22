@@ -69,7 +69,7 @@ func RegisterReapKong(p *cli.Parser) {
 		now:             time.Now,
 		stopSession:     defaultStopSession,
 		rmSession:       defaultRmSession,
-		removeWorktree:  defaultReapRemoveWorktree,
+		removeWorktree:  reapRemoveWorktreeWithTimeout,
 		worktreeClean:   defaultWorktreeClean,
 		ghCommitPresent: defaultGHCommitPresent,
 		noteFunc:        defaultReapNote,
@@ -82,9 +82,12 @@ func RegisterReapKong(p *cli.Parser) {
 type rmSessionFunc func(id string) error
 
 // reapRemoveWorktreeFunc removes worktree from disk, resolving its owning
-// repo root itself so callers never need to know or pass it. Injected so
-// tests substitute a fake without a real git subprocess.
-type reapRemoveWorktreeFunc func(worktree string) error
+// repo root itself so callers never need to know or pass it, bounded by the
+// given timeout. Injected so tests substitute a fake without a real git
+// subprocess, and so removeWorktreeIfClean can choose a mode-aware bound —
+// short for steady-state, generous for --bulk (agent-teams-442q.13; see
+// reapWorktreeRemoveTimeout/reapBulkWorktreeRemoveTimeout).
+type reapRemoveWorktreeFunc func(worktree string, timeout time.Duration) error
 
 // worktreeGitStatus classifies a worktree's git-inspection result — the ONE
 // git-inspection path shared by the steady-state clean-only gate
@@ -104,18 +107,22 @@ const (
 	// override; the contract requires PROOF of no unpushed/uncommitted work,
 	// not merely absence of proof of some.
 	wtDirty worktreeGitStatus = iota
-	// wtDirtyRecoverable: porcelain non-empty, but EVERY line is a pure
-	// tracked-file deletion (" D" unstaged or "D " staged) — no untracked,
-	// add, modify, rename, copy, or unmerged entry. This is the signature a
-	// `git worktree remove` leaves when killed mid-operation (see
-	// reapWorktreeRemoveTimeout's doc comment): it deletes the working-tree
-	// files from disk, then aborts, leaving HEAD intact. Every "missing"
-	// file is still in HEAD, so once gh-verify (bulkGHVerifyRemovable)
-	// proves HEAD is on GitHub, removing the rest of this corpse loses
-	// nothing — a staged addition/modification is content NOT at HEAD, which
-	// is exactly why this predicate is deletions-only. Steady-state
-	// (non-bulk) treats this exactly like wtDirty — skip, no gh call; only
-	// bulk mode may override it, the same way it overrides wtUnpushed below.
+	// wtDirtyRecoverable: porcelain non-empty, but EVERY line is a pure,
+	// UNSTAGED tracked-file deletion (" D" only — never "D ") — no
+	// untracked, staged, modify, rename, copy, or unmerged entry. This is
+	// the signature a `git worktree remove` leaves when killed
+	// mid-operation (see reapWorktreeRemoveTimeout's doc comment): it is a
+	// recursive unlink of working-tree files that never touches the index,
+	// so it can only ever produce unstaged deletions, then aborts, leaving
+	// HEAD and the index intact. Every "missing" file is still in HEAD, so
+	// once gh-verify (bulkGHVerifyRemovable) proves HEAD is on GitHub,
+	// removing the rest of this corpse loses nothing. A STAGED deletion
+	// ("D ") is deliberately excluded (agent-teams-442q.14/Finding 1): it
+	// means an agent ran `git rm` and never committed — real, uncommitted
+	// intent a killed `git worktree remove` cannot produce — so it stays
+	// wtDirty. Steady-state (non-bulk) treats this exactly like wtDirty —
+	// skip, no gh call; only bulk mode may override it, the same way it
+	// overrides wtUnpushed below.
 	wtDirtyRecoverable
 	// wtUnpushed: porcelain empty, but HEAD carries commits absent from
 	// every local remote-tracking ref. Steady-state (non-bulk) treats this
@@ -418,12 +425,18 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 
 // previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
 // would do without touching disk — the same outcome vocabulary, substituting
-// "worktree-would-remove"/"worktree-would-remove-gh-verified" for the
-// mutating "worktree-removed"/"worktree-removed-gh-verified". prURL is the
+// "worktree-would-remove"/"worktree-would-remove-gh-verified"/
+// "worktree-would-remove-corpse-gh-verified" for the mutating
+// "worktree-removed"/"worktree-removed-gh-verified"/
+// "worktree-removed-corpse-gh-verified" (--dry-run never attempts a removal,
+// so it never reports worktree-remove-failed either). prURL is the
 // initiative's own review PR URL (empty in one-off mode, which never sets
 // c.Bulk); it is only consulted for the bulk gh-verify override, when
 // worktreeClean reports wtUnpushed or wtDirtyRecoverable — the same two
-// statuses removeWorktreeIfClean itself overrides (agent-teams-442q.11).
+// statuses removeWorktreeIfClean itself overrides (agent-teams-442q.11),
+// kept as separate outcome strings per status (agent-teams-442q.14/Finding
+// 2) so a dry-run preview distinguishes a reclaimable deletion corpse from a
+// reclaimable stale-remote-ref worktree exactly like the real run does.
 func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -438,7 +451,12 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 	switch status {
 	case wtClean:
 		return "worktree-would-remove"
-	case wtUnpushed, wtDirtyRecoverable:
+	case wtDirtyRecoverable:
+		if c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+			return "worktree-would-remove-corpse-gh-verified"
+		}
+		return "worktree-dirty-skipped"
+	case wtUnpushed:
 		if c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
 			return "worktree-would-remove-gh-verified"
 		}
@@ -619,17 +637,29 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // worktreeClean reports wtUnpushed or wtDirtyRecoverable (real, non-deletion
 // uncommitted/untracked changes always win — see wtDirty's doc comment). A
 // dirty worktree is reclaimed in --bulk ONLY when its dirt is exclusively
-// tracked-file deletions (wtDirtyRecoverable — every "missing" file is still
-// in HEAD) AND gh-verify confirms HEAD is on GitHub; every other dirty state
-// (any non-deletion change, untracked files, or an inconclusive check) is
-// still always skipped. Returns the journal outcome string:
+// unstaged tracked-file deletions (wtDirtyRecoverable — every "missing" file
+// is still in HEAD) AND gh-verify confirms HEAD is on GitHub; every other
+// dirty state (any non-deletion change, untracked files, or an inconclusive
+// check) is still always skipped. The actual removal runs under a mode-aware
+// timeout — reapWorktreeRemoveTimeout steady-state, the far more generous
+// reapBulkWorktreeRemoveTimeout under --bulk (see their doc comments;
+// agent-teams-442q.13). Returns the journal outcome string:
 // "worktree-unknown" (no worktree path resolved at all),
 // "worktree-skipped-caller-cwd" (worktree is the calling session's own cwd),
 // "worktree-absent" (nothing on disk to remove — a clean no-op),
 // "worktree-dirty-skipped" (uncommitted/deleted changes not overridden by a
 // bulk gh-verify, or the clean-check itself failed — never force-delete on
-// an inconclusive check), "worktree-removed", or (bulk mode's gh-verify
-// override fired) "worktree-removed-gh-verified".
+// an inconclusive check), "worktree-remove-failed" (removal was attempted —
+// clean or gh-verified — but the removeWorktree call itself errored or timed
+// out; kept distinct from worktree-dirty-skipped since this worktree was
+// NEVER dirty, only its removal failed, and it may now need manual attention
+// — agent-teams-442q.13/Finding 2), "worktree-removed", or (bulk mode's
+// gh-verify override fired) "worktree-removed-gh-verified" for a reclaimed
+// stale-remote-ref (wtUnpushed) worktree, or
+// "worktree-removed-corpse-gh-verified" for a reclaimed deletion-corpse
+// (wtDirtyRecoverable) worktree — kept distinct (agent-teams-442q.14/Finding
+// 2) since the journal is the only durable record of which force-removal
+// path fired.
 func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -646,22 +676,36 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		return "worktree-absent"
 	}
 
-	ghVerified := false
+	// ghVerifiedOutcome is "" when no override fired (plain wtClean, or not
+	// removable at all) or the specific "worktree-removed(-corpse)?-gh-
+	// verified" string this removal's override earned — decided up front so
+	// a later removal failure or success can each report the right outcome
+	// without re-deriving which status fired.
+	ghVerifiedOutcome := ""
 	removable := status == wtClean
 	if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
 		removable = true
-		ghVerified = true
+		if status == wtDirtyRecoverable {
+			ghVerifiedOutcome = "worktree-removed-corpse-gh-verified"
+		} else {
+			ghVerifiedOutcome = "worktree-removed-gh-verified"
+		}
 	}
 	if !removable {
 		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is not provably clean, skipping removal\n", worktree)
 		return "worktree-dirty-skipped"
 	}
-	if err := c.removeWorktree(worktree); err != nil {
-		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
-		return "worktree-dirty-skipped"
+
+	timeout := reapWorktreeRemoveTimeout
+	if c.Bulk {
+		timeout = reapBulkWorktreeRemoveTimeout
 	}
-	if ghVerified {
-		return "worktree-removed-gh-verified"
+	if err := c.removeWorktree(worktree, timeout); err != nil {
+		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
+		return "worktree-remove-failed"
+	}
+	if ghVerifiedOutcome != "" {
+		return ghVerifiedOutcome
 	}
 	return "worktree-removed"
 }
@@ -705,26 +749,28 @@ func defaultRmSession(id string) error {
 
 // reapWorktreeRemoveTimeout bounds reapRemoveWorktreeWithTimeout's
 // git-common-dir resolve AND the actual `git worktree remove` as ONE shared,
-// combined deadline — not one timeout per call. A single
+// combined deadline — not one timeout per call — in STEADY-STATE (non-bulk)
+// mode only; --bulk uses the far more generous reapBulkWorktreeRemoveTimeout
+// instead (removeWorktreeIfClean selects between them on c.Bulk). A single
 // context.WithTimeout(_, reapWorktreeRemoveTimeout) is threaded through both
 // git.CommonDir and git.RemoveWorktree via boundedGitRunner
 // (bounded_exec.go), so together they get this budget once, not twice. On
 // expiry the whole process group is killed (same pattern as
 // runBoundedClaude) and the call returns an error rather than falsely
 // reporting the worktree removed — the caller's best-effort `git worktree
-// prune` cleans up any partial removal, and the survivor is simply retried
-// on the next tick instead of silently marked done.
+// prune` cleans up any partial removal that reached it, though a removal
+// that times out INSIDE git.RemoveWorktree itself never reaches that prune
+// at all (reapBulkWorktreeRemoveTimeout's doc comment has the consequence);
+// either way the survivor is simply retried on the next tick instead of
+// silently marked done.
 //
 // Sized to satisfy two constraints at once. First, it must never interrupt a
 // legitimate large-worktree removal: observed ~15s for a large worktree
 // (contract agent-teams-442q.3 live-verify), so 45s leaves 3x margin.
 // Second, it must still keep a worst-case scan tick under pr-shepherd's 90s
 // hard SIGTERM budget (pr-shepherd PR #5), even when the survivor that trips
-// this timeout starts right at the edge of the 15s soft ScanDeadline. This
-// is the steady-state, non-bulk path pr-shepherd actually runs under budget
-// — --bulk forces ScanDeadline=0 and is an unbudgeted human-run drain, not
-// subject to this at all. Summing every sequential bounded call on that one
-// survivor's teardown path:
+// this timeout starts right at the edge of the 15s soft ScanDeadline. Summing
+// every sequential bounded call on that one survivor's teardown path:
 //
 //	15s  ScanDeadline slop (survivor starts just under the soft deadline)
 //	 5s  stop                                          (claudeCallTimeout)
@@ -736,22 +782,38 @@ func defaultRmSession(id string) error {
 //	== 85s total, a 5s margin under the 90s hard budget.
 const reapWorktreeRemoveTimeout = 45 * time.Second
 
-// defaultReapRemoveWorktree removes worktree, resolving its owning repo root
-// via git's common-dir (the shared .git directory every linked worktree
-// points back to) so the caller never needs to separately track or pass the
-// main repo root. `claude rm` does NOT remove an ateam worktree — proven
-// live (contract, "WORKTREE REMOVAL") — so this explicit step is mandatory
-// for actually reclaiming the disk space and `git worktree list` entry.
-func defaultReapRemoveWorktree(worktree string) error {
-	return reapRemoveWorktreeWithTimeout(worktree, reapWorktreeRemoveTimeout)
-}
+// reapBulkWorktreeRemoveTimeout bounds `git worktree remove` in --bulk mode
+// only (removeWorktreeIfClean selects this over reapWorktreeRemoveTimeout
+// when c.Bulk is true). --bulk already forces ScanDeadline=0 and Max=0 — an
+// unbudgeted, human-invoked drain with no per-tick deadline to protect — so
+// unlike the steady-state bound above, this one only needs to be generous,
+// not tight. Sized from live evidence (agent-teams-442q.13): a production
+// --bulk run against 942 worktrees, applying reapWorktreeRemoveTimeout's own
+// 45s bound to every removal, timed out 31 of 72 gh-verified-safe removals
+// mid-delete under real disk/CPU load on a shared machine — and because the
+// best-effort `git worktree prune` in reapRemoveWorktreeWithTimeout only runs
+// AFTER git.RemoveWorktree returns nil, a removal that times out inside
+// RemoveWorktree itself never reaches that prune, so 7 of the 31 were left as
+// a permanent, git-invisible corpse no future reap can ever reach again. Ten
+// minutes leaves generous margin for the largest observed worktrees (~15s,
+// contract agent-teams-442q.3) while still bounding a genuine hang; a --bulk
+// run that outlives this on every survivor is a different problem this
+// timeout cannot solve.
+const reapBulkWorktreeRemoveTimeout = 10 * time.Minute
 
-// reapRemoveWorktreeWithTimeout is defaultReapRemoveWorktree's real
-// implementation, taking the removal timeout as a parameter so a test can
-// exercise the real timeout/process-group-kill behavior on a short fuse
-// without waiting out reapWorktreeRemoveTimeout for real — the same shape
-// runBoundedClaude's own tests use, calling it directly with a short custom
-// timeout rather than going through a production wrapper.
+// reapRemoveWorktreeWithTimeout removes worktree, resolving its owning repo
+// root via git's common-dir (the shared .git directory every linked
+// worktree points back to) so the caller never needs to separately track or
+// pass the main repo root. `claude rm` does NOT remove an ateam worktree —
+// proven live (contract, "WORKTREE REMOVAL") — so this explicit step is
+// mandatory for actually reclaiming the disk space and `git worktree list`
+// entry. This is the production reapRemoveWorktreeFunc, wired directly in
+// RegisterReapKong; taking timeout as a parameter lets removeWorktreeIfClean
+// choose a mode-aware bound (reapWorktreeRemoveTimeout steady-state,
+// reapBulkWorktreeRemoveTimeout for --bulk) and lets a test exercise the
+// real timeout/process-group-kill behavior on a short fuse without waiting
+// out either constant for real — the same shape runBoundedClaude's own tests
+// use, calling it directly with a short custom timeout.
 func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error {
 	// ONE shared deadline across both the git-common-dir resolve and the
 	// actual `git worktree remove` — see reapWorktreeRemoveTimeout's doc
@@ -792,14 +854,17 @@ func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error
 // exists=false.
 //
 // Non-empty porcelain is not automatically wtDirty: when EVERY line is a
-// pure tracked-file deletion (allTrackedDeletions — " D" unstaged or "D "
-// staged, no untracked/add/modify/rename/unmerged entry), this is the
-// signature a `git worktree remove` leaves when killed mid-removal — the
-// working-tree files are gone from disk but HEAD still has them intact. That
+// pure, UNSTAGED tracked-file deletion (allTrackedDeletions — " D" only, no
+// staged "D ", untracked, add, modify, rename, or unmerged entry), this is
+// the signature a `git worktree remove` leaves when killed mid-removal — a
+// recursive unlink that never touches the index, so the working-tree files
+// are gone from disk but HEAD and the index still have them intact. That
 // case resolves HEAD via `git rev-parse HEAD` and reports
 // wtDirtyRecoverable, falling back to wtDirty if the sha resolve itself
-// fails (proof required, same as any other inconclusive check). Any other
-// non-empty porcelain reports wtDirty directly, no sha resolve attempted.
+// fails (proof required, same as any other inconclusive check). A staged
+// deletion ("D "), or any other non-empty porcelain, reports wtDirty
+// directly, no sha resolve attempted — real, uncommitted intent, not a
+// killed-removal corpse.
 //
 // Any other inconclusive result — the status/rev-list subprocess itself
 // failing — also reports status=wtDirty: the contract requires PROOF of no
@@ -859,14 +924,19 @@ func defaultWorktreeClean(worktree string) (exists bool, status worktreeGitStatu
 }
 
 // allTrackedDeletions reports whether every non-empty line of porcelain (raw
-// `git status --porcelain` output) is a pure tracked-file deletion: status
-// code " D" (unstaged) or "D " (staged), and nothing else. A single line with
-// any other code — "??" untracked, "A " staged add, "M "/" M" modified,
-// "R "/"C " rename/copy, or an unmerged conflict marker like "UU"/"AA"/"DD"
-// — makes the whole worktree ineligible and returns false. An empty or
-// all-blank porcelain also returns false (defaultWorktreeClean only calls
-// this when porcelain is known non-empty, but this stays conservative on its
-// own regardless of caller).
+// `git status --porcelain` output) is a pure, UNSTAGED tracked-file deletion:
+// status code " D" only, and nothing else. A single line with any other code
+// — "??" untracked, "D " staged deletion, "A " staged add, "M "/" M"
+// modified, "R "/"C " rename/copy, or an unmerged conflict marker like
+// "UU"/"AA"/"DD" — makes the whole worktree ineligible and returns false.
+// "D " is deliberately excluded, not merely another rejected code
+// (agent-teams-442q.14/Finding 1): a killed `git worktree remove` is a
+// recursive unlink of working-tree files that never touches the index, so it
+// can only ever leave unstaged deletions; a staged deletion instead means an
+// agent ran `git rm` and never committed — real, uncommitted intent this
+// predicate must not paper over. An empty or all-blank porcelain also
+// returns false (defaultWorktreeClean only calls this when porcelain is known
+// non-empty, but this stays conservative on its own regardless of caller).
 func allTrackedDeletions(porcelain string) bool {
 	sawDeletion := false
 	for _, line := range strings.Split(porcelain, "\n") {
@@ -876,12 +946,10 @@ func allTrackedDeletions(porcelain string) bool {
 		if len(line) < 2 {
 			return false
 		}
-		switch line[:2] {
-		case " D", "D ":
-			sawDeletion = true
-		default:
+		if line[:2] != " D" {
 			return false
 		}
+		sawDeletion = true
 	}
 	return sawDeletion
 }
