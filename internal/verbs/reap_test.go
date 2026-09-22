@@ -1013,6 +1013,67 @@ func TestReap_NoBulk_DirtyRecoverableWorktree_Skipped(t *testing.T) {
 	}
 }
 
+// (34) bulk + --dry-run + deletion-corpse (wtDirtyRecoverable) + gh HAS the
+// commit => the preview reports "worktree-would-remove-gh-verified", proving
+// --dry-run's read-only path (previewWorktreeOutcome) reflects the same
+// override removeWorktreeIfClean applies for real — agent-teams-442q.12, the
+// gap the .11 gh-verify override left behind (previewWorktreeOutcome's
+// switch fell through wtDirtyRecoverable to its wtDirty default, so a
+// bulk --dry-run used to under-report a reclaimable deletion corpse as
+// staying dirty).
+func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHHasCommit_WouldRemove(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh34")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirtyRecoverable)
+	verb.Bulk = true
+	verb.DryRun = true
+	fakeGH := &fakeGHCommitPresent{present: true}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, stderr := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "worktree-would-remove-gh-verified") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove-gh-verified; got %q", stderr.String())
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
+	}
+}
+
+// (35) bulk + --dry-run + deletion-corpse + gh reports the commit MISSING =>
+// the preview still reports "worktree-dirty-skipped" — inconclusive always
+// protects, dry-run included.
+func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHMissing_StaysSkipped(t *testing.T) {
+	iss, sessions := reapGHVerifyIssue("gh35")
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirtyRecoverable)
+	verb.Bulk = true
+	verb.DryRun = true
+	fakeGH := &fakeGHCommitPresent{present: false}
+	verb.ghCommitPresent = fakeGH.fn()
+
+	ctx, _, stderr := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "worktree-dirty-skipped") {
+		t.Errorf("expected the dry-run preview to report worktree-dirty-skipped; got %q", stderr.String())
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
+	}
+}
+
 // ── hoist / soft deadline / batch bound / scan cancellation ─────────────────
 // Covers the impl bead's own acceptance criteria: the hoisted agentsFunc call,
 // the soft wall-clock deadline that lets one tick exit cleanly under budget,

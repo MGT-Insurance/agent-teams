@@ -421,7 +421,9 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 // "worktree-would-remove"/"worktree-would-remove-gh-verified" for the
 // mutating "worktree-removed"/"worktree-removed-gh-verified". prURL is the
 // initiative's own review PR URL (empty in one-off mode, which never sets
-// c.Bulk); it is only consulted for the bulk gh-verify override (wtUnpushed).
+// c.Bulk); it is only consulted for the bulk gh-verify override, when
+// worktreeClean reports wtUnpushed or wtDirtyRecoverable — the same two
+// statuses removeWorktreeIfClean itself overrides (agent-teams-442q.11).
 func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -436,7 +438,7 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 	switch status {
 	case wtClean:
 		return "worktree-would-remove"
-	case wtUnpushed:
+	case wtUnpushed, wtDirtyRecoverable:
 		if c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
 			return "worktree-would-remove-gh-verified"
 		}
