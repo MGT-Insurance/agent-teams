@@ -47,15 +47,15 @@ Call the plugin's PATH-installed `ateam` bare; never raw `bd -C` against the glo
 
 **Invoked with an initiative id -> resume directly**: `ateam show <id>`; if it resolves, recover state (notes, `ateam human-list`, project beads, branch/PR) and drive it — skip the cwd match below, no re-register. (Unresolved -> treat as a problem statement.)
 
-Otherwise: `ateam resume-match "$PWD"` for an OPEN initiative whose `worktree:` matches cwd (exact-line match; `bd search` is not a fallback — references/registry.md, "Commands"). A match may be mid-flight or `awaiting-merge`: merged -> close-out step; still open -> report awaiting-merge and end the turn if nothing more was asked.
+Otherwise: `ateam resume-match "$PWD"` for an OPEN initiative whose `worktree:` matches cwd (exact-line match, not `bd search` — references/registry.md). A match may be mid-flight or `awaiting-merge`: merged -> close-out step; still open -> report awaiting-merge and end the turn if nothing more was asked.
 
 - **Open match -> resume:** recover state, report where things stand, recreate the team (spawn fresh). Parked **REVIEW**: clear (`ateam clear-gate <id>`) if merged since, then close; **QUESTION**: handle normally.
-- **Open match + new problem statement:** pause and confirm — append to existing vs. start new.
+- **Open match + new problem statement:** pause, confirm: append vs. start new.
 - **No open match + problem statement:** register with the description schema (references/registry.md); a closed initiative here doesn't block registration — only the no-parameter path below surfaces it.
 - **No open match, no problem statement (no-parameter /dri):** `ateam resume-match-closed "$PWD"` — closed match found -> surface via `ateam show <id>` and GATE PROTOCOL, asking **resume** (`ateam reopen <id>`) vs. **start new**; none found -> ask for a problem statement.
 - Either way: append a session note (`session N, <date>, interactive|bg`).
 
-**Ensure-epic (before Phase 2):** read `epic:` from `ateam show <id>` → `EPIC_ID`, thread into every spawn prompt (work beads use `--parent <EPIC_ID>`). Absent (legacy, pre-at-e3m) -> references/registry.md ("DRI ensure-epic step, legacy branch").
+**Ensure-epic (before Phase 2):** read `epic:` from `ateam show <id>` → `EPIC_ID`, thread into every spawn prompt (work beads use `--parent <EPIC_ID>`). Absent (legacy, pre-at-e3m): references/registry.md, "DRI ensure-epic step".
 
 **Standby check (after ensure-epic, before Phase 2 Clarify).** No-op for most initiatives — only initiatives dispatched with `--standby` carry the `standby:` field. Read via `ateam show <id>` and apply the frozen reader rule verbatim (full text + rationale: references/registry.md, "Standby field"): active iff `standby: true` is present **AND** neither the description nor its notes contain `standby: released`.
 
@@ -65,7 +65,7 @@ Otherwise: `ateam resume-match "$PWD"` for an OPEN initiative whose `worktree:` 
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn investigators/planners — never burn the human's attention on grep-able questions); ask only what changes the design, each with your recommended default. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park; while parked, keep non-dependent work moving, batch questions. Default to the structured `--decision`/`--recommendation`/`--alternative` form (references/gate-protocol.md, "Structured ask form (primary)"); `--file` prose is a fallback for asks that don't fit.
+Investigate FIRST (spawn investigators/planners — never burn the human's attention on grep-able questions); ask only what changes the design, each with your recommended default. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park; while parked, keep non-dependent work moving, batch questions. Default to the structured `--decision`/`--recommendation`/`--alternative` form (references/gate-protocol.md); `--file` prose is a fallback for asks that don't fit.
 
 ## Phase 3 — Plan
 
@@ -126,7 +126,7 @@ Do NOT skip this step — the pr-shepherd needs it to route events. Multi-PR: ca
 
 Follow references/wind-down.md exactly: shut down teammates -> remove worktrees -> sweep orphaned processes -> close/annotate project beads -> push the project repo AND sync the global workspace -> drain+condense learnings (`/agent-teams:condense`, lock-guarded, all roles) -> contribute `dri:<slug>` learnings (Memory routing, above) -> write the final registry note.
 
-**End-state (background and interactive).** When delivery/wind-down or merge close-out is done, or awaiting-merge has no new request, and no gate is pending: post the final note, report plainly, and END THE TURN. Do NOT call `claude stop`; the human reaps the idle session.
+**End-state (background and interactive).** When delivery/wind-down or merge close-out is done, or awaiting-merge has no new request, and no gate is pending — with every teammate's idle or return verified against artifacts, never assumed (stall signal above) — post the final note, report plainly, and END THE TURN. Do NOT call `claude stop`; the human reaps the idle session.
 
 # Memory routing
 
