@@ -69,11 +69,15 @@ Every prompt includes:
   `ateam instructions <role>`;
 - project work beads must use `--parent <EPIC_ID>`;
 - the normalized `worktree-setup-warning` when the DRI's required pre-spawn setup attempt failed;
-- report through the final response; urgent blockers may message the parent.
+- return a status — done, blocked, or waiting — through the final response,
+  never ending without one; urgent blockers may also message the parent.
 
 Wait for the child, then independently inspect its Beads, commits, diff, and
-test evidence. A final response is a claim, not durable proof. If a child dies,
-reconstruct from those artifacts and spawn a fresh worker for remaining work.
+test evidence. A final response is a claim, not durable proof — a returned
+claim that a commit or a bead-state change does not back is a stall signal,
+not progress or completion. Inspect the artifacts and spawn a fresh worker for
+the remaining work; never assume the claim and never treat it as a clean
+turn-end. Reconstruct the same way if a child dies.
 
 ## Worktrees and integration
 
