@@ -82,6 +82,7 @@ func RegisterReapKong(p *cli.Parser) {
 		rmSession:       defaultRmSession,
 		removeWorktree:  reapRemoveWorktreeWithTimeout,
 		worktreeClean:   defaultWorktreeClean,
+		worktreeExists:  defaultWorktreeExists,
 		ghCommitPresent: defaultGHCommitPresent,
 		noteFunc:        defaultReapNote,
 		notifyCtx:       defaultReapNotifyCtx,
@@ -158,6 +159,17 @@ const (
 // tests substitute a fake without a real git subprocess.
 type worktreeCleanFunc func(worktree string) (exists bool, status worktreeGitStatus, headSHA string, err error)
 
+// worktreeExistsFunc reports whether worktree is present on disk as a
+// directory — the same existence guard worktreeCleanFunc's own os.Stat
+// applies, standing alone with no accompanying git status/rev-list probe.
+// removeWorktreeIfClean's review-shaped force-remove path (prURL != "") needs
+// only this: dirty/unpushed git state is irrelevant to that decision (see its
+// doc comment), so running worktreeClean's ~15s of sequential git
+// subprocesses there is pure waste that eats into the scan tick's timeout
+// budget (review finding on agent-teams-6hgr.1's force-remove change).
+// Injected so tests substitute a fake without touching a real filesystem.
+type worktreeExistsFunc func(worktree string) bool
+
 // ghCommitPresentFunc reports whether GitHub still retains commit sha in
 // ownerRepo (owner/repo, lower-cased, as parsePrURL returns it) — the bulk
 // mode gh-verify override's sole probe. Injected so tests substitute a fake
@@ -201,6 +213,7 @@ type reapKong struct {
 	rmSession       rmSessionFunc          `kong:"-"`
 	removeWorktree  reapRemoveWorktreeFunc `kong:"-"`
 	worktreeClean   worktreeCleanFunc      `kong:"-"`
+	worktreeExists  worktreeExistsFunc     `kong:"-"`
 	ghCommitPresent ghCommitPresentFunc    `kong:"-"`
 	noteFunc        reapNoteFunc           `kong:"-"`
 	notifyCtx       reapNotifyCtxFunc      `kong:"-"`
@@ -648,7 +661,15 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), "")
 		c.journal(ctx, now, iss.ID, target, "claude", "one-off", action, wtOutcome)
 
-		if action != "failed" {
+		// Written only on FULL teardown success — the session action didn't
+		// fail AND the worktree is actually gone (worktreeTornDown) — the
+		// same invariant runScan's scan-mode note-write gate uses
+		// (agent-teams-6hgr.1, bug 2a). Gating on action alone used to write
+		// the note even when the worktree removal was skipped (dirty,
+		// non-review target) or failed, misrepresenting teardown as complete
+		// for a one-off `ateam reap <id>` a human ran expecting a result
+		// (review finding on agent-teams-6hgr.1's own note-write fix).
+		if action != "failed" && worktreeTornDown(wtOutcome) {
 			if err := c.noteFunc(ctx, iss.ID, now); err != nil {
 				fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
 			}
@@ -756,18 +777,21 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // mode always passes "" regardless of whether its resolved target happens
 // to be review-shaped, so one-off's behavior for a non-review target is
 // unchanged (agent-teams-6hgr.1 scopes the force-remove rule to the
-// review-shaped SCAN path only). When prURL is non-empty, removal is forced
-// UNCONDITIONALLY — regardless of dirty, unpushed, or inconclusive git
-// state — because a review worktree checks out the PR author's branch and
-// never carries changes meant to be pushed from here, so the clean-only /
-// gh-verify gating that protects a normal work worktree does not apply
-// (contract agent-teams-sbh8.1, superseded 2026-09-23 — see its
-// SUPERSEDED-BY note). worktreeClean's status/headSHA are still resolved
-// above (existence still needs its os.Stat, and any error is still logged)
-// but not consulted for this decision, and bulkGHVerifyRemovable is never
-// called on this path — the two live-run bugs this fixes (agent-teams-6hgr.1)
-// left review worktrees stuck skipped as "worktree-dirty-skipped" on every
-// normal scan tick.
+// review-shaped SCAN path only). When prURL is non-empty, the whole decision
+// delegates to forceRemoveWorktree, which removes UNCONDITIONALLY —
+// regardless of dirty, unpushed, or inconclusive git state — because a
+// review worktree checks out the PR author's branch and never carries
+// changes meant to be pushed from here, so the clean-only / gh-verify gating
+// that protects a normal work worktree does not apply (contract
+// agent-teams-sbh8.1, superseded 2026-09-23 — see its SUPERSEDED-BY note).
+// worktreeClean is never called on this path at all — only worktreeExists's
+// bare directory stat — since dirty/unpushed status is irrelevant to a
+// decision that ignores it either way, and worktreeClean's ~15s of
+// sequential git subprocesses was pure waste there, eating into the scan
+// tick's timeout budget (review finding on agent-teams-6hgr.1's own
+// force-remove change — see forceRemoveWorktree's doc comment for the
+// before/after arithmetic). bulkGHVerifyRemovable is likewise never called on
+// this path.
 //
 // When prURL is empty (one-off mode, any target), the ORIGINAL clean-only
 // rule still applies unchanged: removal proceeds when status==wtClean, or
@@ -800,14 +824,15 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // and it may now need manual attention — agent-teams-442q.13/Finding 2),
 // "worktree-removed" (status was wtClean, forced or not — no need to
 // distinguish), "worktree-removed-forced" (review-shaped and force-removed
-// despite a non-clean git state — kept distinct so the journal/summary
-// still show when a force-removal papered over real dirty/unpushed state),
-// or (the now-dead bulk gh-verify override, one-off mode only) "worktree-
-// removed-gh-verified" for a reclaimed stale-remote-ref (wtUnpushed)
-// worktree, or "worktree-removed-corpse-gh-verified" for a reclaimed
-// deletion-corpse (wtDirtyRecoverable) worktree — kept distinct
-// (agent-teams-442q.14/Finding 2) since the journal is the only durable
-// record of which force-removal path fired.
+// despite a non-clean or unchecked git state — kept distinct so the
+// journal/summary still show when a force-removal papered over real
+// dirty/unpushed state), or (the now-dead bulk gh-verify override, one-off
+// mode only) "worktree-removed-gh-verified" for a reclaimed
+// stale-remote-ref (wtUnpushed) worktree, or
+// "worktree-removed-corpse-gh-verified" for a reclaimed deletion-corpse
+// (wtDirtyRecoverable) worktree — kept distinct (agent-teams-442q.14/Finding
+// 2) since the journal is the only durable record of which force-removal
+// path fired.
 func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -816,6 +841,11 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		fmt.Fprintf(ctx.Stdout, "reap: worktree %s is the calling session's own cwd, skipping removal\n", worktree)
 		return "worktree-skipped-caller-cwd"
 	}
+
+	if prURL != "" {
+		return c.forceRemoveWorktree(ctx, worktree)
+	}
+
 	exists, status, headSHA, err := c.worktreeClean(worktree)
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "reap: check worktree %s: %v\n", worktree, err)
@@ -826,17 +856,10 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 
 	// ghVerifiedOutcome is "" when no gh-verify override fired, or the
 	// specific "worktree-removed(-corpse)?-gh-verified" string that
-	// override earned. forced records whether removal proceeded only
-	// because prURL forced it past a non-clean status (review-shaped path)
-	// — decided up front so a later removal failure or success can each
-	// report the right outcome without re-deriving which branch fired.
+	// override earned.
 	removable := status == wtClean
-	forced := false
 	ghVerifiedOutcome := ""
-	if prURL != "" {
-		removable = true
-		forced = status != wtClean
-	} else if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+	if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
 		removable = true
 		if status == wtDirtyRecoverable {
 			ghVerifiedOutcome = "worktree-removed-corpse-gh-verified"
@@ -857,14 +880,42 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
 		return "worktree-remove-failed"
 	}
-	switch {
-	case ghVerifiedOutcome != "":
+	if ghVerifiedOutcome != "" {
 		return ghVerifiedOutcome
-	case forced:
-		return "worktree-removed-forced"
-	default:
-		return "worktree-removed"
 	}
+	return "worktree-removed"
+}
+
+// forceRemoveWorktree implements removeWorktreeIfClean's review-shaped
+// (prURL != "") branch: existence only, via worktreeExists's bare directory
+// stat — never worktreeClean's git status/rev-list probe, since a review
+// worktree's dirty/unpushed state is irrelevant to whether force-removal is
+// safe (removeWorktreeIfClean's doc comment has the reasoning). Skipping that
+// probe here is the fix for a review finding on agent-teams-6hgr.1's own
+// force-remove change: worktreeClean's three sequential git subprocesses,
+// each bounded by reapGitTimeout (5s), cost up to 15s on a path whose outcome
+// never consulted them — pure waste that pushed a worst-case single-survivor
+// scan tick to within 5s of pr-shepherd's 90s hard SIGTERM budget (see
+// reapWorktreeRemoveTimeout's doc comment for the corrected arithmetic).
+// Timeout selection mirrors removeWorktreeIfClean's own clean-only path:
+// reapWorktreeRemoveTimeout steady-state, reapBulkWorktreeRemoveTimeout under
+// --bulk — --bulk is scan-mode-only and scan-mode's prURL is never empty, so
+// in production every --bulk removal now takes this path and needs the same
+// generous bound the old gh-verified-safe removals did (agent-teams-442q.13).
+func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree string) string {
+	if !c.worktreeExists(worktree) {
+		return "worktree-absent"
+	}
+
+	timeout := reapWorktreeRemoveTimeout
+	if c.Bulk {
+		timeout = reapBulkWorktreeRemoveTimeout
+	}
+	if err := c.removeWorktree(worktree, timeout); err != nil {
+		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
+		return "worktree-remove-failed"
+	}
+	return "worktree-removed-forced"
 }
 
 // worktreeTornDown reports whether wtOutcome (a removeWorktreeIfClean
@@ -945,16 +996,18 @@ func defaultRmSession(id string) error {
 // Second, it must still keep a worst-case scan tick under pr-shepherd's 90s
 // hard SIGTERM budget (pr-shepherd PR #5), even when the survivor that trips
 // this timeout starts right at the edge of the 15s soft ScanDeadline. Summing
-// every sequential bounded call on that one survivor's teardown path:
+// every sequential bounded call on that one survivor's teardown path: every
+// scan-mode survivor is review-shaped (the loop filters to
+// initiative.ReviewPRURL before it ever reaches teardown), so it always
+// takes forceRemoveWorktree's existence-only path — a bare os.Stat, not a
+// bounded subprocess — never worktreeClean's git status/rev-list probe:
 //
 //	15s  ScanDeadline slop (survivor starts just under the soft deadline)
 //	 5s  stop                                          (claudeCallTimeout)
 //	 5s  rm                                             (claudeCallTimeout)
-//	 5s  worktreeClean's `git status --porcelain`         (reapGitTimeout)
-//	 5s  worktreeClean's `git rev-list --count ...`       (reapGitTimeout)
 //	45s  this timeout                          (reapWorktreeRemoveTimeout)
 //	 5s  `git worktree prune`, best-effort                (reapGitTimeout)
-//	== 85s total, a 5s margin under the 90s hard budget.
+//	== 75s total, a 15s margin under the 90s hard budget.
 const reapWorktreeRemoveTimeout = 45 * time.Second
 
 // reapBulkWorktreeRemoveTimeout bounds `git worktree remove` in --bulk mode
@@ -1017,6 +1070,14 @@ func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error
 	defer pruneCancel()
 	_ = exec.CommandContext(pruneCtx, "git", "-C", repoRoot, "worktree", "prune").Run()
 	return nil
+}
+
+// defaultWorktreeExists is the production worktreeExistsFunc: a bare
+// directory stat, nothing else — the same guard defaultWorktreeClean's own
+// os.Stat applies, standing alone with no git subprocess attached.
+func defaultWorktreeExists(worktree string) bool {
+	info, err := os.Stat(worktree)
+	return err == nil && info.IsDir()
 }
 
 // defaultWorktreeClean reports whether worktree has no uncommitted changes

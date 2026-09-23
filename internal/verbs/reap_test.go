@@ -171,6 +171,11 @@ func lastReapJournalOutcome(t *testing.T, home string) string {
 
 // newReapVerb builds a reapKong with every DI seam wired to the given fakes,
 // grace defaulted to defaultReapGrace unless overridden by the caller.
+// worktreeExists is derived from clean's own exists return — none of these
+// callers need to fake existence independently of the clean-check result, so
+// this keeps every existing clean fixture (alwaysClean/alwaysDirty/etc.)
+// working unchanged for the force-remove path, which now consults
+// worktreeExists instead of worktreeClean.
 func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover *fakeWorktreeRemover, noter *fakeNoter, clean worktreeCleanFunc) *reapKong {
 	return &reapKong{
 		Grace:          defaultReapGrace,
@@ -182,6 +187,10 @@ func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover
 		rmSession:      rms.fn(),
 		removeWorktree: remover.fn(),
 		worktreeClean:  clean,
+		worktreeExists: func(worktree string) bool {
+			exists, _, _, _ := clean(worktree)
+			return exists
+		},
 		// Safe default: no test relies on this without overriding it
 		// explicitly (verb.ghCommitPresent = ...fn()) — inconclusive must
 		// always protect, so an un-overridden seam never authorizes removal.
@@ -375,6 +384,64 @@ func TestReap_Scan_DirtyWorktree_ForceRemoved(t *testing.T) {
 	}
 	if len(noter.noted) != 1 || noter.noted[0] != "at-6" {
 		t.Errorf("expected reaped note written; got %v", noter.noted)
+	}
+}
+
+// (6b, review finding on agent-teams-6hgr.1's own force-remove change) the
+// review-shaped force-remove path must decide purely on existence
+// (worktreeExists) and never invoke worktreeClean's git status/rev-list
+// probe at all — that probe's ~15s of sequential subprocesses is pure waste
+// on a path whose outcome never consults dirty/unpushed status, and eats
+// into the scan tick's timeout budget (reapWorktreeRemoveTimeout's doc
+// comment has the corrected arithmetic). Built directly (not via
+// newReapVerb, which derives worktreeExists FROM worktreeClean for fixture
+// convenience) so worktreeClean can be instrumented as a call counter
+// instead: this test fails against the pre-fix code, which always called
+// worktreeClean regardless of prURL.
+func TestReap_Scan_ForceRemove_NeverCallsWorktreeClean(t *testing.T) {
+	worktree := "/tmp/reap-wt-6b"
+	sessionID := "sess-uuid-6b"
+	iss := reapReviewIssue("at-6b", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6b", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	worktreeCleanCalls := 0
+
+	verb := &reapKong{
+		Grace:          defaultReapGrace,
+		ScanDeadline:   reapScanSoftDeadlineDefault,
+		Max:            reapScanBatchDefault,
+		agentsFunc:     reapFakeAgents(sessions),
+		now:            func() time.Time { return reapFixedNow },
+		stopSession:    stops.stopFunc(),
+		rmSession:      rms.fn(),
+		removeWorktree: remover.fn(),
+		worktreeClean: func(string) (bool, worktreeGitStatus, string, error) {
+			worktreeCleanCalls++
+			return true, wtClean, "", nil
+		},
+		worktreeExists:  func(string) bool { return true },
+		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
+		noteFunc:        noter.fn(),
+		notifyCtx:       defaultReapNotifyCtx,
+	}
+
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if worktreeCleanCalls != 0 {
+		t.Errorf("expected worktreeClean never called on the review-shaped force-remove path; got %d calls", worktreeCleanCalls)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the worktree force-removed; got %v", remover.removed)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
+		t.Errorf("expected journal outcome worktree-removed-forced; got %q", got)
 	}
 }
 
@@ -584,7 +651,17 @@ func TestReap_OneOff_UnresolvableTarget_Error(t *testing.T) {
 }
 
 // (13) DIRTY worktree in one-off mode => session torn down, worktree
-// removal skipped (never forced), gates bypassed as in (10).
+// removal skipped (never forced), gates bypassed as in (10). Note: this
+// target passes "" as removeWorktreeIfClean's prURL regardless of the
+// underlying initiative being review-shaped — one-off mode always does
+// (see runOneOff/removeWorktreeIfClean's doc comments) — so the dirty
+// clean-only gate still applies here, unlike scan mode's force-remove.
+// Critically, no reaped: note is written despite the session teardown
+// succeeding (action != "failed"): the note gate also requires
+// worktreeTornDown(wtOutcome), and worktree-dirty-skipped is not torn
+// down — a review finding on agent-teams-6hgr.1's own note-write fix
+// (this test previously never asserted on noter.noted at all, silently
+// passing whether or not the note-write bug was present).
 func TestReap_OneOff_DirtyWorktree_SessionGone_WorktreeSkipped(t *testing.T) {
 	worktree := "/tmp/reap-wt-13"
 	sessionID := "sess-uuid-13"
@@ -607,6 +684,44 @@ func TestReap_OneOff_DirtyWorktree_SessionGone_WorktreeSkipped(t *testing.T) {
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected worktree removal skipped for a dirty worktree; got %v", remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected NO reaped note when the worktree removal was skipped, not torn down; got %v", noter.noted)
+	}
+}
+
+// (13b, review finding on agent-teams-6hgr.1's own note-write fix) one-off
+// mode's OTHER note-strand path: the worktree removal is ATTEMPTED (unlike
+// (13)'s skip) but the removeWorktree seam itself errors — mirrors scan
+// mode's TestReap_Scan_WorktreeRemoveFailed_NoNote_RetriedNextTick. Session
+// teardown still succeeds (action != "failed"), so gating the note on
+// action alone would wrongly mark this initiative reaped even though its
+// worktree is still sitting on disk, needing manual attention or a retry.
+func TestReap_OneOff_WorktreeRemoveFailed_NoNote(t *testing.T) {
+	worktree := "/tmp/reap-wt-13b"
+	sessionID := "sess-uuid-13b"
+	iss := reapReviewIssue("at-13b", "closed", reapFixedNow, "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc13b", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	remover := fakeWorktreeRemover{err: fmt.Errorf("simulated removal timeout")}
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapShowFakeBD("at-13b", iss), t.TempDir())
+	verb.Target = "at-13b"
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
+		t.Errorf("expected session torn down despite the removal failure; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected removal attempted on the failing seam; got %v", remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected NO reaped note when the worktree removal itself failed; got %v", noter.noted)
 	}
 }
 
@@ -2022,15 +2137,19 @@ func TestReap_Scan_SummaryLine_CorrectCounts(t *testing.T) {
 	}
 
 	verb := &reapKong{
-		Grace:           defaultReapGrace,
-		ScanDeadline:    reapScanSoftDeadlineDefault,
-		Max:             reapScanBatchDefault,
-		agentsFunc:      reapFakeAgents(sessions),
-		now:             func() time.Time { return reapFixedNow },
-		stopSession:     stops.stopFunc(),
-		rmSession:       rms.fn(),
-		removeWorktree:  removeWorktree,
-		worktreeClean:   clean,
+		Grace:          defaultReapGrace,
+		ScanDeadline:   reapScanSoftDeadlineDefault,
+		Max:            reapScanBatchDefault,
+		agentsFunc:     reapFakeAgents(sessions),
+		now:            func() time.Time { return reapFixedNow },
+		stopSession:    stops.stopFunc(),
+		rmSession:      rms.fn(),
+		removeWorktree: removeWorktree,
+		worktreeClean:  clean,
+		worktreeExists: func(worktree string) bool {
+			exists, _, _, _ := clean(worktree)
+			return exists
+		},
 		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
 		noteFunc:        noter.fn(),
 		notifyCtx:       defaultReapNotifyCtx,
