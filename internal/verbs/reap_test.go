@@ -248,8 +248,10 @@ func TestReap_Scan_WithinGraceSkipped(t *testing.T) {
 	}
 }
 
-// (4) already reaped:-noted => skipped, idempotent.
-func TestReap_Scan_AlreadyReapedSkipped(t *testing.T) {
+// (4) already reaped:-noted => re-swept anyway (agent-teams-6hgr.1: the note
+// no longer skips a scan, it only gates the note-write itself) — session and
+// worktree torn down again, but the note is NOT duplicated.
+func TestReap_Scan_AlreadyReapedRevisited_TornDownAgain(t *testing.T) {
 	worktree := "/tmp/reap-wt-4"
 	sessionID := "sess-uuid-4"
 	iss := reapReviewIssue("at-4", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-17T10:00:00Z", worktree, sessionID, "")
@@ -265,8 +267,49 @@ func TestReap_Scan_AlreadyReapedSkipped(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
-		t.Errorf("expected no action on an already-reaped initiative; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	if len(stops.stopped) != 1 || stops.stopped[0] != "abcaaa" {
+		t.Errorf("expected the session torn down despite the existing reaped note; got %v", stops.stopped)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the worktree removed despite the existing reaped note; got %v", remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no duplicate reaped note; got %v", noter.noted)
+	}
+}
+
+// (regression b, agent-teams-6hgr.1) a reopened-then-reclosed initiative: an
+// existing reaped: note from a PRIOR close/reap, but a NEW live session — a
+// different id than anything in the initiative's own Sessions field (which
+// still names the OLD, now-gone session), matched only via its cwd ==
+// f.Worktree — plus the worktree still on disk. A normal non-bulk scan must
+// tear the new session down and remove the worktree anyway; the stale note
+// must never strand either.
+func TestReap_Scan_ReopenedThenReclosed_NewSessionAndWorktreeTornDown(t *testing.T) {
+	worktree := "/tmp/reap-wt-reopen"
+	oldSessionID := "sess-uuid-reopen-old" // named in the initiative's Sessions field; long gone
+	newSessionID := "sess-uuid-reopen-new" // the second run's session; matched only via CWD
+	iss := reapReviewIssue("at-reopen", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-16T09:00:00Z", worktree, oldSessionID, "")
+	sessions := []agentSession{{ID: "abcreopen", SessionID: newSessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || stops.stopped[0] != "abcreopen" {
+		t.Errorf("expected the NEW session torn down despite the old reaped note; got %v", stops.stopped)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the worktree removed despite the old reaped note; got %v", remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no duplicate reaped note; got %v", noter.noted)
 	}
 }
 
@@ -299,9 +342,12 @@ func TestReap_Scan_NoMatchingSession_WorktreeStillRemoved_NoteWritten(t *testing
 	}
 }
 
-// (6) DIRTY worktree => session torn down, worktree removal SKIPPED
-// (never forced), note still written.
-func TestReap_Scan_DirtyWorktree_SessionTornDown_WorktreeSkipped(t *testing.T) {
+// (6) DIRTY worktree, review-shaped => session torn down, worktree FORCE
+// removed regardless (agent-teams-6hgr.1, bug 1 — a review worktree checks
+// out the PR author's branch and never carries changes meant to be pushed
+// from here, so the clean-only gate a normal work worktree needs doesn't
+// apply), journal outcome worktree-removed-forced, note written.
+func TestReap_Scan_DirtyWorktree_ForceRemoved(t *testing.T) {
 	worktree := "/tmp/reap-wt-6"
 	sessionID := "sess-uuid-6"
 	iss := reapReviewIssue("at-6", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
@@ -311,20 +357,24 @@ func TestReap_Scan_DirtyWorktree_SessionTornDown_WorktreeSkipped(t *testing.T) {
 	var rms fakeRm
 	var remover fakeWorktreeRemover
 	var noter fakeNoter
+	home := t.TempDir()
 	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysDirty)
 
-	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
-		t.Errorf("expected session torn down despite dirty worktree; got stops=%v rms=%v", stops.stopped, rms.removed)
+		t.Errorf("expected session torn down; got stops=%v rms=%v", stops.stopped, rms.removed)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected worktree removal skipped for a dirty worktree; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the dirty worktree force-removed; got %v", remover.removed)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
+		t.Errorf("expected journal outcome worktree-removed-forced; got %q", got)
 	}
 	if len(noter.noted) != 1 || noter.noted[0] != "at-6" {
-		t.Errorf("expected reaped note written despite dirty-worktree skip; got %v", noter.noted)
+		t.Errorf("expected reaped note written; got %v", noter.noted)
 	}
 }
 
@@ -622,8 +672,10 @@ func TestReap_Bulk_RemovesReapedButPresentWorktree_NoDuplicateNote(t *testing.T)
 }
 
 // (20) The same already-reaped-but-present initiative, run WITHOUT --bulk,
-// stays untouched — confirms bulk mode is additive, never the default.
-func TestReap_NoBulk_AlreadyReapedPresentWorktree_StillSkipped(t *testing.T) {
+// is now ALSO removed (agent-teams-6hgr.1: re-eligibility is no longer
+// --bulk-only) — a leftover worktree a prior scan left behind is cleaned up
+// on the very next normal tick, not just a human-invoked drain.
+func TestReap_NoBulk_AlreadyReapedPresentWorktree_StillRemoved(t *testing.T) {
 	worktree := "/tmp/reap-wt-20"
 	iss := reapReviewIssue("at-20", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-16T10:00:00Z", worktree, "sess-uuid-20", "")
 
@@ -637,8 +689,11 @@ func TestReap_NoBulk_AlreadyReapedPresentWorktree_StillSkipped(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected the leftover worktree left alone without --bulk; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the leftover worktree removed even without --bulk; got %v", remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no duplicate reaped note; got %v", noter.noted)
 	}
 }
 
@@ -748,13 +803,24 @@ func TestReap_BulkOrDryRun_WithTarget_Errors(t *testing.T) {
 	}
 }
 
-// ── bulk gh-verify override (Option C) ──────────────────────────────────────
+// ── bulk gh-verify override (Option C) — SUPERSEDED for review-shaped issues ──
 // A checked-out review-pr worktree with no uncommitted changes, but whose
 // HEAD carries commits absent from every local remote-tracking ref
-// (worktreeClean's wtUnpushed), is a false positive when its PR branch was
-// deleted on GitHub after merge — GitHub still has the commit, only the
-// local tracking ref was pruned. --bulk alone may verify this via gh and
-// remove the worktree anyway; every other mode/status always skips.
+// (worktreeClean's wtUnpushed), used to be a false positive --bulk alone
+// could verify via gh and remove anyway, on the theory its PR branch was
+// deleted on GitHub after merge, pruning the local tracking ref — see
+// bulkGHVerifyRemovable's doc comment.
+//
+// agent-teams-6hgr.1 supersedes this override for every issue
+// reapGHVerifyIssue below builds (review-shaped, prURL non-empty):
+// removeWorktreeIfClean now force-removes a review-shaped worktree
+// unconditionally, so this override never fires in production any more —
+// --bulk is scan-mode-only, and scan-mode's prURL is never empty for
+// anything reaching removeWorktreeIfClean. The tests below now assert that
+// supersession (force-removed, gh never called) rather than the old
+// skip-unless-gh-verified behavior; the underlying now-dead machinery
+// itself is removed by the follow-up cleanup bead agent-teams-6hgr.3, not
+// here.
 
 // reapGHVerifyIssue is reapReviewIssue with a fixed worktree/session so every
 // gh-verify test below shares the same owner/repo (from reapReviewIssue's
@@ -768,10 +834,10 @@ func reapGHVerifyIssue(id string) (bd.Issue, []agentSession) {
 	return iss, sessions
 }
 
-// (25) bulk + porcelain-clean + unpushed + gh HAS the commit => removed, and
-// the gh-verify seam is called exactly once with the initiative's owner/repo
-// and resolved HEAD sha.
-func TestReap_Bulk_UnpushedWorktree_GHHasCommit_Removed(t *testing.T) {
+// (25) bulk + porcelain-clean + unpushed, review-shaped => force-removed
+// directly; the gh-verify seam is now dead for this case (agent-teams-6hgr.1)
+// and is never called.
+func TestReap_Bulk_UnpushedWorktree_ForceRemovedWithoutGH(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh25")
 
 	var stops fakeStops
@@ -788,16 +854,18 @@ func TestReap_Bulk_UnpushedWorktree_GHHasCommit_Removed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh25" {
-		t.Errorf("expected the gh-verified worktree removed; got %v", remover.removed)
+		t.Errorf("expected the worktree force-removed; got %v", remover.removed)
 	}
-	if len(fakeGH.calls) != 1 || fakeGH.calls[0] != [2]string{"owner/repo", "deadbeefcafef00d"} {
-		t.Errorf("expected exactly one gh-verify call for owner/repo@deadbeefcafef00d; got %v", fakeGH.calls)
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called (superseded by force-remove); got %v", fakeGH.calls)
 	}
 }
 
-// (26) bulk + porcelain-clean + unpushed + gh reports the commit MISSING =>
-// skipped: no proof, no removal.
-func TestReap_Bulk_UnpushedWorktree_GHMissing_Skipped(t *testing.T) {
+// (26) bulk + porcelain-clean + unpushed, review-shaped => force-removed
+// even though gh would have reported the commit missing — gh is never
+// consulted at all (agent-teams-6hgr.1 supersedes the old skip-unless-
+// verified behavior for a review-shaped worktree).
+func TestReap_Bulk_UnpushedWorktree_ForceRemovedDespiteGHMissing(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh26")
 
 	var stops fakeStops
@@ -813,17 +881,17 @@ func TestReap_Bulk_UnpushedWorktree_GHMissing_Skipped(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected no removal when gh reports the commit missing; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh26" {
+		t.Errorf("expected the worktree force-removed despite gh reporting the commit missing; got %v", remover.removed)
 	}
-	if len(fakeGH.calls) != 1 {
-		t.Errorf("expected the gh-verify seam still called exactly once; got %v", fakeGH.calls)
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
 	}
 }
 
-// (27) bulk + porcelain-clean + unpushed + the gh call itself ERRORS =>
-// skipped — inconclusive always protects, same as a missing commit.
-func TestReap_Bulk_UnpushedWorktree_GHErrors_Skipped(t *testing.T) {
+// (27) bulk + porcelain-clean + unpushed, review-shaped => force-removed
+// even though the gh call itself would error — gh is never consulted.
+func TestReap_Bulk_UnpushedWorktree_ForceRemovedDespiteGHError(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh27")
 
 	var stops fakeStops
@@ -839,15 +907,21 @@ func TestReap_Bulk_UnpushedWorktree_GHErrors_Skipped(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected no removal when the gh call itself errors; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh27" {
+		t.Errorf("expected the worktree force-removed despite a gh error; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
 	}
 }
 
-// (28) bulk + porcelain-DIRTY (real uncommitted/untracked changes), even with
-// gh ready to report the commit present => skipped, and the gh seam is NEVER
-// called: working-tree changes always win over any gh-verify override.
-func TestReap_Bulk_DirtyWorktree_NeverGHOverridden(t *testing.T) {
+// (28) bulk + porcelain-DIRTY (real uncommitted/untracked changes),
+// review-shaped => force-removed regardless — even genuine dirt is
+// force-removed for a review-shaped worktree (agent-teams-6hgr.1, bug 1's
+// "remove regardless of dirty/clean" design decision applies to real dirt
+// too, not just wtUnpushed/wtDirtyRecoverable) — and the gh seam is never
+// called.
+func TestReap_Bulk_DirtyWorktree_ForceRemovedWithoutGH(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh28")
 
 	var stops fakeStops
@@ -863,18 +937,18 @@ func TestReap_Bulk_DirtyWorktree_NeverGHOverridden(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected a dirty worktree never removed, gh notwithstanding; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh28" {
+		t.Errorf("expected the dirty worktree force-removed; got %v", remover.removed)
 	}
 	if len(fakeGH.calls) != 0 {
-		t.Errorf("expected the gh-verify seam never called for a dirty worktree; got %v", fakeGH.calls)
+		t.Errorf("expected the gh-verify seam never called for a review-shaped worktree; got %v", fakeGH.calls)
 	}
 }
 
-// (29) the identical unpushed worktree WITHOUT --bulk => skipped, and the
-// gh-verify seam is NEVER called — the steady-state (non-bulk) gate is
-// unchanged by this override.
-func TestReap_NoBulk_UnpushedWorktree_GHNeverCalled(t *testing.T) {
+// (29) the identical unpushed worktree WITHOUT --bulk => force-removed too —
+// the force-remove-review rule (agent-teams-6hgr.1) applies regardless of
+// --bulk, and the gh-verify seam is NEVER called.
+func TestReap_NoBulk_UnpushedWorktree_ForceRemoved_GHNeverCalled(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh29")
 
 	var stops fakeStops
@@ -889,11 +963,11 @@ func TestReap_NoBulk_UnpushedWorktree_GHNeverCalled(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected no removal without --bulk; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh29" {
+		t.Errorf("expected the worktree force-removed without --bulk; got %v", remover.removed)
 	}
 	if len(fakeGH.calls) != 0 {
-		t.Errorf("expected the gh-verify seam never called outside --bulk; got %v", fakeGH.calls)
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
 	}
 }
 
@@ -923,20 +997,24 @@ func TestReap_Bulk_AlreadyCleanWorktree_RemovedWithoutGH(t *testing.T) {
 	}
 }
 
-// ── bulk gh-verify override for deletion-corpse worktrees (agent-teams-442q.11) ──
+// ── bulk gh-verify override for deletion-corpse worktrees (agent-teams-442q.11) — SUPERSEDED for review-shaped issues ──
 // A worktree killed mid `git worktree remove` (wtDirtyRecoverable — porcelain
 // non-empty but every change is a pure tracked-file deletion, HEAD intact)
-// gets the identical --bulk-only gh-verify override as wtUnpushed above:
-// every "missing" file is still in HEAD, so proving HEAD is on GitHub proves
-// nothing is lost by finishing the removal.
+// used to get the identical --bulk-only gh-verify override as wtUnpushed
+// above. agent-teams-6hgr.1 supersedes this override for every issue
+// reapGHVerifyIssue below builds (review-shaped): removeWorktreeIfClean now
+// force-removes a review-shaped worktree unconditionally, so this override
+// never fires in production any more. The tests below assert that
+// supersession (force-removed, gh never called, outcome
+// "worktree-removed-forced") rather than the old gh-verify behavior; the
+// underlying now-dead machinery itself is removed by the follow-up cleanup
+// bead agent-teams-6hgr.3, not here.
 
-// (31) bulk + deletion-corpse (wtDirtyRecoverable) + gh HAS the commit =>
-// removed with journal outcome "worktree-removed-corpse-gh-verified" —
-// distinct from wtUnpushed's "worktree-removed-gh-verified" so the journal
-// can tell which override path fired (agent-teams-442q.14/Finding 2) — and
-// the gh-verify seam is called exactly once with the initiative's owner/repo
-// and resolved HEAD sha.
-func TestReap_Bulk_DirtyRecoverableWorktree_GHHasCommit_Removed(t *testing.T) {
+// (31) bulk + deletion-corpse (wtDirtyRecoverable), review-shaped =>
+// force-removed directly with journal outcome "worktree-removed-forced" —
+// the gh-verify seam is now dead for this case (agent-teams-6hgr.1) and is
+// never called.
+func TestReap_Bulk_DirtyRecoverableWorktree_ForceRemovedWithoutGH(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh31")
 	home := t.TempDir()
 
@@ -954,19 +1032,19 @@ func TestReap_Bulk_DirtyRecoverableWorktree_GHHasCommit_Removed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh31" {
-		t.Errorf("expected the gh-verified deletion-corpse worktree removed; got %v", remover.removed)
+		t.Errorf("expected the deletion-corpse worktree force-removed; got %v", remover.removed)
 	}
-	if len(fakeGH.calls) != 1 || fakeGH.calls[0] != [2]string{"owner/repo", "deadbeefcafef00d"} {
-		t.Errorf("expected exactly one gh-verify call for owner/repo@deadbeefcafef00d; got %v", fakeGH.calls)
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called (superseded by force-remove); got %v", fakeGH.calls)
 	}
-	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-corpse-gh-verified" {
-		t.Errorf("expected journal outcome worktree-removed-corpse-gh-verified; got %q", got)
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
+		t.Errorf("expected journal outcome worktree-removed-forced; got %q", got)
 	}
 }
 
-// (32) bulk + deletion-corpse + gh reports the commit MISSING => skipped, no
-// removal, journal outcome worktree-dirty-skipped.
-func TestReap_Bulk_DirtyRecoverableWorktree_GHMissing_Skipped(t *testing.T) {
+// (32) bulk + deletion-corpse, review-shaped => force-removed even though gh
+// would have reported the commit missing — gh is never consulted.
+func TestReap_Bulk_DirtyRecoverableWorktree_ForceRemovedDespiteGHMissing(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh32")
 	home := t.TempDir()
 
@@ -983,21 +1061,21 @@ func TestReap_Bulk_DirtyRecoverableWorktree_GHMissing_Skipped(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected no removal when gh reports the commit missing; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh32" {
+		t.Errorf("expected the worktree force-removed despite gh reporting the commit missing; got %v", remover.removed)
 	}
-	if len(fakeGH.calls) != 1 {
-		t.Errorf("expected the gh-verify seam still called exactly once; got %v", fakeGH.calls)
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
 	}
-	if got := lastReapJournalOutcome(t, home); got != "worktree-dirty-skipped" {
-		t.Errorf("expected journal outcome worktree-dirty-skipped; got %q", got)
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
+		t.Errorf("expected journal outcome worktree-removed-forced; got %q", got)
 	}
 }
 
-// (33) the identical deletion-corpse worktree WITHOUT --bulk => skipped, and
-// the gh-verify seam is NEVER called — steady-state is unchanged by this
-// override, exactly like wtUnpushed's non-bulk case above.
-func TestReap_NoBulk_DirtyRecoverableWorktree_Skipped(t *testing.T) {
+// (33) the identical deletion-corpse worktree WITHOUT --bulk => force-removed
+// too — the force-remove-review rule applies regardless of --bulk, and the
+// gh-verify seam is NEVER called.
+func TestReap_NoBulk_DirtyRecoverableWorktree_ForceRemoved(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh33")
 	home := t.TempDir()
 
@@ -1013,27 +1091,24 @@ func TestReap_NoBulk_DirtyRecoverableWorktree_Skipped(t *testing.T) {
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(remover.removed) != 0 {
-		t.Errorf("expected no removal without --bulk; got %v", remover.removed)
+	if len(remover.removed) != 1 || remover.removed[0] != "/tmp/reap-wt-gh33" {
+		t.Errorf("expected the worktree force-removed without --bulk; got %v", remover.removed)
 	}
 	if len(fakeGH.calls) != 0 {
-		t.Errorf("expected the gh-verify seam never called outside --bulk; got %v", fakeGH.calls)
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
 	}
-	if got := lastReapJournalOutcome(t, home); got != "worktree-dirty-skipped" {
-		t.Errorf("expected journal outcome worktree-dirty-skipped; got %q", got)
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
+		t.Errorf("expected journal outcome worktree-removed-forced; got %q", got)
 	}
 }
 
-// (34) bulk + --dry-run + deletion-corpse (wtDirtyRecoverable) + gh HAS the
-// commit => the preview reports "worktree-would-remove-corpse-gh-verified",
-// proving --dry-run's read-only path (previewWorktreeOutcome) reflects the
-// same override removeWorktreeIfClean applies for real — agent-teams-442q.12,
-// the gap the .11 gh-verify override left behind (previewWorktreeOutcome's
-// switch fell through wtDirtyRecoverable to its wtDirty default, so a
-// bulk --dry-run used to under-report a reclaimable deletion corpse as
-// staying dirty) — and the corpse-specific string (agent-teams-442q.14/
-// Finding 2) rather than wtUnpushed's "worktree-would-remove-gh-verified".
-func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHHasCommit_WouldRemove(t *testing.T) {
+// (34) bulk + --dry-run + deletion-corpse (wtDirtyRecoverable), review-shaped
+// => the preview reports "worktree-would-remove-forced", proving --dry-run's
+// read-only path (previewWorktreeOutcome) reflects the same force-remove
+// rule removeWorktreeIfClean applies for real (agent-teams-6hgr.1) — and the
+// gh-verify seam is never consulted, superseding the old
+// "worktree-would-remove-corpse-gh-verified" preview.
+func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_WouldForceRemove(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh34")
 
 	var stops fakeStops
@@ -1050,18 +1125,21 @@ func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHHasCommit_WouldRemove(t *te
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "worktree-would-remove-corpse-gh-verified") {
-		t.Errorf("expected the dry-run preview to report worktree-would-remove-corpse-gh-verified; got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "worktree-would-remove-forced") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove-forced; got %q", stderr.String())
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
 	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
+	}
 }
 
-// (35) bulk + --dry-run + deletion-corpse + gh reports the commit MISSING =>
-// the preview still reports "worktree-dirty-skipped" — inconclusive always
-// protects, dry-run included.
-func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHMissing_StaysSkipped(t *testing.T) {
+// (35) bulk + --dry-run + deletion-corpse, review-shaped, gh reports the
+// commit MISSING => the preview still reports "worktree-would-remove-forced"
+// — the force-remove rule doesn't consult gh at all, dry-run included.
+func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_WouldForceRemoveDespiteGHMissing(t *testing.T) {
 	iss, sessions := reapGHVerifyIssue("gh35")
 
 	var stops fakeStops
@@ -1078,11 +1156,14 @@ func TestReap_Bulk_DryRun_DirtyRecoverableWorktree_GHMissing_StaysSkipped(t *tes
 	if err := verb.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "worktree-dirty-skipped") {
-		t.Errorf("expected the dry-run preview to report worktree-dirty-skipped; got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "worktree-would-remove-forced") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove-forced; got %q", stderr.String())
 	}
 	if len(remover.removed) != 0 {
 		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
+	}
+	if len(fakeGH.calls) != 0 {
+		t.Errorf("expected the gh-verify seam never called; got %v", fakeGH.calls)
 	}
 }
 
@@ -1172,6 +1253,61 @@ func TestReap_Scan_RemoveWorktreeFails_DistinctOutcome(t *testing.T) {
 	}
 	if got := lastReapJournalOutcome(t, home); got != "worktree-remove-failed" {
 		t.Errorf("expected journal outcome worktree-remove-failed; got %q", got)
+	}
+}
+
+// (39, agent-teams-6hgr.1) a failed worktree removal must never get the
+// reaped: note — session teardown alone (action != "failed") is not enough;
+// the worktree must also be verifiably gone. Otherwise the note strands the
+// leftover worktree forever, since bug 2's re-eligibility fix only helps an
+// UN-noted initiative (an already-reaped one is still revisited, but a
+// production build that treats "noted" as "done" would never retry it). A
+// second tick, with the removal seam now working, must complete teardown
+// and only then write the note.
+func TestReap_Scan_WorktreeRemoveFailed_NoNote_RetriedNextTick(t *testing.T) {
+	worktree := "/tmp/reap-wt-retry"
+	sessionID := "sess-uuid-retry"
+	iss := reapReviewIssue("at-retry", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abcretry", SessionID: sessionID, CWD: worktree}}
+
+	// Tick 1: session teardown succeeds, but removal fails.
+	var stops1 fakeStops
+	var rms1 fakeRm
+	remover1 := fakeWorktreeRemover{err: fmt.Errorf("simulated removal timeout")}
+	var noter1 fakeNoter
+	verb1 := newReapVerb(sessions, &stops1, &rms1, &remover1, &noter1, alwaysClean)
+
+	home := t.TempDir()
+	ctx1, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb1.Run(ctx1); err != nil {
+		t.Fatalf("tick 1: unexpected error: %v", err)
+	}
+	if len(stops1.stopped) != 1 || stops1.stopped[0] != "abcretry" {
+		t.Errorf("tick 1: expected the session torn down; got %v", stops1.stopped)
+	}
+	if len(remover1.removed) != 1 || remover1.removed[0] != worktree {
+		t.Errorf("tick 1: expected removal attempted; got %v", remover1.removed)
+	}
+	if len(noter1.noted) != 0 {
+		t.Errorf("tick 1: expected NO reaped note when removal fails; got %v", noter1.noted)
+	}
+
+	// Tick 2: same un-noted issue, removal now succeeds.
+	var stops2 fakeStops
+	var rms2 fakeRm
+	var remover2 fakeWorktreeRemover
+	var noter2 fakeNoter
+	verb2 := newReapVerb(sessions, &stops2, &rms2, &remover2, &noter2, alwaysClean)
+
+	ctx2, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb2.Run(ctx2); err != nil {
+		t.Fatalf("tick 2: unexpected error: %v", err)
+	}
+	if len(remover2.removed) != 1 || remover2.removed[0] != worktree {
+		t.Errorf("tick 2: expected the retried removal to succeed; got %v", remover2.removed)
+	}
+	if len(noter2.noted) != 1 || noter2.noted[0] != "at-retry" {
+		t.Errorf("tick 2: expected the reaped note written once teardown fully completes; got %v", noter2.noted)
 	}
 }
 
@@ -1830,5 +1966,89 @@ func TestReap_Scan_ListClosedFails(t *testing.T) {
 	}
 	if len(stops.stopped) != 0 || len(rms.removed) != 0 || len(remover.removed) != 0 || len(noter.noted) != 0 {
 		t.Errorf("expected no teardown action on a whole-scan failure; got stops=%v rms=%v remover=%v noter=%v", stops.stopped, rms.removed, remover.removed, noter.noted)
+	}
+}
+
+// ── end-of-scan summary line (agent-teams-6hgr.1) ───────────────────────────
+
+// TestReap_Scan_SummaryLine_CorrectCounts builds one closed initiative per
+// distinct outcome the summary aggregates, then asserts the single printed
+// "reap: scan summary — ..." line — always printed, --dry-run/--bulk or not
+// — carries the exact counts feeding it (agent-teams-6hgr.5 depends on this
+// line's shape to surface it in pr-shepherd's logs).
+func TestReap_Scan_SummaryLine_CorrectCounts(t *testing.T) {
+	wtRemoved := "/tmp/reap-wt-sum-1" // clean => worktree-removed
+	wtForced := "/tmp/reap-wt-sum-2"  // dirty + already-reaped => worktree-removed-forced, revisited
+	wtAbsent := "/tmp/reap-wt-sum-3"  // absent => worktree-absent, no matching session
+	wtFailed := "/tmp/reap-wt-sum-4"  // clean, but removal itself errors => worktree-remove-failed
+
+	issues := []bd.Issue{
+		reapReviewIssue("at-sum-1", "closed", reapFixedNow.Add(-time.Hour), "", wtRemoved, "sess-sum-1", ""),
+		reapReviewIssue("at-sum-2", "closed", reapFixedNow.Add(-time.Hour), "reaped: 2026-09-16T09:00:00Z", wtForced, "sess-sum-2", ""),
+		reapReviewIssue("at-sum-3", "closed", reapFixedNow.Add(-time.Hour), "", wtAbsent, "sess-sum-3-unused", ""),
+		reapReviewIssue("at-sum-4", "closed", reapFixedNow.Add(-time.Hour), "", wtFailed, "sess-sum-4", ""),
+		reapReviewIssue("at-sum-5", "closed", reapFixedNow.Add(-5*time.Minute), "", "/tmp/reap-wt-sum-5", "sess-sum-5", ""), // within grace
+		reapReviewIssue("at-sum-6", "closed", reapFixedNow.Add(-time.Hour), "", "/tmp/reap-wt-sum-6", "sess-sum-6", "codex"),
+	}
+	sessions := []agentSession{
+		{ID: "abc-sum-1", SessionID: "sess-sum-1", CWD: wtRemoved},
+		{ID: "abc-sum-2", SessionID: "sess-sum-2", CWD: wtForced},
+		// at-sum-3 has no matching live session at all.
+		{ID: "abc-sum-4", SessionID: "sess-sum-4", CWD: wtFailed},
+	}
+
+	// worktreeClean dispatches per-path: absent for wtAbsent, dirty for
+	// wtForced, clean for everything else (wtRemoved and wtFailed alike —
+	// wtFailed's failure comes from the removeWorktree seam, not its status).
+	clean := func(worktree string) (bool, worktreeGitStatus, string, error) {
+		switch worktree {
+		case wtAbsent:
+			return false, wtClean, "", nil
+		case wtForced:
+			return true, wtDirty, "", nil
+		default:
+			return true, wtClean, "", nil
+		}
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var noter fakeNoter
+	removeWorktree := func(worktree string, timeout time.Duration) error {
+		if worktree == wtFailed {
+			return fmt.Errorf("simulated removal timeout")
+		}
+		return nil
+	}
+
+	verb := &reapKong{
+		Grace:           defaultReapGrace,
+		ScanDeadline:    reapScanSoftDeadlineDefault,
+		Max:             reapScanBatchDefault,
+		agentsFunc:      reapFakeAgents(sessions),
+		now:             func() time.Time { return reapFixedNow },
+		stopSession:     stops.stopFunc(),
+		rmSession:       rms.fn(),
+		removeWorktree:  removeWorktree,
+		worktreeClean:   clean,
+		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
+		noteFunc:        noter.fn(),
+		notifyCtx:       defaultReapNotifyCtx,
+	}
+
+	ctx, stdout, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "reap: scan summary — review=6 processed=4 already-reaped-revisited=1 sessions-torn-down=3 worktrees-removed=2 worktrees-already-gone=1 worktrees-skipped=0 worktrees-failed=1 grace-skipped=1 codex-skipped=1"
+	if !strings.Contains(stdout.String(), want) {
+		t.Errorf("expected summary line %q; got stdout %q", want, stdout.String())
+	}
+
+	// Sanity-check the counts against the fakes directly, so a wrong summary
+	// formula can't coincidentally match a wrong set of side effects.
+	if len(noter.noted) != 2 {
+		t.Errorf("expected exactly 2 reaped notes (at-sum-1, at-sum-3 — at-sum-2 already noted, at-sum-4 failed); got %v", noter.noted)
 	}
 }

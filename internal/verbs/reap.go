@@ -7,11 +7,22 @@
 // modes, selected by the optional positional target:
 //
 //   - SCAN mode (no target): what pr-shepherd calls every tick. Enumerates
-//     CLOSED initiatives, applies the review-shape / grace / already-reaped
-//     gates, and tears down each survivor (session + clean-only worktree
-//     removal). Gating trusts the initiative's own closed state — reap never
-//     probes session status or liveness itself (contract: agent-teams-sbh8.15,
-//     "trust the initiative state").
+//     CLOSED initiatives, applies the review-shape / grace gates, and tears
+//     down each survivor (session + worktree removal). A review-shaped
+//     worktree is force-removed regardless of its git dirty/unpushed state —
+//     it checks out the PR author's branch and never carries changes meant
+//     to be pushed from here, so the clean-only gating a normal work
+//     worktree needs doesn't apply (contract: agent-teams-sbh8.1, superseded
+//     2026-09-23 — see its SUPERSEDED-BY note; agent-teams-6hgr.1). An
+//     already-reaped initiative (a durable "reaped:" bd note) is NOT
+//     skipped: it is re-swept every tick like any other survivor, so a
+//     leftover worktree a prior scan left behind, or a reopened-then-
+//     reclosed initiative's new session, is retried until its teardown
+//     actually completes — the note only prevents a DUPLICATE note being
+//     written, never a repeat sweep (agent-teams-6hgr.1, replacing the old
+//     write-once-skip). Gating trusts the initiative's own closed state —
+//     reap never probes session status or liveness itself (contract:
+//     agent-teams-sbh8.15, "trust the initiative state").
 //   - ONE-OFF mode (a target given): reaps exactly that one target right now,
 //     bypassing every gate — an explicit human action, not necessarily a
 //     review-pr one.
@@ -238,11 +249,84 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 //
 // scanCtx is checked before starting each survivor's teardown, alongside the
 // wall-clock soft deadline and batch bound: once any of the three trips, the
-// loop stops STARTING new work and returns — the survivor already in flight
-// finishes (each of its own subprocess calls is separately bounded by
-// runBoundedClaude), but no further one starts. This is what lets one tick
-// exit cleanly under pr-shepherd's 30s hard budget no matter how large the
-// backlog is, leaving the rest for the next tick.
+// loop stops STARTING new work and falls through to the end-of-scan summary
+// print — the survivor already in flight finishes (each of its own
+// subprocess calls is separately bounded by runBoundedClaude), but no
+// further one starts. This is what lets one tick exit cleanly under
+// pr-shepherd's 30s hard budget no matter how large the backlog is, leaving
+// the rest for the next tick.
+//
+// Prints one end-of-scan summary line to ctx.Stdout unconditionally (Eric,
+// 2026-09-23) — the human-visible aggregate of the per-initiative outcomes
+// already journaled to reap-journal.jsonl, which is what pr-shepherd
+// surfaces in its own logs (the log-level change making it visible there is
+// a separate bead, agent-teams-6hgr.5). Printed on every exit path,
+// including the three early-stop cases above and dry-run — never gated
+// behind --dry-run or --bulk.
+// reapScanSummary aggregates one scan tick's per-initiative outcomes into
+// the single end-of-scan summary line runScan prints to ctx.Stdout (Eric,
+// 2026-09-23) — the human-visible complement to the per-attempt entries
+// already appended to reap-journal.jsonl, and what pr-shepherd surfaces in
+// its own logs (agent-teams-6hgr.5 makes that visible; this struct is the
+// reap.go half). Counts are populated by recordPreview (--dry-run: no real
+// teardown happened) or recordReal (a real attempt was made), never both for
+// the same survivor.
+type reapScanSummary struct {
+	reviewInitiatives      int // every review-shaped issue this tick saw, before any gate
+	graceSkipped           int // skip-grace: not yet past c.Grace
+	badClosedAt            int // skip-bad-closedat: closed_at missing/unparseable
+	codexSkipped           int // skip-codex-ring1: codex teardown not implemented here
+	processed              int // reached a real or previewed teardown attempt
+	alreadyReapedRevisited int // of processed, already carried a reaped: note
+	sessionsTornDown       int // session action == "reaped" (real teardown only)
+	worktreesRemoved       int // worktree outcome is a "removed" variant (real only)
+	worktreesAlreadyGone   int // worktree outcome == worktree-absent (real only)
+	worktreesSkipped       int // worktree outcome == worktree-dirty-skipped (real only)
+	worktreesFailed        int // worktree outcome == worktree-remove-failed (real only)
+}
+
+// recordPreview tallies one --dry-run survivor: only processed/
+// alreadyReapedRevisited move, since a preview never touches a session or a
+// worktree.
+func (s *reapScanSummary) recordPreview(alreadyReaped bool) {
+	s.processed++
+	if alreadyReaped {
+		s.alreadyReapedRevisited++
+	}
+}
+
+// recordReal tallies one real (non-dry-run) survivor's actual teardown
+// outcome — action from teardownClaudeSession, wtOutcome from
+// removeWorktreeIfClean.
+func (s *reapScanSummary) recordReal(alreadyReaped bool, action, wtOutcome string) {
+	s.processed++
+	if alreadyReaped {
+		s.alreadyReapedRevisited++
+	}
+	if action == "reaped" {
+		s.sessionsTornDown++
+	}
+	switch wtOutcome {
+	case "worktree-removed", "worktree-removed-forced", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified":
+		s.worktreesRemoved++
+	case "worktree-absent":
+		s.worktreesAlreadyGone++
+	case "worktree-dirty-skipped":
+		s.worktreesSkipped++
+	case "worktree-remove-failed":
+		s.worktreesFailed++
+	}
+}
+
+// String renders the one-line, stable/parseable-ish summary runScan prints
+// at the end of every scan tick.
+func (s reapScanSummary) String() string {
+	return fmt.Sprintf(
+		"review=%d processed=%d already-reaped-revisited=%d sessions-torn-down=%d worktrees-removed=%d worktrees-already-gone=%d worktrees-skipped=%d worktrees-failed=%d grace-skipped=%d codex-skipped=%d",
+		s.reviewInitiatives, s.processed, s.alreadyReapedRevisited, s.sessionsTornDown, s.worktreesRemoved, s.worktreesAlreadyGone, s.worktreesSkipped, s.worktreesFailed, s.graceSkipped, s.codexSkipped,
+	)
+}
+
 func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=closed", "--json"); err != nil {
@@ -274,28 +358,28 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 
 	scanStart := time.Now()
 	var reaped int
+	var summary reapScanSummary
 
 	for _, iss := range issues {
 		prURL, ok := initiative.ReviewPRURL(iss)
 		if !ok {
 			continue // not review-shaped: untouched, never reap's concern
 		}
+		summary.reviewInitiatives++
 		f := initiative.Of(iss)
 		if f.Runtime == "codex" {
+			summary.codexSkipped++
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-codex-ring1", "")
 			continue // Ring 1: codex teardown is not implemented by this verb
 		}
-		// In bulk mode ONLY, an already-reaped initiative is not skipped
-		// outright: a prior scan may have torn down its session but left a
-		// clean worktree on disk (the plain gate below never re-visits a
-		// noted initiative). alreadyReaped gates the note-write below so
-		// it stays a write-once note even though this sweep can revisit the
-		// same initiative on every bulk run until its worktree is finally
-		// gone.
+		// alreadyReaped no longer skips this initiative (agent-teams-6hgr.1
+		// — a durable note used to be the SOLE gate keeping a scan from
+		// ever revisiting an initiative, which stranded a leftover worktree
+		// or a reopened-then-reclosed session's new session behind it
+		// forever). It still gates the note-write below to write-once: a
+		// re-swept initiative that already has a note never gets a
+		// duplicate one.
 		alreadyReaped := hasReapedNote(iss.Notes)
-		if alreadyReaped && !c.Bulk {
-			continue // already reaped: at-most-once, no repeat gh probe
-		}
 
 		closedAt, err := time.Parse(time.RFC3339, iss.ClosedAt)
 		if iss.ClosedAt == "" || err != nil {
@@ -303,27 +387,36 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			// permanently stuck (closed_at will never become parseable on a
 			// later tick), whereas "skip-grace" self-resolves.
 			fmt.Fprintf(ctx.Stderr, "reap: %s: closed_at missing or unparseable (%q), skipping\n", iss.ID, iss.ClosedAt)
+			summary.badClosedAt++
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-bad-closedat", "")
 			continue
 		}
 		if now.Sub(closedAt) < c.Grace {
+			summary.graceSkipped++
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", "skip-grace", "")
 			continue
 		}
 
 		// Soft budget check, right before the expensive part (teardown):
 		// skip-only iterations above never cost meaningful wall-clock time,
-		// so they don't count against it.
+		// so they don't count against it. A trip here stops STARTING new
+		// survivors but falls through to the end-of-scan summary print
+		// below rather than returning directly, so every exit path reports
+		// what the tick actually did.
+		stop := false
 		select {
 		case <-scanCtx.Done():
-			return nil
+			stop = true
 		default:
 		}
-		if c.ScanDeadline > 0 && time.Since(scanStart) >= c.ScanDeadline {
-			return nil
+		if !stop && c.ScanDeadline > 0 && time.Since(scanStart) >= c.ScanDeadline {
+			stop = true
 		}
-		if c.Max > 0 && reaped >= c.Max {
-			return nil
+		if !stop && c.Max > 0 && reaped >= c.Max {
+			stop = true
+		}
+		if stop {
+			break
 		}
 
 		if c.DryRun {
@@ -332,6 +425,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			sessOutcome := c.previewSessionOutcome(sessions, sessErr, matchInitiativeSession(f), callerID)
 			wtOutcome := c.previewWorktreeOutcome(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
 			processed++
+			summary.recordPreview(alreadyReaped)
 			if c.Bulk {
 				fmt.Fprintf(ctx.Stderr, "reap --bulk --dry-run: [%d/%d] %s session=%s worktree=%s (%s)\n", processed, total, iss.ID, sessOutcome, wtOutcome, f.Worktree)
 			}
@@ -341,15 +435,21 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
 		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
 		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
+		summary.recordReal(alreadyReaped, action, wtOutcome)
 
 		if action != "failed" {
-			// Written after teardown (or when the session was already gone,
-			// action=="no-session") — never on a genuine teardown failure,
-			// so a failing stop/rm is retried on the next tick rather than
-			// silently marked done. Skipped when alreadyReaped: the note is
-			// write-once, so a bulk re-sweep that only finishes removing a
+			// Written only on FULL teardown success: the session action
+			// didn't fail AND the worktree is actually gone — removed just
+			// now, or already absent (worktreeTornDown). A
+			// worktree-remove-failed, dirty-skipped, unknown, or
+			// skipped-caller-cwd outcome withholds the note so this
+			// initiative is retried next tick instead of silently marked
+			// done (agent-teams-6hgr.1, bug 2a — a worktree-remove-failed
+			// outcome used to get noted anyway whenever the session action
+			// alone hadn't failed). Skipped when alreadyReaped: the note is
+			// write-once, so a re-sweep that only finishes removing a
 			// leftover worktree never appends a duplicate.
-			if !alreadyReaped {
+			if worktreeTornDown(wtOutcome) && !alreadyReaped {
 				if err := c.noteFunc(ctx, iss.ID, now); err != nil {
 					fmt.Fprintf(ctx.Stderr, "reap: %s: write reaped note: %v\n", iss.ID, err)
 				}
@@ -366,6 +466,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	if c.Bulk {
 		fmt.Fprintf(ctx.Stderr, "reap --bulk: done — %d/%d processed\n", processed, total)
 	}
+	fmt.Fprintf(ctx.Stdout, "reap: scan summary — %s\n", summary.String())
 	return nil
 }
 
@@ -425,18 +526,25 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 
 // previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
 // would do without touching disk — the same outcome vocabulary, substituting
-// "worktree-would-remove"/"worktree-would-remove-gh-verified"/
-// "worktree-would-remove-corpse-gh-verified" for the mutating
-// "worktree-removed"/"worktree-removed-gh-verified"/
-// "worktree-removed-corpse-gh-verified" (--dry-run never attempts a removal,
-// so it never reports worktree-remove-failed either). prURL is the
-// initiative's own review PR URL (empty in one-off mode, which never sets
-// c.Bulk); it is only consulted for the bulk gh-verify override, when
-// worktreeClean reports wtUnpushed or wtDirtyRecoverable — the same two
-// statuses removeWorktreeIfClean itself overrides (agent-teams-442q.11),
-// kept as separate outcome strings per status (agent-teams-442q.14/Finding
-// 2) so a dry-run preview distinguishes a reclaimable deletion corpse from a
-// reclaimable stale-remote-ref worktree exactly like the real run does.
+// "worktree-would-remove"/"worktree-would-remove-forced"/
+// "worktree-would-remove-gh-verified"/"worktree-would-remove-corpse-gh-verified"
+// for the mutating "worktree-removed"/"worktree-removed-forced"/
+// "worktree-removed-gh-verified"/"worktree-removed-corpse-gh-verified"
+// (--dry-run never attempts a removal, so it never reports
+// worktree-remove-failed either). prURL is the initiative's own review PR
+// URL (empty in one-off mode, which never sets c.Bulk). When prURL is
+// non-empty (review-shaped — the only way runScan's dry-run branch reaches
+// this, since the loop above already filters to review-shaped issues), this
+// mirrors removeWorktreeIfClean's force-remove rule: status/headSHA are
+// still resolved (existence still needs worktreeClean's os.Stat) but not
+// otherwise consulted, and bulkGHVerifyRemovable is never called. When
+// prURL is empty, the old clean-only / bulk gh-verify override path applies
+// unchanged: it is only consulted when worktreeClean reports wtUnpushed or
+// wtDirtyRecoverable — the same two statuses removeWorktreeIfClean itself
+// overrides on that path (agent-teams-442q.11), kept as separate outcome
+// strings per status (agent-teams-442q.14/Finding 2) so a dry-run preview
+// distinguishes a reclaimable deletion corpse from a reclaimable
+// stale-remote-ref worktree exactly like the real run does.
 func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -447,6 +555,12 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 	exists, status, headSHA, _ := c.worktreeClean(worktree)
 	if !exists {
 		return "worktree-absent"
+	}
+	if prURL != "" {
+		if status == wtClean {
+			return "worktree-would-remove"
+		}
+		return "worktree-would-remove-forced"
 	}
 	switch status {
 	case wtClean:
@@ -627,21 +741,50 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 	return "reaped"
 }
 
-// removeWorktreeIfClean removes worktree from disk when it is clean, per the
-// contract's clean-only safety rule. callerWorktree is the calling session's
+// removeWorktreeIfClean removes worktree from disk — force-removed when
+// worktree is review-shaped (prURL non-empty), otherwise per the contract's
+// original clean-only safety rule. callerWorktree is the calling session's
 // own cwd (from callerWorktreeCWD; "" when unknown) — when worktree matches
 // it, removal is skipped unconditionally, since force-removing the running
-// caller's own cwd worktree breaks the live session. prURL is the
-// initiative's own review PR URL (empty in one-off mode, which never sets
-// c.Bulk); it is only consulted for the bulk-mode gh-verify override, when
-// worktreeClean reports wtUnpushed or wtDirtyRecoverable (real, non-deletion
+// caller's own cwd worktree breaks the live session; this guard is checked
+// BEFORE the review-shaped force-remove rule below, so it is never
+// overridden by it.
+//
+// prURL is the initiative's own review PR URL — non-empty ONLY when this is
+// called from runScan (the scan loop already filters to review-shaped
+// issues via initiative.ReviewPRURL before it ever reaches here); one-off
+// mode always passes "" regardless of whether its resolved target happens
+// to be review-shaped, so one-off's behavior for a non-review target is
+// unchanged (agent-teams-6hgr.1 scopes the force-remove rule to the
+// review-shaped SCAN path only). When prURL is non-empty, removal is forced
+// UNCONDITIONALLY — regardless of dirty, unpushed, or inconclusive git
+// state — because a review worktree checks out the PR author's branch and
+// never carries changes meant to be pushed from here, so the clean-only /
+// gh-verify gating that protects a normal work worktree does not apply
+// (contract agent-teams-sbh8.1, superseded 2026-09-23 — see its
+// SUPERSEDED-BY note). worktreeClean's status/headSHA are still resolved
+// above (existence still needs its os.Stat, and any error is still logged)
+// but not consulted for this decision, and bulkGHVerifyRemovable is never
+// called on this path — the two live-run bugs this fixes (agent-teams-6hgr.1)
+// left review worktrees stuck skipped as "worktree-dirty-skipped" on every
+// normal scan tick.
+//
+// When prURL is empty (one-off mode, any target), the ORIGINAL clean-only
+// rule still applies unchanged: removal proceeds when status==wtClean, or
+// in --bulk mode when worktreeClean reports wtUnpushed or wtDirtyRecoverable
+// AND gh-verify confirms HEAD is still on GitHub (real, non-deletion
 // uncommitted/untracked changes always win — see wtDirty's doc comment). A
 // dirty worktree is reclaimed in --bulk ONLY when its dirt is exclusively
 // unstaged tracked-file deletions (wtDirtyRecoverable — every "missing" file
 // is still in HEAD) AND gh-verify confirms HEAD is on GitHub; every other
 // dirty state (any non-deletion change, untracked files, or an inconclusive
-// check) is still always skipped. The actual removal runs under a mode-aware
-// timeout — reapWorktreeRemoveTimeout steady-state, the far more generous
+// check) is still always skipped. In production this bulk gh-verify branch
+// is now unreachable — --bulk is scan-mode-only and scan-mode's prURL is
+// never empty for anything reaching this function — kept only until
+// agent-teams-6hgr.3 removes the now-dead machinery.
+//
+// The actual removal runs under a mode-aware timeout —
+// reapWorktreeRemoveTimeout steady-state, the far more generous
 // reapBulkWorktreeRemoveTimeout under --bulk (see their doc comments;
 // agent-teams-442q.13). Returns the journal outcome string:
 // "worktree-unknown" (no worktree path resolved at all),
@@ -649,17 +792,22 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // "worktree-absent" (nothing on disk to remove — a clean no-op),
 // "worktree-dirty-skipped" (uncommitted/deleted changes not overridden by a
 // bulk gh-verify, or the clean-check itself failed — never force-delete on
-// an inconclusive check), "worktree-remove-failed" (removal was attempted —
-// clean or gh-verified — but the removeWorktree call itself errored or timed
-// out; kept distinct from worktree-dirty-skipped since this worktree was
-// NEVER dirty, only its removal failed, and it may now need manual attention
-// — agent-teams-442q.13/Finding 2), "worktree-removed", or (bulk mode's
-// gh-verify override fired) "worktree-removed-gh-verified" for a reclaimed
-// stale-remote-ref (wtUnpushed) worktree, or
-// "worktree-removed-corpse-gh-verified" for a reclaimed deletion-corpse
-// (wtDirtyRecoverable) worktree — kept distinct (agent-teams-442q.14/Finding
-// 2) since the journal is the only durable record of which force-removal
-// path fired.
+// an inconclusive check; unreachable for a review-shaped worktree, which is
+// always force-removed instead), "worktree-remove-failed" (removal was
+// attempted — clean, forced, or gh-verified — but the removeWorktree call
+// itself errored or timed out; kept distinct from worktree-dirty-skipped
+// since this worktree was NEVER dirty-and-skipped, only its removal failed,
+// and it may now need manual attention — agent-teams-442q.13/Finding 2),
+// "worktree-removed" (status was wtClean, forced or not — no need to
+// distinguish), "worktree-removed-forced" (review-shaped and force-removed
+// despite a non-clean git state — kept distinct so the journal/summary
+// still show when a force-removal papered over real dirty/unpushed state),
+// or (the now-dead bulk gh-verify override, one-off mode only) "worktree-
+// removed-gh-verified" for a reclaimed stale-remote-ref (wtUnpushed)
+// worktree, or "worktree-removed-corpse-gh-verified" for a reclaimed
+// deletion-corpse (wtDirtyRecoverable) worktree — kept distinct
+// (agent-teams-442q.14/Finding 2) since the journal is the only durable
+// record of which force-removal path fired.
 func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -676,14 +824,19 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		return "worktree-absent"
 	}
 
-	// ghVerifiedOutcome is "" when no override fired (plain wtClean, or not
-	// removable at all) or the specific "worktree-removed(-corpse)?-gh-
-	// verified" string this removal's override earned — decided up front so
-	// a later removal failure or success can each report the right outcome
-	// without re-deriving which status fired.
-	ghVerifiedOutcome := ""
+	// ghVerifiedOutcome is "" when no gh-verify override fired, or the
+	// specific "worktree-removed(-corpse)?-gh-verified" string that
+	// override earned. forced records whether removal proceeded only
+	// because prURL forced it past a non-clean status (review-shaped path)
+	// — decided up front so a later removal failure or success can each
+	// report the right outcome without re-deriving which branch fired.
 	removable := status == wtClean
-	if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
+	forced := false
+	ghVerifiedOutcome := ""
+	if prURL != "" {
+		removable = true
+		forced = status != wtClean
+	} else if (status == wtUnpushed || status == wtDirtyRecoverable) && c.Bulk && c.bulkGHVerifyRemovable(ctx, worktree, prURL, headSHA) {
 		removable = true
 		if status == wtDirtyRecoverable {
 			ghVerifiedOutcome = "worktree-removed-corpse-gh-verified"
@@ -704,10 +857,32 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
 		return "worktree-remove-failed"
 	}
-	if ghVerifiedOutcome != "" {
+	switch {
+	case ghVerifiedOutcome != "":
 		return ghVerifiedOutcome
+	case forced:
+		return "worktree-removed-forced"
+	default:
+		return "worktree-removed"
 	}
-	return "worktree-removed"
+}
+
+// worktreeTornDown reports whether wtOutcome (a removeWorktreeIfClean
+// journal outcome string) represents the worktree being fully gone from
+// disk after this reap attempt — removed just now, in any variant, or
+// already absent before this tick. This is runScan's note-write gate
+// (agent-teams-6hgr.1, bug 2a): the reaped: note is written only when the
+// worktree outcome is one of these, never on worktree-remove-failed,
+// worktree-dirty-skipped, worktree-unknown, or worktree-skipped-caller-cwd —
+// each of those leaves real residual state that must be retried, not
+// silently marked done.
+func worktreeTornDown(wtOutcome string) bool {
+	switch wtOutcome {
+	case "worktree-removed", "worktree-removed-forced", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified", "worktree-absent":
+		return true
+	default:
+		return false
+	}
 }
 
 // bulkGHVerifyRemovable is the bulk-mode-only override for a worktree whose
