@@ -19,10 +19,12 @@
 # workaround writeup this is part of.
 #
 # THROTTLED: a catch-all fires for every subagent (Explore, general-purpose,
-# fork, nested spawns too), and `ateam pull` takes bd's flock on
-# .beads/embeddeddolt/.lock — unthrottled, a fan-out session would trade a
-# silent no-op for real lock contention and spawn latency on work that has
-# nothing to do with agent-teams. A timestamp file skips the pull if one ran
+# fork, nested spawns too), and the dolt sql-server serializes DOLT_PULL
+# calls behind its own lock — unthrottled, a fan-out session would trade a
+# silent no-op for real queueing and spawn latency on work that has nothing
+# to do with agent-teams (`ateam pull` skips a young in-flight pull and
+# bounds its own, but still costs a probe round trip per call). A timestamp
+# file skips the pull if one ran
 # within the last THROTTLE_SECONDS. 60s is the starting value: short enough
 # that a role's on-spawn self-fetch (ateam learnings <role>) still sees data
 # no more than a minute stale, long enough that a fan-out of a dozen
@@ -74,9 +76,10 @@ fi
 mkdir -p "$ATH" 2>/dev/null || true
 printf '%s' "$now" > "$THROTTLE_FILE" 2>/dev/null || true
 
-# Pull must go through ateam/bd: bd's flock on .beads/embeddeddolt/.lock serializes
-# parallel subagent pulls; shelling 'dolt' directly would bypass it and hit the manifest race.
-# Stdout is dropped by the harness regardless (see header) — redirected here so
+# Pull must go through ateam/bd: the dolt sql-server serializes DOLT_PULL
+# calls behind its own lock; `ateam pull` probes for one already in flight and
+# skips (using local state) rather than queuing behind it, and bounds its own
+# pull with a timeout. Stdout is dropped by the harness regardless (see header) — redirected here so
 # the hook stays silent by design rather than by accident of the render bug.
 "$ATEAM" pull >/dev/null || true
 

@@ -71,6 +71,19 @@ type inFlightPull struct {
 	Seconds int64
 }
 
+// inFlightPullQuery is the exact SQL probeInFlightPull runs. It is a SELECT,
+// so its own INFO text never starts with "CALL DOLT_PULL" and can never
+// match its own LIKE predicate — see the self-match note below.
+const inFlightPullQuery = "SELECT ID, TIME FROM information_schema.processlist WHERE UPPER(TRIM(INFO)) LIKE 'CALL DOLT_PULL%'"
+
+// processlistRow is the shape of one element of probeInFlightPull's `bd sql
+// --json` output: information_schema.processlist columns come back with
+// upper-case keys (verified live 2026-09-24 against ~/.agent-teams).
+type processlistRow struct {
+	ID   int64 `json:"ID"`
+	Time int64 `json:"TIME"`
+}
+
 // probeInFlightPull checks information_schema.processlist for a running
 // DOLT_PULL and returns the one with the LARGEST TIME (the query actually
 // executing; any others are queued behind it), or nil if none is in flight.
@@ -84,20 +97,6 @@ type inFlightPull struct {
 //   - a probe error (exec failure or unparseable JSON) is reported to the
 //     caller as a non-nil error; guardedPull treats that as fail-open (see
 //     its decision table below), never as "no pull in flight".
-
-// inFlightPullQuery is the exact SQL probeInFlightPull runs. It is a SELECT,
-// so its own INFO text never starts with "CALL DOLT_PULL" and can never
-// match its own LIKE predicate — see the self-match note above.
-const inFlightPullQuery = "SELECT ID, TIME FROM information_schema.processlist WHERE UPPER(TRIM(INFO)) LIKE 'CALL DOLT_PULL%'"
-
-// processlistRow is the shape of one element of probeInFlightPull's `bd sql
-// --json` output: information_schema.processlist columns come back with
-// upper-case keys (verified live 2026-09-24 against ~/.agent-teams).
-type processlistRow struct {
-	ID   int64 `json:"ID"`
-	Time int64 `json:"TIME"`
-}
-
 func probeInFlightPull(ctx context.Context, c *bd.Client) (*inFlightPull, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, pullProbeTimeout)
 	defer cancel()

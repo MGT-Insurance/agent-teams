@@ -48,13 +48,6 @@ func runBd(t *testing.T, dir string, env []string, args ...string) string {
 	return string(out)
 }
 
-// processlistRow is one row of `SELECT ID, TIME FROM
-// information_schema.processlist WHERE INFO LIKE 'CALL DOLT_PULL%'`.
-type processlistRow struct {
-	ID   int64 `json:"ID"`
-	Time int64 `json:"TIME"`
-}
-
 // queryInFlightPulls runs the same probe probeInFlightPull's frozen contract
 // describes, directly — bypassing probeInFlightPull itself, which is still a
 // not-implemented stub on this un-rebased branch (qdeh.2's real body lives on
