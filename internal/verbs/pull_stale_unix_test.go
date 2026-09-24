@@ -45,6 +45,48 @@ func TestSelectTransportTargets_PicksGitUnderServerAndDescendants(t *testing.T) 
 	}
 }
 
+// TestSelectTransportTargets_PicksGitLsRemote covers the hang point
+// team-lead's review flagged: a connection dropped during ref advertisement
+// blocks on `git ls-remote`, not `git fetch` — the case this bead's own
+// keystone reproduced. selectTransportTargets must still find it, argv[0]
+// basename "git" with a "--git-dir" flag preceding the subcommand (the
+// real-world shape observed) included.
+func TestSelectTransportTargets_PicksGitLsRemote(t *testing.T) {
+	const serverPID = 100
+	entries := fakePS(
+		psEntry{PID: serverPID, PPID: 1, LStart: fakeLStart, Command: "dolt sql-server -H 127.0.0.1 -P 60279"},
+		psEntry{PID: 200, PPID: serverPID, LStart: fakeLStart, Command: "git --git-dir /path/to/repo.git ls-remote --heads -- origin"},
+		psEntry{PID: 201, PPID: 200, LStart: fakeLStart, Command: "/path/to/hang-ssh.sh git@example.com git-upload-pack '/x.git'"},
+	)
+
+	descendants, gitParents, err := selectTransportTargets(entries, serverPID)
+	if err != nil {
+		t.Fatalf("selectTransportTargets: %v", err)
+	}
+	if len(gitParents) != 1 || gitParents[0].PID != 200 {
+		t.Fatalf("gitParents = %+v, want exactly pid 200", gitParents)
+	}
+	if len(descendants) != 1 || descendants[0].PID != 201 {
+		t.Fatalf("descendants = %+v, want exactly pid 201", descendants)
+	}
+}
+
+// TestSelectTransportTargets_IgnoresNonTransportGitSubcommand confirms the
+// match stays scoped to "fetch"/"ls-remote": a git child running some other
+// subcommand under the server is not a network-transport hang and must not
+// be selected.
+func TestSelectTransportTargets_IgnoresNonTransportGitSubcommand(t *testing.T) {
+	const serverPID = 100
+	entries := fakePS(
+		psEntry{PID: serverPID, PPID: 1, LStart: fakeLStart, Command: "dolt sql-server -H 127.0.0.1 -P 60279"},
+		psEntry{PID: 200, PPID: serverPID, LStart: fakeLStart, Command: "git status"},
+	)
+
+	if _, _, err := selectTransportTargets(entries, serverPID); err == nil {
+		t.Fatal("selectTransportTargets: want error for a non-transport git subcommand, got nil")
+	}
+}
+
 func TestSelectTransportTargets_IgnoresGitFetchWithWrongParent(t *testing.T) {
 	const serverPID = 100
 	entries := fakePS(

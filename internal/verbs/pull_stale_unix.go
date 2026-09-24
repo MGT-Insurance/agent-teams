@@ -37,10 +37,12 @@
 // The keystone's synthetic remote hangs at `git ls-remote` (the first
 // network hop, since the fake remote never answers even a ref
 // advertisement) rather than at the `git fetch ...refs/dolt/data` step the
-// real incident's log shows — but the ancestry/kill mechanism is identical
-// in both cases, and selectTransportTargets's match pattern is drawn from
-// (and verified against) the real incident's log line, not the synthetic
-// repro.
+// real incident's log shows. Both are real hang points a dropped connection
+// can land on — one during fetch itself, one during the ref advertisement
+// that precedes it — so selectTransportTargets (via isGitTransportChild)
+// matches a direct child of the server whose subcommand is "fetch" or
+// "ls-remote", not "fetch" alone; a narrower match would silently no-op on
+// exactly the case this bead's own keystone reproduced.
 package verbs
 
 import (
@@ -226,11 +228,44 @@ func verifyServerIdentity(entries []psEntry, pid int, port string) (psEntry, err
 	return psEntry{}, fmt.Errorf("terminateHungPull: pid %d (from dolt-server.pid) not found in process table", pid)
 }
 
-// isGitFetchDoltData matches the real incident's observed hung command
-// (~/.agent-teams/.beads/dolt-server.log, connection 207815 and its queued
-// siblings): "git fetch --no-tags --refmap= origin +refs/dolt/data:...".
-func isGitFetchDoltData(command string) bool {
-	return strings.HasPrefix(command, "git fetch") && strings.Contains(command, "refs/dolt/data")
+// gitSubcommand returns command's git subcommand and true, if command's
+// argv[0] basename is "git". It skips past known global flags that take a
+// value (only "--git-dir" is observed in practice, but "-C"/"--work-tree"/
+// "--namespace" are handled defensively) so that a flag's value argument —
+// which, like a subcommand, doesn't start with "-" — is never mistaken for
+// the subcommand itself.
+func gitSubcommand(command string) (string, bool) {
+	fields := strings.Fields(command)
+	if len(fields) == 0 || filepath.Base(fields[0]) != "git" {
+		return "", false
+	}
+	for i := 1; i < len(fields); i++ {
+		switch fields[i] {
+		case "--git-dir", "--work-tree", "--namespace", "-C":
+			i++ // this flag's value is the next token, not the subcommand
+			continue
+		}
+		if strings.HasPrefix(fields[i], "-") {
+			continue
+		}
+		return fields[i], true
+	}
+	return "", false
+}
+
+// isGitTransportChild reports whether command is a git invocation blocked on
+// network I/O: subcommand "fetch" (the real incident's observed hung
+// command, ~/.agent-teams/.beads/dolt-server.log connection 207815 and its
+// queued siblings: "git fetch --no-tags --refmap= origin +refs/dolt/
+// data:...") or "ls-remote" (this bead's own keystone repro hung during ref
+// advertisement, before fetch — a dropped connection there would otherwise
+// leave terminateHungPull with no gitParent to select, per team-lead review).
+func isGitTransportChild(command string) bool {
+	sub, ok := gitSubcommand(command)
+	if !ok {
+		return false
+	}
+	return sub == "fetch" || sub == "ls-remote"
 }
 
 // descendantsOf returns every transitive descendant of rootPID found in
@@ -257,24 +292,24 @@ func descendantsOf(entries []psEntry, rootPID, guardPID int) []psEntry {
 }
 
 // selectTransportTargets returns the dolt sql-server's (serverPID) direct
-// git-fetch-refs/dolt/data children ("gitParents") plus every transitive
-// descendant of those (their ssh transport, "descendants") — by ANCESTRY
-// only: a same-named git process elsewhere in the process table (PPID !=
-// serverPID) is never a target, and serverPID itself is never a target.
-// Returns an error (no targets at all) if the server has no such child —
-// guardedPull's stale branch treats that as a remedy failure, per the
-// frozen decision table.
+// git-transport children ("gitParents": a "fetch" or "ls-remote" subcommand,
+// per isGitTransportChild) plus every transitive descendant of those (their
+// ssh transport, "descendants") — by ANCESTRY only: a same-named git process
+// elsewhere in the process table (PPID != serverPID) is never a target, and
+// serverPID itself is never a target. Returns an error (no targets at all)
+// if the server has no such child — guardedPull's stale branch treats that
+// as a remedy failure, per the frozen decision table.
 func selectTransportTargets(entries []psEntry, serverPID int) (descendants, gitParents []psEntry, err error) {
 	for _, e := range entries {
 		if e.PID == serverPID || e.PPID != serverPID {
 			continue
 		}
-		if isGitFetchDoltData(e.Command) {
+		if isGitTransportChild(e.Command) {
 			gitParents = append(gitParents, e)
 		}
 	}
 	if len(gitParents) == 0 {
-		return nil, nil, fmt.Errorf("terminateHungPull: no git fetch (refs/dolt/data) child found under dolt sql-server pid %d", serverPID)
+		return nil, nil, fmt.Errorf("terminateHungPull: no git fetch/ls-remote child found under dolt sql-server pid %d", serverPID)
 	}
 	for _, g := range gitParents {
 		descendants = append(descendants, descendantsOf(entries, g.PID, serverPID)...)
