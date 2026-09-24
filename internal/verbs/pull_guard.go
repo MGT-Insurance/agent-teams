@@ -14,7 +14,9 @@ package verbs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -82,8 +84,47 @@ type inFlightPull struct {
 //   - a probe error (exec failure or unparseable JSON) is reported to the
 //     caller as a non-nil error; guardedPull treats that as fail-open (see
 //     its decision table below), never as "no pull in flight".
+
+// inFlightPullQuery is the exact SQL probeInFlightPull runs. It is a SELECT,
+// so its own INFO text never starts with "CALL DOLT_PULL" and can never
+// match its own LIKE predicate — see the self-match note above.
+const inFlightPullQuery = "SELECT ID, TIME FROM information_schema.processlist WHERE UPPER(TRIM(INFO)) LIKE 'CALL DOLT_PULL%'"
+
+// processlistRow is the shape of one element of probeInFlightPull's `bd sql
+// --json` output: information_schema.processlist columns come back with
+// upper-case keys (verified live 2026-09-24 against ~/.agent-teams).
+type processlistRow struct {
+	ID   int64 `json:"ID"`
+	Time int64 `json:"TIME"`
+}
+
 func probeInFlightPull(ctx context.Context, c *bd.Client) (*inFlightPull, error) {
-	return nil, errors.New("probeInFlightPull: not implemented")
+	probeCtx, cancel := context.WithTimeout(ctx, pullProbeTimeout)
+	defer cancel()
+
+	out, err := c.RunContext(probeCtx, "sql", "--json", inFlightPullQuery)
+	if err != nil {
+		return nil, fmt.Errorf("probeInFlightPull: %w", err)
+	}
+
+	var rows []processlistRow
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("probeInFlightPull: unmarshal: %w (raw: %.200s)", err, out)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	// Several rows means several queued CALL DOLT_PULLs; the one with the
+	// largest TIME is the one actually executing (the rest are queued
+	// behind it and haven't started their own git+ssh fetch yet).
+	largest := rows[0]
+	for _, row := range rows[1:] {
+		if row.Time > largest.Time {
+			largest = row
+		}
+	}
+	return &inFlightPull{ConnID: largest.ID, Seconds: largest.Time}, nil
 }
 
 // guardedPull is the single entry point every pull caller (ateam pull,
@@ -124,7 +165,56 @@ func probeInFlightPull(ctx context.Context, c *bd.Client) (*inFlightPull, error)
 // Hooks keep `|| true`; a timed-out or skipped pull degrades to local state,
 // which is always correct.
 func guardedPull(ctx context.Context, c *bd.Client, mode pullMode, timeout time.Duration, stderr io.Writer) (stdout string, err error) {
-	return "", errors.New("guardedPull: not implemented")
+	inFlight, probeErr := probeInFlightPull(ctx, c)
+	if probeErr != nil {
+		// Fail-open: a probe failure never blocks a pull, it just loses the
+		// early-skip optimization for this call.
+		fmt.Fprintf(stderr, "ateam pull: probe failed (proceeding): %v\n", probeErr)
+		return boundedPull(ctx, c, timeout, stderr)
+	}
+	if inFlight == nil {
+		return boundedPull(ctx, c, timeout, stderr)
+	}
+
+	if inFlight.Seconds >= int64(pullStaleAfter.Seconds()) {
+		if remedyErr := terminateHungPull(ctx, *inFlight); remedyErr != nil {
+			fmt.Fprintf(stderr, "ateam pull: stale-pull remedy failed (conn %d, %ds): %v; manual recovery: on the dolt sql-server host, find and kill the git/ssh child under connection %d\n", inFlight.ConnID, inFlight.Seconds, remedyErr, inFlight.ConnID)
+			return youngInFlightResult(*inFlight, mode, stderr)
+		}
+		fmt.Fprintf(stderr, "ateam pull: cleared hung dolt pull (conn %d, %ds)\n", inFlight.ConnID, inFlight.Seconds)
+		return boundedPull(ctx, c, timeout, stderr)
+	}
+
+	return youngInFlightResult(*inFlight, mode, stderr)
+}
+
+// youngInFlightResult implements guardedPull's decision-table row for an
+// in-flight pull younger than pullStaleAfter (and the stale-remedy-failed
+// fallback, which behaves identically plus its own extra stderr line above).
+func youngInFlightResult(p inFlightPull, mode pullMode, stderr io.Writer) (string, error) {
+	if mode == pullModeRequired {
+		return "", fmt.Errorf("ateam sync: %w (conn %d, %ds); retry later", errPullInFlight, p.ConnID, p.Seconds)
+	}
+	fmt.Fprintf(stderr, "ateam pull: skipped: dolt pull already in flight (conn %d, %ds); using local state\n", p.ConnID, p.Seconds)
+	return "", nil
+}
+
+// boundedPull runs the actual `bd dolt pull`, bounded by timeout, and
+// translates a ctx-deadline error into the frozen "timed out" stderr/exit
+// contract.
+func boundedPull(ctx context.Context, c *bd.Client, timeout time.Duration, stderr io.Writer) (string, error) {
+	pullCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	out, err := c.RunContext(pullCtx, "dolt", "pull")
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(stderr, "ateam pull: timed out after %s; using local state\n", timeout)
+			return "", fmt.Errorf("ateam pull: timed out after %s: %w", timeout, err)
+		}
+		return "", err
+	}
+	return out, nil
 }
 
 // terminateHungPull is the stale-remedy seam guardedPull's stale branch
