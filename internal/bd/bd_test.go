@@ -1,10 +1,13 @@
 package bd_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 )
@@ -61,6 +64,52 @@ func TestRunErrorIncludesStderr(t *testing.T) {
 	}
 	if msg := err.Error(); msg == "" {
 		t.Error("error message empty")
+	}
+}
+
+// TestRunContext_ObservesCtxDeadline proves RunContext is bounded by the ctx
+// it's given: a ContextExecFunc fake that blocks until ctx is done and then
+// returns ctx.Err() causes RunContext to return quickly with an error
+// wrapping context.DeadlineExceeded — the contract bead's core promise for
+// the exec seam every pull-guard caller builds on.
+func TestRunContext_ObservesCtxDeadline(t *testing.T) {
+	fn := func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	c := bd.NewClientWithContextExec("/ws", fn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.RunContext(ctx, "dolt", "pull")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from a ctx that expired mid-call")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected err to wrap context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("RunContext took %v to return after a 50ms deadline, want under 1s", elapsed)
+	}
+}
+
+// TestRunContext_ViaNewClientWithExec_StillWorks proves Run — which now
+// delegates to RunContext(context.Background(), ...) — is unaffected for a
+// Client built with the plain, context-less NewClientWithExec.
+func TestRunContext_ViaNewClientWithExec_StillWorks(t *testing.T) {
+	c := bd.NewClientWithExec("/ws", func(name string, args ...string) ([]byte, []byte, error) {
+		return []byte("ok\n"), nil, nil
+	})
+	out, err := c.RunContext(context.Background(), "status")
+	if err != nil {
+		t.Fatalf("RunContext: %v", err)
+	}
+	if out != "ok" {
+		t.Errorf("RunContext output = %q, want %q", out, "ok")
 	}
 }
 
