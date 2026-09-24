@@ -10,6 +10,7 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -862,15 +863,28 @@ func runUpdateLocalMainScript(repoPath string) (string, error) {
 
 // ── pull ──────────────────────────────────────────────────────────────────────
 
-// pullKong is the kong-converted form of pull. No arguments.
-type pullKong struct{}
+// pullKong is the kong-converted form of pull.
+type pullKong struct {
+	Timeout time.Duration `name:"timeout" help:"Bound the dolt pull exec (default: 20s)."`
+}
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+// Routes through guardedPull, best-effort: a young in-flight pull is skipped
+// (using local state) rather than queued behind — see pull_guard.go's frozen
+// decision table (agent-teams-qdeh.4).
 func (c *pullKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam pull: no context")
 	}
-	out, err := ctx.BD.Run("dolt", "pull")
+	client, ok := ctx.BD.(*bd.Client)
+	if !ok {
+		return fmt.Errorf("ateam pull: BD client does not support guarded pull")
+	}
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = pullTimeoutDefault
+	}
+	out, err := guardedPull(context.Background(), client, pullModeBestEffort, timeout, ctx.Stderr)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -882,17 +896,30 @@ func (c *pullKong) Run(ctx *cli.Context) error {
 // syncKong is the kong-converted form of sync. No arguments.
 type syncKong struct{}
 
+// boundedBDRun runs args against client bounded by pullTimeoutDefault — used
+// for sync's commit/push execs, which (like its pulls) must never queue
+// indefinitely behind a slow or hung dolt sql-server (agent-teams-qdeh.4).
+func boundedBDRun(client *bd.Client, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), pullTimeoutDefault)
+	defer cancel()
+	return client.RunContext(ctx, args...)
+}
+
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *syncKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
+	}
+	client, ok := ctx.BD.(*bd.Client)
+	if !ok {
+		return cli.Usagef("ateam sync: BD client does not support guarded pull")
 	}
 	// Commit the working set FIRST. `bd dolt pull` refuses a dirty working set
 	// (the events audit table dirties on every bd write), so an uncommitted WS
 	// would deadlock the pull ("local changes would be stomped by merge"). A
 	// clean WS yields "nothing to commit" — that is a no-op, not a failure; any
 	// other commit error aborts before we touch the remote.
-	if out, err := ctx.BD.Run("dolt", "commit"); err != nil {
+	if out, err := boundedBDRun(client, "dolt", "commit"); err != nil {
 		if !strings.Contains(strings.ToLower(out+" "+err.Error()), "nothing to commit") {
 			return err
 		}
@@ -902,12 +929,14 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	if out, err := ctx.BD.Run("dolt", "pull"); err != nil {
+	// sync must not silently proceed on stale local state: a young in-flight
+	// pull fails the call (pullModeRequired) instead of skipping.
+	if out, err := guardedPull(context.Background(), client, pullModeRequired, pullTimeoutDefault, ctx.Stderr); err != nil {
 		return err
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	out, err := ctx.BD.Run("dolt", "push")
+	out, err := boundedBDRun(client, "dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -918,12 +947,12 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	if !strings.Contains(err.Error(), "non-fast-forward") {
 		return err
 	}
-	if out, pullErr := ctx.BD.Run("dolt", "pull"); pullErr != nil {
+	if out, pullErr := guardedPull(context.Background(), client, pullModeRequired, pullTimeoutDefault, ctx.Stderr); pullErr != nil {
 		return pullErr
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	out, err = ctx.BD.Run("dolt", "push")
+	out, err = boundedBDRun(client, "dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}

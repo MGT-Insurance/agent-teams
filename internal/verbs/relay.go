@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -121,9 +122,12 @@ func defaultBDQueryClosed(home, label string) ([]bd.Issue, error) {
 // without touching dolt/git.
 type relayDoltPullFunc func(home string) error
 
-// defaultDoltPull runs `bd -C <home> dolt pull`.
+// defaultDoltPull runs a guarded `bd -C <home> dolt pull`, best-effort: a
+// young in-flight pull is skipped (nil error, local state used) rather than
+// queued behind, so a relay tick never waits on the server's pull lock
+// (agent-teams-qdeh.4).
 func defaultDoltPull(home string) error {
-	_, err := bd.NewClient(home).Run("dolt", "pull")
+	_, err := guardedPull(context.Background(), bd.NewClient(home), pullModeBestEffort, pullTimeoutDefault, os.Stderr)
 	return err
 }
 

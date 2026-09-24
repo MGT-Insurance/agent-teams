@@ -2,51 +2,70 @@
 package bd
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/mgt-insurance/agent-teams/internal/procx"
 )
 
-// ExecFunc is the signature of the function used to run an external command.
-// Swap it in tests via NewClientWithExec.
+// ExecFunc is the signature of the function used to run an external command
+// with no ctx/deadline. Swap it in tests via NewClientWithExec. Prefer
+// ContextExecFunc (RunContext) for any new caller that wants a bound.
 type ExecFunc func(name string, args ...string) (stdout []byte, stderr []byte, err error)
 
-// defaultExec runs the named binary and returns its combined output split by
-// stream. A non-zero exit is returned as err (wraps *exec.ExitError).
-func defaultExec(name string, args ...string) ([]byte, []byte, error) {
-	cmd := exec.Command(name, args...)
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	err := cmd.Run()
-	return outBuf.Bytes(), errBuf.Bytes(), err
-}
+// ContextExecFunc is the signature of the function used to run an external
+// command bounded by ctx. Swap it in tests via NewClientWithContextExec.
+type ContextExecFunc func(ctx context.Context, name string, args ...string) (stdout []byte, stderr []byte, err error)
 
 // Client wraps bd for a specific workspace home.
 type Client struct {
-	home string
-	exec ExecFunc
+	home    string
+	ctxExec ContextExecFunc
 }
 
-// NewClient returns a Client bound to home using the real bd binary.
+// NewClient returns a Client bound to home using the real bd binary. Calls
+// made through RunContext are bounded by procx.RunBounded: if ctx expires
+// before bd exits, the whole bd process group is killed.
 func NewClient(home string) *Client {
-	return &Client{home: home, exec: defaultExec}
+	return &Client{home: home, ctxExec: procx.RunBounded}
 }
 
-// NewClientWithExec returns a Client that uses execFn instead of os/exec.
-// Use this in tests to inject a fake runner.
+// NewClientWithExec returns a Client that uses execFn instead of os/exec, for
+// tests that don't care about ctx. execFn is adapted into a ContextExecFunc
+// that ignores ctx, so Run (which calls RunContext with
+// context.Background()) behaves exactly as before — no existing test needs
+// to change.
 func NewClientWithExec(home string, execFn ExecFunc) *Client {
-	return &Client{home: home, exec: execFn}
+	return &Client{home: home, ctxExec: func(_ context.Context, name string, args ...string) ([]byte, []byte, error) {
+		return execFn(name, args...)
+	}}
 }
 
-// Run executes bd -C <home> [args...] and returns trimmed stdout. Any non-zero
-// exit or exec error is returned as a non-nil error; stderr is appended to the
-// error message for context.
+// NewClientWithContextExec returns a Client that uses fn for every exec, for
+// tests that need to observe or fake ctx cancellation/timeout behavior.
+func NewClientWithContextExec(home string, fn ContextExecFunc) *Client {
+	return &Client{home: home, ctxExec: fn}
+}
+
+// Run executes bd -C <home> [args...] with no deadline and returns trimmed
+// stdout. Equivalent to RunContext(context.Background(), args...).
 func (c *Client) Run(args ...string) (string, error) {
+	return c.RunContext(context.Background(), args...)
+}
+
+// RunContext executes bd -C <home> [args...] bounded by ctx and returns
+// trimmed stdout. Any non-zero exit or exec error is returned as a non-nil
+// error; stderr is appended to the error message for context.
+//
+// If ctx expires before bd exits, the whole bd process group is killed (see
+// internal/procx) and the returned error wraps ctx.Err(), so
+// errors.Is(err, context.DeadlineExceeded) holds for a caller that set a
+// deadline.
+func (c *Client) RunContext(ctx context.Context, args ...string) (string, error) {
 	full := append([]string{"-C", c.home}, args...)
-	out, errOut, err := c.exec("bd", full...)
+	out, errOut, err := c.ctxExec(ctx, "bd", full...)
 	if err != nil {
 		if len(errOut) > 0 {
 			return "", fmt.Errorf("bd %s: %w\n%s", strings.Join(args, " "), err, strings.TrimRight(string(errOut), "\n"))

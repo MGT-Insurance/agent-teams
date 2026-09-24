@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/gitutil"
+	"github.com/mgt-insurance/agent-teams/internal/procx"
 )
 
 // claudeCallTimeout bounds every `claude` subprocess reap (and its siblings)
@@ -117,34 +118,12 @@ func combinedOutput(stdout, stderr []byte) string {
 // several sequential calls gives them one shared combined budget rather than
 // a fresh full budget each — see reapWorktreeRemoveTimeout (reap.go) for why
 // that combined-budget shape matters for git worktree removal.
+//
+// The pgid-kill body lives once, in internal/procx.RunBounded — this is a
+// one-line delegate so bd.Client.RunContext (internal/bd/bd.go) can share the
+// same implementation without verbs importing bd or vice versa.
 func runBoundedExec(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error) {
-	cmd := exec.Command(name, args...)
-	// Setpgid makes this child the leader of its own process group (pgid ==
-	// its own pid), so -pid below targets the whole group, not just it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-
-	if startErr := cmd.Start(); startErr != nil {
-		return nil, nil, startErr
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case waitErr := <-done:
-		return outBuf.Bytes(), errBuf.Bytes(), waitErr
-	case <-ctx.Done():
-		// Kill the whole process group: a bare cmd.Process.Kill() only
-		// signals the direct child, leaving any grandchild orphaned — the
-		// same gap runBoundedClaude closes for `claude`.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done // reap the process so cmd.Wait's goroutine never leaks
-		return outBuf.Bytes(), errBuf.Bytes(), ctx.Err()
-	}
+	return procx.RunBounded(ctx, name, args...)
 }
 
 // boundedGitRunner returns a gitutil.Runner whose exec is bounded by ctx and
