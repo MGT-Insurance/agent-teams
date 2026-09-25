@@ -136,6 +136,19 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
 		return nil
 	}
+	// agent-teams-8st0.7: a closed review initiative whose worktree has been
+	// reaped has no session to resume — reopening it anyway is exactly what
+	// produced the observed reopen/close ping-pong (hung-scan's backstop
+	// reclassifies the worktree-less initiative DEAD and closes it again on
+	// the stale round's review-posted note, then the next re_review poll
+	// reopens it right back). Treat a reaped worktree the same as a reopen
+	// failure below: fall back to spawning a FRESH review, which gets a live
+	// worktree and can actually serve the re-review.
+	if !reviewInitiativeWorktreeLive(result.Worktree) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d but its worktree is gone (%s) — spawning fresh review instead of reopening a dead initiative\n",
+			result.InitiativeID, event.Repo, event.PRNumber, result.Worktree)
+		return c.spawnReviewInitiative(ctx, event)
+	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
 		result.InitiativeID, event.Repo, event.PRNumber)
 	if err := c.runner("reopen", result.InitiativeID); err != nil {
@@ -174,6 +187,15 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
 			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
+		return nil
+	}
+	// agent-teams-8st0.7: same reaped-worktree guard as routeReReview above,
+	// but comment_reply has no spawn fallback by design (a fresh full review
+	// is the wrong response to a comment) — a reaped worktree just drops the
+	// event, same shape as a reopen/send failure below.
+	if !reviewInitiativeWorktreeLive(result.Worktree) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d but its worktree is gone (%s) — dropping comment-reply event (no spawn fallback)\n",
+			result.InitiativeID, event.Repo, event.PRNumber, result.Worktree)
 		return nil
 	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
@@ -307,6 +329,17 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: spawned review initiative for %s#%d\n",
 		event.Repo, event.PRNumber)
 	return nil
+}
+
+// reviewInitiativeWorktreeLive reports whether a closed review initiative's
+// worktree still exists on disk — i.e. whether reopening it could resume a
+// real session rather than an inert one (agent-teams-8st0.7). An empty
+// worktree (legacy data with no "worktree:" field) is treated the same as a
+// reaped one: there is no session to resume either way. Reuses
+// defaultDirExists (reap_orphans.go) rather than a second os.Stat wrapper —
+// same question ("does this worktree cwd still exist"), same answer.
+func reviewInitiativeWorktreeLive(worktree string) bool {
+	return worktree != "" && defaultDirExists(worktree)
 }
 
 // matchHowLabel returns a human-readable label for a MatchHow value.

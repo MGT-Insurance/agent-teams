@@ -116,14 +116,18 @@ func writeTempFile(t *testing.T, content string) string {
 // Its "repo:" field points at a real, .agent-teams-enabled temp dir (rather
 // than a synthetic /code/<ownerRepo> path that doesn't exist on disk), so the
 // many route-pr-event tests built on it keep exercising the non-disabled
-// routing path now that it's gated on repoconfig.Enabled.
+// routing path now that it's gated on repoconfig.Enabled. Its "worktree:"
+// field points at a real (existing) temp dir — not a synthetic /tmp/wt-<id>
+// path — so tests that reopen a closed match built from this fixture exercise
+// the "live worktree" case; TestReReview/CommentReply_*_WorktreeReaped_*
+// below cover the reaped case explicitly with a path that does NOT exist.
 func prFieldIssue(t *testing.T, id, ownerRepo string, prNumber int) bd.Issue {
 	t.Helper()
 	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", ownerRepo, prNumber)
 	return bd.Issue{
 		ID:          id,
 		Title:       "Initiative " + id,
-		Description: fmt.Sprintf("repo: %s\nworktree: /tmp/wt-%s\nbranch: main\n", newEnabledClonePath(t), id),
+		Description: fmt.Sprintf("repo: %s\nworktree: %s\nbranch: main\n", newEnabledClonePath(t), t.TempDir()),
 		Notes:       "pr: " + prURL,
 		Status:      "open",
 	}
@@ -1242,6 +1246,102 @@ func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
 	}
 }
 
+// TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening pins
+// agent-teams-8st0.7: a closed review initiative whose worktree has been
+// reaped must NOT be reopened — reopening it is what produced the observed
+// reopen/close ping-pong (hung-scan's backstop immediately reclassifies the
+// worktree-less initiative DEAD and closes it again on the stale round's
+// review-posted note, then the next re_review poll reopens it right back).
+// It must fall back to spawning a fresh review instead, exactly like a
+// reopen-call failure does.
+func TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
+	closed := bd.Issue{
+		ID:          "at-rr.5",
+		Title:       "Initiative at-rr.5",
+		Description: fmt.Sprintf("repo: %s\nworktree: %s\nbranch: main\n", newEnabledClonePath(t), reapedWorktree),
+		Notes:       "pr: https://github.com/owner/myrepo/pull/42\nreview-posted: PR #42 -- 3 finding(s)",
+		Status:      "closed",
+	}
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReReview, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0][0] != "dispatch" {
+		t.Fatalf("calls = %v, want a single dispatch call (no reopen)", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "worktree is gone") {
+		t.Errorf("stdout missing reaped-worktree notice: %s", stdout.String())
+	}
+}
+
+// TestReReview_ClosedMatch_WorktreeReaped_RepeatedPollsNeverReopen replays
+// the at-9w568 shape: pr-shepherd polling the SAME closed, worktree-reaped
+// initiative on successive re_review events must spawn a fresh review each
+// time and must NEVER reopen the dead initiative — the fix removes the
+// close/reopen ping-pong at its source rather than bounding it to "once".
+func TestReReview_ClosedMatch_WorktreeReaped_RepeatedPollsNeverReopen(t *testing.T) {
+	bodyFile := writeTempFile(t, "re-review body")
+	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
+	closed := bd.Issue{
+		ID:          "at-rr.6",
+		Title:       "Initiative at-rr.6",
+		Description: fmt.Sprintf("repo: %s\nworktree: %s\nbranch: main\n", newEnabledClonePath(t), reapedWorktree),
+		Notes:       "pr: https://github.com/owner/myrepo/pull/42\nreview-posted: PR #42 -- 3 finding(s)",
+		Status:      "closed",
+	}
+	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	for poll := 0; poll < 2; poll++ {
+		cmd := &routePREventKong{
+			Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+			Transition: TransitionReReview, BodyFile: bodyFile,
+			runner: runner.run,
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("poll %d: unexpected error: %v", poll, err)
+		}
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("calls = %v, want 2 dispatch calls (one per poll)", runner.calls)
+	}
+	for i, call := range runner.calls {
+		if call[0] == "reopen" {
+			t.Fatalf("call %d reopened the dead initiative: %v — the ping-pong was not fixed", i, call)
+		}
+		if call[0] != "dispatch" {
+			t.Errorf("call %d = %v, want dispatch", i, call)
+		}
+	}
+}
+
 func TestReReview_OtherTransitionSendHasNoResumeFlags(t *testing.T) {
 	bodyFile := writeTempFile(t, "ci failed body")
 	issue := prFieldIssue(t, "at-ci.1", "owner/myrepo", 42)
@@ -1316,6 +1416,41 @@ func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *test
 	}
 	if !strings.Contains(stdout.String(), "reopening") {
 		t.Errorf("stdout missing reopen notice: %s", stdout.String())
+	}
+}
+
+// TestCommentReply_ClosedMatch_WorktreeReaped_DropsWithoutReopen is the
+// comment_reply counterpart of
+// TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening
+// (agent-teams-8st0.7): comment_reply has no spawn fallback by design, so a
+// reaped worktree must drop the event (log only) rather than reopen — never
+// producing the reopen/close ping-pong, and never a runner call at all.
+func TestCommentReply_ClosedMatch_WorktreeReaped_DropsWithoutReopen(t *testing.T) {
+	bodyFile := writeTempFile(t, "comment reply body")
+	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
+	closed := bd.Issue{
+		ID:          "at-cr.5",
+		Title:       "Initiative at-cr.5",
+		Description: fmt.Sprintf("repo: %s\nworktree: %s\nbranch: main\n", newEnabledClonePath(t), reapedWorktree),
+		Notes:       "pr: https://github.com/owner/myrepo/pull/42\ncomment-replies: 1 reply posted",
+		Status:      "closed",
+	}
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionCommentReply, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls = %v, want 0 (no reopen, no spawn)", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "worktree is gone") {
+		t.Errorf("stdout missing reaped-worktree notice: %s", stdout.String())
 	}
 }
 
