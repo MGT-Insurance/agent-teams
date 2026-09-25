@@ -595,6 +595,88 @@ func TestReap_Bulk_ReviewOpenPR_StillForceRemoved_ProbeNeverCalled(t *testing.T)
 	}
 }
 
+// (6g) explicit PR MERGED => removed. TestReap_Scan_ReapsPastGraceCleanWorktree
+// already exercises MERGED implicitly (newReapVerb's default prState seam),
+// but Eric asked this witnessed directly and by name, not only via a default
+// no test names as the MERGED case.
+func TestReap_Scan_ReviewMergedPR_WorktreeRemoved(t *testing.T) {
+	worktree := "/tmp/reap-wt-6g"
+	sessionID := "sess-uuid-6g"
+	iss := reapReviewIssue("at-6g", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6g", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.prState = func(string, int) (string, error) { return "MERGED", nil }
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the worktree removed once the PR is MERGED; got %v", remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-6g" {
+		t.Errorf("expected reaped note written; got %v", noter.noted)
+	}
+}
+
+// TestReap_Scan_ReviewOpenPR_RepeatedTicks_QuietAndNoExtraWrites pins Eric's
+// follow-up requirement on agent-teams-8st0.13: the session teardown
+// (teardownClaudeSession) is gated ONLY on bd-closed + grace, never on PR
+// state — tick 1 tears the session down on schedule even though the PR is
+// still OPEN and the worktree stays kept. Retries on later ticks, while the
+// PR remains open, must be cheap and quiet: no repeat stop/rm once the
+// session is actually gone from `claude agents` (tick 2 simulates that by
+// swapping in an empty agentsFunc, mirroring what a real `claude agents`
+// listing would show once the tick-1 stop+rm actually landed), and no bd
+// write (the reaped note, the only bd mutation this file makes) on any
+// retry — cutting commit volume is the whole point of the PR-state gate.
+func TestReap_Scan_ReviewOpenPR_RepeatedTicks_QuietAndNoExtraWrites(t *testing.T) {
+	worktree := "/tmp/reap-wt-6h"
+	sessionID := "sess-uuid-6h"
+	iss := reapReviewIssue("at-6h", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6h", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	home := t.TempDir()
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.prState = func(string, int) (string, error) { return "OPEN", nil }
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("tick 1: unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
+		t.Fatalf("tick 1: expected the session torn down independently of the PR-state gate; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 || len(noter.noted) != 0 {
+		t.Fatalf("tick 1: expected the worktree kept and no reaped note; got remover=%v noter=%v", remover.removed, noter.noted)
+	}
+
+	// Tick 2: the session is now actually gone from `claude agents` — a real
+	// stop+rm from tick 1 would have removed it from that listing too.
+	verb.agentsFunc = reapFakeAgents(nil)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("tick 2: unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
+		t.Errorf("tick 2: expected no repeat stop/rm now that the session is gone; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("tick 2: expected the worktree still kept (PR still OPEN); got %v", remover.removed)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("tick 2: expected no bd write on the retry tick; got %v", noter.noted)
+	}
+}
+
 // (7) f.Runtime == "codex" => untouched (Ring 1; no session/worktree/note
 // action).
 func TestReap_Scan_CodexRuntimeUntouched(t *testing.T) {
