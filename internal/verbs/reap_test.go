@@ -134,6 +134,20 @@ func alwaysDirtyRecoverable(string) (bool, worktreeGitStatus, string, error) {
 	return true, wtDirtyRecoverable, "deadbeefcafef00d", nil
 }
 
+// reapAlwaysMergedPRState is newReapVerb's default prState seam
+// (agent-teams-8st0.13): every pre-existing reap test built its review-shaped
+// fixture (reapReviewIssue) expecting unconditional force-removal, so the
+// fixture's PR must resolve MERGED by default — the "PR is done" case,
+// exercised as the live path by every test that doesn't override it. A
+// handful of dedicated tests below override verb.prState to OPEN/error to
+// exercise the new kept-worktree branches instead.
+func reapAlwaysMergedPRState(string, int) (string, error) { return "MERGED", nil }
+
+// reapAlwaysGHOk is newReapVerb's default ghPreflight seam: gh is always
+// reachable, so the PR-state gate's preflight check never itself blocks a
+// probe.
+func reapAlwaysGHOk() error { return nil }
+
 // fakeGHCommitPresent returns a ghCommitPresentFunc that records every
 // (ownerRepo, sha) it was asked about and answers per the fixed present/err
 // given, without shelling to a real gh binary.
@@ -197,6 +211,12 @@ func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover
 		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
 		noteFunc:        noter.fn(),
 		notifyCtx:       defaultReapNotifyCtx,
+		// agent-teams-8st0.13: default the PR-state gate to MERGED so every
+		// pre-existing review-worktree fixture keeps exercising the
+		// force-remove path unchanged; override verb.prState/verb.ghPreflight
+		// explicitly in a test that needs OPEN/inconclusive.
+		prState:     reapAlwaysMergedPRState,
+		ghPreflight: reapAlwaysGHOk,
 	}
 }
 
@@ -427,6 +447,8 @@ func TestReap_Scan_ForceRemove_NeverCallsWorktreeClean(t *testing.T) {
 		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
 		noteFunc:        noter.fn(),
 		notifyCtx:       defaultReapNotifyCtx,
+		prState:         reapAlwaysMergedPRState,
+		ghPreflight:     reapAlwaysGHOk,
 	}
 
 	home := t.TempDir()
@@ -442,6 +464,134 @@ func TestReap_Scan_ForceRemove_NeverCallsWorktreeClean(t *testing.T) {
 	}
 	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
 		t.Errorf("expected journal outcome worktree-removed-forced; got %q", got)
+	}
+}
+
+// (6c, agent-teams-8st0.13) PR still OPEN => the worktree is kept, not
+// force-removed, even past grace — the session is still torn down
+// (independent gate), and no reaped note is written, so this initiative is
+// retried next tick.
+func TestReap_Scan_ReviewOpenPR_WorktreeKept(t *testing.T) {
+	worktree := "/tmp/reap-wt-6c"
+	sessionID := "sess-uuid-6c"
+	iss := reapReviewIssue("at-6c", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6c", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	home := t.TempDir()
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.prState = func(string, int) (string, error) { return "OPEN", nil }
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stops.stopped) != 1 || len(rms.removed) != 1 {
+		t.Errorf("expected the session torn down independently of the worktree gate; got stops=%v rms=%v", stops.stopped, rms.removed)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected the worktree kept while the PR is OPEN; got removed=%v", remover.removed)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-kept-pr-open" {
+		t.Errorf("expected journal outcome worktree-kept-pr-open; got %q", got)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no reaped note while the worktree is kept; got %v", noter.noted)
+	}
+}
+
+// (6d) PR-state probe errors (gh down, PR not found, timeout, ...) => the
+// worktree is kept exactly like an OPEN PR — proof of MERGED/CLOSED is
+// required, an inconclusive probe never authorizes removal.
+func TestReap_Scan_ReviewPRStateProbeError_WorktreeKept(t *testing.T) {
+	worktree := "/tmp/reap-wt-6d"
+	sessionID := "sess-uuid-6d"
+	iss := reapReviewIssue("at-6d", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6d", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	home := t.TempDir()
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.prState = func(string, int) (string, error) { return "", fmt.Errorf("simulated gh pr view failure") }
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected the worktree kept on a probe error; got removed=%v", remover.removed)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-kept-pr-unknown" {
+		t.Errorf("expected journal outcome worktree-kept-pr-unknown; got %q", got)
+	}
+	if len(noter.noted) != 0 {
+		t.Errorf("expected no reaped note on a probe error; got %v", noter.noted)
+	}
+}
+
+// (6e) PR CLOSED (not merged) => removed exactly like MERGED — both are
+// terminal states that clear the gate.
+func TestReap_Scan_ReviewClosedPR_WorktreeRemoved(t *testing.T) {
+	worktree := "/tmp/reap-wt-6e"
+	sessionID := "sess-uuid-6e"
+	iss := reapReviewIssue("at-6e", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6e", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.prState = func(string, int) (string, error) { return "CLOSED", nil }
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected the worktree removed once the PR is CLOSED; got %v", remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-6e" {
+		t.Errorf("expected reaped note written; got %v", noter.noted)
+	}
+}
+
+// (6f) --bulk stays ungated (a human escape hatch, same as one-off mode):
+// even an OPEN PR is force-removed under --bulk, and the PR-state seam is
+// never even consulted.
+func TestReap_Bulk_ReviewOpenPR_StillForceRemoved_ProbeNeverCalled(t *testing.T) {
+	worktree := "/tmp/reap-wt-6f"
+	sessionID := "sess-uuid-6f"
+	iss := reapReviewIssue("at-6f", "closed", reapFixedNow.Add(-time.Hour), "", worktree, sessionID, "")
+	sessions := []agentSession{{ID: "abc6f", SessionID: sessionID, CWD: worktree}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	probeCalls := 0
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.prState = func(string, int) (string, error) {
+		probeCalls++
+		return "OPEN", nil
+	}
+	verb.Bulk = true
+
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), t.TempDir())
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(remover.removed) != 1 || remover.removed[0] != worktree {
+		t.Errorf("expected --bulk to force-remove despite the OPEN PR; got %v", remover.removed)
+	}
+	if probeCalls != 0 {
+		t.Errorf("expected the PR-state probe never consulted under --bulk; got %d calls", probeCalls)
 	}
 }
 
@@ -2153,6 +2303,8 @@ func TestReap_Scan_SummaryLine_CorrectCounts(t *testing.T) {
 		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
 		noteFunc:        noter.fn(),
 		notifyCtx:       defaultReapNotifyCtx,
+		prState:         reapAlwaysMergedPRState,
+		ghPreflight:     reapAlwaysGHOk,
 	}
 
 	ctx, stdout, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
@@ -2160,7 +2312,7 @@ func TestReap_Scan_SummaryLine_CorrectCounts(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := "reap: scan summary — review=6 processed=4 already-reaped-revisited=1 sessions-torn-down=3 worktrees-removed=2 worktrees-already-gone=1 worktrees-skipped=0 worktrees-failed=1 grace-skipped=1 codex-skipped=1"
+	want := "reap: scan summary — review=6 processed=4 already-reaped-revisited=1 sessions-torn-down=3 worktrees-removed=2 worktrees-already-gone=1 worktrees-skipped=0 worktrees-failed=1 worktrees-kept-pr-state=0 grace-skipped=1 codex-skipped=1"
 	if !strings.Contains(stdout.String(), want) {
 		t.Errorf("expected summary line %q; got stdout %q", want, stdout.String())
 	}
