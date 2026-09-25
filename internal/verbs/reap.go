@@ -359,6 +359,15 @@ func (s *reapScanSummary) recordReal(alreadyReaped bool, action, wtOutcome strin
 	}
 }
 
+// isKeptPRStateOutcome reports whether wtOutcome is one of
+// removeWorktreeIfClean's two review-shaped "kept, PR not yet terminal"
+// outcomes (agent-teams-8st0.13): "worktree-kept-pr-open" or
+// "worktree-kept-pr-unknown". runScan's journal-skip gate below uses this to
+// recognize a tick that did nothing new.
+func isKeptPRStateOutcome(wtOutcome string) bool {
+	return wtOutcome == "worktree-kept-pr-open" || wtOutcome == "worktree-kept-pr-unknown"
+}
+
 // String renders the one-line, stable/parseable-ish summary runScan prints
 // at the end of every scan tick.
 func (s reapScanSummary) String() string {
@@ -482,7 +491,20 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
 		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL, iss.ID, prProbe)
-		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
+		// agent-teams-8st0.13 (Eric, follow-up): a still-open-PR survivor is
+		// revisited every tick until its PR reaches a terminal state, but once
+		// the session half is already done — action=="no-session", nothing
+		// left to tear down — and the worktree is STILL kept for the same
+		// reason as last tick, journaling again only repeats what the
+		// previous entry already said. Skip that one exact no-op combination,
+		// stateless: no persisted marker, just this tick's own action/
+		// wtOutcome values. Any tick that did something — the session was
+		// actually torn down (action=="reaped", the first sighting) or the
+		// worktree outcome is anything other than still-kept (removed, or a
+		// real failure) — still journals normally.
+		if action != "no-session" || !isKeptPRStateOutcome(wtOutcome) {
+			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
+		}
 		summary.recordReal(alreadyReaped, action, wtOutcome)
 
 		if action != "failed" {
@@ -1355,7 +1377,14 @@ func hasReapedNote(notes string) bool {
 // reapJournalFileName is the append-only journal reap writes one line to per
 // attempt, mirroring hung-journal.jsonl's role for the hung-scan backstop
 // (hung_workproduct.go) but kept in its own file since it tracks a distinct
-// concern.
+// concern. SCAN mode's real (non-dry-run) path skips the write for one
+// specific repeat tick (agent-teams-8st0.13, follow-up): a review-shaped
+// survivor whose session teardown already found nothing to do
+// (action=="no-session") and whose worktree is still kept for the same
+// PR-not-yet-terminal reason as before (isKeptPRStateOutcome) — a no-op
+// retry earns no new line, since it has nothing new to say. Every other real
+// attempt still journals, including the first tick a "kept" outcome
+// appears (the session teardown itself did something that tick).
 const reapJournalFileName = "reap-journal.jsonl"
 
 // reapJournalEntry is one journal line: which target reap attempted, in
