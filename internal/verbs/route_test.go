@@ -445,7 +445,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 		Transition: TransitionReviewRequested,
 	}
 
-	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+	if err := cmd.spawnReviewInitiative(ctx, event, ""); err != nil {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
@@ -552,7 +552,7 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 		Transition: TransitionReviewRequested,
 	}
 
-	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+	if err := cmd.spawnReviewInitiative(ctx, event, ""); err != nil {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
@@ -618,7 +618,7 @@ func TestSpawnReviewInitiative_PRURLConstructed(t *testing.T) {
 		Transition: TransitionReviewRequested,
 	}
 
-	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
+	if err := cmd.spawnReviewInitiative(ctx, event, ""); err != nil {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
@@ -1419,13 +1419,14 @@ func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *test
 	}
 }
 
-// TestCommentReply_ClosedMatch_WorktreeReaped_DropsWithoutReopen is the
-// comment_reply counterpart of
-// TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening
-// (agent-teams-8st0.7): comment_reply has no spawn fallback by design, so a
-// reaped worktree must drop the event (log only) rather than reopen — never
-// producing the reopen/close ping-pong, and never a runner call at all.
-func TestCommentReply_ClosedMatch_WorktreeReaped_DropsWithoutReopen(t *testing.T) {
+// TestCommentReply_ClosedMatch_WorktreeReaped_SpawnsFreshCommentReplyInsteadOfDropping
+// is the comment_reply counterpart of
+// TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening.
+// agent-teams-8st0.7 first found the reaped-worktree case and dropped the
+// event outright (comment_reply had no spawn fallback then); agent-teams-8st0.14
+// replaces that drop with a fresh spawn in comment-reply mode, since there is
+// no live session left for a later poll to resume into.
+func TestCommentReply_ClosedMatch_WorktreeReaped_SpawnsFreshCommentReplyInsteadOfDropping(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
 	closed := bd.Issue{
@@ -1435,7 +1436,16 @@ func TestCommentReply_ClosedMatch_WorktreeReaped_DropsWithoutReopen(t *testing.T
 		Notes:       "pr: https://github.com/owner/myrepo/pull/42\ncomment-replies: 1 reply posted",
 		Status:      "closed",
 	}
-	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	runner := &fakeRunner{}
 	cmd := &routePREventKong{
@@ -1446,12 +1456,28 @@ func TestCommentReply_ClosedMatch_WorktreeReaped_DropsWithoutReopen(t *testing.T
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 0 {
-		t.Fatalf("calls = %v, want 0 (no reopen, no spawn)", runner.calls)
+	if len(runner.calls) != 1 || runner.calls[0][0] != "dispatch" {
+		t.Fatalf("calls = %v, want a single dispatch call (no reopen)", runner.calls)
+	}
+	if got := launchPromptArg(t, runner.calls[0]); !strings.Contains(got, "comment-reply") {
+		t.Errorf("dispatch launch-prompt = %q, want it to contain \"comment-reply\"", got)
 	}
 	if !strings.Contains(stdout.String(), "worktree is gone") {
 		t.Errorf("stdout missing reaped-worktree notice: %s", stdout.String())
 	}
+}
+
+// launchPromptArg extracts the value following --launch-prompt in a dispatch
+// call's argv, failing the test if the flag is absent.
+func launchPromptArg(t *testing.T, call []string) string {
+	t.Helper()
+	for i, arg := range call {
+		if arg == "--launch-prompt" && i+1 < len(call) {
+			return call[i+1]
+		}
+	}
+	t.Fatalf("call missing --launch-prompt: %v", call)
+	return ""
 }
 
 // TestCommentReply_DisabledRepo_SkipsWithoutReopen is the comment_reply
@@ -1540,11 +1566,26 @@ func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
 	}
 }
 
-func TestCommentReply_SendFails_DropsWithoutSpawn(t *testing.T) {
+// TestCommentReply_SendFails_ClosesReopenedThenSpawnsFreshCommentReply pins
+// agent-teams-8st0.14's close-then-spawn behavior: a reopen that succeeds but
+// whose mail send then fails must NOT leave the reply dropped — it
+// compensating-closes the reopened initiative (so a later event re-matches
+// it as closed, same as before) and then spawns a fresh comment-reply
+// review, replacing the old close-then-drop.
+func TestCommentReply_SendFails_ClosesReopenedThenSpawnsFreshCommentReply(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	closed := prFieldIssue(t, "at-cr.4", "owner/myrepo", 42)
 	closed.Status = "closed"
-	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	runner := &failRunner{failOn: "mail"}
 	cmd := &routePREventKong{
@@ -1555,14 +1596,18 @@ func TestCommentReply_SendFails_DropsWithoutSpawn(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 3 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" || runner.calls[2][0] != "close" {
-		t.Fatalf("calls = %v, want [reopen, mail, close] and no dispatch", runner.calls)
+	if len(runner.calls) != 4 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" ||
+		runner.calls[2][0] != "close" || runner.calls[3][0] != "dispatch" {
+		t.Fatalf("calls = %v, want [reopen, mail, close, dispatch]", runner.calls)
 	}
 	wantClose := []string{"close", "at-cr.4", "--reason", "comment-reply send failed; restoring closed state"}
 	if gotClose := runner.calls[2]; strings.Join(gotClose, "\x00") != strings.Join(wantClose, "\x00") {
 		t.Errorf("close call = %v, want %v", gotClose, wantClose)
 	}
-	if !strings.Contains(stdout.String(), "comment-reply event dropped") {
-		t.Errorf("stdout missing dropped notice: %s", stdout.String())
+	if got := launchPromptArg(t, runner.calls[3]); !strings.Contains(got, "comment-reply") {
+		t.Errorf("dispatch launch-prompt = %q, want it to contain \"comment-reply\"", got)
+	}
+	if !strings.Contains(stdout.String(), "spawning a fresh comment-reply review") {
+		t.Errorf("stdout missing spawn notice: %s", stdout.String())
 	}
 }
