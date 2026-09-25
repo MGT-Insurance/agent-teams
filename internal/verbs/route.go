@@ -170,25 +170,21 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 // comment-reply mode argument). No-match (the PR was never reviewed) and a
 // disabled repo still log and skip — a comment-reply session needs a prior
 // review to answer into, and a disabled repo is deliberate operator policy,
-// not a transient failure either branch could route around. A reopen failure
-// also still drops the event (rare, and not a review-worktree problem the
-// fallback below addresses): pr-shepherd's cursor advances regardless, and
-// the recovery mechanism is thread re-derivation — the comment-reply session
-// reads whole threads from GitHub, so the next reply on the PR re-triggers
-// routing.
+// not a failure any fallback should route around.
 //
-// agent-teams-8st0.14: when the initiative WOULD be reopened but its
-// worktree is already reaped, or the reopen succeeds but the mail send then
-// fails, this now spawns a fresh review initiative in comment-reply mode
-// (spawnReviewInitiative with mode "comment-reply") instead of dropping the
-// reply outright — the thread re-derivation recovery above never actually
-// fires for these two cases, since there is no live session left to
-// re-trigger into on a later poll; only a fresh spawn gives the reply
-// somewhere to land. A send failure AFTER a successful reopen still
-// compensating-closes the initiative first (so a later event re-matches via
-// matchClosedReviewInitiative instead of piling onto a half-delivered open
-// initiative), then spawns — close-then-spawn, replacing the old
-// close-then-drop.
+// agent-teams-8st0.14 (Eric's rule: a reply on a PR this system reviewed
+// must reach a session): every OTHER way this can fail now spawns a fresh
+// review initiative in comment-reply mode (spawnReviewInitiative with mode
+// "comment-reply") instead of dropping the reply — a reaped worktree (no
+// live session to reopen into), a reopen call that itself errors, or a
+// reopen that succeeds but whose mail send then fails. None of these leaves
+// a live session for the old thread-re-derivation recovery (the
+// comment-reply session reads whole threads from GitHub, so the next reply
+// on the PR used to re-trigger routing) to actually resume into, so only a
+// fresh spawn gives the reply somewhere to land. A send failure AFTER a
+// successful reopen still compensating-closes the initiative first (so a
+// later event re-matches via matchClosedReviewInitiative instead of piling
+// onto a half-delivered open initiative), then spawns — close-then-spawn.
 func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) error {
 	result, err := matchClosedReviewInitiative(ctx, event)
 	if err != nil {
@@ -216,9 +212,9 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
 		result.InitiativeID, event.Repo, event.PRNumber)
 	if err := c.runner("reopen", result.InitiativeID); err != nil {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — dropping comment-reply event\n",
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — spawning a fresh comment-reply review instead of dropping\n",
 			result.InitiativeID, err)
-		return nil
+		return c.spawnReviewInitiative(ctx, event, "comment-reply")
 	}
 	sendArgs := []string{"mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd",
 		"--resume-launch-prompt", "/agent-teams:review-pr " + result.InitiativeID + " comment-reply",

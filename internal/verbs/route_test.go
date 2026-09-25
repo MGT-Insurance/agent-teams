@@ -1543,11 +1543,25 @@ func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
 	}
 }
 
-func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
+// TestCommentReply_ReopenFails_SpawnsFreshCommentReplyInsteadOfDropping pins
+// agent-teams-8st0.14's follow-up (Eric's rule: a reply on a PR this system
+// reviewed must reach a session): a reopen call that itself errors is no
+// longer a terminal drop — it spawns a fresh comment-reply review, same as
+// the reaped-worktree and send-failure branches.
+func TestCommentReply_ReopenFails_SpawnsFreshCommentReplyInsteadOfDropping(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	closed := prFieldIssue(t, "at-cr.3", "owner/myrepo", 42)
 	closed.Status = "closed"
-	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clonePath := newEnabledClonePath(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	runner := &failRunner{failOn: "reopen"}
 	cmd := &routePREventKong{
@@ -1558,11 +1572,14 @@ func TestCommentReply_ReopenFails_DropsWithoutSpawn(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 1 || runner.calls[0][0] != "reopen" {
-		t.Fatalf("calls = %v, want [reopen] only", runner.calls)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "dispatch" {
+		t.Fatalf("calls = %v, want [reopen, dispatch]", runner.calls)
 	}
-	if !strings.Contains(stdout.String(), "dropping") {
-		t.Errorf("stdout missing drop notice: %s", stdout.String())
+	if got := launchPromptArg(t, runner.calls[1]); !strings.Contains(got, "comment-reply") {
+		t.Errorf("dispatch launch-prompt = %q, want it to contain \"comment-reply\"", got)
+	}
+	if !strings.Contains(stdout.String(), "spawning a fresh comment-reply review") {
+		t.Errorf("stdout missing spawn notice: %s", stdout.String())
 	}
 }
 
