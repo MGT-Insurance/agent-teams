@@ -13,16 +13,23 @@
 //     it checks out the PR author's branch and never carries changes meant
 //     to be pushed from here, so the clean-only gating a normal work
 //     worktree needs doesn't apply (contract: agent-teams-sbh8.1, superseded
-//     2026-09-23 — see its SUPERSEDED-BY note; agent-teams-6hgr.1). An
+//     2026-09-23 — see its SUPERSEDED-BY note; agent-teams-6hgr.1). It is
+//     NOT, however, removed while its own PR is still open: agent-teams-8st0.13
+//     gates the removal on the PR reaching MERGED or CLOSED (reusing
+//     hung_tick.go's gh probe/cache), keeping the worktree available for a
+//     late re-review or comment-reply request; an inconclusive probe keeps
+//     it too, retried next tick, same as any other unresolved teardown. An
 //     already-reaped initiative (a durable "reaped:" bd note) is NOT
 //     skipped: it is re-swept every tick like any other survivor, so a
 //     leftover worktree a prior scan left behind, or a reopened-then-
 //     reclosed initiative's new session, is retried until its teardown
 //     actually completes — the note only prevents a DUPLICATE note being
 //     written, never a repeat sweep (agent-teams-6hgr.1, replacing the old
-//     write-once-skip). Gating trusts the initiative's own closed state —
-//     reap never probes session status or liveness itself (contract:
-//     agent-teams-sbh8.15, "trust the initiative state").
+//     write-once-skip). Gating trusts the initiative's own closed state for
+//     session/worktree LIVENESS — reap never probes session status itself
+//     (contract: agent-teams-sbh8.15, "trust the initiative state") — but
+//     the PR-merged/closed gate above is a deliberate, narrow exception,
+//     scoped to whether the worktree may be removed at all.
 //   - ONE-OFF mode (a target given): reaps exactly that one target right now,
 //     bypassing every gate — an explicit human action, not necessarily a
 //     review-pr one.
@@ -86,6 +93,8 @@ func RegisterReapKong(p *cli.Parser) {
 		ghCommitPresent: defaultGHCommitPresent,
 		noteFunc:        defaultReapNote,
 		notifyCtx:       defaultReapNotifyCtx,
+		prState:         defaultPRState,
+		ghPreflight:     defaultHungReviewCommentPreflight,
 	})
 }
 
@@ -217,6 +226,22 @@ type reapKong struct {
 	ghCommitPresent ghCommitPresentFunc    `kong:"-"`
 	noteFunc        reapNoteFunc           `kong:"-"`
 	notifyCtx       reapNotifyCtxFunc      `kong:"-"`
+
+	// prState and ghPreflight are agent-teams-8st0.13's PR-merged/closed gate
+	// on a review-shaped worktree's removal — the exact seams hung_tick.go
+	// wires as hungTickDeps.prState/ghPreflight (defaultPRState,
+	// defaultHungReviewCommentPreflight), reused here rather than a second gh
+	// probe. removeWorktreeIfClean's review-shaped branch builds a
+	// hungPRStateProbe from these once per scan (sharing hung-tick's own
+	// StewardHome-relative TTL cache file, hung-pr-state-cache.json — safe to
+	// share: reads/writes are per-tick snapshots, and saveHungPRStateCache
+	// writes atomically via temp-file-then-rename, so a concurrent hung-tick
+	// write can only ever cost a redundant probe next tick, never a
+	// corrupted file or a wrong gate decision). nil-safe: a nil prState makes
+	// hungPRStateProbe.evaluate report probed=false, which this gate treats
+	// exactly like an OPEN PR — keep the worktree, retry next tick.
+	prState     prStateFunc  `kong:"-"`
+	ghPreflight func() error `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -296,6 +321,7 @@ type reapScanSummary struct {
 	worktreesAlreadyGone   int // worktree outcome == worktree-absent (real only)
 	worktreesSkipped       int // worktree outcome == worktree-dirty-skipped (real only)
 	worktreesFailed        int // worktree outcome == worktree-remove-failed (real only)
+	worktreesKeptPRState   int // worktree outcome is a "kept-pr-*" variant — PR not yet merged/closed, or the probe was inconclusive (real only; agent-teams-8st0.13)
 }
 
 // recordPreview tallies one --dry-run survivor: only processed/
@@ -328,15 +354,26 @@ func (s *reapScanSummary) recordReal(alreadyReaped bool, action, wtOutcome strin
 		s.worktreesSkipped++
 	case "worktree-remove-failed":
 		s.worktreesFailed++
+	case "worktree-kept-pr-open", "worktree-kept-pr-unknown":
+		s.worktreesKeptPRState++
 	}
+}
+
+// isKeptPRStateOutcome reports whether wtOutcome is one of
+// removeWorktreeIfClean's two review-shaped "kept, PR not yet terminal"
+// outcomes (agent-teams-8st0.13): "worktree-kept-pr-open" or
+// "worktree-kept-pr-unknown". runScan's journal-skip gate below uses this to
+// recognize a tick that did nothing new.
+func isKeptPRStateOutcome(wtOutcome string) bool {
+	return wtOutcome == "worktree-kept-pr-open" || wtOutcome == "worktree-kept-pr-unknown"
 }
 
 // String renders the one-line, stable/parseable-ish summary runScan prints
 // at the end of every scan tick.
 func (s reapScanSummary) String() string {
 	return fmt.Sprintf(
-		"review=%d processed=%d already-reaped-revisited=%d sessions-torn-down=%d worktrees-removed=%d worktrees-already-gone=%d worktrees-skipped=%d worktrees-failed=%d grace-skipped=%d codex-skipped=%d",
-		s.reviewInitiatives, s.processed, s.alreadyReapedRevisited, s.sessionsTornDown, s.worktreesRemoved, s.worktreesAlreadyGone, s.worktreesSkipped, s.worktreesFailed, s.graceSkipped, s.codexSkipped,
+		"review=%d processed=%d already-reaped-revisited=%d sessions-torn-down=%d worktrees-removed=%d worktrees-already-gone=%d worktrees-skipped=%d worktrees-failed=%d worktrees-kept-pr-state=%d grace-skipped=%d codex-skipped=%d",
+		s.reviewInitiatives, s.processed, s.alreadyReapedRevisited, s.sessionsTornDown, s.worktreesRemoved, s.worktreesAlreadyGone, s.worktreesSkipped, s.worktreesFailed, s.worktreesKeptPRState, s.graceSkipped, s.codexSkipped,
 	)
 }
 
@@ -355,6 +392,13 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	// cause of a tick never finishing, since a single hang stalled every
 	// subsequent survivor before any of them could be marked reaped.
 	sessions, sessErr := c.agentsFunc()
+
+	// prProbe is agent-teams-8st0.13's PR-merged/closed gate on a
+	// review-shaped worktree's removal, built once for the whole tick so its
+	// TTL cache (shared with hung_tick.go's own probe) is loaded once and
+	// flushed once, not per survivor.
+	prProbe := newHungPRStateProbe(ctx, hungTickDeps{now: c.now, prState: c.prState, ghPreflight: c.ghPreflight})
+	defer prProbe.flush()
 
 	// Bulk-clear only: an upfront count (same gates the loop below applies)
 	// so a human watching stderr sees the drain's size before minutes of
@@ -436,7 +480,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			// Read-only preview: query session/worktree state through the
 			// same seams but never call stop/rm/remove/note.
 			sessOutcome := c.previewSessionOutcome(sessions, sessErr, matchInitiativeSession(f), callerID)
-			wtOutcome := c.previewWorktreeOutcome(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
+			wtOutcome := c.previewWorktreeOutcome(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL, iss.ID, prProbe)
 			processed++
 			summary.recordPreview(alreadyReaped)
 			if c.Bulk {
@@ -446,8 +490,21 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 		}
 
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL)
-		c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), prURL, iss.ID, prProbe)
+		// agent-teams-8st0.13 (Eric, follow-up): a still-open-PR survivor is
+		// revisited every tick until its PR reaches a terminal state, but once
+		// the session half is already done — action=="no-session", nothing
+		// left to tear down — and the worktree is STILL kept for the same
+		// reason as last tick, journaling again only repeats what the
+		// previous entry already said. Skip that one exact no-op combination,
+		// stateless: no persisted marker, just this tick's own action/
+		// wtOutcome values. Any tick that did something — the session was
+		// actually torn down (action=="reaped", the first sighting) or the
+		// worktree outcome is anything other than still-kept (removed, or a
+		// real failure) — still journals normally.
+		if action != "no-session" || !isKeptPRStateOutcome(wtOutcome) {
+			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
+		}
 		summary.recordReal(alreadyReaped, action, wtOutcome)
 
 		if action != "failed" {
@@ -558,7 +615,17 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 // strings per status (agent-teams-442q.14/Finding 2) so a dry-run preview
 // distinguishes a reclaimable deletion corpse from a reclaimable
 // stale-remote-ref worktree exactly like the real run does.
-func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
+//
+// When prURL is non-empty and c.Bulk is false, this also mirrors
+// removeWorktreeIfClean's PR-merged/closed gate (agent-teams-8st0.13):
+// initiativeID and prProbe feed the same hungPRStateProbe the real run
+// consults, so a preview never claims a removal the real run would actually
+// keep. "worktree-would-keep-pr-open"/"worktree-would-keep-pr-unknown"
+// substitute for the mutating "worktree-kept-pr-open"/
+// "worktree-kept-pr-unknown" (--dry-run never withholds a note either, since
+// it never writes one). --bulk skips the gate here exactly as it does for
+// real, since --bulk stays ungated (a human escape hatch).
+func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if worktree == "" {
 		return "worktree-unknown"
 	}
@@ -570,6 +637,15 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 		return "worktree-absent"
 	}
 	if prURL != "" {
+		if !c.Bulk {
+			state, probed := prProbe.evaluate(hungScanEntry{ID: initiativeID, ReviewPRURL: prURL})
+			if !probed {
+				return "worktree-would-keep-pr-unknown"
+			}
+			if state != "MERGED" && state != "CLOSED" {
+				return "worktree-would-keep-pr-open"
+			}
+		}
 		if status == wtClean {
 			return "worktree-would-remove"
 		}
@@ -651,14 +727,14 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 			// contract: "the ONLY form that gives codex a removable
 			// worktree" / "To reap a codex worktree one-off, pass the
 			// INITIATIVE ID". Remove it if clean; leave the session alone.
-			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "", "")
+			wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, "", "", "", nil)
 			c.journal(ctx, now, iss.ID, target, "codex", "one-off", "skip-codex-ring1", wtOutcome)
 			return fmt.Errorf("ateam reap: %s is a codex initiative; codex session teardown is not implemented (Ring 1) — worktree outcome: %s", target, wtOutcome)
 		}
 
 		sessions, sessErr := c.agentsFunc()
 		action := c.teardownClaudeSession(ctx, sessions, sessErr, matchInitiativeSession(f), callerID)
-		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), "")
+		wtOutcome := c.removeWorktreeIfClean(ctx, f.Worktree, callerWorktreeCWD(sessions, callerID), "", "", nil)
 		c.journal(ctx, now, iss.ID, target, "claude", "one-off", action, wtOutcome)
 
 		// Written only on FULL teardown success — the session action didn't
@@ -700,7 +776,7 @@ func (c *reapKong) runOneOff(ctx *cli.Context, target string) error {
 		action := c.stopAndRm(ctx, id)
 		// No caller-cwd guard needed here: the explicit refusal above already
 		// rejects this whole form when matched is the calling session.
-		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "", "")
+		wtOutcome := c.removeWorktreeIfClean(ctx, matched.CWD, "", "", "", nil)
 		// No bead was resolved for a bare session id, so no reaped note.
 		c.journal(ctx, now, "", target, "claude", "one-off", action, wtOutcome)
 		if action == "failed" {
@@ -778,20 +854,37 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // to be review-shaped, so one-off's behavior for a non-review target is
 // unchanged (agent-teams-6hgr.1 scopes the force-remove rule to the
 // review-shaped SCAN path only). When prURL is non-empty, the whole decision
-// delegates to forceRemoveWorktree, which removes UNCONDITIONALLY —
-// regardless of dirty, unpushed, or inconclusive git state — because a
-// review worktree checks out the PR author's branch and never carries
-// changes meant to be pushed from here, so the clean-only / gh-verify gating
-// that protects a normal work worktree does not apply (contract
-// agent-teams-sbh8.1, superseded 2026-09-23 — see its SUPERSEDED-BY note).
-// worktreeClean is never called on this path at all — only worktreeExists's
-// bare directory stat — since dirty/unpushed status is irrelevant to a
-// decision that ignores it either way, and worktreeClean's ~15s of
-// sequential git subprocesses was pure waste there, eating into the scan
-// tick's timeout budget (review finding on agent-teams-6hgr.1's own
+// delegates to forceRemoveWorktree, which — once the PR-merged/closed gate
+// below clears — removes UNCONDITIONALLY regardless of dirty, unpushed, or
+// inconclusive git state — because a review worktree checks out the PR
+// author's branch and never carries changes meant to be pushed from here, so
+// the clean-only / gh-verify gating that protects a normal work worktree does
+// not apply (contract agent-teams-sbh8.1, superseded 2026-09-23 — see its
+// SUPERSEDED-BY note). worktreeClean is never called on this path at all —
+// only worktreeExists's bare directory stat — since dirty/unpushed status is
+// irrelevant to a decision that ignores it either way, and worktreeClean's
+// ~15s of sequential git subprocesses was pure waste there, eating into the
+// scan tick's timeout budget (review finding on agent-teams-6hgr.1's own
 // force-remove change — see forceRemoveWorktree's doc comment for the
 // before/after arithmetic). bulkGHVerifyRemovable is likewise never called on
 // this path.
+//
+// agent-teams-8st0.13: a review worktree is also kept — never force-removed
+// — until its own PR reaches a terminal state. Unless c.Bulk (a human escape
+// hatch that stays ungated, exactly like one-off mode), forceRemoveWorktree
+// probes prURL's PR state through prProbe (initiativeID identifies the
+// initiative for its log line only) before removing anything: an OPEN PR
+// keeps the worktree ("worktree-kept-pr-open"), an inconclusive probe
+// (error, timeout, PR not found, or no prState seam wired) does too
+// ("worktree-kept-pr-unknown" — proof of MERGED/CLOSED is required, mirroring
+// every other inconclusive-protects rule in this file), and only MERGED or
+// CLOSED clears the gate. Neither kept outcome is worktreeTornDown, so
+// runScan's note-write gate withholds the reaped note and this initiative is
+// retried next tick — the same retry-until-done mechanism a
+// worktree-remove-failed outcome already relies on. This is why a
+// route.go comment_reply for a still-open PR can keep finding this worktree
+// (or, once it eventually IS torn down, agent-teams-8st0.14 spawns a fresh
+// comment-reply session instead).
 //
 // When prURL is empty (one-off mode, any target), the ORIGINAL clean-only
 // rule still applies unchanged: removal proceeds when status==wtClean, or
@@ -832,8 +925,12 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // "worktree-removed-corpse-gh-verified" for a reclaimed deletion-corpse
 // (wtDirtyRecoverable) worktree — kept distinct (agent-teams-442q.14/Finding
 // 2) since the journal is the only durable record of which force-removal
-// path fired.
-func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL string) string {
+// path fired — or (review-shaped, non-bulk, PR not yet terminal)
+// "worktree-kept-pr-open" or "worktree-kept-pr-unknown".
+//
+// initiativeID and prProbe feed forceRemoveWorktree's PR-state gate; both are
+// ignored whenever prURL is empty (one-off mode never needs them).
+func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if worktree == "" {
 		return "worktree-unknown"
 	}
@@ -843,7 +940,7 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 	}
 
 	if prURL != "" {
-		return c.forceRemoveWorktree(ctx, worktree)
+		return c.forceRemoveWorktree(ctx, worktree, prURL, initiativeID, prProbe)
 	}
 
 	exists, status, headSHA, err := c.worktreeClean(worktree)
@@ -902,9 +999,33 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 // --bulk — --bulk is scan-mode-only and scan-mode's prURL is never empty, so
 // in production every --bulk removal now takes this path and needs the same
 // generous bound the old gh-verified-safe removals did (agent-teams-442q.13).
-func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree string) string {
+//
+// agent-teams-8st0.13: existence is checked FIRST, before the PR-state gate
+// below, so an already-absent worktree is reported (and, via
+// worktreeTornDown, notable) regardless of PR state — there is nothing left
+// to protect. Unless c.Bulk, the gate then probes prURL's state through
+// prProbe (initiativeID, in the hungScanEntry it builds, is used only for
+// that probe's own log line): an OPEN state keeps the worktree
+// ("worktree-kept-pr-open"), an inconclusive probe (error, timeout, PR not
+// found, or c.prState left nil) also keeps it ("worktree-kept-pr-unknown" —
+// proof of MERGED/CLOSED is required, never merely absence of proof of
+// OPEN), and only MERGED or CLOSED proceeds to the actual removal below.
+// --bulk skips this gate entirely — a human-invoked drain stays the ungated
+// escape hatch it always was, matching one-off mode's own prURL="" bypass.
+func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if !c.worktreeExists(worktree) {
 		return "worktree-absent"
+	}
+	if !c.Bulk {
+		state, probed := prProbe.evaluate(hungScanEntry{ID: initiativeID, ReviewPRURL: prURL})
+		if !probed {
+			fmt.Fprintf(ctx.Stdout, "reap: worktree %s: PR state unknown, keeping until it can be confirmed merged/closed\n", worktree)
+			return "worktree-kept-pr-unknown"
+		}
+		if state != "MERGED" && state != "CLOSED" {
+			fmt.Fprintf(ctx.Stdout, "reap: worktree %s: PR still %s, keeping until merged or closed\n", worktree, state)
+			return "worktree-kept-pr-open"
+		}
 	}
 
 	timeout := reapWorktreeRemoveTimeout
@@ -924,9 +1045,12 @@ func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree string) string
 // already absent before this tick. This is runScan's note-write gate
 // (agent-teams-6hgr.1, bug 2a): the reaped: note is written only when the
 // worktree outcome is one of these, never on worktree-remove-failed,
-// worktree-dirty-skipped, worktree-unknown, or worktree-skipped-caller-cwd —
-// each of those leaves real residual state that must be retried, not
-// silently marked done.
+// worktree-dirty-skipped, worktree-unknown, worktree-skipped-caller-cwd,
+// worktree-kept-pr-open, or worktree-kept-pr-unknown — each of those leaves
+// real residual state that must be retried, not silently marked done. The
+// last two (agent-teams-8st0.13) are the review-worktree PR-merged/closed
+// gate keeping this initiative unreaped on purpose, for as long as its PR
+// stays open or unconfirmed.
 func worktreeTornDown(wtOutcome string) bool {
 	switch wtOutcome {
 	case "worktree-removed", "worktree-removed-forced", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified", "worktree-absent":
@@ -1253,7 +1377,14 @@ func hasReapedNote(notes string) bool {
 // reapJournalFileName is the append-only journal reap writes one line to per
 // attempt, mirroring hung-journal.jsonl's role for the hung-scan backstop
 // (hung_workproduct.go) but kept in its own file since it tracks a distinct
-// concern.
+// concern. SCAN mode's real (non-dry-run) path skips the write for one
+// specific repeat tick (agent-teams-8st0.13, follow-up): a review-shaped
+// survivor whose session teardown already found nothing to do
+// (action=="no-session") and whose worktree is still kept for the same
+// PR-not-yet-terminal reason as before (isKeptPRStateOutcome) — a no-op
+// retry earns no new line, since it has nothing new to say. Every other real
+// attempt still journals, including the first tick a "kept" outcome
+// appears (the session teardown itself did something that tick).
 const reapJournalFileName = "reap-journal.jsonl"
 
 // reapJournalEntry is one journal line: which target reap attempted, in

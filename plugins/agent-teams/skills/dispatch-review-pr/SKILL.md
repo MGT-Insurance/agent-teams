@@ -105,7 +105,7 @@ claude attach <session-id>      # open it in this terminal
 claude stop <session-id>        # abort early
 ```
 
-When the background review finishes, it closes its initiative and the session stays idle. An automatic `ateam reap` backstop tears down the idle session (`claude stop` plus `claude rm`) and removes its worktree about 20 minutes after the initiative closes — no human action needed. To remove it immediately instead, run: `ateam reap <initiative-id>`.
+When the background review finishes, it closes its initiative and the session stays idle. An automatic `ateam reap` backstop tears down the idle session (`claude stop` plus `claude rm`) about 20 minutes after the initiative closes; it keeps the review worktree until the PR is merged or closed, then removes it — no human action needed. To remove both immediately instead, run: `ateam reap <initiative-id>`.
 
 ## Key constraints
 
