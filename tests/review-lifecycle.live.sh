@@ -623,6 +623,19 @@ run_S4_moot() {
 # ══════════════════════════════════════════════════════════════════════════
 # S5 — hung tick on a review with 1 unread -> not closed (then the scripted
 # session reads it; 0 open).
+#
+# reviewBackstopCloseGateHolds (hung_tick.go) only considers an entry once
+# (a) it is review-shaped, (b) hasReviewPostedNote(entry.Notes) is true, and
+# (c) the tied session is DEAD/STUCK. Without a planted "review-posted:"
+# note, gate (b) is false and the backstop bails out before it ever looks at
+# unread mail — the initiative would stay open for a reason that has nothing
+# to do with the property this scenario claims to guard, on ANY hung-tick
+# implementation, old or new. So: plant the note first, and after the tick
+# read hung-journal.jsonl (appendHungJournal's ladder=="review-backstop"
+# entries) to prove the gate actually fired, not merely that its
+# precondition was unmet. Expected ladder_action: "skip-unread-mail" when
+# the unread-mail guard (agent-teams-8st0.21) is present and holds the close
+# back; "close" (and a closed status) on a binary that lacks it.
 # ══════════════════════════════════════════════════════════════════════════
 run_S5() {
   local n=106
@@ -631,6 +644,15 @@ run_S5() {
 
   local wt="$T/manual-worktrees/s5"
   local id; id="$(make_review_initiative "s5" "$wt" "$n" open)"
+
+  # Satisfy reviewBackstopCloseGateHolds's gate (b): a posted-review note,
+  # verbatim shape from SKILL.md's own review-posted step (hung_scan.go's
+  # hasReviewPostedNote matches on the "review-posted:" line prefix, nothing
+  # else about the body).
+  local posted_note="$T/s5-review-posted-note.txt"
+  printf 'review-posted: PR #%d -- 1 finding(s), event=COMMENT\nreviewed-sha: %s\n' \
+    "$n" "$(pr_head_sha "$n")" > "$posted_note"
+  bd -C "$AGENT_TEAMS_HOME" note "$id" --file "$posted_note" >/dev/null
 
   # Fake a live session for this cwd so `ateam mail send` delivers via the
   # doorbell (no resume/launch) — leaving exactly 1 unread message sitting on
@@ -671,9 +693,26 @@ run_S5() {
 
   local status_after; status_after="$(issue_status "$id")"
 
+  # Prove reviewBackstopCloseGateHolds actually fired for $id, not merely
+  # that its precondition went unmet — read the journal appendHungJournal
+  # writes for every review-backstop decision (hung_tick.go's
+  # hungReviewBackstopJournalEntry: Ladder=="review-backstop" always,
+  # LadderAction carries the specific outcome).
+  local journal_path="$AGENT_TEAMS_HOME/steward/hung-journal.jsonl"
+  local gate_action="not-reached"
+  if [ -f "$journal_path" ]; then
+    gate_action="$(jq -rs --arg id "$id" \
+      '[.[] | select(.id == $id and .ladder == "review-backstop")]
+       | if length == 0 then "not-reached" else (last.ladder_action // "not-reached") end' \
+      "$journal_path" 2>/dev/null)"
+    [ -n "$gate_action" ] || gate_action="not-reached"
+  fi
+
   local reason=""
   if [ "$status_after" = "closed" ]; then
-    reason="the hung-tick backstop closed $id despite 1 unread message (relay log: $(tr '\n' ' ' < "$STATE_DIR/relay-s5.log")); "
+    reason="the hung-tick backstop closed $id despite 1 unread message (ladder_action=$gate_action; relay log: $(tr '\n' ' ' < "$STATE_DIR/relay-s5.log")); "
+  elif [ "$gate_action" != "skip-unread-mail" ]; then
+    reason="review-backstop gate action was '$gate_action', expected 'skip-unread-mail' — the gate that guards unread mail was never proven to fire, so staying open doesn't demonstrate the property this scenario tests (relay log: $(tr '\n' ' ' < "$STATE_DIR/relay-s5.log")); "
   fi
 
   # Regardless of the assertion above, drain the mail so the scenario still
@@ -696,7 +735,7 @@ run_S5() {
     record "S5" FAIL "not-closed held, but mail wisps remain open after the scripted session drained it"
     return
   fi
-  record "S5" PASS "hung tick did not close $id with 1 unread; scripted session then read+closed it, 0 open mail"
+  record "S5" PASS "review-backstop gate reached (ladder_action=skip-unread-mail); hung tick did not close $id with 1 unread; scripted session then read+closed it, 0 open mail"
 }
 
 # ══════════════════════════════════════════════════════════════════════════
