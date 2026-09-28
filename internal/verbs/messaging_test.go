@@ -1772,6 +1772,16 @@ func TestCheckStewardInboxGuard_OldFormatLive_Refuses(t *testing.T) {
 // either fires).
 func TestInboxKong_StewardDuplicateSession_RefusesBothPeekAndConsume(t *testing.T) {
 	home := t.TempDir()
+
+	// steward init runs against a permissive fakeBD, on a context that shares
+	// home but not the strict trap fbd below — installPrimeMemoryCaps' own
+	// `bd config set` pair (steward.go) would otherwise trip the trap before
+	// the guard under test ever runs.
+	initCtx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(initCtx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
 			t.Fatalf("unexpected bd query call — guard must refuse before querying: %v", args)
@@ -1783,10 +1793,6 @@ func TestInboxKong_StewardDuplicateSession_RefusesBothPeekAndConsume(t *testing.
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, home)
-
-	if err := (&stewardInitKong{}).Run(ctx); err != nil {
-		t.Fatalf("steward init: %v", err)
-	}
 	t.Chdir(StewardSessionDir(ctx))
 
 	writeWatcherPidfile(t, home, os.Getpid(), "incumbent-session")

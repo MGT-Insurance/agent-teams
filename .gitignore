@@ -11,3 +11,6 @@
 # Eval harness runtime artifacts (manifest.json / result.json per run)
 eval/runs/*
 !eval/runs/.gitkeep
+
+# beads (bd >= 1.3.0) cooperative lock files, e.g. .beads.gate.lock beside .beads/
+*.gate.lock*

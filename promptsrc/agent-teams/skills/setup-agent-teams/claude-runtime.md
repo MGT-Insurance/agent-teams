@@ -107,15 +107,15 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Persist it in the shell rc, open a new terminal, and retry step 5. For "unsupported platform", file a plugin issue for the missing platform binary.
 
-### 5e. Install the global-workspace PRIME.md
+### 5e. Install the global-workspace PRIME.md, memory caps, and cap sentinel
 
-`ateam steward init` idempotently installs the bundled `$AGENT_TEAMS_HOME/.beads/PRIME.md`, preventing `bd prime` from dumping all-role memory into sessions:
+`ateam steward init` idempotently installs the bundled `$AGENT_TEAMS_HOME/.beads/PRIME.md` (replaces `bd prime`'s workflow text), sets the `prime.max-memories`/`prime.max-memory-chars` config keys to `1` (caps what `bd prime` injects from the persistent memory store — on bd v1.3.0+, a custom PRIME.md alone no longer suppresses that section), and writes a sentinel memory (`000-prime-cap-sentinel`) whose key sorts ahead of every real memory key in the workspace, so the one memory the cap still lets through is always this harmless placeholder rather than real content:
 
 ```bash
 ateam steward init
 ```
 
-Expected: prints `installed: <path>/.beads/PRIME.md` on first run (or nothing about PRIME.md if it's already installed and unchanged — self-healing is silent), followed by the Steward session directory path. Safe to re-run: it never overwrites a human-edited or unrecognized PRIME.md.
+Expected: prints `installed: <path>/.beads/PRIME.md` on first run (or nothing about PRIME.md if it's already installed and unchanged — self-healing is silent), followed by the Steward session directory path. Safe to re-run: it never overwrites a human-edited or unrecognized PRIME.md, and the config keys and sentinel memory are set unconditionally (a no-op write when already correct).
 
 ### 5f. Check optional Codex compatibility
 
@@ -274,11 +274,11 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ateam sync
    ```
 
-5. Confirm step 5e's PRIME.md install actually took, not just that the workspace exists:
+5. Confirm step 5e's PRIME.md install, memory caps, and cap sentinel actually took, not just that the workspace exists:
    ```bash
    ateam audit
    ```
-   Expected: an `audit: bd prime clean — <n> bytes, no memory dump (budget 10240)` line (alongside the leaked-work-beads line). If instead you see `audit: FAILED — the global workspace has no installed PRIME.md`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md by hand).
+   Expected: an `audit: bd prime clean — <n> bytes, ...` line (alongside the leaked-work-beads line) — either `no memories in store` on a fresh workspace, or `memories capped (prime.max-memories=1, prime.max-memory-chars=1), sentinel confirmed (000-prime-cap-sentinel)` once some exist. If instead you see `audit: FAILED — the global workspace has no installed PRIME.md` or `audit: FAILED — ... is not safely capped`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md, the config keys, or the sentinel memory by hand).
 
 ## 10. Verify memory-routing hook is active
 
