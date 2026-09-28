@@ -2618,6 +2618,177 @@ func TestReap_Scan_CorpseWorktree_ContainmentGuardFails_NotRemoved(t *testing.T)
 	}
 }
 
+// ── agent-teams-n3qp.4: --dry-run predicts the corpse outcome too ──
+// Before this fix, previewWorktreeOutcome called worktreeClean (git status)
+// before any corpse handling, so a review-shaped corpse's dry-run preview
+// walked into the same wrong-repo hazard forceRemoveWorktree's own doc
+// comment warns about, and never predicted a corpse removal at all. These
+// mirror the real-run corpse-fallback tests above, but with DryRun set and
+// no removal seam ever invoked.
+
+// TestReap_Scan_DryRun_CorpseWorktree_PredictsWouldRemoveCorpse covers the
+// core case: a real directory with no .git. The dry-run preview reports
+// "worktree-would-remove-corpse" without ever calling worktreeClean, and
+// leaves the corpse directory untouched on disk.
+func TestReap_Scan_DryRun_CorpseWorktree_PredictsWouldRemoveCorpse(t *testing.T) {
+	home, wtRoot := newCorpseFixtureRoot(t)
+	corpse := filepath.Join(wtRoot, "corpse-dryrun-1") // no `git init` — no .git of its own
+	mustMkdir(t, corpse)
+	iss := reapReviewIssue("at-corpse-dryrun-1", "closed", reapFixedNow.Add(-time.Hour), "", corpse, "sess-corpse-dryrun-1", "")
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-unrelated", CWD: "/tmp/other"}}
+
+	var cleanCalls int
+	clean := func(string) (bool, worktreeGitStatus, string, error) {
+		cleanCalls++
+		return true, wtClean, "deadbeef", nil
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, clean)
+	verb.worktreeExists = defaultWorktreeExists
+	verb.isCorpseWorktree = defaultIsCorpseWorktree
+	verb.Bulk = true
+	verb.DryRun = true
+
+	ctx, _, stderr := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(stderr.String(), "worktree-would-remove-corpse") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove-corpse; got %q", stderr.String())
+	}
+	if cleanCalls != 0 {
+		t.Errorf("expected worktreeClean never called for a corpse preview; got %d calls", cleanCalls)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
+	}
+	if _, statErr := os.Stat(corpse); statErr != nil {
+		t.Fatalf("expected the corpse dir to survive a --dry-run preview: %v", statErr)
+	}
+}
+
+// TestReap_Scan_DryRun_CorpseWorktree_NestedInParentRepo covers the
+// wrong-repo hazard directly: a corpse dir living INSIDE a real parent git
+// repo. The dry-run preview still predicts "worktree-would-remove-corpse"
+// via the stat-only checks, never falling into worktreeClean's git status
+// probe (which would resolve against the parent repo's .git instead of the
+// corpse), and the parent repo itself is left completely alone.
+func TestReap_Scan_DryRun_CorpseWorktree_NestedInParentRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	home, wtRoot := newCorpseFixtureRoot(t)
+	parent := filepath.Join(wtRoot, "parent-dryrun")
+	mustMkdir(t, parent)
+	runGit(t, parent, "init")
+	runGit(t, parent, "config", "user.email", "test@example.com")
+	runGit(t, parent, "config", "user.name", "Test")
+	runGit(t, parent, "commit", "--allow-empty", "-m", "init")
+	parentHEADBefore, err := exec.Command("git", "-C", parent, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD (parent, before): %v", err)
+	}
+
+	corpse := filepath.Join(parent, "corpse-child-dryrun")
+	mustMkdir(t, corpse)
+	if err := os.WriteFile(filepath.Join(corpse, "stray.txt"), []byte("leftover"), 0o644); err != nil {
+		t.Fatalf("write stray file: %v", err)
+	}
+
+	iss := reapReviewIssue("at-corpse-dryrun-2", "closed", reapFixedNow.Add(-time.Hour), "", corpse, "sess-corpse-dryrun-2", "")
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-unrelated", CWD: "/tmp/other"}}
+
+	var cleanCalls int
+	clean := func(string) (bool, worktreeGitStatus, string, error) {
+		cleanCalls++
+		return true, wtClean, "deadbeef", nil
+	}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, clean)
+	verb.worktreeExists = defaultWorktreeExists
+	verb.isCorpseWorktree = defaultIsCorpseWorktree
+	verb.Bulk = true
+	verb.DryRun = true
+
+	ctx, _, stderr := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(stderr.String(), "worktree-would-remove-corpse") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove-corpse; got %q", stderr.String())
+	}
+	if cleanCalls != 0 {
+		t.Errorf("expected worktreeClean never called (would walk into the parent repo); got %d calls", cleanCalls)
+	}
+	if _, statErr := os.Stat(filepath.Join(parent, ".git")); statErr != nil {
+		t.Fatalf("expected the parent repo's .git to survive untouched: %v", statErr)
+	}
+	parentHEADAfter, err := exec.Command("git", "-C", parent, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD (parent, after): %v", err)
+	}
+	if string(parentHEADAfter) != string(parentHEADBefore) {
+		t.Fatalf("expected the parent repo's HEAD unchanged; before %q after %q", parentHEADBefore, parentHEADAfter)
+	}
+	if _, statErr := os.Stat(corpse); statErr != nil {
+		t.Fatalf("expected the corpse dir to survive a --dry-run preview: %v", statErr)
+	}
+}
+
+// TestReap_Scan_DryRun_ValidReviewWorktree_OutcomeUnchanged proves the fix
+// doesn't touch the existing behavior for a real, valid worktree (created
+// with `git worktree add`, so it has its own .git file): the preview still
+// falls through to worktreeClean for its status, exactly as before this
+// change, rather than ever reporting a corpse outcome.
+func TestReap_Scan_DryRun_ValidReviewWorktree_OutcomeUnchanged(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	_, wtPath := initRepoWithWorktree(t, "reap-corpse-dryrun-valid")
+
+	iss := reapReviewIssue("at-corpse-dryrun-3", "closed", reapFixedNow.Add(-time.Hour), "", wtPath, "sess-corpse-dryrun-3", "")
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-unrelated", CWD: "/tmp/other"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, defaultWorktreeClean)
+	verb.worktreeExists = defaultWorktreeExists
+	verb.isCorpseWorktree = defaultIsCorpseWorktree
+	verb.Bulk = true
+	verb.DryRun = true
+
+	home := t.TempDir()
+	ctx, _, stderr := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(stderr.String(), "worktree-would-remove-corpse") {
+		t.Errorf("expected a valid worktree never to preview as a corpse; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "worktree-would-remove") {
+		t.Errorf("expected the dry-run preview to report worktree-would-remove(-forced); got %q", stderr.String())
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected zero mutations under --dry-run; got %v", remover.removed)
+	}
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		t.Fatalf("expected the valid worktree to survive a --dry-run preview: %v", statErr)
+	}
+}
+
 // TestDefaultIsCorpseWorktree exercises the stat-only corpse detection
 // directly: no .git at all, a plain repo's own .git directory, a linked
 // worktree's .git file with a live gitdir: target, one with a dangling

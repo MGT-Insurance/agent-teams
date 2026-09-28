@@ -617,34 +617,46 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 // previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
 // would do without touching disk — the same outcome vocabulary, substituting
 // "worktree-would-remove"/"worktree-would-remove-forced"/
-// "worktree-would-remove-gh-verified"/"worktree-would-remove-corpse-gh-verified"
-// for the mutating "worktree-removed"/"worktree-removed-forced"/
+// "worktree-would-remove-corpse"/"worktree-would-remove-gh-verified"/
+// "worktree-would-remove-corpse-gh-verified" for the mutating
+// "worktree-removed"/"worktree-removed-forced"/"worktree-removed-corpse"/
 // "worktree-removed-gh-verified"/"worktree-removed-corpse-gh-verified"
 // (--dry-run never attempts a removal, so it never reports
 // worktree-remove-failed either). prURL is the initiative's own review PR
-// URL (empty in one-off mode, which never sets c.Bulk). When prURL is
-// non-empty (review-shaped — the only way runScan's dry-run branch reaches
-// this, since the loop above already filters to review-shaped issues), this
-// mirrors removeWorktreeIfClean's force-remove rule: status/headSHA are
-// still resolved (existence still needs worktreeClean's os.Stat) but not
-// otherwise consulted, and bulkGHVerifyRemovable is never called. When
-// prURL is empty, the old clean-only / bulk gh-verify override path applies
-// unchanged: it is only consulted when worktreeClean reports wtUnpushed or
-// wtDirtyRecoverable — the same two statuses removeWorktreeIfClean itself
-// overrides on that path (agent-teams-442q.11), kept as separate outcome
-// strings per status (agent-teams-442q.14/Finding 2) so a dry-run preview
-// distinguishes a reclaimable deletion corpse from a reclaimable
-// stale-remote-ref worktree exactly like the real run does.
+// URL (empty in one-off mode, which never sets c.Bulk).
 //
-// When prURL is non-empty and c.Bulk is false, this also mirrors
-// removeWorktreeIfClean's PR-merged/closed gate (agent-teams-8st0.13):
-// initiativeID and prProbe feed the same hungPRStateProbe the real run
-// consults, so a preview never claims a removal the real run would actually
-// keep. "worktree-would-keep-pr-open"/"worktree-would-keep-pr-unknown"
-// substitute for the mutating "worktree-kept-pr-open"/
-// "worktree-kept-pr-unknown" (--dry-run never withholds a note either, since
-// it never writes one). --bulk skips the gate here exactly as it does for
-// real, since --bulk stays ungated (a human escape hatch).
+// When prURL is non-empty (review-shaped — the only way runScan's dry-run
+// branch reaches this, since the loop above already filters to
+// review-shaped issues), this mirrors forceRemoveWorktree's own ordering
+// exactly, existence check first: worktreeExists's bare directory stat,
+// never worktreeClean's git status/rev-list probe, since a corpse worktree
+// (no .git of its own, or a dangling one) has no repo for that probe to
+// resolve against — it would walk up into whatever unrelated parent repo
+// happens to contain worktree instead of failing loudly, the same hazard
+// forceRemoveWorktree's own doc comment describes. Then the PR-merged/
+// closed gate (agent-teams-8st0.13): initiativeID and prProbe feed the same
+// hungPRStateProbe the real run consults, so a preview never claims a
+// removal the real run would actually keep.
+// "worktree-would-keep-pr-open"/"worktree-would-keep-pr-unknown" substitute
+// for the mutating "worktree-kept-pr-open"/"worktree-kept-pr-unknown"
+// (--dry-run never withholds a note either, since it never writes one).
+// --bulk skips the gate here exactly as it does for real, since --bulk
+// stays ungated (a human escape hatch). Only once the gate clears does this
+// consult isCorpseWorktree && corpseRemovalAllowed, exactly like
+// forceRemoveWorktree — a corpse verdict predicts
+// "worktree-would-remove-corpse" without ever calling worktreeClean; any
+// other review-shaped survivor falls through to worktreeClean for the
+// status/headSHA a normal, non-corpse force-remove doesn't otherwise need,
+// distinguishing "worktree-would-remove" (clean) from
+// "worktree-would-remove-forced" (not) exactly as before this fix.
+//
+// When prURL is empty, the old clean-only / bulk gh-verify override path
+// applies unchanged: it is only consulted when worktreeClean reports
+// wtUnpushed or wtDirtyRecoverable — the same two statuses
+// removeWorktreeIfClean itself overrides on that path (agent-teams-442q.11),
+// kept as separate outcome strings per status (agent-teams-442q.14/Finding
+// 2) so a dry-run preview distinguishes a reclaimable deletion corpse from a
+// reclaimable stale-remote-ref worktree exactly like the real run does.
 func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -652,11 +664,10 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 	if callerWorktree != "" && worktree == callerWorktree {
 		return "worktree-skipped-caller-cwd"
 	}
-	exists, status, headSHA, _ := c.worktreeClean(worktree)
-	if !exists {
-		return "worktree-absent"
-	}
 	if prURL != "" {
+		if !c.worktreeExists(worktree) {
+			return "worktree-absent"
+		}
 		if !c.Bulk {
 			state, probed := prProbe.evaluate(hungScanEntry{ID: initiativeID, ReviewPRURL: prURL})
 			if !probed {
@@ -666,10 +677,21 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 				return "worktree-would-keep-pr-open"
 			}
 		}
+		if c.isCorpseWorktree(worktree) && corpseRemovalAllowed(ctx.Home+"-worktrees", worktree) {
+			return "worktree-would-remove-corpse"
+		}
+		exists, status, _, _ := c.worktreeClean(worktree)
+		if !exists {
+			return "worktree-absent"
+		}
 		if status == wtClean {
 			return "worktree-would-remove"
 		}
 		return "worktree-would-remove-forced"
+	}
+	exists, status, headSHA, _ := c.worktreeClean(worktree)
+	if !exists {
+		return "worktree-absent"
 	}
 	switch status {
 	case wtClean:
