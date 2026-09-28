@@ -706,6 +706,7 @@ run_S5() {
 # ══════════════════════════════════════════════════════════════════════════
 run_S6() {
   local n=107
+  local branch="pr-branch-$n"
   make_pr_ref "$n" "s6 content"
   gh_set_failcount "$n" 3
 
@@ -713,13 +714,27 @@ run_S6() {
   local id; id="$(make_review_initiative "s6" "$wt" "$n" open)"
   rm -rf "$wt" # worktree gone — the at-76ynq shape
 
+  # "3 polls in a row" models pr-shepherd retrying the SAME PR event while gh
+  # is unreachable (route.go's own documented purpose for --dedup-key: "so
+  # pr-shepherd's retry after a failed reopen or a failed send ... dedups
+  # into the same message instead of creating a second one", route.go:107-
+  # 109). Retrying via route-pr-event with an IDENTICAL body each time is
+  # what actually exercises that contract — 3 distinct hand-written bodies
+  # (the harness's original approach) would each hash to a different
+  # --dedup-key by design and correctly produce 3 messages, which isn't what
+  # this scenario is testing. One fixed body-file, reused for every poll AND
+  # the heal retry, keeps repo#pr|transition|body constant so every call
+  # computes the same dedup-key (route.go:129-130).
+  local bodyfile="$T/s6-body.txt"
+  printf 'PR #%d review requires another look; gh unreachable.\n' "$n" > "$bodyfile"
+
   local reason=""
   local i
   for i in 1 2 3; do
-    local nudge="$T/s6-nudge-$i.txt"
-    printf 'poll %d\n' "$i" > "$nudge"
     local out rc
-    out="$(ateam mail send "$id" --file "$nudge" --sender ops 2>&1)"
+    out="$(ateam route-pr-event --repo "$OWNER_REPO" --pr-number "$n" --head-branch "$branch" \
+          --transition comment_reply --body-file "$bodyfile" \
+          --pr-url "https://github.com/$OWNER_REPO/pull/$n" 2>&1)"
     rc=$?
     if [ "$rc" = "0" ]; then
       reason="${reason}poll $i: expected exit 1 (gh down), got exit 0 ($out); "
@@ -733,9 +748,9 @@ run_S6() {
 
   gh_set_state "$n" OPEN
   local heal_out heal_rc
-  local heal_nudge="$T/s6-nudge-heal.txt"
-  printf 'poll heal\n' > "$heal_nudge"
-  heal_out="$(ateam mail send "$id" --file "$heal_nudge" --sender ops 2>&1)"
+  heal_out="$(ateam route-pr-event --repo "$OWNER_REPO" --pr-number "$n" --head-branch "$branch" \
+        --transition comment_reply --body-file "$bodyfile" \
+        --pr-url "https://github.com/$OWNER_REPO/pull/$n" 2>&1)"
   heal_rc=$?
   if [ "$heal_rc" != "0" ]; then
     reason="${reason}heal poll: expected exit 0 once gh reports OPEN, got exit $heal_rc ($heal_out); "
