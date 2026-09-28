@@ -117,38 +117,18 @@ const (
 )
 
 // installPrimeMemoryCaps sets primeMaxMemoriesKey and primeMaxMemoryCharsKey
-// to primeMemoryCapValue on the global workspace, via `bd config set`.
+// to primeMemoryCapValue via `bd config set`.
 //
-// WHY this exists alongside installGlobalPrimeMD above: on bd v1.1.0, a
-// custom PRIME.md was a TOTAL override of `bd prime`'s output, so installing
-// it was the whole fix. Upstream reversed that (GH#3941) — on bd v1.3.0+ a
-// custom PRIME.md replaces only the workflow text, and every persistent
-// memory is re-appended after it, unbounded. `--no-memories` would suppress
-// that section outright, but it has no config-key fallback, and every caller
-// that resolves this workspace (the beads plugin's flag-less SessionStart/
-// PreCompact `bd prime` hooks) can't pass flags. The `prime.max-memories`/
-// `prime.max-memory-chars` config keys are the lever that IS reachable
-// without a flag: bd always emits at least one memory plus an elision
-// banner (so this never reaches zero), but capped at 1/1 it holds the
-// section to roughly one memory's worth instead of the whole store —
-// measured on the real global workspace, 3,033,776 -> 2,234 bytes.
-//
-// Both keys live as plain YAML in <home>/.beads/config.yaml (verified
-// empirically against a scratch `bd init` workspace on bd 1.3.0) — NOT in
-// the Dolt-managed issue database, so unlike this workspace's issues they
-// never sync via `refs/dolt/data`. That's fine here: this is a per-machine
-// setup step, and every machine's own `ateam steward init`/`start` sets it
-// locally, the same way installGlobalPrimeMD does for PRIME.md.
-//
-// Set unconditionally, no read-before-write: `bd config set` on an
-// already-correct value is a harmless no-op write, and unlike
-// installGlobalPrimeMD there is no divergent-content case worth detecting
-// or reporting — this key has exactly one correct value, so nothing is
-// logged on success (stewardInit's only stdout contract is the session
-// directory, and a routine "confirmed" note on every init/start would be
-// pure noise). A write failure IS a hard error: the audit in
-// audit_prime.go depends on these keys, so a silent failure here would
-// defeat it.
+// WHY: `bd prime --no-memories` has no config-key fallback, so a flag-less
+// caller (the beads plugin's SessionStart/PreCompact hooks) can't reach it.
+// These keys are the reachable lever instead: bd always emits at least one
+// memory plus an elision banner, but capped it holds the section to roughly
+// one memory's worth (measured, 3,033,776 -> 2,234 bytes). Stored as plain
+// per-machine YAML in <home>/.beads/config.yaml, not Dolt — unlike the
+// sentinel memory below, this never syncs; every machine sets it locally.
+// Unconditional set (a no-op write when already correct); a write failure
+// IS a hard error, since checkGlobalPrimeBudget (audit_prime.go) depends on
+// these keys.
 func installPrimeMemoryCaps(ctx *cli.Context) error {
 	if _, err := ctx.BD.Run("config", "set", primeMaxMemoriesKey, primeMemoryCapValue); err != nil {
 		return fmt.Errorf("set %s: %w", primeMaxMemoriesKey, err)
@@ -189,30 +169,42 @@ const primeCapSentinelBody = "Sentinel memory for ateam's prime-cap mechanism " 
 	"but deleting it exposes whichever real memory sorts first instead."
 
 // installSentinelMemory writes primeCapSentinelKey/primeCapSentinelBody via
-// `bd remember`, unconditionally — like installPrimeMemoryCaps above, this
-// key has exactly one correct value, so a `bd remember` on an
-// already-correct memory is a harmless no-op update (verified empirically:
-// re-running `bd remember --key <existing key>` overwrites the same memory
-// in place; it never creates a duplicate). A write failure IS a hard error:
-// checkGlobalPrimeBudget's sentinel check depends on this memory existing
-// and sorting first.
+// `bd remember`. Unlike installPrimeMemoryCaps above, this memory lives in
+// the Dolt-managed store, so an unconditional write on every `steward init`
+// would create sync churn on every machine that runs it — read first via
+// `bd memories --json` (the same call query.go's role/tier filters use) and
+// write only when the key is missing or its body differs. A read failure is
+// not treated as "already correct": it falls through to the unconditional
+// write, since `bd remember` on an already-correct memory is a harmless
+// no-op update in place (verified empirically: bd does not normalize the
+// key, and a repeat `bd remember --key <existing key>` never creates a
+// duplicate). A write failure IS a hard error: checkGlobalPrimeBudget's
+// sentinel check depends on this memory existing and sorting first.
 func installSentinelMemory(ctx *cli.Context) error {
+	var existing map[string]any
+	if err := ctx.BD.RunJSON(&existing, "memories", "--json"); err == nil {
+		if body, ok := existing[primeCapSentinelKey].(string); ok && body == primeCapSentinelBody {
+			return nil
+		}
+	}
 	if _, err := ctx.BD.Run("remember", "--key", primeCapSentinelKey, primeCapSentinelBody); err != nil {
 		return fmt.Errorf("remember %s: %w", primeCapSentinelKey, err)
 	}
 	return nil
 }
 
-// globalPrimeMDPath returns $ATEAM_HOME/.beads/PRIME.md — the beads v1.1.0
-// (cmd/bd/prime.go) override path: `bd prime`, run against the global
-// agent-teams workspace, treats a PRIME.md file there as a total override of
-// its default output (which otherwise dumps the entire all-role memory store
-// into every session). Not one of the Steward*Path helpers in
-// steward_seams.go: that file is the frozen contract other tracks import
-// read-only, and this path isn't Steward-specific — it's a property of the
-// global workspace as a whole, installed by `ateam steward init` because
-// that's the existing one-time workspace-setup hook, not because it's
-// steward state.
+// globalPrimeMDPath returns $ATEAM_HOME/.beads/PRIME.md. On beads v1.1.0,
+// `bd prime` treated a PRIME.md file there as a TOTAL override of its
+// default output. Upstream reversed that (GH#3941, see
+// installPrimeMemoryCaps above): on the currently-installed bd v1.3.0+, this
+// file replaces only the workflow-text preamble, and the memory section is
+// still re-appended after it. Still installed for that partial effect, and
+// because audit_prime.go's checkPrimeMDInstalled asserts on this exact path.
+// Not one of the Steward*Path helpers in steward_seams.go: that file is the
+// frozen contract other tracks import read-only, and this path isn't
+// Steward-specific — it's a property of the global workspace as a whole,
+// installed by `ateam steward init` because that's the existing one-time
+// workspace-setup hook, not because it's steward state.
 func globalPrimeMDPath(ctx *cli.Context) string {
 	return filepath.Join(ctx.Home, ".beads", "PRIME.md")
 }
