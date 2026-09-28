@@ -94,7 +94,65 @@ func stewardInit(ctx *cli.Context) (string, error) {
 		return "", fmt.Errorf("install global PRIME.md: %w", err)
 	}
 
+	if err := installPrimeMemoryCaps(ctx); err != nil {
+		return "", fmt.Errorf("install prime memory caps: %w", err)
+	}
+
 	return sessionDir, nil
+}
+
+// primeMaxMemoriesKey and primeMaxMemoryCharsKey are the bd config keys
+// (bd >= v1.3.0) that cap what `bd prime` injects from the persistent memory
+// store. primeMemoryCapValue is the value this tool sets both to. Shared with
+// audit_prime.go's checkGlobalPrimeBudget, which reads them back to confirm
+// installPrimeMemoryCaps actually took.
+const (
+	primeMaxMemoriesKey    = "prime.max-memories"
+	primeMaxMemoryCharsKey = "prime.max-memory-chars"
+	primeMemoryCapValue    = "1"
+)
+
+// installPrimeMemoryCaps sets primeMaxMemoriesKey and primeMaxMemoryCharsKey
+// to primeMemoryCapValue on the global workspace, via `bd config set`.
+//
+// WHY this exists alongside installGlobalPrimeMD above: on bd v1.1.0, a
+// custom PRIME.md was a TOTAL override of `bd prime`'s output, so installing
+// it was the whole fix. Upstream reversed that (GH#3941) — on bd v1.3.0+ a
+// custom PRIME.md replaces only the workflow text, and every persistent
+// memory is re-appended after it, unbounded. `--no-memories` would suppress
+// that section outright, but it has no config-key fallback, and every caller
+// that resolves this workspace (the beads plugin's flag-less SessionStart/
+// PreCompact `bd prime` hooks) can't pass flags. The `prime.max-memories`/
+// `prime.max-memory-chars` config keys are the lever that IS reachable
+// without a flag: bd always emits at least one memory plus an elision
+// banner (so this never reaches zero), but capped at 1/1 it holds the
+// section to roughly one memory's worth instead of the whole store —
+// measured on the real global workspace, 3,033,776 -> 2,234 bytes.
+//
+// Both keys live as plain YAML in <home>/.beads/config.yaml (verified
+// empirically against a scratch `bd init` workspace on bd 1.3.0) — NOT in
+// the Dolt-managed issue database, so unlike this workspace's issues they
+// never sync via `refs/dolt/data`. That's fine here: this is a per-machine
+// setup step, and every machine's own `ateam steward init`/`start` sets it
+// locally, the same way installGlobalPrimeMD does for PRIME.md.
+//
+// Set unconditionally, no read-before-write: `bd config set` on an
+// already-correct value is a harmless no-op write, and unlike
+// installGlobalPrimeMD there is no divergent-content case worth detecting
+// or reporting — this key has exactly one correct value, so nothing is
+// logged on success (stewardInit's only stdout contract is the session
+// directory, and a routine "confirmed" note on every init/start would be
+// pure noise). A write failure IS a hard error: the audit in
+// audit_prime.go depends on these keys, so a silent failure here would
+// defeat it.
+func installPrimeMemoryCaps(ctx *cli.Context) error {
+	if _, err := ctx.BD.Run("config", "set", primeMaxMemoriesKey, primeMemoryCapValue); err != nil {
+		return fmt.Errorf("set %s: %w", primeMaxMemoriesKey, err)
+	}
+	if _, err := ctx.BD.Run("config", "set", primeMaxMemoryCharsKey, primeMemoryCapValue); err != nil {
+		return fmt.Errorf("set %s: %w", primeMaxMemoryCharsKey, err)
+	}
+	return nil
 }
 
 // globalPrimeMDPath returns $ATEAM_HOME/.beads/PRIME.md — the beads v1.1.0

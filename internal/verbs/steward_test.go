@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,67 @@ func TestStewardInit_Idempotent(t *testing.T) {
 func TestStewardInit_NilContext(t *testing.T) {
 	if err := (&stewardInitKong{}).Run(nil); err == nil {
 		t.Fatal("expected error for nil context")
+	}
+}
+
+// ── global prime memory caps ─────────────────────────────────────────────────
+
+// TestStewardInit_SetsPrimeMemoryCaps is the mutation check for
+// installPrimeMemoryCaps: if the call to it is ever dropped from stewardInit,
+// or the key names/value it passes change, this goes RED.
+func TestStewardInit_SetsPrimeMemoryCaps(t *testing.T) {
+	home := t.TempDir()
+	var calls []string
+	bdRunner := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			return "", nil
+		},
+	}
+	ctx, _, _ := makeCtx(bdRunner, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, want := range []string{
+		"config set prime.max-memories 1",
+		"config set prime.max-memory-chars 1",
+	} {
+		found := false
+		for _, c := range calls {
+			if c == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("stewardInit did not call `bd %s`; calls = %v", want, calls)
+		}
+	}
+}
+
+// A `bd config set` failure for either cap key must hard-fail stewardInit —
+// the audit in audit_prime.go depends on these keys, so a silently-ignored
+// write failure would defeat it.
+func TestStewardInit_PrimeMemoryCapSetFailure_HardFails(t *testing.T) {
+	home := t.TempDir()
+	bdRunner := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "config" {
+				return "", errors.New("bd config set: boom")
+			}
+			return "", nil
+		},
+	}
+	ctx, _, _ := makeCtx(bdRunner, home)
+
+	err := (&stewardInitKong{}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected an error when `bd config set` fails")
+	}
+	if !strings.Contains(err.Error(), primeMaxMemoriesKey) {
+		t.Errorf("error should name the failing key: %v", err)
 	}
 }
 
