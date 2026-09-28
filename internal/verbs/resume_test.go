@@ -327,12 +327,15 @@ type fakeResumeGit struct {
 
 	attachCalls []attachCall
 	addCalls    []addCall
+	removeCalls []removeCall
 	attachErr   error
 	addErr      error
+	removeErr   error
 }
 
 type attachCall struct{ repoRoot, wtPath, branch string }
 type addCall struct{ repoRoot, wtPath, branch, base string }
+type removeCall struct{ repoRoot, wtPath string }
 
 func (g *fakeResumeGit) BranchExists(_, ref string) bool { return g.refs[ref] }
 
@@ -350,6 +353,18 @@ func (g *fakeResumeGit) AddWorktree(repoRoot, wtPath, branch, base string) error
 		return g.addErr
 	}
 	return os.MkdirAll(wtPath, 0o755)
+}
+
+// RemoveWorktree backs recreateReviewWorktree's cleanup of a stray detached
+// worktree when the gh pr checkout fallback fails (agent-teams-8st0.29 fix
+// 2). It removes the directory addDetached/AddWorktree created, mirroring
+// what `git worktree remove --force` does to the real checkout.
+func (g *fakeResumeGit) RemoveWorktree(repoRoot, wtPath string) error {
+	g.removeCalls = append(g.removeCalls, removeCall{repoRoot, wtPath})
+	if g.removeErr != nil {
+		return g.removeErr
+	}
+	return os.RemoveAll(wtPath)
 }
 
 // noopSetup stubs worktreeSetupFunc for tests that only care about the
@@ -590,6 +605,56 @@ func TestResume_MissingWorktree_Review_BothStrategiesFail_ErrorsNoLaunch(t *test
 	}
 	if !strings.Contains(stderr.String(), "at-rev4") {
 		t.Errorf("expected initiative id in stderr, got: %s", stderr.String())
+	}
+}
+
+// TestResume_MissingWorktree_Review_BothStrategiesFail_RemovesStrayDetachedWorktree
+// covers agent-teams-8st0.29 fix 2: fetch fails, addDetached stages a stray
+// branchless worktree at wtPath, and the gh pr checkout fallback also
+// fails — resume must remove that stray worktree (git worktree remove
+// --force) and prune git's bookkeeping before returning the error, so the
+// next resume finds wtPath missing and retries recreation from scratch
+// instead of finding an existing (wrong-checkout) dir and skipping it.
+func TestResume_MissingWorktree_Review_BothStrategiesFail_RemovesStrayDetachedWorktree(t *testing.T) {
+	repoDir := newEnabledRepoDir(t)
+	missing := filepath.Join(t.TempDir(), "gone")
+	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+		raw, _ := json.Marshal([]bd.Issue{resumeReviewIssue("at-rev4b", repoDir, "dead-branch", missing, 12, "mgt-insurance/midgard")})
+		return string(raw), nil
+	}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	pruneCalls := 0
+	git := &fakeResumeGit{refs: map[string]bool{}}
+	cmd := &resumeKong{
+		ID:           "at-rev4b",
+		git:          git,
+		gitPrune:     func(string) error { pruneCalls++; return nil },
+		setup:        noopSetup,
+		prState:      func(string, int) (string, error) { return ghPRStateOpen, nil },
+		fetchPRHead:  func(string, string, int) error { return fmt.Errorf("fetch: no such ref") },
+		addDetached:  func(_, wtPath string) error { return os.MkdirAll(wtPath, 0o755) },
+		ghPRCheckout: func(string, string, int) error { return fmt.Errorf("gh: pull request not found") },
+		launchRaw: func(_ *cli.Context, _, _, _, _, _, _ string) error {
+			t.Fatal("launchRaw called; both recreation strategies failed")
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+
+	if len(git.removeCalls) != 1 {
+		t.Fatalf("RemoveWorktree calls = %d, want 1: %+v", len(git.removeCalls), git.removeCalls)
+	}
+	if got := git.removeCalls[0]; got.repoRoot != repoDir || got.wtPath != missing {
+		t.Errorf("RemoveWorktree call = %+v, want repoRoot=%q wtPath=%q", got, repoDir, missing)
+	}
+	if pruneCalls < 2 {
+		t.Errorf("gitPrune calls = %d, want at least 2 (the up-front best-effort prune plus the post-cleanup prune)", pruneCalls)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Errorf("expected the stray detached worktree dir %s to be removed, stat err = %v", missing, err)
 	}
 }
 

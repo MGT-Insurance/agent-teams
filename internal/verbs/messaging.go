@@ -257,16 +257,20 @@ func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string
 // nothing left to review (the PR it was resuming for is already merged or
 // closed) — every message still queued for the recipient is closed as moot
 // rather than left open for a review that will never happen, and the
-// recipient initiative is closed alongside it. Every step is best-effort:
-// a failure closing the mail or the initiative is reported to ctx.Stderr but
+// recipient initiative is closed alongside it. Closing the mail and the
+// initiative is best-effort: a failure there is reported to ctx.Stderr but
 // never turns this into a non-zero exit — the contract calls for exit 0
-// either way.
+// either way. The unread query itself is NOT best-effort: if it fails, we
+// don't know what's still queued, so the initiative must stay open rather
+// than risk stranding unclosed mail on a closed initiative — this returns
+// an error, mail send exits 1, and the message stays queued for a retry
+// that redoes the moot path (agent-teams-8st0.29 fix 1).
 func (c *sendKong) closeAsNothingToReview(ctx *cli.Context, resumeErr error) error {
 	note := fmt.Sprintf("%s; nothing to act on", resumeErr)
 
 	unread, err := unreadMailFor(ctx, c.RecipientID)
 	if err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam send: query unread mail for %s: %v\n", c.RecipientID, err)
+		return fmt.Errorf("ateam send: query unread mail for %s: %w", c.RecipientID, err)
 	}
 	ids := make([]string, len(unread))
 	for i, m := range unread {

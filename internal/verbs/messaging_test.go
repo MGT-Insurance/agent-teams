@@ -1935,6 +1935,7 @@ type fakeMailBD struct {
 	closedIDs   []string
 	noteCalls   []string
 	closeErrFor string // if set, `bd close` for this id returns an error
+	listErr     error  // if set, the "list" RunJSON op (unreadMailFor) returns this error
 }
 
 func newFakeMailBD(recipientID, status string) *fakeMailBD {
@@ -2021,6 +2022,9 @@ func (f *fakeMailBD) RunJSON(dst any, args ...string) error {
 		}
 		return nil
 	case "list":
+		if f.listErr != nil {
+			return f.listErr
+		}
 		var assignee, label, excludeLabel, status string
 		for _, a := range args {
 			switch {
@@ -2228,6 +2232,41 @@ func TestSendKong_ResumeNothingToReview_ClosesUnreadMailAndInitiative(t *testing
 	}
 	if !strings.Contains(stdout.String(), "nothing to review for at-moot-recip") {
 		t.Errorf("stdout missing moot-close notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_ResumeNothingToReview_UnreadQueryErrorLeavesInitiativeOpen
+// covers agent-teams-8st0.29 fix 1: if unreadMailFor itself fails inside
+// closeAsNothingToReview, we don't know what's still queued for the
+// recipient, so the initiative must NOT be closed and the message must
+// stay open — send exits non-zero so pr-shepherd retries and redoes the
+// moot path, rather than stranding open mail on a closed initiative.
+func TestSendKong_ResumeNothingToReview_UnreadQueryErrorLeavesInitiativeOpen(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-moot-err-recip", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	fdb.listErr = errors.New("bd list boom")
+	ctx, _, _ := makeCtx(fdb, home)
+
+	cmd := &sendKong{
+		RecipientID: "at-moot-err-recip",
+		File:        makeTempFile(t, "one more try"),
+		agentsFunc:  noResumeAgentsFunc,
+		resumeFunc:  func(_ *cli.Context, _, _, _ string) error { return errNothingToReview },
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a non-zero exit when the unread-mail query fails, got nil")
+	}
+
+	if fdb.recipient.Status == "closed" {
+		t.Error("initiative must not be closed when the unread-mail query failed")
+	}
+	for id, m := range fdb.messages {
+		if m.Status == "closed" {
+			t.Errorf("message %s: must not be closed when the unread-mail query failed", id)
+		}
 	}
 }
 

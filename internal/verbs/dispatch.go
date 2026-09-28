@@ -705,15 +705,18 @@ type resumeKong struct {
 // smaller interface from dispatchKong's gitRunner above: resume never
 // creates a worktree off the default branch (RULED 2026-09-28: a review
 // branch is NEVER created that way), so it has no DefaultBranch/
-// WorktreeExists member, and it needs two members gitRunner doesn't
-// (BranchExists, AttachWorktree). *gitutil.Runner already implements both
-// interfaces structurally; extending gitRunner itself instead would force
-// every existing fake built against it (other tracks' test files included)
-// to grow two new methods it has no use for.
+// WorktreeExists member, and it needs three members gitRunner doesn't
+// (BranchExists, AttachWorktree, RemoveWorktree). *gitutil.Runner already
+// implements both interfaces structurally; extending gitRunner itself
+// instead would force every existing fake built against it (other tracks'
+// test files included) to grow methods it has no use for. RemoveWorktree
+// backs recreateReviewWorktree's cleanup of a stray detached worktree
+// (agent-teams-8st0.29 fix 2) when the gh pr checkout fallback fails.
 type resumeWorktreeGit interface {
 	AddWorktree(repoRoot, wtPath, branch, base string) error
 	BranchExists(repoRoot, ref string) bool
 	AttachWorktree(repoRoot, wtPath, branch string) error
+	RemoveWorktree(repoRoot, wtPath string) error
 }
 
 // pruneWorktreesFunc, fetchPRHeadFunc, addDetachedWorktreeFunc, and
@@ -1009,7 +1012,20 @@ func (c *resumeKong) recreateReviewWorktree(repoRoot, wtPath, branch string, prN
 		return fmt.Errorf("add detached worktree: %w", err)
 	}
 	if err := c.ghPRCheckout(wtPath, branch, prNumber); err != nil {
-		return fmt.Errorf("fetch pull/%d/head failed and the gh pr checkout fallback also failed: %w", prNumber, err)
+		checkoutErr := fmt.Errorf("fetch pull/%d/head failed and the gh pr checkout fallback also failed: %w", prNumber, err)
+		// addDetached above staged a bare, branchless worktree at wtPath; the
+		// checkout that was meant to give it a branch never landed, so it's
+		// now a stray. Left in place, the next resume would find an existing
+		// dir at wtPath and skip recreation entirely, launching on the wrong
+		// (detached, branchless) checkout. Remove it and prune git's
+		// bookkeeping so the next resume retries recreation from scratch.
+		if rmErr := c.git.RemoveWorktree(repoRoot, wtPath); rmErr != nil {
+			return fmt.Errorf("%w; also failed to remove the stray detached worktree %s (remove manually): %v", checkoutErr, wtPath, rmErr)
+		}
+		if pruneErr := c.gitPrune(repoRoot); pruneErr != nil {
+			return fmt.Errorf("%w; also failed to prune worktree bookkeeping: %v", checkoutErr, pruneErr)
+		}
+		return checkoutErr
 	}
 	return nil
 }
