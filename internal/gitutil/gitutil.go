@@ -144,6 +144,35 @@ func (r *Runner) RemoveWorktree(repoRoot, wtPath string) error {
 	return nil
 }
 
+// BranchExists reports whether ref — a fully-qualified ref such as
+// "refs/heads/<branch>" (a local branch) or "refs/remotes/origin/<branch>"
+// (a remote-tracking branch) — resolves to a real commit. Used by `ateam
+// resume` (agent-teams-8st0.28) to decide how to recreate a missing
+// worktree without ever guessing: a caller checks the exact ref it cares
+// about rather than this method inferring local-vs-remote from a bare name.
+// Equivalent to: git -C <repoRoot> show-ref --verify --quiet <ref>
+func (r *Runner) BranchExists(repoRoot, ref string) bool {
+	_, _, err := r.exec("git", "-C", repoRoot, "show-ref", "--verify", "--quiet", ref)
+	return err == nil
+}
+
+// AttachWorktree adds a worktree at wtPath checked out on an EXISTING local
+// branch — unlike AddWorktree, it never creates a new branch. Used by
+// `ateam resume` to reattach a worktree whose directory is gone but whose
+// branch is still present locally (contract agent-teams-8st0.18 item 2).
+// Equivalent to: git -C <repoRoot> worktree add <wtPath> <branch>
+func (r *Runner) AttachWorktree(repoRoot, wtPath, branch string) error {
+	_, errOut, err := r.exec("git", "-C", repoRoot, "worktree", "add", wtPath, branch)
+	if err != nil {
+		msg := strings.TrimSpace(string(errOut))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("git worktree add (attach %s): %s", branch, msg)
+	}
+	return nil
+}
+
 // Slugify converts s to a kebab-case slug: lowercase, runs of non-alphanumeric
 // characters become a single "-", leading/trailing "-" are trimmed, and the
 // result is capped at 50 characters (on a word boundary where possible).
