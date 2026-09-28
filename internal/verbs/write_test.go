@@ -1671,42 +1671,44 @@ func TestLearn_FileNotFound(t *testing.T) {
 // ── close ─────────────────────────────────────────────────────────────────────
 
 func TestClose_BareID(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5"})
+	// Call 0 is the pre-close bd show that refuseIfUnreadReviewMail (agent-
+	// teams-8st0.20) uses to decide whether at-5 is review-shaped.
+	assertArgs(t, *calls, 1, []string{"close", "at-5"})
 }
 
 func TestClose_WithReason(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=shipped"})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=shipped"})
 }
 
 func TestClose_WithReasonEqualsForm(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=shipped"})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=shipped"})
 }
 
 func TestClose_WithFile(t *testing.T) {
 	content := "reason from file"
 	f := makeTempFile(t, content)
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// --file should override reason inline
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=" + content})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=" + content})
 }
 
 func TestClose_MissingID(t *testing.T) {
@@ -2274,7 +2276,7 @@ func TestLearn_TrimsTrailingNewlineBeforeMeasuring(t *testing.T) {
 }
 
 func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
+	ctx, _ := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "✓ Closed at-5"}})
 	if err := (&closeKong{ID: "at-5"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2285,7 +2287,7 @@ func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 }
 
 func TestClose_WithReason_ForwardsBDStdout(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
+	ctx, _ := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "✓ Closed at-5"}})
 	if err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2425,12 +2427,12 @@ func TestNoteKong_RunCallsBDNote(t *testing.T) {
 func TestCloseKong_FilePrecedenceOverReason(t *testing.T) {
 	content := "reason from file"
 	f := makeTempFile(t, content)
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	cmd := &closeKong{ID: "at-5", Reason: "inline reason", File: f}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=" + content})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=" + content})
 }
 
 // ── close: update-local-main wiring (agent-teams-q564.1) ────────────────────
