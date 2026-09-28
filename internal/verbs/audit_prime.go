@@ -36,33 +36,18 @@ const primeMemoriesHeading = "## Persistent Memories"
 // emits is confirmed capped AND is the harmless sentinel, not a real memory.
 // It reports whether the assertion held.
 //
-// WHY this is a standing assertion and not just a fix: on bd v1.1.0 a custom
-// PRIME.md was a TOTAL override of `bd prime`'s output, so installing one was
-// the whole fix. Upstream beads reversed that (GH#3941): on bd v1.3.0+ a
-// custom PRIME.md replaces only the workflow text, and every persistent
-// memory is re-appended after it, unbounded — `--no-memories` would suppress
-// that section outright, but has no config-key fallback, so a caller that
-// can't pass flags (the beads plugin's flag-less SessionStart/PreCompact
-// `bd prime` hooks) can't reach it. The reachable lever is the
-// prime.max-memories/prime.max-memory-chars config keys (installPrimeMemoryCaps
-// in steward.go sets both to 1): bd always emits at least one memory plus an
-// elision banner, so a capped prime never gets fully silent, but it holds the
-// section to roughly one memory's worth instead of the whole store. That one
-// memory is still a REAL memory unless something makes it not be — so
-// installSentinelMemory (steward.go) plants primeCapSentinelKey, a key that
-// sorts first alphabetically ahead of every real memory key in this
-// workspace, so the memory a capped prime picks is always this placeholder.
-// A beads upgrade that changes this mechanism again, a workspace where
-// `ateam steward init` never ran, or a real memory key that happens to sort
-// before "0" silently un-caps or de-sentinels it: no error, no warning, real
-// memory content simply returns to every session's context on every
-// PreCompact. Nothing else in the system can witness that regression.
+// On bd v1.3.0+, a custom PRIME.md replaces only the workflow text; every
+// memory is still re-appended, unbounded (GH#3941). installPrimeMemoryCaps
+// (steward.go) caps that section to one memory; installSentinelMemory
+// (steward.go) makes that one memory a harmless placeholder instead of a
+// real one. Nothing else witnesses a regression in either mechanism, so
+// this check confirms both hold on every run.
 //
-// Fail-soft by construction: this runs on every DRI preflight on the machine,
-// so a false failure here would break every DRI. Anything short of a confirmed
-// oversized-or-uncapped prime — no workspace, unreadable workspace, bd prime
-// or bd config get failing for any reason at all — is a silent no-op: no
-// output, no side effects, exit 0.
+// Fail-soft by construction: this runs on every DRI preflight on the
+// machine, so a false failure here would break every DRI. Anything short of
+// a confirmed oversized-or-uncapped prime — no workspace, unreadable
+// workspace, bd prime or bd config get failing for any reason — is a silent
+// no-op: no output, no side effects, exit 0.
 func checkGlobalPrimeBudget(ctx *cli.Context) bool {
 	if !workspace.Initialized(ctx.Home) {
 		return true
