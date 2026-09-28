@@ -152,7 +152,7 @@ func TestReviewerReferencePathsAvoidStaleCoordinates(t *testing.T) {
 	hungScanPath := "internal/verbs/hung_scan.go"
 
 	skill := readReviewerRefinementFile(t, root, skillPath)
-	if err := reviewerRefinementClausesError(skillPath, skill, "No second argument → normal flow (steps 2–11)."); err != nil {
+	if err := reviewerRefinementClausesError(skillPath, skill, "Otherwise, normal flow (steps 3–11)."); err != nil {
 		t.Fatal(err)
 	}
 

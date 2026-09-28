@@ -26,13 +26,23 @@ run `ateam show <id>`. If it is OPEN, re-derive GitHub work and re-close it
 idempotently under step 11 / comment-reply step 4. NEVER end OPEN without a
 gate.
 
+**Mail cadence.** Read `ateam mail inbox` at the start of every round — right
+after step 2 on entry, and again on each resume before re-deriving GitHub
+work — and once more immediately before `ateam close` in step 11 /
+comment-reply step 4. If that pre-close read surfaces new messages,
+re-derive from GitHub once more before closing. If `ateam close` refuses
+because unread mail remains, read the inbox and retry.
+
 ### 1. Parse the argument
 
 First argument: initiative id (e.g. `at-xxx`). Optional `comment-reply`
 selects that mode. If no id was given, stop and request one.
 
-- No second argument → normal flow (steps 2–11).
 - `comment-reply` → read step 2, follow **Comment-reply mode**, skip 3–10.
+- No second argument → read step 2, then read the inbox per **Mail
+  cadence**. If any message's first line is `transition: comment_reply`,
+  follow **Comment-reply mode**, skip 3–10. An explicit `comment-reply`
+  argument still wins over this. Otherwise, normal flow (steps 3–11).
 
 ### 2. Read initiative details
 
@@ -309,6 +319,7 @@ a defect the hung-scan flags for hand-triage.
 printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMENT>\nreviewed-sha: <reviewed-sha>\n' \
   > "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
+ateam mail inbox   # Mail cadence: read again immediately before closing
 ateam close <id> --reason "Review posted: <review-html-url>"
 
 TITLE_SEG=" — <pr-title>"   # exactly "" if step 4's title lookup failed
@@ -356,10 +367,11 @@ ateam gate <id> --file <note> --kind=question
 ## Comment-reply mode
 
 Someone replied in an inline review-comment thread this identity
-participated in; pr-shepherd reopened this initiative to respond. Reply
-text may arrive as mail via the normal hook flow — treat it as context if
-present, but do NOT run `ateam mail inbox` yourself. Re-derive the work from
-GitHub directly, every time (wake invariant above).
+participated in; pr-shepherd reopened this initiative to respond, and a
+mail with `transition: comment_reply` as its first body line (read per step
+1 or **Mail cadence**) is what selects this mode. Treat the mail as
+context, but still re-derive the work from GitHub directly, every time
+(wake invariant above).
 
 1. **Find the threads.** Fetch all inline review comments:
 
@@ -408,6 +420,7 @@ GitHub directly, every time (wake invariant above).
    printf 'comment-replies: PR #<pr-number> — <k> thread(s) answered\n' \
      > "${CLAUDE_JOB_DIR}/tmp/reply-note-<id>.txt"
    ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/reply-note-<id>.txt"
+   ateam mail inbox   # Mail cadence: read again immediately before closing
    ateam close <id> --reason "Comment replies posted: <pr-url>"
    ```
 
