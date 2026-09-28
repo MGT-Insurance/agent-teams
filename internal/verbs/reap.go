@@ -115,9 +115,11 @@ type reapRemoveWorktreeFunc func(worktree string, timeout time.Duration) error
 // corpseCheckFunc reports whether worktree is a "corpse" — a directory left
 // on disk after a `git worktree remove` was killed mid-operation, which git
 // itself has already disowned (pruned its administrative entry, so it no
-// longer appears in `git worktree list`): only a stub directory remains,
-// with no .git of its own. Injected so tests substitute a fake without a
-// real git subprocess or filesystem probe.
+// longer appears in `git worktree list`): either no .git of its own remains
+// at all, or its .git is a file (a linked worktree's own pointer) whose
+// "gitdir:" target has been pruned out from under it. Stat-only — never a
+// git subprocess. Injected so tests substitute a fake without touching a
+// real filesystem.
 type corpseCheckFunc func(worktree string) bool
 
 // removeCorpseFunc recursively deletes a corpse worktree directory (plain
@@ -937,13 +939,14 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // distinguish), "worktree-removed-forced" (review-shaped and force-removed
 // despite a non-clean or unchecked git state — kept distinct so the
 // journal/summary still show when a force-removal papered over real
-// dirty/unpushed state), "worktree-removed-corpse" (review-shaped and
-// force-removed via a plain recursive delete because the directory had
-// already been disowned by git — no .git of its own, or git's own
-// common-dir resolve failed on it — never via `git worktree remove`, which
-// would either fail outright or, worse, resolve against an unrelated parent
-// repo that happens to contain this path; kept distinct from
-// worktree-removed-forced so the journal shows which removal path fired,
+// dirty/unpushed state), "worktree-removed-corpse" (review-shaped, stat-only
+// confirmed a corpse — no .git of its own, or its .git file's gitdir: target
+// has been pruned away — AND corpseRemovalAllowed confirmed the path is
+// safely containable, then force-removed via a plain recursive delete
+// instead of via `git worktree remove`, which would either fail outright or,
+// worse, resolve against an unrelated parent repo that happens to contain
+// this path; kept distinct from worktree-removed-forced so the journal shows
+// which removal path fired,
 // and distinct from the unrelated worktree-removed-corpse-gh-verified below,
 // which is the deletion-corpse override in the one-off clean-only path, not
 // this git-disowned one), or (the now-dead bulk gh-verify override, one-off
@@ -1046,15 +1049,18 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 // git-common-dir), same as ever; a corpse — a stub directory left behind by
 // a `git worktree remove` that was killed mid-operation, which git has
 // already disowned by pruning its administrative entry out of `git worktree
-// list` — has no .git of its own for that to act on, so it instead goes
-// through removeCorpse, a plain bounded recursive delete
-// (agent-teams-n3qp.1). This ordering matters: isCorpseWorktree must run
-// AFTER the PR-state gate (a corpse still deserves the same "PR not yet
-// terminal" protection as a live worktree) but BEFORE calling removeWorktree
-// (a missing .git makes `git rev-parse --git-common-dir` walk up to whatever
-// unrelated parent repo happens to contain worktree and "succeed" against
-// it, which would target `git worktree remove` at the wrong repo instead of
-// failing loudly).
+// list` — has no .git of its own (or a dangling one) for that to act on, so
+// it instead goes through removeCorpse, a plain bounded recursive delete
+// (agent-teams-n3qp.1) — but only once corpseRemovalAllowed also confirms
+// worktree is safely containable (its own doc comment has the rule); a
+// corpse verdict that fails that guard falls through to removeWorktree
+// below exactly like a non-corpse would. This ordering matters:
+// isCorpseWorktree must run AFTER the PR-state gate (a corpse still deserves
+// the same "PR not yet terminal" protection as a live worktree) but BEFORE
+// calling removeWorktree (a missing .git makes `git rev-parse
+// --git-common-dir` walk up to whatever unrelated parent repo happens to
+// contain worktree and "succeed" against it, which would target `git
+// worktree remove` at the wrong repo instead of failing loudly).
 func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if !c.worktreeExists(worktree) {
 		return "worktree-absent"
@@ -1079,10 +1085,12 @@ func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initia
 	// A corpse — a stub directory left by a `git worktree remove` killed
 	// mid-operation, which git has already disowned (pruned its own
 	// administrative entry) — has no repo of its own for `git worktree
-	// remove` to act on. Route it to a plain recursive delete instead;
-	// see defaultIsCorpseWorktree for why this check runs before, and
-	// independently of, the normal removeWorktree call below.
-	if c.isCorpseWorktree(worktree) {
+	// remove` to act on. Route it to a plain recursive delete instead, but
+	// only when corpseRemovalAllowed also confirms worktree is safely
+	// containable — see its own doc comment for why that guard is required
+	// in addition to isCorpseWorktree's detection. Either check failing
+	// falls straight through to the normal removeWorktree call below.
+	if c.isCorpseWorktree(worktree) && corpseRemovalAllowed(ctx.Home+"-worktrees", worktree) {
 		if err := c.removeCorpse(worktree, timeout); err != nil {
 			fmt.Fprintf(ctx.Stderr, "reap: remove corpse worktree %s: %v\n", worktree, err)
 			return "worktree-remove-failed"
@@ -1254,30 +1262,106 @@ func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error
 	return nil
 }
 
+// corpseGitdirPrefix is the standard prefix a linked worktree's own .git
+// FILE contains — "gitdir: <path>", pointing back at its administrative
+// entry inside the main repo's real .git directory (git-worktree(1)) — as
+// opposed to a plain repo's .git, which is a directory.
+const corpseGitdirPrefix = "gitdir: "
+
+// corpseGitdirTarget reads worktree's .git file and resolves the path its
+// "gitdir: <path>" line names, relative to worktree when not already
+// absolute (the same resolution git itself applies). ok is false when the
+// file can't be read or doesn't parse as a gitdir pointer at all — distinct
+// from a target that parses but no longer exists, which is
+// defaultIsCorpseWorktree's actual corpse signal.
+func corpseGitdirTarget(worktree string) (target string, ok bool) {
+	data, err := os.ReadFile(filepath.Join(worktree, ".git"))
+	if err != nil {
+		return "", false
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, corpseGitdirPrefix) {
+		return "", false
+	}
+	target = strings.TrimSpace(strings.TrimPrefix(line, corpseGitdirPrefix))
+	if target == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktree, target)
+	}
+	return target, true
+}
+
 // defaultIsCorpseWorktree is the production corpseCheckFunc, called only
 // once worktreeExists has already confirmed worktree is present on disk
-// (forceRemoveWorktree's own gate order). It reports a corpse whenever
-// worktree has no .git of its own — checked FIRST, via a bare os.Stat, and
-// decisive on its own: a missing .git means `git rev-parse
-// --git-common-dir` would not fail but instead walk up the filesystem and
-// resolve against whatever unrelated parent repo happens to contain
-// worktree (for example the worktrees directory itself, if that is ever a
-// repo), silently "succeeding" against the wrong repo entirely — so that
-// call is never even attempted when .git is already known absent. Only when
-// .git IS present does this fall through to actually resolving the git
-// common dir (bounded by reapGitTimeout, mirroring every other short
-// git-inspection probe reap runs directly — see its doc comment); a failure
-// there means a real worktree whose git metadata is broken in some other
-// way, and is treated as a corpse too, on the same "cannot safely go through
-// git worktree remove" reasoning.
+// (forceRemoveWorktree's own gate order). Stat-only, never a git subprocess:
+// a corpse is (a) worktree has no .git of its own at all, or (b) worktree's
+// .git IS a file (a linked worktree's own pointer, never a plain repo's .git
+// directory) whose gitdir: target has already been pruned away — the
+// signature left behind when a `git worktree remove` was killed
+// mid-operation and git had already disowned the administrative entry that
+// pointer names. A .git file present but not parseable as a gitdir pointer
+// at all is NOT claimed as a corpse by either rule — it falls through to the
+// normal removeWorktree path, which fails safe on whatever it can't
+// resolve.
+//
+// This used to also fall back to a bounded `git rev-parse --git-common-dir`
+// subprocess whenever .git was present but broken in some other way (review
+// finding on agent-teams-n3qp.1): a transient failure there — not an actual
+// corpse — misclassified a valid worktree as one, routing it through
+// removeCorpse's raw delete instead of the real git.RemoveWorktree/prune
+// path, and cost every removal a second git subprocess that
+// reapWorktreeRemoveTimeout's own budget arithmetic never accounted for.
 func defaultIsCorpseWorktree(worktree string) bool {
-	if _, err := os.Stat(filepath.Join(worktree, ".git")); err != nil {
+	info, err := os.Stat(filepath.Join(worktree, ".git"))
+	if err != nil {
 		return true
 	}
-	cctx, cancel := context.WithTimeout(context.Background(), reapGitTimeout)
-	defer cancel()
-	_, err := boundedGitRunner(cctx).CommonDir(worktree)
+	if info.IsDir() {
+		return false
+	}
+	target, ok := corpseGitdirTarget(worktree)
+	if !ok {
+		return false
+	}
+	_, err = os.Stat(target)
 	return err != nil
+}
+
+// corpseRemovalAllowed reports whether it is safe to run removeCorpse's raw
+// recursive filesystem delete (os.RemoveAll) against worktree. Unlike `git
+// worktree remove`, which refuses to operate on a path it can't resolve to a
+// real repo, os.RemoveAll has no boundary check of its own — a bad
+// routing-data field, an unresolved ".." segment, or a symlink would let it
+// delete whatever the path actually names. forceRemoveWorktree consults this
+// before ever taking the corpse path; worktree must be:
+//   - absolute and already filepath.Clean (rejects a relative path, or one
+//     carrying unresolved ".." segments that could resolve outside root
+//     despite a naive prefix match),
+//   - strictly under root (root itself is never removable),
+//   - not a symlink (Lstat, not Stat — RemoveAll would otherwise happily
+//     walk through a symlinked worktree path into wherever it points).
+//
+// A false here means "not safely corpse-removable", not "not a corpse":
+// forceRemoveWorktree falls through to the existing removeWorktree (`git
+// worktree remove`) path unchanged.
+func corpseRemovalAllowed(root, worktree string) bool {
+	if root == "" || worktree == "" {
+		return false
+	}
+	if !filepath.IsAbs(worktree) || filepath.Clean(worktree) != worktree {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), worktree)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Lstat(worktree)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	return true
 }
 
 // reapRemoveCorpseWithTimeout deletes a corpse worktree directory — see
