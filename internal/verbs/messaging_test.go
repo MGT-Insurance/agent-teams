@@ -309,16 +309,18 @@ func TestInbox_DrainAndMark(t *testing.T) {
 
 	// markMessageRead must close the message bead (auto-close-on-read) —
 	// regression guard: a future refactor dropping or reordering this call
-	// should fail here, not just silently stop closing messages.
+	// should fail here, not just silently stop closing messages. --force is
+	// required: bd 1.3.0 refuses close when assignee (the recipient
+	// initiative) differs from actor (the git user).
 	closeCalled := false
 	for _, call := range labelCalls {
-		if len(call) == 2 && call[0] == "close" && call[1] == "at-wisp-m1" {
+		if len(call) == 3 && call[0] == "close" && call[1] == "at-wisp-m1" && call[2] == "--force" {
 			closeCalled = true
 			break
 		}
 	}
 	if !closeCalled {
-		t.Errorf("expected close call for at-wisp-m1; calls: %v", labelCalls)
+		t.Errorf("expected close --force call for at-wisp-m1; calls: %v", labelCalls)
 	}
 
 	_ = stdout
@@ -574,12 +576,12 @@ func TestResolveInboxRecipientRuntime_SessionTieResolvesFromUnregisteredCwd(t *t
 			}
 			closeCalled := false
 			for _, call := range labelCalls {
-				if len(call) == 2 && call[0] == "close" && call[1] == "at-msg-1" {
+				if len(call) == 3 && call[0] == "close" && call[1] == "at-msg-1" && call[2] == "--force" {
 					closeCalled = true
 				}
 			}
 			if !closeCalled {
-				t.Errorf("markMessageRead: expected close call for at-msg-1; calls: %v", labelCalls)
+				t.Errorf("markMessageRead: expected close --force call for at-msg-1; calls: %v", labelCalls)
 			}
 		})
 	}

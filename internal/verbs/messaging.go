@@ -802,7 +802,12 @@ func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
 	}
 	// Auto-close on read. Fires only here (post-ack), never on delivery —
 	// unread/pending messages and messages to a dead initiative stay open.
-	if _, err := ctx.BD.Run("close", msgID); err != nil {
+	// --force: bd 1.3.0 refuses close when assignee != actor, and mail
+	// wisps are assigned to the recipient initiative while ateam's actor
+	// resolves to the git user — never the recipient. Mail is single-owner
+	// (only the recipient ever closes its own wisp), so the concurrent-
+	// reclaim race the guard protects against doesn't apply here.
+	if _, err := ctx.BD.Run("close", msgID, "--force"); err != nil {
 		return fmt.Errorf("close message: %w", err)
 	}
 	return nil
