@@ -77,7 +77,7 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 		return nil
 
 	case c.Transition == TransitionReviewRequested:
-		return c.spawnReviewInitiative(ctx, event)
+		return c.spawnReviewInitiative(ctx, event, "")
 
 	case c.Transition == TransitionReReview:
 		return c.routeReReview(ctx, event)
@@ -123,7 +123,7 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 	if result.How == MatchNone {
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review for %s#%d has no prior initiative — spawning fresh review\n",
 			event.Repo, event.PRNumber)
-		return c.spawnReviewInitiative(ctx, event)
+		return c.spawnReviewInitiative(ctx, event, "")
 	}
 	// Disabled repos get NO fallback here, unlike a reopen/send failure below:
 	// this is deliberate operator policy, not a transient error, so degrading
@@ -136,17 +136,30 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
 		return nil
 	}
+	// agent-teams-8st0.7: a closed review initiative whose worktree has been
+	// reaped has no session to resume — reopening it anyway is exactly what
+	// produced the observed reopen/close ping-pong (hung-scan's backstop
+	// reclassifies the worktree-less initiative DEAD and closes it again on
+	// the stale round's review-posted note, then the next re_review poll
+	// reopens it right back). Treat a reaped worktree the same as a reopen
+	// failure below: fall back to spawning a FRESH review, which gets a live
+	// worktree and can actually serve the re-review.
+	if !reviewInitiativeWorktreeLive(result.Worktree) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d but its worktree is gone (%s) — spawning fresh review instead of reopening a dead initiative\n",
+			result.InitiativeID, event.Repo, event.PRNumber, result.Worktree)
+		return c.spawnReviewInitiative(ctx, event, "")
+	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
 		result.InitiativeID, event.Repo, event.PRNumber)
 	if err := c.runner("reopen", result.InitiativeID); err != nil {
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — spawning fresh review\n",
 			result.InitiativeID, err)
-		return c.spawnReviewInitiative(ctx, event)
+		return c.spawnReviewInitiative(ctx, event, "")
 	}
 	if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — spawning fresh review\n",
 			result.InitiativeID, err)
-		return c.spawnReviewInitiative(ctx, event)
+		return c.spawnReviewInitiative(ctx, event, "")
 	}
 	return nil
 }
@@ -154,13 +167,24 @@ func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error 
 // routeCommentReply handles transition=comment_reply when no open initiative
 // owns the PR: reopen the closed review initiative and mail it the reply so
 // the relaunched session can respond in-thread (the resume prompt carries the
-// comment-reply mode argument). Unlike re_review there is NO spawn fallback —
-// a fresh full review is the wrong response to a comment — so no-match,
-// reopen failure, and send failure all log and drop the event. A drop is
-// terminal for THIS event (pr-shepherd's cursor advances regardless); the
-// recovery mechanism is thread re-derivation — the comment-reply session
-// reads whole threads from GitHub, so the next reply on the PR re-triggers
-// routing and the relaunched session answers the dropped reply too.
+// comment-reply mode argument). No-match (the PR was never reviewed) and a
+// disabled repo still log and skip — a comment-reply session needs a prior
+// review to answer into, and a disabled repo is deliberate operator policy,
+// not a failure any fallback should route around.
+//
+// agent-teams-8st0.14 (Eric's rule: a reply on a PR this system reviewed
+// must reach a session): every OTHER way this can fail now spawns a fresh
+// review initiative in comment-reply mode (spawnReviewInitiative with mode
+// "comment-reply") instead of dropping the reply — a reaped worktree (no
+// live session to reopen into), a reopen call that itself errors, or a
+// reopen that succeeds but whose mail send then fails. None of these leaves
+// a live session for the old thread-re-derivation recovery (the
+// comment-reply session reads whole threads from GitHub, so the next reply
+// on the PR used to re-trigger routing) to actually resume into, so only a
+// fresh spawn gives the reply somewhere to land. A send failure AFTER a
+// successful reopen still compensating-closes the initiative first (so a
+// later event re-matches via matchClosedReviewInitiative instead of piling
+// onto a half-delivered open initiative), then spawns — close-then-spawn.
 func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) error {
 	result, err := matchClosedReviewInitiative(ctx, event)
 	if err != nil {
@@ -176,12 +200,21 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
 		return nil
 	}
+	// agent-teams-8st0.7 found the reaped-worktree case; agent-teams-8st0.14
+	// changes what happens next: spawn a fresh comment-reply review instead
+	// of dropping the reply, since there is no live session this worktree's
+	// initiative could ever resume into on its own.
+	if !reviewInitiativeWorktreeLive(result.Worktree) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d but its worktree is gone (%s) — spawning a fresh comment-reply review instead of reopening a dead initiative\n",
+			result.InitiativeID, event.Repo, event.PRNumber, result.Worktree)
+		return c.spawnReviewInitiative(ctx, event, "comment-reply")
+	}
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
 		result.InitiativeID, event.Repo, event.PRNumber)
 	if err := c.runner("reopen", result.InitiativeID); err != nil {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — dropping comment-reply event\n",
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — spawning a fresh comment-reply review instead of dropping\n",
 			result.InitiativeID, err)
-		return nil
+		return c.spawnReviewInitiative(ctx, event, "comment-reply")
 	}
 	sendArgs := []string{"mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd",
 		"--resume-launch-prompt", "/agent-teams:review-pr " + result.InitiativeID + " comment-reply",
@@ -196,9 +229,9 @@ func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) er
 			fmt.Fprintf(ctx.Stdout, "route-pr-event: compensating close of %s also failed (%v) — initiative left open, needs manual close\n",
 				result.InitiativeID, closeErr)
 		}
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — comment-reply event dropped\n",
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — spawning a fresh comment-reply review instead of dropping\n",
 			result.InitiativeID, err)
-		return nil
+		return c.spawnReviewInitiative(ctx, event, "comment-reply")
 	}
 	return nil
 }
@@ -209,10 +242,12 @@ func RegisterRouteEventKong(p *cli.Parser) {
 }
 
 // spawnReviewInitiative handles the SPAWN path (fkr.23): an unowned PR with
-// transition=review_requested. It resolves the event repo to a local clone
-// path via a config file at <ctx.Home>/review-repos/<repo-key>, where
-// repo-key = Slugify(basename(event.Repo)). If the config file is absent, or
-// if it's present but the clone has no (or a disabled) .agent-teams file
+// transition=review_requested, plus (agent-teams-8st0.14) the fresh-review
+// fallback for a dead-worktree or send-failed re_review or comment_reply. It
+// resolves the event repo to a local clone path via a config file at
+// <ctx.Home>/review-repos/<repo-key>, where repo-key =
+// Slugify(basename(event.Repo)). If the config file is absent, or if it's
+// present but the clone has no (or a disabled) .agent-teams file
 // (internal/repoconfig), it logs a skip message and returns nil — the latter
 // check exists so a disabled repo with an open review_requested PR degrades
 // to one quiet log line per pr-shepherd poll instead of a dispatch subprocess
@@ -221,8 +256,13 @@ func RegisterRouteEventKong(p *cli.Parser) {
 // ateamRunner with:
 //
 //	dispatch --repo <clonePath> --problem <title> --body-file <tmpFile> \
-//	         --launch-prompt "/agent-teams:review-pr {id}" --skip-epic \
+//	         --launch-prompt "/agent-teams:review-pr {id}[ mode]" --skip-epic \
 //	         --model sonnet --topic reviews
+//
+// mode is appended to the launch prompt as the review-pr skill's optional
+// second argument (SKILL.md) when non-empty — "" for a normal review spawn,
+// "comment-reply" so the relaunched session answers reply threads instead of
+// running the full review flow.
 //
 // Registration (one-time, out of band):
 //
@@ -232,7 +272,7 @@ func RegisterRouteEventKong(p *cli.Parser) {
 // e.g. for MGT-Insurance/midgard (key = "midgard"):
 //
 //	echo /Users/ericlloyd/Code/midgard > ~/.agent-teams/review-repos/midgard
-func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent) error {
+func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent, mode string) error {
 	// repo-key = Slugify(basename of owner/repo)
 	repoKey := gitutil.Slugify(filepath.Base(event.Repo))
 
@@ -294,8 +334,12 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	// --topic ReviewsHandle is what actually removes the noise: this webhook
 	// path — not /dispatch-review-pr — spawned every one of the observed
 	// single-line per-PR topics, so the shared Reviews topic only wins here.
+	launchPrompt := "/agent-teams:review-pr {id}"
+	if mode != "" {
+		launchPrompt += " " + mode
+	}
 	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath,
-		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic", "--model", "sonnet",
+		"--launch-prompt", launchPrompt, "--skip-epic", "--model", "sonnet",
 		"--topic", ReviewsHandle)
 	// Clean up temp file after the runner returns (dispatch has already read it).
 	os.Remove(tmpPath)
@@ -307,6 +351,17 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	fmt.Fprintf(ctx.Stdout, "route-pr-event: spawned review initiative for %s#%d\n",
 		event.Repo, event.PRNumber)
 	return nil
+}
+
+// reviewInitiativeWorktreeLive reports whether a closed review initiative's
+// worktree still exists on disk — i.e. whether reopening it could resume a
+// real session rather than an inert one (agent-teams-8st0.7). An empty
+// worktree (legacy data with no "worktree:" field) is treated the same as a
+// reaped one: there is no session to resume either way. Reuses
+// defaultDirExists (reap_orphans.go) rather than a second os.Stat wrapper —
+// same question ("does this worktree cwd still exist"), same answer.
+func reviewInitiativeWorktreeLive(worktree string) bool {
+	return worktree != "" && defaultDirExists(worktree)
 }
 
 // matchHowLabel returns a human-readable label for a MatchHow value.

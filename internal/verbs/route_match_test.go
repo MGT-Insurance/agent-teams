@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
+	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // makeIssue builds a minimal bd.Issue for use in match-engine tests.
@@ -534,8 +535,11 @@ func TestMatchClosed_PicksMostRecentlyCreated(t *testing.T) {
 	if got.InitiativeID != "at-new.1" {
 		t.Errorf("InitiativeID = %q, want at-new.1 (most recent)", got.InitiativeID)
 	}
-	if got.Worktree != "/tmp/wt-at-new.1" {
-		t.Errorf("Worktree = %q", got.Worktree)
+	// prFieldIssue (agent-teams-8st0.7) gives each issue a real, unique temp
+	// dir as its worktree rather than a predictable literal, so assert
+	// against newer's own parsed field instead of a hardcoded path.
+	if want := initiative.Of(newer).Worktree; got.Worktree != want {
+		t.Errorf("Worktree = %q, want %q (newer's own worktree)", got.Worktree, want)
 	}
 }
 
