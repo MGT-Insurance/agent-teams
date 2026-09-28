@@ -43,13 +43,38 @@ func RegisterDispatchKong(p *cli.Parser) {
 		codexCheck:       sessionruntime.RequireCompatibleCodex,
 		setup:            runWorktreeSetup,
 	})
-	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", &resumeKong{
+	resumeCmd := newProductionResumeKong()
+	// agentsFunc/stopSession back the duplicate-live-session guard (see the
+	// field doc comment on resumeKong) — an opt-in the interactive CLI verb
+	// takes and messaging.go's defaultResume deliberately does not (preserves
+	// its existing behavior, agent-teams-ndr4.3), so they're wired here
+	// rather than in the shared constructor.
+	resumeCmd.agentsFunc = defaultAgentsJSONAll
+	resumeCmd.stopSession = defaultStopSession
+	p.AddVerb("resume", "Re-launch a background DRI session for an existing initiative.", resumeCmd)
+	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
+}
+
+// newProductionResumeKong builds a resumeKong wired with every seam
+// recreateWorktree needs in production — setup, git, gitPrune, fetchPRHead,
+// addDetached, ghPRCheckout, and prState, plus launch, launchRaw,
+// runtimeStart, and codexCheck. It is the ONE place those seams are wired,
+// used by both RegisterDispatchKong's CLI "resume" verb above and
+// messaging.go's defaultResume (the mail-send/route-pr-event auto-resume
+// escalation), so the two registrations can no longer drift apart the way
+// they did before agent-teams-8st0.30: defaultResume used to build its own
+// resumeKong literal that omitted prState (and every other recreateWorktree
+// seam), so an auto-resume onto a missing worktree either nil-panicked or
+// silently failed "could not determine PR state" without ever calling gh.
+//
+// Deliberately excludes agentsFunc/stopSession — see the comment where
+// RegisterDispatchKong sets them on its own copy.
+func newProductionResumeKong() *resumeKong {
+	return &resumeKong{
 		launch:       launchBGSession,
 		launchRaw:    rawLaunchBGSession,
 		runtimeStart: startRuntimeWorker,
 		codexCheck:   sessionruntime.RequireCompatibleCodex,
-		agentsFunc:   defaultAgentsJSONAll,
-		stopSession:  defaultStopSession,
 		setup:        runWorktreeSetup,
 		git:          gitutil.New(),
 		gitPrune:     defaultPruneWorktreesFn,
@@ -57,8 +82,7 @@ func RegisterDispatchKong(p *cli.Parser) {
 		addDetached:  defaultAddDetachedWorktreeFn,
 		ghPRCheckout: defaultGHPRCheckoutFn,
 		prState:      defaultPRState,
-	})
-	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
+	}
 }
 
 // ---- new-initiative (kong) --------------------------------------------------

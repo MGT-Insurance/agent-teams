@@ -448,9 +448,17 @@ func runAgentsJSON(args ...string) ([]agentSession, error) {
 	return sessions, nil
 }
 
-// defaultResume runs `ateam resume <id>` via the resumeKong directly.
+// defaultResume runs `ateam resume <id>` via the resumeKong directly. It uses
+// newProductionResumeKong (dispatch.go) — the same constructor
+// RegisterDispatchKong's CLI "resume" verb uses — so this auto-resume
+// escalation path gets every recreateWorktree seam (gitPrune, git, setup,
+// prState, ...) the interactive verb gets; see that constructor's doc
+// comment for why a hand-rolled literal here caused agent-teams-8st0.30.
 func defaultResume(ctx *cli.Context, id, launchPrompt, model string) error {
-	cmd := &resumeKong{ID: id, LaunchPrompt: launchPrompt, Model: model, launch: launchBGSession, launchRaw: rawLaunchBGSession}
+	cmd := newProductionResumeKong()
+	cmd.ID = id
+	cmd.LaunchPrompt = launchPrompt
+	cmd.Model = model
 	return cmd.Run(ctx)
 }
 
