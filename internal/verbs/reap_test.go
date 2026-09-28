@@ -224,6 +224,13 @@ func newReapVerb(sessions []agentSession, stops *fakeStops, rms *fakeRm, remover
 			exists, _, _, _ := clean(worktree)
 			return exists
 		},
+		// Safe default: no pre-existing fixture is a corpse, so every test
+		// that doesn't override this explicitly keeps exercising the normal
+		// removeWorktree path unchanged. removeCorpse is therefore never
+		// called by default either, but is wired to a harmless stub rather
+		// than left nil.
+		isCorpseWorktree: func(string) bool { return false },
+		removeCorpse:     func(string, time.Duration) error { return nil },
 		// Safe default: no test relies on this without overriding it
 		// explicitly (verb.ghCommitPresent = ...fn()) — inconclusive must
 		// always protect, so an un-overridden seam never authorizes removal.
@@ -462,12 +469,14 @@ func TestReap_Scan_ForceRemove_NeverCallsWorktreeClean(t *testing.T) {
 			worktreeCleanCalls++
 			return true, wtClean, "", nil
 		},
-		worktreeExists:  func(string) bool { return true },
-		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
-		noteFunc:        noter.fn(),
-		notifyCtx:       defaultReapNotifyCtx,
-		prState:         reapAlwaysMergedPRState,
-		ghPreflight:     reapAlwaysGHOk,
+		worktreeExists:   func(string) bool { return true },
+		isCorpseWorktree: func(string) bool { return false },
+		removeCorpse:     func(string, time.Duration) error { return nil },
+		ghCommitPresent:  func(string, string) (bool, error) { return false, nil },
+		noteFunc:         noter.fn(),
+		notifyCtx:        defaultReapNotifyCtx,
+		prState:          reapAlwaysMergedPRState,
+		ghPreflight:      reapAlwaysGHOk,
 	}
 
 	home := t.TempDir()
@@ -2290,6 +2299,176 @@ func TestReapRemoveWorktreeWithTimeout_RealWorktree_Succeeds(t *testing.T) {
 	}
 }
 
+// ── corpse worktree fallback (agent-teams-n3qp.1) ───────────────────────────
+//
+// A "corpse" is a directory left behind after a `git worktree remove` was
+// killed mid-operation: git has already pruned its administrative entry (it
+// no longer appears in `git worktree list`), but the stub directory itself
+// is still on disk with no .git of its own. Before this fallback, reap's
+// review-shaped force-remove path (forceRemoveWorktree) tried to resolve
+// the corpse's owning repo via git-common-dir, which fails outright on a
+// bare stub dir with no parent repo — journaling worktree-remove-failed
+// forever. These tests exercise the real production seams
+// (defaultWorktreeExists, defaultIsCorpseWorktree, reapRemoveCorpseWithTimeout)
+// against real temp directories, not stubs, per the bead's own test spec.
+
+// TestReap_Scan_CorpseWorktree_RemovedViaFallback covers the core case: a
+// real directory with no .git, not registered in any git worktree list. A
+// normal scan tick removes it via the corpse fallback (a plain recursive
+// delete), not via `git worktree remove`, and still writes the durable
+// reaped note — the same as any other successfully torn-down survivor.
+func TestReap_Scan_CorpseWorktree_RemovedViaFallback(t *testing.T) {
+	corpse := t.TempDir() // no `git init` — no .git of its own
+	iss := reapReviewIssue("at-corpse-1", "closed", reapFixedNow.Add(-time.Hour), "", corpse, "sess-corpse-1", "")
+	// No live session matches this initiative — mirrors
+	// TestReap_Scan_NoMatchingSession_WorktreeStillRemoved_NoteWritten;
+	// the corpse fallback is a worktree-only concern.
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-unrelated", CWD: "/tmp/other"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.worktreeExists = defaultWorktreeExists
+	verb.isCorpseWorktree = defaultIsCorpseWorktree
+	verb.removeCorpse = reapRemoveCorpseWithTimeout
+
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(corpse); !os.IsNotExist(statErr) {
+		t.Fatalf("expected corpse dir to be gone; stat err = %v", statErr)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-corpse" {
+		t.Errorf("expected journal outcome worktree-removed-corpse; got %q", got)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected the real git-worktree-remove seam never called for a corpse; got %v", remover.removed)
+	}
+	if len(noter.noted) != 1 || noter.noted[0] != "at-corpse-1" {
+		t.Errorf("expected reaped note despite the removal taking the corpse path; got %v", noter.noted)
+	}
+}
+
+// TestReap_Scan_CorpseWorktree_NestedInParentRepo_ParentUntouched covers the
+// nested-corpse hazard the fallback exists to avoid: a corpse dir living
+// INSIDE a real parent git repo. Without the .git-absence check running
+// first, `git rev-parse --git-common-dir` on the corpse would walk up and
+// resolve against the PARENT repo's .git instead of failing — the exact
+// wrong-repo hazard forceRemoveWorktree's doc comment warns about. This
+// proves the corpse is still removed as a corpse (never through `git
+// worktree remove` against the parent) and the parent repo itself is left
+// completely alone.
+func TestReap_Scan_CorpseWorktree_NestedInParentRepo_ParentUntouched(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	parent := t.TempDir()
+	runGit(t, parent, "init")
+	runGit(t, parent, "config", "user.email", "test@example.com")
+	runGit(t, parent, "config", "user.name", "Test")
+	runGit(t, parent, "commit", "--allow-empty", "-m", "init")
+	parentHEADBefore, err := exec.Command("git", "-C", parent, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD (parent, before): %v", err)
+	}
+
+	corpse := filepath.Join(parent, "corpse-child")
+	if err := os.Mkdir(corpse, 0o755); err != nil {
+		t.Fatalf("mkdir corpse: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(corpse, "stray.txt"), []byte("leftover"), 0o644); err != nil {
+		t.Fatalf("write stray file: %v", err)
+	}
+
+	iss := reapReviewIssue("at-corpse-2", "closed", reapFixedNow.Add(-time.Hour), "", corpse, "sess-corpse-2", "")
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-unrelated", CWD: "/tmp/other"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var remover fakeWorktreeRemover
+	var noter fakeNoter
+	verb := newReapVerb(sessions, &stops, &rms, &remover, &noter, alwaysClean)
+	verb.worktreeExists = defaultWorktreeExists
+	verb.isCorpseWorktree = defaultIsCorpseWorktree
+	verb.removeCorpse = reapRemoveCorpseWithTimeout
+
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(corpse); !os.IsNotExist(statErr) {
+		t.Fatalf("expected corpse dir to be gone; stat err = %v", statErr)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-corpse" {
+		t.Errorf("expected journal outcome worktree-removed-corpse; got %q", got)
+	}
+	if len(remover.removed) != 0 {
+		t.Errorf("expected the real git-worktree-remove seam never called against the parent repo; got %v", remover.removed)
+	}
+	if _, statErr := os.Stat(filepath.Join(parent, ".git")); statErr != nil {
+		t.Fatalf("expected the parent repo's .git to survive untouched: %v", statErr)
+	}
+	parentHEADAfter, err := exec.Command("git", "-C", parent, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD (parent, after): %v", err)
+	}
+	if string(parentHEADAfter) != string(parentHEADBefore) {
+		t.Fatalf("expected the parent repo's HEAD unchanged; before %q after %q", parentHEADBefore, parentHEADAfter)
+	}
+}
+
+// TestReap_Scan_ValidReviewWorktree_StillRemovedViaGitWorktreeRemove proves
+// the fallback doesn't touch the existing behavior: a real, valid worktree
+// (created with `git worktree add`, so it has its own .git file) is still
+// force-removed through the normal git.RemoveWorktree path, not the corpse
+// fallback.
+func TestReap_Scan_ValidReviewWorktree_StillRemovedViaGitWorktreeRemove(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	_, wtPath := initRepoWithWorktree(t, "reap-corpse-fallback-valid")
+
+	iss := reapReviewIssue("at-corpse-3", "closed", reapFixedNow.Add(-time.Hour), "", wtPath, "sess-corpse-3", "")
+	sessions := []agentSession{{ID: "unrelated", SessionID: "sess-unrelated", CWD: "/tmp/other"}}
+
+	var stops fakeStops
+	var rms fakeRm
+	var noter fakeNoter
+	corpseCalled := false
+
+	verb := newReapVerb(sessions, &stops, &rms, &fakeWorktreeRemover{}, &noter, alwaysClean)
+	verb.worktreeExists = defaultWorktreeExists
+	verb.isCorpseWorktree = defaultIsCorpseWorktree
+	verb.removeWorktree = reapRemoveWorktreeWithTimeout
+	verb.removeCorpse = func(string, time.Duration) error {
+		corpseCalled = true
+		return nil
+	}
+
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(reapScanFakeBD([]bd.Issue{iss}), home)
+	if err := verb.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected the valid worktree to be gone; stat err = %v", statErr)
+	}
+	if got := lastReapJournalOutcome(t, home); got != "worktree-removed-forced" {
+		t.Errorf("expected journal outcome worktree-removed-forced (unchanged path); got %q", got)
+	}
+	if corpseCalled {
+		t.Error("expected the corpse-removal seam never called for a valid, non-corpse worktree")
+	}
+}
+
 func TestHasReapedNote(t *testing.T) {
 	cases := []struct {
 		notes string
@@ -2438,11 +2617,13 @@ func TestReap_Scan_SummaryLine_CorrectCounts(t *testing.T) {
 			exists, _, _, _ := clean(worktree)
 			return exists
 		},
-		ghCommitPresent: func(string, string) (bool, error) { return false, nil },
-		noteFunc:        noter.fn(),
-		notifyCtx:       defaultReapNotifyCtx,
-		prState:         reapAlwaysMergedPRState,
-		ghPreflight:     reapAlwaysGHOk,
+		isCorpseWorktree: func(string) bool { return false },
+		removeCorpse:     func(string, time.Duration) error { return nil },
+		ghCommitPresent:  func(string, string) (bool, error) { return false, nil },
+		noteFunc:         noter.fn(),
+		notifyCtx:        defaultReapNotifyCtx,
+		prState:          reapAlwaysMergedPRState,
+		ghPreflight:      reapAlwaysGHOk,
 	}
 
 	ctx, stdout, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
