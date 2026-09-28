@@ -546,6 +546,25 @@ func (f *fakeHungClose) close(_ *cli.Context, id, reason string) error {
 	return f.err
 }
 
+// noUnreadMail is a hungUnreadMailFunc reporting "no unread mail" for every
+// id — the common wiring for backstop tests exercising a path where
+// agent-teams-8st0.21's CONTRACT item 6 gate isn't the thing under test.
+func noUnreadMail(_ *cli.Context, _ string) ([]bd.Issue, error) { return nil, nil }
+
+// fakeUnreadMail is an injectable hungUnreadMailFunc returning a canned
+// ([]bd.Issue, error) and recording every call, for tests that exercise the
+// unread-mail gate itself.
+type fakeUnreadMail struct {
+	unread []bd.Issue
+	err    error
+	calls  int
+}
+
+func (f *fakeUnreadMail) probe(_ *cli.Context, _ string) ([]bd.Issue, error) {
+	f.calls++
+	return f.unread, f.err
+}
+
 // fakePendingReviewComment is an injectable pendingReviewCommentFunc
 // returning a canned (pending, err) and recording every call — so tests
 // drive the S3(d)/S4 gate without shelling to gh.
@@ -598,6 +617,7 @@ func TestDoHungTick_ReviewBackstop_ClosesOnDeadNoPendingComment(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            ft,
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -661,6 +681,7 @@ func TestDoHungTick_ReviewBackstop_ClosesOnStuckHungNoPendingComment(t *testing.
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -703,6 +724,7 @@ func TestDoHungTick_ReviewBackstop_NoCloseWhenPendingComment(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -737,6 +759,7 @@ func TestDoHungTick_ReviewBackstop_NoCloseWhenWorking(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -780,6 +803,7 @@ func TestDoHungTick_ReviewBackstop_NoCloseWhenNeverPosted(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -828,6 +852,7 @@ func TestDoHungTick_ReviewBackstop_NonReviewShapedUnaffected(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -885,6 +910,7 @@ func TestDoHungTick_ReviewBackstop_ClosesOnMergedNoPostedNote(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            ft,
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -936,6 +962,7 @@ func TestDoHungTick_ReviewBackstop_ClosesOnClosedNoPostedNote(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -982,6 +1009,7 @@ func TestDoHungTick_ReviewBackstop_ClosesOnMergedStuckHungNoPostedNote(t *testin
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -1028,6 +1056,7 @@ func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPROpen(t *testing.T) {
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -1072,6 +1101,7 @@ func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPendingComment(t *testi
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -1116,6 +1146,7 @@ func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenProbeErrors(t *testing.
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -1159,6 +1190,7 @@ func TestDoHungTick_ReviewBackstop_MergedGate_NoCloseWhenPreflightFails(t *testi
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return fmt.Errorf("gh not authenticated") },
 		prState:              prState.probe,
@@ -1199,6 +1231,7 @@ func TestDoHungTick_ReviewBackstop_PostedNotePathUnaffectedByMergedGate(t *testi
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -1295,6 +1328,7 @@ func TestDoHungTick_ReviewBackstop_CloseErrorFallsThroughToLadder(t *testing.T) 
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 	}
@@ -1365,6 +1399,7 @@ func TestDoHungTick_ReviewBackstop_MergedGate_CloseErrorFallsThroughToLadder(t *
 		topicPost:            defaultHungTopicPost,
 		transport:            &fakeTransport{returnRef: "1"},
 		closeFunc:            closeFn.close,
+		unreadMail:           noUnreadMail,
 		pendingReviewComment: pending.probe,
 		ghPreflight:          func() error { return nil },
 		prState:              prState.probe,
@@ -1399,6 +1434,199 @@ func TestDoHungTick_ReviewBackstop_MergedGate_CloseErrorFallsThroughToLadder(t *
 	// fires a wake, exactly as if the merged backstop gate had never held.
 	if len(wake.bodies) != 1 {
 		t.Errorf("wake calls = %d, want 1 (a failing close must still escalate via the existing DEAD ladder)", len(wake.bodies))
+	}
+}
+
+// ── agent-teams-8st0.21: the unread-mail gate (CONTRACT agent-teams-8st0.18
+// item 6) ────────────────────────────────────────────────────────────────
+
+// TestDoHungTick_ReviewBackstop_UnreadMailBlocksClose proves CONTRACT item 6
+// on the posted-note path: an otherwise gate-eligible entry (posted, DEAD, no
+// pending comment) with one unread message must NOT be closed — the close is
+// skipped, "skip-unread-mail" is journaled, and the entry falls through to
+// the existing DEAD ladder exactly like a failing close does.
+func TestDoHungTick_ReviewBackstop_UnreadMailBlocksClose(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-unread", wt, "https://github.com/acme/widget/pull/29", true)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-unread": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	unread := &fakeUnreadMail{unread: []bd.Issue{{ID: "at-unread.msg1"}}}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		unreadMail:           unread.probe,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (unread mail must block the close)", len(closeFn.calls))
+	}
+	if unread.calls != 1 {
+		t.Errorf("unread-mail probe calls = %d, want 1", unread.calls)
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (blocked close must still escalate via the existing DEAD ladder)", len(wake.bodies))
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	journalStr := string(journalData)
+	if !strings.Contains(journalStr, `"ladder_action":"skip-unread-mail"`) {
+		t.Errorf("journal missing the skip-unread-mail marker: %s", journalStr)
+	}
+	if strings.Contains(journalStr, `"ladder_action":"close"`) {
+		t.Errorf("journal must NOT record a close when unread mail blocked it: %s", journalStr)
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_UnreadMailProbeErrorBlocksClose proves the
+// fail-closed half of CONTRACT item 6: a probe error can never prove "no
+// unread mail", so it is treated exactly like a non-empty result.
+func TestDoHungTick_ReviewBackstop_UnreadMailProbeErrorBlocksClose(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-unreaderr", wt, "https://github.com/acme/widget/pull/30", true)}
+	ctx := makeHungCtx(t, issues)
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	unread := &fakeUnreadMail{err: fmt.Errorf("bd list: exit status 1")}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             (&fakeHungWakeSend{}).send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		unreadMail:           unread.probe,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (a probe error must fail closed)", len(closeFn.calls))
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_MergedGate_UnreadMailBlocksClose is the
+// merged-gate sibling of TestDoHungTick_ReviewBackstop_UnreadMailBlocksClose:
+// the same gate applies to the not-posted/MERGED backstop path
+// (reviewBackstopMergedGateHolds, agent-teams-lu02.1).
+func TestDoHungTick_ReviewBackstop_MergedGate_UnreadMailBlocksClose(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-mergedunread", wt, "https://github.com/acme/widget/pull/31", false)}
+	ctx := makeHungCtx(t, issues)
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	seedDeadSince := t0.Add(-(hungDeadWorktreeThreshold + 5*time.Minute)).UTC().Format(time.RFC3339)
+	if err := saveHungState(hungStatePath(ctx), map[string]hungAnchor{
+		"at-mergedunread": {DeadSince: seedDeadSince},
+	}); err != nil {
+		t.Fatalf("seed anchor state: %v", err)
+	}
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged}
+	unread := &fakeUnreadMail{unread: []bd.Issue{{ID: "at-mergedunread.msg1"}}}
+	wake := &fakeHungWakeSend{}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // no live session -> DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             wake.send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		unreadMail:           unread.probe,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (unread mail must block the merged-gate close)", len(closeFn.calls))
+	}
+	if len(wake.bodies) != 1 {
+		t.Errorf("wake calls = %d, want 1 (blocked close must still escalate via the existing DEAD ladder)", len(wake.bodies))
+	}
+
+	journalData, err := os.ReadFile(hungJournalPath(StewardHome(ctx)))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if !strings.Contains(string(journalData), `"ladder_action":"skip-unread-mail"`) {
+		t.Errorf("journal missing the skip-unread-mail marker: %s", journalData)
+	}
+}
+
+// TestDoHungTick_ReviewBackstop_MergedGate_UnreadMailProbeErrorBlocksClose is
+// the merged-gate sibling of the posted-note probe-error test above.
+func TestDoHungTick_ReviewBackstop_MergedGate_UnreadMailProbeErrorBlocksClose(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{reviewIssue("at-mergedunreaderr", wt, "https://github.com/acme/widget/pull/32", false)}
+	ctx := makeHungCtx(t, issues)
+
+	closeFn := &fakeHungClose{}
+	pending := &fakePendingReviewComment{pending: false}
+	prState := &fakePRState{state: ghPRStateMerged}
+	unread := &fakeUnreadMail{err: fmt.Errorf("bd list: exit status 1")}
+	deps := hungTickDeps{
+		agentsFunc:           func() ([]agentSession, error) { return nil, nil }, // DEAD
+		now:                  fixedNow(time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)),
+		wakeSend:             (&fakeHungWakeSend{}).send,
+		topicPost:            defaultHungTopicPost,
+		transport:            &fakeTransport{returnRef: "1"},
+		closeFunc:            closeFn.close,
+		unreadMail:           unread.probe,
+		pendingReviewComment: pending.probe,
+		ghPreflight:          func() error { return nil },
+		prState:              prState.probe,
+	}
+
+	if err := doHungTick(ctx, deps); err != nil {
+		t.Fatalf("doHungTick: %v", err)
+	}
+	if len(closeFn.calls) != 0 {
+		t.Fatalf("close calls = %d, want 0 (a probe error must fail closed)", len(closeFn.calls))
+	}
+}
+
+// TestHungHasUnreadMail_NilSeamFailsClosed proves hungHasUnreadMail's own
+// nil-safe default: with no unreadMail seam wired at all (the zero value —
+// distinct from a wired seam returning an error), the gate still reports
+// "has unread mail" — a never-wired seam can no more prove "no unread mail"
+// than a probe error can, and production (runHungTickUntil) always wires
+// unreadMailFor, so nil only ever occurs in an incompletely-configured test.
+func TestHungHasUnreadMail_NilSeamFailsClosed(t *testing.T) {
+	ctx := makeHungCtx(t, nil)
+	if !hungHasUnreadMail(ctx, hungTickDeps{}, "at-whatever") {
+		t.Error("hungHasUnreadMail with nil seam = false, want true (fail closed)")
 	}
 }
 
