@@ -50,6 +50,13 @@ func RegisterDispatchKong(p *cli.Parser) {
 		codexCheck:   sessionruntime.RequireCompatibleCodex,
 		agentsFunc:   defaultAgentsJSONAll,
 		stopSession:  defaultStopSession,
+		setup:        runWorktreeSetup,
+		git:          gitutil.New(),
+		gitPrune:     defaultPruneWorktreesFn,
+		fetchPRHead:  defaultFetchPRHeadFn,
+		addDetached:  defaultAddDetachedWorktreeFn,
+		ghPRCheckout: defaultGHPRCheckoutFn,
+		prState:      defaultPRState,
 	})
 	p.AddHiddenVerb("runtime-worker", "Internal managed app-server turn submitter.", &runtimeWorkerKong{})
 }
@@ -673,7 +680,52 @@ type resumeKong struct {
 	// skips the guard entirely, preserving that caller's existing behavior.
 	agentsFunc  agentsJSONFunc  `kong:"-"`
 	stopSession stopSessionFunc `kong:"-"`
+
+	// setup/git/gitPrune/fetchPRHead/addDetached/ghPRCheckout/prState back
+	// recreateWorktree below (contract agent-teams-8st0.18 item 2,
+	// agent-teams-8st0.28): recreating a missing worktree at the same path,
+	// gated by a PR-state probe for a review-shaped initiative. Unlike
+	// agentsFunc/stopSession above, these are NOT optional-feature seams —
+	// every production registration (RegisterDispatchKong) sets all seven,
+	// so recreateWorktree calls them directly with no nil-fallback, matching
+	// dispatchKong.git's own convention. A test that exercises the
+	// missing-worktree path must set whichever of these its scenario
+	// reaches; one that never does (dir exists) never touches them.
+	setup        worktreeSetupFunc       `kong:"-"`
+	git          resumeWorktreeGit       `kong:"-"`
+	gitPrune     pruneWorktreesFunc      `kong:"-"`
+	fetchPRHead  fetchPRHeadFunc         `kong:"-"`
+	addDetached  addDetachedWorktreeFunc `kong:"-"`
+	ghPRCheckout ghPRCheckoutFunc        `kong:"-"`
+	prState      prStateFunc             `kong:"-"`
 }
+
+// resumeWorktreeGit is the git surface resumeKong needs to recreate a
+// missing worktree (contract agent-teams-8st0.18 item 2) — a separate,
+// smaller interface from dispatchKong's gitRunner above: resume never
+// creates a worktree off the default branch (RULED 2026-09-28: a review
+// branch is NEVER created that way), so it has no DefaultBranch/
+// WorktreeExists member, and it needs two members gitRunner doesn't
+// (BranchExists, AttachWorktree). *gitutil.Runner already implements both
+// interfaces structurally; extending gitRunner itself instead would force
+// every existing fake built against it (other tracks' test files included)
+// to grow two new methods it has no use for.
+type resumeWorktreeGit interface {
+	AddWorktree(repoRoot, wtPath, branch, base string) error
+	BranchExists(repoRoot, ref string) bool
+	AttachWorktree(repoRoot, wtPath, branch string) error
+}
+
+// pruneWorktreesFunc, fetchPRHeadFunc, addDetachedWorktreeFunc, and
+// ghPRCheckoutFunc are resumeKong's remaining injected git/gh seams for
+// recreateWorktree — kept as bare func types (mirroring worktreeSetupFunc/
+// prTitleFunc above) rather than added to resumeWorktreeGit or gitutil.go,
+// since they are resume-specific one-off operations, not general-purpose
+// git plumbing other verbs would reuse.
+type pruneWorktreesFunc func(repoRoot string) error
+type fetchPRHeadFunc func(repoRoot, branch string, prNumber int) error
+type addDetachedWorktreeFunc func(repoRoot, wtPath string) error
+type ghPRCheckoutFunc func(wtPath, branch string, prNumber int) error
 
 // Validate checks that the required ID arg is non-empty.
 func (c *resumeKong) Validate() error {
@@ -725,9 +777,19 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		return cli.Silent(1)
 	}
 
+	// prURL/isReview is CONTRACT agent-teams-8st0.18's review-shaped
+	// predicate (initiative.ReviewPRURL — same one hung_scan.go's
+	// hungScanEntry.ReviewPRURL uses): a non-empty "pr-url:" Description
+	// line. Computed once here, ahead of both consumers below — the
+	// missing-worktree recreation gate (item 2) and the default-prompt
+	// selection (item 3) — so a malformed pr-url line is handled once
+	// rather than by two independent parses that could disagree.
+	prURL, isReview := initiative.ReviewPRURL(issue)
+
 	if _, err := os.Stat(dir); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam resume: worktree path does not exist: %s\n", dir)
-		return cli.Silent(1)
+		if err := c.recreateWorktree(ctx, f, dir, isReview, prURL); err != nil {
+			return err
+		}
 	}
 
 	// Duplicate-live-session guard (agent-teams-ndr4.1): resume used to launch
@@ -828,6 +890,13 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		})
 	} else if c.LaunchPrompt != "" {
 		launchErr = c.launchRaw(ctx, dir, c.LaunchPrompt, c.Model, "", "dri", c.ID)
+	} else if isReview {
+		// CONTRACT agent-teams-8st0.18 item 3: a review-shaped initiative
+		// resumed with no explicit --launch-prompt runs the review-pr skill
+		// (sonnet), not a full DRI — mirrors route.go's spawnReviewInitiative
+		// and dispatch-review-pr's own launch-prompt choice for the same
+		// initiative kind.
+		launchErr = c.launchRaw(ctx, dir, "/agent-teams:review-pr "+c.ID, "sonnet", "", "dri", c.ID)
 	} else {
 		launchErr = c.launch(ctx, dir, c.ID, "dri", c.ID)
 	}
@@ -843,6 +912,186 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		printCodexControls(ctx.Stdout, ctx.Home, c.ID, codexSession)
 	} else {
 		printWatchControl(ctx.Stdout, sessionName)
+	}
+	return nil
+}
+
+// recreateWorktree implements CONTRACT agent-teams-8st0.18 item 2's resume
+// side (agent-teams-8st0.28): dir does not exist, so rebuild it at the same
+// path before resume tries to launch into it. RULED 2026-09-28: a review
+// worktree is NEVER created from the default branch — a REVIEW worktree is
+// always attached to an existing local branch or built from the PR's own
+// head, never from f.Repo's default branch. Returns errNothingToReview,
+// unwrapped, when a review-shaped initiative's PR already turned out to be
+// MERGED or CLOSED — callers (mail send, the hung-scan backstop) key off
+// that exact sentinel via errors.Is.
+func (c *resumeKong) recreateWorktree(ctx *cli.Context, f initiative.Fields, dir string, isReview bool, prURL string) error {
+	var ownerRepo string
+	var prNumber int
+	if isReview {
+		var ok bool
+		ownerRepo, prNumber, ok = parsePrURL(prURL)
+		if !ok {
+			fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has an unparsable pr-url %q; cannot probe PR state or recreate its worktree\n", c.ID, prURL)
+			return cli.Silent(1)
+		}
+		// Probe PR state FIRST, before touching git at all: a MERGED/CLOSED
+		// PR means there is nothing left to review, so no worktree should be
+		// created even if a stale local branch is still lying around.
+		state, probed := probeReviewPRState(ctx, c.prState, ownerRepo, prNumber)
+		if !probed {
+			fmt.Fprintf(ctx.Stderr, "ateam resume: could not determine PR state for %s#%d; retry once gh is reachable\n", ownerRepo, prNumber)
+			return cli.Silent(1)
+		}
+		if state == ghPRStateMerged || state == ghPRStateClosed {
+			return errNothingToReview
+		}
+	}
+
+	if f.Repo == "" {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no repo: line in its description; cannot recreate worktree %s\n", c.ID, dir)
+		return cli.Silent(1)
+	}
+	if f.Branch == "" {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: initiative %s has no branch: line in its description; cannot recreate worktree %s\n", c.ID, dir)
+		return cli.Silent(1)
+	}
+
+	// Best-effort: stale worktree administrative entries (the directory was
+	// removed directly rather than via `git worktree remove`) would
+	// otherwise make the `git worktree add`/`AttachWorktree` calls below
+	// fail on bookkeeping rather than on anything about the branch itself.
+	// A failure here is warned, never fatal — the add below still gets a
+	// real chance to run and reports its own error if prune's staleness
+	// wasn't actually the problem.
+	if err := c.gitPrune(f.Repo); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: warning: git worktree prune failed (continuing): %v\n", err)
+	}
+
+	var recreateErr error
+	switch {
+	case c.git.BranchExists(f.Repo, "refs/heads/"+f.Branch):
+		recreateErr = c.git.AttachWorktree(f.Repo, dir, f.Branch)
+	case isReview:
+		recreateErr = c.recreateReviewWorktree(f.Repo, dir, f.Branch, prNumber)
+	case c.git.BranchExists(f.Repo, "refs/remotes/origin/"+f.Branch):
+		recreateErr = c.git.AddWorktree(f.Repo, dir, f.Branch, "origin/"+f.Branch)
+	default:
+		fmt.Fprintf(ctx.Stderr, "ateam resume: branch %q not found locally or at origin for %s; cannot recreate worktree (work may be gone)\n", f.Branch, c.ID)
+		return cli.Silent(1)
+	}
+	if recreateErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: recreate worktree for %s: %v\n", c.ID, recreateErr)
+		return cli.Silent(1)
+	}
+
+	if _, err := c.setup(ctx, dir); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: warning: worktree setup failed after recreate (continuing): %v\n", err)
+	}
+	return nil
+}
+
+// recreateReviewWorktree implements the REVIEW branch's two-strategy
+// worktree build (contract item 2, no local branch case): fetch the PR's own
+// head ref directly first — never the default branch. If that fails (e.g. a
+// fork PR whose head ref the origin remote doesn't expose), fall back to an
+// ad-hoc DETACHED worktree (no branch at all, so it can't violate the
+// never-branch-from-default rule either) plus `gh pr checkout`, which
+// resolves a fork's remote itself. Both failing is reported to the caller,
+// which turns it into a loud error and creates nothing further; the detached
+// worktree left behind by a fetch-succeeded-checkout-failed split is not
+// cleaned up here — a rare double failure, left for a human to remove.
+func (c *resumeKong) recreateReviewWorktree(repoRoot, wtPath, branch string, prNumber int) error {
+	if err := c.fetchPRHead(repoRoot, branch, prNumber); err == nil {
+		return c.git.AttachWorktree(repoRoot, wtPath, branch)
+	}
+	if err := c.addDetached(repoRoot, wtPath); err != nil {
+		return fmt.Errorf("add detached worktree: %w", err)
+	}
+	if err := c.ghPRCheckout(wtPath, branch, prNumber); err != nil {
+		return fmt.Errorf("fetch pull/%d/head failed and the gh pr checkout fallback also failed: %w", prNumber, err)
+	}
+	return nil
+}
+
+// probeReviewPRState answers whether a review-shaped initiative's PR is
+// already MERGED or CLOSED, reusing hung_tick.go's own PR-state probe cache
+// (hungPRStateCache/defaultPRState) rather than a second cache file — same
+// question, same TTL, one persisted cache regardless of which verb asks.
+// probed==false means "could not determine" (e.g. a gh failure): the caller
+// must treat that as inconclusive, never as OPEN.
+func probeReviewPRState(ctx *cli.Context, prState prStateFunc, ownerRepo string, prNumber int) (state string, probed bool) {
+	if prState == nil {
+		return "", false
+	}
+	cachePath := hungPRStateCachePath(ctx)
+	cache := loadHungPRStateCache(cachePath)
+	now := time.Now()
+	key := prStateCacheKey(ownerRepo, prNumber)
+	if cached, fresh := cache.lookup(key, now, hungPRStateTTL); fresh {
+		return cached, true
+	}
+	result, err := prState(ownerRepo, prNumber)
+	if err != nil {
+		return "", false
+	}
+	cache.put(key, result, now)
+	if saveErr := saveHungPRStateCache(cachePath, cache); saveErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: warning: persist pr-state cache: %v\n", saveErr)
+	}
+	return result, true
+}
+
+// defaultPruneWorktreesFn removes git's administrative entries for worktree
+// paths that no longer exist on disk, so a subsequent `git worktree add`/
+// `AttachWorktree` at a path a human or process deleted directly (rather
+// than via `git worktree remove`) does not fail on stale bookkeeping.
+// Equivalent to: git -C <repoRoot> worktree prune
+func defaultPruneWorktreesFn(repoRoot string) error {
+	out, err := exec.Command("git", "-C", repoRoot, "worktree", "prune").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree prune: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// defaultFetchPRHeadFn fetches a PR's own head commit into a local branch —
+// resume's first REVIEW-worktree-recreation strategy (contract item 2): the
+// PR's head, never the base/default branch.
+// Equivalent to: git -C <repoRoot> fetch origin pull/<prNumber>/head:<branch>
+func defaultFetchPRHeadFn(repoRoot, branch string, prNumber int) error {
+	refspec := fmt.Sprintf("pull/%d/head:%s", prNumber, branch)
+	out, err := exec.Command("git", "-C", repoRoot, "fetch", "origin", refspec).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git fetch origin %s: %s", refspec, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// defaultAddDetachedWorktreeFn adds a worktree at wtPath in detached-HEAD
+// state — no branch of any kind, so it can never violate the never-branch-
+// from-default rule. Used only as the staging step for the gh pr checkout
+// fallback (defaultGHPRCheckoutFn), when fetching the PR head directly
+// failed (e.g. a fork PR the remote doesn't expose).
+// Equivalent to: git -C <repoRoot> worktree add --detach <wtPath>
+func defaultAddDetachedWorktreeFn(repoRoot, wtPath string) error {
+	out, err := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", wtPath).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree add --detach %s: %s", wtPath, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// defaultGHPRCheckoutFn checks out prNumber's PR as local branch name inside
+// the worktree at wtPath — the fork-PR fallback (gh resolves a fork's own
+// remote itself, which a plain `git fetch origin pull/<n>/head` cannot).
+// Equivalent to (run inside wtPath): gh pr checkout <prNumber> --branch <branch>
+func defaultGHPRCheckoutFn(wtPath, branch string, prNumber int) error {
+	cmd := exec.Command("gh", "pr", "checkout", strconv.Itoa(prNumber), "--branch", branch)
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh pr checkout %d --branch %s: %s", prNumber, branch, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
