@@ -77,10 +77,12 @@ RESULTS_FILE="$T/results.tsv"
 : > "$RESULTS_FILE"
 OVERALL_RC=0
 
-record() { # $1=name $2=PASS|FAIL $3=reason
+record() { # $1=name $2=PASS|FAIL|SKIP $3=reason
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$RESULTS_FILE"
   if [ "$2" = "PASS" ]; then
     echo "PASS  $1"
+  elif [ "$2" = "SKIP" ]; then
+    echo "SKIP  $1 -- $3"
   else
     echo "FAIL  $1 -- $3"
     OVERALL_RC=1
@@ -636,8 +638,28 @@ run_S4_moot() {
 # precondition was unmet. Expected ladder_action: "skip-unread-mail" when
 # the unread-mail guard (agent-teams-8st0.21) is present and holds the close
 # back; "close" (and a closed status) on a binary that lacks it.
+#
+# SKIPPED for now: `ateam relay`'s only non-secret transport
+# (internal/transport/stub) has an explicitly non-blocking Receive() ("drains
+# present reply-*.json files, returns — no network long-poll"). relayKong.Run
+# (relay.go) ends on `return t.Receive(...)`; the instant that returns, its
+# deferred `close(stop); <-done` stops the hung-tick goroutine. Measured: a
+# foreground `ateam relay` run against an e2e-tagged binary, same env this
+# scenario uses (AGENT_TEAMS_HUNG_TICK_INTERVAL=1s), exits on its own after
+# ~138ms — far short of even a 1s tick, so the ticker never fires once,
+# regardless of how long this scenario would sleep afterward. This blocks
+# ANY binary, not just one side, so it can't tell branch and control apart
+# live. The fixture below (from e5961b6) is left in place, unexecuted, for
+# when a blocking stub-transport mode lands (tracked separately) — the
+# unread-mail guard itself is proven instead by a mutation test in
+# internal/verbs/hung_tick_test.go (see the mutation-proof note on this
+# initiative's bead for names + FAIL/PASS output).
 # ══════════════════════════════════════════════════════════════════════════
 run_S5() {
+  record "S5" SKIP "not live-reachable: ateam relay's stub Receive is non-blocking, so the hung tick never fires; property covered by mutation-proven unit test"
+  return
+
+  # shellcheck disable=SC2317
   local n=106
   make_pr_ref "$n" "s5 content"
   gh_set_state "$n" OPEN
