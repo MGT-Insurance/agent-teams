@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -73,11 +74,16 @@ func (f *stewardRouteFakeBD) RunJSON(dst any, args ...string) error {
 
 // requireStewardMarker creates the Steward session marker in ctx.Home (via
 // the real stewardInitKong.Run) so notifyToSteward's presence guard
-// (agent-teams-e3mq.24) passes. Doesn't touch ctx.BD, so it's safe to call
-// against any fake BD, including a queued fakeExec.
+// (agent-teams-e3mq.24) passes. Runs stewardInit against a THROWAWAY context
+// that shares ctx.Home but not ctx.BD: stewardInit's own setup calls
+// (installPrimeMemoryCaps' `bd config set` pair, steward.go) would otherwise
+// consume slots from a queue-based fakeBD/fakeExec built for the caller's own
+// sequence of calls, silently shifting every response after it. Safe to call
+// against any ctx regardless of its BD fake, including a queued fakeExec.
 func requireStewardMarker(t *testing.T, ctx *cli.Context) {
 	t.Helper()
-	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+	initCtx := &cli.Context{Home: ctx.Home, BD: &fakeBD{}, Stdout: io.Discard, Stderr: io.Discard}
+	if err := (&stewardInitKong{}).Run(initCtx); err != nil {
 		t.Fatalf("requireStewardMarker: steward init: %v", err)
 	}
 }
