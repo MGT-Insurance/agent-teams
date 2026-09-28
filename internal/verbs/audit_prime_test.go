@@ -95,23 +95,100 @@ func TestAuditPrime_PassesWhenSuppressed(t *testing.T) {
 	}
 }
 
-// The realistic day-to-day case: memories exist but are capped by
-// installPrimeMemoryCaps (steward.go) — this must be GREEN, not just the
-// zero-memory case above.
+// The realistic day-to-day case: memories exist, capped by
+// installPrimeMemoryCaps (steward.go), and the one memory bd chose to emit
+// is the sentinel installSentinelMemory planted (steward.go) — this must be
+// GREEN, not just the zero-memory case above.
 func TestAuditPrime_PassesWhenMemoriesCapped(t *testing.T) {
 	home := auditPrimeWorkspace(t)
 	out := auditPrimeSuppressed + "\n## Persistent Memories (showing 1 of 3, alphabetical)\n\n" +
-		"> 2 more memories are not shown here (capped by max-memories=1).\n\n### alpha\nalpha memory content\n"
+		"> 2 more memories are not shown here (capped by max-memories=1).\n\n### " + primeCapSentinelKey + "\n" + primeCapSentinelBody + "\n"
 	ctx, stdout, stderr := makeCtx(auditPrimeBD(out, primeMemoryCapValue, nil), home)
 
 	if err := (&auditKong{}).Run(ctx); err != nil {
 		t.Fatalf("audit with capped memories: err = %v, want nil", err)
 	}
-	if !strings.Contains(stdout.String(), "audit: bd prime clean") || !strings.Contains(stdout.String(), "memories capped") {
-		t.Errorf("stdout missing the capped-clean line:\n%s", stdout.String())
+	got := stdout.String()
+	if !strings.Contains(got, "audit: bd prime clean") || !strings.Contains(got, "memories capped") || !strings.Contains(got, "sentinel confirmed") {
+		t.Errorf("stdout missing the capped-clean line:\n%s", got)
 	}
 	if stderr.String() != "" {
 		t.Errorf("unexpected stderr: %q", stderr.String())
+	}
+}
+
+// The concrete threat the sentinel exists to catch: caps are confirmed
+// correct and prime is well under budget, but the ONE memory bd actually
+// emitted is a real memory, not the sentinel — either the sentinel is
+// missing, or a key sorting before it got added. Must FAIL: a regression
+// that only checks capsOK (dropping the sentinel check entirely) would turn
+// this green for the wrong reason — see
+// TestAuditPrime_MutationCheck_SentinelGuardIsLoadBearing below, which
+// proves that.
+func TestAuditPrime_FailsWhenEmittedMemoryIsNotSentinel(t *testing.T) {
+	home := auditPrimeWorkspace(t)
+	out := auditPrimeSuppressed + "\n## Persistent Memories (showing 1 of 3, alphabetical)\n\n" +
+		"> 2 more memories are not shown here (capped by max-memories=1).\n\n### 00-a-real-secret-key\nreal memory body\n"
+	ctx, stdout, stderr := makeCtx(auditPrimeBD(out, primeMemoryCapValue, nil), home)
+
+	if cli.ExitCode((&auditKong{}).Run(ctx)) != 1 {
+		t.Fatalf("emitted memory is not the sentinel: want exit 1")
+	}
+	if strings.Contains(stdout.String(), "bd prime clean") {
+		t.Errorf("failure path still printed the clean line:\n%s", stdout.String())
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "memory caps:   confirmed") {
+		t.Errorf("failure output should still report caps as confirmed:\n%s", got)
+	}
+	if !strings.Contains(got, "sentinel:      NOT confirmed") {
+		t.Errorf("failure output should report the sentinel as not confirmed:\n%s", got)
+	}
+	if !strings.Contains(got, `"00-a-real-secret-key"`) {
+		t.Errorf("failure output should show the actual emitted key:\n%s", got)
+	}
+}
+
+// Defensive shape that shouldn't happen once hasMemories is true (the
+// heading always comes with at least one "### " entry in practice), but
+// firstPrimeMemoryKey must fail closed rather than panic or false-pass.
+func TestAuditPrime_FailsWhenMemoryHeadingHasNoEntry(t *testing.T) {
+	home := auditPrimeWorkspace(t)
+	out := auditPrimeSuppressed + "\n## Persistent Memories (showing 1 of 3, alphabetical)\n\n(malformed: no entry follows)\n"
+	ctx, _, stderr := makeCtx(auditPrimeBD(out, primeMemoryCapValue, nil), home)
+
+	if cli.ExitCode((&auditKong{}).Run(ctx)) != 1 {
+		t.Fatalf("memory heading with no entry: want exit 1")
+	}
+	if !strings.Contains(stderr.String(), "sentinel:      NOT confirmed (no memory heading found") {
+		t.Errorf("failure output should report no memory entry found:\n%s", stderr.String())
+	}
+}
+
+// TestAuditPrime_MutationCheck_SentinelGuardIsLoadBearing proves the
+// sentinel guard added to checkGlobalPrimeBudget is actually load-bearing:
+// firstPrimeMemoryKey, called directly (bypassing the pass/fail wiring),
+// must extract "00-a-real-secret-key" — not the sentinel — from the same
+// fixture TestAuditPrime_FailsWhenEmittedMemoryIsNotSentinel uses. If a
+// future edit stops computing sentinelOK from firstPrimeMemoryKey's result
+// (e.g. hardcodes sentinelOK = true, or drops the "&& sentinelOK" term from
+// checkGlobalPrimeBudget's pass condition), this still passes on its own —
+// which is exactly why TestAuditPrime_FailsWhenEmittedMemoryIsNotSentinel
+// above is the test that actually catches that regression: this one only
+// confirms the parser itself extracts the right key, not the wiring around
+// it.
+func TestAuditPrime_MutationCheck_SentinelGuardIsLoadBearing(t *testing.T) {
+	out := auditPrimeSuppressed + "\n## Persistent Memories (showing 1 of 3, alphabetical)\n\n" +
+		"> 2 more memories are not shown here (capped by max-memories=1).\n\n### 00-a-real-secret-key\nreal memory body\n"
+	key, ok := firstPrimeMemoryKey(out)
+	if !ok {
+		t.Fatal("firstPrimeMemoryKey: ok = false, want true")
+	}
+	if key == primeCapSentinelKey {
+		t.Fatalf("firstPrimeMemoryKey extracted the sentinel key from a fixture that doesn't contain it — the parser is broken")
+	}
+	if key != "00-a-real-secret-key" {
+		t.Errorf("firstPrimeMemoryKey = %q, want %q", key, "00-a-real-secret-key")
 	}
 }
 

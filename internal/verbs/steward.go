@@ -98,6 +98,10 @@ func stewardInit(ctx *cli.Context) (string, error) {
 		return "", fmt.Errorf("install prime memory caps: %w", err)
 	}
 
+	if err := installSentinelMemory(ctx); err != nil {
+		return "", fmt.Errorf("install prime cap sentinel memory: %w", err)
+	}
+
 	return sessionDir, nil
 }
 
@@ -151,6 +155,50 @@ func installPrimeMemoryCaps(ctx *cli.Context) error {
 	}
 	if _, err := ctx.BD.Run("config", "set", primeMaxMemoryCharsKey, primeMemoryCapValue); err != nil {
 		return fmt.Errorf("set %s: %w", primeMaxMemoryCharsKey, err)
+	}
+	return nil
+}
+
+// primeCapSentinelKey is the bd memory key installed as a permanent
+// placeholder for the ONE memory a capped `bd prime` (max-memories=1) always
+// emits. `bd memories` lists keys alphabetically, and a bare "0" prefix sorts
+// ahead of every real memory key in this workspace (the "<role>:<tier>:
+// <slug>" convention used by `ateam learn`, plus "user:*", "applied:*",
+// etc.) — so the one memory a capped prime picks is always this harmless
+// placeholder instead of whichever real memory happens to sort first.
+// Verified empirically (scratch `bd init` workspace, bd 1.3.0): bd does not
+// normalize the key, and a repeat `bd remember --key` on the same key
+// updates in place rather than duplicating.
+//
+// Never consumed by any ateam tool: every existing memory-key parser (the
+// role/tier/slug filters in query.go, condense_check.go, the
+// condense/drain/forget verbs in kong_converted.go, and steward_topics.go's
+// "steward:topics:" prefix check) either requires a role prefix or a colon
+// this bare key doesn't have, so all of them skip it silently — confirmed by
+// reading each site before adding this key.
+const primeCapSentinelKey = "000-prime-cap-sentinel"
+
+// primeCapSentinelBody is primeCapSentinelKey's content: informational only,
+// read by a human via `bd memories`/`bd prime`, never parsed by any tool.
+const primeCapSentinelBody = "Sentinel memory for ateam's prime-cap mechanism " +
+	"(installSentinelMemory in internal/verbs/steward.go; checked by " +
+	"checkGlobalPrimeBudget in internal/verbs/audit_prime.go). Its key sorts " +
+	"first alphabetically so a capped `bd prime` (max-memories=1) always " +
+	"emits this harmless placeholder instead of a real memory. Do not delete " +
+	"or rename this key — `ateam steward init` re-creates it if it's gone, " +
+	"but deleting it exposes whichever real memory sorts first instead."
+
+// installSentinelMemory writes primeCapSentinelKey/primeCapSentinelBody via
+// `bd remember`, unconditionally — like installPrimeMemoryCaps above, this
+// key has exactly one correct value, so a `bd remember` on an
+// already-correct memory is a harmless no-op update (verified empirically:
+// re-running `bd remember --key <existing key>` overwrites the same memory
+// in place; it never creates a duplicate). A write failure IS a hard error:
+// checkGlobalPrimeBudget's sentinel check depends on this memory existing
+// and sorting first.
+func installSentinelMemory(ctx *cli.Context) error {
+	if _, err := ctx.BD.Run("remember", "--key", primeCapSentinelKey, primeCapSentinelBody); err != nil {
+		return fmt.Errorf("remember %s: %w", primeCapSentinelKey, err)
 	}
 	return nil
 }

@@ -128,6 +128,62 @@ func TestStewardInit_PrimeMemoryCapSetFailure_HardFails(t *testing.T) {
 	}
 }
 
+// ── prime cap sentinel memory ────────────────────────────────────────────────
+
+// TestStewardInit_SetsSentinelMemory is the mutation check for
+// installSentinelMemory: if the call to it is ever dropped from stewardInit,
+// or the key it writes changes, this goes RED.
+func TestStewardInit_SetsSentinelMemory(t *testing.T) {
+	home := t.TempDir()
+	var calls []string
+	bdRunner := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			return "", nil
+		},
+	}
+	ctx, _, _ := makeCtx(bdRunner, home)
+
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "remember --key " + primeCapSentinelKey + " " + primeCapSentinelBody
+	found := false
+	for _, c := range calls {
+		if c == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("stewardInit did not call `bd %s`; calls = %v", want, calls)
+	}
+}
+
+// A `bd remember` failure for the sentinel key must hard-fail stewardInit —
+// checkGlobalPrimeBudget's sentinel check depends on this memory existing.
+func TestStewardInit_SentinelMemorySetFailure_HardFails(t *testing.T) {
+	home := t.TempDir()
+	bdRunner := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "remember" {
+				return "", errors.New("bd remember: boom")
+			}
+			return "", nil
+		},
+	}
+	ctx, _, _ := makeCtx(bdRunner, home)
+
+	err := (&stewardInitKong{}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected an error when `bd remember` fails")
+	}
+	if !strings.Contains(err.Error(), primeCapSentinelKey) {
+		t.Errorf("error should name the sentinel key: %v", err)
+	}
+}
+
 // ── global PRIME.md install ──────────────────────────────────────────────────
 
 func TestStewardInit_InstallsGlobalPrimeMD(t *testing.T) {

@@ -33,7 +33,8 @@ const primeMemoriesHeading = "## Persistent Memories"
 
 // checkGlobalPrimeBudget asserts that `bd prime`, resolved against the global
 // workspace, stays under primeBudgetBytes, and that any memory section it
-// emits is confirmed capped. It reports whether the assertion held.
+// emits is confirmed capped AND is the harmless sentinel, not a real memory.
+// It reports whether the assertion held.
 //
 // WHY this is a standing assertion and not just a fix: on bd v1.1.0 a custom
 // PRIME.md was a TOTAL override of `bd prime`'s output, so installing one was
@@ -46,10 +47,15 @@ const primeMemoriesHeading = "## Persistent Memories"
 // prime.max-memories/prime.max-memory-chars config keys (installPrimeMemoryCaps
 // in steward.go sets both to 1): bd always emits at least one memory plus an
 // elision banner, so a capped prime never gets fully silent, but it holds the
-// section to roughly one memory's worth instead of the whole store. A beads
-// upgrade that changes this mechanism again — or a workspace where
-// `ateam steward init` never ran — silently un-caps it: no error, no warning,
-// the whole memory store simply returns to every session's context on every
+// section to roughly one memory's worth instead of the whole store. That one
+// memory is still a REAL memory unless something makes it not be — so
+// installSentinelMemory (steward.go) plants primeCapSentinelKey, a key that
+// sorts first alphabetically ahead of every real memory key in this
+// workspace, so the memory a capped prime picks is always this placeholder.
+// A beads upgrade that changes this mechanism again, a workspace where
+// `ateam steward init` never ran, or a real memory key that happens to sort
+// before "0" silently un-caps or de-sentinels it: no error, no warning, real
+// memory content simply returns to every session's context on every
 // PreCompact. Nothing else in the system can witness that regression.
 //
 // Fail-soft by construction: this runs on every DRI preflight on the machine,
@@ -74,11 +80,13 @@ func checkGlobalPrimeBudget(ctx *cli.Context) bool {
 	size := len(out)
 	hasMemories := strings.Contains(out, primeMemoriesHeading)
 
-	// The caps only matter when there's a memory section to cap — an empty
-	// memory store emits no heading regardless of what the keys are set to,
-	// and checking them would just manufacture a false positive.
-	var maxMemories, maxChars string
+	// The caps and the sentinel only matter when there's a memory section to
+	// cap — an empty memory store emits no heading regardless of what the
+	// keys are set to or which memory would have sorted first, and checking
+	// either would just manufacture a false positive.
+	var maxMemories, maxChars, emittedKey string
 	capsOK := true
+	sentinelOK := true
 	if hasMemories {
 		var errMemories, errChars error
 		maxMemories, errMemories = ctx.BD.Run("config", "get", primeMaxMemoriesKey)
@@ -87,26 +95,58 @@ func checkGlobalPrimeBudget(ctx *cli.Context) bool {
 			return true
 		}
 		capsOK = maxMemories == primeMemoryCapValue && maxChars == primeMemoryCapValue
+
+		var keyFound bool
+		emittedKey, keyFound = firstPrimeMemoryKey(out)
+		sentinelOK = keyFound && emittedKey == primeCapSentinelKey
 	}
 
-	if size <= primeBudgetBytes && capsOK {
+	if size <= primeBudgetBytes && capsOK && sentinelOK {
 		if hasMemories {
-			fmt.Fprintf(ctx.Stdout, "audit: bd prime clean — %d bytes, memories capped (%s=%s, %s=%s) (budget %d)\n",
-				size, primeMaxMemoriesKey, maxMemories, primeMaxMemoryCharsKey, maxChars, primeBudgetBytes)
+			fmt.Fprintf(ctx.Stdout, "audit: bd prime clean — %d bytes, memories capped (%s=%s, %s=%s), sentinel confirmed (%s) (budget %d)\n",
+				size, primeMaxMemoriesKey, maxMemories, primeMaxMemoryCharsKey, maxChars, primeCapSentinelKey, primeBudgetBytes)
 		} else {
 			fmt.Fprintf(ctx.Stdout, "audit: bd prime clean — %d bytes, no memories in store (budget %d)\n", size, primeBudgetBytes)
 		}
 		return true
 	}
 
-	reportPrimeBudgetFailure(ctx, size, hasMemories, capsOK, maxMemories, maxChars)
+	reportPrimeBudgetFailure(ctx, size, hasMemories, capsOK, sentinelOK, emittedKey, maxMemories, maxChars)
 	return false
 }
 
+// firstPrimeMemoryKey extracts the key from the first "### <key>" heading
+// following primeMemoriesHeading in out — the one memory a capped `bd prime`
+// actually chose to emit. ok is false when out has no memory section, or
+// (defensively; shouldn't happen once hasMemories is true) that section has
+// no "### " heading at all.
+func firstPrimeMemoryKey(out string) (key string, ok bool) {
+	idx := strings.Index(out, primeMemoriesHeading)
+	if idx < 0 {
+		return "", false
+	}
+	rest := out[idx+len(primeMemoriesHeading):]
+	const headingPrefix = "\n### "
+	headingIdx := strings.Index(rest, headingPrefix)
+	if headingIdx < 0 {
+		return "", false
+	}
+	line := rest[headingIdx+len(headingPrefix):]
+	if nl := strings.IndexByte(line, '\n'); nl >= 0 {
+		line = line[:nl]
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", false
+	}
+	return line, true
+}
+
 // reportPrimeBudgetFailure writes the FAILED report for checkGlobalPrimeBudget.
-// size/hasMemories/capsOK/maxMemories/maxChars are exactly what
-// checkGlobalPrimeBudget already computed — this only formats them.
-func reportPrimeBudgetFailure(ctx *cli.Context, size int, hasMemories, capsOK bool, maxMemories, maxChars string) {
+// size/hasMemories/capsOK/sentinelOK/emittedKey/maxMemories/maxChars are
+// exactly what checkGlobalPrimeBudget already computed — this only formats
+// them.
+func reportPrimeBudgetFailure(ctx *cli.Context, size int, hasMemories, capsOK, sentinelOK bool, emittedKey, maxMemories, maxChars string) {
 	fmt.Fprintln(ctx.Stderr, "audit: FAILED — `bd prime` against the global workspace is not safely capped:")
 	fmt.Fprintf(ctx.Stderr, "  workspace:     %s\n", ctx.Home)
 
@@ -116,14 +156,25 @@ func reportPrimeBudgetFailure(ctx *cli.Context, size int, hasMemories, capsOK bo
 	}
 	fmt.Fprintf(ctx.Stderr, "  bd prime size: %d bytes (budget %d, %s)\n", size, primeBudgetBytes, budgetVerdict)
 
-	switch {
-	case !hasMemories:
+	if !hasMemories {
 		fmt.Fprintln(ctx.Stderr, "  memory caps:   n/a (no memories in store)")
-	case capsOK:
-		fmt.Fprintf(ctx.Stderr, "  memory caps:   confirmed (%s=%s, %s=%s)\n", primeMaxMemoriesKey, maxMemories, primeMaxMemoryCharsKey, maxChars)
-	default:
-		fmt.Fprintf(ctx.Stderr, "  memory caps:   NOT confirmed (%s=%q, %s=%q, want %q both)\n",
-			primeMaxMemoriesKey, maxMemories, primeMaxMemoryCharsKey, maxChars, primeMemoryCapValue)
+		fmt.Fprintln(ctx.Stderr, "  sentinel:      n/a (no memories in store)")
+	} else {
+		if capsOK {
+			fmt.Fprintf(ctx.Stderr, "  memory caps:   confirmed (%s=%s, %s=%s)\n", primeMaxMemoriesKey, maxMemories, primeMaxMemoryCharsKey, maxChars)
+		} else {
+			fmt.Fprintf(ctx.Stderr, "  memory caps:   NOT confirmed (%s=%q, %s=%q, want %q both)\n",
+				primeMaxMemoriesKey, maxMemories, primeMaxMemoryCharsKey, maxChars, primeMemoryCapValue)
+		}
+		switch {
+		case sentinelOK:
+			fmt.Fprintf(ctx.Stderr, "  sentinel:      confirmed (%s)\n", primeCapSentinelKey)
+		case emittedKey == "":
+			fmt.Fprintf(ctx.Stderr, "  sentinel:      NOT confirmed (no memory heading found in output, want %q)\n", primeCapSentinelKey)
+		default:
+			fmt.Fprintf(ctx.Stderr, "  sentinel:      NOT confirmed (emitted %q, want %q — a key that sorts earlier was added, or the sentinel is missing)\n",
+				emittedKey, primeCapSentinelKey)
+		}
 	}
 	fmt.Fprintln(ctx.Stderr, "")
 	fmt.Fprintln(ctx.Stderr, "`bd prime` output is injected verbatim into every session that resolves this")
@@ -138,17 +189,25 @@ func reportPrimeBudgetFailure(ctx *cli.Context, size int, hasMemories, capsOK bo
 	fmt.Fprintln(ctx.Stderr, "on bd v1.3.0+ a custom PRIME.md replaces only the workflow text and every memory")
 	fmt.Fprintln(ctx.Stderr, "is re-appended after it, unbounded — and `--no-memories` has no config-key")
 	fmt.Fprintln(ctx.Stderr, "fallback, so a hook that always calls flag-less `bd prime` can't reach it either.")
+	fmt.Fprintln(ctx.Stderr, "The mitigation caps the section to one memory (prime.max-memories/")
+	fmt.Fprintln(ctx.Stderr, "prime.max-memory-chars=1) and plants a sentinel memory that sorts first")
+	fmt.Fprintln(ctx.Stderr, "alphabetically, so that one memory is always a harmless placeholder rather than")
+	fmt.Fprintln(ctx.Stderr, "real content.")
 	fmt.Fprintln(ctx.Stderr, "")
-	fmt.Fprintln(ctx.Stderr, "WHAT TO DO — confirm prime.max-memories/prime.max-memory-chars are set:")
+	fmt.Fprintln(ctx.Stderr, "WHAT TO DO — confirm prime.max-memories/prime.max-memory-chars are set, and that")
+	fmt.Fprintln(ctx.Stderr, "the sentinel memory exists:")
 	fmt.Fprintf(ctx.Stderr, "  bd -C %s config get %s\n", ctx.Home, primeMaxMemoriesKey)
 	fmt.Fprintf(ctx.Stderr, "  bd -C %s config get %s\n", ctx.Home, primeMaxMemoryCharsKey)
-	fmt.Fprintln(ctx.Stderr, "Run `ateam steward init` to set both idempotently (installPrimeMemoryCaps in")
-	fmt.Fprintln(ctx.Stderr, "internal/verbs/steward.go) — it's safe to re-run and is the fix for both a")
-	fmt.Fprintln(ctx.Stderr, "missing/wrong key and a workspace that never had `steward init` run on it.")
-	fmt.Fprintln(ctx.Stderr, "If the keys are already confirmed and prime is STILL over budget, the caps")
-	fmt.Fprintln(ctx.Stderr, "mechanism itself has changed again upstream — bd always emits at least one full")
-	fmt.Fprintln(ctx.Stderr, "memory regardless of the char cap, so a single oversized memory can still blow")
-	fmt.Fprintln(ctx.Stderr, "the budget; that needs a different fix (e.g. `bd forget` on that one entry), not")
+	fmt.Fprintf(ctx.Stderr, "  bd -C %s memories %s\n", ctx.Home, primeCapSentinelKey)
+	fmt.Fprintln(ctx.Stderr, "Run `ateam steward init` to set/recreate all three idempotently")
+	fmt.Fprintln(ctx.Stderr, "(installPrimeMemoryCaps and installSentinelMemory in internal/verbs/steward.go)")
+	fmt.Fprintln(ctx.Stderr, "— it's safe to re-run and is the fix for a missing/wrong key, a missing sentinel,")
+	fmt.Fprintln(ctx.Stderr, "or a workspace that never had `steward init` run on it.")
+	fmt.Fprintln(ctx.Stderr, "If the keys and sentinel are already confirmed and prime is STILL over budget or")
+	fmt.Fprintln(ctx.Stderr, "emitting the wrong memory, the caps mechanism itself has changed again upstream —")
+	fmt.Fprintln(ctx.Stderr, "bd always emits at least one full memory regardless of the char cap, so a single")
+	fmt.Fprintln(ctx.Stderr, "oversized memory can still blow the budget; or a new key sorting before")
+	fmt.Fprintf(ctx.Stderr, "%q was added, which needs a different fix (e.g. renaming/removing that key), not\n", primeCapSentinelKey)
 	fmt.Fprintln(ctx.Stderr, "a change to this check.")
 	fmt.Fprintln(ctx.Stderr, "")
 	fmt.Fprintln(ctx.Stderr, "  Reproduce with:")
