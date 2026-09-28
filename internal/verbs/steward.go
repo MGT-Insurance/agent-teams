@@ -94,19 +94,79 @@ func stewardInit(ctx *cli.Context) (string, error) {
 		return "", fmt.Errorf("install global PRIME.md: %w", err)
 	}
 
+	if err := installPrimeMemoryCaps(ctx); err != nil {
+		return "", fmt.Errorf("install prime memory caps: %w", err)
+	}
+
+	if err := installSentinelMemory(ctx); err != nil {
+		return "", fmt.Errorf("install prime cap sentinel memory: %w", err)
+	}
+
 	return sessionDir, nil
 }
 
-// globalPrimeMDPath returns $ATEAM_HOME/.beads/PRIME.md — the beads v1.1.0
-// (cmd/bd/prime.go) override path: `bd prime`, run against the global
-// agent-teams workspace, treats a PRIME.md file there as a total override of
-// its default output (which otherwise dumps the entire all-role memory store
-// into every session). Not one of the Steward*Path helpers in
-// steward_seams.go: that file is the frozen contract other tracks import
-// read-only, and this path isn't Steward-specific — it's a property of the
-// global workspace as a whole, installed by `ateam steward init` because
-// that's the existing one-time workspace-setup hook, not because it's
-// steward state.
+// primeMaxMemoriesKey and primeMaxMemoryCharsKey are the bd config keys
+// (bd >= v1.3.0) that cap what `bd prime` injects from the persistent memory
+// store. primeMemoryCapValue is the value this tool sets both to. Shared with
+// audit_prime.go's checkGlobalPrimeBudget, which reads them back to confirm
+// installPrimeMemoryCaps actually took.
+const (
+	primeMaxMemoriesKey    = "prime.max-memories"
+	primeMaxMemoryCharsKey = "prime.max-memory-chars"
+	primeMemoryCapValue    = "1"
+)
+
+// installPrimeMemoryCaps sets primeMaxMemoriesKey and primeMaxMemoryCharsKey
+// to primeMemoryCapValue via `bd config set`. On bd 1.3.0+, a custom
+// PRIME.md no longer suppresses memories (GH#3941); `--no-memories` has no
+// config-key fallback, so the beads plugin's flag-less hooks can't reach it.
+// These keys are stored as plain per-machine YAML in
+// <home>/.beads/config.yaml, not Dolt. A write failure is fatal:
+// checkGlobalPrimeBudget (audit_prime.go) depends on these keys.
+func installPrimeMemoryCaps(ctx *cli.Context) error {
+	if _, err := ctx.BD.Run("config", "set", primeMaxMemoriesKey, primeMemoryCapValue); err != nil {
+		return fmt.Errorf("set %s: %w", primeMaxMemoriesKey, err)
+	}
+	if _, err := ctx.BD.Run("config", "set", primeMaxMemoryCharsKey, primeMemoryCapValue); err != nil {
+		return fmt.Errorf("set %s: %w", primeMaxMemoryCharsKey, err)
+	}
+	return nil
+}
+
+// primeCapSentinelKey is a placeholder bd memory key that sorts first
+// alphabetically, so a capped `bd prime` (max-memories=1) always emits it
+// instead of a real memory. ateam's memory-key parsers all skip it — it has
+// no colon, so it matches no role/tier/slug prefix.
+const primeCapSentinelKey = "000-prime-cap-sentinel"
+
+// primeCapSentinelBody is primeCapSentinelKey's content. It's a placeholder
+// that keeps a capped `bd prime` from surfacing a real memory. Don't delete
+// it — `ateam steward init` restores it.
+const primeCapSentinelBody = "Placeholder memory for ateam's prime-cap " +
+	"mechanism. It sorts first alphabetically, so a capped `bd prime` " +
+	"(max-memories=1) always emits this instead of a real memory. Don't " +
+	"delete it — `ateam steward init` restores it."
+
+// installSentinelMemory writes primeCapSentinelKey/primeCapSentinelBody,
+// reading first so it only calls `bd remember` when the key is missing or stale.
+func installSentinelMemory(ctx *cli.Context) error {
+	var existing map[string]any
+	if err := ctx.BD.RunJSON(&existing, "memories", "--json"); err == nil {
+		if body, ok := existing[primeCapSentinelKey].(string); ok && body == primeCapSentinelBody {
+			return nil
+		}
+	}
+	if _, err := ctx.BD.Run("remember", "--key", primeCapSentinelKey, primeCapSentinelBody); err != nil {
+		return fmt.Errorf("remember %s: %w", primeCapSentinelKey, err)
+	}
+	return nil
+}
+
+// globalPrimeMDPath returns $ATEAM_HOME/.beads/PRIME.md. On bd 1.3.0+,
+// PRIME.md replaces only bd's workflow text; memories are capped
+// separately (installPrimeMemoryCaps above). Not a Steward*Path helper in
+// steward_seams.go — that file is a frozen contract, and this path is a
+// global-workspace property, not steward state.
 func globalPrimeMDPath(ctx *cli.Context) string {
 	return filepath.Join(ctx.Home, ".beads", "PRIME.md")
 }
