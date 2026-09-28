@@ -896,11 +896,20 @@ func (c *pullKong) Run(ctx *cli.Context) error {
 // syncKong is the kong-converted form of sync. No arguments.
 type syncKong struct{}
 
-// boundedBDRun runs args against client bounded by pullTimeoutDefault — used
-// for sync's commit/push execs, which (like its pulls) must never queue
-// indefinitely behind a slow or hung dolt sql-server (agent-teams-qdeh.4).
-func boundedBDRun(client *bd.Client, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), pullTimeoutDefault)
+// pushTimeoutDefault bounds a single `bd dolt push` exec issued by `ateam
+// sync`. A real push against the global workspace takes about 22-30s of CPU
+// work (agent-teams-8st0), well past pullTimeoutDefault's 20s, which is tuned
+// for a hung pull rather than a slow-but-healthy push — so sync's push exec
+// gets its own bound instead. Set to about 3x the observed worst case.
+const pushTimeoutDefault = 90 * time.Second
+
+// boundedBDRun runs args against client bounded by timeout — used for sync's
+// commit/push execs, which (like its pulls) must never queue indefinitely
+// behind a slow or hung dolt sql-server (agent-teams-qdeh.4). Callers pass
+// pullTimeoutDefault for commit and pushTimeoutDefault for push, since a
+// healthy push runs well past pullTimeoutDefault's hung-pull-tuned bound.
+func boundedBDRun(client *bd.Client, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return client.RunContext(ctx, args...)
 }
@@ -919,7 +928,7 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	// would deadlock the pull ("local changes would be stomped by merge"). A
 	// clean WS yields "nothing to commit" — that is a no-op, not a failure; any
 	// other commit error aborts before we touch the remote.
-	if out, err := boundedBDRun(client, "dolt", "commit"); err != nil {
+	if out, err := boundedBDRun(client, pullTimeoutDefault, "dolt", "commit"); err != nil {
 		if !strings.Contains(strings.ToLower(out+" "+err.Error()), "nothing to commit") {
 			return err
 		}
@@ -936,7 +945,7 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	out, err := boundedBDRun(client, "dolt", "push")
+	out, err := boundedBDRun(client, pushTimeoutDefault, "dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -952,7 +961,7 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	out, err = boundedBDRun(client, "dolt", "push")
+	out, err = boundedBDRun(client, pushTimeoutDefault, "dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
