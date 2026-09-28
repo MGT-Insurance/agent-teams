@@ -949,9 +949,11 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 // worktree is NEVER created from the default branch — a REVIEW worktree is
 // always attached to an existing local branch or built from the PR's own
 // head, never from f.Repo's default branch. Returns errNothingToReview,
-// unwrapped, when a review-shaped initiative's PR already turned out to be
-// MERGED or CLOSED — callers (mail send, the hung-scan backstop) key off
-// that exact sentinel via errors.Is.
+// wrapped with the actual PR state (MERGED or CLOSED) so callers that
+// surface the error text — the moot-close note (messaging.go) — can name
+// it, when a review-shaped initiative's PR already turned out to be MERGED
+// or CLOSED. Callers (mail send, the hung-scan backstop) key off the
+// sentinel via errors.Is, which still holds through the %w wrap.
 func (c *resumeKong) recreateWorktree(ctx *cli.Context, f initiative.Fields, dir string, isReview bool, prURL string) error {
 	var ownerRepo string
 	var prNumber int
@@ -971,7 +973,7 @@ func (c *resumeKong) recreateWorktree(ctx *cli.Context, f initiative.Fields, dir
 			return cli.Silent(1)
 		}
 		if state == ghPRStateMerged || state == ghPRStateClosed {
-			return errNothingToReview
+			return fmt.Errorf("%w (PR state %s)", errNothingToReview, state)
 		}
 	}
 

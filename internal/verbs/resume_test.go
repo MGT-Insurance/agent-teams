@@ -699,6 +699,49 @@ func TestResume_MissingWorktree_Review_Merged_ReturnsErrNothingToReview(t *testi
 	}
 }
 
+// TestResume_MissingWorktree_Review_ErrorNamesPRState covers the review-fix
+// item requiring the errNothingToReview error text to name the actual PR
+// state (MERGED or CLOSED) — the moot-close note in mail send's
+// closeAsNothingToReview formats this error verbatim, so callers otherwise
+// can't tell the two terminal states apart. errors.Is must still classify
+// the wrapped error as errNothingToReview.
+func TestResume_MissingWorktree_Review_ErrorNamesPRState(t *testing.T) {
+	for _, state := range []string{ghPRStateMerged, ghPRStateClosed} {
+		t.Run(state, func(t *testing.T) {
+			repoDir := newEnabledRepoDir(t)
+			missing := filepath.Join(t.TempDir(), "gone")
+			fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+				raw, _ := json.Marshal([]bd.Issue{resumeReviewIssue("at-rev5", repoDir, "merged-branch", missing, 5, "mgt-insurance/midgard")})
+				return string(raw), nil
+			}}
+			ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+			cmd := &resumeKong{
+				ID:       "at-rev5",
+				git:      &fakeResumeGit{refs: map[string]bool{"refs/heads/merged-branch": true}},
+				gitPrune: func(string) error { return nil },
+				setup:    noopSetup,
+				prState:  func(string, int) (string, error) { return state, nil },
+				launchRaw: func(_ *cli.Context, _, _, _, _, _, _ string) error {
+					t.Fatal("launchRaw called; PR is terminal, resume must not launch")
+					return nil
+				},
+				launch: func(_ *cli.Context, _, _, _, _ string) error {
+					t.Fatal("launch called; PR is terminal, resume must not launch")
+					return nil
+				},
+			}
+			err := cmd.Run(ctx)
+			if !errors.Is(err, errNothingToReview) {
+				t.Fatalf("Run() error = %v, want errNothingToReview", err)
+			}
+			if !strings.Contains(err.Error(), state) {
+				t.Errorf("Run() error = %q, want it to name PR state %q", err.Error(), state)
+			}
+		})
+	}
+}
+
 // TestResume_MissingWorktree_DRI_TracksOriginBranch covers "DRI worktree
 // gone, only origin/<branch> exists -> tracked, launched": no local branch,
 // but origin/<branch> exists, so resume tracks it via AddWorktree(base =

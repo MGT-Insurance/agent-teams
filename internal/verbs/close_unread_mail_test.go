@@ -133,11 +133,12 @@ func TestClose_UnreadMailQueryErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestClose_ShowIssueErrorFallsThroughToClose verifies that if the pre-close
-// bd show lookup itself fails (e.g. bd show is broken, or the id doesn't
-// exist), refuseIfUnreadReviewMail swallows it rather than blocking close —
-// the close call below is left to surface bd's own "not found" error.
-func TestClose_ShowIssueErrorFallsThroughToClose(t *testing.T) {
+// TestClose_ShowIssueErrorRefusesClose verifies that if the pre-close bd show
+// lookup itself fails (e.g. bd show is broken, or a transient bd error),
+// refuseIfUnreadReviewMail fails CLOSED: it refuses the close rather than
+// falling through, since a review-shaped initiative with unread mail would
+// otherwise slip past the check entirely on a flaky bd call.
+func TestClose_ShowIssueErrorRefusesClose(t *testing.T) {
 	fbd := &fakeBD{
 		runFn: func(args ...string) (string, error) {
 			if len(args) >= 1 && args[0] == "show" {
@@ -148,7 +149,12 @@ func TestClose_ShowIssueErrorFallsThroughToClose(t *testing.T) {
 	}
 	ctx, _, _ := makeCtx(fbd, t.TempDir())
 
-	if err := (&closeKong{ID: "at-5"}).Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := (&closeKong{ID: "at-5"}).Run(ctx)
+	if err == nil {
+		t.Fatal("expected close to refuse when the pre-close bd show fails, got nil error")
+	}
+	want := "ateam close: reading at-5: bd show: not found"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }

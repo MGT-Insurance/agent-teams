@@ -759,9 +759,10 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 func (c *closeKong) refuseIfUnreadReviewMail(ctx *cli.Context) error {
 	issue, err := bd.ShowIssue(ctx.BD, c.ID)
 	if err != nil {
-		// Let the close attempt below surface the real "no such issue"
-		// error via bd close, rather than duplicating bd's own message.
-		return nil
+		// Fail CLOSED: every other unread-mail check in this guard refuses
+		// the close on error, so a transient bd failure here must not fall
+		// through to a close that skips the review-shaped check entirely.
+		return fmt.Errorf("ateam close: reading %s: %w", c.ID, err)
 	}
 	if _, ok := initiative.ReviewPRURL(issue); !ok {
 		return nil
