@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -1915,5 +1916,357 @@ func TestSendKong_StewardRecipient_IdleSession_DoorbellPersists_Respawns(t *test
 	}
 	if !strings.Contains(stdout.String(), "respawned stew1234") {
 		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}
+
+// ── L1 CONTRACT (agent-teams-8st0.19): always store, dedup, closed queue,
+// moot close on errNothingToReview ──────────────────────────────────────────
+
+// fakeMailBD is a stateful bd fake for the L1 contract tests: unlike the
+// per-call sendFixture.fakeBD above, dedup and moot-close depend on state
+// (created/closed messages, the recipient's own status) persisting across
+// repeated sendKong.Run calls in one test, so this fake actually tracks a
+// recipient issue and a small message store rather than returning a fixed
+// response every time.
+type fakeMailBD struct {
+	recipient   bd.Issue
+	messages    map[string]*bd.Issue
+	nextID      int
+	closedIDs   []string
+	noteCalls   []string
+	closeErrFor string // if set, `bd close` for this id returns an error
+}
+
+func newFakeMailBD(recipientID, status string) *fakeMailBD {
+	return &fakeMailBD{
+		recipient: bd.Issue{ID: recipientID, Status: status},
+		messages:  map[string]*bd.Issue{},
+	}
+}
+
+func (f *fakeMailBD) targetByID(id string) *bd.Issue {
+	if id == f.recipient.ID {
+		return &f.recipient
+	}
+	return f.messages[id]
+}
+
+func (f *fakeMailBD) Run(args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	switch args[0] {
+	case "show":
+		raw, _ := json.Marshal([]bd.Issue{f.recipient})
+		return string(raw), nil
+	case "label":
+		op, id, label := args[1], args[2], args[3]
+		target := f.targetByID(id)
+		if target == nil {
+			return "", nil
+		}
+		switch op {
+		case "add":
+			if !hasLabel(target.Labels, label) {
+				target.Labels = append(target.Labels, label)
+			}
+		case "remove":
+			out := target.Labels[:0]
+			for _, l := range target.Labels {
+				if l != label {
+					out = append(out, l)
+				}
+			}
+			target.Labels = out
+		}
+		return "", nil
+	case "note":
+		f.noteCalls = append(f.noteCalls, args[2])
+		return "", nil
+	case "close":
+		id := args[1]
+		if id == f.closeErrFor {
+			return "", fmt.Errorf("fake close error for %s", id)
+		}
+		f.closedIDs = append(f.closedIDs, id)
+		if target := f.targetByID(id); target != nil {
+			target.Status = "closed"
+		}
+		return "", nil
+	}
+	return "", nil
+}
+
+func (f *fakeMailBD) RunJSON(dst any, args ...string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "create":
+		f.nextID++
+		issue := bd.Issue{
+			ID:        fmt.Sprintf("at-msg-%d", f.nextID),
+			IssueType: "message",
+			Assignee:  f.recipient.ID,
+			Status:    "open",
+		}
+		for _, a := range args {
+			if v, ok := strings.CutPrefix(a, "--labels="); ok {
+				issue.Labels = append(issue.Labels, v)
+			}
+		}
+		f.messages[issue.ID] = &issue
+		if out, ok := dst.(*bd.Issue); ok {
+			*out = issue
+		}
+		return nil
+	case "list":
+		var assignee, label, excludeLabel, status string
+		for _, a := range args {
+			switch {
+			case strings.HasPrefix(a, "--assignee="):
+				assignee = strings.TrimPrefix(a, "--assignee=")
+			case strings.HasPrefix(a, "--label="):
+				label = strings.TrimPrefix(a, "--label=")
+			case strings.HasPrefix(a, "--exclude-label="):
+				excludeLabel = strings.TrimPrefix(a, "--exclude-label=")
+			case strings.HasPrefix(a, "--status="):
+				status = strings.TrimPrefix(a, "--status=")
+			}
+		}
+		var out []bd.Issue
+		for _, id := range sortedMessageIDs(f.messages) {
+			m := f.messages[id]
+			if assignee != "" && m.Assignee != assignee {
+				continue
+			}
+			if status != "" && m.Status != status {
+				continue
+			}
+			if label != "" && !hasLabel(m.Labels, label) {
+				continue
+			}
+			if excludeLabel != "" && hasLabel(m.Labels, excludeLabel) {
+				continue
+			}
+			out = append(out, *m)
+		}
+		if dstSlice, ok := dst.(*[]bd.Issue); ok {
+			*dstSlice = out
+		}
+		return nil
+	}
+	return nil
+}
+
+// sortedMessageIDs returns f's message ids in insertion (numeric) order so
+// list results are deterministic across a map's random iteration order.
+func sortedMessageIDs(messages map[string]*bd.Issue) []string {
+	ids := make([]string, 0, len(messages))
+	for id := range messages {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// noResumeAgentsFunc reports no live sessions, so an open-recipient send
+// falls through to the resume-escalation branch every L1 test below that
+// isn't exercising the closed-recipient path (which never reaches agentsFunc
+// at all) actually wants to hit.
+func noResumeAgentsFunc() ([]agentSession, error) { return nil, nil }
+
+// TestSendKong_ClosedRecipient_AlwaysStoresDistinctMessages is the core L1
+// regression case: three distinct sends to a closed recipient must each
+// store a message and exit 0 — never refuse, never touch the doorbell, never
+// call resume — where before this contract, send stored the message and
+// THEN called resume, which refused for a closed initiative (dispatch.go's
+// resumeKong.Run) and turned exit 0 into exit 1 on every retry.
+func TestSendKong_ClosedRecipient_AlwaysStoresDistinctMessages(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-closed-recip", "closed")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, stdout, _ := makeCtx(fdb, home)
+
+	for i := 0; i < 3; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-closed-recip",
+			File:        makeTempFile(t, fmt.Sprintf("body %d", i)),
+			agentsFunc: func() ([]agentSession, error) {
+				t.Fatal("agentsFunc must not run for a closed recipient")
+				return nil, nil
+			},
+			resumeFunc: func(_ *cli.Context, _, _, _ string) error {
+				t.Fatal("resume must not be called for a closed recipient")
+				return nil
+			},
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(fdb.messages) != 3 {
+		t.Fatalf("expected 3 stored messages, got %d", len(fdb.messages))
+	}
+	if !strings.Contains(stdout.String(), "recipient at-closed-recip is closed; message queued until reopened") {
+		t.Errorf("stdout missing closed-recipient notice: %s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "mailbox", "at-closed-recip.wake")); err == nil {
+		t.Error("doorbell must never be created for a closed recipient")
+	}
+}
+
+// TestSendKong_ClosedRecipient_DedupKeyCollapsesToOneMessage proves the
+// closed-recipient path and the dedup path compose: three sends with the
+// same --dedup-key store exactly one message, and every call still exits 0.
+func TestSendKong_ClosedRecipient_DedupKeyCollapsesToOneMessage(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-closed-dedup", "closed")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, _, _ := makeCtx(fdb, home)
+
+	for i := 0; i < 3; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-closed-dedup",
+			File:        makeTempFile(t, "same body"),
+			DedupKey:    "pr-42-review_requested",
+			agentsFunc: func() ([]agentSession, error) {
+				t.Fatal("agentsFunc must not run for a closed recipient")
+				return nil, nil
+			},
+			resumeFunc: func(_ *cli.Context, _, _, _ string) error {
+				t.Fatal("resume must not be called for a closed recipient")
+				return nil
+			},
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(fdb.messages) != 1 {
+		t.Fatalf("expected exactly 1 stored message across 3 dedup-keyed sends, got %d", len(fdb.messages))
+	}
+}
+
+// TestSendKong_OpenRecipient_DedupKeyStillRunsDeliveryOnSecondCall is the
+// HUMAN-GATED default from CONTRACT 8st0.18 item 1 (Q5, decided YES): a
+// dedup hit creates no new message but still runs the delivery steps — here,
+// the resume escalation — on every call, not just the first.
+func TestSendKong_OpenRecipient_DedupKeyStillRunsDeliveryOnSecondCall(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-open-dedup", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, _, _ := makeCtx(fdb, home)
+
+	resumeCalls := 0
+	for i := 0; i < 2; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-open-dedup",
+			File:        makeTempFile(t, "same body"),
+			DedupKey:    "pr-9-comment_reply",
+			agentsFunc:  noResumeAgentsFunc,
+			resumeFunc:  func(_ *cli.Context, _, _, _ string) error { resumeCalls++; return nil },
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(fdb.messages) != 1 {
+		t.Fatalf("expected exactly 1 stored message across 2 dedup-keyed sends, got %d", len(fdb.messages))
+	}
+	if resumeCalls != 2 {
+		t.Errorf("expected resume to run on both calls (dedup hit still delivers), got %d call(s)", resumeCalls)
+	}
+}
+
+// TestSendKong_ResumeNothingToReview_ClosesUnreadMailAndInitiative covers
+// CONTRACT 8st0.18 item 1e: when resume reports errNothingToReview, every
+// unread message queued for the recipient is closed with delivery:moot and
+// the recipient initiative itself is closed — and the command still exits 0.
+func TestSendKong_ResumeNothingToReview_ClosesUnreadMailAndInitiative(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-moot-recip", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, stdout, _ := makeCtx(fdb, home)
+
+	// Seed two prior unread messages directly (as if queued from earlier
+	// retries), plus the one this send creates.
+	fdb.messages["at-msg-prior-1"] = &bd.Issue{ID: "at-msg-prior-1", IssueType: "message", Assignee: "at-moot-recip", Status: "open"}
+	fdb.messages["at-msg-prior-2"] = &bd.Issue{ID: "at-msg-prior-2", IssueType: "message", Assignee: "at-moot-recip", Status: "open"}
+
+	cmd := &sendKong{
+		RecipientID: "at-moot-recip",
+		File:        makeTempFile(t, "one more try"),
+		agentsFunc:  noResumeAgentsFunc,
+		resumeFunc:  func(_ *cli.Context, _, _, _ string) error { return errNothingToReview },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, id := range []string{"at-msg-prior-1", "at-msg-prior-2", "at-msg-1"} {
+		m, ok := fdb.messages[id]
+		if !ok {
+			t.Fatalf("message %s missing from fake store", id)
+		}
+		if m.Status != "closed" {
+			t.Errorf("message %s: expected closed, got %s", id, m.Status)
+		}
+		if !hasLabel(m.Labels, "delivery:moot") {
+			t.Errorf("message %s: missing delivery:moot label; got %v", id, m.Labels)
+		}
+	}
+	if fdb.recipient.Status != "closed" {
+		t.Errorf("expected recipient initiative closed, got %s", fdb.recipient.Status)
+	}
+	if !strings.Contains(stdout.String(), "nothing to review for at-moot-recip") {
+		t.Errorf("stdout missing moot-close notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_ResumeOtherError_ExitsNonZeroMessageStaysQueued covers the
+// "any other resume error" branch of CONTRACT 8st0.18 item 1e: exactly one
+// open message survives across 3 retries with the same dedup key, and every
+// retry's resume failure surfaces as a non-zero exit (the caller — pr-shepherd
+// — is expected to retry).
+func TestSendKong_ResumeOtherError_ExitsNonZeroMessageStaysQueued(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-retry-recip", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, _, _ := makeCtx(fdb, home)
+
+	for i := 0; i < 3; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-retry-recip",
+			File:        makeTempFile(t, "retry body"),
+			DedupKey:    "pr-7-review_requested",
+			agentsFunc:  noResumeAgentsFunc,
+			resumeFunc:  func(_ *cli.Context, _, _, _ string) error { return errors.New("worktree recreate failed") },
+		}
+		err := cmd.Run(ctx)
+		if err == nil {
+			t.Fatalf("retry %d: expected non-zero exit (error), got nil", i)
+		}
+		if errors.Is(err, errNothingToReview) {
+			t.Fatalf("retry %d: unexpected errNothingToReview classification", i)
+		}
+	}
+
+	var open []string
+	for id, m := range fdb.messages {
+		if m.Status == "open" {
+			open = append(open, id)
+		}
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected exactly 1 open message after 3 retries with the same key, got %d: %v", len(open), open)
 	}
 }
