@@ -83,18 +83,20 @@ const reapGitTimeout = 5 * time.Second
 // RegisterReapKong registers the reap verb onto p.
 func RegisterReapKong(p *cli.Parser) {
 	p.AddVerb("reap", "Tear down closed review sessions past grace (scan mode, what pr-shepherd calls every tick) or one target right now (one-off mode); see reap-orphans for stop-only cwd-missing cleanup.", &reapKong{
-		agentsFunc:      defaultAgentsJSONAll,
-		now:             time.Now,
-		stopSession:     defaultStopSession,
-		rmSession:       defaultRmSession,
-		removeWorktree:  reapRemoveWorktreeWithTimeout,
-		worktreeClean:   defaultWorktreeClean,
-		worktreeExists:  defaultWorktreeExists,
-		ghCommitPresent: defaultGHCommitPresent,
-		noteFunc:        defaultReapNote,
-		notifyCtx:       defaultReapNotifyCtx,
-		prState:         defaultPRState,
-		ghPreflight:     defaultHungReviewCommentPreflight,
+		agentsFunc:       defaultAgentsJSONAll,
+		now:              time.Now,
+		stopSession:      defaultStopSession,
+		rmSession:        defaultRmSession,
+		removeWorktree:   reapRemoveWorktreeWithTimeout,
+		worktreeClean:    defaultWorktreeClean,
+		worktreeExists:   defaultWorktreeExists,
+		isCorpseWorktree: defaultIsCorpseWorktree,
+		removeCorpse:     reapRemoveCorpseWithTimeout,
+		ghCommitPresent:  defaultGHCommitPresent,
+		noteFunc:         defaultReapNote,
+		notifyCtx:        defaultReapNotifyCtx,
+		prState:          defaultPRState,
+		ghPreflight:      defaultHungReviewCommentPreflight,
 	})
 }
 
@@ -109,6 +111,22 @@ type rmSessionFunc func(id string) error
 // short for steady-state, generous for --bulk (agent-teams-442q.13; see
 // reapWorktreeRemoveTimeout/reapBulkWorktreeRemoveTimeout).
 type reapRemoveWorktreeFunc func(worktree string, timeout time.Duration) error
+
+// corpseCheckFunc reports whether worktree is a "corpse" — a directory left
+// on disk after a `git worktree remove` was killed mid-operation, which git
+// itself has already disowned (pruned its administrative entry, so it no
+// longer appears in `git worktree list`): either no .git of its own remains
+// at all, or its .git is a file (a linked worktree's own pointer) whose
+// "gitdir:" target has been pruned out from under it. Stat-only — never a
+// git subprocess. Injected so tests substitute a fake without touching a
+// real filesystem.
+type corpseCheckFunc func(worktree string) bool
+
+// removeCorpseFunc recursively deletes a corpse worktree directory (plain
+// filesystem delete, never `git worktree remove` — see defaultIsCorpseWorktree
+// for why), bounded by timeout. Injected so tests substitute a fake without
+// touching a real filesystem.
+type removeCorpseFunc func(worktree string, timeout time.Duration) error
 
 // worktreeGitStatus classifies a worktree's git-inspection result — the ONE
 // git-inspection path shared by the steady-state clean-only gate
@@ -216,16 +234,18 @@ type reapKong struct {
 	Bulk         bool          `name:"bulk" help:"Scan mode only: one-time human-invoked unbudgeted drain. Forces --scan-deadline=0 and --max=0, also re-sweeps already-reaped initiatives whose worktree is still present on disk, and prints running progress to stderr. A clean worktree whose HEAD is missing from every local remote (its PR branch deleted on GitHub after merge) is verified via gh before removal, never forced. Pair with --dry-run to preview first."`
 	DryRun       bool          `name:"dry-run" help:"Scan mode only: report what would be torn down without stopping any session, removing any worktree, or writing any reaped note."`
 
-	agentsFunc      agentsJSONFunc         `kong:"-"`
-	now             func() time.Time       `kong:"-"`
-	stopSession     stopSessionFunc        `kong:"-"`
-	rmSession       rmSessionFunc          `kong:"-"`
-	removeWorktree  reapRemoveWorktreeFunc `kong:"-"`
-	worktreeClean   worktreeCleanFunc      `kong:"-"`
-	worktreeExists  worktreeExistsFunc     `kong:"-"`
-	ghCommitPresent ghCommitPresentFunc    `kong:"-"`
-	noteFunc        reapNoteFunc           `kong:"-"`
-	notifyCtx       reapNotifyCtxFunc      `kong:"-"`
+	agentsFunc       agentsJSONFunc         `kong:"-"`
+	now              func() time.Time       `kong:"-"`
+	stopSession      stopSessionFunc        `kong:"-"`
+	rmSession        rmSessionFunc          `kong:"-"`
+	removeWorktree   reapRemoveWorktreeFunc `kong:"-"`
+	worktreeClean    worktreeCleanFunc      `kong:"-"`
+	worktreeExists   worktreeExistsFunc     `kong:"-"`
+	isCorpseWorktree corpseCheckFunc        `kong:"-"`
+	removeCorpse     removeCorpseFunc       `kong:"-"`
+	ghCommitPresent  ghCommitPresentFunc    `kong:"-"`
+	noteFunc         reapNoteFunc           `kong:"-"`
+	notifyCtx        reapNotifyCtxFunc      `kong:"-"`
 
 	// prState and ghPreflight are agent-teams-8st0.13's PR-merged/closed gate
 	// on a review-shaped worktree's removal — the exact seams hung_tick.go
@@ -346,7 +366,7 @@ func (s *reapScanSummary) recordReal(alreadyReaped bool, action, wtOutcome strin
 		s.sessionsTornDown++
 	}
 	switch wtOutcome {
-	case "worktree-removed", "worktree-removed-forced", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified":
+	case "worktree-removed", "worktree-removed-forced", "worktree-removed-corpse", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified":
 		s.worktreesRemoved++
 	case "worktree-absent":
 		s.worktreesAlreadyGone++
@@ -597,34 +617,46 @@ func (c *reapKong) previewSessionOutcome(sessions []agentSession, sessErr error,
 // previewWorktreeOutcome reports, for --dry-run, what removeWorktreeIfClean
 // would do without touching disk — the same outcome vocabulary, substituting
 // "worktree-would-remove"/"worktree-would-remove-forced"/
-// "worktree-would-remove-gh-verified"/"worktree-would-remove-corpse-gh-verified"
-// for the mutating "worktree-removed"/"worktree-removed-forced"/
+// "worktree-would-remove-corpse"/"worktree-would-remove-gh-verified"/
+// "worktree-would-remove-corpse-gh-verified" for the mutating
+// "worktree-removed"/"worktree-removed-forced"/"worktree-removed-corpse"/
 // "worktree-removed-gh-verified"/"worktree-removed-corpse-gh-verified"
 // (--dry-run never attempts a removal, so it never reports
 // worktree-remove-failed either). prURL is the initiative's own review PR
-// URL (empty in one-off mode, which never sets c.Bulk). When prURL is
-// non-empty (review-shaped — the only way runScan's dry-run branch reaches
-// this, since the loop above already filters to review-shaped issues), this
-// mirrors removeWorktreeIfClean's force-remove rule: status/headSHA are
-// still resolved (existence still needs worktreeClean's os.Stat) but not
-// otherwise consulted, and bulkGHVerifyRemovable is never called. When
-// prURL is empty, the old clean-only / bulk gh-verify override path applies
-// unchanged: it is only consulted when worktreeClean reports wtUnpushed or
-// wtDirtyRecoverable — the same two statuses removeWorktreeIfClean itself
-// overrides on that path (agent-teams-442q.11), kept as separate outcome
-// strings per status (agent-teams-442q.14/Finding 2) so a dry-run preview
-// distinguishes a reclaimable deletion corpse from a reclaimable
-// stale-remote-ref worktree exactly like the real run does.
+// URL (empty in one-off mode, which never sets c.Bulk).
 //
-// When prURL is non-empty and c.Bulk is false, this also mirrors
-// removeWorktreeIfClean's PR-merged/closed gate (agent-teams-8st0.13):
-// initiativeID and prProbe feed the same hungPRStateProbe the real run
-// consults, so a preview never claims a removal the real run would actually
-// keep. "worktree-would-keep-pr-open"/"worktree-would-keep-pr-unknown"
-// substitute for the mutating "worktree-kept-pr-open"/
-// "worktree-kept-pr-unknown" (--dry-run never withholds a note either, since
-// it never writes one). --bulk skips the gate here exactly as it does for
-// real, since --bulk stays ungated (a human escape hatch).
+// When prURL is non-empty (review-shaped — the only way runScan's dry-run
+// branch reaches this, since the loop above already filters to
+// review-shaped issues), this mirrors forceRemoveWorktree's own ordering
+// exactly, existence check first: worktreeExists's bare directory stat,
+// never worktreeClean's git status/rev-list probe, since a corpse worktree
+// (no .git of its own, or a dangling one) has no repo for that probe to
+// resolve against — it would walk up into whatever unrelated parent repo
+// happens to contain worktree instead of failing loudly, the same hazard
+// forceRemoveWorktree's own doc comment describes. Then the PR-merged/
+// closed gate (agent-teams-8st0.13): initiativeID and prProbe feed the same
+// hungPRStateProbe the real run consults, so a preview never claims a
+// removal the real run would actually keep.
+// "worktree-would-keep-pr-open"/"worktree-would-keep-pr-unknown" substitute
+// for the mutating "worktree-kept-pr-open"/"worktree-kept-pr-unknown"
+// (--dry-run never withholds a note either, since it never writes one).
+// --bulk skips the gate here exactly as it does for real, since --bulk
+// stays ungated (a human escape hatch). Only once the gate clears does this
+// consult isCorpseWorktree && corpseRemovalAllowed, exactly like
+// forceRemoveWorktree — a corpse verdict predicts
+// "worktree-would-remove-corpse" without ever calling worktreeClean; any
+// other review-shaped survivor falls through to worktreeClean for the
+// status/headSHA a normal, non-corpse force-remove doesn't otherwise need,
+// distinguishing "worktree-would-remove" (clean) from
+// "worktree-would-remove-forced" (not) exactly as before this fix.
+//
+// When prURL is empty, the old clean-only / bulk gh-verify override path
+// applies unchanged: it is only consulted when worktreeClean reports
+// wtUnpushed or wtDirtyRecoverable — the same two statuses
+// removeWorktreeIfClean itself overrides on that path (agent-teams-442q.11),
+// kept as separate outcome strings per status (agent-teams-442q.14/Finding
+// 2) so a dry-run preview distinguishes a reclaimable deletion corpse from a
+// reclaimable stale-remote-ref worktree exactly like the real run does.
 func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWorktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if worktree == "" {
 		return "worktree-unknown"
@@ -632,11 +664,10 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 	if callerWorktree != "" && worktree == callerWorktree {
 		return "worktree-skipped-caller-cwd"
 	}
-	exists, status, headSHA, _ := c.worktreeClean(worktree)
-	if !exists {
-		return "worktree-absent"
-	}
 	if prURL != "" {
+		if !c.worktreeExists(worktree) {
+			return "worktree-absent"
+		}
 		if !c.Bulk {
 			state, probed := prProbe.evaluate(hungScanEntry{ID: initiativeID, ReviewPRURL: prURL})
 			if !probed {
@@ -646,10 +677,21 @@ func (c *reapKong) previewWorktreeOutcome(ctx *cli.Context, worktree, callerWork
 				return "worktree-would-keep-pr-open"
 			}
 		}
+		if c.isCorpseWorktree(worktree) && corpseRemovalAllowed(ctx.Home+"-worktrees", worktree) {
+			return "worktree-would-remove-corpse"
+		}
+		exists, status, _, _ := c.worktreeClean(worktree)
+		if !exists {
+			return "worktree-absent"
+		}
 		if status == wtClean {
 			return "worktree-would-remove"
 		}
 		return "worktree-would-remove-forced"
+	}
+	exists, status, headSHA, _ := c.worktreeClean(worktree)
+	if !exists {
+		return "worktree-absent"
 	}
 	switch status {
 	case wtClean:
@@ -919,7 +961,17 @@ func (c *reapKong) stopAndRm(ctx *cli.Context, id string) string {
 // distinguish), "worktree-removed-forced" (review-shaped and force-removed
 // despite a non-clean or unchecked git state — kept distinct so the
 // journal/summary still show when a force-removal papered over real
-// dirty/unpushed state), or (the now-dead bulk gh-verify override, one-off
+// dirty/unpushed state), "worktree-removed-corpse" (review-shaped, stat-only
+// confirmed a corpse — no .git of its own, or its .git file's gitdir: target
+// has been pruned away — AND corpseRemovalAllowed confirmed the path is
+// safely containable, then force-removed via a plain recursive delete
+// instead of via `git worktree remove`, which would either fail outright or,
+// worse, resolve against an unrelated parent repo that happens to contain
+// this path; kept distinct from worktree-removed-forced so the journal shows
+// which removal path fired,
+// and distinct from the unrelated worktree-removed-corpse-gh-verified below,
+// which is the deletion-corpse override in the one-off clean-only path, not
+// this git-disowned one), or (the now-dead bulk gh-verify override, one-off
 // mode only) "worktree-removed-gh-verified" for a reclaimed
 // stale-remote-ref (wtUnpushed) worktree, or
 // "worktree-removed-corpse-gh-verified" for a reclaimed deletion-corpse
@@ -1012,6 +1064,25 @@ func (c *reapKong) removeWorktreeIfClean(ctx *cli.Context, worktree, callerWorkt
 // OPEN), and only MERGED or CLOSED proceeds to the actual removal below.
 // --bulk skips this gate entirely — a human-invoked drain stays the ungated
 // escape hatch it always was, matching one-off mode's own prURL="" bypass.
+//
+// Once the PR-state gate clears, isCorpseWorktree decides between two
+// removal paths: a normal review worktree still has its own .git and goes
+// through removeWorktree (`git worktree remove`, resolving its repo root via
+// git-common-dir), same as ever; a corpse — a stub directory left behind by
+// a `git worktree remove` that was killed mid-operation, which git has
+// already disowned by pruning its administrative entry out of `git worktree
+// list` — has no .git of its own (or a dangling one) for that to act on, so
+// it instead goes through removeCorpse, a plain bounded recursive delete
+// (agent-teams-n3qp.1) — but only once corpseRemovalAllowed also confirms
+// worktree is safely containable (its own doc comment has the rule); a
+// corpse verdict that fails that guard falls through to removeWorktree
+// below exactly like a non-corpse would. This ordering matters:
+// isCorpseWorktree must run AFTER the PR-state gate (a corpse still deserves
+// the same "PR not yet terminal" protection as a live worktree) but BEFORE
+// calling removeWorktree (a missing .git makes `git rev-parse
+// --git-common-dir` walk up to whatever unrelated parent repo happens to
+// contain worktree and "succeed" against it, which would target `git
+// worktree remove` at the wrong repo instead of failing loudly).
 func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initiativeID string, prProbe *hungPRStateProbe) string {
 	if !c.worktreeExists(worktree) {
 		return "worktree-absent"
@@ -1032,6 +1103,23 @@ func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initia
 	if c.Bulk {
 		timeout = reapBulkWorktreeRemoveTimeout
 	}
+
+	// A corpse — a stub directory left by a `git worktree remove` killed
+	// mid-operation, which git has already disowned (pruned its own
+	// administrative entry) — has no repo of its own for `git worktree
+	// remove` to act on. Route it to a plain recursive delete instead, but
+	// only when corpseRemovalAllowed also confirms worktree is safely
+	// containable — see its own doc comment for why that guard is required
+	// in addition to isCorpseWorktree's detection. Either check failing
+	// falls straight through to the normal removeWorktree call below.
+	if c.isCorpseWorktree(worktree) && corpseRemovalAllowed(ctx.Home+"-worktrees", worktree) {
+		if err := c.removeCorpse(worktree, timeout); err != nil {
+			fmt.Fprintf(ctx.Stderr, "reap: remove corpse worktree %s: %v\n", worktree, err)
+			return "worktree-remove-failed"
+		}
+		return "worktree-removed-corpse"
+	}
+
 	if err := c.removeWorktree(worktree, timeout); err != nil {
 		fmt.Fprintf(ctx.Stderr, "reap: remove worktree %s: %v\n", worktree, err)
 		return "worktree-remove-failed"
@@ -1053,7 +1141,7 @@ func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initia
 // stays open or unconfirmed.
 func worktreeTornDown(wtOutcome string) bool {
 	switch wtOutcome {
-	case "worktree-removed", "worktree-removed-forced", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified", "worktree-absent":
+	case "worktree-removed", "worktree-removed-forced", "worktree-removed-corpse", "worktree-removed-gh-verified", "worktree-removed-corpse-gh-verified", "worktree-absent":
 		return true
 	default:
 		return false
@@ -1194,6 +1282,134 @@ func reapRemoveWorktreeWithTimeout(worktree string, timeout time.Duration) error
 	defer pruneCancel()
 	_ = exec.CommandContext(pruneCtx, "git", "-C", repoRoot, "worktree", "prune").Run()
 	return nil
+}
+
+// corpseGitdirPrefix is the standard prefix a linked worktree's own .git
+// FILE contains — "gitdir: <path>", pointing back at its administrative
+// entry inside the main repo's real .git directory (git-worktree(1)) — as
+// opposed to a plain repo's .git, which is a directory.
+const corpseGitdirPrefix = "gitdir: "
+
+// corpseGitdirTarget reads worktree's .git file and resolves the path its
+// "gitdir: <path>" line names, relative to worktree when not already
+// absolute (the same resolution git itself applies). ok is false when the
+// file can't be read or doesn't parse as a gitdir pointer at all — distinct
+// from a target that parses but no longer exists, which is
+// defaultIsCorpseWorktree's actual corpse signal.
+func corpseGitdirTarget(worktree string) (target string, ok bool) {
+	data, err := os.ReadFile(filepath.Join(worktree, ".git"))
+	if err != nil {
+		return "", false
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(line, corpseGitdirPrefix) {
+		return "", false
+	}
+	target = strings.TrimSpace(strings.TrimPrefix(line, corpseGitdirPrefix))
+	if target == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktree, target)
+	}
+	return target, true
+}
+
+// defaultIsCorpseWorktree is the production corpseCheckFunc, called only
+// once worktreeExists has already confirmed worktree is present on disk
+// (forceRemoveWorktree's own gate order). Stat-only, never a git subprocess:
+// a corpse is (a) worktree has no .git of its own at all, or (b) worktree's
+// .git IS a file (a linked worktree's own pointer, never a plain repo's .git
+// directory) whose gitdir: target has already been pruned away — the
+// signature left behind when a `git worktree remove` was killed
+// mid-operation and git had already disowned the administrative entry that
+// pointer names. A .git file present but not parseable as a gitdir pointer
+// at all is NOT claimed as a corpse by either rule — it falls through to the
+// normal removeWorktree path, which fails safe on whatever it can't
+// resolve.
+//
+// This used to also fall back to a bounded `git rev-parse --git-common-dir`
+// subprocess whenever .git was present but broken in some other way (review
+// finding on agent-teams-n3qp.1): a transient failure there — not an actual
+// corpse — misclassified a valid worktree as one, routing it through
+// removeCorpse's raw delete instead of the real git.RemoveWorktree/prune
+// path, and cost every removal a second git subprocess that
+// reapWorktreeRemoveTimeout's own budget arithmetic never accounted for.
+func defaultIsCorpseWorktree(worktree string) bool {
+	info, err := os.Stat(filepath.Join(worktree, ".git"))
+	if err != nil {
+		return true
+	}
+	if info.IsDir() {
+		return false
+	}
+	target, ok := corpseGitdirTarget(worktree)
+	if !ok {
+		return false
+	}
+	_, err = os.Stat(target)
+	return err != nil
+}
+
+// corpseRemovalAllowed reports whether it is safe to run removeCorpse's raw
+// recursive filesystem delete (os.RemoveAll) against worktree. Unlike `git
+// worktree remove`, which refuses to operate on a path it can't resolve to a
+// real repo, os.RemoveAll has no boundary check of its own — a bad
+// routing-data field, an unresolved ".." segment, or a symlink would let it
+// delete whatever the path actually names. forceRemoveWorktree consults this
+// before ever taking the corpse path; worktree must be:
+//   - absolute and already filepath.Clean (rejects a relative path, or one
+//     carrying unresolved ".." segments that could resolve outside root
+//     despite a naive prefix match),
+//   - strictly under root (root itself is never removable),
+//   - not a symlink (Lstat, not Stat — RemoveAll would otherwise happily
+//     walk through a symlinked worktree path into wherever it points).
+//
+// A false here means "not safely corpse-removable", not "not a corpse":
+// forceRemoveWorktree falls through to the existing removeWorktree (`git
+// worktree remove`) path unchanged.
+func corpseRemovalAllowed(root, worktree string) bool {
+	if root == "" || worktree == "" {
+		return false
+	}
+	if !filepath.IsAbs(worktree) || filepath.Clean(worktree) != worktree {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), worktree)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	info, err := os.Lstat(worktree)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	return true
+}
+
+// reapRemoveCorpseWithTimeout deletes a corpse worktree directory — see
+// defaultIsCorpseWorktree — via a plain recursive filesystem delete, never
+// `git worktree remove`/`worktree prune`: a corpse has no .git of its own
+// for git to act on, and git has already pruned its administrative entry
+// out of `git worktree list` on its own, so there is nothing left for a
+// prune to do either. Bounded by timeout (the same mode-aware bound
+// forceRemoveWorktree selects for the normal removeWorktree path) via a
+// goroutine + select, since os.RemoveAll itself takes no context. On
+// timeout the goroutine is left to finish in the background — os.RemoveAll
+// has no cancellation hook to stop it mid-walk — but the caller gets back
+// worktree-remove-failed either way, exactly like a removeWorktree timeout,
+// so the survivor is simply retried next tick rather than falsely marked
+// done.
+func reapRemoveCorpseWithTimeout(worktree string, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- os.RemoveAll(worktree)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("remove corpse worktree %s: timed out after %s", worktree, timeout)
+	}
 }
 
 // defaultWorktreeExists is the production worktreeExistsFunc: a bare
