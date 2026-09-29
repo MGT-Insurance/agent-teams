@@ -16,13 +16,33 @@ import (
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 
-// fakeRunner captures args passed to the ateamRunner without executing any subprocess.
+// snapshotFileArg reads the content of the path following a "--file" flag
+// in args, at call time — before the caller (route.go's send helper) removes
+// the temp file once the runner returns. Returns "" if there is no --file
+// flag or the read fails.
+func snapshotFileArg(args []string) string {
+	for i, a := range args {
+		if a == "--file" && i+1 < len(args) {
+			if data, err := os.ReadFile(args[i+1]); err == nil {
+				return string(data)
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// fakeRunner captures args passed to the ateamRunner without executing any
+// subprocess. fileContents[i] is a snapshot of calls[i]'s --file content (if
+// any), taken before route.go's send helper removes the temp file.
 type fakeRunner struct {
-	calls [][]string
+	calls        [][]string
+	fileContents []string
 }
 
 func (f *fakeRunner) run(args ...string) error {
 	f.calls = append(f.calls, append([]string(nil), args...))
+	f.fileContents = append(f.fileContents, snapshotFileArg(args))
 	return nil
 }
 
@@ -110,6 +130,51 @@ func writeTempFile(t *testing.T, content string) string {
 	}
 	f.Close()
 	return f.Name()
+}
+
+// assertMailSendArgs verifies a runner call is a well-formed mail-send
+// invocation built by sendArgs (CONTRACT agent-teams-8st0.18 item 4): argv
+// shape, --file pointing at a temp file whose content is
+// "transition: <wantTransition>\n" + origBody, and a 16-hex-char
+// --dedup-key. fileContent is the --file snapshot taken at call time (see
+// snapshotFileArg) — route.go's send helper removes the temp file as soon as
+// the runner returns, before a test could read it back off disk. Returns
+// the dedup key so callers can compare it across calls (e.g. the "same
+// event twice -> same dedup key" acceptance case).
+func assertMailSendArgs(t *testing.T, call []string, fileContent, wantID, wantTransition, origBody string) string {
+	t.Helper()
+	if len(call) != 9 {
+		t.Fatalf("mail send call has %d args, want 9: %v", len(call), call)
+	}
+	if call[0] != "mail" || call[1] != "send" {
+		t.Errorf("call[0:2] = %v, want [mail send]", call[:2])
+	}
+	if call[2] != wantID {
+		t.Errorf("call[2] (initiative id) = %q, want %q", call[2], wantID)
+	}
+	if call[3] != "--file" {
+		t.Errorf("call[3] = %q, want \"--file\"", call[3])
+	}
+	wantBody := "transition: " + wantTransition + "\n" + origBody
+	if fileContent != wantBody {
+		t.Errorf("send body = %q, want %q", fileContent, wantBody)
+	}
+	if call[5] != "--sender" || call[6] != "pr-shepherd" {
+		t.Errorf("call[5:7] = %v, want [--sender pr-shepherd]", call[5:7])
+	}
+	if call[7] != "--dedup-key" {
+		t.Errorf("call[7] = %q, want \"--dedup-key\"", call[7])
+	}
+	key := call[8]
+	if len(key) != 16 {
+		t.Errorf("dedup key %q has length %d, want 16", key, len(key))
+	}
+	for _, arg := range call {
+		if arg == "--resume-launch-prompt" {
+			t.Errorf("mail send must not carry --resume-launch-prompt (deleted by agent-teams-8st0.27): %v", call)
+		}
+	}
+	return key
 }
 
 // prFieldIssue builds an issue that will MatchPRField for ownerRepo + prNumber.
@@ -212,31 +277,7 @@ func TestDecisionMatrix_OwnedViaPRFieldRoutesViaSend(t *testing.T) {
 	if len(fr.calls) != 1 {
 		t.Fatalf("expected 1 runner call, got %d: %v", len(fr.calls), fr.calls)
 	}
-	call := fr.calls[0]
-	if len(call) < 7 {
-		t.Fatalf("runner call too short: %v", call)
-	}
-	if call[0] != "mail" {
-		t.Errorf("call[0]: got %q, want \"mail\"", call[0])
-	}
-	if call[1] != "send" {
-		t.Errorf("call[1]: got %q, want \"send\"", call[1])
-	}
-	if call[2] != "at-abc.1" {
-		t.Errorf("call[2] (initiative id): got %q, want \"at-abc.1\"", call[2])
-	}
-	if call[3] != "--file" {
-		t.Errorf("call[3]: got %q, want \"--file\"", call[3])
-	}
-	if call[4] != bodyFile {
-		t.Errorf("call[4] (body file): got %q, want %q", call[4], bodyFile)
-	}
-	if call[5] != "--sender" {
-		t.Errorf("call[5]: got %q, want \"--sender\"", call[5])
-	}
-	if call[6] != "pr-shepherd" {
-		t.Errorf("call[6]: got %q, want \"pr-shepherd\"", call[6])
-	}
+	assertMailSendArgs(t, fr.calls[0], fr.fileContents[0], "at-abc.1", "ci_failed", "CI failed output")
 	if !strings.Contains(stdout.String(), "at-abc.1") {
 		t.Errorf("stdout should mention matched initiative id; got: %q", stdout.String())
 	}
@@ -445,7 +486,7 @@ func TestSpawnReviewInitiative_Configured(t *testing.T) {
 		Transition: TransitionReviewRequested,
 	}
 
-	if err := cmd.spawnReviewInitiative(ctx, event, ""); err != nil {
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
@@ -552,7 +593,7 @@ func TestSpawnReviewInitiative_ConfiguredBodyContent(t *testing.T) {
 		Transition: TransitionReviewRequested,
 	}
 
-	if err := cmd.spawnReviewInitiative(ctx, event, ""); err != nil {
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
@@ -618,7 +659,7 @@ func TestSpawnReviewInitiative_PRURLConstructed(t *testing.T) {
 		Transition: TransitionReviewRequested,
 	}
 
-	if err := cmd.spawnReviewInitiative(ctx, event, ""); err != nil {
+	if err := cmd.spawnReviewInitiative(ctx, event); err != nil {
 		t.Fatalf("spawnReviewInitiative error: %v", err)
 	}
 
@@ -1023,15 +1064,17 @@ func (f *statusFakeBD) RunJSON(dst any, args ...string) error {
 	return nil
 }
 
-// failRunner records calls like fakeRunner but fails any call whose first arg
-// equals failOn.
+// failRunner records calls like fakeRunner (including a --file snapshot,
+// see snapshotFileArg) but fails any call whose first arg equals failOn.
 type failRunner struct {
-	calls  [][]string
-	failOn string
+	calls        [][]string
+	fileContents []string
+	failOn       string
 }
 
 func (f *failRunner) run(args ...string) error {
 	f.calls = append(f.calls, append([]string(nil), args...))
+	f.fileContents = append(f.fileContents, snapshotFileArg(args))
 	if len(args) > 0 && args[0] == f.failOn {
 		return fmt.Errorf("injected %s failure", f.failOn)
 	}
@@ -1049,7 +1092,11 @@ func makeStatusCtx(open, closed []bd.Issue) (*cli.Context, *bytes.Buffer, *bytes
 	}, stdout, stderr
 }
 
-func TestReReview_OpenMatch_SendsWithResumeFlags(t *testing.T) {
+// TestReReview_OpenMatch_SendsWithDedupKeyNoResumeFlags verifies the OPEN
+// match path for re_review: send only, carrying a --dedup-key and no
+// --resume-launch-prompt (CONTRACT agent-teams-8st0.18 item 4 — resume
+// prompt selection moved into `ateam resume` itself, item 3).
+func TestReReview_OpenMatch_SendsWithDedupKeyNoResumeFlags(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	issue := prFieldIssue(t, "at-rr.1", "owner/myrepo", 42)
 	ctx, _, _ := makeStatusCtx([]bd.Issue{issue}, nil)
@@ -1066,13 +1113,11 @@ func TestReReview_OpenMatch_SendsWithResumeFlags(t *testing.T) {
 	if len(runner.calls) != 1 {
 		t.Fatalf("calls = %d, want 1 (send only)", len(runner.calls))
 	}
-	want := []string{"mail", "send", "at-rr.1", "--file", bodyFile, "--sender", "pr-shepherd",
-		"--resume-launch-prompt", "/agent-teams:review-pr at-rr.1", "--resume-model", "sonnet"}
-	if strings.Join(runner.calls[0], " ") != strings.Join(want, " ") {
-		t.Errorf("send args = %v\nwant %v", runner.calls[0], want)
-	}
+	assertMailSendArgs(t, runner.calls[0], runner.fileContents[0], "at-rr.1", "re_review", "re-review body")
 }
 
+// TestReReview_ClosedMatch_ReopensThenSends verifies the CLOSED match path:
+// [reopen, mail send] in that order, no dispatch/close.
 func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	closed := prFieldIssue(t, "at-rr.2", "owner/myrepo", 42)
@@ -1094,11 +1139,7 @@ func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
 	if strings.Join(runner.calls[0], " ") != "reopen at-rr.2" {
 		t.Errorf("first call = %v, want reopen at-rr.2", runner.calls[0])
 	}
-	wantSend := []string{"mail", "send", "at-rr.2", "--file", bodyFile, "--sender", "pr-shepherd",
-		"--resume-launch-prompt", "/agent-teams:review-pr at-rr.2", "--resume-model", "sonnet"}
-	if strings.Join(runner.calls[1], " ") != strings.Join(wantSend, " ") {
-		t.Errorf("send args = %v\nwant %v", runner.calls[1], wantSend)
-	}
+	assertMailSendArgs(t, runner.calls[1], runner.fileContents[1], "at-rr.2", "re_review", "re-review body")
 	if !strings.Contains(stdout.String(), "reopening") {
 		t.Errorf("stdout missing reopen notice: %s", stdout.String())
 	}
@@ -1107,8 +1148,8 @@ func TestReReview_ClosedMatch_ReopensThenSends(t *testing.T) {
 // TestReReview_DisabledRepo_SkipsWithoutReopenOrSpawn pins the Codex
 // adversarial-review finding: a re_review matching a CLOSED initiative whose
 // repo is disabled must not reopen it (nor fall back to spawning a fresh
-// review, unlike a reopen/send failure) — the repo being disabled is
-// deliberate operator policy, not a transient error.
+// review) — the repo being disabled is deliberate operator policy, not a
+// transient error.
 func TestReReview_DisabledRepo_SkipsWithoutReopenOrSpawn(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	repoDir := newDisabledClonePath(t)
@@ -1170,7 +1211,13 @@ func TestReReview_NoInitiative_FallsBackToSpawn(t *testing.T) {
 	}
 }
 
-func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
+// TestReReview_ReopenFails_SendsAnywayThenExits1 pins CONTRACT
+// agent-teams-8st0.18 item 4 / agent-teams-8st0.27 rev 5: a reopen failure is
+// no longer a fallback trigger — mail send always stores the message
+// (8st0.19), so route sends anyway and exits 1 (not 0) so pr-shepherd
+// retries; the retry re-matches the still-closed initiative, reopens it, and
+// the resend dedups. No dispatch, no close.
+func TestReReview_ReopenFails_SendsAnywayThenExits1(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	closed := prFieldIssue(t, "at-rr.3", "owner/myrepo", 42)
 	closed.Status = "closed"
@@ -1191,23 +1238,28 @@ func TestReReview_ReopenFails_FallsBackToSpawn(t *testing.T) {
 		Transition: TransitionReReview, BodyFile: bodyFile,
 		runner: runner.run,
 	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a non-nil error (exit 1) after a failed reopen, got nil")
 	}
-	// reopen (failed), then dispatch fallback — no send.
-	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "dispatch" {
-		t.Fatalf("calls = %v, want [reopen, dispatch]", runner.calls)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] (no dispatch, no close)", runner.calls)
 	}
+	assertMailSendArgs(t, runner.calls[1], runner.fileContents[1], "at-rr.3", "re_review", "re-review body")
 	if !strings.Contains(stdout.String(), "reopen at-rr.3 failed") {
 		t.Errorf("stdout missing reopen-failure notice: %s", stdout.String())
 	}
 }
 
-func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
+// TestReReview_SendFailsAfterReopen_Exits1NoDispatch verifies a send failure
+// (after a successful reopen) exits 1 with no dispatch and no compensating
+// close — the message is already stored by mail send (8st0.19), so there is
+// nothing to compensate for; the message stays open and queued.
+func TestReReview_SendFailsAfterReopen_Exits1NoDispatch(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	closed := prFieldIssue(t, "at-rr.4", "owner/myrepo", 42)
 	closed.Status = "closed"
-	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
 	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
 	repoDir := filepath.Join(tmpHome, "review-repos")
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
@@ -1224,37 +1276,22 @@ func TestReReview_SendFailsAfterReopen_FallsBackToSpawn(t *testing.T) {
 		Transition: TransitionReReview, BodyFile: bodyFile,
 		runner: runner.run,
 	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a non-nil error (exit 1) after a failed send, got nil")
 	}
-	// reopen (success), send/mail (failed), then dispatch fallback.
-	if len(runner.calls) != 3 {
-		t.Fatalf("calls = %d, want 3 [reopen, mail send, dispatch]: %v", len(runner.calls), runner.calls)
-	}
-	if runner.calls[0][0] != "reopen" {
-		t.Errorf("calls[0][0]: got %q, want \"reopen\"", runner.calls[0][0])
-	}
-	if runner.calls[1][0] != "mail" {
-		t.Errorf("calls[1][0]: got %q, want \"mail\"", runner.calls[1][0])
-	}
-	if runner.calls[2][0] != "dispatch" {
-		t.Errorf("calls[2][0]: got %q, want \"dispatch\"", runner.calls[2][0])
-	}
-	outStr := stdout.String()
-	if !strings.Contains(outStr, "send to") {
-		t.Errorf("stdout should contain 'send to' failure notice; got: %s", outStr)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] only (no dispatch, no close)", runner.calls)
 	}
 }
 
-// TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening pins
-// agent-teams-8st0.7: a closed review initiative whose worktree has been
-// reaped must NOT be reopened — reopening it is what produced the observed
-// reopen/close ping-pong (hung-scan's backstop immediately reclassifies the
-// worktree-less initiative DEAD and closes it again on the stale round's
-// review-posted note, then the next re_review poll reopens it right back).
-// It must fall back to spawning a fresh review instead, exactly like a
-// reopen-call failure does.
-func TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening(t *testing.T) {
+// TestReReview_ClosedMatch_WorktreeReaped_StillReopensAndSends pins the
+// agent-teams-8st0.27 rev-5 reversal of the agent-teams-8st0.7 special case:
+// a missing worktree no longer changes routing at all — the closed-match
+// branch always reopens and sends, and a missing worktree is now
+// `ateam resume`'s problem to fix (agent-teams-8st0.28 recreates it), not
+// route's problem to route around.
+func TestReReview_ClosedMatch_WorktreeReaped_StillReopensAndSends(t *testing.T) {
 	bodyFile := writeTempFile(t, "re-review body")
 	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
 	closed := bd.Issue{
@@ -1264,16 +1301,7 @@ func TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening(t *te
 		Notes:       "pr: https://github.com/owner/myrepo/pull/42\nreview-posted: PR #42 -- 3 finding(s)",
 		Status:      "closed",
 	}
-	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
-	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
-	repoDir := filepath.Join(tmpHome, "review-repos")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	clonePath := newEnabledClonePath(t)
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
 	runner := &fakeRunner{}
 	cmd := &routePREventKong{
@@ -1284,61 +1312,11 @@ func TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening(t *te
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 1 || runner.calls[0][0] != "dispatch" {
-		t.Fatalf("calls = %v, want a single dispatch call (no reopen)", runner.calls)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] even with a reaped worktree", runner.calls)
 	}
-	if !strings.Contains(stdout.String(), "worktree is gone") {
-		t.Errorf("stdout missing reaped-worktree notice: %s", stdout.String())
-	}
-}
-
-// TestReReview_ClosedMatch_WorktreeReaped_RepeatedPollsNeverReopen replays
-// the at-9w568 shape: pr-shepherd polling the SAME closed, worktree-reaped
-// initiative on successive re_review events must spawn a fresh review each
-// time and must NEVER reopen the dead initiative — the fix removes the
-// close/reopen ping-pong at its source rather than bounding it to "once".
-func TestReReview_ClosedMatch_WorktreeReaped_RepeatedPollsNeverReopen(t *testing.T) {
-	bodyFile := writeTempFile(t, "re-review body")
-	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
-	closed := bd.Issue{
-		ID:          "at-rr.6",
-		Title:       "Initiative at-rr.6",
-		Description: fmt.Sprintf("repo: %s\nworktree: %s\nbranch: main\n", newEnabledClonePath(t), reapedWorktree),
-		Notes:       "pr: https://github.com/owner/myrepo/pull/42\nreview-posted: PR #42 -- 3 finding(s)",
-		Status:      "closed",
-	}
-	ctx, _, _, tmpHome := makeRouteCtxWithHome(t, nil)
-	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
-	repoDir := filepath.Join(tmpHome, "review-repos")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	clonePath := newEnabledClonePath(t)
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	runner := &fakeRunner{}
-	for poll := 0; poll < 2; poll++ {
-		cmd := &routePREventKong{
-			Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
-			Transition: TransitionReReview, BodyFile: bodyFile,
-			runner: runner.run,
-		}
-		if err := cmd.Run(ctx); err != nil {
-			t.Fatalf("poll %d: unexpected error: %v", poll, err)
-		}
-	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("calls = %v, want 2 dispatch calls (one per poll)", runner.calls)
-	}
-	for i, call := range runner.calls {
-		if call[0] == "reopen" {
-			t.Fatalf("call %d reopened the dead initiative: %v — the ping-pong was not fixed", i, call)
-		}
-		if call[0] != "dispatch" {
-			t.Errorf("call %d = %v, want dispatch", i, call)
-		}
+	if !strings.Contains(stdout.String(), "reopening") {
+		t.Errorf("stdout missing reopen notice: %s", stdout.String())
 	}
 }
 
@@ -1363,6 +1341,72 @@ func TestReReview_OtherTransitionSendHasNoResumeFlags(t *testing.T) {
 	}
 }
 
+// ── review_requested closed-match (new in agent-teams-8st0.27: the closed-
+// match check used to be re_review/comment_reply-only; the rev-5 contract
+// folds review_requested into the same [open -> send, closed -> reopen+send,
+// none -> spawn] decision tree) ──────────────────────────────────────────────
+
+// TestReviewRequested_ClosedMatch_ReopensThenSends proves review_requested
+// now goes through the SAME closed-match reopen-then-send path as
+// re_review/comment_reply, instead of always spawning a brand new
+// initiative when one for this PR already exists (closed).
+func TestReviewRequested_ClosedMatch_ReopensThenSends(t *testing.T) {
+	bodyFile := writeTempFile(t, "reviewer added")
+	closed := prFieldIssue(t, "at-vr.1", "owner/myrepo", 42)
+	closed.Status = "closed"
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReviewRequested, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] (no dispatch)", runner.calls)
+	}
+	assertMailSendArgs(t, runner.calls[1], runner.fileContents[1], "at-vr.1", "review_requested", "reviewer added")
+	if !strings.Contains(stdout.String(), "reopening") {
+		t.Errorf("stdout missing reopen notice: %s", stdout.String())
+	}
+}
+
+// TestReviewRequested_NoMatch_ConfiguredSpawnsFreshReview proves the
+// unowned + no-prior-initiative + configured-repo case still ends in exactly
+// one dispatch, through the full Run() path (not just a direct
+// spawnReviewInitiative call).
+func TestReviewRequested_NoMatch_ConfiguredSpawnsFreshReview(t *testing.T) {
+	bodyFile := writeTempFile(t, "reviewer added")
+	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
+	clonePath := newEnabledClonePath(t)
+	repoDir := filepath.Join(tmpHome, "review-repos")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42, HeadBranch: "feat-x",
+		Transition: TransitionReviewRequested, BodyFile: bodyFile,
+		runner: runner.run,
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0][0] != "dispatch" {
+		t.Fatalf("calls = %v, want a single dispatch call", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "no prior initiative") {
+		t.Errorf("stdout missing spawn-fallback notice: %s", stdout.String())
+	}
+}
+
 // ── comment_reply transition ──────────────────────────────────────────────────
 
 func TestCommentReply_OpenMatch_PlainSendNoResumeFlags(t *testing.T) {
@@ -1382,13 +1426,10 @@ func TestCommentReply_OpenMatch_PlainSendNoResumeFlags(t *testing.T) {
 	if len(runner.calls) != 1 {
 		t.Fatalf("calls = %d, want 1 (send only)", len(runner.calls))
 	}
-	want := []string{"mail", "send", "at-cr.1", "--file", bodyFile, "--sender", "pr-shepherd"}
-	if strings.Join(runner.calls[0], " ") != strings.Join(want, " ") {
-		t.Errorf("send args = %v\nwant %v (no resume flags on open match)", runner.calls[0], want)
-	}
+	assertMailSendArgs(t, runner.calls[0], runner.fileContents[0], "at-cr.1", "comment_reply", "comment reply body")
 }
 
-func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *testing.T) {
+func TestCommentReply_ClosedMatch_ReopensThenSends(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	closed := prFieldIssue(t, "at-cr.2", "owner/myrepo", 42)
 	closed.Status = "closed"
@@ -1409,24 +1450,17 @@ func TestCommentReply_ClosedMatch_ReopensThenSendsWithCommentReplyPrompt(t *test
 	if strings.Join(runner.calls[0], " ") != "reopen at-cr.2" {
 		t.Errorf("first call = %v, want reopen at-cr.2", runner.calls[0])
 	}
-	wantSend := []string{"mail", "send", "at-cr.2", "--file", bodyFile, "--sender", "pr-shepherd",
-		"--resume-launch-prompt", "/agent-teams:review-pr at-cr.2 comment-reply", "--resume-model", "sonnet"}
-	if strings.Join(runner.calls[1], " ") != strings.Join(wantSend, " ") {
-		t.Errorf("send args = %v\nwant %v", runner.calls[1], wantSend)
-	}
+	assertMailSendArgs(t, runner.calls[1], runner.fileContents[1], "at-cr.2", "comment_reply", "comment reply body")
 	if !strings.Contains(stdout.String(), "reopening") {
 		t.Errorf("stdout missing reopen notice: %s", stdout.String())
 	}
 }
 
-// TestCommentReply_ClosedMatch_WorktreeReaped_SpawnsFreshCommentReplyInsteadOfDropping
-// is the comment_reply counterpart of
-// TestReReview_ClosedMatch_WorktreeReaped_SpawnsFreshInsteadOfReopening.
-// agent-teams-8st0.7 first found the reaped-worktree case and dropped the
-// event outright (comment_reply had no spawn fallback then); agent-teams-8st0.14
-// replaces that drop with a fresh spawn in comment-reply mode, since there is
-// no live session left for a later poll to resume into.
-func TestCommentReply_ClosedMatch_WorktreeReaped_SpawnsFreshCommentReplyInsteadOfDropping(t *testing.T) {
+// TestCommentReply_ClosedMatch_WorktreeReaped_StillReopensAndSends is the
+// comment_reply counterpart of
+// TestReReview_ClosedMatch_WorktreeReaped_StillReopensAndSends: a reaped
+// worktree no longer diverts comment_reply to a fresh spawn either.
+func TestCommentReply_ClosedMatch_WorktreeReaped_StillReopensAndSends(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	reapedWorktree := filepath.Join(t.TempDir(), "reaped-worktree-does-not-exist")
 	closed := bd.Issue{
@@ -1436,16 +1470,7 @@ func TestCommentReply_ClosedMatch_WorktreeReaped_SpawnsFreshCommentReplyInsteadO
 		Notes:       "pr: https://github.com/owner/myrepo/pull/42\ncomment-replies: 1 reply posted",
 		Status:      "closed",
 	}
-	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
-	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
-	repoDir := filepath.Join(tmpHome, "review-repos")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	clonePath := newEnabledClonePath(t)
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
 	runner := &fakeRunner{}
 	cmd := &routePREventKong{
@@ -1456,28 +1481,12 @@ func TestCommentReply_ClosedMatch_WorktreeReaped_SpawnsFreshCommentReplyInsteadO
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(runner.calls) != 1 || runner.calls[0][0] != "dispatch" {
-		t.Fatalf("calls = %v, want a single dispatch call (no reopen)", runner.calls)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] even with a reaped worktree", runner.calls)
 	}
-	if got := launchPromptArg(t, runner.calls[0]); !strings.Contains(got, "comment-reply") {
-		t.Errorf("dispatch launch-prompt = %q, want it to contain \"comment-reply\"", got)
+	if !strings.Contains(stdout.String(), "reopening") {
+		t.Errorf("stdout missing reopen notice: %s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "worktree is gone") {
-		t.Errorf("stdout missing reaped-worktree notice: %s", stdout.String())
-	}
-}
-
-// launchPromptArg extracts the value following --launch-prompt in a dispatch
-// call's argv, failing the test if the flag is absent.
-func launchPromptArg(t *testing.T, call []string) string {
-	t.Helper()
-	for i, arg := range call {
-		if arg == "--launch-prompt" && i+1 < len(call) {
-			return call[i+1]
-		}
-	}
-	t.Fatalf("call missing --launch-prompt: %v", call)
-	return ""
 }
 
 // TestCommentReply_DisabledRepo_SkipsWithoutReopen is the comment_reply
@@ -1543,25 +1552,14 @@ func TestCommentReply_NoInitiative_DropsWithoutSpawn(t *testing.T) {
 	}
 }
 
-// TestCommentReply_ReopenFails_SpawnsFreshCommentReplyInsteadOfDropping pins
-// agent-teams-8st0.14's follow-up (Eric's rule: a reply on a PR this system
-// reviewed must reach a session): a reopen call that itself errors is no
-// longer a terminal drop — it spawns a fresh comment-reply review, same as
-// the reaped-worktree and send-failure branches.
-func TestCommentReply_ReopenFails_SpawnsFreshCommentReplyInsteadOfDropping(t *testing.T) {
+// TestCommentReply_ReopenFails_SendsAnywayThenExits1 pins the rev-5 contract:
+// a reopen failure for comment_reply is no longer a spawn trigger — it sends
+// anyway and exits 1, same as re_review.
+func TestCommentReply_ReopenFails_SendsAnywayThenExits1(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	closed := prFieldIssue(t, "at-cr.3", "owner/myrepo", 42)
 	closed.Status = "closed"
-	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
-	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
-	repoDir := filepath.Join(tmpHome, "review-repos")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	clonePath := newEnabledClonePath(t)
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	ctx, stdout, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
 	runner := &failRunner{failOn: "reopen"}
 	cmd := &routePREventKong{
@@ -1569,40 +1567,27 @@ func TestCommentReply_ReopenFails_SpawnsFreshCommentReplyInsteadOfDropping(t *te
 		Transition: TransitionCommentReply, BodyFile: bodyFile,
 		runner: runner.run,
 	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a non-nil error (exit 1) after a failed reopen, got nil")
 	}
-	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "dispatch" {
-		t.Fatalf("calls = %v, want [reopen, dispatch]", runner.calls)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] (no dispatch)", runner.calls)
 	}
-	if got := launchPromptArg(t, runner.calls[1]); !strings.Contains(got, "comment-reply") {
-		t.Errorf("dispatch launch-prompt = %q, want it to contain \"comment-reply\"", got)
-	}
-	if !strings.Contains(stdout.String(), "spawning a fresh comment-reply review") {
-		t.Errorf("stdout missing spawn notice: %s", stdout.String())
+	if !strings.Contains(stdout.String(), "reopen at-cr.3 failed") {
+		t.Errorf("stdout missing reopen-failure notice: %s", stdout.String())
 	}
 }
 
-// TestCommentReply_SendFails_ClosesReopenedThenSpawnsFreshCommentReply pins
-// agent-teams-8st0.14's close-then-spawn behavior: a reopen that succeeds but
-// whose mail send then fails must NOT leave the reply dropped — it
-// compensating-closes the reopened initiative (so a later event re-matches
-// it as closed, same as before) and then spawns a fresh comment-reply
-// review, replacing the old close-then-drop.
-func TestCommentReply_SendFails_ClosesReopenedThenSpawnsFreshCommentReply(t *testing.T) {
+// TestCommentReply_SendFails_Exits1NoCloseNoDispatch pins the rev-5 contract:
+// a send failure after a successful reopen no longer compensating-closes or
+// spawns — it exits 1 with the message already stored (8st0.19), left open
+// and queued for retry.
+func TestCommentReply_SendFails_Exits1NoCloseNoDispatch(t *testing.T) {
 	bodyFile := writeTempFile(t, "comment reply body")
 	closed := prFieldIssue(t, "at-cr.4", "owner/myrepo", 42)
 	closed.Status = "closed"
-	ctx, stdout, _, tmpHome := makeRouteCtxWithHome(t, nil)
-	ctx.BD = &statusFakeBD{closed: []bd.Issue{closed}}
-	repoDir := filepath.Join(tmpHome, "review-repos")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	clonePath := newEnabledClonePath(t)
-	if err := os.WriteFile(filepath.Join(repoDir, "myrepo"), []byte(clonePath+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	ctx, _, _ := makeStatusCtx(nil, []bd.Issue{closed})
 
 	runner := &failRunner{failOn: "mail"}
 	cmd := &routePREventKong{
@@ -1610,21 +1595,78 @@ func TestCommentReply_SendFails_ClosesReopenedThenSpawnsFreshCommentReply(t *tes
 		Transition: TransitionCommentReply, BodyFile: bodyFile,
 		runner: runner.run,
 	}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a non-nil error (exit 1) after a failed send, got nil")
 	}
-	if len(runner.calls) != 4 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" ||
-		runner.calls[2][0] != "close" || runner.calls[3][0] != "dispatch" {
-		t.Fatalf("calls = %v, want [reopen, mail, close, dispatch]", runner.calls)
+	if len(runner.calls) != 2 || runner.calls[0][0] != "reopen" || runner.calls[1][0] != "mail" {
+		t.Fatalf("calls = %v, want [reopen, mail send] only (no close, no dispatch)", runner.calls)
 	}
-	wantClose := []string{"close", "at-cr.4", "--reason", "comment-reply send failed; restoring closed state"}
-	if gotClose := runner.calls[2]; strings.Join(gotClose, "\x00") != strings.Join(wantClose, "\x00") {
-		t.Errorf("close call = %v, want %v", gotClose, wantClose)
+}
+
+// ── dedup key ──────────────────────────────────────────────────────────────────
+
+// TestSendArgs_DedupKeyStableAcrossSameEvent proves the "same event twice ->
+// same dedup key" acceptance case directly against sendArgs: identical repo,
+// PR number, transition, and body must yield the identical dedup key so a
+// retried send (e.g. after a failed reopen) dedups into the same message.
+func TestSendArgs_DedupKeyStableAcrossSameEvent(t *testing.T) {
+	bodyFile := writeTempFile(t, "same body")
+	cmd := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42,
+		Transition: TransitionCIFailed, BodyFile: bodyFile,
 	}
-	if got := launchPromptArg(t, runner.calls[3]); !strings.Contains(got, "comment-reply") {
-		t.Errorf("dispatch launch-prompt = %q, want it to contain \"comment-reply\"", got)
+
+	args1, tmp1, err := cmd.sendArgs("at-dk.1")
+	if err != nil {
+		t.Fatalf("sendArgs (first): %v", err)
 	}
-	if !strings.Contains(stdout.String(), "spawning a fresh comment-reply review") {
-		t.Errorf("stdout missing spawn notice: %s", stdout.String())
+	defer os.Remove(tmp1)
+	args2, tmp2, err := cmd.sendArgs("at-dk.1")
+	if err != nil {
+		t.Fatalf("sendArgs (second): %v", err)
+	}
+	defer os.Remove(tmp2)
+
+	key1 := args1[len(args1)-1]
+	key2 := args2[len(args2)-1]
+	if key1 != key2 {
+		t.Errorf("dedup key changed across identical events: %q vs %q", key1, key2)
+	}
+	if len(key1) != 16 {
+		t.Errorf("dedup key %q has length %d, want 16", key1, len(key1))
+	}
+}
+
+// TestSendArgs_DedupKeyDiffersByTransition proves the key is not just a
+// hash of repo+PR: a different transition on the same PR must dedup
+// separately (a ci_failed message and a changes_requested message for the
+// same PR are not the same event).
+func TestSendArgs_DedupKeyDiffersByTransition(t *testing.T) {
+	bodyFile := writeTempFile(t, "same body")
+	cmd1 := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42,
+		Transition: TransitionCIFailed, BodyFile: bodyFile,
+	}
+	cmd2 := &routePREventKong{
+		Repo: "owner/myrepo", PRNumber: 42,
+		Transition: TransitionChangesRequested, BodyFile: bodyFile,
+	}
+
+	args1, tmp1, err := cmd1.sendArgs("at-dk.1")
+	if err != nil {
+		t.Fatalf("sendArgs (ci_failed): %v", err)
+	}
+	defer os.Remove(tmp1)
+	args2, tmp2, err := cmd2.sendArgs("at-dk.1")
+	if err != nil {
+		t.Fatalf("sendArgs (changes_requested): %v", err)
+	}
+	defer os.Remove(tmp2)
+
+	key1 := args1[len(args1)-1]
+	key2 := args2[len(args2)-1]
+	if key1 == key2 {
+		t.Errorf("dedup key identical across different transitions: %q", key1)
 	}
 }

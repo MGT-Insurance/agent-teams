@@ -30,7 +30,8 @@ type sendKong struct {
 	File               string `name:"file"   help:"Path to the message body file (required)." required:""`
 	Sender             string `name:"sender" help:"Sender identifier (default: steward when sent from the steward session, else git user.name)."`
 	Thread             string `name:"thread" help:"Optional thread identifier label."`
-	ResumeLaunchPrompt string `name:"resume-launch-prompt" help:"Launch prompt used if the recipient session is gone and must be resumed (default: /dri <id>)."`
+	DedupKey           string `name:"dedup-key" help:"Skip creating a new message if an open one assigned to the recipient already carries this key (label dedup:<key>); delivery still runs."`
+	ResumeLaunchPrompt string `name:"resume-launch-prompt" help:"Launch prompt used if the recipient session is gone and must be resumed (default: resolved by ateam resume from the initiative type)."`
 	ResumeModel        string `name:"resume-model" help:"Model for a resumed session (only meaningful with --resume-launch-prompt)."`
 
 	agentsFunc     agentsJSONFunc       `kong:"-"`
@@ -62,26 +63,33 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	sender := resolveSender(ctx, c.Sender)
 
-	createArgs := []string{
-		"create",
-		"--type=message",
-		"--assignee=" + c.RecipientID,
-		"--notes=from: " + sender,
-		"--labels=delivery:pending",
-		"--body-file=" + c.File,
-		"--title=message from " + sender,
-		"--json",
+	msgID, deduped, err := c.createOrDedupMessage(ctx, sender)
+	if err != nil {
+		return err
 	}
-	if c.Thread != "" {
-		createArgs = append(createArgs, "--labels=thread:"+c.Thread)
+	if deduped {
+		fmt.Fprintf(ctx.Stdout, "message_id: %s (deduplicated)\n", msgID)
+	} else {
+		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", msgID)
+	}
+	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
+
+	// Recipient status is resolved BEFORE the doorbell is ever touched
+	// (CONTRACT 8st0.18 item 1b): the message above is always stored
+	// regardless of recipient state, but a closed recipient gets no
+	// doorbell, no resume, no reopen — just a queued message. Steward is a
+	// machine-scoped singleton, not an initiative bead; recipientWorktree
+	// returns the zero-value bd.Issue for it, so Status is never "closed"
+	// and this never gates Steward mail.
+	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	if liveErr != nil {
+		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
+		return nil
 	}
 
-	var issue bd.Issue
-	if err := ctx.BD.RunJSON(&issue, createArgs...); err != nil {
-		return fmt.Errorf("ateam send: create message bead: %w", err)
-	}
-	if issue.ID == "" {
-		return fmt.Errorf("ateam send: bd create returned no id")
+	if c.RecipientID != StewardHandle && recipIssue.Status == "closed" {
+		fmt.Fprintf(ctx.Stdout, "recipient %s is closed; message queued until reopened\n", c.RecipientID)
+		return nil
 	}
 
 	doorbellDir := filepath.Join(ctx.Home, "mailbox")
@@ -91,15 +99,6 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	doorbellPath := filepath.Join(doorbellDir, c.RecipientID+".wake")
 	if err := touchFile(doorbellPath); err != nil {
 		return fmt.Errorf("ateam send: touch doorbell: %w", err)
-	}
-
-	fmt.Fprintf(ctx.Stdout, "message_id: %s\n", issue.ID)
-	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
-
-	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
-	if liveErr != nil {
-		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
-		return nil
 	}
 
 	// Disabled repo: the message stays queued (the bd issue above already
@@ -122,7 +121,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	fields := initiative.Of(recipIssue)
 	runtimeKind, runtimeErr := sessionruntime.ResolveStored(fields.Runtime)
 	if runtimeErr != nil {
-		fmt.Fprintf(ctx.Stdout, "warning: recipient runtime is invalid (%v); message %s remains queued\n", runtimeErr, issue.ID)
+		fmt.Fprintf(ctx.Stdout, "warning: recipient runtime is invalid (%v); message %s remains queued\n", runtimeErr, msgID)
 		return nil
 	}
 	if runtimeKind == sessionruntime.Codex {
@@ -136,7 +135,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 			return nil
 		}
 		if err != nil {
-			fmt.Fprintf(ctx.Stdout, "warning: Codex wake failed (%v); message %s remains queued\n", err, issue.ID)
+			fmt.Fprintf(ctx.Stdout, "warning: Codex wake failed (%v); message %s remains queued\n", err, msgID)
 			return nil
 		}
 		fmt.Fprintln(ctx.Stdout, "Codex thread accepted the mail wake request")
@@ -181,6 +180,9 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		}
 		fmt.Fprintf(ctx.Stdout, "recipient not found in claude agents; launching via ateam resume\n")
 		if err := c.resumeFunc(ctx, c.RecipientID, c.ResumeLaunchPrompt, c.ResumeModel); err != nil {
+			if errors.Is(err, errNothingToReview) {
+				return c.closeAsNothingToReview(ctx, err)
+			}
 			return fmt.Errorf("ateam send: resume escalation: %w", err)
 		}
 		return nil
@@ -206,10 +208,81 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	fmt.Fprintf(ctx.Stdout, "doorbell still present after 5s; recipient is deaf — respawning %s\n", entry.ID)
 	if err := c.respawnFunc(entry.ID); err != nil {
-		fmt.Fprintf(ctx.Stdout, "warning: respawn %s failed (%v); message %s remains queued for the next turn\n", entry.ID, err, issue.ID)
+		fmt.Fprintf(ctx.Stdout, "warning: respawn %s failed (%v); message %s remains queued for the next turn\n", entry.ID, err, msgID)
 		return nil
 	}
 	fmt.Fprintf(ctx.Stdout, "respawned %s to deliver the doorbell\n", entry.ID)
+	return nil
+}
+
+// createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
+// hit, create nothing and return the existing open message's id (deduped =
+// true); mail send never refuses a recipient, so this only ever short-
+// circuits the create call, never the delivery steps that follow it.
+func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string, bool, error) {
+	if existingID, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey); err != nil {
+		return "", false, fmt.Errorf("ateam send: dedup lookup: %w", err)
+	} else if hit {
+		return existingID, true, nil
+	}
+
+	createArgs := []string{
+		"create",
+		"--type=message",
+		"--assignee=" + c.RecipientID,
+		"--notes=from: " + sender,
+		"--labels=delivery:pending",
+		"--body-file=" + c.File,
+		"--title=message from " + sender,
+		"--json",
+	}
+	if c.Thread != "" {
+		createArgs = append(createArgs, "--labels=thread:"+c.Thread)
+	}
+	if c.DedupKey != "" {
+		createArgs = append(createArgs, "--labels=dedup:"+c.DedupKey)
+	}
+
+	var issue bd.Issue
+	if err := ctx.BD.RunJSON(&issue, createArgs...); err != nil {
+		return "", false, fmt.Errorf("ateam send: create message bead: %w", err)
+	}
+	if issue.ID == "" {
+		return "", false, fmt.Errorf("ateam send: bd create returned no id")
+	}
+	return issue.ID, false, nil
+}
+
+// closeAsNothingToReview implements CONTRACT 8st0.18 item 1e: resume found
+// nothing left to review (the PR it was resuming for is already merged or
+// closed) — every message still queued for the recipient is closed as moot
+// rather than left open for a review that will never happen, and the
+// recipient initiative is closed alongside it. Closing the mail and the
+// initiative is best-effort: a failure there is reported to ctx.Stderr but
+// never turns this into a non-zero exit — the contract calls for exit 0
+// either way. The unread query itself is NOT best-effort: if it fails, we
+// don't know what's still queued, so the initiative must stay open rather
+// than risk stranding unclosed mail on a closed initiative — this returns
+// an error, mail send exits 1, and the message stays queued for a retry
+// that redoes the moot path (agent-teams-8st0.29 fix 1).
+func (c *sendKong) closeAsNothingToReview(ctx *cli.Context, resumeErr error) error {
+	note := fmt.Sprintf("%s; nothing to act on", resumeErr)
+
+	unread, err := unreadMailFor(ctx, c.RecipientID)
+	if err != nil {
+		return fmt.Errorf("ateam send: query unread mail for %s: %w", c.RecipientID, err)
+	}
+	ids := make([]string, len(unread))
+	for i, m := range unread {
+		ids[i] = m.ID
+	}
+	if err := closeMailAs(ctx, ids, "delivery:moot", note); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam send: close moot mail for %s: %v\n", c.RecipientID, err)
+	}
+	if _, err := ctx.BD.Run("close", c.RecipientID, "--reason="+note); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam send: close initiative %s: %v\n", c.RecipientID, err)
+	}
+	fmt.Fprintf(ctx.Stdout, "nothing to review for %s; closed %d message(s) as moot\n", c.RecipientID, len(ids))
 	return nil
 }
 
@@ -375,9 +448,17 @@ func runAgentsJSON(args ...string) ([]agentSession, error) {
 	return sessions, nil
 }
 
-// defaultResume runs `ateam resume <id>` via the resumeKong directly.
+// defaultResume runs `ateam resume <id>` via the resumeKong directly. It uses
+// newProductionResumeKong (dispatch.go) — the same constructor
+// RegisterDispatchKong's CLI "resume" verb uses — so this auto-resume
+// escalation path gets every recreateWorktree seam (gitPrune, git, setup,
+// prState, ...) the interactive verb gets; see that constructor's doc
+// comment for why a hand-rolled literal here caused agent-teams-8st0.30.
 func defaultResume(ctx *cli.Context, id, launchPrompt, model string) error {
-	cmd := &resumeKong{ID: id, LaunchPrompt: launchPrompt, Model: model, launch: launchBGSession, launchRaw: rawLaunchBGSession}
+	cmd := newProductionResumeKong()
+	cmd.ID = id
+	cmd.LaunchPrompt = launchPrompt
+	cmd.Model = model
 	return cmd.Run(ctx)
 }
 
@@ -802,7 +883,12 @@ func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
 	}
 	// Auto-close on read. Fires only here (post-ack), never on delivery —
 	// unread/pending messages and messages to a dead initiative stay open.
-	if _, err := ctx.BD.Run("close", msgID); err != nil {
+	// --force: bd 1.3.0 refuses close when assignee != actor, and mail
+	// wisps are assigned to the recipient initiative while ateam's actor
+	// resolves to the git user — never the recipient. Mail is single-owner
+	// (only the recipient ever closes its own wisp), so the concurrent-
+	// reclaim race the guard protects against doesn't apply here.
+	if _, err := ctx.BD.Run("close", msgID, "--force"); err != nil {
 		return fmt.Errorf("close message: %w", err)
 	}
 	return nil

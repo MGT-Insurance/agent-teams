@@ -2370,6 +2370,55 @@ func TestResumeKong_RepoDisabled_Refuses(t *testing.T) {
 	}
 }
 
+// TestDefaultResume_MissingWorktree_UsesSharedProductionRecreateSeams is the
+// witness for agent-teams-8st0.30: messaging.go's defaultResume (the
+// mail-send/route-pr-event auto-resume escalation) must wire the same
+// recreateWorktree production seams — gitPrune, git, setup, prState, ... —
+// that RegisterDispatchKong wires for the interactive CLI "resume" verb.
+//
+// Before the fix, defaultResume's resumeKong literal (messaging.go:453) left
+// gitPrune and git nil. recreateWorktree calls c.gitPrune(f.Repo)
+// unconditionally (dispatch.go, right before the branch-exists switch), with
+// no nil-fallback — a nil-valued func call panics. This test drives
+// defaultResume against a REAL git repo whose target branch genuinely
+// doesn't exist locally or at origin, so a correctly-wired resumeKong falls
+// through to the ordinary "branch not found" failure and returns cleanly
+// instead of ever reaching setup or launch — keeping this a fast, local-only
+// unit test with no gh call and no spawned session.
+func TestDefaultResume_MissingWorktree_UsesSharedProductionRecreateSeams(t *testing.T) {
+	repoDir := initGitWorktree(t)
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", repoconfig.FileName, err)
+	}
+	missing := filepath.Join(t.TempDir(), "gone")
+	const branch = "no-such-branch-anywhere"
+
+	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+		raw, _ := json.Marshal([]bd.Issue{resumeDriIssue("at-seams1", repoDir, branch, missing)})
+		return string(raw), nil
+	}}
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+
+	var panicked any
+	var err error
+	func() {
+		defer func() { panicked = recover() }()
+		err = defaultResume(ctx, "at-seams1", "", "")
+	}()
+	if panicked != nil {
+		t.Fatalf("defaultResume panicked (a recreateWorktree seam — gitPrune/git/setup/prState — was left nil): %v", panicked)
+	}
+	if err == nil {
+		t.Fatal("defaultResume: expected an error (branch missing locally and at origin), got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "not found locally or at origin") {
+		t.Errorf("expected 'not found locally or at origin' in stderr, got: %s", stderr.String())
+	}
+}
+
 // ── dispatch: epic creation ───────────────────────────────────────────────────
 
 // TestDispatch_EpicCreatedAndAppendedToBody verifies that when createEpic

@@ -718,6 +718,9 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam close: no context")
 	}
+	if err := c.refuseIfUnreadReviewMail(ctx); err != nil {
+		return err
+	}
 	reason := c.Reason
 	if c.File != "" {
 		data, err := os.ReadFile(c.File)
@@ -744,6 +747,34 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	c.runLocalMainUpdate(ctx)
 	c.sendCloseSignal(ctx)
 	return nil
+}
+
+// refuseIfUnreadReviewMail implements CONTRACT agent-teams-8st0.18 item 5:
+// a review-shaped initiative (initiative.ReviewPRURL, Description carries a
+// "pr-url:" line) with unread mail refuses to close, so no session is left
+// that can ever read those messages (inbox resolution only lists open
+// initiatives, messaging.go:561). Non-review initiatives are never checked
+// here — closing them is unchanged. There is no override flag; a human who
+// truly needs to drop a message uses `ateam mail close <msg>` instead.
+func (c *closeKong) refuseIfUnreadReviewMail(ctx *cli.Context) error {
+	issue, err := bd.ShowIssue(ctx.BD, c.ID)
+	if err != nil {
+		// Fail CLOSED: every other unread-mail check in this guard refuses
+		// the close on error, so a transient bd failure here must not fall
+		// through to a close that skips the review-shaped check entirely.
+		return fmt.Errorf("ateam close: reading %s: %w", c.ID, err)
+	}
+	if _, ok := initiative.ReviewPRURL(issue); !ok {
+		return nil
+	}
+	messages, err := unreadMailFor(ctx, c.ID)
+	if err != nil {
+		return fmt.Errorf("ateam close: checking unread mail: %w", err)
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	return fmt.Errorf("ateam close: %s has %d unread message(s); run ateam mail inbox and handle them", c.ID, len(messages))
 }
 
 // closeSignalFarewell is posted into the initiative's Telegram topic (if

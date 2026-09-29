@@ -1046,6 +1046,12 @@ func (p *hungPRStateProbe) flush() {
 	}
 }
 
+// hungUnreadMailFunc looks up id's unread review mail. Injected into
+// hungTickDeps so tests substitute a canned result instead of shelling to a
+// real bd binary; production wires unreadMailFor (mail_unread.go, CONTRACT
+// agent-teams-8st0.18).
+type hungUnreadMailFunc func(ctx *cli.Context, id string) ([]bd.Issue, error)
+
 // hungTickDeps bundles the seams doHungTick needs beyond ctx. A fake in
 // tests substitutes every field so no subprocess/network/filesystem beyond
 // ctx.Home's temp dir is touched.
@@ -1080,6 +1086,32 @@ type hungTickDeps struct {
 	// passing untouched, since runHungTickUntil is the only caller that
 	// wires a non-nil prState.
 	prState prStateFunc
+
+	// unreadMail is CONTRACT agent-teams-8st0.18 item 6's gate: EITHER
+	// backstop close below must first prove entry.ID has no unread mail —
+	// a re-review or comment-reply message the backstop would otherwise
+	// strand right as it closes the initiative out from under it. nil-safe
+	// like the probes above, but conservatively: nil (never wired) or a
+	// probe error is treated exactly like a non-empty result — fail
+	// closed, since "no unread mail" is a precondition for closing, not an
+	// assumed default, and an unreadable mailbox can never prove it.
+	unreadMail hungUnreadMailFunc
+}
+
+// hungHasUnreadMail evaluates CONTRACT item 6 for id: true means the
+// backstop must NOT close it this tick. Mirrors hungPendingCommentProbe's
+// and hungPRStateProbe's own conservative contract (probed=false never
+// authorizes a close) — here collapsed to a single bool since, unlike
+// those two, this gate has no cache/preflight lifecycle to reuse.
+func hungHasUnreadMail(ctx *cli.Context, deps hungTickDeps, id string) bool {
+	if deps.unreadMail == nil {
+		return true
+	}
+	unread, err := deps.unreadMail(ctx, id)
+	if err != nil {
+		return true
+	}
+	return len(unread) > 0
 }
 
 // doHungTick runs one periodic tick. scanHung (reused, called with
@@ -1147,7 +1179,16 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 			// as before this bead.
 			if deps.closeFunc != nil && reviewBackstopCloseGateHolds(entry) {
 				if pending, probed := pendingProbe.evaluate(entry); probed && !pending {
-					if err := deps.closeFunc(ctx, entry.ID, hungReviewBackstopCloseReason); err != nil {
+					if hungHasUnreadMail(ctx, deps, entry.ID) {
+						// agent-teams-8st0.21 CONTRACT item 6: unread mail
+						// blocks the close exactly like a failing close does —
+						// journal the skip and fall through to the existing
+						// ladder switch below, never silently dropping the
+						// entry.
+						if err := appendHungJournal(journalPath, hungReviewBackstopJournalEntry(nowRFC3339, entry, "skip-unread-mail")); err != nil {
+							transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+						}
+					} else if err := deps.closeFunc(ctx, entry.ID, hungReviewBackstopCloseReason); err != nil {
 						transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: backstop close %s failed: %v", entry.ID, err)
 						// agent-teams-huq7.1 CONTRACT AMENDMENT: a failing
 						// close must still escalate — do NOT journal a
@@ -1180,7 +1221,13 @@ func doHungTick(ctx *cli.Context, deps hungTickDeps) error {
 				// unanswered comment.
 				if state, probed := mergedProbe.evaluate(entry); probed && (state == ghPRStateMerged || state == ghPRStateClosed) {
 					if pending, probed := pendingProbe.evaluate(entry); probed && !pending {
-						if err := deps.closeFunc(ctx, entry.ID, hungReviewBackstopMergedCloseReason); err != nil {
+						if hungHasUnreadMail(ctx, deps, entry.ID) {
+							// Same CONTRACT item 6 gate as the posted-note path
+							// above.
+							if err := appendHungJournal(journalPath, hungReviewBackstopJournalEntry(nowRFC3339, entry, "skip-unread-mail")); err != nil {
+								transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: journal write for %s failed: %v", entry.ID, err)
+							}
+						} else if err := deps.closeFunc(ctx, entry.ID, hungReviewBackstopMergedCloseReason); err != nil {
 							transport.Logf(ctx.Stderr, 0, "ateam relay: hung tick: backstop close %s failed: %v", entry.ID, err)
 							// Same CONTRACT AMENDMENT as the posted-note path
 							// above: a failing close must still escalate — do
@@ -1354,6 +1401,7 @@ func runHungTickUntil(ctx *cli.Context, t transport.Transport, stop <-chan struc
 		pendingReviewComment: defaultPendingReviewComment,
 		ghPreflight:          defaultHungReviewCommentPreflight,
 		prState:              defaultPRState,
+		unreadMail:           unreadMailFor,
 	}
 	ticker := time.NewTicker(hungTickInterval)
 	defer ticker.Stop()

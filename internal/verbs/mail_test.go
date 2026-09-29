@@ -400,7 +400,7 @@ func TestMailClose_CallsBDClose(t *testing.T) {
 	if err := c.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []string{"close", "at-m1"}
+	want := []string{"close", "at-m1", "--force"}
 	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
 		t.Errorf("got calls %v, want [%v]", calls, want)
 	}
