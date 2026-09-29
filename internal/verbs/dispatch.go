@@ -1364,6 +1364,15 @@ func bgSessionSettingsJSON(role, initiativeID, autoCompactWindow string) string 
 	return string(b)
 }
 
+// reviewPromptPrefix marks a PR review session launch (dispatch,
+// route-pr-event, resume, and mail wake all funnel through bgSessionArgs).
+const reviewPromptPrefix = "/agent-teams:review-pr "
+
+// reviewMCPConfigJSON is the inline --mcp-config payload for review sessions.
+// With --strict-mcp-config it makes docs-hound the only MCP server the session
+// loads; project, user, plugin, and claude.ai connector servers are dropped.
+const reviewMCPConfigJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"https://docs-hound.mgtinsurance.app/api/mcp"}}}`
+
 // bgSessionArgs returns the argv slice (everything after "claude") for a
 // background session launch. prompt is the raw positional argument passed to
 // claude (e.g. "/dri at-abc123" or a custom skill invocation). model overrides
@@ -1413,6 +1422,12 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON,
 	appendVal := memoryRoutingRule
 	if strings.HasPrefix(prompt, "/dri ") {
 		appendVal = driSystemPromptAppend
+	}
+	// --mcp-config is variadic in claude 2.1.285: a positional argument that
+	// directly follows it is swallowed as another config path. The flag pair
+	// therefore goes before --append-system-prompt, never adjacent to the prompt.
+	if strings.HasPrefix(prompt, reviewPromptPrefix) {
+		args = append(args, "--strict-mcp-config", "--mcp-config", reviewMCPConfigJSON)
 	}
 	args = append(args, "--append-system-prompt", appendVal)
 	if advisor != "" {
