@@ -1639,6 +1639,47 @@ func TestBGSessionArgs_ReviewPromptOmitsGuardrails(t *testing.T) {
 	}
 }
 
+func TestBGSessionArgs_ReviewPromptRestrictsMCPToDocsHound(t *testing.T) {
+	const wantJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"https://docs-hound.mgtinsurance.app/api/mcp"}}}`
+	prompt := "/agent-teams:review-pr at-x"
+	args := bgSessionArgs("my-session", prompt, "", "", "dri", "at-x", "{}", "")
+	t.Logf("review-pr argv: %q", args)
+
+	strict, cfg := -1, -1
+	for i, a := range args {
+		switch a {
+		case "--strict-mcp-config":
+			strict = i
+		case "--mcp-config":
+			cfg = i
+		}
+	}
+	if strict < 0 || cfg < 0 {
+		t.Fatalf("argv missing --strict-mcp-config or --mcp-config: %v", args)
+	}
+	if cfg+1 >= len(args) || args[cfg+1] != wantJSON {
+		t.Fatalf("--mcp-config value mismatch; got argv %v", args)
+	}
+	// Variadic guard: a flag, never the positional prompt, must follow the value.
+	if cfg+2 >= len(args)-1 || !strings.HasPrefix(args[cfg+2], "--") {
+		t.Errorf("element after --mcp-config value must be a flag, got %v", args[cfg+2:])
+	}
+	if args[len(args)-1] != prompt {
+		t.Errorf("last argv element = %q, want prompt", args[len(args)-1])
+	}
+}
+
+func TestBGSessionArgs_NonReviewPromptsGetNoMCPFlags(t *testing.T) {
+	for _, prompt := range []string{"/dri at-abc123", "/some-prompt", "/agent-teams:review-prx at-x"} {
+		args := bgSessionArgs("my-session", prompt, "", "", "", "", "{}", "")
+		for _, a := range args {
+			if a == "--strict-mcp-config" || a == "--mcp-config" {
+				t.Errorf("prompt %q: unexpected MCP flag %q in %v", prompt, a, args)
+			}
+		}
+	}
+}
+
 func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	name := "my-session"
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
