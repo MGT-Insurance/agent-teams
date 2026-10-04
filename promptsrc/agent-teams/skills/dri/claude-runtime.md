@@ -121,7 +121,7 @@ Dispatch scope-expanding work through **`/agent-teams:dispatch-dri`**; never han
 
 - references/registry.md — schema, standby field, audit, commands
 - references/gate-protocol.md — gate sequence + review/execution-state model
-- references/execution.md — spawn/worktree/merge/integration, role-division
+- references/execution.md — spawn/worktree/merge/integration, role-division, peer-DRI messaging
 - references/wind-down.md — checklist (close-out + condense sweep)
 - references/advisor.md — consult criteria (`use_advisors == true`)
 - references/memory.md — three-tier memory mechanics

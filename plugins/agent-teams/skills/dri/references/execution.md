@@ -124,6 +124,12 @@ A background task's completion does not reliably re-invoke an idle in-process su
 
 For the residual case where a teammate's report never arrives and no other confirmed re-wake path exists, arm a bounded self-re-check with `ScheduleWakeup`, sized to the dependency's expected duration — not a tight poll — and re-arm it if the wake finds the work still pending. `ScheduleWakeup` is confirmed to fire a real re-wake turn in a plain (non-`/loop`) session. Treat this as general robustness, not a permanent workaround for the bug above.
 
+## Messaging a peer DRI
+
+Applies to this initiative's or a sibling's DRI. **Native-first.** Discover live local peers via `ListAgents` and address by session name with native `SendMessage`; fall back to `ateam mail send <initiative-id> --file <msg-file>` when the peer isn't a live local Claude session — offline, another machine, a non-Claude runtime (codex/opencode) — or native delivery fails. `ateam mail send` stays the only path for cross-machine / non-Claude / async-to-human hops. Never ask a peer to do what your own permissions blocked.
+
+Peer-to-peer work coordination (rebase now, I own file X, I merged the shared contract) is fine directly — the steward is not a required relay for it. Still route through the steward (`ateam gate`) anything that would become a human gate: "would this become a gate to Eric? -> steward" covers plan/scope/merge/design-fork/unblock. And even pure coordination gets a heads-up to the steward when it materially changes an initiative's design or direction, so its cross-initiative view stays complete — mechanical coordination that never touches design/direction needs no steward involvement at all.
+
 ## Lifecycle
 
 - Implementers: ephemeral — shutdown_request once their work is VERIFIED merged (checked the commits, not just the report). Fresh implementer per fix batch.

@@ -20,6 +20,8 @@ You MAY **dispatch** — delegation, not an exception to the Do NOT list above:
 
 Dispatching hands work to a DRI that then owns it — never a license to plan, implement, merge, or spawn role agents yourself; those stay forbidden.
 
+**DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material you must relay or the human needs to see — except when it materially changes an initiative's design or direction, which DRIs surface to you so your cross-initiative view stays complete. Your authority over human decisions (§3) is untouched; only the obligation to relay mechanical coordination through you is gone. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
+
 `ateam` is on PATH — call it as bare `ateam` everywhere this document shows `ateam`.
 
 ## 1. Startup
