@@ -19,9 +19,7 @@ New to agent-teams? Start with [GETTING-STARTED.md](GETTING-STARTED.md) for an e
 
 (For local development: `/plugin marketplace add /path/to/agent-teams`.)
 
-The plugin also declares two config options in its manifest (`use_advisors`, `dri_model`; see the `userConfig` block in `plugins/agent-teams/.claude-plugin/plugin.json`) that pick which model a background DRI actually runs on — `dri_model` (default `claude-opus-4-8`) is the DRI's model; `use_advisors` (default off) instead runs the DRI on sonnet with `dri_model` attached as an advisor.
-
-A third option, `auto_compact_window`, sets the token window agent-teams asks Claude Code to use for the background sessions it launches (DRI and steward). Left empty (the default), agent-teams sends nothing — Claude Code picks the window from the model, which is today's behavior, unchanged. Set it to lower that window: a plain number (`450000`), a `k`/`m` suffix (`500k`, `1m`), a bare `100`–`1000` as thousands shorthand (`200` means `200000`), or the literal `auto`. It can only lower the window — it can never raise it above the model's real context window. Note this sets the *window*, not the point where compaction actually fires: compaction kicks in roughly 33,000 tokens below it, so `500000` means compaction fires near `467000`. A bad value fails the launch loudly with Claude Code's own error message; agent-teams doesn't validate it itself.
+`$AGENT_TEAMS_HOME/config.toml` is the single source of truth for all agent-teams machine configuration, including which model a background DRI runs on and the auto-compact window it and the steward request — see [Machine-local runtime defaults](#machine-local-runtime-defaults).
 
 ## Enable a repo
 
@@ -31,7 +29,7 @@ A missing file has the identical effect to `disabled: true`: not enabled. `disab
 
 Commit the file. It's read straight off disk, so an untracked `.agent-teams` enables only the checkout it's sitting in, not the repo. Nothing creates it for you.
 
-When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative, mail wakeups, and PR-event routing all skip without erroring. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
+When a repo isn't enabled, `ateam dispatch` and `ateam resume` refuse loudly — `agent-teams is not enabled for ...`, non-zero exit. Everything hook-driven goes quiet instead: resolving a session to its initiative and PR-event routing skip without erroring. Codex mail delivery also skips because it requires the enabled session binding. So a repo switched off mid-flight reads less like a refusal than like agent-teams having quietly stopped.
 
 ## Machine-local instructions
 
@@ -66,6 +64,71 @@ ateam resume <id>                                 # relaunch an existing initiat
 
 Both launch the background session with `--permission-mode bypassPermissions` for hands-off operation: the DRI runs without permission prompts and spawns teammates with `mode: bypassPermissions`. **Safety note:** bypass means agents run commands unprompted — the guardrails are worktree isolation (each teammate is confined to its own worktree) and role boundaries (teammates only commit to their own track; the DRI owns branch integration and opens the PR; merging stays a human decision). The DRI skill enforces these.
 
+### Machine-local runtime defaults
+
+`ateam dispatch` can select a machine-local runtime default from
+`$AGENT_TEAMS_HOME/config.toml` (normally `~/.agent-teams/config.toml`). This
+file is the single source of truth for agent-teams machine configuration —
+nothing else (a plugin option, an environment variable) also feeds these
+settings. The initial recommended file is:
+
+```toml
+work_runtime = "codex"
+review_runtime = "claude"
+```
+
+An exact `--topic reviews` dispatch selects `review_runtime`. Every other
+dispatch selects `work_runtime`. Resolution is an explicit concrete
+`--runtime`, then `ATEAM_RUNTIME`, then the selected config key, then the
+legacy `claude` fallback. `--runtime auto` skips only the explicit tier. A
+valid flag or environment value does not read the config for runtime selection.
+
+The file is strict, flat TOML with five optional keys. `work_runtime` and
+`review_runtime` must each be exactly lowercase `claude` or `codex` when
+present. A missing file or missing selected runtime key falls through. When
+agent-teams reads this config, an invalid file stops the operation before a
+side effect. Invalid files include unreadable files, malformed TOML, tables,
+unknown keys, empty values, and invalid runtime values. The selected concrete
+runtime is stored on the new initiative. This config never changes the runtime
+of an existing initiative. Codex PR-review execution is not added by this
+config.
+
+`auto_compact_window` is an optional positive integer token count, applied to
+the background sessions agent-teams launches (DRI and steward) on both
+runtimes. For example:
+
+```toml
+auto_compact_window = 300000
+```
+
+There is no default, and `ateam setup codex` does not add the key. When it is
+absent, agent-teams sends no compaction override on either runtime: Claude
+Code picks the window from the model (today's behavior, unchanged), and Codex
+gets no `model_auto_compact_token_limit`. A present value must be positive and
+fit a signed 64-bit integer; an invalid value stops the attempted launch or
+resume before a side effect, on either runtime. On Claude, a configured value
+can only lower the window — it can never raise it above the model's real
+context window. Note this sets the *window*, not the point where compaction
+actually fires: compaction kicks in roughly 33,000 tokens below it, so
+`300000` means compaction fires near `267000`.
+
+For Codex, the resolved value applies to fresh dispatches, explicit resumes
+and cold reloads, and managed app-server mail delivery. Agent-teams supplies
+it on thread start and resume. A change does not retrofit a thread already
+loaded by the managed app server.
+Codex child role agents inherit the root thread config natively. The five role
+TOMLs do not copy the key. This key never edits the user-owned Codex config,
+changes ordinary Codex sessions, or sets the native Codex compaction scope.
+
+`use_advisors` (boolean, default `false`) and `claude_dri_model` (string,
+default `claude-opus-4-8`) together pick which model a background DRI runs
+on. Both are Claude-only: the Codex DRI's model comes from the user's own
+Codex config, not from this file. `claude_dri_model` is the "strong model"
+slot — with `use_advisors` left `false` (the default), it's the DRI session's
+own model; with `use_advisors` set `true`, the DRI session worker runs on
+`sonnet` instead, with `claude_dri_model` attached as its advisor
+(`--model sonnet --advisor <claude_dri_model>`).
+
 Open the native session view with `ateam runtime open claude`; attach to answer gates (`claude attach <id>` — the short id from that listing, not the session name, which does not resolve), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
 
 ## Eval suite
@@ -92,8 +155,8 @@ Start or act as it with `/agent-teams:steward`, or manage it directly with `atea
 
 Sessions message each other through a durable, Dolt-synced mailbox — a message survives a crash and reaches a recipient on another machine after `bd dolt pull`.
 
-- **Send** — `ateam mail send <recipient-id> --file <body>` writes the message and rings a doorbell that wakes the recipient if it has gone idle. The recipient is an **initiative id**, or the reserved handle `steward`. If no live session exists, it escalates to `ateam resume` — except `steward`, which has no resume path and just queues the mail.
-- **Receive** — `ateam mail inbox` consumes unread messages for the current initiative; you do run it by hand. A hook peeks (`ateam mail inbox --peek`) on each prompt and at session start and, if mail is waiting, tells you to run it — the hook only signals, it never drains.
+- **Send** — `ateam mail send <recipient-id> --file <body>` writes the message and rings a doorbell. The recipient is an **initiative id**, or the reserved handle `steward`. For an active Codex thread, managed app-server delivery is the authoritative mail wake path. If a Codex initiative has no bound session thread, delivery cannot wake it and the mail remains queued for startup/resume catch-up. For Claude, no live session escalates to `ateam resume` — except `steward`, which has no resume path and just queues the mail.
+- **Receive** — `ateam mail inbox` consumes unread messages for the current initiative; you do run it by hand. Codex `SessionStart` binds the session and peeks only during startup or resume to catch up queued mail; it only signals, never drains. Claude retains its existing hook behavior: it peeks on each prompt and at session start and, if mail is waiting, tells you to run `ateam mail inbox`.
 - **List / close / purge** — `ateam mail list` is a read-only table of every initiative's recent mail, including closed (does not mark anything read); `ateam mail close <id>` closes a message bead; `ateam mail purge` deletes old closed ones.
 - Bare `send` / `inbox` / `debug-mail` still work as deprecated aliases — older role learnings and installed hooks still call them. Each prints a deprecation note to stderr and delegates to the `ateam mail` equivalent.
 
@@ -103,13 +166,13 @@ A local, single-user web UI for watching every initiative on the machine — an 
 
 ## Worktree setup hooks
 
-When an agent creates a fresh track worktree, gitignored files (env files, creds, local config) are not present. Most work doesn't need them. When a worktree does need live env (running a dev server, creds-dependent validation), run:
+Manual usage and pre-existing or resumed worktrees remain on-demand. By contrast, every fresh agent-teams-managed primary or delegated worktree gets a mandatory automatic setup attempt before its agent runs Node tooling; a failed attempt is reported and does not block the later managed lifecycle. Gitignored files (env files, creds, local config) are not present in a fresh worktree:
 
 ```bash
 ateam worktree-setup [abs-worktree-path]   # defaults to cwd
 ```
 
-The hook is registered once per repo by dropping a file at `$AGENT_TEAMS_HOME/worktree-hooks/<repo-slug>` whose contents are the absolute path to the setup script; the reference implementation is `scripts/midgard-worktree-setup.sh`. A missing or failing hook is non-fatal.
+The hook is registered once per repo by dropping a file at `$AGENT_TEAMS_HOME/worktree-hooks/<repo-slug>` whose contents are the absolute path to the setup script; the reference implementation is `scripts/midgard-worktree-setup.sh`. No registered hook is an exit-0 no-op. A configured hook that is missing or fails is loud and makes standalone `ateam worktree-setup` exit 1; managed callers report that failure and continue their lifecycle.
 
 ## Development / Contributing
 

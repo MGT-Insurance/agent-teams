@@ -92,7 +92,7 @@ func (c *setupCodexKong) Run(ctx *cli.Context) error {
 		}
 		fmt.Fprintf(ctx.Stdout, "installed: %s\n", target)
 	}
-	fmt.Fprintln(ctx.Stdout, "in the Codex CLI, open /hooks and trust the agent-teams-codex lifecycle hooks")
+	fmt.Fprintln(ctx.Stdout, "in the Codex CLI, open /hooks and trust the agent-teams-codex SessionStart hook")
 	fmt.Fprintln(ctx.Stdout, "start a new Codex session before testing the installed agent types")
 	return nil
 }

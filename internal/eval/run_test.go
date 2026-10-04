@@ -53,6 +53,7 @@ func TestDispatchArgs_WithAdvisor(t *testing.T) {
 	cfg := ConfigFingerprint{DRIModel: "sonnet", Advisor: "opus"}
 	args := dispatchArgs("/tmp/repo", task, cfg, "task1-abc123-1700000000")
 
+	assertContainsPair(t, args, "--runtime", "claude")
 	assertContainsPair(t, args, "--repo", "/tmp/repo")
 	assertContainsPair(t, args, "--base-branch", "v1-buggy")
 	assertContainsPair(t, args, "--problem", "fix it")
@@ -72,6 +73,7 @@ func TestDispatchArgs_NoAdvisorOmitsFlag(t *testing.T) {
 			t.Fatalf("did not expect --advisor in argv when cfg.Advisor is empty, got %v at index %d", args, i)
 		}
 	}
+	assertContainsPair(t, args, "--runtime", "claude")
 	assertContainsPair(t, args, "--slug", "task1-def456-1700000001")
 	assertContainsPair(t, args, "--model", "opus")
 	assertContainsPair(t, args, "--launch-prompt", "/dri {id}")

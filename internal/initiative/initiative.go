@@ -437,6 +437,33 @@ func extractPRURLFallback(text string) string {
 	return PRURLRE.FindString(text)
 }
 
+// ReviewPRURL reports whether iss is REVIEW-SHAPED: its Description carries
+// a "pr-url: <url>" field line (frozen matching rule, item 1) — the
+// unmodeled canonical key the review-pr skill writes (via `ateam dispatch`/
+// route.go, not Go's [New]) for the single PR a review initiative is
+// reviewing (package doc comment, frozen item 3). Presence of the line means
+// iss is review-shaped; the returned string is that PR's URL.
+//
+// ReviewPRURL scans Description ONLY, via the same [all] accumulation every
+// other reader in this package builds on — never Notes. This is
+// deliberately NOT [ResolvedPRs]: ResolvedPRs unions the "pr" rail with a
+// Notes-then-Description free-text fallback (frozen precedence,
+// docs/multi-pr-contract.md), and a DRI initiative carries its PR in Notes
+// (the dri skill's "pr:" line), never a "pr-url:" line in Description.
+// Calling ResolvedPRs here would false-positive on every DRI initiative and
+// conflate two distinct initiative kinds under one predicate — pr-url in
+// Description is exactly what distinguishes a review-shaped initiative from
+// a DRI one (agent-teams-huq7.1 S1, verified against dispatch.go:539-541 and
+// route.go:272-274, both of which write pr-url as a Description line, and
+// against the live at-2rnv/at-7xo2 instances).
+func ReviewPRURL(iss bd.Issue) (string, bool) {
+	v := first(all(iss), "pr-url")
+	if v == "" {
+		return "", false
+	}
+	return v, true
+}
+
 // ResolvedPRs returns iss's PR URLs per the frozen, PERMANENT read
 // precedence (docs/multi-pr-contract.md, "read precedence"): the "pr" rail
 // (Of(iss).PRs) wins WHOLESALE when non-empty; only when the rail is

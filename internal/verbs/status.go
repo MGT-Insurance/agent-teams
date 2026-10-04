@@ -24,7 +24,9 @@ package verbs
 // per docs/multi-pr-contract.md §6 — see computeExecutionStatus's own doc
 // comment for how a multi-PR disagreement rolls up into this one string):
 //  1. NEEDS-DECISION  — labels contain "human" AND a "gate:question" of ANY
-//                       PR (bare or per-PR suffixed)
+//                       PR (bare or per-PR suffixed) OR a bare
+//                       "gate:live-test-review" (pre-PR, never per-PR
+//                       suffixed)
 //  2. IN-PROGRESS     — the joined session is ACTIVELY WORKING
 //                       (overrides any review gate)
 //  3. labels contain "human" AND a "gate:review" of ANY PR AND NOT actively
@@ -111,7 +113,9 @@ type askBlockJSON struct {
 // its labels, the current live sessions, and its worktree path.
 //
 // Evaluation order (first match wins):
-//  1. NEEDS-DECISION  — "human" + a "gate:question" of ANY PR present in labels
+//  1. NEEDS-DECISION  — "human" + a "gate:question" of ANY PR present in
+//     labels, OR "human" + a bare "gate:live-test-review" (raised pre-PR,
+//     so it never carries a per-PR suffix)
 //  2. IN-PROGRESS     — session actively working (overrides gate:review)
 //  3. "human" + a "gate:review" of ANY PR + NOT actively working; see the
 //     sub-cascade below
@@ -140,10 +144,11 @@ type askBlockJSON struct {
 func computeExecutionStatus(labels []string, sessions []agentSession, worktree string) string {
 	hasHuman := hasLabel(labels, "human")
 	hasQuestion := hasGateKind(labels, "gate:question")
+	hasLiveTestReview := hasGateKind(labels, "gate:live-test-review")
 	hasReview := hasGateKind(labels, "gate:review")
 
 	// Rule 1: NEEDS-DECISION
-	if hasHuman && hasQuestion {
+	if hasHuman && (hasQuestion || hasLiveTestReview) {
 		return "NEEDS-DECISION"
 	}
 

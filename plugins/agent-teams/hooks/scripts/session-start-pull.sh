@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # SessionStart hook for agent-teams.
 # Best-effort remote pull so DRIs read fresh learnings+initiatives, not stale local Dolt.
-# Pull must go through ateam/bd: bd's flock on .beads/embeddeddolt/.lock serializes
-# parallel subagent pulls; shelling 'dolt' directly would bypass it and hit the manifest race.
+# Pull must go through ateam/bd: the dolt sql-server serializes DOLT_PULL
+# calls behind its own lock; `ateam pull` probes for one already in flight and
+# skips (using local state) rather than queuing behind it, and bounds its own
+# pull with a timeout — so this hook never waits on a hung transport.
 # Never fails — a pull failure degrades to local read, which is always correct.
 set -euo pipefail
 

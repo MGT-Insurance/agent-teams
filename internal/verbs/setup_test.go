@@ -19,17 +19,61 @@ func TestSetupCodexInstallsDefinitionsAndDetectsDrift(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("first setup: %v", err)
 	}
-	for _, role := range []string{"planner", "implementer", "tester", "reviewer"} {
+	distinctiveRules := map[string]string{
+		"planner":      "Decompose in concentric circles",
+		"implementer":  "Never guess on design",
+		"reviewer":     "After-the-fact identifiability",
+		"tester":       "Only the DRI starts a dev server",
+		"investigator": "vs PLANNER",
+	}
+	expectedModels := map[string]string{
+		"planner":      "gpt-5.6-sol",
+		"implementer":  "gpt-5.6-terra",
+		"investigator": "gpt-5.6-terra",
+		"reviewer":     "gpt-5.6-terra",
+		"tester":       "gpt-5.6-terra",
+	}
+	for _, role := range []string{"planner", "implementer", "tester", "reviewer", "investigator"} {
 		path := filepath.Join(codexHome, "agents", "agent-teams-"+role+".toml")
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", role, err)
 		}
-		if !strings.Contains(string(body), `name = "agent-teams-`+role+`"`) || !strings.Contains(string(body), "ateam learnings "+role) {
+		if !strings.Contains(string(body), `name = "agent-teams-`+role+`"`) ||
+			!strings.Contains(string(body), "ateam learnings "+role) ||
+			!strings.Contains(string(body), distinctiveRules[role]) {
 			t.Fatalf("invalid %s definition: %s", role, body)
 		}
+
+		modelAssignments := 0
+		reasoningEffortAssignments := 0
+		for _, line := range strings.Split(string(body), "\n") {
+			key, _, hasAssignment := strings.Cut(line, "=")
+			if !hasAssignment {
+				continue
+			}
+			switch strings.TrimSpace(key) {
+			case "model":
+				modelAssignments++
+				if got, want := strings.TrimSpace(line), `model = "`+expectedModels[role]+`"`; got != want {
+					t.Errorf("%s model assignment = %q, want %q", role, got, want)
+				}
+			case "model_reasoning_effort":
+				reasoningEffortAssignments++
+				if got, want := strings.TrimSpace(line), `model_reasoning_effort = "high"`; got != want {
+					t.Errorf("%s reasoning effort assignment = %q, want %q", role, got, want)
+				}
+			}
+		}
+		if modelAssignments != 1 {
+			t.Errorf("%s model assignments = %d, want exactly 1", role, modelAssignments)
+		}
+		if reasoningEffortAssignments != 1 {
+			t.Errorf("%s reasoning effort assignments = %d, want exactly 1", role, reasoningEffortAssignments)
+		}
 	}
-	if !strings.Contains(stdout.String(), "start a new Codex session") {
+	if !strings.Contains(stdout.String(), "trust the agent-teams-codex SessionStart hook") ||
+		!strings.Contains(stdout.String(), "start a new Codex session") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 

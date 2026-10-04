@@ -650,6 +650,32 @@ func TestHumanListQuestionGate(t *testing.T) {
 	}
 }
 
+// TestHumanListLiveTestReviewGate covers agent-teams-n0jt.5.3: a bare
+// "gate:live-test-review" label (raised pre-PR-open, agent-teams-n0jt.1) must
+// render through the legacy no-resolved-PR branch with kind LIVE-TEST-REVIEW,
+// the same as the REVIEW/QUESTION gates above.
+func TestHumanListLiveTestReviewGate(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-ltr1", Title: "Live-verify the new endpoint", Labels: []string{"human", "gate:live-test-review"}, Notes: "Tester found a regression, needs your call"},
+	}
+	ctx, out := newHumanListCtx(t, issues)
+
+	if err := runQ(t, "human-list", ctx); err != nil {
+		t.Fatalf("human-list.Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "[LIVE-TEST-REVIEW]") {
+		t.Errorf("expected [LIVE-TEST-REVIEW] in output, got: %q", got)
+	}
+	if !strings.Contains(got, "at-ltr1") {
+		t.Errorf("expected id at-ltr1 in output, got: %q", got)
+	}
+	if !strings.Contains(got, "Tester found a regression, needs your call") {
+		t.Errorf("expected note text in output, got: %q", got)
+	}
+}
+
 // TestHumanListOmitsExternalReview confirms a handed-off initiative
 // (external-review label present, agent-teams-p9dm.23) is skipped by
 // human-list even though it still carries human + gate:review — it is no

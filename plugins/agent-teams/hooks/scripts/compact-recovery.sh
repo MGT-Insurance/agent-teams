@@ -15,6 +15,16 @@ HOOK_STDIN=$(cat 2>/dev/null || true)
 HOOK_SESSION_ID=$(printf '%s' "$HOOK_STDIN" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 export HOOK_SESSION_ID
 
+# Extra arg for `ateam resolve-initiative`: pass the session id when known, so
+# a launch-cwd-mismatched session (cwd doesn't match its registered worktree)
+# still resolves via its durable session tie instead of going deaf
+# (agent-teams-y814.8, at-1k234). "unknown" is the stdin-parse-failure
+# sentinel above, not a real session id — omit it too, same as an empty id.
+session_id_flag=""
+if [ -n "$HOOK_SESSION_ID" ] && [ "$HOOK_SESSION_ID" != "unknown" ]; then
+  session_id_flag="$HOOK_SESSION_ID"
+fi
+
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$(dirname "$0")/lib/hook-debug-log.sh"
 
@@ -30,7 +40,9 @@ command -v jq >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 # this script must not re-derive it. Ancestor semantics also fix the bug the
 # old whole-line-equality jq had: recovery silently did nothing when the
 # compacted session's cwd was any subdirectory of the registered worktree.
-match_id=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
+# --session-id (session_id_flag, computed above) is a durable fallback beside
+# it, not a replacement.
+match_id=$("$ATEAM" resolve-initiative "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
 if [ -z "$match_id" ]; then
   HOOK_EXIT_REASON="no-open-match"
   exit 0
@@ -45,10 +57,12 @@ echo "## agent-teams: initiative context (post-compaction recovery)"
 "$ATEAM" show "$match_id" 2>/dev/null || true
 cat <<'EOF'
 
-This session is the DRI for the initiative above. The /dri skill governs it —
-re-read the dri skill if its guidance is no longer in context. Recover working
-state from: this initiative's notes, `bd human list` in the global workspace
-(parked gates), and the project repo's beads (plan, discovery beads).
+This session is the DRI for the initiative above, governed by the /dri skill.
+Compaction may have DROPPED that skill from your context. Before any other
+action, re-invoke it now: call the Skill tool with skill "agent-teams:dri"
+(argument: this initiative's id). Then recover working state from this
+initiative's notes, `ateam human-list` (parked gates), and the project repo's
+beads (plan and discovery beads).
 EOF
 
 HOOK_EXIT_REASON="ok"

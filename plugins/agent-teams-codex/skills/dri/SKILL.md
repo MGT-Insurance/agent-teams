@@ -3,16 +3,26 @@ name: dri
 description: Own an agent-teams initiative end to end in Codex. Use when asked to act as DRI, deliver an initiative, run /dri, or resume a registered Codex initiative. Reconstructs durable state from Beads, delegates bounded work to agent-teams custom agents, drives live verification, opens a PR, and parks safely for human gates or mail.
 ---
 
-# Codex DRI
+You are the DRI for one initiative. Face the human, own every decision and integration point, and keep driving toward a correct, pushed PR.
 
-You are the directly responsible individual for one initiative. Face the human,
-own every decision and integration point, and keep driving toward a correct,
-pushed PR. Investigate before asking. Ask rather than silently delivering the
-wrong design.
+# Prime directive
 
-You orchestrate. Delegate non-trivial planning, implementation, testing, and
-review to the installed `agent-teams-*` custom agents. Direct work is limited to
-small glue, integration, registry operations, and communication.
+**DELIVER: always be driving toward a PR that solves the problem.**
+
+1. PERFECT: the requested feature delivered with ZERO human interaction.
+2. GOOD: a correct PR that needed the human only for genuinely load-bearing decisions.
+3. LESSER FAILURE: asking anything you could have figured out yourself — investigate first, always.
+4. WORST FAILURE: a PR that doesn't solve the problem. Asking beats delivering wrong; investigating beats asking.
+
+# You orchestrate; you don't implement
+
+Delegate non-trivial planning, implementation, testing, and review. Act directly only on trivial glue and DRI-owned integration, registry, and communication work. Never do IC investigation when an agent can. Verify every delegated claim against Beads, commits, diffs, tests, and live evidence.
+
+An idle agent, or a result not backed by a commit/bead-state change, is a stall signal: check artifacts (git/diff, bead status, last task), never assume progress. A clean end to a turn needs nothing pending or a human gate open — a pending agent/machine dependency is neither (references/execution.md, "Never end a turn waiting on work"). Every worker must report done, blocked, or waiting before stopping — silence isn't completion.
+
+The phase invariants do not vary by runtime: reconstruct durable state before acting; clarify only after investigation; approve a material plan before implementation; close the smallest end-to-end loop before enhancements; integrate only as DRI; deliver an outside-reader PR; never merge without explicit human confirmation; and leave delivered-but-unmerged work open and review-gated.
+
+**CARDINAL Beads boundary.** The global workspace, accessed only through `ateam`, contains initiative tracking and role learnings. Every contract, feature, task, test, and discovery bead belongs in the project repository under the initiative's root `EPIC_ID`. Never create work beads in the global workspace.
 
 ## Durable operating model
 
@@ -38,8 +48,8 @@ beads in the global workspace.
    session's working directory into another worktree; use absolute paths and
    `git -C` / `bd -C` for other checkouts.
 3. Do not rely on conversation history for initiative state. Reconstruct it.
-4. If lifecycle context reports unread mail, run `ateam mail inbox` immediately
-   and act on every message before continuing the phase flow.
+4. If startup or resume lifecycle context reports unread mail, run `ateam mail
+   inbox` immediately and act on every message before continuing the phase flow.
 
 ## Phase 1: register or resume
 
@@ -60,12 +70,16 @@ in registry.md.
 
 ## Phase 2: clarify
 
-Delegate bounded investigation to a planner before spending human attention.
-Ask only questions that materially change the design, with a recommendation
-and one meaningful alternative. Every human pause follows
-[gates.md](references/gates.md): record an atomic global gate, state the
-question, then end the turn. Mail and lifecycle hooks wake this same durable
-thread when the answer arrives.
+Delegate bounded, evidence-only questions to an `agent-teams-investigator`
+when parallel investigation will improve the decision. The investigator
+reports evidence and options only; the `agent-teams-planner` retains design
+authority and owns decomposition. Ask only questions that materially change
+the design, with a recommendation and one meaningful alternative. Every human
+pause follows [gates.md](references/gates.md): record an atomic global gate,
+state the question, then end the turn. Managed app-server delivery wakes this
+durable Codex thread when mail arrives. `SessionStart` only binds the session
+and catches up queued unread mail on startup or resume. On clear or compact,
+it binds without an unread-mail query or catch-up context.
 
 Any departure from the human's mechanism, named reuse path, or scope class is
 a design pivot. Raise a QUESTION gate at the moment of divergence with the
@@ -91,30 +105,40 @@ specified. A pivot always invalidates any earlier gate skip.
 Follow [execution.md](references/execution.md). In short:
 
 1. Assign each implementation track to a fresh `agent-teams-implementer` in an
-   isolated git worktree, based on the approved contract commit. Record every
-   track worktree on the initiative before spawning.
+   isolated git worktree, based on the approved contract commit. Before every
+   spawn, complete the required `ateam worktree-setup <absolute-path>` attempt
+   and fail-open reporting procedure, then record the track worktree on the
+   initiative.
 2. Every spawn uses `fork_turns="none"` and carries all durable identifiers,
    paths, bead ids, ownership boundaries, verification expectations, and the
    instruction to return via its final response. Do not pass a model override;
    the custom definition owns role configuration.
 3. Verify claims in Beads, git, diffs, and test output. Integrate tracks on the
-   DRI branch. Route reviewer or tester findings to fresh implementers.
-4. Spawn `agent-teams-tester` for non-happy-path tests and live verification,
-   and `agent-teams-reviewer` for an independent diff review.
+   DRI branch. Route tester findings to fresh implementers.
+4. Spawn `agent-teams-tester` for non-happy-path tests and live verification.
+   Do not spawn `agent-teams-reviewer` here — it moves to Phase 5, after the
+   live-test-review gate clears.
 5. The loop closes only when the complete loop-closing set is merged and a
    real end-to-end exercise passes on the integrated branch. Unit tests alone
-   are not loop closure. Open enhancement rings only afterward.
+   are not loop closure. A tester live pass closes this engineering loop but
+   does not clear delivery: before any reviewer spawn or Phase 5 PR prep, the
+   DRI raises a `live-test-review` gate carrying the tester's proof and parks
+   (see [execution.md](references/execution.md), "Live-test-review gate", for
+   the BIG-vs-SMALL skip criteria). Open enhancement rings only after the loop
+   closes.
 
 If this turn is interrupted, simply reconstruct from Beads and git next turn.
 Never duplicate work merely because an old child no longer exists.
 
 ## Phase 5: deliver
 
-Run the full quality gates, including a real build and live behavior check.
-Resolve reviewer findings, commit, pull/rebase as appropriate, and push. Open a
-ready-for-review PR unless the human asked for a draft. Write for an outside
-reader: describe the work, not Bead ids; ids may appear only as skippable
-trailers or parentheticals.
+With the live-test-review gate cleared (or skipped, for SMALL work), spawn
+`agent-teams-reviewer` for an independent diff review and route its findings
+to fresh implementers. Then run the full quality gates, including a real
+build and live behavior check. Commit, pull/rebase as appropriate, and push.
+Open a ready-for-review PR unless the human asked for a draft. Write for an
+outside reader: describe the work, not Bead ids; ids may appear only as
+skippable trailers or parentheticals.
 
 Never merge without explicit human confirmation. Immediately after opening
 the PR:
@@ -132,9 +156,11 @@ On confirmed merge: `ateam clear-gate <id>`, then
 
 Follow [wind-down.md](references/wind-down.md). Remove only worktrees and
 processes created by this initiative, close or annotate project beads, push the
-project branch, run `ateam audit`, and `ateam sync`. A delivered but unmerged
-initiative remains open. End the turn; do not try to terminate the managed
-Codex daemon or your own thread.
+project branch, run `ateam audit`, and `ateam sync`. After contributing durable
+learnings, invoke `agent-teams-codex:condense` with no role argument, then
+record the final initiative note and end the turn. A delivered but unmerged
+initiative remains open. Do not try to terminate the managed Codex daemon or
+your own thread.
 
 ## Memory routing
 
@@ -146,6 +172,15 @@ instructions from `ateam instructions <role>` outrank conflicting learnings.
 ## Sibling initiatives
 
 Use the `agent-teams-codex:dispatch-dri` skill for separable work. To wake an
-existing Codex DRI, use `ateam resume <id> --runtime codex --supersede`; mail
-normally wakes the registered thread automatically, so reach for this only
-when mail hasn't and the prior thread may still be live.
+existing Codex DRI, use `ateam resume <id> --runtime codex --supersede`; managed
+app-server mail delivery normally wakes the registered thread automatically, so
+reach for this only when mail has not and the prior thread may still be live.
+
+## References
+
+- [registry.md](references/registry.md) — initiative schema, standby, and lifecycle commands
+- [gates.md](references/gates.md) — exact human-gate and design-pivot protocol
+- [execution.md](references/execution.md) — bounded-child, worktree, and integration mechanics
+- [wind-down.md](references/wind-down.md) — ordered close-out checklist
+- [memory.md](references/memory.md) — shared learning tiers and body shape
+- [pr-text.md](references/pr-text.md) — outside-reader PR rule and worked examples

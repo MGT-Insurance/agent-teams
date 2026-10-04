@@ -87,6 +87,18 @@ func TestClassifyInitiative(t *testing.T) {
 			wantCwd:   true,
 		},
 		{
+			// agent-teams-n0jt.5.1: a parked live-test-review gate is a real
+			// gate like gate:question/gate:review -- it must classify
+			// AWAITING-HUMAN, not HUNG, while the human reviews live-test
+			// proof.
+			name:      "waiting + human + gate:live-test-review => AWAITING-HUMAN",
+			labels:    []string{"human", "gate:live-test-review"},
+			sessions:  []agentSession{{CWD: wt, Status: "waiting", PID: &pid}},
+			dirExists: dirExists,
+			wantClass: hungClassAwaitingHuman,
+			wantCwd:   true,
+		},
+		{
 			// agent-teams-ssib.22: a per-PR-gated initiative's label is
 			// "gate:review:<pr-url>", not the bare "gate:review" hasLabel
 			// alone matches. Before this fix, this case misclassified DEAD
@@ -184,6 +196,32 @@ func TestClassifyInitiative(t *testing.T) {
 			}
 			if gotCwd != tc.wantCwd {
 				t.Errorf("cwdPresent = %v, want %v", gotCwd, tc.wantCwd)
+			}
+		})
+	}
+}
+
+// ── hasReviewPostedNote (agent-teams-huq7.1 S2) ──────────────────────────────
+
+func TestHasReviewPostedNote(t *testing.T) {
+	tests := []struct {
+		name  string
+		notes string
+		want  bool
+	}{
+		{"review-posted line present", "review-posted: PR #5840 — approved\n", true},
+		{"comment-replies line present", "comment-replies: PR #4773 — 2 thread(s) answered\n", true},
+		{"both markers, either is sufficient", "review-posted: one\ncomment-replies: two\n", true},
+		{"review-timeout must NOT count", "review-timeout: no diff after 10 attempts\n", false},
+		{"empty notes", "", false},
+		{"unrelated prose only", "delivered, ready for review.\n", false},
+		{"marker not at line start does not count", "note: see review-posted: below\n", false},
+		{"marker several lines down the append-open tail still matches", "some earlier note.\nanother note.\nreview-posted: PR #1 — approved\n", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasReviewPostedNote(tc.notes); got != tc.want {
+				t.Errorf("hasReviewPostedNote(%q) = %v, want %v", tc.notes, got, tc.want)
 			}
 		})
 	}
@@ -498,6 +536,54 @@ func TestScanHung_Dead_PidNilAndCwdMissing(t *testing.T) {
 // through its full lifecycle: set on first STUCK observation, elapsed grows
 // (and hung flips true) as an injected clock advances, then cleared the
 // instant the session stops being STUCK (busy in this test).
+// ── scanHung: ReviewPRURL/Notes wiring (agent-teams-huq7.1 S1/S5) ────────────
+
+// TestScanHung_PopulatesReviewPRURLAndNotes proves scanHung threads through
+// both S1's review-shaped predicate and the raw Notes text a consumer (the
+// hung tick's S2/S3 gate) needs, WITHOUT changing classification at all —
+// S5 is explicit that this is an additive field, no classification change.
+func TestScanHung_PopulatesReviewPRURLAndNotes(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{
+		ID:          "at-1",
+		Title:       "review initiative",
+		Description: "worktree: " + wt + "\npr-url: https://github.com/acme/widget/pull/12\n",
+		Notes:       "review-posted: PR #12 — approved\n",
+		Status:      "open",
+	}}
+	ctx := makeHungCtx(t, issues)
+
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return nil, nil }, fixedNow(time.Now()), true)
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if want := "https://github.com/acme/widget/pull/12"; out[0].ReviewPRURL != want {
+		t.Errorf("ReviewPRURL = %q, want %q", out[0].ReviewPRURL, want)
+	}
+	if out[0].Notes != issues[0].Notes {
+		t.Errorf("Notes = %q, want %q", out[0].Notes, issues[0].Notes)
+	}
+	if out[0].Classification != hungClassDead {
+		t.Fatalf("classification = %q, want DEAD (no live session) — ReviewPRURL/Notes must not change classification", out[0].Classification)
+	}
+}
+
+// TestScanHung_ReviewPRURLEmptyWhenNotReviewShaped proves a plain
+// (non-review) initiative's ReviewPRURL stays empty.
+func TestScanHung_ReviewPRURLEmptyWhenNotReviewShaped(t *testing.T) {
+	wt := t.TempDir()
+	issues := []bd.Issue{{ID: "at-1", Title: "plain", Description: "worktree: " + wt, Status: "open"}}
+	ctx := makeHungCtx(t, issues)
+
+	out, err := scanHung(ctx, func() ([]agentSession, error) { return nil, nil }, fixedNow(time.Now()), true)
+	if err != nil {
+		t.Fatalf("scanHung returned error: %v", err)
+	}
+	if out[0].ReviewPRURL != "" {
+		t.Errorf("ReviewPRURL = %q, want empty", out[0].ReviewPRURL)
+	}
+}
+
 func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	wt := t.TempDir()
 	issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
@@ -597,6 +683,113 @@ func TestScanHung_StuckAnchorLifecycle(t *testing.T) {
 	if out[0].Hung {
 		t.Error("freshly re-STUCK initiative should not be hung immediately")
 	}
+}
+
+// ── agent-teams-bq9y.2: machine-sleep discount disambiguation ────────────────
+//
+// Both tests below drive the SAME raw wall-clock span (StuckSince/DeadSince
+// to a point comfortably past the threshold) through two scenarios: the
+// machine slept through nearly all of it (must NOT trip — the discount is
+// the whole point of bq9y.2), versus the same span with no sleep recorded
+// (must STILL trip — proving the discount doesn't mask a genuine stall).
+// TestMain (machine_sleep_test.go) defaults machineSleepLog to "no sleep",
+// so the second scenario needs no override at all.
+
+// TestScanHung_MachineSleepDiscountsStuckElapsed covers the STUCK clock.
+func TestScanHung_MachineSleepDiscountsStuckElapsed(t *testing.T) {
+	wt := t.TempDir()
+	pid := 1
+	idleSessions := []agentSession{{CWD: wt, Status: "idle", PID: &pid}}
+	agentsFunc := func() ([]agentSession, error) { return idleSessions, nil }
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(hungStuckThreshold + 5*time.Minute) // raw elapsed: over threshold
+
+	t.Run("sleep covering the window suppresses the trip", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		// Asleep for all but a 4-minute awake remainder — real awake elapsed
+		// (4m) comes out well under threshold despite raw elapsed being over.
+		restore := setMachineSleepLog(t, fakeSleepIntervalLog(t0.Add(time.Minute), t1.Add(-4*time.Minute)))
+		defer restore()
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if out[0].Hung {
+			t.Errorf("expected hung=false: nearly the entire raw elapsed window was machine sleep, want it discounted (stuck_elapsed_seconds=%d)", out[0].StuckElapsedSeconds)
+		}
+	})
+
+	t.Run("no sleep in the window: the genuine stall still trips", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if !out[0].Hung {
+			t.Error("expected hung=true: no sleep occurred, the stall is genuine")
+		}
+	})
+}
+
+// TestScanHung_MachineSleepDiscountsDeadElapsed is the STUCK test's
+// counterpart for D4 (DEAD-with-worktree-present): same mechanics
+// (elapsed := now.Sub(DeadSince) - sleptBetween(...)), a matched session
+// with PID nil (classifyInitiative: cwdPresent && zero live sessions ->
+// DEAD).
+func TestScanHung_MachineSleepDiscountsDeadElapsed(t *testing.T) {
+	wt := t.TempDir()
+	sessions := []agentSession{{CWD: wt, Status: "idle"}} // PID nil -> not live
+	agentsFunc := func() ([]agentSession, error) { return sessions, nil }
+
+	t0 := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(hungDeadWorktreeThreshold + 5*time.Minute)
+
+	t.Run("sleep covering the window suppresses the trip", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		restore := setMachineSleepLog(t, fakeSleepIntervalLog(t0.Add(time.Minute), t1.Add(-4*time.Minute)))
+		defer restore()
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if out[0].DeadHung {
+			t.Errorf("expected dead_hung=false: nearly the entire raw elapsed window was machine sleep, want it discounted (dead_elapsed_seconds=%d)", out[0].DeadElapsedSeconds)
+		}
+	})
+
+	t.Run("no sleep in the window: the genuine stall still trips", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt, Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if !out[0].DeadHung {
+			t.Error("expected dead_hung=true: no sleep occurred, the stall is genuine")
+		}
+	})
 }
 
 // ── saveHungState atomicity ──────────────────────────────────────────────────

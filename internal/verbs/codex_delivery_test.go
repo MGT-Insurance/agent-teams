@@ -212,7 +212,7 @@ func TestInboxKongCodexConsumesTwoRapidMessagesInOneWake(t *testing.T) {
 			return json.Unmarshal(mustMarshal(issues), dst)
 		},
 		runFn: func(args ...string) (string, error) {
-			if len(args) == 2 && args[0] == "close" {
+			if len(args) == 3 && args[0] == "close" && args[2] == "--force" {
 				closed[args[1]] = true
 			}
 			return "", nil

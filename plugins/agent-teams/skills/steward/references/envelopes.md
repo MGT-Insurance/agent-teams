@@ -14,6 +14,14 @@ The relay's last-resort catch-all fires on three failure modes: 2+ open initiati
 
 **Multi-machine sync-lag caveat:** each machine syncs beads/topic-refs on its own schedule. A reply belonging to another machine's topic, or to an initiative this machine doesn't own, can arrive here simply because the sync that would have routed it correctly hasn't landed yet. That's why the dispatch rule says stay silent or minimal in that case — reacting confidently on stale state produces confusing double-replies once the sync catches up.
 
+## steward-gate — kind:live-test-review
+
+Proof-forwarding, not the question/review decision-escalation flow the rest of this envelope's handler exists for. A tester's live verification already produced concrete evidence — a screenshot, a captured payload — so folding it into a digested recommendation would throw away exactly what the human asked to see. The handler skips enrichment and the ledger entirely and instead fans the attachment list out through the audited `ateam notify --image`/`--document` channel, then sends the short text body last.
+
+Each attachment's caption is its own basename, not the proof body repeated: `--file` is required on every `ateam notify` call, and reusing the same summary as every attachment's caption would show the human the same text N+1 times — noise against the "judge quickly" goal. Basename is the only per-attachment text the envelope actually carries (kind + path, no per-attachment description), so it's the honest maximum without inventing content.
+
+No-steward tolerance falls out of the existing mechanism for free: `notifyToSteward` no-ops when no steward marker is present, so a live-test-review gate WAITS exactly like a question/review gate does — no separate detection or fallback needed here.
+
 ## steward-reply — why the answer message is the unblock
 
 The parked DRI is waiting on the answer message itself; that mail is what it resumes on. Clearing the gate is a separate step the DRI performs for itself once it has processed the answer, which is why the Steward never calls `ateam clear-gate` — doing so would clear a gate the DRI has not yet acted on.

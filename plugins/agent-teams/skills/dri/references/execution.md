@@ -1,3 +1,68 @@
+# Shared execution contract
+
+The DRI owns integration. Give every delegated track the initiative id, project `EPIC_ID`, exact bead ids, absolute worktree, file-disjoint ownership, role boundary, stop conditions, and required verification. Work beads use `--parent <EPIC_ID>`. Role configuration owns the model; do not override it.
+
+Use one git worktree per implementation track, never an independent clone. For **every fresh delegated track worktree**, the DRI must complete this fail-open sequence before spawning: create -> setup attempt -> failure report -> `track-worktree:` -> spawn. Setup is unconditional: do not run a project script directly or ask the child to install dependencies first; the registered hook owns that work. No registered hook exits 0 and needs no warning. A configured missing or failing hook exits 1; it never removes the worktree or blocks recording or spawning. Operate across checkouts by absolute path or `git -C`/`bd -C` without changing the DRI's session cwd.
+
+After creation, use this POSIX-shell-safe procedure (including under `set -e`). `track_worktree` is its absolute path; on failure determine `hook_path` and `outcome` without hook output or credentials: `missing` for an absent configured script, otherwise `exit-N` from its status (or `exit-1` if unavailable).
+
+```sh
+print_setup_warning() {
+  printf 'worktree-setup-warning: path="%s" hook="%s" outcome="%s" lifecycle=continued\n' \
+    "$track_worktree" "$hook_path" "$outcome"
+}
+
+setup_status=0
+ateam worktree-setup "$track_worktree" > /dev/null 2>&1 || setup_status=$?
+if [ "$setup_status" -ne 0 ]; then
+  if warning_file=$(mktemp); then
+    if print_setup_warning > "$warning_file"; then
+      if ! cat "$warning_file"; then
+        print_setup_warning >&2 || :
+        printf 'worktree-setup-display-warning: path="%s" lifecycle=continued\n' \
+          "$track_worktree" >&2 || :
+      fi
+      if ! ateam note "$initiative_id" --file "$warning_file"; then
+        printf 'worktree-setup-note-warning: initiative="%s" lifecycle=continued\n' \
+          "$initiative_id" >&2 || :
+      fi
+    else
+      print_setup_warning >&2 || :
+      printf 'worktree-setup-report-warning: path="%s" lifecycle=continued\n' \
+        "$track_worktree" >&2 || :
+    fi
+    if ! rm -f "$warning_file"; then
+      printf 'worktree-setup-cleanup-warning: path="%s" lifecycle=continued\n' \
+        "$track_worktree" >&2 || :
+    fi
+  else
+    print_setup_warning >&2 || :
+    printf 'worktree-setup-report-warning: path="%s" lifecycle=continued\n' \
+      "$track_worktree" >&2 || :
+  fi
+fi
+```
+
+The line from `print_setup_warning` is the exact normalized warning. When its temporary file is available, append that file to the existing initiative; always include the normalized warning in the spawn brief, then record `track-worktree:` and spawn. Every reporting primitive is nonblocking: a temporary-file, write, display, note, or cleanup failure emits a fallback warning without hook output or credentials and still continues. A successful setup skips this reporting path and continues directly to track recording and spawn.
+
+Implementers add code and core-path tests but never push, merge, or deploy. Testers own edge cases and live verification. Reviewers never fix. The DRI verifies artifacts, integrates the composed branch, routes findings to fresh implementers, and repeats integration verification after every ring. Loop closure requires both integrated code and an observable end-to-end exercise; tests alone are insufficient.
+
+## Never end a turn waiting on work
+
+Three yield states, not two:
+
+- **Nothing pending** -> a clean end of turn; the human reaps the idle session.
+- **A pending human gate** -> park; the human is the driver.
+- **A pending agent or machine dependency** (a spawned teammate still working, a build/CI/merge still running) -> NOT a clean end and NOT a park. Never end a turn to wait on it.
+
+For that third state, never end a turn to wait on a background command, a build, or a peer's message to finish. You may still launch independent work concurrently, but collect it within the same live turn — one blocking wait, never a turn-ending await. The simplest single-task form: run it in the foreground (one blocking call with an explicit timeout), get the result, then report and stop.
+
+This overrides, for any spawned teammate, the general "background it and wait for the finish notification" habit — that habit is written for a top-level session. A spawned teammate does not get the same re-wake.
+
+### Stall handling
+
+A teammate that has gone idle without delivering its committed artifact is a stall, not progress — never assume it is still working. On being re-woken by its idle notification with work still pending, do not re-yield on "still waiting": verify the artifact first (`bd show`, `git log`, the diff — never the claim alone), nudge the teammate (an `ateam mail` / SendMessage DOES wake it, unlike a background-task finish notification), and replace or take over the work if it stays unresponsive.
+
 # Execution mechanics — team, worktrees, integration
 
 ## Team
@@ -8,9 +73,9 @@
 - **Verify, don't assume:** after your first named spawn, run `ateam spawn-check`. It reads the harness's own spawn record and reports whether the role definition actually attached. If it reports DEFINITION-DROPPED, shut that agent down and re-spawn it correctly rather than continuing on a generic agent.
 - Keep a roster of every spawn. For a NAMED spawn (a teammate), the roster entry is its bare `name:` — SendMessage to a teammate REJECTS the `agentId` form ("to must be a bare teammate name — there is only one team per session"), so the name is the only working address, not merely a legibility label. For an UNNAMED spawn (an async subagent), there is no name — the `agentId` the spawn returns is the only handle, and SendMessage to it works. Do NOT pass `team_name` — the harness accepts but ignores it (one implicit team per session) — and do not pass `model`; each role's agent definition sets its own. Bypass is required for hands-off operation — backgrounded teammates must run without permission prompts.
 - Bypass removes prompts, not role discipline — role rules (never push/merge/deploy — DRI-only) and worktree isolation remain the guardrails.
-- Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and — for any agent whose worktree will need live env — the instruction to provision it with `ateam worktree-setup <its-worktree-abs-path>` (the framework wrapper, never a raw project setup script) — no separate `pnpm install` needed first, the hook installs dependencies itself when the worktree needs them. Also give it: coordinate directly with peers via SendMessage — a teammate peer by its bare `name:` (`agentId` is rejected for teammates — see "Team" above), an unnamed subagent peer by its `agentId` (its only handle) — for handoffs/clarifications/verification; do not route peer coordination through the DRI. When two peers need to talk, distribute the relevant names (or agentIds, for subagent peers) from your roster to both sides so each can address the other directly. Escalate blockers, design ambiguity, and scope changes to team-lead, who stays decider/integrator not relay. Also tell every spawned agent: **NEVER call `EnterWorktree`.** A non-isolated teammate shares the lead's session cwd, so its `EnterWorktree` drifts the LEAD's cwd — the harness re-applies the pin before every Bash call, and the lead can't escape it. Work via absolute paths and `git -C <your-worktree-abs-path>`; never `cd` or `EnterWorktree` into your worktree.
+- Give every spawn: its assigned bead ids, its worktree path, the role-division rules, and any normalized `worktree-setup-warning` produced by the DRI's pre-spawn setup attempt. Do not delegate setup or dependency installation to the child before that attempt. Also tell every spawn to commit its work and report its artifacts, then signal team-lead with a status — done, blocked, or waiting — before it goes idle; never let it go quiet with unreported work. Also give it: coordinate directly with peers via SendMessage — a teammate peer by its bare `name:` (`agentId` is rejected for teammates — see "Team" above), an unnamed subagent peer by its `agentId` (its only handle) — for handoffs/clarifications/verification; do not route peer coordination through the DRI. When two peers need to talk, distribute the relevant names (or agentIds, for subagent peers) from your roster to both sides so each can address the other directly. Escalate blockers, design ambiguity, and scope changes to team-lead, who stays decider/integrator not relay. Also tell every spawned agent: **NEVER call `EnterWorktree`.** A non-isolated teammate shares the lead's session cwd, so its `EnterWorktree` drifts the LEAD's cwd — the harness re-applies the pin before every Bash call, and the lead can't escape it. Work via absolute paths and `git -C <your-worktree-abs-path>`; never `cd` or `EnterWorktree` into your worktree.
 - Helpers are spawned without a model argument — each role's agent definition sets its own model. A spawn that asks for a different model is rejected and must be re-issued with the model argument removed.
-- Messages cross: an idle notification right after you assign work usually means the assignment hasn't been processed yet — verify against bd/git state before re-sending or escalating.
+- Messages cross: an idle notification right after you assign work usually means the assignment hasn't been processed yet — that's not alarm, but it is still the stall-signal check from the shared authority principle: verify against bd/git state before you rule out a stall, and before re-sending or escalating.
 
 ## CWD discipline — the DRI never lets its cwd drift
 
@@ -27,16 +92,43 @@
 - **Canonical root:** every track worktree lives under one machine-wide root, `${AGENT_TEAMS_HOME}-worktrees/<team>-<track>` (default `~/.agent-teams-worktrees/...`) — deliberately outside both the workspace and the project repo, so `/setup-agent-teams` can pre-approve it once in `additionalDirectories`; ad-hoc sibling paths can't be pre-approved. (`.beads/` discovery is unaffected — a worktree resolves the project's single `.beads/` via git-common-dir.)
 - One **git worktree** (never an independent clone) per parallel track, branched at the FROZEN CONTRACT commit: `bd worktree create <path> -b <track-branch> <integration-branch>` (preferred, guarantees shared-`.beads/` discovery) or `git worktree add <path> -b <track-branch> <integration-branch>`. Clones fragment the beads workspace — agents in them wouldn't see the project's issues.
 - If the contract advances before tracks start, advance the worktrees: `git -C <path> reset --hard <integration-branch>` (only while clean).
-- Fresh worktrees need dependency install; tell the implementer.
-- **Worktree env setup is on-demand, not routine.** Most tracks never touch gitignored env wiring — only run `ateam worktree-setup <abs-path>` when a worktree actually needs live env (dev server, creds-dependent validation, a pre-commit hook requiring it), usually the tester or an implementer touching creds-dependent code. The hook now installs dependencies itself when the worktree lacks them (before pulling), so you no longer need to run `pnpm install` first. No registered hook (or a configured script that is missing) → harmless message, exit 0. But a hook that RUNS and fails — whether install failed, the pull failed, or an expected env file still did not land — now exits NONZERO with a loud stderr warning. So a zero exit means provisioning actually completed; a nonzero exit means live env is not ready and you must not hand the worktree off for live verification until it is.
+- **Immediately after creating every fresh track worktree, attempt** `ateam worktree-setup <absolute-path>` to completion. The shared execution contract defines its mandatory fail-open reporting, initiative note, track-recording, and spawn order. Never invoke the project hook directly and never perform a separate pre-setup dependency install.
 - **`ateam worktree-setup` is the only sanctioned entry point** — never call a raw setup script directly, even one a project memory names as "the reusable way." The wrapper resolves the repo's registered hook (`~/.agent-teams/worktree-hooks/<repo-key>`) and runs it with the same args, adding repo-key resolution, a not-a-git-worktree guard, and surfacing a failed hook as a nonzero exit. A memory naming a raw script path SHADOWS the wrapper — re-point it at `ateam worktree-setup` when you find one. (The one correct place a raw path appears is hook *registration* itself — see `setup-agent-teams/SKILL.md` §8.)
-- **Record a `track-worktree:` line for every implementer worktree you spawn** (agent-teams-sgr5/D9) — right after creating it, BEFORE spawning the implementer: append `track-worktree: <abs-path>` to the initiative description (`ateam show` → edit → `ateam update-description --file <tmpfile>`). This is what lets hung-scan's stall detector see git activity in a track worktree instead of reading it as flatlined; skip only for a worktree the DRI itself operates in (already covered by `worktree:`). Legacy/missed cases fall back to a path-substring heuristic, but that's not a substitute — record the line every time.
+- **Record a `track-worktree:` line for every implementer worktree you spawn** (agent-teams-sgr5/D9) — after the required setup attempt and any failure reporting, but BEFORE spawning the implementer: append `track-worktree: <abs-path>` to the initiative description (`ateam show` → edit → `ateam update-description --file <tmpfile>`). This is what lets hung-scan's stall detector see git activity in a track worktree instead of reading it as flatlined; skip only for a worktree the DRI itself operates in (already covered by `worktree:`). Legacy/missed cases fall back to a path-substring heuristic, but that's not a substitute — record the line every time.
 
 ## Integration (DRI-owned)
 
 - Merge each track into the integration branch as it lands: prefer `git merge --ff-only <track-branch>`; on real conflicts, resolve them YOURSELF (read both sides; keep the contract's intent).
 - After the loop-closing set's tracks merge, run an integration verification pass (full typecheck + the feature's suites on the composed branch) independently of what tracks reported — this is Step 1 of the two-step gate at SKILL.md's **LOOP CLOSED checkpoint** (the canonical loop-closure definition; not restated here — necessary but not sufficient on its own). Re-run this same pass after each subsequent ring's tracks merge.
 - Remove worktrees and delete track branches at wind-down, not before.
+
+## Live-test-review gate
+
+A tester live pass closes the ENGINEERING loop (SKILL.md's LOOP CLOSED checkpoint) — it does not clear delivery. Before spawning `agent-teams-reviewer` or starting Phase 5 PR prep, the DRI raises a `--kind=live-test-review` gate carrying the tester's proof — gates are DRI-owned; the tester never raises one:
+
+```bash
+ateam gate <initiative-id> --kind=live-test-review --attach <path> [--attach <path> ...] --file <summary-file>
+```
+
+The tester hands its proof (screenshots, payload/log files, a short summary) to the DRI via SendMessage rather than raising anything itself. Treat the gate exactly like review or question: CLEARED (steward-forwarded, human's go received) before proceeding, PARK while it waits. Never detect steward presence or fall back to Telegram directly — with no steward running, it simply WAITS.
+
+**BIG vs SMALL.** BIG — observable behavior (UI, API response, CLI output, user-facing flow), decomposed into multiple tracks/implementers, or a changed default/durable state/user-facing message — always gates. SMALL — single-track, few-item, linear, nothing observable, no load-bearing human decision — skips it: reading the diff against criteria IS the verification, the same bar as the team/plan-gate skip. A cleared (or skipped) plan gate is NOT itself a trigger either way.
+
+**Feedback loop.** A requested change can pull in any mix of investigator/implementer/planner — a fresh plan gate if it reshapes the work — then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped for the PR before approval. The ask stays REVIEW throughout — never frame this as "ready to merge."
+
+## Why the background re-wake bug forces "never end a turn waiting on work"
+
+A background task's completion does not reliably re-invoke an idle in-process subagent in Claude Code — the finish notification queues but never starts a turn, and the subagent's own background task can be killed when its turn ends (Claude Code issues #92563, #83627, #87675, #76203, all open as of 2026-09-22). A top-level session gets a native re-wake; a spawned teammate does not. Treat "Never end a turn waiting on work" (shared execution contract, above) as unconditional for any teammate regardless of whether this bug is ever fixed — relax it only once those issues close.
+
+### Backstop: bounded self-re-check
+
+For the residual case where a teammate's report never arrives and no other confirmed re-wake path exists, arm a bounded self-re-check with `ScheduleWakeup`, sized to the dependency's expected duration — not a tight poll — and re-arm it if the wake finds the work still pending. `ScheduleWakeup` is confirmed to fire a real re-wake turn in a plain (non-`/loop`) session. Treat this as general robustness, not a permanent workaround for the bug above.
+
+## Messaging a peer DRI
+
+Applies to this initiative's or a sibling's DRI. **Native-first.** Discover live local peers via `ListAgents` and address by session name with native `SendMessage`; fall back to `ateam mail send <initiative-id> --file <msg-file>` when the peer isn't a live local Claude session — offline, another machine, a non-Claude runtime (codex/opencode) — or native delivery fails. `ateam mail send` stays the only path for cross-machine / non-Claude / async-to-human hops. Never ask a peer to do what your own permissions blocked.
+
+Peer-to-peer work coordination (rebase now, I own file X, I merged the shared contract) is fine directly — the steward is not a required relay for it. Still route through the steward (`ateam gate`) anything that would become a human gate: "would this become a gate to Eric? -> steward" covers plan/scope/merge/design-fork/unblock. And even pure coordination gets a heads-up to the steward when it materially changes an initiative's design or direction, so its cross-initiative view stays complete — mechanical coordination that never touches design/direction needs no steward involvement at all.
 
 ## Lifecycle
 

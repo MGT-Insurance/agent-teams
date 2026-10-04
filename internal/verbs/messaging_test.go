@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -309,16 +310,18 @@ func TestInbox_DrainAndMark(t *testing.T) {
 
 	// markMessageRead must close the message bead (auto-close-on-read) —
 	// regression guard: a future refactor dropping or reordering this call
-	// should fail here, not just silently stop closing messages.
+	// should fail here, not just silently stop closing messages. --force is
+	// required: bd 1.3.0 refuses close when assignee (the recipient
+	// initiative) differs from actor (the git user).
 	closeCalled := false
 	for _, call := range labelCalls {
-		if len(call) == 2 && call[0] == "close" && call[1] == "at-wisp-m1" {
+		if len(call) == 3 && call[0] == "close" && call[1] == "at-wisp-m1" && call[2] == "--force" {
 			closeCalled = true
 			break
 		}
 	}
 	if !closeCalled {
-		t.Errorf("expected close call for at-wisp-m1; calls: %v", labelCalls)
+		t.Errorf("expected close --force call for at-wisp-m1; calls: %v", labelCalls)
 	}
 
 	_ = stdout
@@ -355,6 +358,47 @@ func TestIsStewardSession_NoMarker_ReturnsFalse(t *testing.T) {
 	// No `steward init` run — marker file does not exist.
 	if isStewardSession(ctx, StewardSessionDir(ctx)) {
 		t.Error("expected isStewardSession false when no marker file exists")
+	}
+}
+
+func TestResolveSender_StewardSession_StampsSteward(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	// cwd is the steward session: the sender must be the steward, not git
+	// user.name. This is the bug — steward->DRI mail used to collapse to
+	// gitUserName() ("Eric Lloyd") on model-driven send paths.
+	if got := defaultSender(ctx, StewardSessionDir(ctx)); got != StewardHandle {
+		t.Errorf("defaultSender(steward session) = %q, want %q", got, StewardHandle)
+	}
+}
+
+func TestResolveSender_ExplicitAlwaysWins(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	// An explicit --sender wins without touching the filesystem; the relay
+	// (human), hung_tick (hung-scan) and route (pr-shepherd) paths all depend
+	// on this precedence and must never be aborted by a cwd lookup.
+	if got := resolveSender(ctx, "human"); got != "human" {
+		t.Errorf("resolveSender(explicit) = %q, want %q", got, "human")
+	}
+}
+
+func TestResolveSender_NonStewardSession_FallsBackToGitUser(t *testing.T) {
+	home := t.TempDir()
+	ctx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(ctx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+	// A non-steward cwd keeps the git user.name fallback — the legitimate
+	// "human running the CLI" case.
+	if got := defaultSender(ctx, t.TempDir()); got != gitUserName() {
+		t.Errorf("defaultSender(non-steward) = %q, want gitUserName() %q", got, gitUserName())
 	}
 }
 
@@ -403,6 +447,144 @@ func TestResolveInboxRecipient_NoMarker_FallsBackToInitiative(t *testing.T) {
 	}
 	if id != myID {
 		t.Errorf("resolveInboxRecipient = %q, want %q (existing worktree-based resolution)", id, myID)
+	}
+}
+
+// TestResolveInboxRecipientRuntime_SessionTieResolvesFromUnregisteredCwd is
+// the loop-closing witness (agent-teams-y814.3): before .1/.2 this fails,
+// because resolveInboxRecipientRuntime only ever looked at cwd — a cwd that
+// matches no registered worktree could never resolve, no matter what session
+// tie the caller carries. Every open initiative here has a worktree that does
+// NOT match unregisteredCwd, so the cwd fallback alone can never resolve any
+// of them; only the session-tie path (or, in case d, nothing) can.
+func TestResolveInboxRecipientRuntime_SessionTieResolvesFromUnregisteredCwd(t *testing.T) {
+	const unregisteredCwd = "/unregistered/cwd"
+
+	claudeInitiative := bd.Issue{
+		ID: "at-claude-init", Status: "open",
+		Description: "worktree: /other/claude-wt\nsession: sess-c\n",
+	}
+	codexInitiative := bd.Issue{
+		ID: "at-codex-init", Status: "open",
+		Description: "worktree: /other/codex-wt\nruntime: codex\nsession: thr-x\n",
+	}
+	// A different Claude initiative carrying the STALE (leaked) env value —
+	// case (c) must NOT resolve to this one.
+	staleClaudeInitiative := bd.Issue{
+		ID: "at-stale-claude", Status: "open",
+		Description: "worktree: /other/stale-wt\nsession: other\n",
+	}
+
+	for _, tc := range []struct {
+		name        string
+		codexEnv    string
+		claudeEnv   string
+		issues      []bd.Issue
+		wantErr     bool
+		wantID      string
+		wantIsCodex bool
+	}{
+		{
+			name:      "a_claude_session_tie_resolves",
+			claudeEnv: "sess-c",
+			issues:    []bd.Issue{claudeInitiative},
+			wantID:    "at-claude-init",
+		},
+		{
+			name:        "b_codex_session_tie_resolves",
+			codexEnv:    "thr-x",
+			issues:      []bd.Issue{codexInitiative},
+			wantID:      "at-codex-init",
+			wantIsCodex: true,
+		},
+		{
+			name:        "c_codex_first_precedence_beats_leaked_claude_env",
+			codexEnv:    "thr-x",
+			claudeEnv:   "other",
+			issues:      []bd.Issue{codexInitiative, staleClaudeInitiative},
+			wantID:      "at-codex-init",
+			wantIsCodex: true,
+		},
+		{
+			name:    "d_neither_env_set_falls_back_to_cwd_no_match_errors",
+			issues:  []bd.Issue{claudeInitiative, codexInitiative},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Always set both — t.Setenv auto-restores after the subtest, and
+			// an explicit "" (rather than leaving a real ambient value, e.g.
+			// this very process's own CLAUDE_CODE_SESSION_ID) is what keeps
+			// cases from leaking into each other or into the host session.
+			t.Setenv(codexSessionIDEnvVar, tc.codexEnv)
+			t.Setenv(sessionIDEnvVar, tc.claudeEnv)
+
+			fbd := &fakeBD{
+				runJSONFn: func(dst any, args ...string) error {
+					return json.Unmarshal(mustMarshal(tc.issues), dst)
+				},
+				runFn: func(args ...string) (string, error) { return "", nil },
+			}
+			ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+			id, isCodex, err := resolveInboxRecipientRuntime(ctx, unregisteredCwd)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveInboxRecipientRuntime: expected an error (no cwd match), got id=%q", id)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveInboxRecipientRuntime: unexpected error: %v", err)
+			}
+			if id != tc.wantID {
+				t.Errorf("resolveInboxRecipientRuntime id = %q, want %q", id, tc.wantID)
+			}
+			if isCodex != tc.wantIsCodex {
+				t.Errorf("resolveInboxRecipientRuntime isCodex = %v, want %v", isCodex, tc.wantIsCodex)
+			}
+
+			// Ack side-effect: the resolved recipient must be usable end to
+			// end through markMessageRead — same assertions as
+			// TestInbox_DrainAndMark (messaging_test.go ~255-322).
+			var labelCalls [][]string
+			ackBD := &fakeBD{
+				runJSONFn: fbd.runJSONFn,
+				runFn: func(args ...string) (string, error) {
+					labelCalls = append(labelCalls, args)
+					return "", nil
+				},
+			}
+			ackCtx, _, _ := makeCtx(ackBD, t.TempDir())
+			if err := markMessageRead(ackCtx, "at-msg-1", id, "2026-09-02T00:00:00Z"); err != nil {
+				t.Fatalf("markMessageRead: %v", err)
+			}
+
+			var added, removed []string
+			for _, call := range labelCalls {
+				if len(call) >= 4 && call[0] == "label" && call[1] == "add" {
+					added = append(added, call[3])
+				}
+				if len(call) >= 4 && call[0] == "label" && call[1] == "remove" {
+					removed = append(removed, call[3])
+				}
+			}
+			if !containsAll(added, "read", "delivery:acked") {
+				t.Errorf("markMessageRead: added labels %v missing read/delivery:acked", added)
+			}
+			if !containsAll(removed, "delivery:pending") {
+				t.Errorf("markMessageRead: removed labels %v missing delivery:pending", removed)
+			}
+			closeCalled := false
+			for _, call := range labelCalls {
+				if len(call) == 3 && call[0] == "close" && call[1] == "at-msg-1" && call[2] == "--force" {
+					closeCalled = true
+				}
+			}
+			if !closeCalled {
+				t.Errorf("markMessageRead: expected close --force call for at-msg-1; calls: %v", labelCalls)
+			}
+		})
 	}
 }
 
@@ -1593,6 +1775,16 @@ func TestCheckStewardInboxGuard_OldFormatLive_Refuses(t *testing.T) {
 // either fires).
 func TestInboxKong_StewardDuplicateSession_RefusesBothPeekAndConsume(t *testing.T) {
 	home := t.TempDir()
+
+	// steward init runs against a permissive fakeBD, on a context that shares
+	// home but not the strict trap fbd below — installPrimeMemoryCaps' own
+	// `bd config set` pair (steward.go) would otherwise trip the trap before
+	// the guard under test ever runs.
+	initCtx, _, _ := makeCtx(&fakeBD{}, home)
+	if err := (&stewardInitKong{}).Run(initCtx); err != nil {
+		t.Fatalf("steward init: %v", err)
+	}
+
 	fbd := &fakeBD{
 		runJSONFn: func(dst any, args ...string) error {
 			t.Fatalf("unexpected bd query call — guard must refuse before querying: %v", args)
@@ -1604,10 +1796,6 @@ func TestInboxKong_StewardDuplicateSession_RefusesBothPeekAndConsume(t *testing.
 		},
 	}
 	ctx, _, _ := makeCtx(fbd, home)
-
-	if err := (&stewardInitKong{}).Run(ctx); err != nil {
-		t.Fatalf("steward init: %v", err)
-	}
 	t.Chdir(StewardSessionDir(ctx))
 
 	writeWatcherPidfile(t, home, os.Getpid(), "incumbent-session")
@@ -1734,5 +1922,396 @@ func TestSendKong_StewardRecipient_IdleSession_DoorbellPersists_Respawns(t *test
 	}
 	if !strings.Contains(stdout.String(), "respawned stew1234") {
 		t.Errorf("stdout missing respawn notice: %s", stdout.String())
+	}
+}
+
+// ── L1 CONTRACT (agent-teams-8st0.19): always store, dedup, closed queue,
+// moot close on errNothingToReview ──────────────────────────────────────────
+
+// fakeMailBD is a stateful bd fake for the L1 contract tests: unlike the
+// per-call sendFixture.fakeBD above, dedup and moot-close depend on state
+// (created/closed messages, the recipient's own status) persisting across
+// repeated sendKong.Run calls in one test, so this fake actually tracks a
+// recipient issue and a small message store rather than returning a fixed
+// response every time.
+type fakeMailBD struct {
+	recipient   bd.Issue
+	messages    map[string]*bd.Issue
+	nextID      int
+	closedIDs   []string
+	noteCalls   []string
+	closeErrFor string // if set, `bd close` for this id returns an error
+	listErr     error  // if set, the "list" RunJSON op (unreadMailFor) returns this error
+}
+
+func newFakeMailBD(recipientID, status string) *fakeMailBD {
+	return &fakeMailBD{
+		recipient: bd.Issue{ID: recipientID, Status: status},
+		messages:  map[string]*bd.Issue{},
+	}
+}
+
+func (f *fakeMailBD) targetByID(id string) *bd.Issue {
+	if id == f.recipient.ID {
+		return &f.recipient
+	}
+	return f.messages[id]
+}
+
+func (f *fakeMailBD) Run(args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	switch args[0] {
+	case "show":
+		raw, _ := json.Marshal([]bd.Issue{f.recipient})
+		return string(raw), nil
+	case "label":
+		op, id, label := args[1], args[2], args[3]
+		target := f.targetByID(id)
+		if target == nil {
+			return "", nil
+		}
+		switch op {
+		case "add":
+			if !hasLabel(target.Labels, label) {
+				target.Labels = append(target.Labels, label)
+			}
+		case "remove":
+			out := target.Labels[:0]
+			for _, l := range target.Labels {
+				if l != label {
+					out = append(out, l)
+				}
+			}
+			target.Labels = out
+		}
+		return "", nil
+	case "note":
+		f.noteCalls = append(f.noteCalls, args[2])
+		return "", nil
+	case "close":
+		id := args[1]
+		if id == f.closeErrFor {
+			return "", fmt.Errorf("fake close error for %s", id)
+		}
+		f.closedIDs = append(f.closedIDs, id)
+		if target := f.targetByID(id); target != nil {
+			target.Status = "closed"
+		}
+		return "", nil
+	}
+	return "", nil
+}
+
+func (f *fakeMailBD) RunJSON(dst any, args ...string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "create":
+		f.nextID++
+		issue := bd.Issue{
+			ID:        fmt.Sprintf("at-msg-%d", f.nextID),
+			IssueType: "message",
+			Assignee:  f.recipient.ID,
+			Status:    "open",
+		}
+		for _, a := range args {
+			if v, ok := strings.CutPrefix(a, "--labels="); ok {
+				issue.Labels = append(issue.Labels, v)
+			}
+		}
+		f.messages[issue.ID] = &issue
+		if out, ok := dst.(*bd.Issue); ok {
+			*out = issue
+		}
+		return nil
+	case "list":
+		if f.listErr != nil {
+			return f.listErr
+		}
+		var assignee, label, excludeLabel, status string
+		for _, a := range args {
+			switch {
+			case strings.HasPrefix(a, "--assignee="):
+				assignee = strings.TrimPrefix(a, "--assignee=")
+			case strings.HasPrefix(a, "--label="):
+				label = strings.TrimPrefix(a, "--label=")
+			case strings.HasPrefix(a, "--exclude-label="):
+				excludeLabel = strings.TrimPrefix(a, "--exclude-label=")
+			case strings.HasPrefix(a, "--status="):
+				status = strings.TrimPrefix(a, "--status=")
+			}
+		}
+		var out []bd.Issue
+		for _, id := range sortedMessageIDs(f.messages) {
+			m := f.messages[id]
+			if assignee != "" && m.Assignee != assignee {
+				continue
+			}
+			if status != "" && m.Status != status {
+				continue
+			}
+			if label != "" && !hasLabel(m.Labels, label) {
+				continue
+			}
+			if excludeLabel != "" && hasLabel(m.Labels, excludeLabel) {
+				continue
+			}
+			out = append(out, *m)
+		}
+		if dstSlice, ok := dst.(*[]bd.Issue); ok {
+			*dstSlice = out
+		}
+		return nil
+	}
+	return nil
+}
+
+// sortedMessageIDs returns f's message ids in insertion (numeric) order so
+// list results are deterministic across a map's random iteration order.
+func sortedMessageIDs(messages map[string]*bd.Issue) []string {
+	ids := make([]string, 0, len(messages))
+	for id := range messages {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// noResumeAgentsFunc reports no live sessions, so an open-recipient send
+// falls through to the resume-escalation branch every L1 test below that
+// isn't exercising the closed-recipient path (which never reaches agentsFunc
+// at all) actually wants to hit.
+func noResumeAgentsFunc() ([]agentSession, error) { return nil, nil }
+
+// TestSendKong_ClosedRecipient_AlwaysStoresDistinctMessages is the core L1
+// regression case: three distinct sends to a closed recipient must each
+// store a message and exit 0 — never refuse, never touch the doorbell, never
+// call resume — where before this contract, send stored the message and
+// THEN called resume, which refused for a closed initiative (dispatch.go's
+// resumeKong.Run) and turned exit 0 into exit 1 on every retry.
+func TestSendKong_ClosedRecipient_AlwaysStoresDistinctMessages(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-closed-recip", "closed")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, stdout, _ := makeCtx(fdb, home)
+
+	for i := 0; i < 3; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-closed-recip",
+			File:        makeTempFile(t, fmt.Sprintf("body %d", i)),
+			agentsFunc: func() ([]agentSession, error) {
+				t.Fatal("agentsFunc must not run for a closed recipient")
+				return nil, nil
+			},
+			resumeFunc: func(_ *cli.Context, _, _, _ string) error {
+				t.Fatal("resume must not be called for a closed recipient")
+				return nil
+			},
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(fdb.messages) != 3 {
+		t.Fatalf("expected 3 stored messages, got %d", len(fdb.messages))
+	}
+	if !strings.Contains(stdout.String(), "recipient at-closed-recip is closed; message queued until reopened") {
+		t.Errorf("stdout missing closed-recipient notice: %s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "mailbox", "at-closed-recip.wake")); err == nil {
+		t.Error("doorbell must never be created for a closed recipient")
+	}
+}
+
+// TestSendKong_ClosedRecipient_DedupKeyCollapsesToOneMessage proves the
+// closed-recipient path and the dedup path compose: three sends with the
+// same --dedup-key store exactly one message, and every call still exits 0.
+func TestSendKong_ClosedRecipient_DedupKeyCollapsesToOneMessage(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-closed-dedup", "closed")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, _, _ := makeCtx(fdb, home)
+
+	for i := 0; i < 3; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-closed-dedup",
+			File:        makeTempFile(t, "same body"),
+			DedupKey:    "pr-42-review_requested",
+			agentsFunc: func() ([]agentSession, error) {
+				t.Fatal("agentsFunc must not run for a closed recipient")
+				return nil, nil
+			},
+			resumeFunc: func(_ *cli.Context, _, _, _ string) error {
+				t.Fatal("resume must not be called for a closed recipient")
+				return nil
+			},
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(fdb.messages) != 1 {
+		t.Fatalf("expected exactly 1 stored message across 3 dedup-keyed sends, got %d", len(fdb.messages))
+	}
+}
+
+// TestSendKong_OpenRecipient_DedupKeyStillRunsDeliveryOnSecondCall is the
+// HUMAN-GATED default from CONTRACT 8st0.18 item 1 (Q5, decided YES): a
+// dedup hit creates no new message but still runs the delivery steps — here,
+// the resume escalation — on every call, not just the first.
+func TestSendKong_OpenRecipient_DedupKeyStillRunsDeliveryOnSecondCall(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-open-dedup", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, _, _ := makeCtx(fdb, home)
+
+	resumeCalls := 0
+	for i := 0; i < 2; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-open-dedup",
+			File:        makeTempFile(t, "same body"),
+			DedupKey:    "pr-9-comment_reply",
+			agentsFunc:  noResumeAgentsFunc,
+			resumeFunc:  func(_ *cli.Context, _, _, _ string) error { resumeCalls++; return nil },
+		}
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatalf("send %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(fdb.messages) != 1 {
+		t.Fatalf("expected exactly 1 stored message across 2 dedup-keyed sends, got %d", len(fdb.messages))
+	}
+	if resumeCalls != 2 {
+		t.Errorf("expected resume to run on both calls (dedup hit still delivers), got %d call(s)", resumeCalls)
+	}
+}
+
+// TestSendKong_ResumeNothingToReview_ClosesUnreadMailAndInitiative covers
+// CONTRACT 8st0.18 item 1e: when resume reports errNothingToReview, every
+// unread message queued for the recipient is closed with delivery:moot and
+// the recipient initiative itself is closed — and the command still exits 0.
+func TestSendKong_ResumeNothingToReview_ClosesUnreadMailAndInitiative(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-moot-recip", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, stdout, _ := makeCtx(fdb, home)
+
+	// Seed two prior unread messages directly (as if queued from earlier
+	// retries), plus the one this send creates.
+	fdb.messages["at-msg-prior-1"] = &bd.Issue{ID: "at-msg-prior-1", IssueType: "message", Assignee: "at-moot-recip", Status: "open"}
+	fdb.messages["at-msg-prior-2"] = &bd.Issue{ID: "at-msg-prior-2", IssueType: "message", Assignee: "at-moot-recip", Status: "open"}
+
+	cmd := &sendKong{
+		RecipientID: "at-moot-recip",
+		File:        makeTempFile(t, "one more try"),
+		agentsFunc:  noResumeAgentsFunc,
+		resumeFunc:  func(_ *cli.Context, _, _, _ string) error { return errNothingToReview },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, id := range []string{"at-msg-prior-1", "at-msg-prior-2", "at-msg-1"} {
+		m, ok := fdb.messages[id]
+		if !ok {
+			t.Fatalf("message %s missing from fake store", id)
+		}
+		if m.Status != "closed" {
+			t.Errorf("message %s: expected closed, got %s", id, m.Status)
+		}
+		if !hasLabel(m.Labels, "delivery:moot") {
+			t.Errorf("message %s: missing delivery:moot label; got %v", id, m.Labels)
+		}
+	}
+	if fdb.recipient.Status != "closed" {
+		t.Errorf("expected recipient initiative closed, got %s", fdb.recipient.Status)
+	}
+	if !strings.Contains(stdout.String(), "nothing to review for at-moot-recip") {
+		t.Errorf("stdout missing moot-close notice: %s", stdout.String())
+	}
+}
+
+// TestSendKong_ResumeNothingToReview_UnreadQueryErrorLeavesInitiativeOpen
+// covers agent-teams-8st0.29 fix 1: if unreadMailFor itself fails inside
+// closeAsNothingToReview, we don't know what's still queued for the
+// recipient, so the initiative must NOT be closed and the message must
+// stay open — send exits non-zero so pr-shepherd retries and redoes the
+// moot path, rather than stranding open mail on a closed initiative.
+func TestSendKong_ResumeNothingToReview_UnreadQueryErrorLeavesInitiativeOpen(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-moot-err-recip", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	fdb.listErr = errors.New("bd list boom")
+	ctx, _, _ := makeCtx(fdb, home)
+
+	cmd := &sendKong{
+		RecipientID: "at-moot-err-recip",
+		File:        makeTempFile(t, "one more try"),
+		agentsFunc:  noResumeAgentsFunc,
+		resumeFunc:  func(_ *cli.Context, _, _, _ string) error { return errNothingToReview },
+	}
+	err := cmd.Run(ctx)
+	if err == nil {
+		t.Fatal("expected a non-zero exit when the unread-mail query fails, got nil")
+	}
+
+	if fdb.recipient.Status == "closed" {
+		t.Error("initiative must not be closed when the unread-mail query failed")
+	}
+	for id, m := range fdb.messages {
+		if m.Status == "closed" {
+			t.Errorf("message %s: must not be closed when the unread-mail query failed", id)
+		}
+	}
+}
+
+// TestSendKong_ResumeOtherError_ExitsNonZeroMessageStaysQueued covers the
+// "any other resume error" branch of CONTRACT 8st0.18 item 1e: exactly one
+// open message survives across 3 retries with the same dedup key, and every
+// retry's resume failure surfaces as a non-zero exit (the caller — pr-shepherd
+// — is expected to retry).
+func TestSendKong_ResumeOtherError_ExitsNonZeroMessageStaysQueued(t *testing.T) {
+	home := t.TempDir()
+	wt := t.TempDir()
+	fdb := newFakeMailBD("at-retry-recip", "open")
+	fdb.recipient.Description = "worktree: " + wt + "\n"
+	ctx, _, _ := makeCtx(fdb, home)
+
+	for i := 0; i < 3; i++ {
+		cmd := &sendKong{
+			RecipientID: "at-retry-recip",
+			File:        makeTempFile(t, "retry body"),
+			DedupKey:    "pr-7-review_requested",
+			agentsFunc:  noResumeAgentsFunc,
+			resumeFunc:  func(_ *cli.Context, _, _, _ string) error { return errors.New("worktree recreate failed") },
+		}
+		err := cmd.Run(ctx)
+		if err == nil {
+			t.Fatalf("retry %d: expected non-zero exit (error), got nil", i)
+		}
+		if errors.Is(err, errNothingToReview) {
+			t.Fatalf("retry %d: unexpected errNothingToReview classification", i)
+		}
+	}
+
+	var open []string
+	for id, m := range fdb.messages {
+		if m.Status == "open" {
+			open = append(open, id)
+		}
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected exactly 1 open message after 3 retries with the same key, got %d: %v", len(open), open)
 	}
 }

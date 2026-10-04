@@ -107,20 +107,17 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		if other.ID == initiativeID {
 			continue
 		}
-		otherFields := initiative.Of(other)
-		for _, id := range otherFields.Sessions {
-			if id != sessionID {
-				continue
-			}
-			otherRuntime, err := sessionruntime.ResolveStored(otherFields.Runtime)
-			if err != nil {
-				return fmt.Errorf("appendSessionID: matching open initiative %s: %w", other.ID, err)
-			}
-			if otherRuntime == targetRuntime {
-				return fmt.Errorf(
-					"appendSessionID: %s session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
-					targetRuntime, sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
-			}
+		if !issueHasSession(other, sessionID) {
+			continue
+		}
+		otherRuntime, err := sessionruntime.ResolveStored(initiative.Of(other).Runtime)
+		if err != nil {
+			return fmt.Errorf("appendSessionID: matching open initiative %s: %w", other.ID, err)
+		}
+		if otherRuntime == targetRuntime {
+			return fmt.Errorf(
+				"appendSessionID: %s session %s is already tied to open initiative %s — refusing to also tie it to %s: %w",
+				targetRuntime, sessionID, other.ID, initiativeID, errSessionTiedElsewhere)
 		}
 	}
 
@@ -146,6 +143,71 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		return fmt.Errorf("appendSessionID: bd update %s: %w", initiativeID, err)
 	}
 	return nil
+}
+
+// issueHasSession reports whether iss's "session:" lines include sessionID.
+// This is the pure inner scan shared by appendSessionID's cross-initiative
+// guard and resolveInitiativeBySession: both need the same membership check,
+// but layer different policy on top (appendSessionID errors on a same-runtime
+// conflict; resolveInitiativeBySession collects every runtime-matching hit to
+// enforce uniqueness), so only this innermost check is factored out.
+func issueHasSession(iss bd.Issue, sessionID string) bool {
+	for _, id := range initiative.Of(iss).Sessions {
+		if id == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveInitiativeBySession finds the open initiative durably tied to the
+// current session, independent of cwd — the session-tie counterpart to
+// matchByWorktreeOrAncestor. It scans open initiatives for the ones whose
+// runtime (sessionruntime.ResolveStored(initiative.Of(iss).Runtime)) equals
+// runtime AND whose Sessions (initiative.Of(iss).Sessions) contains
+// sessionID, keyed on {runtime, id} per docs/codex-runtime-contract.md §2.2's
+// uniqueness rule.
+//
+// Deliberately conservative: an empty sessionID, zero matches, or more than
+// one match all return (bd.Issue{}, false, nil) — this never guesses. A
+// >1 match should not happen given the {runtime, id} uniqueness rule
+// appendSessionID's own guard enforces at write time, but resolution must not
+// assume that invariant holds (e.g. data written before the guard existed, or
+// written by a future caller that bypasses it) and silently pick one.
+//
+// An issue whose stored runtime fails to resolve (invalid non-empty value) is
+// skipped rather than erroring the whole scan: it cannot equal any valid Kind
+// anyway, so treating it as "not this runtime" is correct without forcing
+// every caller to handle a single bad issue's metadata as a hard failure.
+func resolveInitiativeBySession(ctx *cli.Context, runtime sessionruntime.Kind, sessionID string) (bd.Issue, bool, error) {
+	if sessionID == "" {
+		return bd.Issue{}, false, nil
+	}
+
+	var openIssues []bd.Issue
+	if err := ctx.BD.RunJSON(&openIssues, "list", "--status=open", "--json"); err != nil {
+		return bd.Issue{}, false, fmt.Errorf("resolveInitiativeBySession: list open initiatives: %w", err)
+	}
+
+	var match *bd.Issue
+	for i := range openIssues {
+		iss := &openIssues[i]
+		if !issueHasSession(*iss, sessionID) {
+			continue
+		}
+		issRuntime, err := sessionruntime.ResolveStored(initiative.Of(*iss).Runtime)
+		if err != nil || issRuntime != runtime {
+			continue
+		}
+		if match != nil {
+			return bd.Issue{}, false, nil // >1 match — never guess
+		}
+		match = iss
+	}
+	if match == nil {
+		return bd.Issue{}, false, nil
+	}
+	return *match, true, nil
 }
 
 // matchSessionsForInitiative returns the sessions tied to iss, ordered
@@ -369,8 +431,21 @@ func (c *resumeMatchKong) Run(ctx *cli.Context) error {
 // re-arming hooks for it, the same as if the initiative had never resolved. A
 // missing "repo:" field (legacy data) skips this check rather than resolving
 // a marker file against an empty/relative path.
+//
+// SessionID, when non-empty, is tried FIRST via resolveInitiativeBySession —
+// the durable session tie, independent of cwd — before falling back to the
+// cwd-based matchByWorktreeOrAncestor below. This is what restores wake/mail
+// signaling for a session whose launch cwd doesn't match its registered
+// worktree (at-0xnp1): its SessionStart tie still resolves it even though the
+// path-only match would find nothing. Hardcoded to sessionruntime.Claude
+// because this verb serves the Claude-plugin shell hooks exclusively — the
+// Codex plugin resolves via its own codex-hook path
+// (resolveCodexHookInitiative), never this verb. An empty SessionID (or one
+// with no tie) falls through to the cwd path exactly as before this field
+// existed.
 type resolveInitiativeKong struct {
-	Path string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
+	Path      string `arg:"" name:"path" help:"Absolute path to resolve — a registered worktree root or any subdirectory of one."`
+	SessionID string `name:"session-id" help:"Current Claude session id — tried first via its durable initiative tie before falling back to path resolution."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -379,15 +454,24 @@ func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam resolve-initiative: nil context")
 	}
 
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
-		return nil
+	var match *bd.Issue
+	if c.SessionID != "" {
+		if issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID); err == nil && found {
+			match = &issue
+		}
 	}
 
-	match := matchByWorktreeOrAncestor(issues, c.Path)
 	if match == nil {
-		return nil
+		var issues []bd.Issue
+		if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+			return nil
+		}
+		match = matchByWorktreeOrAncestor(issues, c.Path)
+		if match == nil {
+			return nil
+		}
 	}
+
 	if repo := initiative.Of(*match).Repo; repo != "" && !repoconfig.Enabled(repo) {
 		return nil
 	}

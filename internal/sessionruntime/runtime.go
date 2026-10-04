@@ -31,11 +31,14 @@ type Request struct {
 	// Managed Codex threads outlive the submitting ateam process, so this value
 	// must be made sticky on the thread instead of relying on daemon process env.
 	AgentTeamsHome string
-	Worktree       string
-	Prompt         string
-	Model          string
-	Events         io.Writer
-	Stderr         io.Writer
+	// AutoCompactWindow is the optional per-thread Codex compaction token limit
+	// resolved by the runtime worker. Nil preserves Codex's native model default.
+	AutoCompactWindow *int64
+	Worktree          string
+	Prompt            string
+	Model             string
+	Events            io.Writer
+	Stderr            io.Writer
 }
 
 // SessionSink durably binds a newly observed session to its initiative.
@@ -63,15 +66,28 @@ func ParseKind(value string) (Kind, error) {
 	}
 }
 
+// DefaultResolver lazily reads a selected dispatch-class runtime default.
+// The bool reports whether that class has a configured value.
+type DefaultResolver func() (string, bool, error)
+
 // ResolveNew chooses the concrete runtime for a newly dispatched initiative.
-// The explicit value wins; empty and "auto" consult ATEAM_RUNTIME and then
-// preserve the legacy Claude default.
-func ResolveNew(explicit, machineDefault string) (Kind, error) {
+// The explicit value wins; empty and "auto" consult ATEAM_RUNTIME, the lazy
+// selected config default, and then preserve the legacy Claude default.
+func ResolveNew(explicit, machineDefault string, configDefault DefaultResolver) (Kind, error) {
 	if explicit != "" && explicit != "auto" {
 		return ParseKind(explicit)
 	}
 	if machineDefault != "" {
 		return ParseKind(machineDefault)
+	}
+	if configDefault != nil {
+		value, configured, err := configDefault()
+		if err != nil {
+			return "", err
+		}
+		if configured {
+			return ParseKind(value)
+		}
 	}
 	return Claude, nil
 }

@@ -753,6 +753,67 @@ func TestScanHung_WorkProduct_RealChangeResetsClock(t *testing.T) {
 	}
 }
 
+// TestScanHung_MachineSleepDiscountsWorkProductFlatline is agent-teams-
+// bq9y.2's disambiguation coverage for the work-product flatline clock —
+// the clock the superseded ndr4.2 mechanism explicitly left sleep-blind
+// (see hung_tick.go's package doc comment). Same shape as the STUCK/DEAD
+// versions in hung_scan_test.go: the same raw flat span, once with sleep
+// covering nearly all of it (must not trip) and once with none (must still
+// trip).
+func TestScanHung_MachineSleepDiscountsWorkProductFlatline(t *testing.T) {
+	wt := t.TempDir()
+	origProbe, origClaimed := hungGitProbeFunc, hungProjectClaimedBeadFunc
+	defer func() { hungGitProbeFunc, hungProjectClaimedBeadFunc = origProbe, origClaimed }()
+	hungProjectClaimedBeadFunc = func(string) (bool, error) { return true, nil }
+
+	pid := 1
+	workingSessions := []agentSession{{CWD: wt, Status: "busy", PID: &pid}}
+	agentsFunc := func() ([]agentSession, error) { return workingSessions, nil }
+
+	t0 := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	hungGitProbeFunc = func(string) gitProbeResult {
+		// A constant hash/mtime (never changes across ticks) IS the flatline
+		// signal — same shape as TestScanHung_WorkProduct_DurableAcrossBusyBlip.
+		return gitProbeResult{Available: true, StatusHash: "flat-forever", IndexMtime: t0, CommitTime: t0}
+	}
+	t1 := t0.Add(hungWorkProductFlatThreshold + 5*time.Minute) // raw flat: over threshold
+
+	t.Run("sleep covering the window suppresses the trip", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt + "\nmode: bg\n", Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		restore := setMachineSleepLog(t, fakeSleepIntervalLog(t0.Add(time.Minute), t1.Add(-4*time.Minute)))
+		defer restore()
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if out[0].WorkProductTripEligible {
+			t.Errorf("expected wp_tripped=false: nearly the entire raw flatline window was machine sleep, want it discounted (wp_flat_seconds=%d)", out[0].WorkProductFlatSeconds)
+		}
+	})
+
+	t.Run("no sleep in the window: the genuine flatline still trips", func(t *testing.T) {
+		issues := []bd.Issue{{ID: "at-1", Title: "one", Description: "worktree: " + wt + "\nmode: bg\n", Status: "open"}}
+		ctx := makeHungCtx(t, issues)
+		if _, err := scanHung(ctx, agentsFunc, fixedNow(t0), true); err != nil {
+			t.Fatalf("seed tick: %v", err)
+		}
+
+		out, err := scanHung(ctx, agentsFunc, fixedNow(t1), true)
+		if err != nil {
+			t.Fatalf("scanHung: %v", err)
+		}
+		if !out[0].WorkProductTripEligible {
+			t.Error("expected wp_tripped=true: no sleep occurred, the flatline is genuine")
+		}
+	})
+}
+
 // ── D4: DEAD-with-worktree-present joins the ladder ───────────────────────────
 
 func TestScanHung_DeadWithWorktree_AnchorsAndHungAtThreshold(t *testing.T) {

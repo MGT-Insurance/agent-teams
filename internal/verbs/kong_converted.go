@@ -10,6 +10,7 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -186,11 +187,43 @@ func (c *noteKong) Run(ctx *cli.Context) error {
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 
-// gateNotifyFunc is called after gate labels are set to route the ask to
-// the Steward. Injected so tests can verify invocations and simulate
-// failures without a real transport. nil means skip notify (zero-value
-// gateKong, test usage).
-type gateNotifyFunc func(ctx *cli.Context, id, file string) error
+// Attachment is one proof file a gate carries to the Steward alongside its
+// ask body — a screenshot, HAR, log, or other file passed via repeatable
+// --attach. Kind is "photo" (png/jpg/jpeg/gif/webp, case-insensitive
+// extension) or "document" (everything else), classified ONCE by
+// classifyAttachment at gate time so the classification rides the envelope
+// and the Steward never re-derives it — see steward_seams.go's Gate→Steward
+// envelope for the wire format.
+type Attachment struct {
+	Path string
+	Kind string // "photo" or "document"
+}
+
+// maxAttachmentBytes is the size cap a single --attach file must not exceed
+// (Eric, agent-teams-n0jt.1 notes: "must reject any file > 10 MB
+// (10,485,760 bytes) at gate time, failing loudly at the gate site").
+const maxAttachmentBytes = 10 * 1024 * 1024
+
+// classifyAttachment routes path to "photo" (case-insensitive
+// png/jpg/jpeg/gif/webp extension) or "document" (everything else) — the
+// one place a gate attachment is classified, so it can ride the envelope
+// as a typed value instead of every downstream reader re-deriving it from
+// the path.
+func classifyAttachment(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+		return "photo"
+	default:
+		return "document"
+	}
+}
+
+// gateNotifyFunc is called after gate labels are set to route the ask —
+// plus any --attach proof attachments, already classified — to the
+// Steward. Injected so tests can verify invocations and simulate failures
+// without a real transport. nil means skip notify (zero-value gateKong,
+// test usage).
+type gateNotifyFunc func(ctx *cli.Context, id, file string, attachments []Attachment) error
 
 // gateKong is the kong-converted form of gate.
 // Two mutually-exclusive entry paths: prose (--file) vs structured
@@ -218,7 +251,17 @@ type gateKong struct {
 	ContextFile    string `name:"context-file"                  help:"Path to optional context file (content ≤280 chars)."`
 
 	// Kind applies to both forms.
-	Kind string `name:"kind" enum:"review,question" default:"question" help:"Gate kind: review or question."`
+	Kind string `name:"kind" enum:"review,question,live-test-review" default:"question" help:"Gate kind: review, question, or live-test-review."`
+
+	// Attach is a repeatable proof-attachment path (screenshot, HAR, log,
+	// etc.), independent of which body form (--file or --decision) is used.
+	// Every path is validated in Validate (exists, ≤10 MB, no TAB/newline —
+	// TAB and newline are the envelope's own delimiters, steward_seams.go)
+	// and classified in Run by classifyAttachment into "photo" or
+	// "document" before riding the Gate→Steward envelope. sep:"none" keeps
+	// a comma inside a path from being mistaken for a second attachment —
+	// repeated `--attach` flags still append normally.
+	Attach []string `name:"attach" sep:"none" help:"Path to a proof attachment (repeatable): screenshot, HAR, log, etc. Auto-routed as a photo (png/jpg/jpeg/gif/webp) or document; rejected if missing, over 10 MB, or the path contains a TAB or newline."`
 
 	// PR scopes the gate to one PR, per the frozen grammar
 	// "<base>:<pr-url>" (docs/multi-pr-contract.md §3): the emitted label
@@ -237,10 +280,25 @@ type gateKong struct {
 }
 
 // Validate enforces constraints not expressible as tags:
+//   - Every --attach path: no TAB/newline (breaks the envelope's own
+//     delimiters), must exist, must not exceed maxAttachmentBytes.
 //   - If structured flags are used: --decision required; --decision ≤120 chars; context-file content ≤280 chars.
 //   - If neither form is provided: --file required error.
 //   - Prose form: file must exist.
 func (c *gateKong) Validate(_ *kong.Context) error {
+	for _, p := range c.Attach {
+		if strings.ContainsAny(p, "\t\n") {
+			return cli.Usagef("ateam gate: --attach path contains a tab or newline (breaks the envelope encoding): %q", p)
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			return cli.Usagef("ateam gate: --attach file not found: %s", p)
+		}
+		if info.Size() > maxAttachmentBytes {
+			return cli.Usagef("ateam gate: --attach file exceeds %d bytes (10 MB cap): %s (%d bytes)", maxAttachmentBytes, p, info.Size())
+		}
+	}
+
 	structuredUsed := c.Decision != "" || c.Recommendation != "" ||
 		c.Alternative != "" || c.ContextFile != ""
 
@@ -399,7 +457,11 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 			}
 			// On any temp-file failure, fall back to noteFile (sentinel block).
 		}
-		if notifyErr := c.notify(ctx, c.ID, notifyFile); notifyErr != nil {
+		attachments := make([]Attachment, len(c.Attach))
+		for i, p := range c.Attach {
+			attachments[i] = Attachment{Path: p, Kind: classifyAttachment(p)}
+		}
+		if notifyErr := c.notify(ctx, c.ID, notifyFile, attachments); notifyErr != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: notify failed (gate still recorded): %v\n", notifyErr)
 		}
 	}
@@ -480,7 +542,7 @@ func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
 		extra = perPRGateLabels(issue.Labels)
 	}
 
-	labels := append([]string{"human", "gate:review", "gate:question", externalReviewLabel}, extra...)
+	labels := append([]string{"human", "gate:review", "gate:question", "gate:live-test-review", externalReviewLabel}, extra...)
 	for _, label := range labels {
 		out, err := ctx.BD.Run("label", "remove", c.ID, label)
 		if out != "" {
@@ -499,6 +561,13 @@ func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
 // are handled separately by clearBareLegacy's always-attempted four-label
 // removal, so this only needs to find the per-PR additions a --pr gate call
 // may have left behind.
+//
+// Deliberately does NOT include "gate:live-test-review:" — that kind is
+// bare-only (raised pre-PR, agent-teams-n0jt.1), so a bare clear-gate never
+// needs to hunt for a per-PR-suffixed stray of it. clearOnePR's removal
+// loop below still covers the defensive case where one was created anyway
+// (e.g. a `gate --kind=live-test-review --pr <url>` call, which nothing
+// currently rejects).
 func perPRGateLabels(labels []string) []string {
 	var found []string
 	for _, l := range labels {
@@ -544,12 +613,12 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 	hasOwnPerPRLabel := hasLabel(issue.Labels, "gate:review:"+pr) ||
 		hasLabel(issue.Labels, "gate:question:"+pr) ||
 		hasLabel(issue.Labels, externalReviewLabel+":"+pr)
-	hasBareGate := hasLabel(issue.Labels, "gate:review") || hasLabel(issue.Labels, "gate:question")
+	hasBareGate := hasLabel(issue.Labels, "gate:review") || hasLabel(issue.Labels, "gate:question") || hasLabel(issue.Labels, "gate:live-test-review")
 	if !hasOwnPerPRLabel && hasBareGate {
 		return cli.Usagef("ateam clear-gate: %s's gate is initiative-wide, not per-PR — run `ateam clear-gate %s` without --pr to clear it", c.ID, c.ID)
 	}
 
-	for _, base := range []string{"gate:review", "gate:question", externalReviewLabel} {
+	for _, base := range []string{"gate:review", "gate:question", "gate:live-test-review", externalReviewLabel} {
 		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+pr)
 		if out != "" {
 			fmt.Fprintln(ctx.Stdout, out)
@@ -579,15 +648,15 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 	return err
 }
 
-// anyGateLabelRemains reports whether labels still contain a review or
-// question gate for any PR — bare, legacy form, or per-PR "<base>:<url>"
-// suffixed form (docs/multi-pr-contract.md §3). Used by clear-gate to decide
-// whether the shared "human" label is safe to remove once one PR's gate is
-// cleared. external-review is deliberately excluded: it is additive on top
-// of a review gate (external_review.go §2), never a gate on its own, so it
-// carries no signal here.
+// anyGateLabelRemains reports whether labels still contain a review,
+// question, or live-test-review gate for any PR — bare, legacy form, or
+// per-PR "<base>:<url>" suffixed form (docs/multi-pr-contract.md §3). Used
+// by clear-gate to decide whether the shared "human" label is safe to
+// remove once one PR's gate is cleared. external-review is deliberately
+// excluded: it is additive on top of a review gate (external_review.go §2),
+// never a gate on its own, so it carries no signal here.
 func anyGateLabelRemains(labels []string) bool {
-	return hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:question")
+	return hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:live-test-review")
 }
 
 // ── learn ─────────────────────────────────────────────────────────────────────
@@ -649,6 +718,9 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam close: no context")
 	}
+	if err := c.refuseIfUnreadReviewMail(ctx); err != nil {
+		return err
+	}
 	reason := c.Reason
 	if c.File != "" {
 		data, err := os.ReadFile(c.File)
@@ -675,6 +747,34 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	c.runLocalMainUpdate(ctx)
 	c.sendCloseSignal(ctx)
 	return nil
+}
+
+// refuseIfUnreadReviewMail implements CONTRACT agent-teams-8st0.18 item 5:
+// a review-shaped initiative (initiative.ReviewPRURL, Description carries a
+// "pr-url:" line) with unread mail refuses to close, so no session is left
+// that can ever read those messages (inbox resolution only lists open
+// initiatives, messaging.go:561). Non-review initiatives are never checked
+// here — closing them is unchanged. There is no override flag; a human who
+// truly needs to drop a message uses `ateam mail close <msg>` instead.
+func (c *closeKong) refuseIfUnreadReviewMail(ctx *cli.Context) error {
+	issue, err := bd.ShowIssue(ctx.BD, c.ID)
+	if err != nil {
+		// Fail CLOSED: every other unread-mail check in this guard refuses
+		// the close on error, so a transient bd failure here must not fall
+		// through to a close that skips the review-shaped check entirely.
+		return fmt.Errorf("ateam close: reading %s: %w", c.ID, err)
+	}
+	if _, ok := initiative.ReviewPRURL(issue); !ok {
+		return nil
+	}
+	messages, err := unreadMailFor(ctx, c.ID)
+	if err != nil {
+		return fmt.Errorf("ateam close: checking unread mail: %w", err)
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	return fmt.Errorf("ateam close: %s has %d unread message(s); run ateam mail inbox and handle them", c.ID, len(messages))
 }
 
 // closeSignalFarewell is posted into the initiative's Telegram topic (if
@@ -794,15 +894,28 @@ func runUpdateLocalMainScript(repoPath string) (string, error) {
 
 // ── pull ──────────────────────────────────────────────────────────────────────
 
-// pullKong is the kong-converted form of pull. No arguments.
-type pullKong struct{}
+// pullKong is the kong-converted form of pull.
+type pullKong struct {
+	Timeout time.Duration `name:"timeout" help:"Bound the dolt pull exec (default: 20s)."`
+}
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
+// Routes through guardedPull, best-effort: a young in-flight pull is skipped
+// (using local state) rather than queued behind — see pull_guard.go's frozen
+// decision table (agent-teams-qdeh.4).
 func (c *pullKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam pull: no context")
 	}
-	out, err := ctx.BD.Run("dolt", "pull")
+	client, ok := ctx.BD.(*bd.Client)
+	if !ok {
+		return fmt.Errorf("ateam pull: BD client does not support guarded pull")
+	}
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = pullTimeoutDefault
+	}
+	out, err := guardedPull(context.Background(), client, pullModeBestEffort, timeout, ctx.Stderr)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -814,17 +927,39 @@ func (c *pullKong) Run(ctx *cli.Context) error {
 // syncKong is the kong-converted form of sync. No arguments.
 type syncKong struct{}
 
+// pushTimeoutDefault bounds a single `bd dolt push` exec issued by `ateam
+// sync`. A real push against the global workspace takes about 22-30s of CPU
+// work (agent-teams-8st0), well past pullTimeoutDefault's 20s, which is tuned
+// for a hung pull rather than a slow-but-healthy push — so sync's push exec
+// gets its own bound instead. Set to about 3x the observed worst case.
+const pushTimeoutDefault = 90 * time.Second
+
+// boundedBDRun runs args against client bounded by timeout — used for sync's
+// commit/push execs, which (like its pulls) must never queue indefinitely
+// behind a slow or hung dolt sql-server (agent-teams-qdeh.4). Callers pass
+// pullTimeoutDefault for commit and pushTimeoutDefault for push, since a
+// healthy push runs well past pullTimeoutDefault's hung-pull-tuned bound.
+func boundedBDRun(client *bd.Client, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return client.RunContext(ctx, args...)
+}
+
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *syncKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
+	}
+	client, ok := ctx.BD.(*bd.Client)
+	if !ok {
+		return cli.Usagef("ateam sync: BD client does not support guarded pull")
 	}
 	// Commit the working set FIRST. `bd dolt pull` refuses a dirty working set
 	// (the events audit table dirties on every bd write), so an uncommitted WS
 	// would deadlock the pull ("local changes would be stomped by merge"). A
 	// clean WS yields "nothing to commit" — that is a no-op, not a failure; any
 	// other commit error aborts before we touch the remote.
-	if out, err := ctx.BD.Run("dolt", "commit"); err != nil {
+	if out, err := boundedBDRun(client, pullTimeoutDefault, "dolt", "commit"); err != nil {
 		if !strings.Contains(strings.ToLower(out+" "+err.Error()), "nothing to commit") {
 			return err
 		}
@@ -834,12 +969,14 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	if out, err := ctx.BD.Run("dolt", "pull"); err != nil {
+	// sync must not silently proceed on stale local state: a young in-flight
+	// pull fails the call (pullModeRequired) instead of skipping.
+	if out, err := guardedPull(context.Background(), client, pullModeRequired, pullTimeoutDefault, ctx.Stderr); err != nil {
 		return err
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	out, err := ctx.BD.Run("dolt", "push")
+	out, err := boundedBDRun(client, pushTimeoutDefault, "dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -850,12 +987,12 @@ func (c *syncKong) Run(ctx *cli.Context) error {
 	if !strings.Contains(err.Error(), "non-fast-forward") {
 		return err
 	}
-	if out, pullErr := ctx.BD.Run("dolt", "pull"); pullErr != nil {
+	if out, pullErr := guardedPull(context.Background(), client, pullModeRequired, pullTimeoutDefault, ctx.Stderr); pullErr != nil {
 		return pullErr
 	} else if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	out, err = ctx.BD.Run("dolt", "push")
+	out, err = boundedBDRun(client, pushTimeoutDefault, "dolt", "push")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -1435,6 +1572,7 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterCostKong(p)
 	RegisterQueryKong(p)
 	RegisterMatchKong(p)
+	RegisterHookScanKong(p)
 	RegisterDispatchKong(p)
 	RegisterRuntimeKong(p)
 	RegisterSetupKong(p)
@@ -1446,6 +1584,7 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterHungScanKong(p)
 	RegisterWatchersKong(p)
 	RegisterReapOrphansKong(p)
+	RegisterReapKong(p)
 	RegisterNotifyKong(p)
 	RegisterRelayKong(p)
 	RegisterStewardKong(p)

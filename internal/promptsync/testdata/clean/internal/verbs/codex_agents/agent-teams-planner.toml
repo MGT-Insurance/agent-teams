@@ -1,0 +1,6 @@
+name = "fixture-planner"
+developer_instructions = """
+Runtime-only intro.
+First shared line.
+Second shared line.
+"""

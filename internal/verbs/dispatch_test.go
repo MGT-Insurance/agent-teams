@@ -16,6 +16,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -182,6 +183,185 @@ func TestDispatch_NoLaunch_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDispatch_WorktreeSetupFailureContinuesLifecycle(t *testing.T) {
+	tests := []struct {
+		name       string
+		runtime    string
+		noLaunch   bool
+		idOnly     bool
+		outcome    string
+		wantLaunch bool
+	}{
+		{name: "claude missing hook", outcome: "missing", wantLaunch: true},
+		{name: "codex failed hook", runtime: "codex", outcome: "exit-42", wantLaunch: true},
+		{name: "no launch missing hook", noLaunch: true, idOnly: true, outcome: "missing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			repoDir := newEnabledRepoDir(t)
+			slug := "setup-order"
+			wtPath := filepath.Join(home+"-worktrees", slug)
+			result := worktreeSetupResult{Path: wtPath, Hook: "/configured/setup.sh", Outcome: tt.outcome}
+			warning := result.warningLine()
+			var events []string
+			var body string
+			var removed bool
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				events = append(events, "register")
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--body-file=") {
+						data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+						if err != nil {
+							return err
+						}
+						body = string(data)
+					}
+				}
+				issue := dst.(*bd.Issue)
+				issue.ID = "at-setup-order"
+				issue.Title = "setup order"
+				return nil
+			}}
+			fg := &fakeGit{
+				repoRootFn: func(string) (string, error) { return repoDir, nil },
+				addWorktreeFn: func(_, _, _, _ string) error {
+					events = append(events, "add-worktree")
+					return nil
+				},
+				removeWorktreeFn: func(_, _ string) error {
+					removed = true
+					return nil
+				},
+			}
+			ctx, stdout, stderr := makeCtx(fbd, home)
+			cmd := &dispatchKong{
+				Problem:  "setup order",
+				Slug:     slug,
+				Repo:     repoDir,
+				Runtime:  tt.runtime,
+				NoLaunch: tt.noLaunch,
+				IDOnly:   tt.idOnly,
+				git:      fg,
+				setup: func(_ *cli.Context, gotPath string) (worktreeSetupResult, error) {
+					if gotPath != wtPath {
+						t.Fatalf("setup path = %q, want %q", gotPath, wtPath)
+					}
+					events = append(events, "setup")
+					return result, &cli.SilentError{Code: 1}
+				},
+				createEpic: func(_, _ string) (string, error) {
+					events = append(events, "epic")
+					return "project-epic", nil
+				},
+				transportEnabled: func(string) bool { return true },
+				transportFor: func(string) (transport.Transport, error) {
+					events = append(events, "transport")
+					return &fakeTransport{returnRef: "setup-topic"}, nil
+				},
+				labelAdd: func(cli.BDRunner, string, string) error {
+					events = append(events, "topic-recorded")
+					return nil
+				},
+				launch: func(*cli.Context, string, string, string, string) error {
+					events = append(events, "launch")
+					return nil
+				},
+				runtimeStart: func(*cli.Context, runtimeStartRequest) error {
+					events = append(events, "launch")
+					return nil
+				},
+			}
+
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("dispatch should continue after configured hook failure: %v", err)
+			}
+			wantEvents := []string{"add-worktree", "setup", "epic", "register", "transport", "topic-recorded"}
+			if tt.wantLaunch {
+				wantEvents = append(wantEvents, "launch")
+			}
+			if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
+				t.Fatalf("lifecycle order = %v, want %v", events, wantEvents)
+			}
+			if removed {
+				t.Fatal("configured setup failure must retain the worktree")
+			}
+			if !strings.Contains(stderr.String(), "WARNING") || !strings.Contains(stderr.String(), warning) {
+				t.Fatalf("stderr must contain loud normalized warning %q:\n%s", warning, stderr.String())
+			}
+			if !strings.Contains(body, warning) {
+				t.Fatalf("registered initiative body missing normalized warning %q:\n%s", warning, body)
+			}
+			if tt.idOnly && stdout.String() != "at-setup-order\n" {
+				t.Fatalf("--id-only stdout = %q, want initiative id only", stdout.String())
+			}
+		})
+	}
+}
+
+func TestDispatch_WorktreeSetupUnexpectedErrorStopsLifecycle(t *testing.T) {
+	home := t.TempDir()
+	repoDir := newEnabledRepoDir(t)
+	var events []string
+	ctx, _, _ := makeCtx(&fakeBD{runJSONFn: func(any, ...string) error {
+		events = append(events, "register")
+		return nil
+	}}, home)
+	cmd := &dispatchKong{
+		Problem:  "unexpected setup error",
+		Repo:     repoDir,
+		NoLaunch: true,
+		git: &fakeGit{
+			repoRootFn: func(string) (string, error) { return repoDir, nil },
+			addWorktreeFn: func(string, string, string, string) error {
+				events = append(events, "add-worktree")
+				return nil
+			},
+		},
+		setup: func(*cli.Context, string) (worktreeSetupResult, error) {
+			events = append(events, "setup")
+			return worktreeSetupResult{}, errors.New("hook registry is a directory")
+		},
+		createEpic: func(string, string) (string, error) {
+			events = append(events, "epic")
+			return "", nil
+		},
+		launch: func(*cli.Context, string, string, string, string) error {
+			events = append(events, "launch")
+			return nil
+		},
+	}
+
+	err := cmd.Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "worktree setup") {
+		t.Fatalf("Run error = %v, want unexpected setup error", err)
+	}
+	if got, want := strings.Join(events, ","), "add-worktree,setup"; got != want {
+		t.Fatalf("lifecycle events = %q, want %q (must not register or launch)", got, want)
+	}
+}
+
+func TestRunWorktreeSetup_SuppressesHookOutputAtDispatchBoundary(t *testing.T) {
+	home := t.TempDir()
+	repoRoot := initGitWorktree(t)
+	scriptPath := filepath.Join(t.TempDir(), "leaky-setup.sh")
+	const stdoutMarker = "dispatch-hook-stdout-secret"
+	const stderrMarker = "dispatch-hook-stderr-secret"
+	writeTinyScript(t, scriptPath, "#!/bin/sh\nprintf '%s\\n' "+stdoutMarker+"\nprintf '%s\\n' "+stderrMarker+" >&2\nexit 17\n")
+	writeHookFile(t, home, slugifyBasename(repoRoot), scriptPath)
+
+	ctx, stdout, stderr := makeCtx(&fakeBD{}, home)
+	result, err := runWorktreeSetup(ctx, repoRoot)
+	if err == nil || result.Outcome != "exit-17" {
+		t.Fatalf("runWorktreeSetup result=%+v err=%v, want exit-17 failure from real hook runner", result, err)
+	}
+	if strings.Contains(stdout.String(), stdoutMarker) || strings.Contains(stdout.String(), stderrMarker) ||
+		strings.Contains(stderr.String(), stdoutMarker) || strings.Contains(stderr.String(), stderrMarker) {
+		t.Fatalf("hook output leaked through primary dispatch boundary: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestDispatch_CodexPersistsRuntimeAndStartsWorker(t *testing.T) {
 	repoDir := newEnabledRepoDir(t)
 	home := t.TempDir()
@@ -282,6 +462,155 @@ func TestDispatch_RuntimeResolutionAndValidation(t *testing.T) {
 			t.Fatalf("err=%v gitCalled=%v", err, gitCalled)
 		}
 	})
+}
+
+func TestDispatch_ConfigRuntimeDefaultsByClass(t *testing.T) {
+	t.Setenv("ATEAM_RUNTIME", "")
+	tests := []struct {
+		name, topic, explicit, want string
+		withConfig                  bool
+	}{
+		{name: "ordinary work uses work runtime", explicit: "auto", want: "codex", withConfig: true},
+		{name: "review uses review runtime", topic: ReviewsHandle, want: "claude", withConfig: true},
+		{name: "review without config preserves Claude", topic: ReviewsHandle, want: "claude"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir := newEnabledRepoDir(t)
+			home := t.TempDir()
+			if tt.withConfig {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("work_runtime = \"codex\"\nreview_runtime = \"claude\"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var body string
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--body-file=") {
+						data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+						if err != nil {
+							return err
+						}
+						body = string(data)
+					}
+				}
+				dst.(*bd.Issue).ID = "at-config1"
+				return nil
+			}}
+			ctx, _, _ := makeCtx(fbd, home)
+			cmd := &dispatchKong{
+				Problem:  "configured runtime",
+				Repo:     repoDir,
+				NoLaunch: true,
+				Topic:    tt.topic,
+				Runtime:  tt.explicit,
+				git:      &fakeGit{repoRootFn: func(string) (string, error) { return repoDir, nil }},
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(body, "runtime: "+tt.want+"\n") {
+				t.Fatalf("initiative body does not persist %s runtime:\n%s", tt.want, body)
+			}
+		})
+	}
+}
+
+func TestDispatch_HigherRuntimeTiersBypassInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name, explicit, environment, want string
+	}{
+		{name: "explicit beats environment and config", explicit: "claude", environment: "codex", want: "claude"},
+		{name: "environment beats config", environment: "codex", want: "codex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ATEAM_RUNTIME", tt.environment)
+			repoDir := newEnabledRepoDir(t)
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var body string
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				for _, arg := range args {
+					if strings.HasPrefix(arg, "--body-file=") {
+						data, err := os.ReadFile(strings.TrimPrefix(arg, "--body-file="))
+						if err != nil {
+							return err
+						}
+						body = string(data)
+					}
+				}
+				dst.(*bd.Issue).ID = "at-bypass1"
+				return nil
+			}}
+			ctx, _, _ := makeCtx(fbd, home)
+			cmd := &dispatchKong{
+				Problem:  "higher tier",
+				Repo:     repoDir,
+				NoLaunch: true,
+				Runtime:  tt.explicit,
+				git:      &fakeGit{repoRootFn: func(string) (string, error) { return repoDir, nil }},
+			}
+			if err := cmd.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !strings.Contains(body, "runtime: "+tt.want+"\n") {
+				t.Fatalf("initiative body does not persist %s runtime:\n%s", tt.want, body)
+			}
+		})
+	}
+}
+
+func TestDispatch_InvalidConfigFailsBeforeSideEffects(t *testing.T) {
+	t.Setenv("ATEAM_RUNTIME", "")
+	home := t.TempDir()
+	path := filepath.Join(home, "config.toml")
+	if err := os.WriteFile(path, []byte("work_runtime = \"other\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sideEffects := 0
+	cmd := &dispatchKong{
+		Problem: "invalid config",
+		git: &fakeGit{repoRootFn: func(string) (string, error) {
+			sideEffects++
+			return "", nil
+		}},
+		createEpic: func(string, string) (string, error) {
+			sideEffects++
+			return "", nil
+		},
+		transportEnabled: func(string) bool {
+			sideEffects++
+			return true
+		},
+		codexCheck: func(context.Context, string) error {
+			sideEffects++
+			return nil
+		},
+		runtimeStart: func(*cli.Context, runtimeStartRequest) error {
+			sideEffects++
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(&fakeBD{
+		runFn: func(...string) (string, error) {
+			sideEffects++
+			return "", nil
+		},
+		runJSONFn: func(any, ...string) error {
+			sideEffects++
+			return nil
+		},
+	}, home)
+	err := cmd.Run(ctx)
+	if err == nil || cli.ExitCode(err) != 2 || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "work_runtime") {
+		t.Fatalf("Run() error = %v, want usage error naming path and key", err)
+	}
+	if sideEffects != 0 {
+		t.Fatalf("invalid config invoked %d dispatch side effects", sideEffects)
+	}
 }
 
 // ---- dispatch: not a repo --------------------------------------------------
@@ -441,6 +770,7 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	repoDir := newEnabledRepoDir(t)
 
 	var removedRepo, removedWt string
+	setupRan := false
 	fg := &fakeGit{
 		repoRootFn: func(dir string) (string, error) { return repoDir, nil },
 		removeWorktreeFn: func(repoRoot, wtPath string) error {
@@ -463,7 +793,11 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 		Repo:     repoDir,
 		NoLaunch: true,
 		git:      fg,
-		launch:   func(_ *cli.Context, _, _, _, _ string) error { return nil },
+		setup: func(_ *cli.Context, _ string) (worktreeSetupResult, error) {
+			setupRan = true
+			return worktreeSetupResult{}, nil
+		},
+		launch: func(_ *cli.Context, _, _, _, _ string) error { return nil },
 	}
 
 	err := cmd.Run(ctx)
@@ -481,6 +815,9 @@ func TestDispatch_RegisterFailure_RemovesWorktree(t *testing.T) {
 	}
 	if removedRepo != repoDir {
 		t.Errorf("RemoveWorktree called with repo=%q, want %q", removedRepo, repoDir)
+	}
+	if !setupRan {
+		t.Error("successful setup must run before an independent registration failure")
 	}
 }
 
@@ -1227,10 +1564,59 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "at-abc123", "", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
-	// the canonical memoryRoutingRule const.
+	// the canonical driSystemPromptAppend const (memoryRoutingRule +
+	// driGuardrails, concatenated into one string — agent-teams-kxlb.2). A
+	// "/dri " prompt is what a true DRI launch always carries
+	// (launchBGSession prepends it), which is what earns the guardrail
+	// digest — see TestBGSessionArgs_ReviewPromptOmitsGuardrails for the
+	// negative case.
+	found := false
+	for i, a := range args {
+		if a == "--append-system-prompt" {
+			if i+1 >= len(args) {
+				t.Fatal("--append-system-prompt has no following value in argv")
+			}
+			val := args[i+1]
+			if val != driSystemPromptAppend {
+				t.Errorf("value after --append-system-prompt does not match driSystemPromptAppend const:\ngot:  %q\nwant: %q", val, driSystemPromptAppend)
+			}
+			if !strings.Contains(val, "ateam learn") {
+				t.Errorf("append-system-prompt missing 'ateam learn': %q", val)
+			}
+			if !strings.Contains(val, "Never MEMORY.md") {
+				t.Errorf("append-system-prompt missing 'Never MEMORY.md': %q", val)
+			}
+			if !strings.Contains(val, "DRI HARD GUARDRAILS") {
+				t.Errorf("append-system-prompt missing DRI guardrail digest: %q", val)
+			}
+			if !strings.Contains(val, "re-invoke it via the Skill tool") {
+				t.Errorf("append-system-prompt missing the re-invoke-the-skill floor bullet: %q", val)
+			}
+			if !strings.Contains(val, "Never merge without explicit human confirmation") {
+				t.Errorf("append-system-prompt missing the never-merge-without-confirmation guardrail: %q", val)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("argv missing --append-system-prompt; got: %v", args)
+	}
+}
+
+// TestBGSessionArgs_ReviewPromptOmitsGuardrails is the negative case for the
+// "/dri " gate above: a non-DRI bg session launched with a custom
+// --launch-prompt (e.g. review-pr, which hardcodes role "dri" — route.go ->
+// launchRaw — but never prefixes its prompt with "/dri ") must still get
+// memoryRoutingRule (role-agnostic, always wanted) but NOT driGuardrails
+// (DRI-orchestration rules that don't apply and would just add per-turn
+// bloat on a session that isn't a DRI).
+func TestBGSessionArgs_ReviewPromptOmitsGuardrails(t *testing.T) {
+	args := bgSessionArgs("my-session", "/agent-teams:review-pr at-x", "", "", "dri", "at-x", "{}", "")
+
 	found := false
 	for i, a := range args {
 		if a == "--append-system-prompt" {
@@ -1239,13 +1625,10 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 			}
 			val := args[i+1]
 			if val != memoryRoutingRule {
-				t.Errorf("value after --append-system-prompt does not match memoryRoutingRule const:\ngot:  %q\nwant: %q", val, memoryRoutingRule)
+				t.Errorf("value after --append-system-prompt for a non-/dri prompt = %q, want memoryRoutingRule alone: %q", val, memoryRoutingRule)
 			}
-			if !strings.Contains(val, "ateam learn") {
-				t.Errorf("memoryRoutingRule missing 'ateam learn': %q", val)
-			}
-			if !strings.Contains(val, "Never MEMORY.md") {
-				t.Errorf("memoryRoutingRule missing 'Never MEMORY.md': %q", val)
+			if strings.Contains(val, "DRI HARD GUARDRAILS") {
+				t.Errorf("append-system-prompt for a review-pr (non-DRI) session must not contain the DRI guardrail digest: %q", val)
 			}
 			found = true
 			break
@@ -1253,6 +1636,47 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("argv missing --append-system-prompt; got: %v", args)
+	}
+}
+
+func TestBGSessionArgs_ReviewPromptRestrictsMCPToDocsHound(t *testing.T) {
+	const wantJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"https://docs-hound.mgtinsurance.app/api/mcp"}}}`
+	prompt := "/agent-teams:review-pr at-x"
+	args := bgSessionArgs("my-session", prompt, "", "", "dri", "at-x", "{}", "")
+	t.Logf("review-pr argv: %q", args)
+
+	strict, cfg := -1, -1
+	for i, a := range args {
+		switch a {
+		case "--strict-mcp-config":
+			strict = i
+		case "--mcp-config":
+			cfg = i
+		}
+	}
+	if strict < 0 || cfg < 0 {
+		t.Fatalf("argv missing --strict-mcp-config or --mcp-config: %v", args)
+	}
+	if cfg+1 >= len(args) || args[cfg+1] != wantJSON {
+		t.Fatalf("--mcp-config value mismatch; got argv %v", args)
+	}
+	// Variadic guard: a flag, never the positional prompt, must follow the value.
+	if cfg+2 >= len(args)-1 || !strings.HasPrefix(args[cfg+2], "--") {
+		t.Errorf("element after --mcp-config value must be a flag, got %v", args[cfg+2:])
+	}
+	if args[len(args)-1] != prompt {
+		t.Errorf("last argv element = %q, want prompt", args[len(args)-1])
+	}
+}
+
+func TestBGSessionArgs_NonReviewPromptsGetNoMCPFlags(t *testing.T) {
+	for _, prompt := range []string{"/dri at-abc123", "/some-prompt", "/agent-teams:review-prx at-x"} {
+		args := bgSessionArgs("my-session", prompt, "", "", "", "", "{}", "")
+		for _, a := range args {
+			if a == "--strict-mcp-config" || a == "--mcp-config" {
+				t.Errorf("prompt %q: unexpected MCP flag %q in %v", prompt, a, args)
+			}
+		}
 	}
 }
 
@@ -1396,102 +1820,225 @@ func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
 	}
 }
 
-// ---- driAdvisorSettings: env-reading helper --------------------------------
+// ---- driAdvisorSettings: config.toml-reading helper ------------------------
 
-// TestDriAdvisorSettings verifies driAdvisorSettings() returns ("sonnet",
-// driModel) only when CLAUDE_PLUGIN_OPTION_USE_ADVISORS is exactly "true",
-// and (driModel, "") for every other value, including unset, empty, "false",
-// and any casing/value other than the exact string "true". driModel comes
-// from CLAUDE_PLUGIN_OPTION_DRI_MODEL, defaulting to "claude-opus-4-8" when unset or
-// empty. Cases with an explicit non-default dri_model ("haiku") in both the
-// advisor-on and advisor-off branches prove the env var actually threads
-// through, not just the default.
+// TestDriAdvisorSettings verifies driAdvisorSettings(home) returns ("sonnet",
+// claudeDriModel) only when config.toml's use_advisors key is true, and
+// (claudeDriModel, "") otherwise — including when config.toml is absent
+// entirely, which must resolve to the hardcoded defaults (claude-opus-4-8,
+// no advisor) with NO env involved. Cases with an explicit non-default
+// claude_dri_model ("haiku") in both the advisor-on and advisor-off branches
+// prove the config key actually threads through, not just the default.
 func TestDriAdvisorSettings(t *testing.T) {
-	const advisorsKey = "CLAUDE_PLUGIN_OPTION_USE_ADVISORS"
-	const modelKey = "CLAUDE_PLUGIN_OPTION_DRI_MODEL"
-
 	cases := []struct {
-		name           string
-		setAdvisorsEnv bool
-		advisorsValue  string
-		setModelEnv    bool
-		modelValue     string
-		wantModel      string
-		wantAdvisor    string
+		name        string
+		config      string // "" means no config.toml file at all
+		wantModel   string
+		wantAdvisor string
 	}{
-		{name: "true_default_model", setAdvisorsEnv: true, advisorsValue: "true", wantModel: "sonnet", wantAdvisor: "claude-opus-4-8"},
-		{name: "unset_default_model", setAdvisorsEnv: false, wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "empty_default_model", setAdvisorsEnv: true, advisorsValue: "", wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "false_default_model", setAdvisorsEnv: true, advisorsValue: "false", wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "TRUE_wrong_case_default_model", setAdvisorsEnv: true, advisorsValue: "TRUE", wantModel: "claude-opus-4-8", wantAdvisor: ""},
-		{name: "true_nondefault_model", setAdvisorsEnv: true, advisorsValue: "true", setModelEnv: true, modelValue: "haiku", wantModel: "sonnet", wantAdvisor: "haiku"},
-		{name: "false_nondefault_model", setAdvisorsEnv: true, advisorsValue: "false", setModelEnv: true, modelValue: "haiku", wantModel: "haiku", wantAdvisor: ""},
+		{name: "absent_config_defaults", config: "", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "advisors_true_default_model", config: "use_advisors = true\n", wantModel: "sonnet", wantAdvisor: "claude-opus-4-8"},
+		{name: "advisors_false_default_model", config: "use_advisors = false\n", wantModel: "claude-opus-4-8", wantAdvisor: ""},
+		{name: "advisors_true_nondefault_model", config: "use_advisors = true\nclaude_dri_model = \"haiku\"\n", wantModel: "sonnet", wantAdvisor: "haiku"},
+		{name: "advisors_false_nondefault_model", config: "use_advisors = false\nclaude_dri_model = \"haiku\"\n", wantModel: "haiku", wantAdvisor: ""},
+		{name: "model_only_no_advisors_key", config: "claude_dri_model = \"haiku\"\n", wantModel: "haiku", wantAdvisor: ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setAdvisorsEnv {
-				t.Setenv(advisorsKey, tc.advisorsValue)
-			} else {
-				// Ensure the var is unset for this subtest, in case the outer
-				// test process inherited it from the environment.
-				t.Setenv(advisorsKey, "")
-				os.Unsetenv(advisorsKey)
-			}
-			if tc.setModelEnv {
-				t.Setenv(modelKey, tc.modelValue)
-			} else {
-				// Ensure the var is unset for this subtest, in case the outer
-				// test process inherited it from the environment.
-				t.Setenv(modelKey, "")
-				os.Unsetenv(modelKey)
+			home := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 
-			gotModel, gotAdvisor := driAdvisorSettings()
+			gotModel, gotAdvisor, err := driAdvisorSettings(home)
+			if err != nil {
+				t.Fatalf("driAdvisorSettings(%q) unexpected error: %v", home, err)
+			}
 			if gotModel != tc.wantModel || gotAdvisor != tc.wantAdvisor {
-				t.Errorf("driAdvisorSettings() = (%q, %q), want (%q, %q)", gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
+				t.Errorf("driAdvisorSettings(%q) = (%q, %q), want (%q, %q)", home, gotModel, gotAdvisor, tc.wantModel, tc.wantAdvisor)
 			}
 		})
 	}
 }
 
-// ---- driAutoCompactWindow: env-reading helper ------------------------------
+// TestDriAdvisorSettings_InvalidConfigPropagatesError verifies a malformed
+// config.toml surfaces as an error rather than silently falling back to
+// defaults — readers must never swallow a reader error (agent-teams-qox8.2).
+func TestDriAdvisorSettings_InvalidConfigPropagatesError(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := driAdvisorSettings(home); err == nil {
+		t.Fatal("driAdvisorSettings: want error for invalid config.toml, got nil")
+	}
+}
 
-// TestDriAutoCompactWindow verifies driAutoCompactWindow() returns
-// CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW verbatim — empty when unset, and
-// unmodified otherwise, including a non-numeric CLI shorthand and the literal
-// "auto". The helper must NOT reject or normalize any value: validation is
-// the claude CLI's job (bgSessionArgs), not this helper's.
+// ---- driAutoCompactWindow: config.toml-reading helper ----------------------
+
+// TestDriAutoCompactWindow verifies driAutoCompactWindow(home) resolves
+// config.toml's auto_compact_window key (a positive integer token count) to
+// its decimal string form, and returns "" when the key or the file is
+// absent — the unchanged empty-default contract. No env var is read at all:
+// the free-form CLI shorthand ("500k", "auto") the old env-backed helper
+// passed through verbatim no longer applies, since config.toml only ever
+// carries a plain positive int64.
 func TestDriAutoCompactWindow(t *testing.T) {
-	const key = "CLAUDE_PLUGIN_OPTION_AUTO_COMPACT_WINDOW"
-
 	cases := []struct {
 		name   string
-		setEnv bool
-		value  string
+		config string // "" means no config.toml file at all
 		want   string
 	}{
-		{name: "unset", setEnv: false, want: ""},
-		{name: "empty", setEnv: true, value: "", want: ""},
-		{name: "numeric", setEnv: true, value: "450000", want: "450000"},
-		{name: "shorthand", setEnv: true, value: "500k", want: "500k"},
-		{name: "literal_auto", setEnv: true, value: "auto", want: "auto"},
-		{name: "non_numeric_garbage", setEnv: true, value: "banana", want: "banana"},
+		{name: "absent_config", config: "", want: ""},
+		{name: "configured", config: "auto_compact_window = 450000\n", want: "450000"},
+		{name: "regression_witness_300k", config: "auto_compact_window = 300000\n", want: "300000"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setEnv {
-				t.Setenv(key, tc.value)
-			} else {
-				// Ensure the var is unset for this subtest, in case the outer
-				// test process inherited it from the environment.
-				t.Setenv(key, "")
-				os.Unsetenv(key)
+			home := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 
-			if got := driAutoCompactWindow(); got != tc.want {
-				t.Errorf("driAutoCompactWindow() = %q, want %q", got, tc.want)
+			got, err := driAutoCompactWindow(home)
+			if err != nil {
+				t.Fatalf("driAutoCompactWindow(%q) unexpected error: %v", home, err)
+			}
+			if got != tc.want {
+				t.Errorf("driAutoCompactWindow(%q) = %q, want %q", home, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDriAutoCompactWindow_InvalidConfigPropagatesError verifies a malformed
+// config.toml surfaces as an error rather than silently resolving to "".
+func TestDriAutoCompactWindow_InvalidConfigPropagatesError(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driAutoCompactWindow(home); err == nil {
+		t.Fatal("driAutoCompactWindow: want error for invalid config.toml, got nil")
+	}
+}
+
+// TestDriAutoCompactWindow_RegressionWitness_ArgvCarriesFormattedTokens is the
+// end-to-end regression witness (agent-teams-qox8.2): a bare, no-env temp
+// home whose config.toml sets auto_compact_window = 300000 must produce
+// "--autocompact 300000" (strconv.FormatInt of the configured int) in BOTH
+// the dispatch producer's argv (bgSessionArgs) and the steward producer's
+// argv (stewardLaunchArgs) — proving config.toml alone, with no plugin-option
+// env var present, drives the flag on a bare-terminal launch.
+func TestDriAutoCompactWindow_RegressionWitness_ArgvCarriesFormattedTokens(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("auto_compact_window = 300000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	window, err := driAutoCompactWindow(home)
+	if err != nil {
+		t.Fatalf("driAutoCompactWindow(%q) unexpected error: %v", home, err)
+	}
+	if window != "300000" {
+		t.Fatalf("driAutoCompactWindow(%q) = %q, want %q", home, window, "300000")
+	}
+
+	dispatchArgs := bgSessionArgs("sess", "/dri at-abc", "", "", "", "", "{}", window)
+	if !argvContainsSequence(dispatchArgs, "--autocompact", "300000") {
+		t.Errorf("bgSessionArgs argv missing \"--autocompact 300000\": %v", dispatchArgs)
+	}
+
+	stewardArgs := stewardLaunchArgs(window)
+	if !argvContainsSequence(stewardArgs, "--autocompact", "300000") {
+		t.Errorf("stewardLaunchArgs argv missing \"--autocompact 300000\": %v", stewardArgs)
+	}
+}
+
+// argvContainsSequence reports whether args contains flag immediately
+// followed by value at some position i, i+1.
+func argvContainsSequence(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- parseAutoCompactWindowTokens: value parser ---------------------------
+
+// TestParseAutoCompactWindowTokens covers every accepted form the claude
+// CLI's own --autocompact flag documents (plain integer, k/m suffix, bare
+// 100-1000 thousands shorthand, the literal "auto") plus the fail-closed
+// cases (empty, unparseable) that must all resolve to ok=false ("no window").
+func TestParseAutoCompactWindowTokens(t *testing.T) {
+	cases := []struct {
+		name       string
+		value      string
+		wantTokens int
+		wantOK     bool
+	}{
+		{name: "k_suffix", value: "300k", wantTokens: 300000, wantOK: true},
+		{name: "bare_thousands_shorthand", value: "200", wantTokens: 200000, wantOK: true},
+		{name: "plain_integer", value: "300000", wantTokens: 300000, wantOK: true},
+		{name: "m_suffix", value: "1m", wantTokens: 1000000, wantOK: true},
+		{name: "literal_auto", value: "auto", wantOK: false},
+		{name: "auto_uppercase", value: "AUTO", wantOK: false},
+		{name: "empty", value: "", wantOK: false},
+		{name: "zero", value: "0", wantOK: false},
+		{name: "negative", value: "-1", wantOK: false},
+		{name: "overflow", value: "9223372036854775807m", wantOK: false},
+		{name: "garbage", value: "banana", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTokens, gotOK := parseAutoCompactWindowTokens(tc.value)
+			if gotOK != tc.wantOK {
+				t.Fatalf("parseAutoCompactWindowTokens(%q) ok = %v, want %v", tc.value, gotOK, tc.wantOK)
+			}
+			if gotOK && gotTokens != tc.wantTokens {
+				t.Errorf("parseAutoCompactWindowTokens(%q) tokens = %d, want %d", tc.value, gotTokens, tc.wantTokens)
+			}
+		})
+	}
+}
+
+func TestParseAutoCompactWindowValueDistinguishesAutoFromInvalid(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		want      int64
+		wantAuto  bool
+		wantError bool
+	}{
+		{name: "plain tokens", value: "300000", want: 300000},
+		{name: "thousands shorthand", value: "300", want: 300000},
+		{name: "k suffix", value: "300k", want: 300000},
+		{name: "m suffix", value: "1M", want: 1000000},
+		{name: "auto", value: " AUTO ", wantAuto: true},
+		{name: "empty", value: " ", wantError: true},
+		{name: "wrong suffix", value: "300g", wantError: true},
+		{name: "zero", value: "0", wantError: true},
+		{name: "negative", value: "-300k", wantError: true},
+		{name: "parse overflow", value: "9223372036854775808", wantError: true},
+		{name: "multiply overflow", value: "9223372036854775807m", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, automatic, err := parseAutoCompactWindowValue(tt.value)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("parseAutoCompactWindowValue(%q) error = %v, wantError %v", tt.value, err, tt.wantError)
+			}
+			if got != tt.want || automatic != tt.wantAuto {
+				t.Fatalf("parseAutoCompactWindowValue(%q) = %d, %v; want %d, %v", tt.value, got, automatic, tt.want, tt.wantAuto)
 			}
 		})
 	}
@@ -1864,6 +2411,55 @@ func TestResumeKong_RepoDisabled_Refuses(t *testing.T) {
 	}
 }
 
+// TestDefaultResume_MissingWorktree_UsesSharedProductionRecreateSeams is the
+// witness for agent-teams-8st0.30: messaging.go's defaultResume (the
+// mail-send/route-pr-event auto-resume escalation) must wire the same
+// recreateWorktree production seams — gitPrune, git, setup, prState, ... —
+// that RegisterDispatchKong wires for the interactive CLI "resume" verb.
+//
+// Before the fix, defaultResume's resumeKong literal (messaging.go:453) left
+// gitPrune and git nil. recreateWorktree calls c.gitPrune(f.Repo)
+// unconditionally (dispatch.go, right before the branch-exists switch), with
+// no nil-fallback — a nil-valued func call panics. This test drives
+// defaultResume against a REAL git repo whose target branch genuinely
+// doesn't exist locally or at origin, so a correctly-wired resumeKong falls
+// through to the ordinary "branch not found" failure and returns cleanly
+// instead of ever reaching setup or launch — keeping this a fast, local-only
+// unit test with no gh call and no spawned session.
+func TestDefaultResume_MissingWorktree_UsesSharedProductionRecreateSeams(t *testing.T) {
+	repoDir := initGitWorktree(t)
+	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", repoconfig.FileName, err)
+	}
+	missing := filepath.Join(t.TempDir(), "gone")
+	const branch = "no-such-branch-anywhere"
+
+	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+		raw, _ := json.Marshal([]bd.Issue{resumeDriIssue("at-seams1", repoDir, branch, missing)})
+		return string(raw), nil
+	}}
+	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+
+	var panicked any
+	var err error
+	func() {
+		defer func() { panicked = recover() }()
+		err = defaultResume(ctx, "at-seams1", "", "")
+	}()
+	if panicked != nil {
+		t.Fatalf("defaultResume panicked (a recreateWorktree seam — gitPrune/git/setup/prState — was left nil): %v", panicked)
+	}
+	if err == nil {
+		t.Fatal("defaultResume: expected an error (branch missing locally and at origin), got nil")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("expected exit 1, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "not found locally or at origin") {
+		t.Errorf("expected 'not found locally or at origin' in stderr, got: %s", stderr.String())
+	}
+}
+
 // ── dispatch: epic creation ───────────────────────────────────────────────────
 
 // TestDispatch_EpicCreatedAndAppendedToBody verifies that when createEpic
@@ -1933,30 +2529,62 @@ func TestDispatch_EpicCreatedAndAppendedToBody(t *testing.T) {
 
 // ── bgSessionArgs: --settings argument ─────────────────────────────────────
 
-// TestBGSessionArgs_SettingsOmitsAutoCompactWindow pins the decision NOT to
-// configure Claude Code's auto-compact trigger from here. Any value ateam pins
-// can only lower the threshold: unset falls through to the CLI's "auto" term,
-// which is the running model's full context window, while a pinned number is
-// clamped by min(realModelWindow, requested). This call site once requested
-// 200000 and cost every background session 5x its usable context. If a future
-// change reintroduces the key, this test is the thing that should stop it.
-func TestBGSessionArgs_SettingsOmitsAutoCompactWindow(t *testing.T) {
-	// Every production launch path supplies a role, so --settings is present.
-	// The non-empty window cases are the ones that matter: the regression this
-	// guards against is a future change that pins the window in --settings as
-	// well as on argv, which can only happen when a window is actually set.
-	for _, tc := range []struct{ role, initiativeID, window string }{
-		{"dri", "at-abc123", ""},
-		{"dri", "", ""},
-		{"steward", "", ""},
-		{"dri", "at-abc123", "450000"},
-		{"dri", "", "500k"},
-		{"steward", "", "auto"},
+// TestBGSessionArgs_SettingsAutoCompactWindow pins agent-teams-4pc5.3's fix:
+// the auto-compact window now DOES belong in --settings (inverting the older
+// decision this test used to guard — the earlier default-safety argument
+// still holds for the UNSET case, just not for a value the caller actually
+// configured). Nearly all background launches are served by the daemon's
+// pre-warmed spare pool, which claims a session via IPC and only honors
+// --settings, never a startup-time --autocompact flag — so a window pinned
+// only on argv silently never reaches those sessions. Every parseable window
+// must appear as autoCompactEnabled:true + autoCompactWindow:<int> (the
+// global default for autoCompactEnabled is false, so the window alone would
+// still leave compaction off); "auto", empty, and unparseable values must
+// still omit both keys, keeping today's default byte-identical. Unmarshaled
+// into a map rather than string-compared, so key ordering can't make this
+// brittle.
+func TestBGSessionArgs_SettingsAutoCompactWindow(t *testing.T) {
+	for _, tc := range []struct {
+		role, initiativeID, window string
+		wantWindow                 int
+		wantKeys                   bool
+	}{
+		{role: "dri", initiativeID: "at-abc123", window: "", wantKeys: false},
+		{role: "dri", initiativeID: "", window: "", wantKeys: false},
+		{role: "steward", initiativeID: "", window: "", wantKeys: false},
+		{role: "steward", initiativeID: "", window: "auto", wantKeys: false},
+		{role: "dri", initiativeID: "", window: "banana", wantKeys: false},
+		{role: "dri", initiativeID: "at-abc123", window: "450000", wantWindow: 450000, wantKeys: true},
+		{role: "dri", initiativeID: "", window: "500k", wantWindow: 500000, wantKeys: true},
+		{role: "dri", initiativeID: "at-abc123", window: "1m", wantWindow: 1000000, wantKeys: true},
+		{role: "dri", initiativeID: "", window: "200", wantWindow: 200000, wantKeys: true},
 	} {
 		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}", tc.window)
 		got := settingsValue(t, args)
-		if strings.Contains(got, "autoCompactWindow") {
-			t.Errorf("--settings for role=%q window=%q must not pin autoCompactWindow; got %q", tc.role, tc.window, got)
+
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+			t.Fatalf("role=%q window=%q: --settings = %q is not valid JSON: %v", tc.role, tc.window, got, err)
+		}
+
+		if !tc.wantKeys {
+			if _, ok := parsed["autoCompactEnabled"]; ok {
+				t.Errorf("role=%q window=%q: --settings must omit autoCompactEnabled; got %q", tc.role, tc.window, got)
+			}
+			if _, ok := parsed["autoCompactWindow"]; ok {
+				t.Errorf("role=%q window=%q: --settings must omit autoCompactWindow; got %q", tc.role, tc.window, got)
+			}
+			continue
+		}
+		enabled, ok := parsed["autoCompactEnabled"].(bool)
+		if !ok || !enabled {
+			t.Errorf("role=%q window=%q: --settings missing autoCompactEnabled:true; got %q", tc.role, tc.window, got)
+		}
+		winVal, ok := parsed["autoCompactWindow"].(float64)
+		if !ok {
+			t.Errorf("role=%q window=%q: --settings missing numeric autoCompactWindow; got %q", tc.role, tc.window, got)
+		} else if int(winVal) != tc.wantWindow {
+			t.Errorf("role=%q window=%q: autoCompactWindow = %v, want %d", tc.role, tc.window, winVal, tc.wantWindow)
 		}
 	}
 }
@@ -2062,7 +2690,7 @@ func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
 	// The flag it precedes must still be intact.
 	found := false
 	for i, a := range args {
-		if a == "--append-system-prompt" && i+1 < len(args) && args[i+1] == memoryRoutingRule {
+		if a == "--append-system-prompt" && i+1 < len(args) && args[i+1] == driSystemPromptAppend {
 			found = true
 		}
 	}
