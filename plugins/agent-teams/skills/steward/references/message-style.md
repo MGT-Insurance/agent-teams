@@ -22,9 +22,11 @@ fabricated specimen that later contradicts his taste is worse than a blank slot.
 
 These three pairs demonstrate the four cross-kind rules (SKILL.md §5) against real
 sent messages. They are NOT calibrated per-kind specimens awaiting the human's ruling —
-do not read them as filling any empty slot below. Every BEFORE is quoted verbatim
-from a real sent message; every AFTER is new prose written to obey the rules,
-built only from facts already present in its BEFORE.
+do not read them as filling any empty slot below, and not as license for the merge
+phrasing some of them quote verbatim: they predate the "ask is review, never merge"
+rule (SKILL.md §5) same as the calibrated gate-escalation specimen does. Every
+BEFORE is quoted verbatim from a real sent message; every AFTER is new prose
+written to obey the rules, built only from facts already present in its BEFORE.
 
 ### Bare ids, under budget
 
@@ -164,6 +166,11 @@ full URL for every PR. They are Eric's own approved text, left verbatim — not 
 that a bare number is acceptable.*
 
 ### gate-escalation
+
+*The "Merge PR #123 now, or make it cheaper first?" framing below predates the
+rule that a gate-escalation's ask is review, never merge (SKILL.md §5, "The ask
+is review, never merge"). It is Eric's own approved text, left verbatim — not a
+template for a PR he hasn't reviewed yet.*
 
 The rule this specimen illustrates:
 

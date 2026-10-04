@@ -214,7 +214,11 @@ func (c *mailCloseKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam mail close: nil context")
 	}
-	out, err := ctx.BD.Run("close", c.ID)
+	// --force: bd 1.3.0 refuses close when assignee != actor, and mail
+	// wisps are assigned to the recipient initiative while ateam's actor
+	// resolves to the git user. Mail is single-owner, so the concurrent-
+	// reclaim race the guard protects against doesn't apply here.
+	out, err := ctx.BD.Run("close", c.ID, "--force")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}

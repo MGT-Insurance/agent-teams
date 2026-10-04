@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -17,10 +16,10 @@ import (
 var errCodexHookNoInitiative = errors.New("no Codex initiative for hook cwd")
 
 type codexHookInput struct {
-	SessionID      string `json:"session_id"`
-	CWD            string `json:"cwd"`
-	HookEventName  string `json:"hook_event_name"`
-	StopHookActive bool   `json:"stop_hook_active"`
+	SessionID     string `json:"session_id"`
+	CWD           string `json:"cwd"`
+	HookEventName string `json:"hook_event_name"`
+	Source        string `json:"source"`
 }
 
 type codexHookSpecificOutput struct {
@@ -29,17 +28,14 @@ type codexHookSpecificOutput struct {
 }
 
 type codexHookOutput struct {
-	Decision           string                   `json:"decision,omitempty"`
-	Reason             string                   `json:"reason,omitempty"`
 	SystemMessage      string                   `json:"systemMessage,omitempty"`
 	HookSpecificOutput *codexHookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
 type codexHookDeps struct {
-	resolve func(*cli.Context, string) (bd.Issue, error)
+	resolve func(*cli.Context, string, string) (bd.Issue, error)
 	tie     func(*cli.Context, string, string) error
 	unread  func(*cli.Context, string) ([]bd.Issue, error)
-	repair  func(*cli.Context, string) error
 }
 
 type codexHookKong struct {
@@ -58,15 +54,12 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 	if ctx == nil {
 		return fmt.Errorf("ateam codex-hook: nil context")
 	}
+	if event != "session-start" {
+		return fmt.Errorf("ateam codex-hook: unsupported event %q", event)
+	}
 	var hookInput codexHookInput
 	if err := json.NewDecoder(input).Decode(&hookInput); err != nil {
 		return fmt.Errorf("ateam codex-hook: decode input: %w", err)
-	}
-	if event != "session-start" && event != "user-prompt-submit" && event != "stop" {
-		return fmt.Errorf("ateam codex-hook: unsupported event %q", event)
-	}
-	if event == "stop" && hookInput.StopHookActive {
-		return writeCodexHookOutput(ctx, codexHookOutput{})
 	}
 	if deps.resolve == nil {
 		deps.resolve = resolveCodexHookInitiative
@@ -77,10 +70,7 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 	if deps.unread == nil {
 		deps.unread = queryUnreadMessages
 	}
-	if deps.repair == nil {
-		deps.repair = repairCodexDoorbell
-	}
-	issue, err := deps.resolve(ctx, hookInput.CWD)
+	issue, err := deps.resolve(ctx, hookInput.CWD, hookInput.SessionID)
 	if errors.Is(err, errCodexHookNoInitiative) {
 		return writeCodexHookOutput(ctx, codexHookOutput{})
 	}
@@ -94,6 +84,13 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 			output.SystemMessage = "agent-teams could not tie this Codex thread to initiative " + issue.ID + ": " + err.Error()
 		}
 	}
+	if hookInput.Source == "compact" {
+		output.HookSpecificOutput = &codexHookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: driGuardrails}
+		return writeCodexHookOutput(ctx, output)
+	}
+	if hookInput.Source != "startup" && hookInput.Source != "resume" {
+		return writeCodexHookOutput(ctx, output)
+	}
 	messages, err := deps.unread(ctx, issue.ID)
 	if err != nil {
 		output.SystemMessage = "agent-teams could not inspect unread mail for " + issue.ID + ": " + err.Error()
@@ -102,23 +99,25 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 	if len(messages) == 0 {
 		return writeCodexHookOutput(ctx, output)
 	}
-	if err := deps.repair(ctx, issue.ID); err != nil && output.SystemMessage == "" {
-		output.SystemMessage = "agent-teams could not repair the mail doorbell for " + issue.ID + ": " + err.Error()
-	}
 	mailPrompt := fmt.Sprintf("You have %d unread agent-teams message(s). Run `ateam mail inbox` now and act on every message.", len(messages))
-	switch event {
-	case "session-start":
-		output.HookSpecificOutput = &codexHookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: mailPrompt}
-	case "user-prompt-submit":
-		output.HookSpecificOutput = &codexHookSpecificOutput{HookEventName: "UserPromptSubmit", AdditionalContext: mailPrompt}
-	case "stop":
-		output.Decision = "block"
-		output.Reason = mailPrompt
-	}
+	output.HookSpecificOutput = &codexHookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: mailPrompt}
 	return writeCodexHookOutput(ctx, output)
 }
 
-func resolveCodexHookInitiative(ctx *cli.Context, cwd string) (bd.Issue, error) {
+// resolveCodexHookInitiative resolves the Codex initiative for this hook
+// call. A non-empty session ID is resolved first through the durable Codex
+// session binding; an untied or absent ID falls back to the hook cwd.
+func resolveCodexHookInitiative(ctx *cli.Context, cwd, sessionID string) (bd.Issue, error) {
+	if sessionID != "" {
+		issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Codex, sessionID)
+		if err != nil {
+			return bd.Issue{}, err
+		}
+		if found {
+			return issue, nil
+		}
+	}
+
 	var issues []bd.Issue
 	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
 		return bd.Issue{}, err
@@ -136,14 +135,6 @@ func resolveCodexHookInitiative(ctx *cli.Context, cwd string) (bd.Issue, error) 
 		return bd.Issue{}, errCodexHookNoInitiative
 	}
 	return issue, nil
-}
-
-func repairCodexDoorbell(ctx *cli.Context, initiativeID string) error {
-	dir := filepath.Join(ctx.Home, "mailbox")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return touchFile(filepath.Join(dir, initiativeID+".wake"))
 }
 
 func writeCodexHookOutput(ctx *cli.Context, output codexHookOutput) error {

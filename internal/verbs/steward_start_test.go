@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -532,11 +533,13 @@ func TestStewardStartKong_RelayFlag_DefaultsFalse(t *testing.T) {
 
 // TestStewardLaunchArgs_ContainsSettingsFlag verifies that the sanctioned
 // Steward launch argv carries "--settings" immediately followed by the exact
-// stewardSettingsJSON string — the mechanism that publishes ATEAM_ROLE=steward
-// per the role-signal contract (agent-teams-142k.1). No ATEAM_INITIATIVE (the
-// steward is fleet-scoped) and no autoCompactWindow in the settings payload
-// (it travels as a separate argv pair — see
-// TestStewardLaunchArgs_AutoCompactWindow — not through stewardSettingsJSON).
+// stewardSettingsJSON("") string — the mechanism that publishes
+// ATEAM_ROLE=steward per the role-signal contract (agent-teams-142k.1). No
+// ATEAM_INITIATIVE (the steward is fleet-scoped). With no window configured,
+// no autoCompactEnabled/autoCompactWindow keys either (see
+// TestStewardLaunchArgs_AutocompactFlagWhenSet and
+// TestStewardSettingsJSON_AutoCompactWindow below for the non-empty-window
+// case, where those keys DO appear in this same payload).
 func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
 	args := stewardLaunchArgs("")
 
@@ -547,8 +550,8 @@ func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
 				t.Fatal("--settings has no following value in argv")
 			}
 			val := args[i+1]
-			if val != stewardSettingsJSON {
-				t.Errorf("value after --settings = %q, want %q", val, stewardSettingsJSON)
+			if want := stewardSettingsJSON(""); val != want {
+				t.Errorf("value after --settings = %q, want %q", val, want)
 			}
 			found = true
 			break
@@ -557,8 +560,8 @@ func TestStewardLaunchArgs_ContainsSettingsFlag(t *testing.T) {
 	if !found {
 		t.Errorf("argv missing --settings; got: %v", args)
 	}
-	if stewardSettingsJSON != `{"env":{"ATEAM_ROLE":"steward"}}` {
-		t.Errorf("stewardSettingsJSON = %q, want %q", stewardSettingsJSON, `{"env":{"ATEAM_ROLE":"steward"}}`)
+	if got := stewardSettingsJSON(""); got != `{"env":{"ATEAM_ROLE":"steward"}}` {
+		t.Errorf("stewardSettingsJSON(\"\") = %q, want %q", got, `{"env":{"ATEAM_ROLE":"steward"}}`)
 	}
 }
 
@@ -639,5 +642,63 @@ func TestStewardLaunchArgs_AutocompactFlagWhenSet(t *testing.T) {
 		if last := args[len(args)-1]; last != "/agent-teams:steward" {
 			t.Errorf("window %q: last argv element = %q, want %q", window, last, "/agent-teams:steward")
 		}
+	}
+}
+
+// TestStewardSettingsJSON_AutoCompactWindow verifies the steward-specific
+// carrier for the fix in agent-teams-4pc5.3: when autoCompactWindow parses to
+// a real token count, stewardSettingsJSON must carry autoCompactEnabled:true
+// and autoCompactWindow:<int> alongside env.ATEAM_ROLE=steward — the
+// claimed-spare pool that serves nearly all Steward launches only
+// reconfigures a session through --settings, never through the startup-time
+// --autocompact flag (see bgSessionSettings in dispatch.go for the full
+// evidence). "auto", "", and unparseable values must omit both keys, keeping
+// the payload byte-identical to before this fix. Unmarshaled into a map
+// rather than string-compared, so key ordering can't make this brittle.
+func TestStewardSettingsJSON_AutoCompactWindow(t *testing.T) {
+	cases := []struct {
+		window     string
+		wantWindow int
+		wantKeys   bool
+	}{
+		{window: "300k", wantWindow: 300000, wantKeys: true},
+		{window: "200", wantWindow: 200000, wantKeys: true},
+		{window: "300000", wantWindow: 300000, wantKeys: true},
+		{window: "1m", wantWindow: 1000000, wantKeys: true},
+		{window: "auto", wantKeys: false},
+		{window: "", wantKeys: false},
+		{window: "banana", wantKeys: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.window, func(t *testing.T) {
+			got := stewardSettingsJSON(tc.window)
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+				t.Fatalf("stewardSettingsJSON(%q) = %q is not valid JSON: %v", tc.window, got, err)
+			}
+			env, _ := parsed["env"].(map[string]any)
+			if env == nil || env["ATEAM_ROLE"] != "steward" {
+				t.Errorf("stewardSettingsJSON(%q) = %q missing env.ATEAM_ROLE=steward", tc.window, got)
+			}
+			if !tc.wantKeys {
+				if _, ok := parsed["autoCompactEnabled"]; ok {
+					t.Errorf("stewardSettingsJSON(%q) = %q must omit autoCompactEnabled", tc.window, got)
+				}
+				if _, ok := parsed["autoCompactWindow"]; ok {
+					t.Errorf("stewardSettingsJSON(%q) = %q must omit autoCompactWindow", tc.window, got)
+				}
+				return
+			}
+			enabled, ok := parsed["autoCompactEnabled"].(bool)
+			if !ok || !enabled {
+				t.Errorf("stewardSettingsJSON(%q) = %q missing autoCompactEnabled:true", tc.window, got)
+			}
+			winVal, ok := parsed["autoCompactWindow"].(float64)
+			if !ok {
+				t.Errorf("stewardSettingsJSON(%q) = %q missing numeric autoCompactWindow", tc.window, got)
+			} else if int(winVal) != tc.wantWindow {
+				t.Errorf("stewardSettingsJSON(%q) autoCompactWindow = %v, want %d", tc.window, winVal, tc.wantWindow)
+			}
+		})
 	}
 }

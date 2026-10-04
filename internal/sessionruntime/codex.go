@@ -36,7 +36,6 @@ type appServerTurn struct {
 type appServerThread struct {
 	ID     string                `json:"id"`
 	Status appServerThreadStatus `json:"status"`
-	Turns  []appServerTurn       `json:"turns,omitempty"`
 }
 
 type threadResult struct {
@@ -45,6 +44,14 @@ type threadResult struct {
 
 type turnResult struct {
 	Turn appServerTurn `json:"turn"`
+}
+
+// turnsPage is the response shape of thread/turns/list: a page of turn
+// metadata (no items, when requested with itemsView "notLoaded") plus an
+// opaque cursor to fetch the next page.
+type turnsPage struct {
+	Data       []appServerTurn `json:"data"`
+	NextCursor *string         `json:"nextCursor"`
 }
 
 func (a CodexAdapter) Launch(ctx context.Context, req Request, sink SessionSink) error {
@@ -66,8 +73,8 @@ func (a CodexAdapter) Launch(ctx context.Context, req Request, sink SessionSink)
 		"sandbox":        "danger-full-access",
 		"serviceName":    appServerServiceName,
 	}
-	if req.AgentTeamsHome != "" {
-		params["config"] = codexThreadConfig(req.AgentTeamsHome)
+	if req.AgentTeamsHome != "" || req.AutoCompactWindow != nil {
+		params["config"] = codexThreadConfig(req)
 	}
 	if req.Model != "" {
 		params["model"] = req.Model
@@ -105,12 +112,21 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 	}
 	defer client.Close()
 
-	resumeParams := map[string]any{"threadId": session.ID}
-	if req.AgentTeamsHome != "" {
-		// Re-apply the sticky override on every resume. Besides making the
-		// contract explicit, this repairs threads first created by an older
-		// ateam that relied on the managed daemon's process environment.
-		resumeParams["config"] = codexThreadConfig(req.AgentTeamsHome)
+	resumeParams := map[string]any{
+		"threadId": session.ID,
+		// Return thread metadata and live-resume state only; do not hydrate
+		// thread.turns with the full rollout history. A long-running session
+		// exceeds the app-server's 4MB read limit if we hydrate it here. The
+		// in-progress turn (if any) is resolved separately via the paginated
+		// thread/turns/list, which returns metadata only.
+		"excludeTurns": true,
+	}
+	if req.AgentTeamsHome != "" || req.AutoCompactWindow != nil {
+		// Send the current per-thread config on every resume. This repairs the
+		// sticky workspace env for older threads and gives cold reloads request
+		// parity with start. An already loaded thread may retain its active
+		// compaction setting even though the current value is sent here.
+		resumeParams["config"] = codexThreadConfig(req)
 	}
 	if req.Model != "" {
 		resumeParams["model"] = req.Model
@@ -123,19 +139,13 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 		return fmt.Errorf("codex resume: requested thread %s but app-server returned %s", session.ID, resumed.Thread.ID)
 	}
 
-	var read threadResult
-	if err := client.Request(ctx, "thread/read", map[string]any{
-		"threadId":     session.ID,
-		"includeTurns": true,
-	}, &read); err != nil {
-		return fmt.Errorf("codex resume: inspect thread: %w", err)
-	}
-	if read.Thread.ID != session.ID {
-		return fmt.Errorf("codex resume: read returned thread %s, want %s", read.Thread.ID, session.ID)
+	activeTurnID, err := resolveActiveTurnID(ctx, client, session.ID)
+	if err != nil {
+		return fmt.Errorf("codex resume: list turns: %w", err)
 	}
 
-	activeTurnID := activeTurn(read.Thread)
-	if read.Thread.Status.Type == "active" {
+	statusType := resumed.Thread.Status.Type
+	if statusType == "active" {
 		if activeTurnID == "" {
 			return fmt.Errorf("codex resume: thread %s is active but app-server returned no in-progress turn", session.ID)
 		}
@@ -145,7 +155,7 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 		return nil
 	}
 	if activeTurnID != "" {
-		return fmt.Errorf("codex resume: thread %s reports %s with in-progress turn %s", session.ID, read.Thread.Status.Type, activeTurnID)
+		return fmt.Errorf("codex resume: thread %s reports %s with in-progress turn %s", session.ID, statusType, activeTurnID)
 	}
 	if _, err := startCodexTurn(ctx, client, req, session.ID); err != nil {
 		return fmt.Errorf("codex resume: %w", err)
@@ -153,12 +163,17 @@ func (a CodexAdapter) Resume(ctx context.Context, req Request, session SessionRe
 	return nil
 }
 
-func codexThreadConfig(agentTeamsHome string) map[string]any {
-	return map[string]any{
-		"shell_environment_policy": map[string]any{
-			"set": map[string]string{"AGENT_TEAMS_HOME": agentTeamsHome},
-		},
+func codexThreadConfig(req Request) map[string]any {
+	config := make(map[string]any, 2)
+	if req.AgentTeamsHome != "" {
+		config["shell_environment_policy"] = map[string]any{
+			"set": map[string]string{"AGENT_TEAMS_HOME": req.AgentTeamsHome},
+		}
 	}
+	if req.AutoCompactWindow != nil {
+		config["model_auto_compact_token_limit"] = *req.AutoCompactWindow
+	}
+	return config
 }
 
 func validateCodexRequest(req Request) error {
@@ -254,10 +269,50 @@ func steerCodexTurn(ctx context.Context, client appServerRPC, threadID, turnID, 
 	return nil
 }
 
-func activeTurn(thread appServerThread) string {
-	for i := len(thread.Turns) - 1; i >= 0; i-- {
-		if thread.Turns[i].Status == "inProgress" {
-			return thread.Turns[i].ID
+// maxTurnsListPages bounds thread/turns/list pagination so a malformed or
+// looping cursor from the app-server cannot hang resume indefinitely. Real
+// threads page through in the tens to low hundreds of turns at most.
+const maxTurnsListPages = 10000
+
+// resolveActiveTurnID finds the in-progress turn for a thread, if any, using
+// only paginated turn metadata (id + status, no items) so the lookup stays
+// small regardless of how much conversation history the thread carries. It
+// preserves the exact invariant the old full-history scan used: the most
+// recent turn whose status is "inProgress" wins, without assuming the
+// newest turn returned is necessarily the active one.
+func resolveActiveTurnID(ctx context.Context, client appServerRPC, threadID string) (string, error) {
+	var cursor *string
+	for page := 0; page < maxTurnsListPages; page++ {
+		params := map[string]any{
+			"threadId":      threadID,
+			"sortDirection": "desc",
+			"itemsView":     "notLoaded",
+		}
+		if cursor != nil {
+			params["cursor"] = *cursor
+		}
+		var result turnsPage
+		if err := client.Request(ctx, "thread/turns/list", params, &result); err != nil {
+			return "", err
+		}
+		if id := activeTurn(result.Data); id != "" {
+			return id, nil
+		}
+		if result.NextCursor == nil || *result.NextCursor == "" {
+			return "", nil
+		}
+		cursor = result.NextCursor
+	}
+	return "", fmt.Errorf("thread %s: exceeded %d thread/turns/list pages without exhausting turns", threadID, maxTurnsListPages)
+}
+
+// activeTurn scans turns (ordered newest-first, as thread/turns/list returns
+// with sortDirection "desc") and returns the ID of the first one whose status
+// is "inProgress" — the most recent in-progress turn, if any.
+func activeTurn(turns []appServerTurn) string {
+	for _, turn := range turns {
+		if turn.Status == "inProgress" {
+			return turn.ID
 		}
 	}
 	return ""

@@ -6,14 +6,13 @@
 // rebuild of the four committed platform binaries, and a plugin version
 // bump. This file makes them settable at process start.
 //
-// Deliberately NOT the plugin userConfig chain (plugin.json userConfig ->
-// export-plugin-options.sh -> CLAUDE_PLUGIN_OPTION_*). That chain only
-// populates the environment of Bash tool calls made inside a Claude Code
-// session, and the relay is routinely hand-started from a terminal with no
-// CLAUDE_* variables at all — so a userConfig knob would work or not work
-// depending on how the relay happened to be launched that day, with no
-// signal either way. A knob that silently is not connected is worse than no
-// knob.
+// Deliberately not driven by a Claude Code plugin userConfig chain. Such a
+// chain only populates the environment of Bash tool calls made inside a
+// Claude Code session, and the relay is routinely hand-started from a
+// terminal with no CLAUDE_* variables at all — so a userConfig knob would
+// work or not work depending on how the relay happened to be launched that
+// day, with no signal either way. A knob that silently is not connected is
+// worse than no knob.
 //
 // The FILE tier is the primary mechanism, and it works on every launch path
 // unconditionally: AGENT_TEAMS_HOME is pinned explicitly by the supervised

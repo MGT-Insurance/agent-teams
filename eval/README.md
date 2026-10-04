@@ -25,7 +25,9 @@ configurations (currently `opus-noadvisor` and `sonnet-advisor`, the frozen
 v1 registry in `cmd/eval/main.go`) and compares them on cost, latency, tool
 calls, turns, and correctness. It is **not** a pass/fail gate — `eval collect`
 always produces descriptive metrics plus a correctness score, never a
-binary "the build passed."
+binary "the build passed." Every eval dispatch explicitly pins the Claude
+runtime because its model/advisor axes and local session metrics are
+Claude-only; machine runtime defaults cannot redirect these runs.
 
 ## Lifecycle
 
@@ -39,9 +41,10 @@ regardless of your cwd.
    pair not in the frozen registry, **`scripts/eval run --task <path>
    --model <m> [--advisor <a>]`** — see [CLI reference](#cli-reference) for
    how the two forms interact) — loads a `TaskSpec` (see below), resolves its
-   fixture repo to a local clone, and shells `ateam dispatch --repo <clone>
-   --base-branch <FixtureRef> --problem <Problem> --slug <RunID> --model
-   <cfg.DRIModel> [--advisor <cfg.Advisor>] --launch-prompt "/dri {id}"`.
+   fixture repo to a local clone, and shells `ateam dispatch --runtime claude
+   --repo <clone> --base-branch <FixtureRef> --problem <Problem> --slug
+   <RunID> --model <cfg.DRIModel> [--advisor <cfg.Advisor>] --launch-prompt
+   "/dri {id}"`.
    This launches a real DRI agent team that works autonomously — minutes to
    hours — against the fixture. `eval run` itself returns quickly once
    dispatch has started; it prints the `RunID` and writes

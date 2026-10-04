@@ -3,7 +3,10 @@
 # Fires on every user prompt. Does two things:
 #   1. DISARM: kills the pending wake watcher for this initiative (the session
 #      is now active; the watcher re-arms on the next Stop).
-#   2. SIGNAL: runs `ateam mail inbox --peek`; if unread mail is reported, emits an
+#   2. SIGNAL: runs `ateam hook-scan` (one combined bd call resolving the
+#      initiative id AND unread mail — agent-teams-1y0m.8, replacing the old
+#      resolve-initiative + mail inbox --peek pair to cut this hook's per-
+#      prompt Dolt opens from 3 to 1); if unread mail is reported, emits an
 #      additionalContext message telling the model to run `ateam mail inbox`.
 #      Does NOT consume (drain) mail — the model runs `ateam mail inbox` to do that.
 # Silent no-op when cwd is not a registered initiative — teammate subagents and
@@ -19,6 +22,16 @@ ATEAM="${CLAUDE_PLUGIN_ROOT:-}/bin/ateam"
 HOOK_STDIN=$(cat 2>/dev/null || true)
 HOOK_SESSION_ID=$(printf '%s' "$HOOK_STDIN" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 export HOOK_SESSION_ID
+
+# Extra arg for `ateam hook-scan`: pass the session id when known, so a
+# launch-cwd-mismatched session (cwd doesn't match its registered worktree)
+# still resolves via its durable session tie instead of going deaf
+# (agent-teams-y814.4, at-1k234). "unknown" is the stdin-parse-failure
+# sentinel above, not a real session id — omit it too, same as an empty id.
+session_id_flag=""
+if [ -n "$HOOK_SESSION_ID" ] && [ "$HOOK_SESSION_ID" != "unknown" ]; then
+  session_id_flag="$HOOK_SESSION_ID"
+fi
 
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$(dirname "$0")/lib/hook-debug-log.sh"
@@ -41,16 +54,25 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 
 if is_steward_cwd; then
   match_id="steward"
+  # The Steward has no worktree: line to resolve, but still needs its unread
+  # mail checked — `--id` skips path/worktree resolution and checks unread
+  # mail directly for this already-known recipient (internal/verbs/hookscan.go).
+  scan_out=$("$ATEAM" hook-scan --id="$match_id" 2>/dev/null || true)
 else
-  # ── Resolve initiative id for $PWD (the worktree root OR any subdir) ────────
-  # `ateam resolve-initiative` owns the matching rule (internal/verbs/match.go);
-  # this script must not re-derive it.
-  match_id=$("$ATEAM" resolve-initiative "$PWD" 2>/dev/null || true)
+  # ── Resolve initiative id for $PWD (the worktree root OR any subdir) AND ───
+  # check unread mail, both from ONE combined bd call. `ateam hook-scan` owns
+  # the matching rule (internal/verbs/match.go via internal/verbs/hookscan.go);
+  # this script must not re-derive it. --session-id (session_id_flag, computed
+  # above) lets it resolve via the durable session tie first when cwd alone
+  # would find nothing.
+  scan_out=$("$ATEAM" hook-scan "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
+  match_id=$(printf '%s\n' "$scan_out" | sed -n 's/^id: //p')
   if [ -z "$match_id" ]; then
     HOOK_EXIT_REASON="no-open-match"
     exit 0
   fi
 fi
+unread=$(printf '%s\n' "$scan_out" | sed -n 's/^unread: //p')
 
 HOOK_INITIATIVE="$match_id"
 export HOOK_INITIATIVE
@@ -97,16 +119,12 @@ if [ -f "$DOORBELL" ]; then
   hook_log_note "note" "doorbell-consumed initiative=${match_id}"
 fi
 
-# ── Signal: peek at unread mail; emit additionalContext if any ───────────────
-peek_out=$("$ATEAM" mail inbox --peek 2>/dev/null || true)
-# peek reports "N unread message(s)" when mail is present, "no unread mail" otherwise.
-case "$peek_out" in
-  *"unread message"*)
-    signal="You have ${peek_out} — run \`ateam mail inbox\` to read them."
-    HOOK_EXIT_REASON="mail-signaled"
-    jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
-    ;;
-esac
+# ── Signal: unread mail, from the combined scan above; emit additionalContext ─
+if [ -n "$unread" ] && [ "$unread" -gt 0 ]; then
+  signal="You have $unread unread message(s) — run \`ateam mail inbox\` to read them."
+  HOOK_EXIT_REASON="mail-signaled"
+  jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'
+fi
 
 if [ "$HOOK_EXIT_REASON" = "unexpected" ]; then
   HOOK_EXIT_REASON="ok"

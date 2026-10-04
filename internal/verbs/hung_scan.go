@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -120,6 +121,23 @@ type hungScanEntry struct {
 	WorkProductTripEligible bool   `json:"wp_trip_eligible,omitempty"`
 	WorkProductDowngraded   bool   `json:"wp_downgraded,omitempty"` // transcript corroborator held it
 	FailureTokensFound      bool   `json:"failure_tokens_found,omitempty"`
+
+	// ReviewPRURL is agent-teams-huq7.1 S1's review-shaped predicate:
+	// initiative.ReviewPRURL(iss)'s value when iss's Description carries a
+	// "pr-url:" field line, "" otherwise. Additive and classification-neutral
+	// — it never changes Classification/Hung/DeadHung/WorkProductTripEligible
+	// above, it only lets a consumer (the hung tick's S3/S5 backstop) tell a
+	// review-shaped initiative apart from every other kind.
+	ReviewPRURL string `json:"review_pr_url,omitempty"`
+
+	// Notes is iss.Notes, carried through unconditionally so a consumer (the
+	// hung tick's hasReviewPostedNote gate, S2) can evaluate the
+	// review-posted signal without a second bd fetch. Deliberately excluded
+	// from the wire format (json:"-") — Notes is free-form prose that can
+	// grow large and isn't part of this verb's documented emitted shape; it
+	// is an in-process-only convenience field for this package's own
+	// consumers.
+	Notes string `json:"-"`
 }
 
 // hungAnchor is the durable per-initiative record persisted at
@@ -326,8 +344,9 @@ func classifyCodexLiveness(f initiative.Fields, now time.Time, readCodex codexRo
 // catch):
 //  1. DEAD  — worktree directory missing (orphan).
 //  2. AWAITING-HUMAN — labels carry "human" AND ("gate:question" OR
-//     "gate:review") — checked regardless of PID presence, since a real gate
-//     means the initiative is waiting on the human, not hung.
+//     "gate:review" OR "gate:live-test-review") — checked regardless of PID
+//     presence, since a real gate means the initiative is waiting on the
+//     human, not hung.
 //  3. codex runtime — classifyCodexLiveness (above) decides WORKING/STUCK/
 //     DEAD from the rollout file's last event; the Claude-only tail below
 //     (steps 4-6) never runs for a codex initiative, and readCodex is never
@@ -373,7 +392,7 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 	// false stall alert (agent-teams-ssib.22). Call the same predicate
 	// status.go uses for computeExecutionStatus's identical question rather
 	// than writing a second implementation of it.
-	hasGate := hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:review")
+	hasGate := hasGateKind(labels, "gate:question") || hasGateKind(labels, "gate:review") || hasGateKind(labels, "gate:live-test-review")
 	if hasHuman && hasGate {
 		return hungClassAwaitingHuman, matched, cwdPresent
 	}
@@ -393,6 +412,34 @@ func classifyInitiative(labels []string, sessions []agentSession, iss bd.Issue, 
 	}
 
 	return hungClassStuck, matched, cwdPresent
+}
+
+// hasReviewPostedNote reports whether notes (an initiative's bd Notes text)
+// has a line beginning "review-posted:" or "comment-replies:" — the exact
+// markers the review-pr normal-review outcome-note path and comment-reply
+// note path write via `ateam note` once a review or a comment-reply round has
+// actually been posted to GitHub. This is the LOCAL,
+// no-network S2 signal (agent-teams-huq7.1 S2): the note is the
+// authoritative record that WE did our job, so the hung-tick backstop never
+// needs to ask GitHub whether a review exists at all — only (via the
+// separate S4 probe) whether a LATER comment is still awaiting a reply.
+//
+// "review-timeout:" is the NO-REVIEW-POSTED case (the skill gave up waiting
+// for the diff, SKILL.md's timeout path) and deliberately does not match
+// this prefix scan — a timed-out review must not be treated as posted.
+//
+// This is a line-PREFIX scan, not internal/initiative's frozen field-line
+// rule: Notes is free-form prose the skill appends lines like
+// "review-posted: <detail>" into (not routing data), so this intentionally
+// does not reuse fieldLine's "exact key, single colon, single space"
+// grammar from a different package meant for a different kind of text.
+func hasReviewPostedNote(notes string) bool {
+	for _, line := range strings.Split(notes, "\n") {
+		if strings.HasPrefix(line, "review-posted:") || strings.HasPrefix(line, "comment-replies:") {
+			return true
+		}
+	}
+	return false
 }
 
 // scanHung is the reusable classification+anchor engine behind `ateam
@@ -438,6 +485,8 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 		wt := f.Worktree
 		mode := f.Mode
 
+		reviewPRURL, _ := initiative.ReviewPRURL(iss)
+
 		if agentsErr != nil {
 			out = append(out, hungScanEntry{
 				ID:             iss.ID,
@@ -445,6 +494,8 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 				Worktree:       wt,
 				Classification: hungClassUnknown,
 				Mode:           mode,
+				ReviewPRURL:    reviewPRURL,
+				Notes:          iss.Notes,
 			})
 			continue
 		}
@@ -458,6 +509,8 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			Classification: class,
 			CWDPresent:     cwdPresent,
 			Mode:           mode,
+			ReviewPRURL:    reviewPRURL,
+			Notes:          iss.Notes,
 		}
 		if len(matched) > 0 {
 			// Report the primary (first tied session) for the diagnostic
@@ -499,7 +552,14 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			keep = true
 
 			if since, parseErr := time.Parse(time.RFC3339, newAnchor.StuckSince); parseErr == nil {
-				elapsed := nowT.Sub(since)
+				// agent-teams-bq9y.2: discount real machine-sleep time from
+				// the elapsed measurement — a maintenance-sleep span this
+				// machine spends looks identical to "the session stopped
+				// responding" unless it's subtracted out here.
+				elapsed := nowT.Sub(since) - sleptBetween(since, nowT)
+				if elapsed < 0 {
+					elapsed = 0
+				}
 				entry.StuckSince = newAnchor.StuckSince
 				entry.StuckElapsedSeconds = int64(elapsed.Seconds())
 				entry.Hung = elapsed >= hungStuckThreshold
@@ -524,7 +584,12 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			keep = true
 
 			if since, parseErr := time.Parse(time.RFC3339, newAnchor.DeadSince); parseErr == nil {
-				elapsed := nowT.Sub(since)
+				// agent-teams-bq9y.2: same machine-sleep discount as STUCK
+				// above.
+				elapsed := nowT.Sub(since) - sleptBetween(since, nowT)
+				if elapsed < 0 {
+					elapsed = 0
+				}
 				entry.DeadSince = newAnchor.DeadSince
 				entry.DeadElapsedSeconds = int64(elapsed.Seconds())
 				entry.DeadHung = elapsed >= hungDeadWorktreeThreshold
@@ -585,7 +650,11 @@ func scanHung(ctx *cli.Context, agentsFunc agentsJSONFunc, now func() time.Time,
 			if !lastProgress.IsZero() {
 				newAnchor.WorkProductLastProgressAt = lastProgress.UTC().Format(time.RFC3339)
 				entry.WorkProductLastProgress = newAnchor.WorkProductLastProgressAt
-				flat := nowT.Sub(lastProgress)
+				// agent-teams-bq9y.2: discount real machine-sleep time —
+				// the #1 previously sleep-blind clock (lastProgress is built
+				// from external timestamps that don't advance during sleep,
+				// so a suspend inflated this exactly like STUCK/DEAD above).
+				flat := nowT.Sub(lastProgress) - sleptBetween(lastProgress, nowT)
 				if flat < 0 {
 					flat = 0
 				}

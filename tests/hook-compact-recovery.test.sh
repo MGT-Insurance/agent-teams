@@ -25,6 +25,11 @@ chmod +x "$CLAUDE_PLUGIN_ROOT/bin/ateam" "$CLAUDE_PLUGIN_ROOT/bin/ateam-${PLATFO
 
 export AGENT_TEAMS_HOME="$T/ws"
 mkdir -p "$AGENT_TEAMS_HOME" "$T/wt/apps/nested"
+# Every initiative below uses `repo: $T/wt`. `ateam resolve-initiative` silences
+# a match whose repo lacks a `.agent-teams` marker (repoconfig.Enabled, the opt-in
+# kill switch from #150); production repos get the marker at registration time, so
+# the fixture must create it or every case resolves to nothing.
+touch "$T/wt/.agent-teams"
 git -C "$AGENT_TEAMS_HOME" init -q
 (cd "$AGENT_TEAMS_HOME" && bd init --prefix at --non-interactive >/dev/null)
 printf 'problem: test problem\nrepo: %s\nworktree: %s\nbranch: feat/x\nteam: test-team\nmode: interactive\n' "$T/wt" "$T/wt" > "$T/body.md"
@@ -33,7 +38,7 @@ bd -C "$AGENT_TEAMS_HOME" create --title="Hook test initiative" --type=task --pr
 # Case 1: cwd matches a registered open initiative -> emits context
 out=$(cd "$T/wt" && "$SCRIPT")
 echo "$out" | grep -q "Hook test initiative" || { echo "FAIL case1: no context for matching cwd"; exit 1; }
-echo "$out" | grep -q "/dri skill governs" || { echo "FAIL case1: missing governance reminder"; exit 1; }
+echo "$out" | grep -q "re-invoke it now" || { echo "FAIL case1: missing governance reminder"; exit 1; }
 
 # Case 1b: cwd is a SUBDIRECTORY of the worktree -> still recovers.
 # Regression guard for agent-teams-ully.9: the old jq matched the worktree line
@@ -84,5 +89,18 @@ bd -C "$AGENT_TEAMS_HOME" create --title="Inner initiative" --type=task --priori
 out=$(cd "$T/wt/inner/sub" && "$SCRIPT")
 echo "$out" | grep -q "Inner initiative" || { echo "FAIL case6: most-specific worktree did not win"; exit 1; }
 echo "$out" | grep -q "Second real initiative" && { echo "FAIL case6: outer initiative leaked"; exit 1; }
+
+# Case 7: cwd matches NO registered worktree, but the session is durably tied
+# via a "session: <id>" line to an open initiative (agent-teams-y814.8,
+# at-1k234) — --session-id passthrough, wired into compact-recovery.sh by
+# this fix (the same idiom ring .4.3 wired into wake-watcher.sh/inbox-drain.sh/
+# session-start-inbox.sh), still recovers it from stdin's .session_id even
+# though the path-only match below would find nothing. repo stays "$T/wt" (the
+# only directory carrying the .agent-teams enable marker) while worktree is a
+# distinct, never-visited path, so this case cannot pass via cwd matching.
+printf 'problem: session-tied\nrepo: %s\nworktree: %s/wt-tied\nbranch: feat/tied\nteam: t\nmode: interactive\nsession: sess-tie-1\n' "$T/wt" "$T/wt" > "$T/tied-body.md"
+bd -C "$AGENT_TEAMS_HOME" create --title="Session-tied initiative" --type=task --priority=2 --body-file="$T/tied-body.md" >/dev/null
+out=$(cd "$T" && echo '{"session_id":"sess-tie-1"}' | "$SCRIPT")
+echo "$out" | grep -q "Session-tied initiative" || { echo "FAIL case7: session tie did not recover from a non-matching cwd"; exit 1; }
 
 echo "PASS"

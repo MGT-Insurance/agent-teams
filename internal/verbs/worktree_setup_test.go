@@ -223,7 +223,7 @@ func TestWorktreeSetup_ScriptFails(t *testing.T) {
 
 	// A hook that ran and failed must propagate as a nonzero exit — the
 	// worktree may not be fully provisioned.
-	err := cmd.Run(ctx)
+	result, err := cmd.run(ctx)
 	if err == nil {
 		t.Fatal("expected non-nil error when hook script exits nonzero, got nil")
 	}
@@ -231,6 +231,13 @@ func TestWorktreeSetup_ScriptFails(t *testing.T) {
 	// usage-error path's exit 2, and silent so main does not double-print.
 	if code := cli.ExitCode(err); code != 1 {
 		t.Errorf("expected exit 1, got %d", code)
+	}
+	absWtDir, absErr := filepath.Abs(wtDir)
+	if absErr != nil {
+		t.Fatalf("abs worktree path: %v", absErr)
+	}
+	if result.Path != absWtDir || result.Hook != scriptPath || result.Outcome != "exit-42" {
+		t.Fatalf("failed-hook result = %+v, want path=%q hook=%q outcome=exit-42", result, absWtDir, scriptPath)
 	}
 
 	errOut := stderr.String()
@@ -265,8 +272,19 @@ func TestWorktreeSetup_ConfiguredScriptMissing(t *testing.T) {
 	ctx, _, stderr := makeWTCtx(home)
 	cmd := &worktreeSetupKong{git: fg, runner: defaultCmdRunner, WtPath: wtDir}
 
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("expected nil (missing script is non-fatal), got: %v", err)
+	result, err := cmd.run(ctx)
+	if err == nil {
+		t.Fatal("expected configured missing script to return exit 1")
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Fatalf("configured missing script exit code = %d, want 1", code)
+	}
+	absWtDir, err := filepath.Abs(wtDir)
+	if err != nil {
+		t.Fatalf("abs worktree path: %v", err)
+	}
+	if result.Path != absWtDir || result.Hook != missingScript || result.Outcome != "missing" {
+		t.Fatalf("missing-hook result = %+v, want path=%q hook=%q outcome=missing", result, absWtDir, missingScript)
 	}
 
 	errOut := stderr.String()
@@ -275,6 +293,73 @@ func TestWorktreeSetup_ConfiguredScriptMissing(t *testing.T) {
 	}
 	if !strings.Contains(errOut, missingScript) {
 		t.Errorf("expected missing script path in warning, got: %q", errOut)
+	}
+}
+
+func TestWorktreeSetup_UnexpectedHookFilesystemErrorsHardFail(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(t *testing.T, home, repoKey string) string
+		wantError string
+	}{
+		{
+			name: "hook registry is a directory",
+			configure: func(t *testing.T, home, repoKey string) string {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(home, "worktree-hooks", repoKey), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return ""
+			},
+			wantError: "cannot read configured hook",
+		},
+		{
+			name: "hook script stat is not ENOENT",
+			configure: func(t *testing.T, home, repoKey string) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "not-a-directory")
+				if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				writeHookFile(t, home, repoKey, filepath.Join(path, "child"))
+				return ""
+			},
+			wantError: "cannot stat configured hook script",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			repoRoot := t.TempDir()
+			wtDir := t.TempDir()
+			repoKey := slugifyBasename(repoRoot)
+			tt.configure(t, home, repoKey)
+
+			ctx, stdout, stderr := makeWTCtx(home)
+			cmd := &worktreeSetupKong{
+				git: &fakeWTGit{
+					repoRootFn:  func(string) (string, error) { return repoRoot, nil },
+					commonDirFn: func(string) (string, error) { return filepath.Join(repoRoot, ".git"), nil },
+				},
+				runner: func(string, []string, interface{ Write([]byte) (int, error) }, interface{ Write([]byte) (int, error) }) error {
+					t.Fatal("runner must not start after an unexpected hook filesystem error")
+					return nil
+				},
+				WtPath: wtDir,
+			}
+
+			result, err := cmd.run(ctx)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("run error = %v, want hard error containing %q", err, tt.wantError)
+			}
+			if result != (worktreeSetupResult{}) {
+				t.Fatalf("unexpected filesystem error result = %+v, want no configured-hook failure result", result)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("unexpected filesystem error output stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 

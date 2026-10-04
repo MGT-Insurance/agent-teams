@@ -7,6 +7,7 @@
 package verbs
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -120,12 +121,10 @@ func defaultDirExists(path string) bool {
 	return fi.IsDir()
 }
 
-// defaultStopSession runs `claude stop <id>`.
+// defaultStopSession runs `claude stop <id>`, bounded via runBoundedClaude so
+// a hung `claude stop` can no longer stall its callers (reap, reap-orphans,
+// and ateam resume's supersede path) or orphan a grandchild.
 func defaultStopSession(id string) error {
-	cmd := exec.Command("claude", "stop", id)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("claude stop %s: %w (output: %s)", id, err, string(out))
-	}
-	return nil
+	_, err := runBoundedClaude(context.Background(), claudeCallTimeout, "stop", id)
+	return err
 }

@@ -5,6 +5,7 @@
 package verbs
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,19 +72,10 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 		}
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: matched %s (%s) for %s#%d — routing via mail send\n",
 			result.InitiativeID, matchHowLabel(result.How), c.Repo, c.PRNumber)
-		if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
-			return fmt.Errorf("ateam route-pr-event: send: %w", err)
-		}
-		return nil
+		return c.send(ctx, result.InitiativeID)
 
-	case c.Transition == TransitionReviewRequested:
-		return c.spawnReviewInitiative(ctx, event)
-
-	case c.Transition == TransitionReReview:
-		return c.routeReReview(ctx, event)
-
-	case c.Transition == TransitionCommentReply:
-		return c.routeCommentReply(ctx, event)
+	case c.Transition == TransitionReviewRequested, c.Transition == TransitionReReview, c.Transition == TransitionCommentReply:
+		return c.routeClosedOrSpawn(ctx, event)
 
 	default:
 		fmt.Fprintf(ctx.Stdout, "route-pr-event: unowned %s for %s#%d — no owning initiative; skipping\n",
@@ -92,113 +84,103 @@ func (c *routePREventKong) Run(ctx *cli.Context) error {
 	}
 }
 
-// sendArgs builds the mail-send argv for routing the event body to id. A
-// re_review send threads the reviewer launch prompt so a dead session is
-// resumed as a reviewer on sonnet (matching the spawn path), never a DRI.
-func (c *routePREventKong) sendArgs(id string) []string {
-	args := []string{"mail", "send", id, "--file", c.BodyFile, "--sender", "pr-shepherd"}
-	if c.Transition == TransitionReReview {
-		args = append(args,
-			"--resume-launch-prompt", "/agent-teams:review-pr "+id,
-			"--resume-model", "sonnet")
-	}
-	return args
-}
-
-// routeReReview handles transition=re_review when no open initiative owns
-// the PR: reopen the closed review initiative and mail it the re-review
-// request. A fresh spawn is the fallback at every step — no prior
-// initiative, reopen failure, or send failure (e.g. deleted worktree) all
-// degrade to a new review initiative rather than dropping the event.
-// Caveat: if reopen succeeds but the send fails, the spawn fallback leaves
-// TWO open initiatives for the same PR (the reopened one never got the
-// mail); a later poll may then hit matchInitiative's ambiguity error and
-// need manual cleanup (close one). Accepted: rare, and losing the re-review
-// event silently would be worse.
-func (c *routePREventKong) routeReReview(ctx *cli.Context, event PREvent) error {
-	result, err := matchClosedReviewInitiative(ctx, event)
+// send builds the mail-send argv (sendArgs) and runs it, removing the temp
+// body file it wrote regardless of the runner's outcome.
+func (c *routePREventKong) send(ctx *cli.Context, id string) error {
+	args, tmpPath, err := c.sendArgs(id)
 	if err != nil {
-		return fmt.Errorf("ateam route-pr-event: re-review match: %w", err)
+		return fmt.Errorf("ateam route-pr-event: build send args: %w", err)
 	}
-	if result.How == MatchNone {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review for %s#%d has no prior initiative — spawning fresh review\n",
-			event.Repo, event.PRNumber)
-		return c.spawnReviewInitiative(ctx, event)
-	}
-	// Disabled repos get NO fallback here, unlike a reopen/send failure below:
-	// this is deliberate operator policy, not a transient error, so degrading
-	// to spawnReviewInitiative (which would independently re-check the SAME
-	// repo via review-repos config and refuse too) would just be a confusing
-	// second path to the same "no" — a direct, explicit skip is clearer and
-	// does not depend on that second check agreeing.
-	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
-			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
-		return nil
-	}
-	fmt.Fprintf(ctx.Stdout, "route-pr-event: re_review matched closed %s for %s#%d — reopening\n",
-		result.InitiativeID, event.Repo, event.PRNumber)
-	if err := c.runner("reopen", result.InitiativeID); err != nil {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — spawning fresh review\n",
-			result.InitiativeID, err)
-		return c.spawnReviewInitiative(ctx, event)
-	}
-	if err := c.runner(c.sendArgs(result.InitiativeID)...); err != nil {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — spawning fresh review\n",
-			result.InitiativeID, err)
-		return c.spawnReviewInitiative(ctx, event)
+	sendErr := c.runner(args...)
+	os.Remove(tmpPath)
+	if sendErr != nil {
+		return fmt.Errorf("ateam route-pr-event: send: %w", sendErr)
 	}
 	return nil
 }
 
-// routeCommentReply handles transition=comment_reply when no open initiative
-// owns the PR: reopen the closed review initiative and mail it the reply so
-// the relaunched session can respond in-thread (the resume prompt carries the
-// comment-reply mode argument). Unlike re_review there is NO spawn fallback —
-// a fresh full review is the wrong response to a comment — so no-match,
-// reopen failure, and send failure all log and drop the event. A drop is
-// terminal for THIS event (pr-shepherd's cursor advances regardless); the
-// recovery mechanism is thread re-derivation — the comment-reply session
-// reads whole threads from GitHub, so the next reply on the PR re-triggers
-// routing and the relaunched session answers the dropped reply too.
-func (c *routePREventKong) routeCommentReply(ctx *cli.Context, event PREvent) error {
+// sendArgs builds the mail-send argv that routes the event to id (CONTRACT
+// agent-teams-8st0.18 item 4). The message body is "transition: <t>"
+// prepended to the event body (read from c.BodyFile) and written to a fresh
+// temp file — mail send reads it via --file, same contract as BodyFile
+// itself. --dedup-key is the first 16 hex chars of
+// sha256(repo#pr|transition|body), so pr-shepherd's retry after a failed
+// reopen or a failed send (mail send always stores per 8st0.19, so the
+// message already exists) dedups into the same message instead of creating
+// a second one. Returns the temp file's path so the caller removes it once
+// the runner returns.
+func (c *routePREventKong) sendArgs(id string) (args []string, tmpPath string, err error) {
+	body, err := os.ReadFile(c.BodyFile)
+	if err != nil {
+		return nil, "", fmt.Errorf("read body-file: %w", err)
+	}
+
+	tmp, err := os.CreateTemp("", "route-body-*.txt")
+	if err != nil {
+		return nil, "", fmt.Errorf("create temp body file: %w", err)
+	}
+	if _, err := tmp.WriteString("transition: " + string(c.Transition) + "\n" + string(body)); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return nil, "", fmt.Errorf("write temp body file: %w", err)
+	}
+	tmp.Close()
+
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s#%d|%s|%s", c.Repo, c.PRNumber, c.Transition, body)))
+	key := fmt.Sprintf("%x", sum)[:16]
+
+	return []string{"mail", "send", id, "--file", tmp.Name(), "--sender", "pr-shepherd", "--dedup-key", key}, tmp.Name(), nil
+}
+
+// routeClosedOrSpawn handles review_requested, re_review, and comment_reply
+// when no OPEN initiative matches the PR (CONTRACT agent-teams-8st0.18 item
+// 4, agent-teams-8st0.27 rev 5): a closed review initiative matching the PR
+// is reopened and ALWAYS sent to, regardless of whether the reopen
+// succeeded — mail send always stores the message (8st0.19), so a failed
+// reopen just leaves it queued; pr-shepherd's retry re-matches the
+// still-closed initiative, reopens it, and the resend dedups (no second
+// message). A reopen failure is reported by returning an error AFTER the
+// send call, so the process exits 1 and the caller retries. No closed match
+// at all spawns a fresh review for review_requested/re_review; comment_reply
+// has nothing to answer into without a prior review, so it skips.
+func (c *routePREventKong) routeClosedOrSpawn(ctx *cli.Context, event PREvent) error {
 	result, err := matchClosedReviewInitiative(ctx, event)
 	if err != nil {
-		return fmt.Errorf("ateam route-pr-event: comment-reply match: %w", err)
+		return fmt.Errorf("ateam route-pr-event: closed-match: %w", err)
 	}
 	if result.How == MatchNone {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply for %s#%d has no initiative — skipping\n",
-			event.Repo, event.PRNumber)
-		return nil
-	}
-	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
-			result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
-		return nil
-	}
-	fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply matched closed %s for %s#%d — reopening\n",
-		result.InitiativeID, event.Repo, event.PRNumber)
-	if err := c.runner("reopen", result.InitiativeID); err != nil {
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — dropping comment-reply event\n",
-			result.InitiativeID, err)
-		return nil
-	}
-	sendArgs := []string{"mail", "send", result.InitiativeID, "--file", c.BodyFile, "--sender", "pr-shepherd",
-		"--resume-launch-prompt", "/agent-teams:review-pr " + result.InitiativeID + " comment-reply",
-		"--resume-model", "sonnet"}
-	if err := c.runner(sendArgs...); err != nil {
-		// Compensating close: leaving the initiative open would capture ALL
-		// future events for this PR on the open-match branch (and fail the
-		// same way). Restore the closed state so later events re-match via
-		// matchClosedReviewInitiative. Best-effort — a close failure only
-		// costs us the same zombie we'd otherwise have.
-		if closeErr := c.runner("close", result.InitiativeID, "--reason", "comment-reply send failed; restoring closed state"); closeErr != nil {
-			fmt.Fprintf(ctx.Stdout, "route-pr-event: compensating close of %s also failed (%v) — initiative left open, needs manual close\n",
-				result.InitiativeID, closeErr)
+		if c.Transition == TransitionCommentReply {
+			fmt.Fprintf(ctx.Stdout, "route-pr-event: comment_reply for %s#%d has no initiative — skipping\n",
+				event.Repo, event.PRNumber)
+			return nil
 		}
-		fmt.Fprintf(ctx.Stdout, "route-pr-event: send to %s failed (%v) — comment-reply event dropped\n",
-			result.InitiativeID, err)
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: %s for %s#%d has no prior initiative — spawning fresh review\n",
+			c.Transition, event.Repo, event.PRNumber)
+		return c.spawnReviewInitiative(ctx, event)
+	}
+	// Disabled repos get NO reopen and NO fallback here: this is deliberate
+	// operator policy, not a transient error, so degrading to
+	// spawnReviewInitiative (which would independently re-check the SAME
+	// repo via review-repos config and refuse too) would just be a confusing
+	// second path to the same "no" — a direct, explicit skip is clearer and
+	// does not depend on that second check agreeing.
+	if result.Repo != "" && !repoconfig.Enabled(result.Repo) {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: %s matched closed %s for %s#%d but its repo is disabled (%s); skipping\n",
+			c.Transition, result.InitiativeID, event.Repo, event.PRNumber, repoconfig.FileName)
 		return nil
+	}
+	fmt.Fprintf(ctx.Stdout, "route-pr-event: %s matched closed %s for %s#%d — reopening\n",
+		c.Transition, result.InitiativeID, event.Repo, event.PRNumber)
+	reopenErr := c.runner("reopen", result.InitiativeID)
+	if reopenErr != nil {
+		fmt.Fprintf(ctx.Stdout, "route-pr-event: reopen %s failed (%v) — sending anyway\n",
+			result.InitiativeID, reopenErr)
+	}
+	if sendErr := c.send(ctx, result.InitiativeID); sendErr != nil {
+		return sendErr
+	}
+	if reopenErr != nil {
+		return fmt.Errorf("ateam route-pr-event: reopen %s failed: %w", result.InitiativeID, reopenErr)
 	}
 	return nil
 }
@@ -209,10 +191,11 @@ func RegisterRouteEventKong(p *cli.Parser) {
 }
 
 // spawnReviewInitiative handles the SPAWN path (fkr.23): an unowned PR with
-// transition=review_requested. It resolves the event repo to a local clone
-// path via a config file at <ctx.Home>/review-repos/<repo-key>, where
-// repo-key = Slugify(basename(event.Repo)). If the config file is absent, or
-// if it's present but the clone has no (or a disabled) .agent-teams file
+// transition=review_requested or re_review and no prior (open or closed)
+// initiative for it. It resolves the event repo to a local clone path via a
+// config file at <ctx.Home>/review-repos/<repo-key>, where repo-key =
+// Slugify(basename(event.Repo)). If the config file is absent, or if it's
+// present but the clone has no (or a disabled) .agent-teams file
 // (internal/repoconfig), it logs a skip message and returns nil — the latter
 // check exists so a disabled repo with an open review_requested PR degrades
 // to one quiet log line per pr-shepherd poll instead of a dispatch subprocess

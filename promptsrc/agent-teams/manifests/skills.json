@@ -1,0 +1,536 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "skill.dispatch-dri",
+      "kind": "skill",
+      "status": "paired",
+      "inputs": [
+        {"id": "claude-header", "path": "promptsrc/agent-teams/skills/dispatch-dri/claude-header.md"},
+        {"id": "codex-header", "path": "promptsrc/agent-teams/skills/dispatch-dri/codex-header.md"},
+        {"id": "shared-authority", "path": "promptsrc/agent-teams/skills/dispatch-dri/shared-authority.md"},
+        {"id": "shared-preflight", "path": "promptsrc/agent-teams/skills/dispatch-dri/shared-preflight.md"},
+        {"id": "claude-preflight", "path": "promptsrc/agent-teams/skills/dispatch-dri/claude-preflight.md"},
+        {"id": "codex-preflight", "path": "promptsrc/agent-teams/skills/dispatch-dri/codex-preflight.md"},
+        {"id": "shared-capture", "path": "promptsrc/agent-teams/skills/dispatch-dri/shared-capture.md"},
+        {"id": "claude-dispatch", "path": "promptsrc/agent-teams/skills/dispatch-dri/claude-dispatch.md"},
+        {"id": "codex-dispatch", "path": "promptsrc/agent-teams/skills/dispatch-dri/codex-dispatch.md"},
+        {"id": "shared-handoff", "path": "promptsrc/agent-teams/skills/dispatch-dri/shared-handoff.md"},
+        {"id": "claude-footer", "path": "promptsrc/agent-teams/skills/dispatch-dri/claude-footer.md"},
+        {"id": "codex-footer", "path": "promptsrc/agent-teams/skills/dispatch-dri/codex-footer.md"}
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dispatch-dri/SKILL.md",
+          "format": "markdown",
+          "parts": ["claude-header", "shared-authority", "shared-preflight", "claude-preflight", "shared-capture", "claude-dispatch", "shared-handoff", "claude-footer"],
+          "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/dispatch-dri", "min_headroom": 4000}
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dispatch-dri/SKILL.md",
+          "format": "markdown",
+          "parts": ["codex-header", "shared-authority", "shared-preflight", "codex-preflight", "shared-capture", "codex-dispatch", "shared-handoff", "codex-footer"],
+          "skill_budget": {"base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/dispatch-dri", "min_headroom": 4000}
+        }
+      ]
+    },
+    {
+      "id": "skill.dri",
+      "kind": "skill",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "claude-header",
+          "path": "promptsrc/agent-teams/skills/dri/claude-header.md"
+        },
+        {
+          "id": "codex-header",
+          "path": "promptsrc/agent-teams/skills/dri/codex-header.md"
+        },
+        {
+          "id": "shared-authority",
+          "path": "promptsrc/agent-teams/skills/dri/shared-authority.md"
+        },
+        {
+          "id": "claude-runtime",
+          "path": "promptsrc/agent-teams/skills/dri/claude-runtime.md"
+        },
+        {
+          "id": "codex-runtime",
+          "path": "promptsrc/agent-teams/skills/dri/codex-runtime.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "claude-header",
+            "shared-authority",
+            "claude-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/dri",
+            "min_headroom": 4000
+          }
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "codex-header",
+            "shared-authority",
+            "codex-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/dri",
+            "min_headroom": 4000
+          }
+        }
+      ]
+    },
+    {
+      "id": "skill.setup-agent-teams",
+      "kind": "skill",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "claude-header",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/claude-header.md"
+        },
+        {
+          "id": "codex-header",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/codex-header.md"
+        },
+        {
+          "id": "shared-workspace",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/shared-workspace.md"
+        },
+        {
+          "id": "claude-runtime",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/claude-runtime.md"
+        },
+        {
+          "id": "codex-runtime",
+          "path": "promptsrc/agent-teams/skills/setup-agent-teams/codex-runtime.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/setup-agent-teams/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "claude-header",
+            "shared-workspace",
+            "claude-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/setup-agent-teams",
+            "min_headroom": 4000
+          }
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md",
+          "format": "markdown",
+          "parts": [
+            "codex-header",
+            "shared-workspace",
+            "codex-runtime"
+          ],
+          "skill_budget": {
+            "base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/setup-agent-teams",
+            "min_headroom": 4000
+          }
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.execution",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/execution-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/execution-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/execution-codex.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/references/execution.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/execution.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.gates",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/gates-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/gates-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/gates-codex.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/references/gate-protocol.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/gates.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.registry",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/registry-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/registry-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/registry-codex.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/references/registry.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/registry.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.wind-down",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/wind-down-shared.md"
+        },
+        {
+          "id": "claude",
+          "path": "promptsrc/agent-teams/skills/dri/references/wind-down-claude.md"
+        },
+        {
+          "id": "codex",
+          "path": "promptsrc/agent-teams/skills/dri/references/wind-down-codex.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/references/wind-down.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "claude"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/wind-down.md",
+          "format": "markdown",
+          "parts": [
+            "shared",
+            "codex"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.memory",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "claude-header",
+          "path": "promptsrc/agent-teams/skills/dri/references/memory-claude-header.md"
+        },
+        {
+          "id": "codex-header",
+          "path": "promptsrc/agent-teams/skills/dri/references/memory-codex-header.md"
+        },
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/memory-shared.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/references/memory.md",
+          "format": "markdown",
+          "parts": [
+            "claude-header",
+            "shared"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/memory.md",
+          "format": "markdown",
+          "parts": [
+            "codex-header",
+            "shared"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.pr-text",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [
+        {
+          "id": "shared",
+          "path": "promptsrc/agent-teams/skills/dri/references/pr-text-shared.md"
+        }
+      ],
+      "outputs": [
+        {
+          "path": "plugins/agent-teams/skills/dri/references/pr-text.md",
+          "format": "markdown",
+          "parts": [
+            "shared"
+          ]
+        },
+        {
+          "path": "plugins/agent-teams-codex/skills/dri/references/pr-text.md",
+          "format": "markdown",
+          "parts": [
+            "shared"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference.dri.advisor",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Claude-only advisor mechanics have no Codex runtime counterpart.",
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/dri/references/advisor.md", "format": "markdown"}
+      ]
+    },
+    {
+      "id": "skill.bg-session",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude native background-session controls have no Codex product surface requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/bg-session/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "skill.condense",
+      "kind": "skill",
+      "status": "paired",
+      "inputs": [
+        {"id": "claude-header", "path": "promptsrc/agent-teams/skills/condense/claude-header.md"},
+        {"id": "shared-single-role", "path": "promptsrc/agent-teams/skills/condense/shared-single-role.md"},
+        {"id": "claude-all-role-heading", "path": "promptsrc/agent-teams/skills/condense/claude-all-role-heading.md"},
+        {"id": "shared-all-role-lock", "path": "promptsrc/agent-teams/skills/condense/shared-all-role-lock.md"},
+        {"id": "shared-gate", "path": "promptsrc/agent-teams/skills/condense/shared-gate.md"},
+        {"id": "claude-gate-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-gate-explanation.md"},
+        {"id": "shared-skip", "path": "promptsrc/agent-teams/skills/condense/shared-skip.md"},
+        {"id": "claude-sweep-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-sweep-explanation.md"},
+        {"id": "shared-packet-order", "path": "promptsrc/agent-teams/skills/condense/shared-packet-order.md"},
+        {"id": "claude-packet-order-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-packet-order-explanation.md"},
+        {"id": "shared-packet-order-reference", "path": "promptsrc/agent-teams/skills/condense/shared-packet-order-reference.md"},
+        {"id": "shared-packet-example", "path": "promptsrc/agent-teams/skills/condense/shared-packet-example.md"},
+        {"id": "shared-packet-semantics", "path": "promptsrc/agent-teams/skills/condense/shared-packet-semantics.md"},
+        {"id": "shared-all-role-release", "path": "promptsrc/agent-teams/skills/condense/shared-all-role-release.md"},
+        {"id": "claude-procedure-heading", "path": "promptsrc/agent-teams/skills/condense/claude-procedure-heading.md"},
+        {"id": "shared-design-order", "path": "promptsrc/agent-teams/skills/condense/shared-design-order.md"},
+        {"id": "claude-design-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-design-explanation.md"},
+        {"id": "shared-promotion", "path": "promptsrc/agent-teams/skills/condense/shared-promotion.md"},
+        {"id": "shared-apply", "path": "promptsrc/agent-teams/skills/condense/shared-apply.md"},
+        {"id": "claude-apply-explanation", "path": "promptsrc/agent-teams/skills/condense/claude-apply-explanation.md"},
+        {"id": "shared-apply-maintenance", "path": "promptsrc/agent-teams/skills/condense/shared-apply-maintenance.md"},
+        {"id": "shared-drain", "path": "promptsrc/agent-teams/skills/condense/shared-drain.md"},
+        {"id": "shared-verify", "path": "promptsrc/agent-teams/skills/condense/shared-verify.md"},
+        {"id": "claude-memory", "path": "promptsrc/agent-teams/skills/condense/claude-memory.md"},
+        {"id": "codex-header", "path": "promptsrc/agent-teams/skills/condense/codex-header.md"},
+        {"id": "codex-all-role-heading", "path": "promptsrc/agent-teams/skills/condense/codex-all-role-heading.md"},
+        {"id": "codex-procedure-heading", "path": "promptsrc/agent-teams/skills/condense/codex-procedure-heading.md"},
+        {"id": "codex-memory", "path": "promptsrc/agent-teams/skills/condense/codex-memory.md"}
+      ],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/SKILL.md", "format": "markdown", "parts": ["claude-header", "shared-single-role", "claude-all-role-heading", "shared-all-role-lock", "shared-gate", "claude-gate-explanation", "shared-skip", "claude-sweep-explanation", "shared-packet-order", "claude-packet-order-explanation", "shared-packet-order-reference", "shared-packet-example", "shared-packet-semantics", "shared-all-role-release", "claude-procedure-heading", "shared-design-order", "claude-design-explanation", "shared-promotion", "shared-apply", "claude-apply-explanation", "shared-apply-maintenance", "shared-drain", "shared-verify", "claude-memory"], "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/condense", "min_headroom": 600}},
+        {"path": "plugins/agent-teams-codex/skills/condense/SKILL.md", "format": "markdown", "parts": ["codex-header", "shared-single-role", "codex-all-role-heading", "shared-all-role-lock", "shared-gate", "shared-skip", "shared-packet-order", "shared-packet-order-reference", "shared-packet-example", "shared-packet-semantics", "codex-procedure-heading", "shared-design-order", "shared-promotion", "shared-apply", "shared-apply-maintenance", "shared-drain", "shared-verify", "shared-all-role-release", "codex-memory"], "skill_budget": {"base_directory": "/Users/example/.codex/plugins/cache/personal/agent-teams-codex/skills/condense", "min_headroom": 4000}}
+      ]
+    },
+    {
+      "id": "reference.condense.drain-ordering",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/drain-ordering.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/drain-ordering.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/drain-ordering.md", "format": "markdown", "parts": ["shared"]}
+      ]
+    },
+    {
+      "id": "reference.condense.recall-verification",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/recall-verification.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/recall-verification.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/recall-verification.md", "format": "markdown", "parts": ["shared"]}
+      ]
+    },
+    {
+      "id": "reference.condense.trigger-design",
+      "kind": "reference",
+      "status": "paired",
+      "inputs": [{"id": "shared", "path": "promptsrc/agent-teams/skills/condense/trigger-design.md"}],
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/condense/references/trigger-design.md", "format": "markdown", "parts": ["shared"]},
+        {"path": "plugins/agent-teams-codex/skills/condense/references/trigger-design.md", "format": "markdown", "parts": ["shared"]}
+      ]
+    },
+    {
+      "id": "skill.dispatch-review-pr",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude-specific review-session dispatcher has no shared Codex product requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/dispatch-review-pr/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "skill.initiatives",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude command adapter for the initiatives dashboard has no shared Codex skill requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/initiatives/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "skill.preflight",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude command adapter for preflight has no shared Codex skill requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/preflight/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "skill.resume-dri",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude-native DRI session resume controls have no Codex counterpart skill requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/resume-dri/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "skill.review-pr",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude-native PR review session workflow has no Codex counterpart skill requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/review-pr/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.review-pr.mechanics-notes",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude-native PR review workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/review-pr/references/mechanics-notes.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.review-pr.reviewer-prompt",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude-native PR review workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/review-pr/references/reviewer-prompt.md", "format": "markdown"}]
+    },
+    {
+      "id": "skill.steward",
+      "kind": "skill",
+      "status": "runtime-only",
+      "reason": "Claude persistent-team stewardship and session control have no Codex counterpart skill requirement.",
+      "outputs": [{"path": "plugins/agent-teams/skills/steward/SKILL.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.steward.envelopes",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude steward workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/steward/references/envelopes.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.steward.handoff",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude steward workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/steward/references/handoff.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.steward.message-style",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude steward workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/steward/references/message-style.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.steward.operations",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude steward workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/steward/references/operations.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.steward.pr-reviews",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude steward workflow.",
+      "outputs": [{"path": "plugins/agent-teams/skills/steward/references/pr-reviews.md", "format": "markdown"}]
+    }
+  ]
+}

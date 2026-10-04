@@ -770,7 +770,7 @@ func TestGate_NotifyFiredWithGateNote(t *testing.T) {
 		ID:   "at-5",
 		File: f,
 		Kind: "question",
-		notify: func(ctx *cli.Context, id, file string) error {
+		notify: func(ctx *cli.Context, id, file string, attachments []Attachment) error {
 			got = append(got, notifyCall{id, file})
 			return nil
 		},
@@ -801,7 +801,7 @@ func TestGate_NotifyFailureIsNonFatal(t *testing.T) {
 		ID:   "at-5",
 		File: f,
 		Kind: "question",
-		notify: func(ctx *cli.Context, id, file string) error {
+		notify: func(ctx *cli.Context, id, file string, attachments []Attachment) error {
 			return fmt.Errorf("send failed: connection refused")
 		},
 	}
@@ -835,6 +835,128 @@ func TestGate_NilNotifySkipped(t *testing.T) {
 	}
 }
 
+// ── gate: --attach proof seam (agent-teams-n0jt.1) ────────────────────────────
+
+// TestGate_KindLiveTestReview_AttachClassifiesAndNotifies is the bead's core-
+// path acceptance test: a live-test-review gate with two --attach files (one
+// photo, one document) writes the gate:live-test-review label and hands the
+// notify hook a []Attachment classified by extension.
+func TestGate_KindLiveTestReview_AttachClassifiesAndNotifies(t *testing.T) {
+	dir := t.TempDir()
+	png := filepath.Join(dir, "proof.png")
+	har := filepath.Join(dir, "logs.har")
+	if err := os.WriteFile(png, []byte("fake png bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(har, []byte("fake har bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := makeTempFile(t, "live-verified: login flow works")
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}})
+
+	var got []Attachment
+	cmd := &gateKong{
+		ID:     "at-ltr1",
+		File:   f,
+		Kind:   "live-test-review",
+		Attach: []string{png, har},
+		notify: func(ctx *cli.Context, id, file string, attachments []Attachment) error {
+			got = attachments
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d", len(*calls))
+	}
+	assertArgs(t, *calls, 2, []string{"label", "add", "at-ltr1", "gate:live-test-review"})
+
+	want := []Attachment{{Path: png, Kind: "photo"}, {Path: har, Kind: "document"}}
+	if len(got) != len(want) {
+		t.Fatalf("attachments = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("attachments[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestGate_Attach_RejectsOversizeFile confirms Validate rejects a file over
+// the 10 MB cap with a usage error, before Run ever executes.
+func TestGate_Attach_RejectsOversizeFile(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.png")
+	if err := os.WriteFile(big, make([]byte, maxAttachmentBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := makeTempFile(t, "question")
+	g := &gateKong{ID: "at-2", File: f, Kind: "question", Attach: []string{big}}
+	err := g.Validate(nil)
+	assertUsageError(t, err, "10 MB cap")
+}
+
+// TestGate_Attach_RejectsMissingFile confirms Validate rejects a nonexistent
+// --attach path with a usage error.
+func TestGate_Attach_RejectsMissingFile(t *testing.T) {
+	f := makeTempFile(t, "question")
+	g := &gateKong{ID: "at-2", File: f, Kind: "question", Attach: []string{"/no/such/file.png"}}
+	err := g.Validate(nil)
+	if err == nil {
+		t.Fatal("expected usage error for missing --attach file")
+	}
+}
+
+// TestGate_Attach_RejectsPathWithTabOrNewline confirms Validate rejects an
+// --attach path containing a TAB or a newline BEFORE ever stat'ing it — either
+// character would corrupt the Gate->Steward envelope's own TAB-delimited
+// attachment-line encoding (steward_seams.go's "<kind>\t<path>" lines). Proven
+// against a path that does NOT exist on disk, so a pass here can only be the
+// tab/newline check firing, never the (also-would-fire) missing-file check
+// from TestGate_Attach_RejectsMissingFile above.
+func TestGate_Attach_RejectsPathWithTabOrNewline(t *testing.T) {
+	f := makeTempFile(t, "question")
+	for name, path := range map[string]string{
+		"tab":     "proof\tscreenshot.png",
+		"newline": "proof\nscreenshot.png",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := &gateKong{ID: "at-2", File: f, Kind: "question", Attach: []string{path}}
+			err := g.Validate(nil)
+			assertUsageError(t, err, "tab or newline")
+		})
+	}
+}
+
+// TestClassifyAttachment_ExtensionRouting pins classifyAttachment's frozen
+// routing (agent-teams-n0jt.1): png/jpg/jpeg/gif/webp, case-insensitively,
+// route to "photo"; every other extension routes to "document". Covers the
+// case-insensitive uppercase forms and the non-image extensions the bead
+// calls out (.har/.json/.log/.txt) explicitly, alongside a no-extension
+// control.
+func TestClassifyAttachment_ExtensionRouting(t *testing.T) {
+	cases := map[string]string{
+		"proof.PNG":        "photo",
+		"proof.JPG":        "photo",
+		"proof.Png":        "photo",
+		"proof.jpeg":       "photo",
+		"proof.GIF":        "photo",
+		"proof.webp":       "photo",
+		"network.har":      "document",
+		"payload.json":     "document",
+		"output.log":       "document",
+		"notes.txt":        "document",
+		"no-extension-bin": "document",
+	}
+	for path, want := range cases {
+		if got := classifyAttachment(path); got != want {
+			t.Errorf("classifyAttachment(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
 // ── gate: structured-ask notify body (agent-teams-lbxl) ──────────────────────
 
 // TestGate_StructuredAsk_NotifyGetsHumanReadable confirms that when a
@@ -852,7 +974,7 @@ func TestGate_StructuredAsk_NotifyGetsHumanReadable(t *testing.T) {
 		Recommendation: "Yes, ship it",
 		Alternative:    "Wait for next cycle",
 		Kind:           "question",
-		notify: func(ctx *cli.Context, id, file string) error {
+		notify: func(ctx *cli.Context, id, file string, attachments []Attachment) error {
 			data, err := os.ReadFile(file)
 			if err != nil {
 				t.Errorf("notify: ReadFile(%q) failed: %v", file, err)
@@ -902,7 +1024,7 @@ func TestGate_StructuredAsk_NotifyGetsContextInBody(t *testing.T) {
 		Alternative:    "No-go",
 		ContextFile:    contextFile,
 		Kind:           "question",
-		notify: func(ctx *cli.Context, id, file string) error {
+		notify: func(ctx *cli.Context, id, file string, attachments []Attachment) error {
 			data, _ := os.ReadFile(file)
 			notifyBody = string(data)
 			return nil
@@ -927,7 +1049,7 @@ func TestGate_PlainFile_NotifyGetsFileContent(t *testing.T) {
 		ID:   "at-lbxl3",
 		File: f,
 		Kind: "question",
-		notify: func(ctx *cli.Context, id, file string) error {
+		notify: func(ctx *cli.Context, id, file string, attachments []Attachment) error {
 			notifyFile = file
 			return nil
 		},
@@ -973,7 +1095,7 @@ func TestGate_StructuredAsk_BdNoteStillGetsSentinelBlock(t *testing.T) {
 		Recommendation: "Yes",
 		Alternative:    "Defer",
 		Kind:           "question",
-		notify:         func(ctx *cli.Context, id, file string) error { return nil },
+		notify:         func(ctx *cli.Context, id, file string, attachments []Attachment) error { return nil },
 	}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1019,52 +1141,80 @@ func TestGate_NoPR_StaysBare(t *testing.T) {
 	assertArgs(t, *calls, 2, []string{"label", "add", "at-single", "gate:review"})
 }
 
+// TestGate_LiveTestReviewKind_WithPR_DocumentsCurrentUnrejectedBehavior pins
+// CURRENT behavior for --kind=live-test-review combined with --pr: the kind
+// is documented bare-only (raised pre-PR, agent-teams-n0jt.1) — perPRGateLabels
+// deliberately excludes "gate:live-test-review:" and its own doc comment says
+// so ("a `gate --kind=live-test-review --pr <url>` call, which nothing
+// currently rejects") — but gateKong.Run has no --pr/--kind cross-check, so
+// the call is NOT rejected: it succeeds and writes the per-PR-suffixed label
+// same as review/question would. This is "documented unsupported," not
+// "rejected" — a future bead tightening this must update this test, not
+// silently break it.
+func TestGate_LiveTestReviewKind_WithPR_DocumentsCurrentUnrejectedBehavior(t *testing.T) {
+	f := makeTempFile(t, "live-verified: login flow works")
+	const pr = "https://github.com/erlloyd/pr-shepherd/pull/4"
+	ctx, calls := newCtx(t, []fakeResp{
+		showRespWithPRs(t, "at-ltr-pr", []string{pr}), // resolvePR's bd show
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+	})
+	err := (&gateKong{ID: "at-ltr-pr", File: f, Kind: "live-test-review", PR: pr}).Run(ctx)
+	if err != nil {
+		t.Fatalf("gate --kind=live-test-review --pr: expected current behavior to succeed (nothing rejects this yet), got error: %v", err)
+	}
+	assertArgs(t, *calls, 3, []string{"label", "add", "at-ltr-pr", "gate:live-test-review:" + pr})
+}
+
 // ── clear-gate ────────────────────────────────────────────────────────────────
 
 func TestClearGate_WithFile(t *testing.T) {
-	// 6 calls: comment, show (to enumerate any per-PR labels — none here),
+	// 7 calls: comment, show (to enumerate any per-PR labels — none here),
 	// label remove human, label remove gate:review, label remove
-	// gate:question, label remove external-review
+	// gate:question, label remove gate:live-test-review, label remove
+	// external-review
 	f := makeTempFile(t, "response")
 	ctx, calls := newCtx(t, []fakeResp{
 		{stdout: "ok"},
 		showResp(t, "at-3", "human", "gate:review"),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 	})
 	err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 6 {
-		t.Fatalf("expected 6 bd calls, got %d", len(*calls))
+	if len(*calls) != 7 {
+		t.Fatalf("expected 7 bd calls, got %d", len(*calls))
 	}
 	assertArgs(t, *calls, 0, []string{"comment", "at-3", "--file=" + f})
 	assertArgs(t, *calls, 1, []string{"show", "at-3", "--json"})
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "human"})
 	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:review"})
 	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "gate:question"})
-	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "gate:live-test-review"})
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-3", "external-review"})
 }
 
 func TestClearGate_WithoutFile(t *testing.T) {
-	// 5 calls: show, label remove human, label remove gate:review, label
-	// remove gate:question, label remove external-review
+	// 6 calls: show, label remove human, label remove gate:review, label
+	// remove gate:question, label remove gate:live-test-review, label
+	// remove external-review
 	ctx, calls := newCtx(t, []fakeResp{
 		showResp(t, "at-3", "human", "gate:review"),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 	})
 	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls, got %d", len(*calls))
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls, got %d", len(*calls))
 	}
 	assertArgs(t, *calls, 0, []string{"show", "at-3", "--json"})
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
 	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "gate:live-test-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
 }
 
 func TestClearGate_EqualsForm(t *testing.T) {
@@ -1072,7 +1222,7 @@ func TestClearGate_EqualsForm(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
 		{stdout: "ok"},
 		showResp(t, "at-3", "human", "gate:review"),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 	})
 	err := (&clearGateKong{ID: "at-3", File: f}).Run(ctx)
 	if err != nil {
@@ -1083,45 +1233,47 @@ func TestClearGate_EqualsForm(t *testing.T) {
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "human"})
 	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:review"})
 	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "gate:question"})
-	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "gate:live-test-review"})
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-3", "external-review"})
 }
 
 // TestClearGate_ExternalReviewAbsentIsNonFatal confirms that removing
 // external-review when it was never set (the common case — most clear-gate
 // calls are on R, not H, per external_review.go §9) still succeeds, matching
-// how the three pre-existing removals already tolerate absence.
+// how the pre-existing removals already tolerate absence.
 func TestClearGate_ExternalReviewAbsentIsNonFatal(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
 		showResp(t, "at-3", "human", "gate:review"),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: ""},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: ""},
 	})
 	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
 }
 
 // TestClearGate_ShowIssueErrorFallsBackToBareFour confirms the fail-soft
 // path: when the label read fails, bare clear-gate still runs the
-// historical four-label sweep (no per-PR labels can be enumerated without a
+// historical bare-label sweep (no per-PR labels can be enumerated without a
 // read), rather than doing nothing or erroring out.
 func TestClearGate_ShowIssueErrorFallsBackToBareFour(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
 		{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")},
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 	})
 	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls (show + the 4 bare removals), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (show + the 5 bare removals), got %d: %v", len(*calls), *calls)
 	}
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-3", "gate:review"})
 	assertArgs(t, *calls, 3, []string{"label", "remove", "at-3", "gate:question"})
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "external-review"})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-3", "gate:live-test-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-3", "external-review"})
 	if stderr := ctx.Stderr.(*bytes.Buffer).String(); !strings.Contains(stderr, "at-3") {
 		t.Errorf("expected stderr warning naming the id, got: %q", stderr)
 	}
@@ -1132,36 +1284,37 @@ func TestClearGate_ShowIssueErrorFallsBackToBareFour(t *testing.T) {
 // clearOnePR's --pr-scoped half): a bare `clear-gate` (the DRI playbook's
 // documented close-out/resume/standby-release call, no --pr) on an
 // initiative with TWO PRs gated per-PR must leave NOTHING gate-related
-// behind — not the four bare labels, and not either PR's per-PR labels.
-// Without this, a per-PR label survives every bare clear-gate forever and a
-// CLOSED initiative keeps reporting REVIEWABLE/NEEDS-DECISION with no way
-// to dismiss it. This test must go RED if the sweep is reverted to
-// bare-only — verified by hand during implementation (reverting
-// clearBareLegacy to skip perPRGateLabels makes the 6-call assertion fail
-// with only 4 calls, since the two per-PR removals never happen).
+// behind — not the bare labels, and not either PR's per-PR labels. Without
+// this, a per-PR label survives every bare clear-gate forever and a CLOSED
+// initiative keeps reporting REVIEWABLE/NEEDS-DECISION with no way to
+// dismiss it. This test must go RED if the sweep is reverted to bare-only —
+// verified by hand during implementation (reverting clearBareLegacy to skip
+// perPRGateLabels makes the assertion fail with 2 fewer calls, since the
+// two per-PR removals never happen).
 func TestClearGate_Bare_SweepsPerPRLabelsToo(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
 		showResp(t, "at-multi", "human",
 			"gate:review:"+prURLShepherd,
 			"gate:question:"+prURLMidgard,
 		),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, // the 4 bare removals
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, // the 5 bare removals
 		{stdout: "ok"}, {stdout: "ok"}, // the 2 per-PR removals found on the issue
 	})
 	err := (&clearGateKong{ID: "at-multi"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 7 {
-		t.Fatalf("expected 7 bd calls (show + 4 bare + 2 per-PR), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 8 {
+		t.Fatalf("expected 8 bd calls (show + 5 bare + 2 per-PR), got %d: %v", len(*calls), *calls)
 	}
 	assertArgs(t, *calls, 0, []string{"show", "at-multi", "--json"})
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-multi", "human"})
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-multi", "gate:review"})
 	assertArgs(t, *calls, 3, []string{"label", "remove", "at-multi", "gate:question"})
-	assertArgs(t, *calls, 4, []string{"label", "remove", "at-multi", "external-review"})
-	assertArgs(t, *calls, 5, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
-	assertArgs(t, *calls, 6, []string{"label", "remove", "at-multi", "gate:question:" + prURLMidgard})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-multi", "gate:live-test-review"})
+	assertArgs(t, *calls, 5, []string{"label", "remove", "at-multi", "external-review"})
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
+	assertArgs(t, *calls, 7, []string{"label", "remove", "at-multi", "gate:question:" + prURLMidgard})
 
 	// The closed-initiative consequence, cheaply reachable: after this
 	// sweep, hasGateKind must report false for both bases — nothing gate-
@@ -1221,6 +1374,7 @@ func TestClearGate_PRScoped_LeavesOtherPRAndHumanIntact(t *testing.T) {
 		showRespWithPRs(t, "at-multi", []string{prURLShepherd, prURLMidgard}, "human", "gate:review:"+prURLShepherd, "gate:question:"+prURLMidgard),
 		{stdout: "ok"},                   // label remove gate:review:<shepherd>
 		{stdout: "ok"},                   // label remove gate:question:<shepherd>
+		{stdout: "ok"},                   // label remove gate:live-test-review:<shepherd>
 		{stdout: "ok"},                   // label remove external-review:<shepherd>
 		{stdout: string(afterClearJSON)}, // show <id> --json (post-removal check)
 	})
@@ -1229,13 +1383,14 @@ func TestClearGate_PRScoped_LeavesOtherPRAndHumanIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls (no \"human\" removal — midgard is still gated), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (no \"human\" removal — midgard is still gated), got %d: %v", len(*calls), *calls)
 	}
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-multi", "gate:review:" + prURLShepherd})
 	assertArgs(t, *calls, 2, []string{"label", "remove", "at-multi", "gate:question:" + prURLShepherd})
-	assertArgs(t, *calls, 3, []string{"label", "remove", "at-multi", "external-review:" + prURLShepherd})
-	assertArgs(t, *calls, 4, []string{"show", "at-multi", "--json"})
+	assertArgs(t, *calls, 3, []string{"label", "remove", "at-multi", "gate:live-test-review:" + prURLShepherd})
+	assertArgs(t, *calls, 4, []string{"label", "remove", "at-multi", "external-review:" + prURLShepherd})
+	assertArgs(t, *calls, 5, []string{"show", "at-multi", "--json"})
 }
 
 // TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains confirms the other
@@ -1252,6 +1407,7 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 		{stdout: "ok"},
 		{stdout: "ok"},
 		{stdout: "ok"},
+		{stdout: "ok"},
 		{stdout: string(afterClearJSON)},
 		{stdout: "ok"}, // label remove human
 	})
@@ -1260,10 +1416,10 @@ func TestClearGate_PRScoped_RemovesHumanWhenNoGateRemains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 6 {
-		t.Fatalf("expected 6 bd calls (human removed — no PR remains gated), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 7 {
+		t.Fatalf("expected 7 bd calls (human removed — no PR remains gated), got %d: %v", len(*calls), *calls)
 	}
-	assertArgs(t, *calls, 5, []string{"label", "remove", "at-single", "human"})
+	assertArgs(t, *calls, 6, []string{"label", "remove", "at-single", "human"})
 }
 
 // TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace confirms the
@@ -1277,6 +1433,7 @@ func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
 		{stdout: "ok"},
 		{stdout: "ok"},
 		{stdout: "ok"},
+		{stdout: "ok"},
 		{errOut: "not found", err: fmt.Errorf("bd show: exit status 1")},
 	})
 
@@ -1284,8 +1441,8 @@ func TestClearGate_PRScoped_ShowIssueErrorLeavesHumanInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls (no human removal attempted on read failure), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (no human removal attempted on read failure), got %d: %v", len(*calls), *calls)
 	}
 	if stderr := ctx.Stderr.(*bytes.Buffer).String(); !strings.Contains(stderr, "at-multi") {
 		t.Errorf("expected stderr warning naming the id, got: %q", stderr)
@@ -1347,7 +1504,7 @@ func TestClearGate_PRScoped_OwnPerPRLabelOverridesBareGatePresence(t *testing.T)
 	ctx, calls := newCtx(t, []fakeResp{
 		// Both a bare "gate:review" AND shepherd's own per-PR "gate:review:<url>".
 		showRespWithPRs(t, "at-mixed", []string{prURLShepherd}, "human", "gate:review", "gate:review:"+prURLShepherd),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 		{stdout: string(afterClearJSON)},
 	})
 
@@ -1355,8 +1512,8 @@ func TestClearGate_PRScoped_OwnPerPRLabelOverridesBareGatePresence(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls (own per-PR label present, so the clear proceeds despite the bare gate), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls (own per-PR label present, so the clear proceeds despite the bare gate), got %d: %v", len(*calls), *calls)
 	}
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-mixed", "gate:review:" + prURLShepherd})
 }
@@ -1370,7 +1527,7 @@ func TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp(t *testing.T)
 	afterClearJSON, _ := json.Marshal([]bd.Issue{afterClear})
 	ctx, calls := newCtx(t, []fakeResp{
 		showRespWithPRs(t, "at-ungated", []string{prURLShepherd}), // no labels at all
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 		{stdout: string(afterClearJSON)},
 	})
 
@@ -1378,8 +1535,8 @@ func TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 6 {
-		t.Fatalf("expected 6 bd calls (proceeds as a no-op, no rejection; no gate remains so \"human\" is also removed), got %d: %v", len(*calls), *calls)
+	if len(*calls) != 7 {
+		t.Fatalf("expected 7 bd calls (proceeds as a no-op, no rejection; no gate remains so \"human\" is also removed), got %d: %v", len(*calls), *calls)
 	}
 }
 
@@ -1392,14 +1549,14 @@ func TestClearGate_PRScoped_UngatedPRWithNoBareGate_ProceedsAsNoOp(t *testing.T)
 func TestClearGate_NoPR_StillUnconditional(t *testing.T) {
 	ctx, calls := newCtx(t, []fakeResp{
 		showResp(t, "at-3", "human", "gate:review"),
-		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
+		{stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"}, {stdout: "ok"},
 	})
 	err := (&clearGateKong{ID: "at-3"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 bd calls, got %d: %v", len(*calls), *calls)
+	if len(*calls) != 6 {
+		t.Fatalf("expected 6 bd calls, got %d: %v", len(*calls), *calls)
 	}
 	assertArgs(t, *calls, 1, []string{"label", "remove", "at-3", "human"})
 }
@@ -1514,42 +1671,44 @@ func TestLearn_FileNotFound(t *testing.T) {
 // ── close ─────────────────────────────────────────────────────────────────────
 
 func TestClose_BareID(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5"})
+	// Call 0 is the pre-close bd show that refuseIfUnreadReviewMail (agent-
+	// teams-8st0.20) uses to decide whether at-5 is review-shaped.
+	assertArgs(t, *calls, 1, []string{"close", "at-5"})
 }
 
 func TestClose_WithReason(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=shipped"})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=shipped"})
 }
 
 func TestClose_WithReasonEqualsForm(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=shipped"})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=shipped"})
 }
 
 func TestClose_WithFile(t *testing.T) {
 	content := "reason from file"
 	f := makeTempFile(t, content)
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	err := (&closeKong{ID: "at-5", File: f}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// --file should override reason inline
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=" + content})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=" + content})
 }
 
 func TestClose_MissingID(t *testing.T) {
@@ -1591,16 +1750,22 @@ func TestReopen_MissingID(t *testing.T) {
 
 // ── pull ──────────────────────────────────────────────────────────────────────
 
+// probeResp is the fakeResp for probeInFlightPull's `bd sql --json` probe
+// reporting no in-flight DOLT_PULL — guardedPull's every non-error path
+// issues this probe before the real dolt exec (agent-teams-qdeh.4).
+var probeResp = fakeResp{stdout: "[]"}
+
 func TestPull_CallsBDDoltPull(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "pull complete"}})
+	ctx, calls := newCtx(t, []fakeResp{probeResp, {stdout: "pull complete"}})
 	err := (&pullKong{}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(*calls))
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 calls (probe, pull), got %d", len(*calls))
 	}
-	assertArgs(t, *calls, 0, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 0, []string{"sql", "--json", inFlightPullQuery})
+	assertArgs(t, *calls, 1, []string{"dolt", "pull"})
 }
 
 func TestPull_NilContext(t *testing.T) {
@@ -1613,9 +1778,11 @@ func TestPull_NilContext(t *testing.T) {
 // ── sync ──────────────────────────────────────────────────────────────────────
 
 func TestSync_CallsCommitThenPullThenPush(t *testing.T) {
-	// sync must commit first (to clear any dirty working set), then pull, then push.
+	// sync must commit first (to clear any dirty working set), then probe +
+	// pull, then push.
 	ctx, calls := newCtx(t, []fakeResp{
 		{stdout: ""}, // commit: no-op when clean
+		probeResp,
 		{stdout: "pull complete"},
 		{stdout: "push complete"},
 	})
@@ -1623,12 +1790,13 @@ func TestSync_CallsCommitThenPullThenPush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 calls (commit, pull, push), got %d", len(*calls))
+	if len(*calls) != 4 {
+		t.Fatalf("expected 4 calls (commit, probe, pull, push), got %d", len(*calls))
 	}
 	assertArgs(t, *calls, 0, []string{"dolt", "commit"})
-	assertArgs(t, *calls, 1, []string{"dolt", "pull"})
-	assertArgs(t, *calls, 2, []string{"dolt", "push"})
+	assertArgs(t, *calls, 1, []string{"sql", "--json", inFlightPullQuery})
+	assertArgs(t, *calls, 2, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 3, []string{"dolt", "push"})
 }
 
 func TestSync_CommitNothingToCommitIsSuccess(t *testing.T) {
@@ -1636,6 +1804,7 @@ func TestSync_CommitNothingToCommitIsSuccess(t *testing.T) {
 	// ("", nil). Guard: even if surfaced as error, sync must proceed to pull+push.
 	ctx, calls := newCtx(t, []fakeResp{
 		{stdout: "Nothing to commit.", err: nil}, // clean WS: no-op, no error
+		probeResp,
 		{stdout: "pull complete"},
 		{stdout: "push complete"},
 	})
@@ -1643,18 +1812,20 @@ func TestSync_CommitNothingToCommitIsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success when commit is a no-op, got: %v", err)
 	}
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 calls (commit, pull, push), got %d", len(*calls))
+	if len(*calls) != 4 {
+		t.Fatalf("expected 4 calls (commit, probe, pull, push), got %d", len(*calls))
 	}
 }
 
 func TestSync_RetriesPushOnceAfterNonFF(t *testing.T) {
 	// First push fails with a non-fast-forward error; sync should pull again
-	// and retry the push exactly once, succeeding on the retry.
+	// (probe + pull) and retry the push exactly once, succeeding on the retry.
 	ctx, calls := newCtx(t, []fakeResp{
-		{stdout: ""},              // commit: no-op
+		{stdout: ""}, // commit: no-op
+		probeResp,
 		{stdout: "pull complete"}, // initial pull
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")}, // first push: non-ff
+		probeResp,
 		{stdout: "pull complete"}, // retry pull
 		{stdout: "push complete"}, // retry push: success
 	})
@@ -1662,14 +1833,16 @@ func TestSync_RetriesPushOnceAfterNonFF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error on retry success: %v", err)
 	}
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 calls (commit, pull, push[non-ff], pull, push), got %d", len(*calls))
+	if len(*calls) != 7 {
+		t.Fatalf("expected 7 calls (commit, probe, pull, push[non-ff], probe, pull, push), got %d", len(*calls))
 	}
 	assertArgs(t, *calls, 0, []string{"dolt", "commit"})
-	assertArgs(t, *calls, 1, []string{"dolt", "pull"})
-	assertArgs(t, *calls, 2, []string{"dolt", "push"})
-	assertArgs(t, *calls, 3, []string{"dolt", "pull"})
-	assertArgs(t, *calls, 4, []string{"dolt", "push"})
+	assertArgs(t, *calls, 1, []string{"sql", "--json", inFlightPullQuery})
+	assertArgs(t, *calls, 2, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 3, []string{"dolt", "push"})
+	assertArgs(t, *calls, 4, []string{"sql", "--json", inFlightPullQuery})
+	assertArgs(t, *calls, 5, []string{"dolt", "pull"})
+	assertArgs(t, *calls, 6, []string{"dolt", "push"})
 }
 
 func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
@@ -1677,8 +1850,10 @@ func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
 	// sync must NOT retry more than once (total push calls == 2).
 	ctx, calls := newCtx(t, []fakeResp{
 		{stdout: ""}, // commit: no-op
+		probeResp,
 		{stdout: "pull complete"},
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")},
+		probeResp,
 		{stdout: "pull complete"},
 		{errOut: "! [rejected] main -> main (non-fast-forward)", err: fmt.Errorf("bd dolt push: exit status 1\n! [rejected] main -> main (non-fast-forward)")},
 	})
@@ -1686,9 +1861,10 @@ func TestSync_SurfacesErrorWhenRetryAlsoFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when retry push also fails")
 	}
-	// Must not have retried more than once: exactly 5 calls total (commit, pull, push, pull, push).
-	if len(*calls) != 5 {
-		t.Fatalf("expected 5 calls (commit, pull, push, pull, push), got %d — retry loop may be unbounded", len(*calls))
+	// Must not have retried more than once: exactly 7 calls total (commit,
+	// probe, pull, push, probe, pull, push).
+	if len(*calls) != 7 {
+		t.Fatalf("expected 7 calls (commit, probe, pull, push, probe, pull, push), got %d — retry loop may be unbounded", len(*calls))
 	}
 }
 
@@ -1697,6 +1873,7 @@ func TestSync_NoRetryOnNonFFUnrelatedError(t *testing.T) {
 	// immediately without retrying.
 	ctx, calls := newCtx(t, []fakeResp{
 		{stdout: ""}, // commit: no-op
+		probeResp,
 		{stdout: ""}, // pull
 		{errOut: "Permission denied", err: fmt.Errorf("bd dolt push: exit status 1\nPermission denied")},
 	})
@@ -1704,8 +1881,8 @@ func TestSync_NoRetryOnNonFFUnrelatedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from push failure")
 	}
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 calls (commit, pull, push), got %d — non-ff check may be too broad", len(*calls))
+	if len(*calls) != 4 {
+		t.Fatalf("expected 4 calls (commit, probe, pull, push), got %d — non-ff check may be too broad", len(*calls))
 	}
 }
 
@@ -1769,6 +1946,7 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 		{stdout: "ok"}, // clear-gate: label remove human
 		{stdout: "ok"}, // clear-gate: label remove gate:review
 		{stdout: "ok"}, // clear-gate: label remove gate:question
+		{stdout: "ok"}, // clear-gate: label remove gate:live-test-review
 		{stdout: "ok"}, // clear-gate: label remove external-review
 	}
 	execFn, calls := fakeExec(responses)
@@ -1796,8 +1974,8 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	}
 
 	// Verify call sequence
-	if len(*calls) != 10 {
-		t.Fatalf("expected 10 bd calls, got %d: %v", len(*calls), *calls)
+	if len(*calls) != 11 {
+		t.Fatalf("expected 11 bd calls, got %d: %v", len(*calls), *calls)
 	}
 	// call 0: create --json
 	if (*calls)[0].args[0] != "create" {
@@ -1822,8 +2000,10 @@ func TestRegisterGateRoundtrip(t *testing.T) {
 	assertArgs(t, *calls, 7, []string{"label", "remove", "at-round1", "gate:review"})
 	// call 8: label remove gate:question
 	assertArgs(t, *calls, 8, []string{"label", "remove", "at-round1", "gate:question"})
-	// call 9: label remove external-review
-	assertArgs(t, *calls, 9, []string{"label", "remove", "at-round1", "external-review"})
+	// call 9: label remove gate:live-test-review
+	assertArgs(t, *calls, 9, []string{"label", "remove", "at-round1", "gate:live-test-review"})
+	// call 10: label remove external-review
+	assertArgs(t, *calls, 10, []string{"label", "remove", "at-round1", "external-review"})
 }
 
 // ── stdout forwarding ─────────────────────────────────────────────────────────
@@ -2096,7 +2276,7 @@ func TestLearn_TrimsTrailingNewlineBeforeMeasuring(t *testing.T) {
 }
 
 func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
+	ctx, _ := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "✓ Closed at-5"}})
 	if err := (&closeKong{ID: "at-5"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2107,7 +2287,7 @@ func TestClose_BareID_ForwardsBDStdout(t *testing.T) {
 }
 
 func TestClose_WithReason_ForwardsBDStdout(t *testing.T) {
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "✓ Closed at-5"}})
+	ctx, _ := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "✓ Closed at-5"}})
 	if err := (&closeKong{ID: "at-5", Reason: "shipped"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2131,6 +2311,7 @@ func TestReopen_ForwardsBDStdout(t *testing.T) {
 func TestSync_ForwardsBDStdout(t *testing.T) {
 	ctx, _ := newCtx(t, []fakeResp{
 		{stdout: ""}, // commit: no-op
+		probeResp,
 		{stdout: ""}, // pull
 		{stdout: "push complete"},
 	})
@@ -2246,12 +2427,12 @@ func TestNoteKong_RunCallsBDNote(t *testing.T) {
 func TestCloseKong_FilePrecedenceOverReason(t *testing.T) {
 	content := "reason from file"
 	f := makeTempFile(t, content)
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{showResp(t, "at-5"), {stdout: "ok"}})
 	cmd := &closeKong{ID: "at-5", Reason: "inline reason", File: f}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertArgs(t, *calls, 0, []string{"close", "at-5", "--reason=" + content})
+	assertArgs(t, *calls, 1, []string{"close", "at-5", "--reason=" + content})
 }
 
 // ── close: update-local-main wiring (agent-teams-q564.1) ────────────────────

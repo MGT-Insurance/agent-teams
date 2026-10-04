@@ -85,12 +85,7 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 			if params["cwd"] != "/worktree" || params["model"] != "gpt-test" {
 				t.Fatalf("thread/start params = %#v", params)
 			}
-			config := params["config"].(map[string]any)
-			policy := config["shell_environment_policy"].(map[string]any)
-			set := policy["set"].(map[string]any)
-			if set["AGENT_TEAMS_HOME"] != "/workspace" {
-				t.Fatalf("thread/start config = %#v", config)
-			}
+			assertCodexThreadConfig(t, params, "/workspace", int64Pointer(300000))
 			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": "idle"}}}, nil
 		case "turn/start":
 			if params["threadId"] != "thread-123" || params["cwd"] != "/worktree" || params["model"] != "gpt-test" {
@@ -107,11 +102,12 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 	}}
 	var bound SessionRef
 	err := testAdapter(server).Launch(context.Background(), Request{
-		InitiativeID:   "at-1",
-		AgentTeamsHome: "/workspace",
-		Worktree:       "/worktree",
-		Prompt:         "$dri at-1",
-		Model:          "gpt-test",
+		InitiativeID:      "at-1",
+		AgentTeamsHome:    "/workspace",
+		AutoCompactWindow: int64Pointer(300000),
+		Worktree:          "/worktree",
+		Prompt:            "$dri at-1",
+		Model:             "gpt-test",
 	}, func(ref SessionRef) error {
 		bound = ref
 		if len(server.calls) != 2 || server.calls[1].Method != "thread/start" {
@@ -139,28 +135,100 @@ func TestCodexAdapterLaunchStartsThreadBindsThenStartsTurn(t *testing.T) {
 func TestCodexAdapterResumeStartsIdleThread(t *testing.T) {
 	server := resumeServer(t, "idle", nil)
 	err := testAdapter(server).Resume(context.Background(), Request{
-		AgentTeamsHome: "/workspace",
-		Worktree:       "/worktree",
-		Prompt:         "wake",
+		AgentTeamsHome:    "/workspace",
+		AutoCompactWindow: int64Pointer(300000),
+		Worktree:          "/worktree",
+		Prompt:            "wake",
 	}, SessionRef{Runtime: Codex, ID: "thread-123"})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/read,turn/start" {
+	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/start" {
 		t.Fatalf("calls = %s", got)
 	}
-	config := server.calls[1].Params["config"].(map[string]any)
-	policy := config["shell_environment_policy"].(map[string]any)
-	set := policy["set"].(map[string]any)
-	if set["AGENT_TEAMS_HOME"] != "/workspace" {
-		t.Fatalf("thread/resume config = %#v", config)
+	resume := server.calls[1].Params
+	if resume["excludeTurns"] != true {
+		t.Fatalf("thread/resume params = %#v, want excludeTurns:true", resume)
+	}
+	assertCodexThreadConfig(t, resume, "/workspace", int64Pointer(300000))
+	turnsList := server.calls[2].Params
+	if turnsList["threadId"] != "thread-123" || turnsList["sortDirection"] != "desc" || turnsList["itemsView"] != "notLoaded" {
+		t.Fatalf("thread/turns/list params = %#v", turnsList)
 	}
 }
 
 func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	server := resumeServer(t, "active", []map[string]any{
-		{"id": "turn-done", "status": "completed"},
 		{"id": "turn-live", "status": "inProgress"},
+		{"id": "turn-done", "status": "completed"},
+	})
+	err := testAdapter(server).Resume(context.Background(), Request{
+		AgentTeamsHome:    "/workspace",
+		AutoCompactWindow: int64Pointer(300000),
+		Worktree:          "/worktree",
+		Prompt:            "new mail",
+	}, SessionRef{Runtime: Codex, ID: "thread-123"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/steer" {
+		t.Fatalf("calls = %s", got)
+	}
+	assertCodexThreadConfig(t, server.calls[1].Params, "/workspace", int64Pointer(300000))
+	steer := server.calls[len(server.calls)-1].Params
+	if steer["expectedTurnId"] != "turn-live" {
+		t.Fatalf("steer params = %#v", steer)
+	}
+}
+
+func TestCodexAdapterOmitsAutoCompactWindowWhenUnset(t *testing.T) {
+	t.Run("thread start", func(t *testing.T) {
+		server := &fakeAppServer{handle: func(method string, params map[string]any) (any, error) {
+			switch method {
+			case "initialize":
+				return map[string]any{}, nil
+			case "thread/start":
+				assertCodexThreadConfig(t, params, "/workspace", nil)
+				return map[string]any{"thread": map[string]any{"id": "thread-123"}}, nil
+			case "turn/start":
+				return map[string]any{"turn": map[string]any{"id": "turn-1"}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected method %s", method)
+			}
+		}}
+		err := testAdapter(server).Launch(context.Background(), Request{
+			AgentTeamsHome: "/workspace",
+			Worktree:       "/worktree",
+			Prompt:         "work",
+		}, func(SessionRef) error { return nil })
+		if err != nil {
+			t.Fatalf("Launch: %v", err)
+		}
+	})
+
+	t.Run("thread resume", func(t *testing.T) {
+		server := resumeServer(t, "idle", nil)
+		err := testAdapter(server).Resume(context.Background(), Request{
+			AgentTeamsHome: "/workspace",
+			Worktree:       "/worktree",
+			Prompt:         "wake",
+		}, SessionRef{Runtime: Codex, ID: "thread-123"})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		assertCodexThreadConfig(t, server.calls[1].Params, "/workspace", nil)
+	})
+}
+
+func TestCodexAdapterResumeSteersNewestOfTwoActiveTurns(t *testing.T) {
+	// thread/turns/list returns newest-first (sortDirection:"desc"). When two
+	// turns are simultaneously "inProgress" — a state the app-server should
+	// not normally produce, but the adapter must still handle deterministically
+	// — the MOST RECENT in-progress turn wins, matching activeTurn()'s
+	// documented "first match in newest-first order" semantics.
+	server := resumeServer(t, "active", []map[string]any{
+		{"id": "turn-newer", "status": "inProgress"},
+		{"id": "turn-older", "status": "inProgress"},
 	})
 	err := testAdapter(server).Resume(context.Background(), Request{
 		Worktree: "/worktree",
@@ -169,8 +237,58 @@ func TestCodexAdapterResumeSteersActualActiveTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/read,turn/steer" {
+	if got := callMethods(server.calls); got != "initialize,thread/resume,thread/turns/list,turn/steer" {
 		t.Fatalf("calls = %s", got)
+	}
+	steer := server.calls[len(server.calls)-1].Params
+	if steer["expectedTurnId"] != "turn-newer" {
+		t.Fatalf("steer params = %#v, want expectedTurnId=turn-newer", steer)
+	}
+}
+
+func TestCodexAdapterResumeFindsActiveTurnAcrossPages(t *testing.T) {
+	// The active turn is not on the first (newest-first) page; the adapter
+	// must follow nextCursor to find it rather than assuming a single page
+	// covers the whole thread.
+	pages := [][]map[string]any{
+		{{"id": "turn-newest", "status": "completed"}},
+		{{"id": "turn-live", "status": "inProgress"}, {"id": "turn-oldest", "status": "completed"}},
+	}
+	call := 0
+	server := &fakeAppServer{handle: func(method string, params map[string]any) (any, error) {
+		switch method {
+		case "initialize":
+			return map[string]any{}, nil
+		case "thread/resume":
+			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": "active"}}}, nil
+		case "thread/turns/list":
+			if params["itemsView"] != "notLoaded" || params["sortDirection"] != "desc" {
+				t.Fatalf("thread/turns/list params = %#v", params)
+			}
+			page := pages[call]
+			call++
+			resp := map[string]any{"data": page}
+			if call < len(pages) {
+				resp["nextCursor"] = "cursor-1"
+			} else {
+				resp["nextCursor"] = nil
+			}
+			return resp, nil
+		case "turn/steer":
+			return map[string]any{"turnId": params["expectedTurnId"]}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", method)
+		}
+	}}
+	err := testAdapter(server).Resume(context.Background(), Request{
+		Worktree: "/worktree",
+		Prompt:   "new mail",
+	}, SessionRef{Runtime: Codex, ID: "thread-123"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if call != 2 {
+		t.Fatalf("thread/turns/list called %d times, want 2 (pagination)", call)
 	}
 	steer := server.calls[len(server.calls)-1].Params
 	if steer["expectedTurnId"] != "turn-live" {
@@ -269,6 +387,9 @@ func TestCodexAdapterFailures(t *testing.T) {
 	})
 }
 
+// resumeServer fakes an app-server for a resumed thread. turns is the page
+// of turn metadata thread/turns/list returns, already in the newest-first
+// order the real RPC uses with sortDirection "desc".
 func resumeServer(t *testing.T, status string, turns []map[string]any) *fakeAppServer {
 	t.Helper()
 	return &fakeAppServer{handle: func(method string, params map[string]any) (any, error) {
@@ -279,11 +400,15 @@ func resumeServer(t *testing.T, status string, turns []map[string]any) *fakeAppS
 			if params["threadId"] != "thread-123" {
 				t.Fatalf("thread/resume params = %#v", params)
 			}
+			if params["excludeTurns"] != true {
+				t.Fatalf("thread/resume params = %#v, want excludeTurns:true", params)
+			}
 			return map[string]any{"thread": map[string]any{"id": "thread-123", "status": map[string]any{"type": status}}}, nil
-		case "thread/read":
-			return map[string]any{"thread": map[string]any{
-				"id": "thread-123", "status": map[string]any{"type": status}, "turns": turns,
-			}}, nil
+		case "thread/turns/list":
+			if params["threadId"] != "thread-123" || params["sortDirection"] != "desc" || params["itemsView"] != "notLoaded" {
+				t.Fatalf("thread/turns/list params = %#v", params)
+			}
+			return map[string]any{"data": turns, "nextCursor": nil}, nil
 		case "turn/start":
 			return map[string]any{"turn": map[string]any{"id": "turn-new", "status": "inProgress"}}, nil
 		case "turn/steer":
@@ -300,6 +425,47 @@ func callMethods(calls []rpcCall) string {
 		methods = append(methods, call.Method)
 	}
 	return strings.Join(methods, ",")
+}
+
+func assertCodexThreadConfig(t *testing.T, params map[string]any, wantHome string, wantWindow *int64) {
+	t.Helper()
+	config, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("params config = %#v, want object", params["config"])
+	}
+	policy, ok := config["shell_environment_policy"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread config = %#v, want shell_environment_policy", config)
+	}
+	set, ok := policy["set"].(map[string]any)
+	if !ok || set["AGENT_TEAMS_HOME"] != wantHome {
+		t.Fatalf("thread config = %#v, want AGENT_TEAMS_HOME %q", config, wantHome)
+	}
+
+	gotWindow, present := config["model_auto_compact_token_limit"]
+	if wantWindow == nil {
+		if present {
+			t.Fatalf("thread config = %#v, model_auto_compact_token_limit must be absent", config)
+		}
+	} else if !present || gotWindow != float64(*wantWindow) {
+		t.Fatalf("thread config = %#v, want integer model_auto_compact_token_limit %d", config, *wantWindow)
+	}
+	for _, forbidden := range []string{"model_context_window", "model_auto_compact_token_limit_scope", "_scope"} {
+		if _, present := config[forbidden]; present {
+			t.Fatalf("thread config = %#v, forbidden key %q is present", config, forbidden)
+		}
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal thread config: %v", err)
+	}
+	if wantWindow != nil && !strings.Contains(string(encoded), fmt.Sprintf(`"model_auto_compact_token_limit":%d`, *wantWindow)) {
+		t.Fatalf("serialized thread config = %s, want integer token limit", encoded)
+	}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func TestWebsocketRPCHandlesInterleavedNotification(t *testing.T) {

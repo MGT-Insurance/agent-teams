@@ -7,75 +7,42 @@ Set up this machine for agent-teams. Work through these steps in order, reportin
 
 If you set AGENT_TEAMS_HOME to a custom path, use that literal path in place of `~/.agent-teams` below.
 
-## 1. Verify beads
+## Shared workspace setup
 
-`bd --version`. If missing: STOP and tell the human — agent-teams hard-requires beads (https://github.com/gastownhall/beads). Do not improvise a fallback.
+Agent-teams requires `bd`; run `bd --version` and stop if it is missing. Resolve the workspace as `${AGENT_TEAMS_HOME:-$HOME/.agent-teams}` and use that literal path throughout. Do not improvise a store or use raw global-workspace `bd` as a replacement for `ateam` after setup.
 
-## 2. Resolve the workspace location
+Ask whether an existing private agent-teams memory remote already exists.
 
-The default workspace path is `~/.agent-teams`. If the human wants a non-default location, have them set `AGENT_TEAMS_HOME` in the `env` block of `~/.claude/settings.json` (applies to all future sessions), and use that literal path in place of `~/.agent-teams` in every command below.
-
-## 3. Create or clone the workspace
-
-Ask the human: do you already have an agent-teams memory remote (e.g. a private `agent-teams-memory` repo from another machine)?
-
-### Existing remote → clone
+For an existing remote, clone it into the workspace, then initialize Beads from inside that checkout:
 
 ```bash
-git clone <remote-url> ~/.agent-teams
-(cd ~/.agent-teams && bd init --prefix at --non-interactive)
+git clone <remote-url> <workspace>
+(cd <workspace> && bd init --prefix at --non-interactive)
+bd -C <workspace> memories dri
 ```
 
-`bd init` detects the git origin and auto-bootstraps from `refs/dolt/data` — no separate `bd dolt pull` needed (and `bd dolt pull` alone is a footgun: it may pull from a wrong configured remote). Verify knowledge arrived:
+`bd init` detects the Git origin and bootstraps `refs/dolt/data`; do not run a separate `bd dolt pull`, which may use a stale configured remote.
+
+For a fresh workspace, create a Git repository, initialize Beads, have the human create a private remote, make and push the initial Git commit, then configure and push the separate Dolt remote:
 
 ```bash
-bd -C ~/.agent-teams memories dri
+mkdir -p <workspace>
+git -C <workspace> init
+(cd <workspace> && bd init --prefix at --non-interactive)
+git -C <workspace> remote add origin <url>
+git -C <workspace> add -A
+git -C <workspace> commit -m "init agent-teams workspace"
+git -C <workspace> branch -M main
+git -C <workspace> push -u origin main
+bd -C <workspace> dolt remote add origin <url>
+bd -C <workspace> dolt push
 ```
 
-### Fresh → init
-
-**Step 1 — create the git repo and initialize beads** (`bd -C` does not work for `init`; a subshell is required):
-
-```bash
-mkdir -p ~/.agent-teams
-git -C ~/.agent-teams init
-(cd ~/.agent-teams && bd init --prefix at --non-interactive)
-```
-
-**Step 2 — have the human create a private remote**, e.g.:
-
-```
-gh repo create <user>/agent-teams-memory --private
-```
-
-**Step 3 — wire up the git remote and push the initial commit** (the remote must have at least one commit before `bd dolt push`):
-
-```bash
-git -C ~/.agent-teams remote add origin <url>
-git -C ~/.agent-teams add -A
-git -C ~/.agent-teams commit -m "init agent-teams workspace"
-git -C ~/.agent-teams branch -M main
-git -C ~/.agent-teams push -u origin main
-```
-
-**Step 4 — add the Dolt remote** (separate from the git remote, but can use the same URL) **and push the Dolt data**:
-
-```bash
-bd -C ~/.agent-teams dolt remote add origin <url>
-bd -C ~/.agent-teams dolt push
-```
+The Git remote carries repository files; the Dolt remote carries Beads data under its separate ref. Normal cross-machine synchronization uses `ateam sync` after the `ateam` wrapper is installed.
 
 ## 4. Enable team orchestration (REQUIRED)
 
-The DRI's team-orchestration model (team-joined background spawns + `SendMessage` peer messaging) requires the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var to be set. Without it, teammates cannot join a team or message each other, and the DRI cannot orchestrate a background team at Phase 4. There is no separate team-creation step — with the env var set, the team forms automatically when the first teammate is spawned (the pre-v2.1.178 `TeamCreate`/`TeamDelete` tools no longer exist).
-
-Tell the human to add the following to the `env` block of `~/.claude/settings.json`:
-
-```json
-"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
-```
-
-Example — the `env` block in `~/.claude/settings.json`:
+Team-joined background spawns and `SendMessage` require `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`. Add it to the `env` block of `~/.claude/settings.json` for every future interactive or headless session:
 
 ```json
 {
@@ -86,13 +53,9 @@ Example — the `env` block in `~/.claude/settings.json`:
 }
 ```
 
-This setting applies to all future sessions. It is required regardless of whether you intend to run the DRI interactively or headlessly.
-
 ## 5. Install `ateam` onto PATH
 
-`ateam` ships as prebuilt per-platform binaries inside the plugin's `bin/` directory. Setup owns putting bare `ateam` on PATH — it creates a symlink in `~/.local/bin` (which is on PATH on standard macOS/Linux user setups). This is idempotent: re-running setup is always safe.
-
-A SessionStart hook (`ensure-ateam-link.sh`) now keeps this symlink pointed at the active plugin installation on every session, so it self-heals across plugin updates. Step 5 remains useful as a first-run convenience, not something you need to re-run after an upgrade.
+`ateam` ships in the plugin's `bin/`. Install an idempotent `~/.local/bin/ateam` symlink; the `ensure-ateam-link.sh` SessionStart hook repairs it after upgrades.
 
 ### 5a. Resolve the installed wrapper path
 
@@ -103,8 +66,6 @@ Work through the following resolution order and stop at the first path that exis
 ```bash
 command -v ateam
 ```
-
-If this prints a path (exit 0), that is the wrapper. Use it directly.
 
 **Option B — marketplace cache install:**
 
@@ -124,8 +85,6 @@ for key, entries in plugins.items():
 "
 ```
 
-If this prints a path, that is the wrapper.
-
 **Option C — local directory-marketplace checkout:**
 
 ```bash
@@ -141,8 +100,6 @@ for mp_name, mp in data.items():
             break
 "
 ```
-
-If this prints a path, that is the wrapper.
 
 If none of the three options resolves a path, STOP — the plugin is not installed. Confirm the agent-teams plugin is installed in `~/.claude/settings.json` and retry.
 
@@ -164,7 +121,7 @@ done
 echo "Real wrapper: $WRAPPER_PATH"
 ```
 
-Report the printed path. It must be the real `bin/ateam` inside the plugin installation, not a path under `~/.local/bin`.
+The printed path must be the real plugin `bin/ateam`, not `~/.local/bin`.
 
 ### 5c. Install the symlink
 
@@ -175,7 +132,7 @@ mkdir -p ~/.local/bin
 ln -sf "$WRAPPER_PATH" ~/.local/bin/ateam
 ```
 
-`ln -sf` is force-mode: it overwrites any existing symlink and does not error on re-run. If `~/.local/bin` does not exist it is created. Report the result of `ls -la ~/.local/bin/ateam`.
+Report `ls -la ~/.local/bin/ateam`.
 
 ### 5d. Smoke test — fail loud
 
@@ -183,29 +140,23 @@ ln -sf "$WRAPPER_PATH" ~/.local/bin/ateam
 ateam ws
 ```
 
-Expected: prints the workspace path (e.g. `/Users/you/.agent-teams`). Exit 0.
-
-If this fails with "command not found" or a non-zero exit:
-
-**STOP. Do not proceed.** `~/.local/bin` is not on PATH in this shell environment. The human must add it:
+Expected: workspace path and exit 0. On command-not-found/nonzero, STOP; add:
 
 ```
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Add that line to `~/.zshrc` (or `~/.bashrc`) so it persists, then open a new terminal and re-run `/setup-agent-teams` from step 5 onward.
+Persist it in the shell rc, open a new terminal, and retry step 5. For "unsupported platform", file a plugin issue for the missing platform binary.
 
-If the error is "unsupported platform" rather than "command not found", the symlink resolved correctly but the plugin's `bin/` directory is missing the platform binary — file an issue against the agent-teams plugin.
+### 5e. Install the global-workspace PRIME.md, memory caps, and cap sentinel
 
-### 5e. Install the global-workspace PRIME.md
-
-Left unset, `bd prime` dumps the ENTIRE all-role memory store into every session that resolves this workspace, on every PreCompact — hundreds of KB across hundreds of memories once the store has been running a while. The fix is a `PRIME.md` override at `$AGENT_TEAMS_HOME/.beads/PRIME.md`; `ateam steward init` installs it idempotently from the plugin's bundled template. Run it now rather than waiting for someone to happen to start a Steward session first:
+`ateam steward init` idempotently installs the bundled `$AGENT_TEAMS_HOME/.beads/PRIME.md` (replaces `bd prime`'s workflow text), sets the `prime.max-memories`/`prime.max-memory-chars` config keys to `1` (caps what `bd prime` injects from the persistent memory store — on bd v1.3.0+, a custom PRIME.md alone no longer suppresses that section), and writes a sentinel memory (`000-prime-cap-sentinel`) whose key sorts ahead of every real memory key in the workspace, so the one memory the cap still lets through is always this harmless placeholder rather than real content:
 
 ```bash
 ateam steward init
 ```
 
-Expected: prints `installed: <path>/.beads/PRIME.md` on first run (or nothing about PRIME.md if it's already installed and unchanged — self-healing is silent), followed by the Steward session directory path. Safe to re-run: it never overwrites a human-edited or unrecognized PRIME.md.
+Expected: prints `installed: <path>/.beads/PRIME.md` on first run (or nothing about PRIME.md if it's already installed and unchanged — self-healing is silent), followed by the Steward session directory path. Safe to re-run: it never overwrites a human-edited or unrecognized PRIME.md, and the config keys and sentinel memory are set unconditionally (a no-op write when already correct).
 
 ### 5f. Check optional Codex compatibility
 
@@ -225,29 +176,9 @@ ateam runtime check codex --optional
 If the human intends to use Codex now, rerun without `--optional`; do not claim
 Codex is ready unless `ateam runtime check codex` exits zero.
 
-### Allowlist `ateam`
-
-Add the following entry to the `permissions.allow` array in `~/.claude/settings.json` so workspace operations do not prompt:
-
-```
-"Bash(ateam:*)"
-```
-
-This single entry covers all `ateam` subcommands regardless of which per-platform binary is selected.
-
 ## 6. Provision the interactive-DRI permission profile (OPTIONAL — interactive only)
 
-This whole step is **only for interactive DRI sessions** — the human-facing session
-that runs `/dri` in a terminal. Backgrounded DRIs and Phase-4 teammates run with
-`bypassPermissions` and never prompt, so they need none of this.
-
-Why it matters: a DRI session is **git-heavy** (it owns integration — `git worktree
-add`, `git merge`, `git push`, branch ops) and does dozens of git calls per run. The
-teammates are silent under bypass, so every permission prompt the human sees comes
-from the DRI session's own Bash calls. Without a permission profile, the human is
-prompted on essentially every git command. The three entries below quiet that:
-the `ateam`/`bd` allowlist, a **scoped git allowlist**, and a **canonical worktree
-root** in `additionalDirectories`.
+This is only for the human-facing interactive `/dri`; background DRIs and teammates use `bypassPermissions`. Configure the `ateam` allowlist, scoped routine Git verbs, and canonical worktree root below.
 
 ### 6a. Allowlist `ateam`
 
@@ -339,7 +270,7 @@ If that prints usage output, the CLI is available and the tester can use it for 
 
 ## 8. Register a repo's worktree-setup hook (OPTIONAL — one-time per repo)
 
-When a worktree needs live env wiring — running a dev server, creds-dependent validation (e.g. socotra), a pre-commit hook that requires it — an agent runs `ateam worktree-setup <wtPath>` to provision the gitignored files the repo needs (e.g. `.vercel` link, env files). No separate `pnpm install` first: the midgard hook installs dependencies itself when the worktree lacks them, before pulling. It is invoked on-demand, not on every worktree. The verb is a no-op unless a hook is registered for the repo. Registration is optional: with no hook (or a configured script that is missing) the verb prints a harmless message and exits 0. But a registered hook that RUNS and fails now exits nonzero, so a caller can tell provisioning did not complete — install failed, the pull failed, or an env file the worktree needs still did not land.
+When a worktree needs live env wiring — running a dev server, creds-dependent validation (e.g. socotra), a pre-commit hook that requires it — an agent runs `ateam worktree-setup <wtPath>` to provision the gitignored files the repo needs (e.g. `.vercel` link, env files). No separate `pnpm install` first: the midgard hook installs dependencies itself when the worktree lacks them, before pulling. Manual usage and pre-existing or resumed worktrees remain on-demand. By contrast, every fresh agent-teams-managed primary or delegated worktree gets a mandatory automatic setup attempt before its agent runs Node tooling; a failed attempt is reported and does not block the later managed lifecycle. No registered hook is an exit-0 no-op. A configured hook that is missing or fails emits a loud diagnostic and makes standalone `ateam worktree-setup` exit 1, so callers can detect incomplete provisioning without exposing hook output or credentials.
 
 **How it works.** The verb looks up `<AGENT_TEAMS_HOME>/worktree-hooks/<repo-key>`. The repo-key is the slugified basename of the main checkout (the source checkout behind the worktree) — the same identity dispatch uses for team names. If the file exists, its single line (trimmed) is treated as the absolute path to the repo's setup script; the verb runs `<script> <wtPath> <srcCheckout>`. No file → harmless "no hook configured" message.
 
@@ -384,11 +315,11 @@ Run on BOTH paths (clone or fresh) after step 6 completes.
    ateam sync
    ```
 
-5. Confirm step 5e's PRIME.md install actually took, not just that the workspace exists:
+5. Confirm step 5e's PRIME.md install, memory caps, and cap sentinel actually took, not just that the workspace exists:
    ```bash
    ateam audit
    ```
-   Expected: an `audit: bd prime clean — <n> bytes, no memory dump (budget 10240)` line (alongside the leaked-work-beads line). If instead you see `audit: FAILED — the global workspace has no installed PRIME.md`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md by hand).
+   Expected: an `audit: bd prime clean — <n> bytes, ...` line (alongside the leaked-work-beads line) — either `no memories in store` on a fresh workspace, or `memories capped (prime.max-memories=1, prime.max-memory-chars=1), sentinel confirmed (000-prime-cap-sentinel)` once some exist. If instead you see `audit: FAILED — the global workspace has no installed PRIME.md` or `audit: FAILED — ... is not safely capped`, step 5e didn't take — re-run `ateam steward init` (do not write PRIME.md, the config keys, or the sentinel memory by hand).
 
 ## 10. Verify memory-routing hook is active
 

@@ -170,3 +170,85 @@ func TestAddWorktree_Error(t *testing.T) {
 		t.Errorf("error message missing context: %v", err)
 	}
 }
+
+// ---- BranchExists -----------------------------------------------------------
+
+func TestBranchExists_LocalBranchPresent(t *testing.T) {
+	dir := initTempRepo(t)
+	r := New()
+	// initTempRepo's default branch is whatever `git init` picked (main or
+	// master) — create a distinct branch so this test doesn't depend on that.
+	cmd := exec.Command("git", "-C", dir, "branch", "feature-x")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch feature-x: %v\n%s", err, out)
+	}
+	if !r.BranchExists(dir, "refs/heads/feature-x") {
+		t.Error("BranchExists(refs/heads/feature-x) = false, want true")
+	}
+}
+
+func TestBranchExists_MissingRef(t *testing.T) {
+	dir := initTempRepo(t)
+	r := New()
+	if r.BranchExists(dir, "refs/heads/no-such-branch") {
+		t.Error("BranchExists(refs/heads/no-such-branch) = true, want false")
+	}
+	if r.BranchExists(dir, "refs/remotes/origin/no-such-branch") {
+		t.Error("BranchExists(refs/remotes/origin/no-such-branch) = true, want false (no origin configured)")
+	}
+}
+
+func TestBranchExists_WithInjectedFake(t *testing.T) {
+	fake := NewWithExec(func(name string, args ...string) ([]byte, []byte, error) {
+		return nil, nil, nil // show-ref exits 0
+	})
+	if !fake.BranchExists("/repo", "refs/heads/main") {
+		t.Error("expected true for a zero-error exec result")
+	}
+	failing := NewWithExec(func(name string, args ...string) ([]byte, []byte, error) {
+		return nil, []byte("fatal: not a valid ref\n"), &exec.ExitError{}
+	})
+	if failing.BranchExists("/repo", "refs/heads/gone") {
+		t.Error("expected false for a failing exec result")
+	}
+}
+
+// ---- AttachWorktree ----------------------------------------------------------
+
+func TestAttachWorktree_ExistingBranch(t *testing.T) {
+	dir := initTempRepo(t)
+	r := New()
+	cmd := exec.Command("git", "-C", dir, "branch", "feature-y")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch feature-y: %v\n%s", err, out)
+	}
+	wtPath := filepath.Join(t.TempDir(), "attached-wt")
+
+	if err := r.AttachWorktree(dir, wtPath, "feature-y"); err != nil {
+		t.Fatalf("AttachWorktree: %v", err)
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("worktree dir not created: %v", err)
+	}
+	// The attached worktree must be checked out on feature-y, not a new branch.
+	out, err := exec.Command("git", "-C", wtPath, "branch", "--show-current").Output()
+	if err != nil {
+		t.Fatalf("git branch --show-current: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "feature-y" {
+		t.Errorf("attached worktree branch = %q, want %q", got, "feature-y")
+	}
+}
+
+func TestAttachWorktree_Error(t *testing.T) {
+	fake := NewWithExec(func(name string, args ...string) ([]byte, []byte, error) {
+		return nil, []byte("fatal: no such branch\n"), &exec.ExitError{}
+	})
+	err := fake.AttachWorktree("/repo", "/wt", "no-such-branch")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "git worktree add") || !strings.Contains(err.Error(), "no-such-branch") {
+		t.Errorf("error message missing context: %v", err)
+	}
+}

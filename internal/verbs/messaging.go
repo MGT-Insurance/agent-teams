@@ -2,6 +2,7 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,9 +28,10 @@ import (
 type sendKong struct {
 	RecipientID        string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
 	File               string `name:"file"   help:"Path to the message body file (required)." required:""`
-	Sender             string `name:"sender" help:"Sender identifier (default: git user.name)."`
+	Sender             string `name:"sender" help:"Sender identifier (default: steward when sent from the steward session, else git user.name)."`
 	Thread             string `name:"thread" help:"Optional thread identifier label."`
-	ResumeLaunchPrompt string `name:"resume-launch-prompt" help:"Launch prompt used if the recipient session is gone and must be resumed (default: /dri <id>)."`
+	DedupKey           string `name:"dedup-key" help:"Skip creating a new message if an open one assigned to the recipient already carries this key (label dedup:<key>); delivery still runs."`
+	ResumeLaunchPrompt string `name:"resume-launch-prompt" help:"Launch prompt used if the recipient session is gone and must be resumed (default: resolved by ateam resume from the initiative type)."`
 	ResumeModel        string `name:"resume-model" help:"Model for a resumed session (only meaningful with --resume-launch-prompt)."`
 
 	agentsFunc     agentsJSONFunc       `kong:"-"`
@@ -59,31 +61,35 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return cli.Usagef("ateam send: file not found: %s", c.File)
 	}
 
-	sender := c.Sender
-	if sender == "" {
-		sender = gitUserName()
+	sender := resolveSender(ctx, c.Sender)
+
+	msgID, deduped, err := c.createOrDedupMessage(ctx, sender)
+	if err != nil {
+		return err
+	}
+	if deduped {
+		fmt.Fprintf(ctx.Stdout, "message_id: %s (deduplicated)\n", msgID)
+	} else {
+		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", msgID)
+	}
+	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
+
+	// Recipient status is resolved BEFORE the doorbell is ever touched
+	// (CONTRACT 8st0.18 item 1b): the message above is always stored
+	// regardless of recipient state, but a closed recipient gets no
+	// doorbell, no resume, no reopen — just a queued message. Steward is a
+	// machine-scoped singleton, not an initiative bead; recipientWorktree
+	// returns the zero-value bd.Issue for it, so Status is never "closed"
+	// and this never gates Steward mail.
+	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	if liveErr != nil {
+		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
+		return nil
 	}
 
-	createArgs := []string{
-		"create",
-		"--type=message",
-		"--assignee=" + c.RecipientID,
-		"--notes=from: " + sender,
-		"--labels=delivery:pending",
-		"--body-file=" + c.File,
-		"--title=message from " + sender,
-		"--json",
-	}
-	if c.Thread != "" {
-		createArgs = append(createArgs, "--labels=thread:"+c.Thread)
-	}
-
-	var issue bd.Issue
-	if err := ctx.BD.RunJSON(&issue, createArgs...); err != nil {
-		return fmt.Errorf("ateam send: create message bead: %w", err)
-	}
-	if issue.ID == "" {
-		return fmt.Errorf("ateam send: bd create returned no id")
+	if c.RecipientID != StewardHandle && recipIssue.Status == "closed" {
+		fmt.Fprintf(ctx.Stdout, "recipient %s is closed; message queued until reopened\n", c.RecipientID)
+		return nil
 	}
 
 	doorbellDir := filepath.Join(ctx.Home, "mailbox")
@@ -93,15 +99,6 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	doorbellPath := filepath.Join(doorbellDir, c.RecipientID+".wake")
 	if err := touchFile(doorbellPath); err != nil {
 		return fmt.Errorf("ateam send: touch doorbell: %w", err)
-	}
-
-	fmt.Fprintf(ctx.Stdout, "message_id: %s\n", issue.ID)
-	fmt.Fprintf(ctx.Stdout, "recipient: %s\n", c.RecipientID)
-
-	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
-	if liveErr != nil {
-		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
-		return nil
 	}
 
 	// Disabled repo: the message stays queued (the bd issue above already
@@ -124,7 +121,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	fields := initiative.Of(recipIssue)
 	runtimeKind, runtimeErr := sessionruntime.ResolveStored(fields.Runtime)
 	if runtimeErr != nil {
-		fmt.Fprintf(ctx.Stdout, "warning: recipient runtime is invalid (%v); message %s remains queued\n", runtimeErr, issue.ID)
+		fmt.Fprintf(ctx.Stdout, "warning: recipient runtime is invalid (%v); message %s remains queued\n", runtimeErr, msgID)
 		return nil
 	}
 	if runtimeKind == sessionruntime.Codex {
@@ -138,7 +135,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 			return nil
 		}
 		if err != nil {
-			fmt.Fprintf(ctx.Stdout, "warning: Codex wake failed (%v); message %s remains queued\n", err, issue.ID)
+			fmt.Fprintf(ctx.Stdout, "warning: Codex wake failed (%v); message %s remains queued\n", err, msgID)
 			return nil
 		}
 		fmt.Fprintln(ctx.Stdout, "Codex thread accepted the mail wake request")
@@ -183,6 +180,9 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		}
 		fmt.Fprintf(ctx.Stdout, "recipient not found in claude agents; launching via ateam resume\n")
 		if err := c.resumeFunc(ctx, c.RecipientID, c.ResumeLaunchPrompt, c.ResumeModel); err != nil {
+			if errors.Is(err, errNothingToReview) {
+				return c.closeAsNothingToReview(ctx, err)
+			}
 			return fmt.Errorf("ateam send: resume escalation: %w", err)
 		}
 		return nil
@@ -208,10 +208,81 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	fmt.Fprintf(ctx.Stdout, "doorbell still present after 5s; recipient is deaf — respawning %s\n", entry.ID)
 	if err := c.respawnFunc(entry.ID); err != nil {
-		fmt.Fprintf(ctx.Stdout, "warning: respawn %s failed (%v); message %s remains queued for the next turn\n", entry.ID, err, issue.ID)
+		fmt.Fprintf(ctx.Stdout, "warning: respawn %s failed (%v); message %s remains queued for the next turn\n", entry.ID, err, msgID)
 		return nil
 	}
 	fmt.Fprintf(ctx.Stdout, "respawned %s to deliver the doorbell\n", entry.ID)
+	return nil
+}
+
+// createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
+// hit, create nothing and return the existing open message's id (deduped =
+// true); mail send never refuses a recipient, so this only ever short-
+// circuits the create call, never the delivery steps that follow it.
+func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string, bool, error) {
+	if existingID, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey); err != nil {
+		return "", false, fmt.Errorf("ateam send: dedup lookup: %w", err)
+	} else if hit {
+		return existingID, true, nil
+	}
+
+	createArgs := []string{
+		"create",
+		"--type=message",
+		"--assignee=" + c.RecipientID,
+		"--notes=from: " + sender,
+		"--labels=delivery:pending",
+		"--body-file=" + c.File,
+		"--title=message from " + sender,
+		"--json",
+	}
+	if c.Thread != "" {
+		createArgs = append(createArgs, "--labels=thread:"+c.Thread)
+	}
+	if c.DedupKey != "" {
+		createArgs = append(createArgs, "--labels=dedup:"+c.DedupKey)
+	}
+
+	var issue bd.Issue
+	if err := ctx.BD.RunJSON(&issue, createArgs...); err != nil {
+		return "", false, fmt.Errorf("ateam send: create message bead: %w", err)
+	}
+	if issue.ID == "" {
+		return "", false, fmt.Errorf("ateam send: bd create returned no id")
+	}
+	return issue.ID, false, nil
+}
+
+// closeAsNothingToReview implements CONTRACT 8st0.18 item 1e: resume found
+// nothing left to review (the PR it was resuming for is already merged or
+// closed) — every message still queued for the recipient is closed as moot
+// rather than left open for a review that will never happen, and the
+// recipient initiative is closed alongside it. Closing the mail and the
+// initiative is best-effort: a failure there is reported to ctx.Stderr but
+// never turns this into a non-zero exit — the contract calls for exit 0
+// either way. The unread query itself is NOT best-effort: if it fails, we
+// don't know what's still queued, so the initiative must stay open rather
+// than risk stranding unclosed mail on a closed initiative — this returns
+// an error, mail send exits 1, and the message stays queued for a retry
+// that redoes the moot path (agent-teams-8st0.29 fix 1).
+func (c *sendKong) closeAsNothingToReview(ctx *cli.Context, resumeErr error) error {
+	note := fmt.Sprintf("%s; nothing to act on", resumeErr)
+
+	unread, err := unreadMailFor(ctx, c.RecipientID)
+	if err != nil {
+		return fmt.Errorf("ateam send: query unread mail for %s: %w", c.RecipientID, err)
+	}
+	ids := make([]string, len(unread))
+	for i, m := range unread {
+		ids[i] = m.ID
+	}
+	if err := closeMailAs(ctx, ids, "delivery:moot", note); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam send: close moot mail for %s: %v\n", c.RecipientID, err)
+	}
+	if _, err := ctx.BD.Run("close", c.RecipientID, "--reason="+note); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam send: close initiative %s: %v\n", c.RecipientID, err)
+	}
+	fmt.Fprintf(ctx.Stdout, "nothing to review for %s; closed %d message(s) as moot\n", c.RecipientID, len(ids))
 	return nil
 }
 
@@ -361,11 +432,14 @@ func defaultAgentsJSONAll() ([]agentSession, error) {
 }
 
 // runAgentsJSON runs `claude agents <args...>` and parses the JSON result.
+// Producer-level fix: bounded via runBoundedClaude (context.Background(), a
+// self-contained per-call timeout — this DI seam's signature is shared by
+// send/hung/reap-orphans/reap and stays unchanged), so an unbounded `claude
+// agents` hang can no longer stall any of its callers.
 func runAgentsJSON(args ...string) ([]agentSession, error) {
-	cmd := exec.Command("claude", append([]string{"agents"}, args...)...)
-	out, err := cmd.Output()
+	out, err := runBoundedClaude(context.Background(), claudeCallTimeout, append([]string{"agents"}, args...)...)
 	if err != nil {
-		return nil, fmt.Errorf("claude agents %s: %w", strings.Join(args, " "), err)
+		return nil, err
 	}
 	var sessions []agentSession
 	if err := json.Unmarshal(out, &sessions); err != nil {
@@ -374,9 +448,17 @@ func runAgentsJSON(args ...string) ([]agentSession, error) {
 	return sessions, nil
 }
 
-// defaultResume runs `ateam resume <id>` via the resumeKong directly.
+// defaultResume runs `ateam resume <id>` via the resumeKong directly. It uses
+// newProductionResumeKong (dispatch.go) — the same constructor
+// RegisterDispatchKong's CLI "resume" verb uses — so this auto-resume
+// escalation path gets every recreateWorktree seam (gitPrune, git, setup,
+// prState, ...) the interactive verb gets; see that constructor's doc
+// comment for why a hand-rolled literal here caused agent-teams-8st0.30.
 func defaultResume(ctx *cli.Context, id, launchPrompt, model string) error {
-	cmd := &resumeKong{ID: id, LaunchPrompt: launchPrompt, Model: model, launch: launchBGSession, launchRaw: rawLaunchBGSession}
+	cmd := newProductionResumeKong()
+	cmd.ID = id
+	cmd.LaunchPrompt = launchPrompt
+	cmd.Model = model
 	return cmd.Run(ctx)
 }
 
@@ -462,6 +544,36 @@ type respawnFunc func(id string) error
 func defaultRespawn(id string) error {
 	cmd := exec.Command("claude", "respawn", id)
 	return cmd.Run()
+}
+
+// resolveSender determines the mail envelope sender. An explicit --sender
+// always wins (relay=human, hung_tick=hung-scan, route=pr-shepherd, and a
+// human typing the CLI can override too) and never touches the filesystem, so
+// those paths cannot be aborted by a cwd lookup. With no explicit sender, cwd
+// is resolved best-effort: a send from the Steward's own session is stamped as
+// the Steward (so model-driven steward->DRI mail is attributed to the steward
+// rather than collapsing to git user.name), while every other session — and a
+// cwd that cannot be read — keeps the git user.name fallback rather than
+// failing the send.
+func resolveSender(ctx *cli.Context, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return gitUserName()
+	}
+	return defaultSender(ctx, cwd)
+}
+
+// defaultSender picks the no-explicit-sender default for a known cwd: the
+// Steward when the send originates from the Steward's session, otherwise git
+// user.name.
+func defaultSender(ctx *cli.Context, cwd string) string {
+	if isStewardSession(ctx, cwd) {
+		return StewardHandle
+	}
+	return gitUserName()
 }
 
 // gitUserName returns the current git user.name (best-effort; empty on error).
@@ -564,10 +676,30 @@ func resolveInboxRecipient(ctx *cli.Context, cwd string) (string, error) {
 // resolveInboxRecipientRuntime returns whether the resolved recipient is a
 // Codex initiative. Legacy or invalid runtime metadata still permits inbox
 // consumption; it simply does not opt into the Codex doorbell contract.
+//
+// Resolution order: the Steward's own session (isStewardSession) always wins
+// first. Next, a durable session tie (resolveInitiativeBySession), keyed on
+// the CURRENT session's runtime-native id — this is what lets `ateam mail
+// inbox` resolve correctly from a cwd that doesn't match any registered
+// worktree (e.g. a nested subshell, or a session whose worktree moved), which
+// the cwd-only path below cannot do. Only when no session id is available, or
+// no open initiative is tied to it, does this fall through to
+// resolveMyInitiativeIssue's pure-cwd match — UNCHANGED, since tie-session
+// (SessionStart) depends on that resolution staying cwd-only.
 func resolveInboxRecipientRuntime(ctx *cli.Context, cwd string) (string, bool, error) {
 	if isStewardSession(ctx, cwd) {
 		return StewardHandle, false, nil
 	}
+
+	if runtimeKind, sessionID, ok := currentRuntimeSessionID(); ok {
+		if issue, found, err := resolveInitiativeBySession(ctx, runtimeKind, sessionID); err != nil {
+			return "", false, err
+		} else if found {
+			resolvedKind, runtimeErr := sessionruntime.ResolveStored(initiative.Of(issue).Runtime)
+			return issue.ID, runtimeErr == nil && resolvedKind == sessionruntime.Codex, nil
+		}
+	}
+
 	issue, err := resolveMyInitiativeIssue(ctx, cwd)
 	if err != nil {
 		return "", false, err
@@ -576,11 +708,42 @@ func resolveInboxRecipientRuntime(ctx *cli.Context, cwd string) (string, bool, e
 	return issue.ID, runtimeErr == nil && runtimeKind == sessionruntime.Codex, nil
 }
 
+// currentRuntimeSessionID returns the calling process's own runtime kind and
+// session id, read from whichever runtime-native env var is set — CODEX-FIRST.
+//
+// codexSessionIDEnvVar (CODEX_THREAD_ID) is checked before sessionIDEnvVar
+// (CLAUDE_CODE_SESSION_ID) because CLAUDE_CODE_SESSION_ID has been observed,
+// live, to LEAK into Codex tool subprocesses (inherited from a parent Claude
+// process — see hung_tick.go:297's hazard note for the same leak surfacing
+// elsewhere). CODEX_THREAD_ID's presence is therefore the reliable "I am
+// Codex" signal: a Codex subprocess may have both set, but only
+// CODEX_THREAD_ID identifies which session it actually is. If neither is
+// set, ok is false and callers fall back to cwd-based resolution.
+func currentRuntimeSessionID() (kind sessionruntime.Kind, sessionID string, ok bool) {
+	if id := os.Getenv(codexSessionIDEnvVar); id != "" {
+		return sessionruntime.Codex, id, true
+	}
+	if id := os.Getenv(sessionIDEnvVar); id != "" {
+		return sessionruntime.Claude, id, true
+	}
+	return "", "", false
+}
+
 // sessionIDEnvVar is the env var Claude Code exports into every session's
 // Bash env carrying that session's id (verified live against the
 // steward-duplicate incident that motivated agent-teams-e3mq.31).
 // checkStewardInboxGuard reads it to identify the calling session.
 const sessionIDEnvVar = "CLAUDE_CODE_SESSION_ID"
+
+// codexSessionIDEnvVar is the env var the Codex CLI injects, codex-native,
+// into every tool subprocess it spawns, carrying that thread's id (the same
+// value stored on the initiative's "session:" line for a Codex session — see
+// docs/codex-runtime-contract.md §2.2). currentRuntimeSessionID checks this
+// BEFORE sessionIDEnvVar (codex-first) because CLAUDE_CODE_SESSION_ID has
+// been confirmed, live, to leak into Codex tool subprocesses inherited from a
+// parent Claude process, which would otherwise misidentify a Codex session as
+// Claude.
+const codexSessionIDEnvVar = "CODEX_THREAD_ID"
 
 // pidfileEntryPid and pidfileEntrySession parse a watcher pidfile entry of
 // the form "pid<TAB>session_id" (or a bare pid for a pre-e3mq.30 entry,
@@ -720,7 +883,12 @@ func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
 	}
 	// Auto-close on read. Fires only here (post-ack), never on delivery —
 	// unread/pending messages and messages to a dead initiative stay open.
-	if _, err := ctx.BD.Run("close", msgID); err != nil {
+	// --force: bd 1.3.0 refuses close when assignee != actor, and mail
+	// wisps are assigned to the recipient initiative while ateam's actor
+	// resolves to the git user — never the recipient. Mail is single-owner
+	// (only the recipient ever closes its own wisp), so the concurrent-
+	// reclaim race the guard protects against doesn't apply here.
+	if _, err := ctx.BD.Run("close", msgID, "--force"); err != nil {
 		return fmt.Errorf("close message: %w", err)
 	}
 	return nil
