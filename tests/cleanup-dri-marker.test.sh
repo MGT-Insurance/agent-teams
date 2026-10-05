@@ -60,6 +60,39 @@ else
   fail ".steward-session marker was removed (should never happen)"
 fi
 
+# ── Case: learnings-gate dir for the ending session is removed whole ─────────
+GATES="$AGENT_TEAMS_HOME/learnings-gate"
+GSID="gate-sess-0001"
+mkdir -p "$GATES/$GSID/spawns" "$GATES/$GSID/loaded" "$GATES/other-sess"
+echo dri > "$GATES/$GSID/main"
+echo planner > "$GATES/$GSID/spawns/probe-t1"
+: > "$GATES/$GSID/loaded/aprobe-t1-abc"
+echo steward > "$GATES/other-sess/main"
+
+run_hook "$GSID"
+
+if [ -e "$GATES/$GSID" ]; then
+  fail "gate dir (main, spawns/, loaded/) still present after SessionEnd"
+else
+  pass "gate dir with main, spawns/ and loaded/ removed on SessionEnd"
+fi
+if [ -f "$GATES/other-sess/main" ]; then
+  pass "another session's gate dir untouched"
+else
+  fail "another session's gate dir was removed"
+fi
+
+# ── Case: invalid session id is a no-op (nothing under or above the root) ───
+set +e
+printf '{"session_id":"../learnings-gate/other-sess"}' | "$SCRIPT" 2>/dev/null
+rc=$?
+set -e
+if [ "$rc" -eq 0 ] && [ -f "$GATES/other-sess/main" ]; then
+  pass "invalid session id -> exits 0 and removes nothing"
+else
+  fail "invalid session id -> rc=$rc, other-sess main present: $([ -f "$GATES/other-sess/main" ] && echo yes || echo no)"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

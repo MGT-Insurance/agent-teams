@@ -5,8 +5,10 @@
 # top-level "SessionEnd" hooks.json key (agent-teams-7ew5.2.6) — fires
 # unconditionally for every session end.
 #
-# ONLY job: remove $ATH/dri-sessions/<session_id> for the ending session_id,
-# if it exists. Never touches .steward-session (StewardSessionMarkerPath) —
+# Jobs: remove $ATH/dri-sessions/<session_id> for the ending session_id, if it
+# exists, and remove the whole learnings-gate root
+# $ATH/learnings-gate/<session_id>/ (lg_cleanup_session: main marker, spawn
+# registry, loaded records). Never touches .steward-session (StewardSessionMarkerPath) —
 # that marker's lifecycle belongs exclusively to `ateam steward init`/
 # `ateam steward remove`. Does not resolve_session_role or check
 # is_steward_cwd at all — a steward session's SessionEnd firing here is
@@ -31,6 +33,10 @@ hook_log_start "cleanup-dri-marker.sh"
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-session-role.sh
 . "$(dirname "$0")/lib/resolve-session-role.sh"
 
+# shellcheck source=plugins/agent-teams/hooks/scripts/lib/learnings-gate.sh
+. "$(dirname "$0")/lib/learnings-gate.sh"
+
 dri_cleanup_session_marker "$ATH" "$HOOK_SESSION_ID"
+lg_cleanup_session "$ATH" "$HOOK_SESSION_ID"
 
 HOOK_EXIT_REASON="ok"
