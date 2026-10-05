@@ -73,11 +73,30 @@ DRI_CWD="$T/dri-plain-cwd"
 mkdir -p "$DRI_CWD"
 
 recall_out=$( (cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/role-recall-recovery.sh") 2>/dev/null )
-if printf '%s' "$recall_out" | grep -q "$DRI_MARKER_TEXT"; then
-  pass "DRI leg: role-recall-recovery.sh stdout contains real ateam learnings dri output"
+if [ "$(cat "$ATH/learnings-gate/$DRI_SID/main" 2>/dev/null)" = "dri" ] \
+  && ! printf '%s' "$recall_out" | grep -q "$DRI_MARKER_TEXT"; then
+  pass "DRI leg: role-recall-recovery.sh armed the learnings gate instead of printing the body"
 else
-  fail "DRI leg: expected seeded dri marker in role-recall-recovery.sh output; got: $recall_out"
+  fail "DRI leg: expected armed gate marker and no learnings body; got: $recall_out"
 fi
+# The gate then denies everything but the real command, whose output carries
+# the seeded marker (the model reads it from its own tool result).
+gate_in() { printf '{"session_id":"%s","tool_name":"Bash","tool_input":{"command":"%s"}}' "$DRI_SID" "$1"; }
+if gate_out=$(gate_in "ls" | "$HOOKS/learnings-gate.sh" pre 2>/dev/null) \
+  && printf '%s' "$gate_out" | grep -q '"permissionDecision": *"deny"'; then
+  pass "DRI leg: learnings-gate.sh denies other calls while armed"
+else
+  fail "DRI leg: expected deny while armed; got: $gate_out"
+fi
+if [ -z "$(gate_in "ateam learnings dri" | "$HOOKS/learnings-gate.sh" pre 2>/dev/null)" ] \
+  && [ ! -f "$ATH/learnings-gate/$DRI_SID/main" ] \
+  && printf '%s' "$expected_dri_learnings" | grep -q "$DRI_MARKER_TEXT"; then
+  pass "DRI leg: exact command allowed, gate cleared, real learnings carry the marker"
+else
+  fail "DRI leg: expected exact command to clear the gate"
+fi
+# Re-arm so the cleanup assertions below also cover the gate dir.
+(cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/role-recall-recovery.sh") >/dev/null 2>&1
 if printf '%s' "$recall_out" | grep -q "ledger"; then
   fail "DRI leg: role-recall-recovery.sh leaked ledger content into dri output"
 else
@@ -89,6 +108,12 @@ if [ -f "$marker" ]; then
   fail "DRI leg: cleanup-dri-marker.sh did not remove the marker"
 else
   pass "DRI leg: cleanup-dri-marker.sh removed the marker"
+fi
+
+if [ -e "$ATH/learnings-gate/$DRI_SID" ]; then
+  fail "DRI leg: cleanup-dri-marker.sh left the learnings-gate dir"
+else
+  pass "DRI leg: cleanup-dri-marker.sh removed the learnings-gate dir"
 fi
 
 post_cleanup_out=$( (cd "$DRI_CWD" && printf '{"session_id":"%s"}' "$DRI_SID" | "$HOOKS/role-recall-recovery.sh") 2>/dev/null )
@@ -109,10 +134,11 @@ mkdir -p "$STEWARD_DIR"
 STEWARD_SID="e2e-steward-session-0002"
 
 steward_recall_out=$( (cd "$STEWARD_DIR" && printf '{"session_id":"%s"}' "$STEWARD_SID" | "$HOOKS/role-recall-recovery.sh") 2>/dev/null )
-if printf '%s' "$steward_recall_out" | grep -q "$STEWARD_MARKER_TEXT"; then
-  pass "Steward leg: role-recall-recovery.sh stdout contains real ateam learnings steward output"
+if [ "$(cat "$ATH/learnings-gate/$STEWARD_SID/main" 2>/dev/null)" = "steward" ] \
+  && ! printf '%s' "$steward_recall_out" | grep -q "$STEWARD_MARKER_TEXT"; then
+  pass "Steward leg: role-recall-recovery.sh armed the learnings gate instead of printing the body"
 else
-  fail "Steward leg: expected seeded steward marker in role-recall-recovery.sh output; got: $steward_recall_out"
+  fail "Steward leg: expected armed gate marker and no learnings body; got: $steward_recall_out"
 fi
 if printf '%s' "$steward_recall_out" | grep -q "scope-call"; then
   pass "Steward leg: role-recall-recovery.sh contains the seeded scope-call category recall"
