@@ -18,7 +18,7 @@ Role learnings are served role-scoped by agent-teams' own hooks and skills, not
 by this prime output:
 
 - `ateam learnings <role>` — hot+fresh set for a role (DRI/steward skills load
-  this at startup; `role-recall-recovery.sh` re-injects it on clear/compact;
+  this at startup; `role-recall-recovery.sh` arms the learnings gate on clear/compact and the agent loads them by running `ateam learnings <role>`;
   every role subagent self-fetches it on spawn -- SubagentStart only freshens
   the local store first, since its stdout never reaches an agent's context).
 - `ateam recall <role> <query>` — search the FULL set, cold entries included.

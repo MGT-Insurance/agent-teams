@@ -77,7 +77,7 @@ func TestCodexPromptSourcesPreserveSessionStartOnlyMailContract(t *testing.T) {
 			"plugins/agent-teams-codex/skills/setup-agent-teams/SKILL.md",
 		}
 		assertPromptClauses(t, root, paths,
-			"Trust only its current `SessionStart` command-hook definition",
+			"Trust only its current `SessionStart`, `PreToolUse`, `PostCompact`, and `SessionEnd` command-hook definitions",
 			"Managed app-server delivery is the Codex mail wake path",
 			"`SessionStart` binds the session and catches up queued unread mail only on startup or resume",
 			"On clear or compact, it binds without an unread-mail query or catch-up context",

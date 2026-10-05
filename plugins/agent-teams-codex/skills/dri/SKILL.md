@@ -40,8 +40,9 @@ beads in the global workspace.
 
 ## Phase 0: preflight
 
-1. Run `ateam ws`, `ateam runtime check codex`, `ateam learnings dri`,
-   `ateam instructions dri`, and `ateam audit`. Stop and direct the human to
+1. Run `ateam ws`, `ateam runtime check codex`, `ateam instructions dri`, and
+   `ateam audit`. Run `ateam learnings dri` as its own exec_command call with
+   max_output_tokens set to 10000 so Codex does not truncate the output. Stop and direct the human to
    `agent-teams-codex:setup-agent-teams` if the CLI, compatible standalone
    Codex, role definitions, or trusted hooks are missing.
 2. Confirm cwd is the dedicated initiative checkout. Never change the Codex

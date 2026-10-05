@@ -449,8 +449,11 @@ session-binding and cold-catch-up surface.
 ## 8. Lifecycle and role startup boundaries
 
 Codex custom role agents did not receive the probed SubagentStart/SubagentStop
-hooks. Therefore neither memory freshness nor correctness may depend on those
-hooks.
+hooks as of Codex 0.145.0. Therefore neither memory freshness nor correctness
+may depend on those hooks. Codex 0.154.0 does emit SubagentStart for custom
+role agents, with `agent_type` set to the role's TOML name and `agent_id` set
+to the child thread id; the learnings gate below uses `agent_type` and
+`agent_id` from PreToolUse and PostCompact, not SubagentStart.
 
 Each Codex role definition must, in its own startup instructions:
 
@@ -464,7 +467,9 @@ Each Codex role definition must, in its own startup instructions:
 The Codex plugin retains exactly one mail/lifecycle adapter invocation: a
 `SessionStart` hook with matcher `startup|resume|clear|compact`.
 `ensure-ateam-link.sh` remains in that `SessionStart` hook group. The manifest
-contains no `UserPromptSubmit` or `Stop` entry, and
+also binds the learnings-gate hooks described in section 8.1 (`PreToolUse`,
+`PostCompact`, `SessionEnd`). It contains no `UserPromptSubmit` or `Stop`
+entry, and
 `user-prompt-submit` and `stop` are not supported `ateam codex-hook` event
 arguments.
 
@@ -476,6 +481,45 @@ and does not deliver or wake mail. Only payload
 `SessionStart` `additionalContext` instructing `ateam mail inbox`. For
 `clear`, `compact`, a missing source, or an unknown source, the adapter still
 binds but neither queries unread mail nor injects mail context.
+
+### 8.1 Learnings gate on Codex
+
+Codex truncates tool output, and the model chooses the cap per call through
+`exec_command` `max_output_tokens`. The model-wide truncation policy is 10000
+tokens. A long `ateam learnings <role>` output is therefore cut, head and tail
+kept and the middle elided, unless the call sets `max_output_tokens` to 10000.
+Role agents run the command as its own `exec_command` call with that setting.
+
+After compaction or `/clear`, the SessionStart hook cannot inject the learnings
+(`additionalContext` is capped at 1000 characters). The adapter instead arms a
+gate, with the same on-disk layout as the Claude gate under
+`<workspace>/learnings-gate/<session_id>/`:
+
+- `main` holds `dri`. `ateam codex-hook session-start` writes it on
+  `source=compact` or `source=clear`, only when the initiative resolves and the
+  payload has no `agent_id`.
+- `loaded/<agent_id>` marks a role child that has loaded its learnings.
+
+`ateam codex-hook pre-tool-use` (matcher `.*`) gates a main-thread call (no
+`agent_id`) while `main` exists, and a child call whose `agent_type` is
+`agent-teams-<role>` for an embedded role while `loaded/<agent_id>` is absent.
+Every other call is allowed. The call that runs exactly `ateam learnings <role>`
+is allowed and clears the gate; every other call is denied with a
+`permissionDecision` of `deny`. The reason ends with the bare command, because
+agents copy any punctuation that follows it. `ateam codex-hook post-compact`
+removes `loaded/<agent_id>` for a role child, which re-arms it.
+`ateam codex-hook session-end` removes the session's gate directory.
+
+All three gate events fail open: they never call `bd`, never exit 2, and print
+nothing on bad JSON, invalid ids, unreadable files, or an unknown role. Codex
+runs a new hook only after the human trusts it in `/hooks`; until then the gate
+does not run.
+
+Codex 0.154.0 spike results behind this design: PreToolUse fires for every tool
+with the session id, `agent_id`, and `agent_type`; a deny output blocks the
+call and the model sees the reason; child calls share the parent `session_id`;
+child compaction fires PreCompact and PostCompact with `agent_id` and no
+SessionStart; main-thread compaction fires all three with no `agent_id`.
 
 ## 9. Ownership map
 

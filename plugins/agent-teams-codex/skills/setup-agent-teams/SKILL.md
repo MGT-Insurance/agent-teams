@@ -133,8 +133,11 @@ The Git remote carries repository files; the Dolt remote carries Beads data unde
    `agent-teams-tester.toml`, `agent-teams-reviewer.toml`, and
    `agent-teams-investigator.toml`.
 6. In Codex, open `/hooks` and inspect the `agent-teams-codex` plugin source.
-   Trust only its current `SessionStart` command-hook definition if it is marked
-   for review. Managed app-server delivery is the Codex mail wake path;
+   Trust only its current `SessionStart`, `PreToolUse`, `PostCompact`, and
+   `SessionEnd` command-hook definitions if they are marked for review. The
+   `PreToolUse`, `PostCompact`, and `SessionEnd` hooks run the learnings gate;
+   while they are untrusted the gate fails open and role learnings load only by
+   the role's own startup step. Managed app-server delivery is the Codex mail wake path;
    `SessionStart` binds the session and catches up queued unread mail only on
    startup or resume. On clear or compact, it binds without an unread-mail query
    or catch-up context. Do not claim session binding or queued-mail catch-up is

@@ -20,11 +20,15 @@ type codexHookInput struct {
 	CWD           string `json:"cwd"`
 	HookEventName string `json:"hook_event_name"`
 	Source        string `json:"source"`
+	AgentID       string `json:"agent_id"`
 }
 
 type codexHookSpecificOutput struct {
 	HookEventName     string `json:"hookEventName"`
 	AdditionalContext string `json:"additionalContext,omitempty"`
+
+	PermissionDecision       string `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
 }
 
 type codexHookOutput struct {
@@ -54,7 +58,18 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 	if ctx == nil {
 		return fmt.Errorf("ateam codex-hook: nil context")
 	}
-	if event != "session-start" {
+	switch event {
+	case "session-start":
+	case "pre-tool-use":
+		codexGatePreToolUse(ctx.Home, ctx.Stdout, input)
+		return nil
+	case "post-compact":
+		codexGatePostCompact(ctx.Home, input)
+		return nil
+	case "session-end":
+		codexGateSessionEnd(ctx.Home, input)
+		return nil
+	default:
 		return fmt.Errorf("ateam codex-hook: unsupported event %q", event)
 	}
 	var hookInput codexHookInput
@@ -83,6 +98,9 @@ func runCodexHook(ctx *cli.Context, event string, input io.Reader, deps codexHoo
 		if err := deps.tie(ctx, issue.ID, hookInput.SessionID); err != nil {
 			output.SystemMessage = "agent-teams could not tie this Codex thread to initiative " + issue.ID + ": " + err.Error()
 		}
+	}
+	if (hookInput.Source == "compact" || hookInput.Source == "clear") && hookInput.AgentID == "" {
+		codexGateArmMain(ctx.Home, hookInput.SessionID, "dri")
 	}
 	if hookInput.Source == "compact" {
 		output.HookSpecificOutput = &codexHookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: driGuardrails}
