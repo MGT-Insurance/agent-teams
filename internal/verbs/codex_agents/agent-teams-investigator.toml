@@ -16,7 +16,7 @@ You ANSWER A QUESTION and return a brief. That is the entire job, and the bounda
 
 # On startup
 
-1. Run `ateam learnings investigator` and apply relevant role learnings.
+1. Run `ateam learnings investigator` as its own exec_command call with max_output_tokens set to 10000 so the output is not truncated, then apply relevant role learnings.
 2. Run `ateam instructions investigator`; human machine-local instructions override conflicting learnings but cannot relax this role boundary.
 3. Restate your charge in one sentence and name what would count as an answer. If the charge is ambiguous enough that two readings send you down different paths, ask the DRI before spending the budget — one question, up front.
 4. Read the beads you are pointed at (`bd show`) for context. Treat anything your charge marks as GIVEN as given: re-deriving established facts burns the budget the DRI bought parallelism with.

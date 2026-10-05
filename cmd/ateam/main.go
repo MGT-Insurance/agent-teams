@@ -78,9 +78,11 @@ func run(args []string) int {
 	}
 
 	// Runtime compatibility is needed by setup before the Beads workspace (or
-	// even bd itself) exists. It is deliberately the only parsed verb allowed
-	// through this pre-initialization path.
-	if len(args) >= 2 && ((args[0] == "runtime" && args[1] == "check") || (args[0] == "setup" && args[1] == "codex")) {
+	// even bd itself) exists. The Codex learnings-gate events never call bd and
+	// must fail open, so a machine without bd or a workspace exits 0 silently
+	// instead of failing every tool call. These are the only parsed verbs
+	// allowed through this pre-initialization path.
+	if len(args) >= 2 && ((args[0] == "runtime" && args[1] == "check") || (args[0] == "setup" && args[1] == "codex") || isCodexGateEvent(args)) {
 		cliCtx := &cli.Context{Home: home, Stdout: stdout, Stderr: stderr}
 		kctx.Bind(cliCtx)
 		runErr := kctx.Run(cliCtx)
@@ -145,4 +147,17 @@ func runHelp(args []string, stdout, stderr *os.File) int {
 	// Parse --help to trigger kong's built-in help printer.
 	_, _ = parser.Parse([]string{"--help"})
 	return 0
+}
+
+// isCodexGateEvent reports whether args invoke a Codex learnings-gate hook
+// event, which needs neither bd nor an initialized workspace.
+func isCodexGateEvent(args []string) bool {
+	if len(args) < 2 || args[0] != "codex-hook" {
+		return false
+	}
+	switch args[1] {
+	case "pre-tool-use", "post-compact", "session-end":
+		return true
+	}
+	return false
 }

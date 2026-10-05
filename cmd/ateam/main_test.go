@@ -84,6 +84,29 @@ func TestRunRuntimeCheckPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
 	}
 }
 
+// The Codex learnings-gate events must fail open: no bd and no workspace is a
+// silent exit 0, not exit 3 or 4 on every tool call.
+func TestRunCodexGateEventsPreInitFailOpen(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	for _, event := range []string{"pre-tool-use", "post-compact", "session-end"} {
+		t.Run(event, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.WriteString(`{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`)
+			_ = w.Close()
+			old := os.Stdin
+			os.Stdin = r
+			defer func() { os.Stdin = old; _ = r.Close() }()
+			if code := run([]string{"codex-hook", event}); code != 0 {
+				t.Fatalf("run([codex-hook %s]) with no bd or workspace = %d, want 0", event, code)
+			}
+		})
+	}
+}
+
 func TestRunSetupCodexPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
 	codexHome := t.TempDir()

@@ -21,15 +21,19 @@
 # narrower, untouched by this change.
 #
 # Resolves this session's role (dri/steward/none) via the shared
-# lib/resolve-session-role.sh. role=dri gets `ateam learnings dri`. role=
-# steward gets `ateam learnings steward` PLUS the ledger track record
+# lib/resolve-session-role.sh. For role dri or steward it ARMS the learnings
+# gate (lib/learnings-gate.sh: writes <ATH>/learnings-gate/<session_id>/main)
+# and prints one short notice instead of the learnings body: learnings-gate.sh
+# then denies every tool call until the model runs `ateam learnings <role>`
+# itself, which puts the body in context where it cannot be skipped. role=
+# steward additionally gets the ledger track record
 # (`ateam steward ledger stats`) and, for each of the five fixed decision
 # categories, `ateam steward ledger recall <category> --limit 3` — skipping
 # any category reporting exactly "no ledger entries" to keep the payload
 # tight. Emitted as plain stdout text (NOT JSON — SessionStart output is raw
 # text, matching compact-recovery.sh's own pattern, unlike UserPromptSubmit's
-# jq/additionalContext shape). Silent no-op for any session with no resolved
-# role. This logic is reason-independent — it behaves identically regardless
+# jq/additionalContext shape). Silent no-op, and no marker, for any session
+# with no resolved role or an invalid session id. This logic is reason-independent — it behaves identically regardless
 # of which of the two matched reasons (clear or compact) triggered it; the
 # script never reads or branches on a "reason"/"source" field.
 set -euo pipefail
@@ -58,6 +62,8 @@ command -v jq >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 . "$(dirname "$0")/lib/resolve-steward.sh"
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/resolve-session-role.sh
 . "$(dirname "$0")/lib/resolve-session-role.sh"
+# shellcheck source=plugins/agent-teams/hooks/scripts/lib/learnings-gate.sh
+. "$(dirname "$0")/lib/learnings-gate.sh"
 
 role=$(resolve_session_role "$ATH" "$HOOK_SESSION_ID")
 if [ -z "$role" ]; then
@@ -72,12 +78,16 @@ hook_log_note "note" "role-resolved role=${role}"
 # internal/verbs/steward.go).
 STEWARD_LEDGER_CATEGORIES="plan-approval scope-call merge-approval design-fork unblock-action"
 
-if [ "$role" = "dri" ]; then
-  echo "## agent-teams: dri role learnings (session-start recovery)"
-  "$ATEAM" learnings dri 2>/dev/null || true
-elif [ "$role" = "steward" ]; then
-  echo "## agent-teams: steward role learnings (session-start recovery)"
-  "$ATEAM" learnings steward 2>/dev/null || true
+if [ "$HOOK_SESSION_ID" != "unknown" ] && lg_arm_main "$ATH" "$HOOK_SESSION_ID" "$role"; then
+  hook_log_note "note" "learnings-gate-armed role=${role}"
+  echo "## agent-teams: ${role} learnings not loaded. Your next tool call must be the Bash command: ateam learnings ${role}"
+else
+  # No usable session id to key a gate on: fall back to printing the body.
+  echo "## agent-teams: ${role} role learnings (session-start recovery)"
+  "$ATEAM" learnings "$role" 2>/dev/null || true
+fi
+
+if [ "$role" = "steward" ]; then
   echo ""
   echo "## agent-teams: steward ledger track record"
   "$ATEAM" steward ledger stats 2>/dev/null || true

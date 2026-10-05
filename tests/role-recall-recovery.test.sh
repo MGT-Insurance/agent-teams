@@ -93,10 +93,21 @@ PLAIN_DIR="$T/plain-cwd"
 mkdir -p "$PLAIN_DIR"
 
 out=$(run_hook "$PLAIN_DIR" "$DRI_SID")
-if printf '%s' "$out" | grep -q "LEARNINGS:dri"; then
-  pass "dri marker -> stdout contains dri learnings"
+GATE_MAIN="$AGENT_TEAMS_HOME/learnings-gate/$DRI_SID/main"
+if [ "$(cat "$GATE_MAIN" 2>/dev/null)" = "dri" ]; then
+  pass "dri marker -> learnings-gate main marker armed with role dri"
 else
-  fail "dri marker -> expected LEARNINGS:dri in stdout; got: $out"
+  fail "dri marker -> expected $GATE_MAIN containing dri"
+fi
+if printf '%s' "$out" | grep -qF "dri learnings not loaded. Your next tool call must be the Bash command: ateam learnings dri"; then
+  pass "dri marker -> stdout has the one-line gate notice"
+else
+  fail "dri marker -> expected gate notice in stdout; got: $out"
+fi
+if printf '%s' "$out" | grep -q "LEARNINGS:dri"; then
+  fail "dri marker -> learnings body still printed (D4: the model must load it itself)"
+else
+  pass "dri marker -> learnings body no longer printed"
 fi
 if printf '%s' "$out" | grep -q "LEDGER-STATS\|RECALL:"; then
   fail "dri marker -> ledger content leaked into dri output"
@@ -111,10 +122,16 @@ mkdir -p "$STEWARD_DIR"
 : > "$STEWARD_DIR/.steward-session"
 
 out=$(run_hook "$STEWARD_DIR" "no-session-needed")
-if printf '%s' "$out" | grep -q "LEARNINGS:steward"; then
-  pass "steward cwd -> stdout contains steward learnings"
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/no-session-needed/main" 2>/dev/null)" = "steward" ]; then
+  pass "steward cwd -> learnings-gate main marker armed with role steward"
 else
-  fail "steward cwd -> expected LEARNINGS:steward in stdout; got: $out"
+  fail "steward cwd -> expected main marker containing steward"
+fi
+if printf '%s' "$out" | grep -qF "steward learnings not loaded. Your next tool call must be the Bash command: ateam learnings steward" \
+  && ! printf '%s' "$out" | grep -q "LEARNINGS:steward"; then
+  pass "steward cwd -> gate notice printed, learnings body not printed"
+else
+  fail "steward cwd -> expected notice and no LEARNINGS:steward body; got: $out"
 fi
 if printf '%s' "$out" | grep -q "LEDGER-STATS:aggregate"; then
   pass "steward cwd -> stdout contains ledger stats"
@@ -139,6 +156,11 @@ if [ -z "$out" ]; then
 else
   fail "no role -> expected empty stdout; got: $out"
 fi
+if [ -e "$AGENT_TEAMS_HOME/learnings-gate/no-role-sess-0002" ]; then
+  fail "no role -> a gate dir was created (a normal session must never be armed)"
+else
+  pass "no role -> no gate dir created"
+fi
 
 HOOKS_LOG="$AGENT_TEAMS_HOME/debug/hooks.log"
 if awk -F'\t' '$3=="role-recall-recovery.sh" && index($6,"reason=no-role"){f=1} END{exit !f}' "$HOOKS_LOG" 2>/dev/null; then
@@ -162,6 +184,25 @@ if [ -e "$AGENT_TEAMS_HOME/dri-sessions/$TRAVERSAL_SID" ]; then
 else
   pass "path-traversal session_id -> zero side effects (no marker path created)"
 fi
+if find "$T" -name main -path "*etc*" | grep -q .; then
+  fail "path-traversal session_id -> a gate marker escaped the gate root"
+else
+  pass "path-traversal session_id -> no gate marker"
+fi
+
+# A steward cwd with an invalid session id cannot be keyed: no marker, and the
+# learnings body is printed instead (fail-safe fallback, never a silent skip).
+out=$(run_hook "$STEWARD_DIR" "$TRAVERSAL_SID")
+if printf '%s' "$out" | grep -q "LEARNINGS:steward" && ! printf '%s' "$out" | grep -q "not loaded. Your next tool call"; then
+  pass "steward + invalid session_id -> falls back to learnings body, no notice"
+else
+  fail "steward + invalid session_id -> expected body fallback; got: $out"
+fi
+if find "$T" -name main -path "*etc*" | grep -q .; then
+  fail "steward + invalid session_id -> marker written outside the gate root"
+else
+  pass "steward + invalid session_id -> no marker written"
+fi
 
 # ── Case: ateam/workspace missing -> silent no-op, reason=missing-deps ───────
 out=$( (cd "$PLAIN_DIR" && printf '{"session_id":"%s"}' "$DRI_SID" | AGENT_TEAMS_HOME="$T/nope-ws" "$SCRIPT") 2>/dev/null )
@@ -182,14 +223,14 @@ fi
 out_clear=$(run_hook_reason "$PLAIN_DIR" "$DRI_SID" "clear")
 out_compact=$(run_hook_reason "$PLAIN_DIR" "$DRI_SID" "compact")
 
-all_have_dri=true
+all_have_notice=true
 for o in "$out_clear" "$out_compact"; do
-  printf '%s' "$o" | grep -q "LEARNINGS:dri" || all_have_dri=false
+  printf '%s' "$o" | grep -qF "ateam learnings dri" || all_have_notice=false
 done
-if [ "$all_have_dri" = "true" ]; then
-  pass "dri role -> LEARNINGS:dri present under clear/compact reasons alike"
+if [ "$all_have_notice" = "true" ]; then
+  pass "dri role -> gate notice present under clear/compact reasons alike"
 else
-  fail "dri role -> expected LEARNINGS:dri under every reason; got clear=[$out_clear] compact=[$out_compact]"
+  fail "dri role -> expected gate notice under every reason; got clear=[$out_clear] compact=[$out_compact]"
 fi
 
 if [ "$out_clear" = "$out_compact" ]; then

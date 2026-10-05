@@ -1,5 +1,5 @@
 {
-  "description": "Tie Codex threads to initiatives and surface durable agent-teams mail.",
+  "description": "Tie Codex threads to initiatives, surface durable agent-teams mail, and gate role sessions until their learnings load.",
   "hooks": {
     "SessionStart": [
       {
@@ -17,6 +17,40 @@
             "timeout": 15,
             "statusMessage": "Checking agent-teams session and mail",
             "additionalContextLimit": 1000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook pre-tool-use",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook post-compact",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/ateam\" codex-hook session-end",
+            "timeout": 5
           }
         ]
       }
