@@ -99,8 +99,10 @@ check "cleanup leaves other session" test -f "$ATH/learnings-gate/other-sess/mai
 check "cleanup of absent root ok" lg_cleanup_session "$ATH" never-existed
 
 # ── deny reason (verbatim) ───────────────────────────────────────────────────
-EXPECT='BLOCKED: your agent-teams planner learnings are not loaded in this context. Run this exact Bash command by itself first, with nothing added: ateam learnings planner . Read its whole output. Every other tool call stays blocked until you run it.'
+EXPECT='BLOCKED: your agent-teams planner learnings are not loaded in this context. Every other tool call stays blocked until you load them. Read the whole output when you do. Run this Bash command by itself, exactly as written, with no period or anything else added: ateam learnings planner'
 check "deny reason verbatim" test "$(lg_deny_reason planner)" = "$EXPECT"
+check "deny reason ends exactly with the command" \
+  test "$(lg_deny_reason planner | sed 's/.*: //')" = "ateam learnings planner"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

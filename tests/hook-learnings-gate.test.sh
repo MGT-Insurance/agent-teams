@@ -25,8 +25,8 @@ GATES="$AGENT_TEAMS_HOME/learnings-gate"
 SID="9e356ad7-2688-4156-99a7-33eb283597db"
 OTHER="11111111-2222-3333-4444-555555555555"
 
-REASON_DRI='BLOCKED: your agent-teams dri learnings are not loaded in this context. Run this exact Bash command by itself first, with nothing added: ateam learnings dri . Read its whole output. Every other tool call stays blocked until you run it.'
-REASON_PLANNER='BLOCKED: your agent-teams planner learnings are not loaded in this context. Run this exact Bash command by itself first, with nothing added: ateam learnings planner . Read its whole output. Every other tool call stays blocked until you run it.'
+REASON_DRI='BLOCKED: your agent-teams dri learnings are not loaded in this context. Every other tool call stays blocked until you load them. Read the whole output when you do. Run this Bash command by itself, exactly as written, with no period or anything else added: ateam learnings dri'
+REASON_PLANNER='BLOCKED: your agent-teams planner learnings are not loaded in this context. Every other tool call stays blocked until you load them. Read the whole output when you do. Run this Bash command by itself, exactly as written, with no period or anything else added: ateam learnings planner'
 REASON_REVIEWER=${REASON_PLANNER//planner/reviewer}
 
 # ── payload builders ─────────────────────────────────────────────────────────

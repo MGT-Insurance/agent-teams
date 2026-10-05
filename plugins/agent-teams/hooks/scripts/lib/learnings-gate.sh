@@ -134,5 +134,5 @@ lg_cleanup_session() {
 # ── Public: lg_deny_reason ───────────────────────────────────────────────────
 lg_deny_reason() {
   local role="$1"
-  printf 'BLOCKED: your agent-teams %s learnings are not loaded in this context. Run this exact Bash command by itself first, with nothing added: ateam learnings %s . Read its whole output. Every other tool call stays blocked until you run it.' "$role" "$role"
+  printf 'BLOCKED: your agent-teams %s learnings are not loaded in this context. Every other tool call stays blocked until you load them. Read the whole output when you do. Run this Bash command by itself, exactly as written, with no period or anything else added: ateam learnings %s' "$role" "$role"
 }
