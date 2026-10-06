@@ -388,6 +388,42 @@ func isKeptPRStateOutcome(wtOutcome string) bool {
 	return wtOutcome == "worktree-kept-pr-open" || wtOutcome == "worktree-kept-pr-unknown"
 }
 
+// reapItemLine renders the per-initiative stdout line runScan prints after a
+// teardown attempt that stopped a session, removed a worktree, or failed at
+// either. It returns "" when the outcomes include nothing worth a line (a
+// no-session/kept/skipped combination), so the caller prints only on non-empty.
+func reapItemLine(id, title, sessionAction, wtOutcome string) string {
+	var parts []string
+	switch sessionAction {
+	case "reaped":
+		parts = append(parts, "session stopped")
+	case "failed":
+		parts = append(parts, "session stop failed")
+	}
+	switch wtOutcome {
+	case "worktree-removed":
+		parts = append(parts, "worktree removed")
+	case "worktree-removed-forced":
+		parts = append(parts, "worktree removed (forced)")
+	case "worktree-removed-corpse":
+		parts = append(parts, "worktree removed (corpse)")
+	case "worktree-removed-gh-verified":
+		parts = append(parts, "worktree removed (verified on GitHub)")
+	case "worktree-removed-corpse-gh-verified":
+		parts = append(parts, "worktree removed (corpse, verified on GitHub)")
+	case "worktree-remove-failed":
+		parts = append(parts, "worktree removal failed")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("reap: %s %s", id, strings.Join(parts, ", "))
+	if title != "" {
+		line += " · " + title
+	}
+	return line + "\n"
+}
+
 // String renders the one-line, stable/parseable-ish summary runScan prints
 // at the end of every scan tick.
 func (s reapScanSummary) String() string {
@@ -526,6 +562,9 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
 		}
 		summary.recordReal(alreadyReaped, action, wtOutcome)
+		if !c.Bulk {
+			fmt.Fprint(ctx.Stdout, reapItemLine(iss.ID, iss.Title, action, wtOutcome))
+		}
 
 		if action != "failed" {
 			// Written only on FULL teardown success: the session action
