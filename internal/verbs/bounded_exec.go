@@ -97,15 +97,11 @@ func runBoundedClaude(ctx context.Context, timeout time.Duration, args ...string
 }
 
 // combinedOutput joins stdout and stderr the way CombinedOutput() would,
-// for embedding in an error message.
+// for embedding in an error message. It trims surrounding whitespace so a
+// trailing newline doesn't push the message's closing delimiter onto its own
+// line.
 func combinedOutput(stdout, stderr []byte) string {
-	if len(stderr) == 0 {
-		return string(stdout)
-	}
-	if len(stdout) == 0 {
-		return string(stderr)
-	}
-	return string(stdout) + string(stderr)
+	return strings.TrimSpace(string(stdout) + string(stderr))
 }
 
 // runBoundedExec runs name(args...), killing the WHOLE process group on

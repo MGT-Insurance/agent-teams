@@ -555,6 +555,53 @@ func TestReap_Scan_ReviewOpenPR_WorktreeKept(t *testing.T) {
 	}
 }
 
+// Kept-PR worktrees collapse into one aggregated stdout line, printed right
+// before the scan summary, with no per-worktree "PR still" lines.
+func TestReap_Scan_KeptPRWorktrees_AggregatedLine(t *testing.T) {
+	mk := func(id string, n int) bd.Issue {
+		wt := fmt.Sprintf("/tmp/reap-wt-agg-%d", n)
+		iss := reapReviewIssue(id, "closed", reapFixedNow.Add(-time.Hour), "", wt, "sess-"+id, "")
+		iss.Description = strings.Replace(iss.Description, "/pull/42", fmt.Sprintf("/pull/%d", n), 1)
+		return iss
+	}
+	issues := []bd.Issue{mk("at-agg1", 9937), mk("at-agg2", 10361)}
+
+	for _, tc := range []struct {
+		name    string
+		prState func(string, int) (string, error)
+		want    string
+	}{
+		{"open", func(string, int) (string, error) { return "OPEN", nil },
+			"reap: keeping 2 worktree(s) until their PRs close: review-pr-9937, review-pr-10361\n"},
+		{"unknown", func(string, int) (string, error) { return "", fmt.Errorf("gh down") },
+			"reap: keeping 2 worktree(s) until their PR state can be confirmed: review-pr-9937, review-pr-10361\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stops fakeStops
+			var rms fakeRm
+			var remover fakeWorktreeRemover
+			var noter fakeNoter
+			verb := newReapVerb(nil, &stops, &rms, &remover, &noter, alwaysClean)
+			verb.prState = tc.prState
+
+			ctx, stdout, _ := makeCtx(reapScanFakeBD(issues), t.TempDir())
+			if err := verb.Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			out := stdout.String()
+			if strings.Count(out, tc.want) != 1 {
+				t.Errorf("expected exactly one aggregated line %q; got:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, "reap: worktree ") {
+				t.Errorf("expected no per-worktree lines; got:\n%s", out)
+			}
+			if strings.Index(out, tc.want) > strings.Index(out, "reap: scan summary") {
+				t.Errorf("expected the aggregated line before the summary; got:\n%s", out)
+			}
+		})
+	}
+}
+
 // (6d) PR-state probe errors (gh down, PR not found, timeout, ...) => the
 // worktree is kept exactly like an OPEN PR — proof of MERGED/CLOSED is
 // required, an inconclusive probe never authorizes removal.

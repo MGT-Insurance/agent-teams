@@ -314,13 +314,12 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 // pr-shepherd's 30s hard budget no matter how large the backlog is, leaving
 // the rest for the next tick.
 //
-// Prints one end-of-scan summary line to ctx.Stdout unconditionally (Eric,
-// 2026-09-23) — the human-visible aggregate of the per-initiative outcomes
-// already journaled to reap-journal.jsonl, which is what pr-shepherd
-// surfaces in its own logs (the log-level change making it visible there is
-// a separate bead, agent-teams-6hgr.5). Printed on every exit path,
-// including the three early-stop cases above and dry-run — never gated
-// behind --dry-run or --bulk.
+// Prints to ctx.Stdout, which pr-shepherd logs one line at a time: a line per
+// initiative it stopped a session or removed a worktree for (or failed to),
+// one aggregated line per kept-PR-state group, then the end-of-scan summary
+// line. The summary line prints on every exit path, including the three
+// early-stop cases above and dry-run — never gated behind --dry-run or
+// --bulk.
 // reapScanSummary aggregates one scan tick's per-initiative outcomes into
 // the single end-of-scan summary line runScan prints to ctx.Stdout (Eric,
 // 2026-09-23) — the human-visible complement to the per-attempt entries
@@ -388,6 +387,42 @@ func isKeptPRStateOutcome(wtOutcome string) bool {
 	return wtOutcome == "worktree-kept-pr-open" || wtOutcome == "worktree-kept-pr-unknown"
 }
 
+// reapItemLine renders the per-initiative stdout line runScan prints after a
+// teardown attempt that stopped a session, removed a worktree, or failed at
+// either. It returns "" when the outcomes include nothing worth a line (a
+// no-session/kept/skipped combination), so the caller prints only on non-empty.
+func reapItemLine(id, title, sessionAction, wtOutcome string) string {
+	var parts []string
+	switch sessionAction {
+	case "reaped":
+		parts = append(parts, "session stopped")
+	case "failed":
+		parts = append(parts, "session stop failed")
+	}
+	switch wtOutcome {
+	case "worktree-removed":
+		parts = append(parts, "worktree removed")
+	case "worktree-removed-forced":
+		parts = append(parts, "worktree removed (forced)")
+	case "worktree-removed-corpse":
+		parts = append(parts, "worktree removed (corpse)")
+	case "worktree-removed-gh-verified":
+		parts = append(parts, "worktree removed (verified on GitHub)")
+	case "worktree-removed-corpse-gh-verified":
+		parts = append(parts, "worktree removed (corpse, verified on GitHub)")
+	case "worktree-remove-failed":
+		parts = append(parts, "worktree removal failed")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("reap: %s %s", id, strings.Join(parts, ", "))
+	if title != "" {
+		line += " · " + title
+	}
+	return line + "\n"
+}
+
 // String renders the one-line, stable/parseable-ish summary runScan prints
 // at the end of every scan tick.
 func (s reapScanSummary) String() string {
@@ -436,6 +471,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	scanStart := time.Now()
 	var reaped int
 	var summary reapScanSummary
+	var keptOpen, keptUnknown []string
 
 	for _, iss := range issues {
 		prURL, ok := initiative.ReviewPRURL(iss)
@@ -526,6 +562,15 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
 		}
 		summary.recordReal(alreadyReaped, action, wtOutcome)
+		switch wtOutcome {
+		case "worktree-kept-pr-open":
+			keptOpen = append(keptOpen, keptWorktreeName(f.Worktree, prURL))
+		case "worktree-kept-pr-unknown":
+			keptUnknown = append(keptUnknown, keptWorktreeName(f.Worktree, prURL))
+		}
+		if !c.Bulk {
+			fmt.Fprint(ctx.Stdout, reapItemLine(iss.ID, iss.Title, action, wtOutcome))
+		}
 
 		if action != "failed" {
 			// Written only on FULL teardown success: the session action
@@ -556,8 +601,24 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	if c.Bulk {
 		fmt.Fprintf(ctx.Stderr, "reap --bulk: done — %d/%d processed\n", processed, total)
 	}
+	if len(keptOpen) > 0 {
+		fmt.Fprintf(ctx.Stdout, "reap: keeping %d worktree(s) until their PRs close: %s\n", len(keptOpen), strings.Join(keptOpen, ", "))
+	}
+	if len(keptUnknown) > 0 {
+		fmt.Fprintf(ctx.Stdout, "reap: keeping %d worktree(s) until their PR state can be confirmed: %s\n", len(keptUnknown), strings.Join(keptUnknown, ", "))
+	}
 	fmt.Fprintf(ctx.Stdout, "reap: scan summary — %s\n", summary.String())
 	return nil
+}
+
+// keptWorktreeName is the short label runScan's aggregated "keeping N
+// worktree(s)" lines use: "review-pr-<N>" when prURL carries a PR number,
+// else the worktree's directory basename.
+func keptWorktreeName(worktree, prURL string) string {
+	if m := initiative.PRURLRE.FindStringSubmatch(prURL); m != nil {
+		return "review-pr-" + m[3]
+	}
+	return filepath.Base(worktree)
 }
 
 // bulkEligibleCount reports how many issues would be attempted in bulk-clear
@@ -1090,11 +1151,9 @@ func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initia
 	if !c.Bulk {
 		state, probed := prProbe.evaluate(hungScanEntry{ID: initiativeID, ReviewPRURL: prURL})
 		if !probed {
-			fmt.Fprintf(ctx.Stdout, "reap: worktree %s: PR state unknown, keeping until it can be confirmed merged/closed\n", worktree)
 			return "worktree-kept-pr-unknown"
 		}
 		if state != "MERGED" && state != "CLOSED" {
-			fmt.Fprintf(ctx.Stdout, "reap: worktree %s: PR still %s, keeping until merged or closed\n", worktree, state)
 			return "worktree-kept-pr-open"
 		}
 	}
