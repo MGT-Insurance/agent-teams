@@ -472,6 +472,7 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	scanStart := time.Now()
 	var reaped int
 	var summary reapScanSummary
+	var keptOpen, keptUnknown []string
 
 	for _, iss := range issues {
 		prURL, ok := initiative.ReviewPRURL(iss)
@@ -562,6 +563,12 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 			c.journal(ctx, now, iss.ID, "", f.Runtime, "scan", action, wtOutcome)
 		}
 		summary.recordReal(alreadyReaped, action, wtOutcome)
+		switch wtOutcome {
+		case "worktree-kept-pr-open":
+			keptOpen = append(keptOpen, keptWorktreeName(f.Worktree, prURL))
+		case "worktree-kept-pr-unknown":
+			keptUnknown = append(keptUnknown, keptWorktreeName(f.Worktree, prURL))
+		}
 		if !c.Bulk {
 			fmt.Fprint(ctx.Stdout, reapItemLine(iss.ID, iss.Title, action, wtOutcome))
 		}
@@ -595,8 +602,24 @@ func (c *reapKong) runScan(ctx *cli.Context, scanCtx context.Context) error {
 	if c.Bulk {
 		fmt.Fprintf(ctx.Stderr, "reap --bulk: done — %d/%d processed\n", processed, total)
 	}
+	if len(keptOpen) > 0 {
+		fmt.Fprintf(ctx.Stdout, "reap: keeping %d worktree(s) until their PRs close: %s\n", len(keptOpen), strings.Join(keptOpen, ", "))
+	}
+	if len(keptUnknown) > 0 {
+		fmt.Fprintf(ctx.Stdout, "reap: keeping %d worktree(s) until their PR state can be confirmed: %s\n", len(keptUnknown), strings.Join(keptUnknown, ", "))
+	}
 	fmt.Fprintf(ctx.Stdout, "reap: scan summary — %s\n", summary.String())
 	return nil
+}
+
+// keptWorktreeName is the short label runScan's aggregated "keeping N
+// worktree(s)" lines use: "review-pr-<N>" when prURL carries a PR number,
+// else the worktree's directory basename.
+func keptWorktreeName(worktree, prURL string) string {
+	if m := initiative.PRURLRE.FindStringSubmatch(prURL); m != nil {
+		return "review-pr-" + m[3]
+	}
+	return filepath.Base(worktree)
 }
 
 // bulkEligibleCount reports how many issues would be attempted in bulk-clear
@@ -1129,11 +1152,9 @@ func (c *reapKong) forceRemoveWorktree(ctx *cli.Context, worktree, prURL, initia
 	if !c.Bulk {
 		state, probed := prProbe.evaluate(hungScanEntry{ID: initiativeID, ReviewPRURL: prURL})
 		if !probed {
-			fmt.Fprintf(ctx.Stdout, "reap: worktree %s: PR state unknown, keeping until it can be confirmed merged/closed\n", worktree)
 			return "worktree-kept-pr-unknown"
 		}
 		if state != "MERGED" && state != "CLOSED" {
-			fmt.Fprintf(ctx.Stdout, "reap: worktree %s: PR still %s, keeping until merged or closed\n", worktree, state)
 			return "worktree-kept-pr-open"
 		}
 	}
