@@ -119,6 +119,21 @@ func TestRunBoundedClaude_NonZeroExit_ErrorEmbedsOutput(t *testing.T) {
 	}
 }
 
+// TestRunBoundedClaude_NonZeroExit_ErrorTrimsTrailingNewline proves the
+// embedded output carries no trailing whitespace, so the closing ")" stays on
+// the same line as the text.
+func TestRunBoundedClaude_NonZeroExit_ErrorTrimsTrailingNewline(t *testing.T) {
+	writeFakeClaude(t, `echo "boom" >&2; exit 1`)
+
+	_, err := runBoundedClaude(context.Background(), claudeCallTimeout, "rm", "some-id")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a nonzero exit")
+	}
+	if !strings.HasSuffix(err.Error(), "(output: boom)") {
+		t.Fatalf("expected the error to end with %q; got %q", "(output: boom)", err.Error())
+	}
+}
+
 // ── runBoundedExec (the generalized helper boundedGitRunner uses for git) ───
 
 // writeFakeBinary writes an executable shell script to a fresh temp dir and
