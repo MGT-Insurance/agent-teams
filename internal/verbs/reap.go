@@ -314,13 +314,12 @@ func (c *reapKong) Run(ctx *cli.Context) error {
 // pr-shepherd's 30s hard budget no matter how large the backlog is, leaving
 // the rest for the next tick.
 //
-// Prints one end-of-scan summary line to ctx.Stdout unconditionally (Eric,
-// 2026-09-23) — the human-visible aggregate of the per-initiative outcomes
-// already journaled to reap-journal.jsonl, which is what pr-shepherd
-// surfaces in its own logs (the log-level change making it visible there is
-// a separate bead, agent-teams-6hgr.5). Printed on every exit path,
-// including the three early-stop cases above and dry-run — never gated
-// behind --dry-run or --bulk.
+// Prints to ctx.Stdout, which pr-shepherd logs one line at a time: a line per
+// initiative it stopped a session or removed a worktree for (or failed to),
+// one aggregated line per kept-PR-state group, then the end-of-scan summary
+// line. The summary line prints on every exit path, including the three
+// early-stop cases above and dry-run — never gated behind --dry-run or
+// --bulk.
 // reapScanSummary aggregates one scan tick's per-initiative outcomes into
 // the single end-of-scan summary line runScan prints to ctx.Stdout (Eric,
 // 2026-09-23) — the human-visible complement to the per-attempt entries
