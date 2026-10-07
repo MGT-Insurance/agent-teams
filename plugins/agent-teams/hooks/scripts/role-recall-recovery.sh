@@ -22,8 +22,9 @@
 #
 # Resolves this session's role (dri/steward/none) via the shared
 # lib/resolve-session-role.sh. For role dri or steward it ARMS the learnings
-# gate (lib/learnings-gate.sh: writes <ATH>/learnings-gate/<session_id>/main)
-# and prints one short notice instead of the learnings body: learnings-gate.sh
+# gate (lib/learnings-gate.sh: writes <ATH>/learnings-gate/<session_id>/main;
+# on compact it defers arming, see ARMING below) and prints one short notice
+# instead of the learnings body: learnings-gate.sh
 # then denies every tool call until the model runs `ateam learnings <role>`
 # itself, which puts the body in context where it cannot be skipped. role=
 # steward additionally gets the ledger track record

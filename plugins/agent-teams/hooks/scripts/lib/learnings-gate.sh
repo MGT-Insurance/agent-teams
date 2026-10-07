@@ -6,7 +6,8 @@
 # subagent/teammate) until it runs `ateam learnings <role>`. Three hook
 # scripts cooperate through the files below, so none of them re-implements
 # paths:
-#   - role-recall-recovery.sh (SessionStart clear|compact)  -> lg_arm_main
+#   - role-recall-recovery.sh (SessionStart clear|compact)  -> lg_arm_main (clear),
+#                                                              lg_write_pending (compact)
 #   - learnings-gate.sh (PreToolUse + PostToolUse(Agent))   -> everything else
 #   - cleanup-dri-marker.sh (SessionEnd)                    -> lg_cleanup_session
 #
