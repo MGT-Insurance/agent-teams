@@ -267,6 +267,17 @@ if [ "$(cat "$PROOT/pending" 2>/dev/null | tr '\n' ' ')" = "dri 1 2 " ]; then
 else
   fail "second compact -> baseline overwritten: $(cat "$PROOT/pending" 2>/dev/null)"
 fi
+# Steward compact: pending is written, no notice, but the ledger section prints.
+SSID="steward-sess-0006"
+mkdir -p "$PROJ/$SSID"; printf '{"subtype":"compact_boundary"}\n' > "$PROJ/$SSID.jsonl"
+out=$( (cd "$STEWARD_DIR" && printf '{"session_id":"%s","transcript_path":"%s","source":"compact"}' "$SSID" "$PROJ/$SSID.jsonl" | "$SCRIPT") 2>/dev/null )
+if [ -f "$AGENT_TEAMS_HOME/learnings-gate/$SSID/pending" ] && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$SSID/main" ] \
+  && ! printf '%s' "$out" | grep -q "not loaded. Your next tool call" \
+  && printf '%s' "$out" | grep -q "LEDGER-STATS:aggregate" && printf '%s' "$out" | grep -q "RECALL:scope-call"; then
+  pass "steward compact -> pending written, no notice, ledger section still printed"
+else
+  fail "steward compact -> expected pending + ledger, no notice; got: $out"
+fi
 # source=clear arms immediately and prints the notice, even with a transcript.
 CSID="dri-sess-0004"
 : > "$AGENT_TEAMS_HOME/dri-sessions/$CSID"

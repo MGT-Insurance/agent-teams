@@ -40,8 +40,9 @@
 # no agent_id, so the hook cannot tell whose context compacted. On
 # source=compact with a usable transcript_path it therefore does NOT arm: it
 # writes <sid>/pending (role plus the compact_boundary counts of the main and
-# subagent transcripts, oldest baseline kept) and prints nothing, since the
-# output would land in whichever context compacted. learnings-gate.sh arms or
+# subagent transcripts, oldest baseline kept) and prints no arm notice or
+# learnings body, since the output would land in whichever context compacted
+# (a steward still gets its ledger section). learnings-gate.sh arms or
 # drops it on the next main-thread call. source=clear, a missing source, or no
 # usable transcript_path arm immediately and print the notice.
 set -euo pipefail
@@ -86,16 +87,14 @@ hook_log_note "note" "role-resolved role=${role}"
 # internal/verbs/steward.go).
 STEWARD_LEDGER_CATEGORIES="plan-approval scope-call merge-approval design-fork unblock-action"
 
+pending_written=0
 hook_source=$(printf '%s' "$HOOK_STDIN" | jq -r '.source // empty' 2>/dev/null || true)
 hook_tp=$(printf '%s' "$HOOK_STDIN" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 if [ "$hook_source" = "compact" ] && [ -n "$hook_tp" ] && [ -f "$hook_tp" ] \
   && [ "$HOOK_SESSION_ID" != "unknown" ] && lg_write_pending "$ATH" "$HOOK_SESSION_ID" "$role" "$hook_tp"; then
   hook_log_note "note" "learnings-gate-pending role=${role}"
-  HOOK_EXIT_REASON="pending"
-  exit 0
-fi
-
-if [ "$HOOK_SESSION_ID" != "unknown" ] && lg_arm_main "$ATH" "$HOOK_SESSION_ID" "$role"; then
+  pending_written=1
+elif [ "$HOOK_SESSION_ID" != "unknown" ] && lg_arm_main "$ATH" "$HOOK_SESSION_ID" "$role"; then
   hook_log_note "note" "learnings-gate-armed role=${role}"
   echo "## agent-teams: ${role} learnings not loaded. Your next tool call must be the Bash command: ateam learnings ${role}"
 else
@@ -118,4 +117,8 @@ if [ "$role" = "steward" ]; then
   done
 fi
 
-HOOK_EXIT_REASON="ok"
+if [ "$pending_written" -eq 1 ]; then
+  HOOK_EXIT_REASON="pending"
+else
+  HOOK_EXIT_REASON="ok"
+fi
