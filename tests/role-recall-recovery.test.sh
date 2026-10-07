@@ -239,6 +239,55 @@ else
   fail "dri role -> output differs by reason; clear=[$out_clear] compact=[$out_compact]"
 fi
 
+# ── Case: subagent SessionStart (parent session_id) -> no marker, no output ──
+SUB_SID="dri-sess-sub-0003"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$SUB_SID"
+run_payload() {
+  # run_payload <json>
+  ( cd "$PLAIN_DIR" && printf '%s' "$1" | "$SCRIPT" ) 2>/dev/null
+}
+
+out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\"}")
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID/main" 2>/dev/null)" = "dri" ] \
+  && printf '%s' "$out" | grep -qF "ateam learnings dri"; then
+  pass "main-thread compact payload -> still arms and prints notice"
+else
+  fail "main-thread compact payload -> expected marker and notice; got: $out"
+fi
+rm -rf "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID"
+
+out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\",\"agent_id\":\"agent-abc123\"}")
+if [ -z "$out" ] && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID" ]; then
+  pass "agent_id payload -> no marker, no output"
+else
+  fail "agent_id payload -> expected no marker/output; got: $out"
+fi
+if awk -F'\t' '$3=="role-recall-recovery.sh" && index($6,"reason=subagent"){f=1} END{exit !f}' "$HOOKS_LOG" 2>/dev/null \
+  && grep -qF "skip-subagent via=agent_id" "$HOOKS_LOG"; then
+  pass "agent_id payload -> logs reason=subagent via=agent_id"
+else
+  fail "agent_id payload -> expected reason=subagent via=agent_id in hooks.log"
+fi
+
+out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\",\"transcript_path\":\"/home/u/.claude/projects/p/$SUB_SID/subagents/agent-x.jsonl\"}")
+if [ -z "$out" ] && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID" ]; then
+  pass "subagents transcript_path payload (no agent_id) -> no marker, no output"
+else
+  fail "subagents transcript_path payload -> expected no marker/output; got: $out"
+fi
+if grep -qF "skip-subagent via=transcript_path" "$HOOKS_LOG"; then
+  pass "subagents transcript_path payload -> logs via=transcript_path"
+else
+  fail "subagents transcript_path payload -> expected via=transcript_path in hooks.log"
+fi
+
+out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\",\"transcript_path\":\"/home/u/.claude/projects/p/$SUB_SID.jsonl\"}")
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID/main" 2>/dev/null)" = "dri" ]; then
+  pass "main transcript_path (no /subagents/) -> still arms"
+else
+  fail "main transcript_path -> expected marker; got: $out"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

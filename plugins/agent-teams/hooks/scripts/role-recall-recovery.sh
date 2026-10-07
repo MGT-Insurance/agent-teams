@@ -36,6 +36,12 @@
 # with no resolved role or an invalid session id. This logic is reason-independent — it behaves identically regardless
 # of which of the two matched reasons (clear or compact) triggered it; the
 # script never reads or branches on a "reason"/"source" field.
+#
+# Skips (no marker, no output) SessionStarts fired inside an in-process
+# subagent: a subagent's auto-compaction fires SessionStart(compact) carrying
+# the PARENT session_id, so arming here would block the parent's main thread
+# with a learnings reload it doesn't need (agent-teams-7r33.1). A subagent is
+# detected by a non-empty .agent_id or a .transcript_path under /subagents/.
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
@@ -52,6 +58,22 @@ export HOOK_SESSION_ID
 
 # Log start BEFORE any guard check.
 hook_log_start "role-recall-recovery.sh"
+
+# Subagent SessionStart: the payload's session_id is the parent's. Skip before
+# any role resolution or marker write.
+if command -v jq >/dev/null 2>&1; then
+  subagent_id=$(printf '%s' "$HOOK_STDIN" | jq -r '.agent_id // empty' 2>/dev/null || true)
+  subagent_tp=$(printf '%s' "$HOOK_STDIN" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+  if [ -n "$subagent_id" ]; then
+    hook_log_note "note" "skip-subagent via=agent_id agent_id=${subagent_id}"
+    HOOK_EXIT_REASON="subagent"
+    exit 0
+  elif [[ "$subagent_tp" == */subagents/* ]]; then
+    hook_log_note "note" "skip-subagent via=transcript_path transcript_path=${subagent_tp}"
+    HOOK_EXIT_REASON="subagent"
+    exit 0
+  fi
+fi
 
 command -v bd >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 command -v jq >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
