@@ -239,6 +239,66 @@ else
   fail "dri role -> output differs by reason; clear=[$out_clear] compact=[$out_compact]"
 fi
 
+# ── Case: source=compact with a transcript -> pending record, no arm, no
+# output (agent-teams-7r33.1); source=clear still arms and prints ──────────────
+PSID="dri-sess-0003"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$PSID"
+PROJ="$T/proj"; mkdir -p "$PROJ/$PSID/subagents"
+TP="$PROJ/$PSID.jsonl"
+printf '{"subtype":"compact_boundary"}\n{"x":1}\n' > "$TP"
+printf '{"subtype":"compact_boundary"}\n{"subtype":"compact_boundary"}\n' > "$PROJ/$PSID/subagents/agent-a1.jsonl"
+PROOT="$AGENT_TEAMS_HOME/learnings-gate/$PSID"
+run_compact() { # run_compact <sid> <transcript> [source]
+  ( cd "$PLAIN_DIR" && printf '{"session_id":"%s","transcript_path":"%s","source":"%s"}' "$1" "$2" "${3:-compact}" | "$SCRIPT" ) 2>/dev/null
+}
+out=$(run_compact "$PSID" "$TP")
+if [ -z "$out" ]; then pass "compact -> prints nothing"; else fail "compact -> expected empty stdout; got: $out"; fi
+if [ ! -e "$PROOT/main" ]; then pass "compact -> main not armed"; else fail "compact -> main armed"; fi
+if [ "$(cat "$PROOT/pending" 2>/dev/null | tr '\n' ' ')" = "dri 1 2 " ]; then
+  pass "compact -> pending holds role, main count 1, subagent total 2"
+else
+  fail "compact -> unexpected pending: $(cat "$PROOT/pending" 2>/dev/null)"
+fi
+# A second compact keeps the original baseline.
+printf '{"subtype":"compact_boundary"}\n' >> "$TP"
+out=$(run_compact "$PSID" "$TP")
+if [ "$(cat "$PROOT/pending" 2>/dev/null | tr '\n' ' ')" = "dri 1 2 " ]; then
+  pass "second compact -> original baseline kept"
+else
+  fail "second compact -> baseline overwritten: $(cat "$PROOT/pending" 2>/dev/null)"
+fi
+# Steward compact: pending is written, no notice, but the ledger section prints.
+SSID="steward-sess-0006"
+mkdir -p "$PROJ/$SSID"; printf '{"subtype":"compact_boundary"}\n' > "$PROJ/$SSID.jsonl"
+out=$( (cd "$STEWARD_DIR" && printf '{"session_id":"%s","transcript_path":"%s","source":"compact"}' "$SSID" "$PROJ/$SSID.jsonl" | "$SCRIPT") 2>/dev/null )
+if [ -f "$AGENT_TEAMS_HOME/learnings-gate/$SSID/pending" ] && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$SSID/main" ] \
+  && ! printf '%s' "$out" | grep -q "not loaded. Your next tool call" \
+  && printf '%s' "$out" | grep -q "LEDGER-STATS:aggregate" && printf '%s' "$out" | grep -q "RECALL:scope-call"; then
+  pass "steward compact -> pending written, no notice, ledger section still printed"
+else
+  fail "steward compact -> expected pending + ledger, no notice; got: $out"
+fi
+# source=clear arms immediately and prints the notice, even with a transcript.
+CSID="dri-sess-0004"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$CSID"
+out=$(run_compact "$CSID" "$TP" clear)
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$CSID/main" 2>/dev/null)" = "dri" ] \
+  && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$CSID/pending" ] \
+  && printf '%s' "$out" | grep -qF "ateam learnings dri"; then
+  pass "clear -> arms immediately with notice, no pending"
+else
+  fail "clear -> expected arm + notice; got: $out"
+fi
+# compact with an unreadable transcript_path falls back to immediate arming.
+USID="dri-sess-0005"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$USID"
+out=$(run_compact "$USID" "$T/missing.jsonl")
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$USID/main" 2>/dev/null)" = "dri" ] && printf '%s' "$out" | grep -qF "ateam learnings dri"; then
+  pass "compact without usable transcript -> arms immediately"
+else
+  fail "compact without usable transcript -> expected arm + notice; got: $out"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

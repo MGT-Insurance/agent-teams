@@ -22,8 +22,9 @@
 #
 # Resolves this session's role (dri/steward/none) via the shared
 # lib/resolve-session-role.sh. For role dri or steward it ARMS the learnings
-# gate (lib/learnings-gate.sh: writes <ATH>/learnings-gate/<session_id>/main)
-# and prints one short notice instead of the learnings body: learnings-gate.sh
+# gate (lib/learnings-gate.sh: writes <ATH>/learnings-gate/<session_id>/main;
+# on compact it defers arming, see ARMING below) and prints one short notice
+# instead of the learnings body: learnings-gate.sh
 # then denies every tool call until the model runs `ateam learnings <role>`
 # itself, which puts the body in context where it cannot be skipped. role=
 # steward additionally gets the ledger track record
@@ -33,9 +34,18 @@
 # tight. Emitted as plain stdout text (NOT JSON — SessionStart output is raw
 # text, matching compact-recovery.sh's own pattern, unlike UserPromptSubmit's
 # jq/additionalContext shape). Silent no-op, and no marker, for any session
-# with no resolved role or an invalid session id. This logic is reason-independent — it behaves identically regardless
-# of which of the two matched reasons (clear or compact) triggered it; the
-# script never reads or branches on a "reason"/"source" field.
+# with no resolved role or an invalid session id.
+#
+# ARMING depends on .source (agent-teams-7r33.1): an in-process subagent's
+# auto-compaction fires SessionStart(compact) with the PARENT session_id and
+# no agent_id, so the hook cannot tell whose context compacted. On
+# source=compact with a usable transcript_path it therefore does NOT arm: it
+# writes <sid>/pending (role plus the compact_boundary counts of the main and
+# subagent transcripts, oldest baseline kept) and prints no arm notice or
+# learnings body, since the output would land in whichever context compacted
+# (a steward still gets its ledger section). learnings-gate.sh arms or
+# drops it on the next main-thread call. source=clear, a missing source, or no
+# usable transcript_path arm immediately and print the notice.
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
@@ -78,7 +88,14 @@ hook_log_note "note" "role-resolved role=${role}"
 # internal/verbs/steward.go).
 STEWARD_LEDGER_CATEGORIES="plan-approval scope-call merge-approval design-fork unblock-action"
 
-if [ "$HOOK_SESSION_ID" != "unknown" ] && lg_arm_main "$ATH" "$HOOK_SESSION_ID" "$role"; then
+pending_written=0
+hook_source=$(printf '%s' "$HOOK_STDIN" | jq -r '.source // empty' 2>/dev/null || true)
+hook_tp=$(printf '%s' "$HOOK_STDIN" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+if [ "$hook_source" = "compact" ] && [ -n "$hook_tp" ] && [ -f "$hook_tp" ] \
+  && [ "$HOOK_SESSION_ID" != "unknown" ] && lg_write_pending "$ATH" "$HOOK_SESSION_ID" "$role" "$hook_tp"; then
+  hook_log_note "note" "learnings-gate-pending role=${role}"
+  pending_written=1
+elif [ "$HOOK_SESSION_ID" != "unknown" ] && lg_arm_main "$ATH" "$HOOK_SESSION_ID" "$role"; then
   hook_log_note "note" "learnings-gate-armed role=${role}"
   echo "## agent-teams: ${role} learnings not loaded. Your next tool call must be the Bash command: ateam learnings ${role}"
 else
@@ -101,4 +118,8 @@ if [ "$role" = "steward" ]; then
   done
 fi
 
-HOOK_EXIT_REASON="ok"
+if [ "$pending_written" -eq 1 ]; then
+  HOOK_EXIT_REASON="pending"
+else
+  HOOK_EXIT_REASON="ok"
+fi
