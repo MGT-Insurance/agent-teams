@@ -216,6 +216,43 @@ run_gate pre "$(pre_payload "$SID" "" "" Bash "$(bash_in ls)")"
 run_gate pre "$(pre_payload "$SID" "" "" Bash "$(bash_in 'ateam learnings dri')")"
 if grep -q "deny" "$LOG" 2>/dev/null && grep -q "clear" "$LOG" 2>/dev/null; then pass "log: deny and clear noted"; else fail "log: missing deny/clear notes"; fi
 
+# ── Pending compaction record (agent-teams-7r33.1) ───────────────────────────
+PROJ="$T/proj"; mkdir -p "$PROJ/$SID/subagents"
+TP="$PROJ/$SID.jsonl"; SUBTP="$PROJ/$SID/subagents/agent-a1.jsonl"
+BOUNDARY='{"type":"system","subtype":"compact_boundary"}'
+# set_pending <main-baseline> <sub-baseline>: pending file + transcripts at baseline.
+set_pending() {
+  reset; mkdir -p "$GATES/$SID"
+  printf 'dri\n%s\n%s\n' "$1" "$2" > "$GATES/$SID/pending"
+  : > "$TP"; : > "$SUBTP"
+  local i
+  for ((i = 0; i < $1; i++)); do echo "$BOUNDARY" >> "$TP"; done
+  for ((i = 0; i < $2; i++)); do echo "$BOUNDARY" >> "$SUBTP"; done
+}
+main_call() { pre_payload "$SID" "" "" Bash "$(bash_in ls)" | jq -c --arg tp "$TP" '. + {transcript_path:$tp}'; }
+sub_call() { pre_payload "$SID" "aexplore-1" Explore Bash "$(bash_in ls)" | jq -c --arg tp "$TP" '. + {transcript_path:$tp}'; }
+logged() { grep -q "$1" "$LOG" 2>/dev/null; }
+
+set_pending 0 0; echo "$BOUNDARY" >> "$TP"; rm -f "$LOG"
+expect_deny "pending + main grew: denied" pre "$(main_call)" "$REASON_DRI"
+if [ "$(cat "$GATES/$SID/main" 2>/dev/null)" = "dri" ] && [ ! -e "$GATES/$SID/pending" ]; then pass "pending + main grew: armed, pending dropped"; else fail "pending + main grew: state wrong"; fi
+
+set_pending 0 0; echo "$BOUNDARY" >> "$SUBTP"; rm -f "$LOG"
+expect_allow "pending + only subagent grew: allowed" pre "$(main_call)"
+if [ ! -e "$GATES/$SID/main" ] && [ ! -e "$GATES/$SID/pending" ] && logged "reason=subagent-compaction"; then pass "pending + only subagent grew: no main, pending dropped, logged"; else fail "pending + only subagent grew: state wrong"; fi
+
+set_pending 1 1; rm -f "$LOG"
+expect_deny "pending + neither grew: armed (fail-safe)" pre "$(main_call)" "$REASON_DRI"
+if [ -e "$GATES/$SID/main" ] && [ ! -e "$GATES/$SID/pending" ] && logged "reason=neither-grew"; then pass "pending + neither grew: main armed, logged"; else fail "pending + neither grew: state wrong"; fi
+
+set_pending 0 0; echo "$BOUNDARY" >> "$TP"
+expect_allow "pending + subagent call: allowed" pre "$(sub_call)"
+if [ -e "$GATES/$SID/pending" ] && [ ! -e "$GATES/$SID/main" ]; then pass "pending + subagent call: pending untouched"; else fail "pending + subagent call: touched pending"; fi
+
+set_pending 0 0; printf 'garbage\n' > "$GATES/$SID/pending"
+expect_allow "pending unreadable: fail open" pre "$(main_call)"
+if [ ! -e "$GATES/$SID/main" ] && [ ! -e "$GATES/$SID/pending" ]; then pass "pending unreadable: dropped, not armed"; else fail "pending unreadable: state wrong"; fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

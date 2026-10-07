@@ -239,53 +239,53 @@ else
   fail "dri role -> output differs by reason; clear=[$out_clear] compact=[$out_compact]"
 fi
 
-# ── Case: subagent SessionStart (parent session_id) -> no marker, no output ──
-SUB_SID="dri-sess-sub-0003"
-: > "$AGENT_TEAMS_HOME/dri-sessions/$SUB_SID"
-run_payload() {
-  # run_payload <json>
-  ( cd "$PLAIN_DIR" && printf '%s' "$1" | "$SCRIPT" ) 2>/dev/null
+# ── Case: source=compact with a transcript -> pending record, no arm, no
+# output (agent-teams-7r33.1); source=clear still arms and prints ──────────────
+PSID="dri-sess-0003"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$PSID"
+PROJ="$T/proj"; mkdir -p "$PROJ/$PSID/subagents"
+TP="$PROJ/$PSID.jsonl"
+printf '{"subtype":"compact_boundary"}\n{"x":1}\n' > "$TP"
+printf '{"subtype":"compact_boundary"}\n{"subtype":"compact_boundary"}\n' > "$PROJ/$PSID/subagents/agent-a1.jsonl"
+PROOT="$AGENT_TEAMS_HOME/learnings-gate/$PSID"
+run_compact() { # run_compact <sid> <transcript> [source]
+  ( cd "$PLAIN_DIR" && printf '{"session_id":"%s","transcript_path":"%s","source":"%s"}' "$1" "$2" "${3:-compact}" | "$SCRIPT" ) 2>/dev/null
 }
-
-out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\"}")
-if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID/main" 2>/dev/null)" = "dri" ] \
+out=$(run_compact "$PSID" "$TP")
+if [ -z "$out" ]; then pass "compact -> prints nothing"; else fail "compact -> expected empty stdout; got: $out"; fi
+if [ ! -e "$PROOT/main" ]; then pass "compact -> main not armed"; else fail "compact -> main armed"; fi
+if [ "$(cat "$PROOT/pending" 2>/dev/null | tr '\n' ' ')" = "dri 1 2 " ]; then
+  pass "compact -> pending holds role, main count 1, subagent total 2"
+else
+  fail "compact -> unexpected pending: $(cat "$PROOT/pending" 2>/dev/null)"
+fi
+# A second compact keeps the original baseline.
+printf '{"subtype":"compact_boundary"}\n' >> "$TP"
+out=$(run_compact "$PSID" "$TP")
+if [ "$(cat "$PROOT/pending" 2>/dev/null | tr '\n' ' ')" = "dri 1 2 " ]; then
+  pass "second compact -> original baseline kept"
+else
+  fail "second compact -> baseline overwritten: $(cat "$PROOT/pending" 2>/dev/null)"
+fi
+# source=clear arms immediately and prints the notice, even with a transcript.
+CSID="dri-sess-0004"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$CSID"
+out=$(run_compact "$CSID" "$TP" clear)
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$CSID/main" 2>/dev/null)" = "dri" ] \
+  && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$CSID/pending" ] \
   && printf '%s' "$out" | grep -qF "ateam learnings dri"; then
-  pass "main-thread compact payload -> still arms and prints notice"
+  pass "clear -> arms immediately with notice, no pending"
 else
-  fail "main-thread compact payload -> expected marker and notice; got: $out"
+  fail "clear -> expected arm + notice; got: $out"
 fi
-rm -rf "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID"
-
-out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\",\"agent_id\":\"agent-abc123\"}")
-if [ -z "$out" ] && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID" ]; then
-  pass "agent_id payload -> no marker, no output"
+# compact with an unreadable transcript_path falls back to immediate arming.
+USID="dri-sess-0005"
+: > "$AGENT_TEAMS_HOME/dri-sessions/$USID"
+out=$(run_compact "$USID" "$T/missing.jsonl")
+if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$USID/main" 2>/dev/null)" = "dri" ] && printf '%s' "$out" | grep -qF "ateam learnings dri"; then
+  pass "compact without usable transcript -> arms immediately"
 else
-  fail "agent_id payload -> expected no marker/output; got: $out"
-fi
-if awk -F'\t' '$3=="role-recall-recovery.sh" && index($6,"reason=subagent"){f=1} END{exit !f}' "$HOOKS_LOG" 2>/dev/null \
-  && grep -qF "skip-subagent via=agent_id" "$HOOKS_LOG"; then
-  pass "agent_id payload -> logs reason=subagent via=agent_id"
-else
-  fail "agent_id payload -> expected reason=subagent via=agent_id in hooks.log"
-fi
-
-out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\",\"transcript_path\":\"/home/u/.claude/projects/p/$SUB_SID/subagents/agent-x.jsonl\"}")
-if [ -z "$out" ] && [ ! -e "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID" ]; then
-  pass "subagents transcript_path payload (no agent_id) -> no marker, no output"
-else
-  fail "subagents transcript_path payload -> expected no marker/output; got: $out"
-fi
-if grep -qF "skip-subagent via=transcript_path" "$HOOKS_LOG"; then
-  pass "subagents transcript_path payload -> logs via=transcript_path"
-else
-  fail "subagents transcript_path payload -> expected via=transcript_path in hooks.log"
-fi
-
-out=$(run_payload "{\"session_id\":\"$SUB_SID\",\"source\":\"compact\",\"transcript_path\":\"/home/u/.claude/projects/p/$SUB_SID.jsonl\"}")
-if [ "$(cat "$AGENT_TEAMS_HOME/learnings-gate/$SUB_SID/main" 2>/dev/null)" = "dri" ]; then
-  pass "main transcript_path (no /subagents/) -> still arms"
-else
-  fail "main transcript_path -> expected marker; got: $out"
+  fail "compact without usable transcript -> expected arm + notice; got: $out"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

@@ -9,13 +9,22 @@
 #      exact command. Two kinds of context are gated:
 #        - the main thread (calls with no agent_id) while
 #          <ATH>/learnings-gate/<sid>/main exists (armed by
-#          role-recall-recovery.sh on clear|compact);
+#          role-recall-recovery.sh on clear, or on compact once this hook
+#          decides the compaction was the main thread's, see below);
 #        - a role subagent or teammate (calls with an agent_id) whose role
 #          resolves and that has no loaded/<agent_id> record.
 #      Allowing the exact command is also the clear: the main marker is
 #      removed, or the loaded record is written. Allowed Agent spawns of
 #      agent-teams-<role> with a name are recorded so the teammate's later
 #      calls (agent_type = the name) resolve to a role.
+#      A SessionStart(compact) cannot say whether the main thread or an
+#      in-process subagent compacted (both carry the parent session_id), so
+#      role-recall-recovery.sh writes <sid>/pending instead of arming. The
+#      first main-thread call (no agent_id) recounts compact_boundary lines
+#      from the payload's transcript_path: main grew -> arm main and drop
+#      pending; only subagent transcripts grew -> drop pending, no arm;
+#      neither grew -> arm (deliberately fail-SAFE). Subagent calls never
+#      touch pending.
 # post (PostToolUse, matcher "Agent"): record the harness's final teammate
 #      name -> role when tool_response.status is "teammate_spawned" (the
 #      harness renames duplicates, for example probe-t1 -> probe-t1-2).
@@ -51,7 +60,7 @@ _HOOK_LOG_SCRIPT="learnings-gate.sh"
 # Parse stdin once. Fields are NUL-terminated so a multi-line command stays
 # exact (the allow-match must see the real bytes).
 session_id="" agent_id="" agent_type="" tool_name="" tool_cmd="" subagent_type="" name=""
-resp_status="" resp_name="" resp_agent_type=""
+resp_status="" resp_name="" resp_agent_type="" transcript_path=""
 {
   IFS= read -r -d '' session_id
   IFS= read -r -d '' agent_id
@@ -63,12 +72,13 @@ resp_status="" resp_name="" resp_agent_type=""
   IFS= read -r -d '' resp_status
   IFS= read -r -d '' resp_name
   IFS= read -r -d '' resp_agent_type
+  IFS= read -r -d '' transcript_path
 } < <(printf '%s' "$payload" | jq -j '
   def s: if type == "string" then . else "" end;
   [ (.session_id | s), (.agent_id | s), (.agent_type | s), (.tool_name | s),
     (.tool_input.command | s), (.tool_input.subagent_type | s),
     (.tool_input.name | s), (.tool_response.status | s),
-    (.tool_response.name | s), (.tool_response.agent_type | s) ]
+    (.tool_response.name | s), (.tool_response.agent_type | s), (.transcript_path | s) ]
   | map(. + "\u0000") | add' 2>/dev/null)
 
 valid_session_id "$session_id" || exit 0
@@ -105,6 +115,23 @@ case "$agent_type" in agent-teams-*) is_role_agent=1 ;; *) is_role_agent=0 ;; es
 
 gate_role=""
 if [ -z "$agent_id" ]; then
+  if [ -e "$root/pending" ]; then
+    if lg_read_pending "$ATH" "$session_id"; then
+      read -r cur_main cur_sub <<< "$(lg_boundary_counts "$transcript_path" "$session_id")"
+      if [ "$cur_main" -gt "$LG_PENDING_MAIN" ]; then
+        lg_arm_main "$ATH" "$session_id" "$LG_PENDING_ROLE"
+        hook_log_note "pending-armed" "reason=main-compaction role=${LG_PENDING_ROLE} main=${LG_PENDING_MAIN}->${cur_main}"
+      elif [ "$cur_sub" -gt "$LG_PENDING_SUB" ]; then
+        hook_log_note "pending-dropped" "reason=subagent-compaction sub=${LG_PENDING_SUB}->${cur_sub}"
+      else
+        lg_arm_main "$ATH" "$session_id" "$LG_PENDING_ROLE"
+        hook_log_note "pending-armed" "reason=neither-grew role=${LG_PENDING_ROLE} main=${cur_main} sub=${cur_sub}"
+      fi
+    else
+      hook_log_note "pending-dropped" "reason=unreadable"
+    fi
+    lg_drop_pending "$ATH" "$session_id"
+  fi
   if [ -f "$root/main" ]; then
     gate_role=$(head -n 1 "$root/main" 2>/dev/null) || gate_role=""
     case "$gate_role" in dri | steward) ;; *) gate_role="" ;; esac

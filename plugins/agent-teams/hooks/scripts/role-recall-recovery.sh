@@ -33,15 +33,17 @@
 # tight. Emitted as plain stdout text (NOT JSON — SessionStart output is raw
 # text, matching compact-recovery.sh's own pattern, unlike UserPromptSubmit's
 # jq/additionalContext shape). Silent no-op, and no marker, for any session
-# with no resolved role or an invalid session id. This logic is reason-independent — it behaves identically regardless
-# of which of the two matched reasons (clear or compact) triggered it; the
-# script never reads or branches on a "reason"/"source" field.
+# with no resolved role or an invalid session id.
 #
-# Skips (no marker, no output) SessionStarts fired inside an in-process
-# subagent: a subagent's auto-compaction fires SessionStart(compact) carrying
-# the PARENT session_id, so arming here would block the parent's main thread
-# with a learnings reload it doesn't need (agent-teams-7r33.1). A subagent is
-# detected by a non-empty .agent_id or a .transcript_path under /subagents/.
+# ARMING depends on .source (agent-teams-7r33.1): an in-process subagent's
+# auto-compaction fires SessionStart(compact) with the PARENT session_id and
+# no agent_id, so the hook cannot tell whose context compacted. On
+# source=compact with a usable transcript_path it therefore does NOT arm: it
+# writes <sid>/pending (role plus the compact_boundary counts of the main and
+# subagent transcripts, oldest baseline kept) and prints nothing, since the
+# output would land in whichever context compacted. learnings-gate.sh arms or
+# drops it on the next main-thread call. source=clear, a missing source, or no
+# usable transcript_path arm immediately and print the notice.
 set -euo pipefail
 
 ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
@@ -58,22 +60,6 @@ export HOOK_SESSION_ID
 
 # Log start BEFORE any guard check.
 hook_log_start "role-recall-recovery.sh"
-
-# Subagent SessionStart: the payload's session_id is the parent's. Skip before
-# any role resolution or marker write.
-if command -v jq >/dev/null 2>&1; then
-  subagent_id=$(printf '%s' "$HOOK_STDIN" | jq -r '.agent_id // empty' 2>/dev/null || true)
-  subagent_tp=$(printf '%s' "$HOOK_STDIN" | jq -r '.transcript_path // empty' 2>/dev/null || true)
-  if [ -n "$subagent_id" ]; then
-    hook_log_note "note" "skip-subagent via=agent_id agent_id=${subagent_id}"
-    HOOK_EXIT_REASON="subagent"
-    exit 0
-  elif [[ "$subagent_tp" == */subagents/* ]]; then
-    hook_log_note "note" "skip-subagent via=transcript_path transcript_path=${subagent_tp}"
-    HOOK_EXIT_REASON="subagent"
-    exit 0
-  fi
-fi
 
 command -v bd >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 command -v jq >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
@@ -99,6 +85,15 @@ hook_log_note "note" "role-resolved role=${role}"
 # declaration order (also the order stewardLedgerCategoryOrder uses in
 # internal/verbs/steward.go).
 STEWARD_LEDGER_CATEGORIES="plan-approval scope-call merge-approval design-fork unblock-action"
+
+hook_source=$(printf '%s' "$HOOK_STDIN" | jq -r '.source // empty' 2>/dev/null || true)
+hook_tp=$(printf '%s' "$HOOK_STDIN" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+if [ "$hook_source" = "compact" ] && [ -n "$hook_tp" ] && [ -f "$hook_tp" ] \
+  && [ "$HOOK_SESSION_ID" != "unknown" ] && lg_write_pending "$ATH" "$HOOK_SESSION_ID" "$role" "$hook_tp"; then
+  hook_log_note "note" "learnings-gate-pending role=${role}"
+  HOOK_EXIT_REASON="pending"
+  exit 0
+fi
 
 if [ "$HOOK_SESSION_ID" != "unknown" ] && lg_arm_main "$ATH" "$HOOK_SESSION_ID" "$role"; then
   hook_log_note "note" "learnings-gate-armed role=${role}"

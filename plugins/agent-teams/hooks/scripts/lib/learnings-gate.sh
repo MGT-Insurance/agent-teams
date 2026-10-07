@@ -14,6 +14,21 @@
 #   <ATH>/learnings-gate/<session_id>/main            one line: "dri" | "steward".
 #                                                     Presence = the main thread
 #                                                     must load learnings.
+#   <ATH>/learnings-gate/<session_id>/pending        three lines: role ("dri" |
+#                                                     "steward"), the main
+#                                                     transcript's compact_boundary
+#                                                     count, and the total across
+#                                                     its subagents/agent-*.jsonl,
+#                                                     all as of the SessionStart
+#                                                     (compact) hook. Presence = a
+#                                                     compaction happened whose
+#                                                     owner (main thread or an
+#                                                     in-process subagent) is not
+#                                                     yet known; the first
+#                                                     main-thread PreToolUse
+#                                                     recounts, then arms main or
+#                                                     drops it. The oldest
+#                                                     baseline wins.
 #   <ATH>/learnings-gate/<session_id>/spawns/<name>   bare role of a named
 #                                                     teammate spawn.
 #   <ATH>/learnings-gate/<session_id>/loaded/<id>     presence = subagent <id>
@@ -29,6 +44,13 @@
 # Public API:
 #   lg_root <ath> <sid>                  prints the gate root; 1 if invalid
 #   lg_arm_main <ath> <sid> <role>       role must be dri|steward
+#   lg_count_boundaries <file>           prints the compact_boundary line count (0 if missing)
+#   lg_boundary_counts <transcript_path> <sid>
+#                                        prints "<main> <subagents-total>"
+#   lg_write_pending <ath> <sid> <role> <transcript_path>
+#                                        no-op if pending exists
+#   lg_read_pending <ath> <sid>          sets LG_PENDING_ROLE/_MAIN/_SUB; 1 if absent or malformed
+#   lg_drop_pending <ath> <sid>
 #   lg_record_spawn <ath> <sid> <name> <role>
 #   lg_known_subagent_role <role> <roles_dir>
 #   lg_resolve_subagent_role <ath> <sid> <agent_type> <roles_dir>
@@ -57,6 +79,62 @@ lg_arm_main() {
   root=$(lg_root "$ath" "$sid") || return 1
   mkdir -p "$root" 2>/dev/null || return 1
   printf '%s\n' "$role" > "$root/main" 2>/dev/null || return 1
+}
+
+# ── Public: lg_count_boundaries ──────────────────────────────────────────────
+# Each compaction appends one line containing "compact_boundary" to the
+# transcript of the context that compacted.
+lg_count_boundaries() {
+  local n
+  n=$(grep -c -F '"compact_boundary"' "$1" 2>/dev/null) || n=0
+  printf '%s' "${n:-0}"
+}
+
+# ── Public: lg_boundary_counts ───────────────────────────────────────────────
+# Subagent transcripts live at <dirname transcript>/<sid>/subagents/agent-*.jsonl.
+lg_boundary_counts() {
+  local tp="$1" sid="$2" main sub=0 f n
+  main=$(lg_count_boundaries "$tp")
+  for f in "$(dirname "$tp")/$sid/subagents"/agent-*.jsonl; do
+    [ -f "$f" ] || continue
+    n=$(lg_count_boundaries "$f")
+    sub=$((sub + n))
+  done
+  printf '%s %s' "$main" "$sub"
+}
+
+# ── Public: lg_write_pending ─────────────────────────────────────────────────
+lg_write_pending() {
+  local ath="$1" sid="$2" role="$3" tp="$4" root counts
+  case "$role" in dri | steward) ;; *) return 1 ;; esac
+  root=$(lg_root "$ath" "$sid") || return 1
+  [ -e "$root/pending" ] && return 0
+  counts=$(lg_boundary_counts "$tp" "$sid")
+  mkdir -p "$root" 2>/dev/null || return 1
+  printf '%s\n%s\n%s\n' "$role" "${counts% *}" "${counts#* }" > "$root/pending" 2>/dev/null || return 1
+}
+
+# ── Public: lg_read_pending ──────────────────────────────────────────────────
+lg_read_pending() {
+  local ath="$1" sid="$2" root
+  LG_PENDING_ROLE="" LG_PENDING_MAIN="" LG_PENDING_SUB=""
+  root=$(lg_root "$ath" "$sid") || return 1
+  [ -f "$root/pending" ] || return 1
+  {
+    IFS= read -r LG_PENDING_ROLE
+    IFS= read -r LG_PENDING_MAIN
+    IFS= read -r LG_PENDING_SUB
+  } < "$root/pending" 2>/dev/null || true
+  case "$LG_PENDING_ROLE" in dri | steward) ;; *) return 1 ;; esac
+  case "$LG_PENDING_MAIN" in '' | *[!0-9]*) return 1 ;; esac
+  case "$LG_PENDING_SUB" in '' | *[!0-9]*) return 1 ;; esac
+}
+
+# ── Public: lg_drop_pending ──────────────────────────────────────────────────
+lg_drop_pending() {
+  local ath="$1" sid="$2" root
+  root=$(lg_root "$ath" "$sid") || return 1
+  rm -f "$root/pending" 2>/dev/null || return 1
 }
 
 # ── Public: lg_record_spawn ──────────────────────────────────────────────────
