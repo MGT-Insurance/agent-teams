@@ -11,7 +11,6 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
-	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 )
 
@@ -845,141 +844,6 @@ func TestNotify_Briefing_ExplicitTitle(t *testing.T) {
 	}
 }
 
-// ── ReviewsHandle ─────────────────────────────────────────────────────────────
-
-// TestNotify_Reviews_FirstNotify_CreatesTopicAndPersistsFile confirms the
-// shared PR-review topic bootstraps like the briefing topic:
-//   - no bd show for the reviews handle (notifyFakeBD errors on an
-//     unexpected Run, and no issue is configured)
-//   - first notify sends with ThreadRef="" (new topic)
-//   - the returned ref is persisted to StewardReviewsThreadPath, not a label
-//   - default title is "Reviews", declared sender is KindNotifyReviews
-func TestNotify_Reviews_FirstNotify_CreatesTopicAndPersistsFile(t *testing.T) {
-	bodyFile := makeTempBodyFile(t, "Review started · #12 midgard — Fix flaky retry logic")
-	home := t.TempDir()
-
-	ft := &fakeTransport{returnRef: "888"}
-	nbd := &notifyFakeBD{}
-
-	cmd := &notifyKong{
-		ID:           ReviewsHandle,
-		File:         bodyFile,
-		transportFor: fakeTransportFor(ft, nil),
-		labelAdd: func(b cli.BDRunner, id, label string) error {
-			t.Fatalf("labelAdd should not be called for the reviews handle")
-			return nil
-		},
-	}
-
-	ctx, out, _ := newNotifyCtx(nbd)
-	ctx.Home = home
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	if len(ft.calls) != 1 {
-		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
-	}
-	if ft.calls[0].ThreadRef != "" {
-		t.Errorf("expected ThreadRef empty on first reviews notify, got %q", ft.calls[0].ThreadRef)
-	}
-	if ft.calls[0].InitiativeID != ReviewsHandle {
-		t.Errorf("InitiativeID = %q, want %q", ft.calls[0].InitiativeID, ReviewsHandle)
-	}
-	if ft.calls[0].Title != "Reviews" {
-		t.Errorf("Title = %q, want %q", ft.calls[0].Title, "Reviews")
-	}
-	if ft.calls[0].Sender != sentlog.KindNotifyReviews {
-		t.Errorf("Sender = %q, want %q", ft.calls[0].Sender, sentlog.KindNotifyReviews)
-	}
-
-	path := StewardReviewsThreadPath(ctx)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("expected reviews thread file at %s: %v", path, err)
-	}
-	if strings.TrimSpace(string(data)) != "888" {
-		t.Errorf("persisted thread ref = %q, want %q", string(data), "888")
-	}
-
-	output := out.String()
-	if !strings.Contains(output, "thread_ref: 888") {
-		t.Errorf("output missing thread_ref: %q", output)
-	}
-	if !strings.Contains(output, "initiative: "+ReviewsHandle) {
-		t.Errorf("output missing initiative line: %q", output)
-	}
-}
-
-// TestNotify_Reviews_SecondNotify_ReusesPersistedFile is the whole point of a
-// SHARED review topic: the second review must land in the topic the first one
-// opened. A non-empty ThreadRef on Send is what tells the transport to post
-// into the existing topic rather than create another one, so asserting it is
-// asserting that no second forum topic is opened.
-func TestNotify_Reviews_SecondNotify_ReusesPersistedFile(t *testing.T) {
-	bodyFile := makeTempBodyFile(t, "Review complete · #13 midgard — Add retry jitter")
-	home := t.TempDir()
-
-	nbd := &notifyFakeBD{}
-	ctx, out, _ := newNotifyCtx(nbd)
-	ctx.Home = home
-
-	path := StewardReviewsThreadPath(ctx)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte("888"), 0o644); err != nil {
-		t.Fatalf("seed reviews thread file: %v", err)
-	}
-
-	ft := &fakeTransport{returnRef: "888"} // topic still open
-	cmd := &notifyKong{
-		ID:           ReviewsHandle,
-		File:         bodyFile,
-		transportFor: fakeTransportFor(ft, nil),
-		labelAdd: func(b cli.BDRunner, id, label string) error {
-			t.Fatalf("labelAdd should not be called for the reviews handle")
-			return nil
-		},
-	}
-
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	if len(ft.calls) != 1 {
-		t.Fatalf("expected 1 Send call, got %d", len(ft.calls))
-	}
-	if ft.calls[0].ThreadRef != "888" {
-		t.Errorf("expected ThreadRef=888 reused from file, got %q", ft.calls[0].ThreadRef)
-	}
-	if !strings.Contains(out.String(), "thread_ref: 888") {
-		t.Errorf("output missing thread_ref: %q", out.String())
-	}
-}
-
-// TestNotify_Reviews_ExplicitTitle confirms --title overrides the "Reviews" default.
-func TestNotify_Reviews_ExplicitTitle(t *testing.T) {
-	bodyFile := makeTempBodyFile(t, "body")
-	ft := &fakeTransport{returnRef: "1"}
-	nbd := &notifyFakeBD{}
-	cmd := &notifyKong{
-		ID:           ReviewsHandle,
-		File:         bodyFile,
-		Title:        "PR Reviews",
-		transportFor: fakeTransportFor(ft, nil),
-		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
-	}
-	ctx, _, _ := newNotifyCtx(nbd)
-	ctx.Home = t.TempDir()
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if ft.calls[0].Title != "PR Reviews" {
-		t.Errorf("Title = %q, want %q", ft.calls[0].Title, "PR Reviews")
-	}
-}
-
 // ── shared-topic publish trigger ──────────────────────────────────────────────
 
 // TestNotify_SharedTopic_PublishesOnEverySend is the regression guard for
@@ -988,56 +852,45 @@ func TestNotify_Reviews_ExplicitTitle(t *testing.T) {
 // code shipped could never acquire a steward:topics record — leaving
 // isKnownStewardTopic always false and the relay's peer-topic skip dead. The
 // REUSE send seeded here (thread-ref file already present) is exactly the
-// case that published nothing before, and both shared handles run through
-// sendSharedTopic, so both are pinned.
+// case that published nothing before.
 func TestNotify_SharedTopic_PublishesOnEverySend(t *testing.T) {
-	for _, tc := range []struct {
-		handle string
-		path   func(*cli.Context) string
-	}{
-		{BriefingHandle, StewardBriefingThreadPath},
-		{ReviewsHandle, StewardReviewsThreadPath},
-	} {
-		t.Run(tc.handle, func(t *testing.T) {
-			bodyFile := makeTempBodyFile(t, "body")
-			nbd := &notifyFakeBD{}
-			ctx, _, _ := newNotifyCtx(nbd)
-			ctx.Home = t.TempDir()
+	bodyFile := makeTempBodyFile(t, "body")
+	nbd := &notifyFakeBD{}
+	ctx, _, _ := newNotifyCtx(nbd)
+	ctx.Home = t.TempDir()
 
-			path := tc.path(ctx)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatalf("mkdir: %v", err)
-			}
-			if err := os.WriteFile(path, []byte("555"), 0o644); err != nil {
-				t.Fatalf("seed thread file: %v", err)
-			}
+	path := StewardBriefingThreadPath(ctx)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("555"), 0o644); err != nil {
+		t.Fatalf("seed thread file: %v", err)
+	}
 
-			ft := &fakeTransport{returnRef: "555"}
-			cmd := &notifyKong{
-				ID:           tc.handle,
-				File:         bodyFile,
-				transportFor: fakeTransportFor(ft, nil),
-				labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
-			}
-			if err := cmd.Run(ctx); err != nil {
-				t.Fatalf("Run returned error: %v", err)
-			}
+	ft := &fakeTransport{returnRef: "555"}
+	cmd := &notifyKong{
+		ID:           BriefingHandle,
+		File:         bodyFile,
+		transportFor: fakeTransportFor(ft, nil),
+		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
 
-			if len(nbd.remembered) != 1 {
-				t.Fatalf("expected 1 publishStewardTopics upsert on a reuse send, got %d: %v", len(nbd.remembered), nbd.remembered)
-			}
-			if !strings.HasPrefix(nbd.remembered[0], "--key="+stewardTopicsKeyPrefix) {
-				t.Errorf("remember key = %q, want the %q namespace", nbd.remembered[0], stewardTopicsKeyPrefix)
-			}
-		})
+	if len(nbd.remembered) != 1 {
+		t.Fatalf("expected 1 publishStewardTopics upsert on a reuse send, got %d: %v", len(nbd.remembered), nbd.remembered)
+	}
+	if !strings.HasPrefix(nbd.remembered[0], "--key="+stewardTopicsKeyPrefix) {
+		t.Errorf("remember key = %q, want the %q namespace", nbd.remembered[0], stewardTopicsKeyPrefix)
 	}
 }
 
-// TestNotify_Reviews_PublishFailureStillSends confirms the publish stays
+// TestNotify_Briefing_PublishFailureStillSends confirms the publish stays
 // fail-soft now that it runs on every send: a broken memory store warns on
 // stderr and must not fail the notify, because losing the message is strictly
 // worse than a stale synced topics record.
-func TestNotify_Reviews_PublishFailureStillSends(t *testing.T) {
+func TestNotify_Briefing_PublishFailureStillSends(t *testing.T) {
 	bodyFile := makeTempBodyFile(t, "body")
 	nbd := &notifyFakeBD{rememberErr: fmt.Errorf("dolt is down")}
 	ctx, out, errBuf := newNotifyCtx(nbd)
@@ -1045,7 +898,7 @@ func TestNotify_Reviews_PublishFailureStillSends(t *testing.T) {
 
 	ft := &fakeTransport{returnRef: "999"}
 	cmd := &notifyKong{
-		ID:           ReviewsHandle,
+		ID:           BriefingHandle,
 		File:         bodyFile,
 		transportFor: fakeTransportFor(ft, nil),
 		labelAdd:     func(b cli.BDRunner, id, label string) error { return nil },
@@ -1063,9 +916,9 @@ func TestNotify_Reviews_PublishFailureStillSends(t *testing.T) {
 		t.Errorf("stderr missing publish warning: %q", errBuf.String())
 	}
 	// The ref still persisted — the publish failure is downstream of it.
-	data, err := os.ReadFile(StewardReviewsThreadPath(ctx))
+	data, err := os.ReadFile(StewardBriefingThreadPath(ctx))
 	if err != nil {
-		t.Fatalf("expected reviews thread file: %v", err)
+		t.Fatalf("expected briefing thread file: %v", err)
 	}
 	if strings.TrimSpace(string(data)) != "999" {
 		t.Errorf("persisted thread ref = %q, want %q", string(data), "999")

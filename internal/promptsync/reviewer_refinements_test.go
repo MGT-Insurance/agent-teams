@@ -158,8 +158,8 @@ func TestReviewerReferencePathsAvoidStaleCoordinates(t *testing.T) {
 
 	mechanics := readReviewerRefinementFile(t, root, mechanicsPath)
 	if err := reviewerRefinementClausesError(mechanicsPath, mechanics,
-		"Background for reviewer learning self-fetch, review-body file-content",
-		"handling, and completion-line notification.",
+		"Background for reviewer learning self-fetch and review-body file-content",
+		"handling. SKILL.md",
 		"## Reviewer learning self-fetch: why the SubagentStart hook can't fetch it",
 	); err != nil {
 		t.Fatal(err)

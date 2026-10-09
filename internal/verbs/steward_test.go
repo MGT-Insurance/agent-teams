@@ -620,8 +620,8 @@ func TestStewardRemove_KeepsLedgerBriefingAndReviewsByDefault(t *testing.T) {
 		t.Errorf("expected both kept paths reported, got: %q", out)
 	}
 	// An operator who follows this list must carry the reviews-thread ref too;
-	// omitting it makes the new machine open a second Reviews topic
-	// (agent-teams-p9dm.41).
+	// omitting it stops the relay on the new machine from recognizing replies
+	// in an existing Reviews topic (agent-teams-p9dm.41).
 	if !strings.Contains(out, reviewsPath) {
 		t.Errorf("expected reviews-thread in the relocation list, got: %q", out)
 	}

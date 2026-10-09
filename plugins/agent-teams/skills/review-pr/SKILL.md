@@ -79,11 +79,11 @@ silently refresh either value.
 Compare the PR's author against the current GitHub identity:
 
 ```bash
-gh pr view <pr-number> --repo <owner>/<repo> --json author,title
+gh pr view <pr-number> --repo <owner>/<repo> --json author
 gh api user -q .login
 ```
 
-This yields `.author.login` and `.title` (empty on failure for step 11).
+This yields `.author.login`.
 
 This drives **two independent decisions** with **opposite safe defaults** —
 do not collapse them into one boolean:
@@ -310,7 +310,8 @@ APPROVE unless self-review. Use the one-round invariant and `REVIEW_URL`.
 ### 11. Record the outcome and close the initiative
 
 Closing is part of delivering the review — same turn as the post, one atomic
-act with the outcome note. Re-reviews and comment replies spawn FRESH
+act with the outcome note. Send no Telegram message: the initiative bead is
+the ledger of reviews. Re-reviews and comment replies spawn FRESH
 sessions via route-pr-event (matches the CLOSED initiative and reopens it),
 so nothing requires staying open. A review-delivered-but-open initiative is
 a defect the hung-scan flags for hand-triage.
@@ -321,39 +322,18 @@ printf 'review-posted: PR #<pr-number> — <N> finding(s), event=<APPROVE|COMMEN
 ateam note <id> --file "${CLAUDE_JOB_DIR}/tmp/review-note-<id>.txt"
 ateam mail inbox   # Mail cadence: read again immediately before closing
 ateam close <id> --reason "Review posted: <review-html-url>"
-
-TITLE_SEG=" — <pr-title>"   # exactly "" if step 4's title lookup failed
-printf 'Review complete · #%s %s%s\n%s' \
-  "<pr-number>" "<repo>" "$TITLE_SEG" "<review-html-url>" \
-  > "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
-ateam notify reviews --file "${CLAUDE_JOB_DIR}/tmp/review-notify-<id>.txt"
 ```
 
 `<review-html-url>` is `$REVIEW_URL` from step 10 — cite `<pr-url>` instead
 if it's empty (POST failed, no fallback captured).
 
-#### The completion line
-
-Posts to the shared **Reviews** topic (one topic for all reviews). Text is
-frozen — reproduce exactly (rationale: `references/mechanics-notes.md`).
-`<repo>` is the **basename** (`midgard`, never `acme/midgard`). `TITLE_SEG`
-is `" — "` (space, em dash **U+2014**, space) plus step 4's title, or
-**empty string** if that failed — copy the separator from the block above,
-don't retype it. Two lines: text, then the bare URL.
-
-**Nothing else goes in it** — no finding count, no severity, no
-`APPROVE`/`COMMENT` verdict. Do NOT pass `--to`; `--title` defaults to
-`Reviews`. Post it **last, after the close** — a notify failure must never
-strand the initiative open.
-
 **Step-9 timeout path**: swap the wording — note `review-timeout: PR
 #<pr-number> — reviewer subagent did not respond`, close `--reason "Review
 not posted (reviewer timeout): <pr-url>"`. That note IS step 9's timeout
-note; don't write a second one, and emit **no** completion line — no review
-happened.
+note; don't write a second one.
 
 **Re-review rounds end the same way** — route-pr-event reopened this
-initiative to run the round; once it posts, rerun this note+close+notify
+initiative to run the round; once it posts, rerun this note+close
 step, citing the new review's URL in both places.
 
 **Rare carve-out:** deliberately waiting on a same-session follow-up? Never
@@ -411,10 +391,9 @@ context, but still re-derive the work from GitHub directly, every time
 
 3. **Nothing to answer?** Reached only after step 1's fresh fetch, never
    from memory. If no qualifying threads exist (already handled, stale
-   notification), note that, close, and skip the completion line — nothing
-   happened to report.
+   notification), note that and close — nothing happened to report.
 
-4. **Note, close, and post the completion line:**
+4. **Note and close:**
 
    ```bash
    printf 'comment-replies: PR #<pr-number> — <k> thread(s) answered\n' \
@@ -423,11 +402,6 @@ context, but still re-derive the work from GitHub directly, every time
    ateam mail inbox   # Mail cadence: read again immediately before closing
    ateam close <id> --reason "Comment replies posted: <pr-url>"
    ```
-
-   Then run step 11's completion-line block unchanged. Two differences: URL
-   is `<pr-url>` (no review posted); and it skips step 4, so fetch the title
-   with `gh pr view <pr-number> --repo <owner>/<repo> --json title -q
-   .title`.
 
 ## Key constraints
 
