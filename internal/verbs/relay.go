@@ -364,12 +364,11 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 	// Reviews-channel short-circuit (agent-teams-p9dm.14, agent-teams-p9dm.50):
 	// a message posted in the shared Reviews topic (contract: ReviewsHandle,
 	// StewardReviewsThreadPath in steward_seams.go) has no initiative bead
-	// behind it by design, exactly like the Briefings topic above — `ateam
-	// dispatch --topic reviews` deliberately writes no "thread:" label (that
-	// omission is load-bearing: it is what stops the first `ateam close` from
-	// closing the shared topic for everyone), so the bd label lookup below
-	// would always miss and the message would die silently, the same failure
-	// class as agent-teams-8beo.1. If this reply's thread ref matches the
+	// behind it by design, exactly like the Briefings topic above. Nothing
+	// posts into the Reviews topic any more, but a topic opened by an earlier
+	// version still exists in the chat and a human can still reply in it; the
+	// bd label lookup below would always miss and the message would die
+	// silently, the same failure class as agent-teams-8beo.1. If this reply's thread ref matches the
 	// persisted reviews-channel thread ref, route it to the Steward directly,
 	// bypassing the initiative lookup entirely, before the peer-steward-topic
 	// skip below can mistake it for another machine's topic. An absent/empty

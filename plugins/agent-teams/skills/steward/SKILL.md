@@ -149,7 +149,7 @@ Never answer from your own session state or memory — context compacts, and any
 - `UNDECLARED` — a call site didn't identify itself; say so, don't guess.
 - No matching record means the log shows nothing for that window, not "I didn't send it" — absence never proves non-authorship.
 
-**"What did that review find?"** — Reviews-topic follow-ups (retrieve from GitHub, never beads) and dispatching a deeper look: references/pr-reviews.md.
+**"What did that review find?"** — PR-review follow-ups (retrieve from GitHub, never beads) and dispatching a deeper look: references/pr-reviews.md.
 
 **"I'm done with that one"** — the human declares a PR handed off, in ANY thread, unprompted: run `ateam handoff <id>`. Never on your own initiative — his to declare, never yours to infer. Phrasings, which-initiative, reversal: references/handoff.md.
 

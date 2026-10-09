@@ -1,26 +1,16 @@
 # Retrieving a past PR review
 
-The human asks what a review found, or asks for a deeper one, after seeing a line in the shared Reviews topic. This file is the whole answer path: read the findings back from GitHub, never from beads.
+The human asks what a review found, or asks for a deeper one. This file is the whole answer path: read the findings back from GitHub, never from beads.
 
-## What the Reviews topic lines carry — and what they deliberately omit
+## Review traffic in Telegram
 
-Two lines per review, frozen in `internal/verbs/steward_seams.go` (`ReviewsStartLineFormat`, :997, and the completion line as a doc comment just below it). Rendered:
+PR-review initiatives post no Telegram message when they open or close. The initiative beads are the ledger of reviews, and the human reads them there. The human can still ask for findings or a deeper look, as a direct message, a briefing reply, or an unrouted reply in an older shared Reviews topic (which has no owning initiative, so the relay cannot place it). Answer it wherever it lands.
 
-```
-Review started · #4408 midgard — feat(mithril/aragorn): migrate /transactions to Aragorn - BUG-874
-https://github.com/MGT-Insurance/midgard/pull/4408
-```
-
-```
-Review complete · #4408 midgard — feat(mithril/aragorn): migrate /transactions to Aragorn - BUG-874
-https://github.com/MGT-Insurance/midgard/pull/4408#pullrequestreview-1234567
-```
-
-PR number, repo basename, PR title, URL. Nothing else — no finding count, no severity, no APPROVE/COMMENT verdict. That omission is Eric's own call (agent-teams-p9dm.7), verbatim:
+The human's own call (agent-teams-p9dm.7), verbatim:
 
 > Most of the time I don't care about the review content. I just want to know a review happened, and then if the PR title intrigues me I'd like to ask the steward for more info, or maybe even to dispatch a more focused review.
 
-So the title is the entire basis on which he decides to dig, and "ask the steward for more info" is a designed-for follow-up, not an off-script request. The ask can arrive as any envelope kind — a direct message, a briefing reply, an unrouted reply from the Reviews topic itself (which has no owning initiative, so the relay cannot place it). Answer it wherever it lands; do not treat the sparse line as all there is.
+"Ask the steward for more info" is a designed-for follow-up, not an off-script request.
 
 ## Retrieving the findings — from GitHub, always
 
@@ -43,7 +33,7 @@ Both endpoints return every review by every author, ours and the humans'. That i
 
 ### Resolving the repo
 
-The topic line renders the repo BASENAME (`midgard`), not `owner/repo` — but the URL on the line's second line carries the owner. Read it off the message rather than reconstructing it: `https://github.com/MGT-Insurance/midgard/pull/4408` gives owner `MGT-Insurance`, repo `midgard`, PR `4408`.
+An older Reviews-topic message renders the repo BASENAME (`midgard`), not `owner/repo` — but its URL carries the owner. Read it off the message rather than reconstructing it: `https://github.com/MGT-Insurance/midgard/pull/4408` gives owner `MGT-Insurance`, repo `midgard`, PR `4408`.
 
 When the human names a bare basename with no URL in reach ("what did that midgard review say?"), assume owner `MGT-Insurance` — every repo in play is under that org, this one included (`git@github.com:MGT-Insurance/agent-teams.git`) — but confirm rather than firing a request at a guessed path:
 

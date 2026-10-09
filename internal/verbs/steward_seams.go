@@ -67,23 +67,11 @@ const BriefingHandle = "briefing"
 // traffic; DirectHandle is the notify handle for out-of-band direct traffic.
 const DirectHandle = "direct"
 
-// ReviewsHandle is the reserved `ateam notify` recipient id for the shared,
-// cross-initiative PR-review topic (agent-teams-p9dm, at-jno7 item 1: one
-// shared "Reviews" topic replacing a Forum topic opened per PR review). Like
-// BriefingHandle, no bead lives behind this id — notify reads/writes its
-// thread ref from StewardReviewsThreadPath instead of an initiative bead's
-// "thread:<n>" label. Every caller posting to, or resolving, the reviews
-// topic MUST use this constant rather than a literal string.
+// ReviewsHandle is the reserved `ateam dispatch --topic` value that marks a
+// PR-review initiative (see the "--topic reviews" section at the end of this
+// file). Every caller passing or comparing it MUST use this constant rather
+// than a literal string.
 const ReviewsHandle = "reviews"
-
-// ReviewsTopicTitle is the forum-topic NAME of the shared Reviews topic.
-// transport.OutboundMessage.Title is what names a topic at creation, and
-// whichever send opens the topic names it permanently — so BOTH senders must
-// use this constant, never a literal: notify's runReviews (its default when
-// --title is absent) and dispatch's --topic create path (agent-teams-p9dm.10),
-// which in practice sends first. Two literals that drift apart would name the
-// topic after whichever PR was reviewed first, or open a second one.
-const ReviewsTopicTitle = "Reviews"
 
 const (
 	stewardDirName                = "steward"
@@ -936,7 +924,8 @@ type isFallbackResponderFunc func(ctx *cli.Context) bool
 // storage is per-machine, a review dispatched from a second machine creates
 // a SECOND "Reviews" topic in the shared chat — one extra topic, not one
 // per PR, which is the noise this design exists to remove (full writeup in
-// agent-teams-p9dm.7).
+// agent-teams-p9dm.7). Nothing posts to the Reviews topic any more; the
+// Reviews ref is kept so existing topics stay recognized.
 //
 // Storage: the dolt-synced memory store, reserved key
 // steward:topics:<hostname> (hostname = os.Hostname(), one key per
@@ -1022,117 +1011,23 @@ func ParseStewardTopicsRecord(value string) (StewardTopicsRecord, error) {
 // steward) — consumed by relay-gating (agent-teams-5y8a.5) as the
 // peer-topic skip check ahead of the bd label query.
 
-// ── Shared PR-review topic: dispatch flag, message lines, PR-title seam ─────
+// ── dispatch --topic reviews: a kind marker, not a Telegram destination ─────
 //
-// agent-teams-p9dm.7 (at-jno7 item 1, Option A): collapses "one Forum topic
-// per PR review" into the single shared ReviewsHandle topic above. Eric
-// rejected findings-summarization in the topic (steward:hot:telegram-
-// message-style caps acks at 25 words, and Eric refuses structural chrome).
-// Verbatim: "Most of the time I don't care about the review content. I just
-// want to know a review happened, and then if the PR title intrigues me I'd
-// like to ask the steward for more info, or maybe even to dispatch a more
-// focused review." So both message lines below carry PR number, repo
-// basename, and PR TITLE — nothing else. No finding counts, no severity, no
-// APPROVE/COMMENT verdict, no headers, no sender tags. The bare URL rides on
-// its own second line so Telegram renders it as a tap target; that
-// affordance is what turns "the title intrigues me" into actually looking,
-// so it stays — it is not content summarization.
+// `ateam dispatch --topic reviews` marks a PR-review initiative. Eric reads
+// the initiative beads as the ledger of reviews and gets no value from
+// Telegram open/close messages about them, so review initiatives post no
+// message when they open or close.
 //
-// --topic <handle> flag (declared on dispatchKong in dispatch.go,
-// agent-teams-p9dm.10 — this comment freezes only the NAME and SEMANTICS,
-// not the kong struct field):
+//   - Value is the reserved ReviewsHandle (the only accepted value). An
+//     unrecognized --topic value is a usage error, not a silent fallback to
+//     per-initiative topic creation.
+//   - When set, dispatch opens no per-initiative topic, sends no message, and
+//     writes NO "thread:" label on the initiative bead.
+//   - When set, dispatch resolves its runtime from config.toml review_runtime
+//     instead of work_runtime.
+//   - When absent, dispatch opens the per-initiative topic and labels it.
 //
-//   - Value is a reserved `ateam notify` handle (currently only
-//     ReviewsHandle).
-//   - When set, dispatch posts its registration line into that handle's
-//     SHARED topic instead of opening a per-initiative topic.
-//   - When set, dispatch writes NO "thread:" label on the initiative bead.
-//     This is load-bearing, not an oversight to "fix" later: two mechanisms
-//     make a shared topic addressed by per-initiative "thread:" labels
-//     actively broken. relay.go:401-412's default branch treats 2+ open
-//     initiatives sharing a label as "(ambiguous)" and drops the reply on
-//     the steward instead of routing it to any review session.
-//     kong_converted.go's closeKong.sendCloseSignal (:526-557) reads
-//     threadLabelValue and unconditionally calls CloseTopic on whatever
-//     thread it resolves to, so the FIRST review to close would close the
-//     shared topic for every other review still in flight. Writing no label
-//     sidesteps both by construction.
-//   - When absent, behavior is byte-identical to today: per-initiative
-//     topic, thread label, no gh subprocess. This flag must not change any
-//     existing dispatch path.
-//   - An unrecognized --topic value is a usage error, not a silent fallback
-//     to per-initiative topic creation.
-//
-// ReviewsStartLineFormat is the two-line dispatch-registration message
-// posted to the shared ReviewsHandle topic (dispatch.go, agent-teams-
-// p9dm.10), a Go fmt format string applied to exactly four args in order:
-// pr-number, pr-repo (BASENAME of owner/repo, e.g. "midgard" not
-// "MGT-Insurance/midgard"), title-segment, pr-url:
-//
-//	Review started · #%s %s%s
-//	%s
-//
-// title-segment is a PRE-COMPOSED argument, not the bare title — this is
-// the ONE frozen format string for both the with-title and the fail-soft
-// no-title case (agent-teams-p9dm.7 deliberately rejected a second
-// ...NoTitleFormat constant: it would duplicate the "Review started · #%s
-// %s" prefix, so any later change to that prefix would have to be made in
-// two places and the two renderings could drift). Callers build
-// title-segment exactly as follows and MUST NOT inline " — " (or any other
-// separator/spacing) themselves:
-//
-//   - title non-empty: " — " (one leading space, an em dash U+2014, one
-//     trailing space) immediately followed by the title — e.g.
-//     " — Fix flaky retry logic".
-//   - title empty (the prTitleFunc fail-soft case below): "" — the empty
-//     string, not a placeholder. The rendered line then reads
-//     "Review started · #<n> <repo>" with no dangling separator.
-const ReviewsStartLineFormat = "Review started · #%s %s%s\n%s"
-
-// The completion line — posted by the review-pr skill via `ateam notify
-// reviews` (plugins/agent-teams/skills/review-pr/SKILL.md, agent-teams-
-// p9dm.13) — is frozen here as a doc comment rather than a Go constant
-// because the skill emits it from shell (printf), which cannot import a Go
-// constant. Verbatim, four args in order: pr-number, pr-repo (basename,
-// same convention as the start line), title-segment, review-url:
-//
-//	Review complete · #%s %s%s
-//	%s
-//
-// title-segment follows the exact same construction rule as
-// ReviewsStartLineFormat's title-segment argument above: " — " + title when
-// non-empty, "" when not — see that constant's doc comment for the byte-
-// exact separator. Unlike the start line, the review-pr skill always has
-// the PR title in hand (it read the PR to review it), so in practice this
-// segment is never empty here. Still, the shell snippet emitting this line
-// MUST assemble it via the same rule (never splice the title directly into
-// a hardcoded "%s — %s" format), so the two lines can never drift apart on
-// separator character or spacing.
-
-// prTitleFunc is the DI seam for fetching a PR's title, consumed by
-// dispatchKong (agent-teams-p9dm.10) as a kong:"-" injected field — never a
-// CLI flag — mirroring the agentsJSONFunc pattern (messaging.go:259,292) so
-// tests substitute a fake without spawning a real `gh` subprocess. Called
-// ONLY on the --topic path; a dispatch without --topic must not invoke it.
-//
-// Default implementation (lives in dispatch.go, NOT here — this contract
-// freezes only the seam):
-//
-//	gh pr view <pr-number> --repo <owner/repo> --json title -q .title
-//
-// with a 10s timeout.
-//
-// FAIL-SOFT, MANDATORY: gh absent, auth failure, 404, or timeout — any
-// failure — yields "" title, which the caller turns into an empty
-// title-segment ("") when composing ReviewsStartLineFormat's arguments (see
-// that constant's doc comment above for the exact construction rule) — the
-// line then renders WITHOUT the " — <title>" segment. A title-fetch failure
-// may NEVER fail a dispatch: by the time this seam runs, bd create has
-// already succeeded — the same fail-soft precedent dispatch.go:336-340
-// already establishes for the rest of the topic path.
-//
-// Declared here rather than at each caller: one implementation, one seam,
-// one test surface. route.go's spawnReviewInitiative has no gh dependency
-// today and must not acquire one — it doesn't call this seam. Only
-// dispatch.go's --topic path does.
-type prTitleFunc func(ownerRepo string, prNumber int) (string, error)
+// The shared Reviews topic that earlier versions posted into is gone, but
+// StewardReviewsThreadPath and the StewardTopicsRecord.Reviews field stay so
+// the relay still recognizes replies in an existing Reviews topic (see
+// relay.go).

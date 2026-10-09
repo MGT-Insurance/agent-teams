@@ -274,9 +274,8 @@ func (c *routePREventKong) spawnReviewInitiative(ctx *cli.Context, event PREvent
 	// --model sonnet keeps automated review sessions cheaper than the opus
 	// default used for full DRI initiatives.
 	//
-	// --topic ReviewsHandle is what actually removes the noise: this webhook
-	// path — not /dispatch-review-pr — spawned every one of the observed
-	// single-line per-PR topics, so the shared Reviews topic only wins here.
+	// --topic ReviewsHandle marks this a review initiative: dispatch opens no
+	// Telegram topic and posts no message for it, and selects review_runtime.
 	runErr := c.runner("dispatch", "--repo", clonePath, "--problem", title, "--body-file", tmpPath,
 		"--launch-prompt", "/agent-teams:review-pr {id}", "--skip-epic", "--model", "sonnet",
 		"--topic", ReviewsHandle)

@@ -1,7 +1,7 @@
 # Why these review-pr mechanics work the way they do
 
-Background for reviewer learning self-fetch, review-body file-content
-handling, and completion-line notification. SKILL.md keeps the actionable
+Background for reviewer learning self-fetch and review-body file-content
+handling. SKILL.md keeps the actionable
 commands and format inline; this file holds the rationale.
 
 ## Reviewer learning self-fetch: why the SubagentStart hook can't fetch it
@@ -28,22 +28,3 @@ A PreToolUse guard now denies a bare-path/`@path` review or comment body
 outright, so a slip here fails loudly instead of posting silently. But the
 guard is a backstop, not a substitute for using the right flag in the first
 place.
-
-## Completion line: why the separator and variable handling are strict
-
-`TITLE_SEG` must be built as its own variable (`" — "` plus the title, or the
-empty string) and substituted whole — never spliced into a hardcoded
-`"%s — %s"` format string. Two reasons:
-
-- The separator is a space, an em dash (**U+2014**), and a space. An en dash
-  or a plain hyphen typed by hand looks right in a diff review but is the
-  wrong character, and nothing catches the difference visually.
-- `ateam dispatch` builds the "Review started" line using this identical
-  rule. If the two constructions drift (one uses the frozen `TITLE_SEG`
-  variable, the other reconstructs the separator inline), the "Review
-  started" and "Review complete" lines for the same PR can end up with
-  visibly different formatting, which reads as a bug in the notify topic
-  even though nothing else is wrong.
-
-Copying the separator character out of the code block (rather than retyping
-it) sidesteps both failure modes.

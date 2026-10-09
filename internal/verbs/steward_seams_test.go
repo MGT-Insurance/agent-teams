@@ -1,7 +1,6 @@
 package verbs_test
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -716,28 +715,6 @@ func TestParseStewardTopicsRecord_ToleratesLegacyDirectField(t *testing.T) {
 	}
 	if want := (verbs.StewardTopicsRecord{Briefing: "12"}); got != want {
 		t.Errorf("ParseStewardTopicsRecord = %+v, want %+v", got, want)
-	}
-}
-
-// ── Shared PR-review topic (agent-teams-p9dm.7) ──────────────────────────────
-
-// TestReviewsStartLineFormat verifies the frozen two-line message the
-// dispatch --topic path posts to the shared Reviews topic renders verbatim
-// byte-for-byte, for both the title-available case and the prTitleFunc
-// fail-soft no-title case (agent-teams-p9dm.7's title-segment convention:
-// one frozen format string, the caller pre-composes the segment — " — " +
-// title when present, "" when absent — rather than a second
-// ...NoTitleFormat constant). No finding counts, no severity, no verdict in
-// either case.
-func TestReviewsStartLineFormat(t *testing.T) {
-	withTitle := fmt.Sprintf(verbs.ReviewsStartLineFormat, "4517", "midgard", " — Fix flaky retry logic", "https://github.com/MGT-Insurance/midgard/pull/4517")
-	if want := "Review started · #4517 midgard — Fix flaky retry logic\nhttps://github.com/MGT-Insurance/midgard/pull/4517"; withTitle != want {
-		t.Errorf("ReviewsStartLineFormat (with title) = %q, want %q", withTitle, want)
-	}
-
-	withoutTitle := fmt.Sprintf(verbs.ReviewsStartLineFormat, "4517", "midgard", "", "https://github.com/MGT-Insurance/midgard/pull/4517")
-	if want := "Review started · #4517 midgard\nhttps://github.com/MGT-Insurance/midgard/pull/4517"; withoutTitle != want {
-		t.Errorf("ReviewsStartLineFormat (no title, fail-soft) = %q, want %q", withoutTitle, want)
 	}
 }
 

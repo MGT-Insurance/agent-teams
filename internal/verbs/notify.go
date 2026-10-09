@@ -75,9 +75,9 @@ const maxDocumentBytes = 10 * 1024 * 1024
 // what makes a stray --to on an adjacent `ateam notify <initiative-id>` line
 // likely, so this is the muscle-memory slip that must not cost a message.
 type notifyKong struct {
-	ID       string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, the reserved ReviewsHandle for the shared PR-review topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
+	ID       string `arg:"" name:"id" help:"Initiative ID, the reserved BriefingHandle for the cross-initiative briefing topic, or the reserved DirectHandle to message the Steward directly via @mention in the shared General channel."`
 	File     string `name:"file" help:"Path to the message body file (required)." required:""`
-	Title    string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, \"Reviews\" for the reviews handle, or \"Steward\" for the direct handle)."`
+	Title    string `name:"title" help:"Optional title (defaults to the initiative's title, \"Briefings\" for the briefing handle, or \"Steward\" for the direct handle)."`
 	To       string `name:"to" help:"Conversation to reply in: the opaque ref from a steward-direct envelope, or the literal \"general\" for the shared General channel. Required for the direct handle."`
 	Image    string `name:"image" help:"Path to a local image file to post inline instead of a text-only message (e.g. a screenshot from local testing). The message body still becomes the photo's caption."`
 	Document string `name:"document" help:"Path to a local file (up to 10 MB) to post as a document attachment instead of a text-only message — for non-image proof (JSON, logs, HAR). The message body still becomes the document's caption. Mutually exclusive with --image."`
@@ -88,9 +88,9 @@ type notifyKong struct {
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
-// For the reserved BriefingHandle and ReviewsHandle, see runBriefing and
-// runReviews: no initiative bead, no thread label — the threadRef persists in
-// the file at StewardBriefingThreadPath / StewardReviewsThreadPath instead.
+// For the reserved BriefingHandle, see runBriefing: no initiative bead, no
+// thread label — the threadRef persists in the file at
+// StewardBriefingThreadPath instead.
 //
 // For a normal initiative id:
 //  1. Reads body from --file; title from --title or derived from the initiative.
@@ -142,9 +142,6 @@ func (c *notifyKong) Run(ctx *cli.Context) error {
 
 	if c.ID == BriefingHandle {
 		return c.runBriefing(ctx, string(body))
-	}
-	if c.ID == ReviewsHandle {
-		return c.runReviews(ctx, string(body))
 	}
 	if c.ID == DirectHandle {
 		return c.runDirect(ctx, string(body))
@@ -257,8 +254,7 @@ func sendAndLabelThread(ctx *cli.Context, id string, t transport.Transport, msg 
 // msg.ThreadRef with it (so callers never set that field themselves), sends,
 // and on first creation persists the returned ref back to path. The
 // file-backed mirror of sendAndLabelThread above, and for the same reason its
-// doc comment gives — notify's briefing and reviews handles, plus dispatch's
-// --topic path (agent-teams-p9dm.10), all route through here, so a shared
+// doc comment gives — notify's briefing handle routes through here, so a shared
 // topic has exactly one create+persist code path.
 //
 // errPrefix labels the stderr diagnostics with the calling verb, as
@@ -337,42 +333,6 @@ func (c *notifyKong) runBriefing(ctx *cli.Context, body string) error {
 	}
 
 	returnedRef, err := sendSharedTopic(ctx, StewardBriefingThreadPath(ctx), t, msg, "ateam notify")
-	if err != nil {
-		return fmt.Errorf("ateam notify: %w", err)
-	}
-
-	fmt.Fprintf(ctx.Stdout, "thread_ref: %s\n", returnedRef)
-	fmt.Fprintf(ctx.Stdout, "initiative: %s\n", c.ID)
-	return nil
-}
-
-// runReviews handles the reserved ReviewsHandle: the single shared,
-// cross-initiative PR-review topic that replaces a forum topic opened per PR
-// review (agent-teams-p9dm). Structurally identical to runBriefing — same
-// bead-less, file-backed shared topic — differing only in the default title,
-// the thread-ref file, and the declared sender kind.
-func (c *notifyKong) runReviews(ctx *cli.Context, body string) error {
-	title := c.Title
-	if title == "" {
-		title = ReviewsTopicTitle
-	}
-
-	home := workspace.Home()
-	t, err := c.transportFor(home)
-	if err != nil {
-		return fmt.Errorf("ateam notify: no transport configured: %w", err)
-	}
-
-	msg := transport.OutboundMessage{
-		InitiativeID: c.ID,
-		Title:        title,
-		Body:         body,
-		ImagePath:    c.Image,
-		DocumentPath: c.Document,
-		Sender:       sentlog.KindNotifyReviews,
-	}
-
-	returnedRef, err := sendSharedTopic(ctx, StewardReviewsThreadPath(ctx), t, msg, "ateam notify")
 	if err != nil {
 		return fmt.Errorf("ateam notify: %w", err)
 	}
