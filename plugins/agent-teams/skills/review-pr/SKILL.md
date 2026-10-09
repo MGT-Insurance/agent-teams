@@ -333,7 +333,7 @@ not posted (reviewer timeout): <pr-url>"`. That note IS step 9's timeout
 note; don't write a second one.
 
 **Re-review rounds end the same way** — route-pr-event reopened this
-initiative to run the round; once it posts, rerun this note+close+notify
+initiative to run the round; once it posts, rerun this note+close
 step, citing the new review's URL in both places.
 
 **Rare carve-out:** deliberately waiting on a same-session follow-up? Never

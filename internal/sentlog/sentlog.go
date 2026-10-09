@@ -41,8 +41,9 @@ import (
 // false-positive that grep) finds SIX literals declaring six of the seven Kinds:
 // KindNotifyReviews is legacy, set by no live site, and kept so old log rows
 // stay readable and queryable. A new literal needs a new Kind only when it
-// is a genuinely new sender — reusing an existing Kind is legitimate. tests/sent-log.test.sh case7 gates the literal count;
-// bump it there when you add a send site.
+// is a genuinely new sender — reusing an existing Kind is legitimate.
+// tests/sent-log.test.sh case7 gates the literal count; bump it there when
+// you add a send site.
 type Kind string
 
 const (

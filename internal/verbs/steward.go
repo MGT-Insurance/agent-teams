@@ -324,8 +324,9 @@ type stewardRemoveKong struct {
 // Run removes the Steward's session dir and doorbell (idempotent — nothing
 // to remove is success, not an error), keeps the ledger, briefing-thread and
 // reviews-thread by default (printing their paths — that's the state to carry
-// when moving the Steward to another machine; leaving the reviews-thread ref
-// behind makes the new machine open a second "Reviews" topic), and with
+// when moving the Steward to another machine; carrying the reviews-thread ref
+// keeps the relay on the new machine recognizing replies in an existing
+// Reviews topic), and with
 // --purge deletes those too. It also reports (never modifies) the count of
 // unread messages still assigned to the Steward handle, so mid-flight mail
 // isn't silently lost, and prints a best-effort, non-blocking warning if a
