@@ -421,6 +421,44 @@ func TestMatchInitiative_AmbiguousPRField(t *testing.T) {
 	}
 }
 
+func TestMatchInitiative_AmbiguousPRField_TwoRailMatches(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	issues := []bd.Issue{
+		railIssue("at-r1", []string{prURL}, "/r", "/wt/r1", "br"),
+		railIssue("at-r2", []string{prURL}, "/r", "/wt/r2", "br"),
+	}
+	event := PREvent{Repo: "owner/repo", PRNumber: 42}
+	_, err := matchInitiativeFromIssues(issues, event, "br")
+	if err == nil {
+		t.Fatal("expected error for two rail matches, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error message missing 'ambiguous': %v", err)
+	}
+}
+
+func TestMatchInitiative_RailWinsOverFreeTextFallback(t *testing.T) {
+	// at-rail owns the PR via its "pr:" rail. at-sibling has no rail and
+	// mentions the same URL in prose, so ResolvedPRs resolves both to the
+	// same PR. The rail match must win rather than erroring as ambiguous.
+	prURL := "https://github.com/owner/repo/pull/12780"
+	issues := []bd.Issue{
+		makeIssue("at-sibling", descLines("/r", "/wt/sibling", "other"), "see also "+prURL+" from the sibling"),
+		railIssue("at-rail", []string{prURL}, "/r", "/wt/rail", "br"),
+	}
+	event := PREvent{Repo: "owner/repo", PRNumber: 12780}
+	result, err := matchInitiativeFromIssues(issues, event, "br")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.How != MatchPRField {
+		t.Errorf("How: got %v, want MatchPRField", result.How)
+	}
+	if result.InitiativeID != "at-rail" {
+		t.Errorf("InitiativeID: got %q, want at-rail", result.InitiativeID)
+	}
+}
+
 func TestMatchInitiative_AmbiguousBranch(t *testing.T) {
 	issues := []bd.Issue{
 		makeIssue("at-b1", descLines("/code/myapp", "/wt/b1", "feat"), ""),
