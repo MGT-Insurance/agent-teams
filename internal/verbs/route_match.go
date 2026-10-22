@@ -67,8 +67,12 @@ func parsePrURL(url string) (ownerRepo string, prNumber int, ok bool) {
 //
 //  3. MatchNone if nothing matched.
 //
-// If more than one initiative matches, the MatchPRField match wins.  If still
-// ambiguous (two MatchPRField matches, or two MatchBranch matches), an error is
+// If more than one initiative matches, the MatchPRField match wins. Within
+// MatchPRField, a hit from the explicit "pr:" rail outranks a hit from the
+// free-text Notes/Description fallback: an initiative that only mentions a
+// sibling's PR URL in prose must not block routing to the initiative that
+// registered the PR. If still ambiguous (two rail matches, two fallback
+// matches with no rail match, or two MatchBranch matches), an error is
 // returned rather than guessing.
 func matchInitiative(ctx *cli.Context, event PREvent, headBranch string) (MatchResult, error) {
 	var issues []bd.Issue
@@ -87,7 +91,8 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 	// Repo name is the part after the last "/".
 	eventRepoName := strings.ToLower(filepath.Base(event.Repo))
 
-	var prMatches []MatchResult
+	var railMatches []MatchResult
+	var fallbackMatches []MatchResult
 	var branchMatches []MatchResult
 
 	for _, iss := range issues {
@@ -98,16 +103,25 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 		// when non-empty, else the Notes-then-Description fallback — see
 		// initiative.ResolvedPRs), not just the first: a first-match-only read
 		// makes a second or third PR invisible to tier-1 matching.
+		//
+		// A hit is bucketed by its source. The free-text fallback picks up any
+		// PR URL the initiative merely mentions (a sibling's PR in its notes),
+		// so a fallback hit must not collide with the explicit rail owner.
 		matchedTier1 := false
 		for _, prURL := range initiative.ResolvedPRs(iss) {
 			ownerRepo, prNumber, ok := parsePrURL(prURL)
 			if ok && ownerRepo == eventOwnerRepo && prNumber == event.PRNumber {
-				prMatches = append(prMatches, MatchResult{
+				m := MatchResult{
 					InitiativeID: iss.ID,
 					Worktree:     f.Worktree,
 					Repo:         f.Repo,
 					How:          MatchPRField,
-				})
+				}
+				if len(f.PRs) > 0 {
+					railMatches = append(railMatches, m)
+				} else {
+					fallbackMatches = append(fallbackMatches, m)
+				}
 				matchedTier1 = true
 				break // one match per initiative is enough to record it
 			}
@@ -131,14 +145,24 @@ func matchInitiativeFromIssues(issues []bd.Issue, event PREvent, headBranch stri
 		}
 	}
 
-	// MatchPRField wins over MatchBranch.
-	if len(prMatches) == 1 {
-		return prMatches[0], nil
+	// MatchPRField wins over MatchBranch; within MatchPRField, the explicit
+	// rail wins over the free-text fallback.
+	if len(railMatches) == 1 {
+		return railMatches[0], nil
 	}
-	if len(prMatches) > 1 {
+	if len(railMatches) > 1 {
 		return MatchResult{}, fmt.Errorf(
 			"matchInitiative: ambiguous — %d initiatives matched PR %s#%d by pr: field",
-			len(prMatches), event.Repo, event.PRNumber,
+			len(railMatches), event.Repo, event.PRNumber,
+		)
+	}
+	if len(fallbackMatches) == 1 {
+		return fallbackMatches[0], nil
+	}
+	if len(fallbackMatches) > 1 {
+		return MatchResult{}, fmt.Errorf(
+			"matchInitiative: ambiguous — %d initiatives matched PR %s#%d by free-text PR URL",
+			len(fallbackMatches), event.Repo, event.PRNumber,
 		)
 	}
 
