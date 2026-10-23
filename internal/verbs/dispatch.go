@@ -357,8 +357,10 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		Runtime:  string(runtimeKind),
 		Standby:  c.Standby,
 	}
-	if h := workspace.Host(); h != "" {
-		fields.Where = whereHostPrefix + h
+	if _, hosted := bd.HostedServer(ctx.Home); hosted {
+		if h := workspace.Host(); h != "" {
+			fields.Where = whereHostPrefix + h
+		}
 	}
 
 	// Try to create a root epic bead in the project repo (fail-soft).
@@ -689,7 +691,7 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 			return fmt.Errorf("ateam resume: Codex runtime unavailable: %w", err)
 		}
 	}
-	if remoteInitiative(f) {
+	if remoteInitiative(ctx.Home, f) {
 		fmt.Fprintf(ctx.Stderr, "ateam resume: %s runs on %s; resume it there\n", c.ID, f.Where)
 		return cli.Silent(1)
 	}

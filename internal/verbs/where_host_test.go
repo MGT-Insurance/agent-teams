@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +14,26 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
+// hostedHome marks home as bound to a non-loopback hosted Dolt server.
+func hostedHome(t *testing.T, home string) string {
+	t.Helper()
+	dir := filepath.Join(home, ".beads")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"dolt_mode":"server","dolt_server_host":"db.example.com"}`
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), []byte(meta), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestRemoteInitiative(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
+	home := hostedHome(t, t.TempDir())
+	if remoteInitiative(t.TempDir(), initiative.Fields{Where: "host:sandbox-1"}) {
+		t.Error("non-hosted home must never report remote")
+	}
 	cases := []struct {
 		where string
 		want  bool
@@ -26,7 +45,7 @@ func TestRemoteInitiative(t *testing.T) {
 		{"other", false},
 	}
 	for _, tc := range cases {
-		if got := remoteInitiative(initiative.Fields{Where: tc.where}); got != tc.want {
+		if got := remoteInitiative(home, initiative.Fields{Where: tc.where}); got != tc.want {
 			t.Errorf("remoteInitiative(%q) = %t, want %t", tc.where, got, tc.want)
 		}
 	}
@@ -34,8 +53,17 @@ func TestRemoteInitiative(t *testing.T) {
 
 func TestDispatch_WritesWhereHostLine(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop-test")
+	dispatchWhere(t, hostedHome(t, t.TempDir()), 1)
+}
+
+func TestDispatch_EmbeddedHome_WritesNoWhereLine(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "laptop-test")
+	dispatchWhere(t, t.TempDir(), 0)
+}
+
+func dispatchWhere(t *testing.T, home string, wantLines int) {
+	t.Helper()
 	repoDir := newEnabledRepoDir(t)
-	home := t.TempDir()
 
 	var capturedBody string
 	fbd := &fakeBD{
@@ -65,8 +93,14 @@ func TestDispatch_WritesWhereHostLine(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if n := strings.Count(capturedBody, "where: host:laptop-test\n"); n != 1 {
-		t.Errorf("want exactly one where: host:laptop-test line, got %d:\n%s", n, capturedBody)
+	if capturedBody == "" {
+		t.Fatal("body file not captured")
+	}
+	if n := strings.Count(capturedBody, "where:"); n != wantLines {
+		t.Errorf("want %d where: lines, got %d:\n%s", wantLines, n, capturedBody)
+	}
+	if wantLines == 1 && !strings.Contains(capturedBody, "where: host:laptop-test\n") {
+		t.Errorf("missing where: host:laptop-test:\n%s", capturedBody)
 	}
 }
 
@@ -111,7 +145,7 @@ func TestSendKong_RemoteRecipient_StopsAfterStoringMessage(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
 	sf := newSendFixture(t)
 	cmd := remoteSendCmd(t, sf, "at-remote")
-	ctx, stdout, _ := makeCtx(whereBD(sf, "at-remote", "at-msg1", "host:sandbox-1"), sf.home)
+	ctx, stdout, _ := makeCtx(whereBD(sf, "at-remote", "at-msg1", "host:sandbox-1"), hostedHome(t, sf.home))
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,10 +159,20 @@ func TestSendKong_RemoteRecipient_StopsAfterStoringMessage(t *testing.T) {
 }
 
 func TestSendKong_NotRemote_ReachesLocalDelivery(t *testing.T) {
-	for _, where := range []string{"", "host:laptop", "run:x"} {
-		t.Run("where="+where, func(t *testing.T) {
+	for _, tc := range []struct {
+		where  string
+		hosted bool
+	}{
+		{"", true}, {"host:laptop", true}, {"run:x", true},
+		{"host:sandbox-1", false}, // embedded home ignores where:
+	} {
+		where := tc.where
+		t.Run(fmt.Sprintf("where=%s,hosted=%t", where, tc.hosted), func(t *testing.T) {
 			t.Setenv("AGENT_TEAMS_HOST", "laptop")
 			sf := newSendFixture(t)
+			if tc.hosted {
+				hostedHome(t, sf.home)
+			}
 			var agentsCalled bool
 			cmd := remoteSendCmd(t, sf, "at-local")
 			cmd.agentsFunc = func() ([]agentSession, error) {
@@ -151,6 +195,7 @@ func TestSendKong_NotRemote_ReachesLocalDelivery(t *testing.T) {
 
 func TestResumeKong_RemoteInitiative_ExitsOneWithoutTouchingWorktree(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
+	home := hostedHome(t, t.TempDir())
 	missing := filepath.Join(t.TempDir(), "never-created")
 	fbd := &fakeBD{
 		runFn: func(...string) (string, error) {
@@ -163,7 +208,7 @@ func TestResumeKong_RemoteInitiative_ExitsOneWithoutTouchingWorktree(t *testing.
 		},
 	}
 	launched := false
-	ctx, _, stderr := makeCtx(fbd, t.TempDir())
+	ctx, _, stderr := makeCtx(fbd, home)
 	cmd := &resumeKong{
 		ID: "at-rr1",
 		launch: func(*cli.Context, string, string, string, string) error {
@@ -183,5 +228,35 @@ func TestResumeKong_RemoteInitiative_ExitsOneWithoutTouchingWorktree(t *testing.
 	}
 	if _, statErr := os.Stat(missing); statErr == nil {
 		t.Error("worktree was recreated")
+	}
+}
+
+func TestResumeKong_EmbeddedHome_IgnoresWhere(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "laptop")
+	dir := t.TempDir()
+	fbd := &fakeBD{
+		runFn: func(...string) (string, error) {
+			raw, _ := json.Marshal([]bd.Issue{{
+				ID:          "at-rr2",
+				Status:      "open",
+				Description: "worktree: " + dir + "\nwhere: host:sandbox-1\n",
+			}})
+			return string(raw), nil
+		},
+	}
+	launched := false
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	cmd := &resumeKong{
+		ID: "at-rr2",
+		launch: func(*cli.Context, string, string, string, string) error {
+			launched = true
+			return nil
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !launched {
+		t.Error("embedded home must resume locally despite a where: line")
 	}
 }
