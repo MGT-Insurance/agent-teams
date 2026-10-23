@@ -99,6 +99,14 @@ REMOTE rule: initiative X is remote to this host iff `Where` starts with
 `host:`, `Host() != ""`, and the rest `!= Host()`. Empty, `run:`, or anything
 else is NOT remote in ring 1 (today's behavior).
 
+Hosted-only (DRI amendment, ring 1): registration writes the `where:` line, and
+`mail send` and `resume` apply the REMOTE rule, only when
+`bd.HostedServer(<ATH>)` is ok. On an embedded or local-server workspace both
+behave exactly as before, even if a description carries a `where:` line. This
+keeps a laptop whose kernel hostname changes with the network (macOS
+`os.Hostname()`) from reading its own initiatives as remote. Every ring-1 host
+sets a fixed `AGENT_TEAMS_HOST` for the same reason.
+
 ## F7 Doorbell filter
 
 Implemented by T2. A journal row `r` rings initiative `ID` iff
