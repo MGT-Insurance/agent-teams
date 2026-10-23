@@ -907,6 +907,10 @@ func (c *pullKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam pull: no context")
 	}
+	if host, hosted := hostedSkipHost(ctx.Home); hosted {
+		fmt.Fprintf(ctx.Stderr, "ateam pull: skipped: hosted server %s; no local replica\n", host)
+		return nil
+	}
 	client, ok := ctx.BD.(*bd.Client)
 	if !ok {
 		return fmt.Errorf("ateam pull: BD client does not support guarded pull")
@@ -949,6 +953,10 @@ func boundedBDRun(client *bd.Client, timeout time.Duration, args ...string) (str
 func (c *syncKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return cli.Usagef("ateam sync: no context")
+	}
+	if host, hosted := hostedSkipHost(ctx.Home); hosted {
+		fmt.Fprintf(ctx.Stdout, "ateam sync: skipped: hosted server %s\n", host)
+		return nil
 	}
 	client, ok := ctx.BD.(*bd.Client)
 	if !ok {
