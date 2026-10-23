@@ -3,6 +3,7 @@ package initiative_test
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -301,5 +302,42 @@ func TestJSONFieldsMarshalsDeterministically(t *testing.T) {
 	}
 	if want := `{"branch":"br","repo":"/r","session":["b","a"],"worktree":"/w"}`; string(first) != want {
 		t.Errorf("marshalled = %s, want %s", first, want)
+	}
+}
+
+func TestWhereRoundTripsThroughNewAndOf(t *testing.T) {
+	plan, err := initiative.New(initiative.Fields{Problem: "p", Where: "host:sandbox-x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(plan.Description, "where: host:sandbox-x\n"); n != 1 {
+		t.Errorf("want exactly one where line, got %d in %q", n, plan.Description)
+	}
+	if got := initiative.Of(issue(plan.Description)).Where; got != "host:sandbox-x" {
+		t.Errorf("Of.Where = %q, want host:sandbox-x", got)
+	}
+}
+
+func TestWhereFirstWinsAndAbsentIsEmpty(t *testing.T) {
+	if got := initiative.Of(issue("where: host:a\nwhere: host:b\n")).Where; got != "host:a" {
+		t.Errorf("Where = %q, want first-wins host:a", got)
+	}
+	if got := initiative.Of(issue("problem: p\n")).Where; got != "" {
+		t.Errorf("Where = %q, want empty", got)
+	}
+}
+
+func TestJSONFieldsWhereOnlyWhenPresent(t *testing.T) {
+	if _, present := initiative.JSONFields(issue("problem: p\n"))["where"]; present {
+		t.Error("where must be omitted when the line is absent")
+	}
+	if got := initiative.JSONFields(issue("where: host:a\n"))["where"]; got != "host:a" {
+		t.Errorf("where = %v, want host:a", got)
+	}
+}
+
+func TestNewRejectsWhereLineBreak(t *testing.T) {
+	if _, err := initiative.New(initiative.Fields{Where: "host:a\nrepo: /x"}); err == nil {
+		t.Error("want error for where value with a line break")
 	}
 }
