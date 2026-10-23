@@ -108,7 +108,7 @@ func (h *followHarness) run(c *mailFollowKong) error {
 	return c.follow(ctx, &cli.Context{Home: h.home, Stderr: &h.stderr, Stdout: &bytes.Buffer{}})
 }
 
-func row(seq, ts, op, typ, assignee string) string {
+func followRowJSON(seq, ts, op, typ, assignee string) string {
 	return `{"seq":` + seq + `,"ts":"` + ts + `","op":"` + op + `","issue":{"issue_type":"` + typ + `","assignee":"` + assignee + `"}}`
 }
 
@@ -134,12 +134,12 @@ func TestMailFollowRingsOnlyForMessageCreateForID(t *testing.T) {
 		line string
 		want bool
 	}{
-		{"create message for id", row("11", "2026-10-23T13:00:00Z", "create", "message", "at-xyz"), true},
-		{"other assignee", row("11", "2026-10-23T13:00:00Z", "create", "message", "at-other"), false},
-		{"update op", row("11", "2026-10-23T13:00:00Z", "update", "message", "at-xyz"), false},
-		{"comment op", row("11", "2026-10-23T13:00:00Z", "comment", "message", "at-xyz"), false},
-		{"close op", row("11", "2026-10-23T13:00:00Z", "close", "message", "at-xyz"), false},
-		{"task type", row("11", "2026-10-23T13:00:00Z", "create", "task", "at-xyz"), false},
+		{"create message for id", followRowJSON("11", "2026-10-23T13:00:00Z", "create", "message", "at-xyz"), true},
+		{"other assignee", followRowJSON("11", "2026-10-23T13:00:00Z", "create", "message", "at-other"), false},
+		{"update op", followRowJSON("11", "2026-10-23T13:00:00Z", "update", "message", "at-xyz"), false},
+		{"comment op", followRowJSON("11", "2026-10-23T13:00:00Z", "comment", "message", "at-xyz"), false},
+		{"close op", followRowJSON("11", "2026-10-23T13:00:00Z", "close", "message", "at-xyz"), false},
+		{"task type", followRowJSON("11", "2026-10-23T13:00:00Z", "create", "task", "at-xyz"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,7 +162,7 @@ func TestMailFollowRingsOnlyForMessageCreateForID(t *testing.T) {
 func TestMailFollowSkipsUnparseableLineAndKeepsGoing(t *testing.T) {
 	h := newFollowHarness(t, true)
 	h.writeSeq("10")
-	h.steps = []followStep{{lines: []string{`{"seq": bogus`, row("11", "2026-10-23T13:00:00Z", "create", "message", "at-xyz")}}}
+	h.steps = []followStep{{lines: []string{`{"seq": bogus`, followRowJSON("11", "2026-10-23T13:00:00Z", "create", "message", "at-xyz")}}}
 	if err := h.run(&mailFollowKong{}); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestMailFollowReconnectsFromCheckpointWithBackoff(t *testing.T) {
 	h := newFollowHarness(t, true)
 	h.writeSeq("10")
 	h.steps = []followStep{
-		{lines: []string{row("11", "2026-10-23T13:00:00Z", "update", "task", "x")}},
+		{lines: []string{followRowJSON("11", "2026-10-23T13:00:00Z", "update", "task", "x")}},
 		{}, // exits with no row: backoff doubles
 		{},
 	}
@@ -252,8 +252,8 @@ func TestMailFollowBaselineFailureReplaysFromZeroRingingOnlyNewRows(t *testing.T
 	h := newFollowHarness(t, true)
 	h.headErr = os.ErrNotExist
 	h.steps = []followStep{{lines: []string{
-		row("1", "2026-10-23T11:59:59Z", "create", "message", "at-xyz"), // before start (12:00:00)
-		row("2", "2026-10-23T12:00:00Z", "create", "message", "at-xyz"), // at start
+		followRowJSON("1", "2026-10-23T11:59:59Z", "create", "message", "at-xyz"), // before start (12:00:00)
+		followRowJSON("2", "2026-10-23T12:00:00Z", "create", "message", "at-xyz"), // at start
 	}}}
 	if err := h.run(&mailFollowKong{}); err != nil {
 		t.Fatal(err)
@@ -267,7 +267,7 @@ func TestMailFollowBaselineFailureReplaysFromZeroRingingOnlyNewRows(t *testing.T
 	// Prove the pre-start row alone does not ring.
 	h2 := newFollowHarness(t, true)
 	h2.headErr = os.ErrNotExist
-	h2.steps = []followStep{{lines: []string{row("1", "2026-10-23T11:59:59Z", "create", "message", "at-xyz")}}}
+	h2.steps = []followStep{{lines: []string{followRowJSON("1", "2026-10-23T11:59:59Z", "create", "message", "at-xyz")}}}
 	if err := h2.run(&mailFollowKong{}); err != nil {
 		t.Fatal(err)
 	}
