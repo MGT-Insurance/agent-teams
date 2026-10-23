@@ -302,6 +302,13 @@ they stay out of git, but a forced add would commit them.
    `AGENT_TEAMS_HOST=laptop-ring1`, `BEADS_DOLT_SERVER_TLS=1`, and
    `--plugin-dir` set to this worktree's `plugins/agent-teams`.
 
+   `AGENT_TEAMS_HOST` is fixed on purpose. The macOS kernel hostname can
+   change with the network, and `Host()` (F5) would then report a different
+   name, so the laptop's own initiatives would read as remote. The script
+   exports the fixed value to the claude it launches, to every `ateam` it
+   runs, and in the output of `env`. Override it with `AGENT_TEAMS_HOST`
+   only if you keep the same value for the whole ring-1 run.
+
 3. In another terminal, with the same env, send mail to the sandbox
    initiative:
 
