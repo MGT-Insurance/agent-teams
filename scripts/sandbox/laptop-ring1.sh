@@ -11,7 +11,7 @@
 #   bash laptop-ring1.sh teardown    remove ~/.agent-teams-ring1 and the scratch clone
 #
 # Needs ~/.config/beads/credentials to hold a [mgt-spike.dbs.hosted.doltdb.com:3306] section whose
-# password belongs to $DB_USER (default eric_lloyd_ring1). This script never reads that file.
+# password belongs to $DB_USER (default eric_lloyd, the existing laptop login). This script never reads that file.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 WT=${WORKTREE:-$(cd "$HERE/../.." && pwd)}
@@ -19,7 +19,7 @@ RING_HOME=${RING_HOME:-$HOME/.agent-teams-ring1}
 RING_WORK=${RING_WORK:-$HOME/.agent-teams-ring1-work}
 CLONE=$RING_WORK/agent-teams
 export HOSTED_HOST=${HOSTED_HOST:-mgt-spike.dbs.hosted.doltdb.com}
-export DB_USER=${DB_USER:-eric_lloyd_ring1}
+export DB_USER=${DB_USER:-eric_lloyd}
 GLOBAL_DB=${GLOBAL_DB:-beads_eric_lloyd_at}
 GLOBAL_PREFIX=${GLOBAL_PREFIX:-at}
 PROJECT_DB=${PROJECT_DB:-beads_eric_lloyd_agent_teams}

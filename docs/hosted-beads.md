@@ -175,8 +175,8 @@ contract items above (F1, F2, F5, F11, F12) define what the scripts build.
 
 Names used below, from F11: global database `beads_eric_lloyd_at` (prefix
 `at`), project database `beads_eric_lloyd_agent_teams` (prefix
-`agent-teams`), DB login `eric_lloyd_ring1`, laptop home
-`~/.agent-teams-ring1`. The sandbox name is `ring1`, so its host identity is
+`agent-teams`), sandbox DB login `eric_lloyd_ring1`, laptop DB login
+`eric_lloyd`, laptop home `~/.agent-teams-ring1`. The sandbox name is `ring1`, so its host identity is
 `sandbox-ring1` (F5).
 
 Never read, print, or commit a credentials file, the pulled Vercel env file,
@@ -192,9 +192,11 @@ or a token. The scripts move the credentials file by path and never echo it.
    `[mgt-spike.dbs.hosted.doltdb.com:3306]`.
 2. Confirm the join bead is done: `sh scripts/build-binaries.sh` ran after the
    T1-T3 changes and the rebuilt `plugins/agent-teams/bin/` is committed.
-3. For the laptop half, confirm `~/.config/beads/credentials` has the same
-   section with the `eric_lloyd_ring1` password. `laptop-ring1.sh` never
-   reads that file; if the password is wrong, `bd` fails at the first step.
+3. For the laptop half, confirm `eric_lloyd` has grants on both hosted
+   databases. The laptop uses your existing `eric_lloyd` login: its password
+   is already in `~/.config/beads/credentials` under the same section. Don't
+   change that file. `laptop-ring1.sh` never reads it; to use another login,
+   set `DB_USER`.
 4. Install the SDK once:
 
    ```sh
