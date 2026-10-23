@@ -141,6 +141,39 @@ else
 fi
 printf '%s\t%s' "$$" "$HOOK_SESSION_ID" > "$PIDFILE"
 
+# ── Hosted doorbell follower ────────────────────────────────────────────────
+# `ateam mail follow` turns the hosted events journal into a local doorbell
+# touch (docs/hosted-beads.md, F7-F10). It exits 0 at once on a non-hosted
+# workspace, so it is always started and the poll loop below is unchanged.
+# Every exit path must stop it: the follower also exits by itself within a
+# second of this pid disappearing (--parent-pid), but killing it here makes
+# that immediate. The signal traps from hook_log_start re-raise the signal
+# after clearing the EXIT trap, so they are wrapped to stop the follower
+# first.
+FOLLOW_PID=""
+stop_follower() {
+  if [ -n "$FOLLOW_PID" ]; then
+    kill "$FOLLOW_PID" 2>/dev/null || true
+    FOLLOW_PID=""
+  fi
+}
+if [ -x "$ATEAM" ]; then
+  mkdir -p "$ATH/debug" 2>/dev/null || true
+  "$ATEAM" mail follow "$match_id" --parent-pid $$ \
+    </dev/null >>"$ATH/debug/mail-follow.log" 2>&1 &
+  FOLLOW_PID=$!
+  disown "$FOLLOW_PID" 2>/dev/null || true
+  trap '
+    _HOOK_TRAP_EXIT_CODE=$?
+    export _HOOK_TRAP_EXIT_CODE
+    stop_follower
+    _hook_exit_trap
+  ' EXIT
+  trap 'stop_follower; _hook_signal_trap TERM' TERM
+  trap 'stop_follower; _hook_signal_trap HUP' HUP
+  trap 'stop_follower; _hook_signal_trap INT' INT
+fi
+
 # ── Heartbeat interval: 4 hours = 14400 seconds, just under the 24h timeout ──
 # Measured in AWAKE time, not wall-clock: a machine sleep spanning part of the
 # window would otherwise count toward it, so many watchers armed at similar
