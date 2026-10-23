@@ -1,0 +1,6 @@
+# Pulled Vercel env holds production values; never commit it.
+.env*
+node_modules
+*.tgz
+credentials*
+*.credentials
