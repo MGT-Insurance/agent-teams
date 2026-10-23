@@ -14,8 +14,8 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
-// hostedHome marks home as bound to a non-loopback hosted Dolt server.
-func hostedHome(t *testing.T, home string) string {
+// markHosted marks home as bound to a non-loopback hosted Dolt server.
+func markHosted(t *testing.T, home string) string {
 	t.Helper()
 	dir := filepath.Join(home, ".beads")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -30,7 +30,7 @@ func hostedHome(t *testing.T, home string) string {
 
 func TestRemoteInitiative(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
-	home := hostedHome(t, t.TempDir())
+	home := markHosted(t, t.TempDir())
 	if remoteInitiative(t.TempDir(), initiative.Fields{Where: "host:sandbox-1"}) {
 		t.Error("non-hosted home must never report remote")
 	}
@@ -53,7 +53,7 @@ func TestRemoteInitiative(t *testing.T) {
 
 func TestDispatch_WritesWhereHostLine(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop-test")
-	dispatchWhere(t, hostedHome(t, t.TempDir()), 1)
+	dispatchWhere(t, markHosted(t, t.TempDir()), 1)
 }
 
 func TestDispatch_EmbeddedHome_WritesNoWhereLine(t *testing.T) {
@@ -145,7 +145,7 @@ func TestSendKong_RemoteRecipient_StopsAfterStoringMessage(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
 	sf := newSendFixture(t)
 	cmd := remoteSendCmd(t, sf, "at-remote")
-	ctx, stdout, _ := makeCtx(whereBD(sf, "at-remote", "at-msg1", "host:sandbox-1"), hostedHome(t, sf.home))
+	ctx, stdout, _ := makeCtx(whereBD(sf, "at-remote", "at-msg1", "host:sandbox-1"), markHosted(t, sf.home))
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestSendKong_NotRemote_ReachesLocalDelivery(t *testing.T) {
 			t.Setenv("AGENT_TEAMS_HOST", "laptop")
 			sf := newSendFixture(t)
 			if tc.hosted {
-				hostedHome(t, sf.home)
+				markHosted(t, sf.home)
 			}
 			var agentsCalled bool
 			cmd := remoteSendCmd(t, sf, "at-local")
@@ -195,7 +195,7 @@ func TestSendKong_NotRemote_ReachesLocalDelivery(t *testing.T) {
 
 func TestResumeKong_RemoteInitiative_ExitsOneWithoutTouchingWorktree(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
-	home := hostedHome(t, t.TempDir())
+	home := markHosted(t, t.TempDir())
 	missing := filepath.Join(t.TempDir(), "never-created")
 	fbd := &fakeBD{
 		runFn: func(...string) (string, error) {
