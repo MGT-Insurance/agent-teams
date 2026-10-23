@@ -18,7 +18,28 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
+
+// whereHostPrefix is the ring-1 grammar of the where: line (docs/hosted-beads.md F6).
+const whereHostPrefix = "host:"
+
+// remoteInitiative reports whether f runs on a host other than this one: the
+// workspace at home is hosted, f.Where starts with "host:", this host's
+// identity is known, and the rest differs from it (docs/hosted-beads.md F6).
+// On a non-hosted home nothing is remote. Empty, "run:", and anything else
+// are not remote.
+func remoteInitiative(home string, f initiative.Fields) bool {
+	if _, hosted := bd.HostedServer(home); !hosted {
+		return false
+	}
+	host, ok := strings.CutPrefix(f.Where, whereHostPrefix)
+	if !ok {
+		return false
+	}
+	h := workspace.Host()
+	return h != "" && host != h
+}
 
 // ── sendKong ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +110,14 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	if c.RecipientID != StewardHandle && recipIssue.Status == "closed" {
 		fmt.Fprintf(ctx.Stdout, "recipient %s is closed; message queued until reopened\n", c.RecipientID)
+		return nil
+	}
+
+	// A recipient that runs on another host is rung by the journal there
+	// (docs/hosted-beads.md F6): no local doorbell, liveness query, or resume.
+	if c.RecipientID != StewardHandle && remoteInitiative(ctx.Home, initiative.Of(recipIssue)) {
+		fmt.Fprintf(ctx.Stdout, "recipient %s runs on %s; the journal rings its doorbell\n",
+			c.RecipientID, initiative.Of(recipIssue).Where)
 		return nil
 	}
 
