@@ -150,7 +150,7 @@ printf '%s\t%s' "$$" "$HOOK_SESSION_ID" > "$PIDFILE"
 # The poll loop re-runs the same call when the follower has died (see below),
 # so both sites share this function. It never fails under `set -e`.
 ensure_host_follower() {
-  if [ -x "$ATEAM" ]; then
+  if [ "${AGENT_TEAMS_HOST_FOLLOW:-}" != "off" ] && [ -x "$ATEAM" ]; then
     mkdir -p "$ATH/debug" 2>/dev/null || true
     "$ATEAM" mail follow </dev/null >>"$ATH/debug/mail-follow.log" 2>&1 || true
   fi
@@ -271,7 +271,7 @@ while true; do
   fi
 
   # Follower liveness check: restart the host follower if it died.
-  if [ "$now" -ge "$next_follow_check" ]; then
+  if [ "${AGENT_TEAMS_HOST_FOLLOW:-}" != "off" ] && [ "$now" -ge "$next_follow_check" ]; then
     next_follow_check=$(( now + FOLLOW_CHECK_SECS ))
     follower_pid=$(cat "$MAILBOX/host-follow.pid" 2>/dev/null || true)
     if [ -z "$follower_pid" ] || ! kill -0 "$follower_pid" 2>/dev/null; then

@@ -221,6 +221,18 @@ fi
 kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true
 rm -f "$HOSTPID"
 
+# I: AGENT_TEAMS_HOST_FOLLOW=off -> the stub ateam is never invoked (neither
+# the arm-time call nor the restart check), even with a missing pidfile.
+rm -f "$HOSTPID"
+launch HEARTBEAT_SECS=14400 FOLLOW_CHECK_SECS=1 AGENT_TEAMS_HOST_FOLLOW=off
+sleep 3.5
+if kill -0 "$WPID" 2>/dev/null && [ ! -e "$CALLS" ]; then
+  pass "I: AGENT_TEAMS_HOST_FOLLOW=off -> watcher never invokes ateam mail follow"
+else
+  fail "I: ateam invoked with follow off (calls=$(call_count)) or watcher died"
+fi
+kill "$WPID" 2>/dev/null || true; wait "$WPID" 2>/dev/null || true
+
 # ── Case H: REAL ateam binary restarts a kill -9'd follower ─────────────────
 # Real `ateam mail follow` against a throwaway hosted workspace (hosted
 # metadata, stub bd first on PATH). Kill -9 the live follower while the

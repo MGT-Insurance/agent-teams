@@ -195,6 +195,29 @@ func TestMailFollowNotHostedExitsZeroAndSpawnsNothing(t *testing.T) {
 	}
 }
 
+func TestMailFollowHostFollowOffIsInertOnHostedWorkspace(t *testing.T) {
+	h := newFollowHarness(t, true)
+	t.Setenv("AGENT_TEAMS_HOST_FOLLOW", "off")
+	c := &mailFollowKong{spawn: func(*cli.Context) error {
+		t.Fatal("AGENT_TEAMS_HOST_FOLLOW=off must not spawn")
+		return nil
+	}}
+	c.runBD = func(context.Context, []string, func(string)) (string, error) {
+		t.Fatal("AGENT_TEAMS_HOST_FOLLOW=off must not run bd")
+		return "", nil
+	}
+	if err := c.Run(h.cliCtx()); err != nil || h.stderr.Len() != 0 {
+		t.Fatalf("Run err=%v stderr=%q", err, h.stderr.String())
+	}
+	// Any other value keeps today's behavior.
+	t.Setenv("AGENT_TEAMS_HOST_FOLLOW", "on")
+	n := 0
+	c2 := &mailFollowKong{spawn: func(*cli.Context) error { n++; return nil }}
+	if err := c2.Run(h.cliCtx()); err != nil || n != 1 {
+		t.Fatalf("value 'on': err=%v spawns=%d", err, n)
+	}
+}
+
 func TestMailFollowHostedParentSpawnsOnceAndDoesNotFollow(t *testing.T) {
 	h := newFollowHarness(t, true)
 	n := 0

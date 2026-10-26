@@ -84,6 +84,9 @@ func (c *mailFollowKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam mail follow: nil context")
 	}
+	if os.Getenv("AGENT_TEAMS_HOST_FOLLOW") == "off" {
+		return nil
+	}
 	if _, ok := bd.HostedServer(ctx.Home); !ok {
 		return nil
 	}
