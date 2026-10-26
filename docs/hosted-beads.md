@@ -109,9 +109,19 @@ sets a fixed `AGENT_TEAMS_HOST` for the same reason.
 
 ## F7 Doorbell filter
 
-Implemented by T2. A journal row `r` rings initiative `ID` iff
-`r.op == "create"` AND `r.issue.issue_type == "message"` AND
-`r.issue.assignee == ID`.
+One follower per host (DRI amendment, ring 1, replaces the per-session
+follower). A journal row `r` is a MESSAGE row iff `r.op == "create"` AND
+`r.issue.issue_type == "message"`. Its recipient is `r.issue.assignee`.
+
+The follower rings recipient `ID` iff `ID` is LOCAL to this host:
+
+- `ID == "steward"` -> local.
+- Otherwise look up initiative `ID` in `<ATH>` and read `Where` with
+  `initiative.Of`. Local iff `Where` is empty, or `Where` is not `host:...`,
+  or the F6 REMOTE rule says not remote (`Host() == ""` or the rest equals
+  `Host()`).
+- Lookup fails (no such initiative, bd error) -> local. A stray doorbell is
+  harmless; lost mail is not.
 
 Action: `touch <ATH>/mailbox/<ID>.wake`, the same file `ateam mail send`
 touches (`internal/verbs/messaging.go:99`).
@@ -123,8 +133,9 @@ Message beads are ephemeral wisps.
 
 ## F8 Checkpoint
 
-`<ATH>/mailbox/<ID>.seq` holds the highest seq processed (decimal text,
-written by rename after every row of any op).
+`<ATH>/mailbox/host.seq` holds the highest seq processed (decimal text,
+written by rename after every row of any op). One file per host, not per
+initiative.
 
 Missing file -> baseline to the journal head with
 `bd sql --json "SELECT COALESCE(MAX(seq),0) AS head FROM bd_events_journal"`
@@ -132,28 +143,49 @@ Missing file -> baseline to the journal head with
 replay from `--since 0` and ring only rows whose `ts` is at or after the
 follower's start).
 
-`events_journal_truncated` -> continue from floor-1 and touch the doorbell
-once (the gap may hide mail).
+`events_journal_truncated` -> continue from floor-1 and touch the doorbell of
+every initiative with a live watcher pidfile once (the gap may hide mail for
+any of them).
 
 ## F9 Follower verb
 
-Implemented by T2: `ateam mail follow <initiative-id> [--parent-pid N]`,
-registered in `internal/verbs/mail_register.go`.
+`ateam mail follow` (no arguments), registered in
+`internal/verbs/mail_register.go`. The per-initiative form
+`ateam mail follow <initiative-id> --parent-pid N` is removed.
 
-- Not hosted (F3 false) -> exit 0 at once, no output.
-- Hosted -> run `bd -C <ATH> events tail --follow --since <checkpoint>`; on
-  any exit of bd, back off 1 s, 2 s, 4 s ... capped at 30 s (reset after a
-  row) and re-run from the checkpoint.
-- Exit 0 when `--parent-pid` is gone (checked every second) or on SIGTERM;
-  kill its bd child first.
+- Not hosted (F3 false) -> exit 0 at once, no output, no child process.
+- Hosted -> start a detached child (new session, stdin /dev/null, output
+  appended to `<ATH>/debug/mail-follow.log`) and exit 0 at once. The
+  caller never waits on the follower.
+- The child takes an exclusive non-blocking `flock` on
+  `<ATH>/mailbox/host-follow.lock`. Lock held by another process -> exit 0.
+  The lock is the singleton; it frees itself when the holder dies.
+- Holding the lock: write `<ATH>/mailbox/host-follow.pid`, then run
+  `bd -C <ATH> events tail --follow --json --since <checkpoint>`; on any exit
+  of bd, back off 1 s, 2 s, 4 s ... capped at 30 s (reset after a row) and
+  re-run from the checkpoint.
+- Lifetime: every 1 s, count live watchers (`<ATH>/mailbox/*.watcher.pid`
+  whose pid passes `kill -0`). After 3 consecutive checks with zero, run the
+  EXIT HANDSHAKE: remove `host-follow.pid`, release the lock, then count
+  watchers once more. Zero -> exit 0. Non-zero -> try the lock again; got it
+  -> rewrite the pidfile and keep following; lock taken -> exit 0 (a newer
+  follower owns it).
+- SIGTERM -> kill the bd child, remove the pidfile, exit 0.
 - Never writes a bead.
+
+Why the handshake closes the start/exit race: a watcher writes its own pidfile
+BEFORE it runs `ateam mail follow` (F10). So either the exiting follower's
+final count sees that pidfile and keeps running, or it released the lock
+before the new child tried it and the new child takes over.
 
 ## F10 Watcher wiring
 
-Implemented by T2: `wake-watcher.sh`, right after it claims its pidfile,
-starts `"$ATEAM" mail follow "$match_id" --parent-pid $$ &` and kills it on
-every exit path (trap). Always started; F9 makes it a no-op on non-hosted
-workspaces, so the shell needs no hosted check.
+`wake-watcher.sh`, right after it writes its own pidfile, runs
+`"$ATEAM" mail follow </dev/null >>"$ATH/debug/mail-follow.log" 2>&1 || true`
+in the foreground (it returns at once, F9). The watcher does NOT kill the
+follower on exit; the follower outlives any one watcher and exits by the F9
+lifetime rule. No hosted check in the shell; F9 makes it a no-op on
+non-hosted workspaces.
 
 ## F11 Ring-1 databases and homes
 
