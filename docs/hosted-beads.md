@@ -153,6 +153,12 @@ any of them).
 `internal/verbs/mail_register.go`. The per-initiative form
 `ateam mail follow <initiative-id> --parent-pid N` is removed.
 
+- `AGENT_TEAMS_HOST_FOLLOW=off` in the process env -> exit 0 at once, no
+  output, no child process, checked before F3 (DRI amendment). Dispatcher's
+  ateam-dri job sets it: a run reads mail at turn end while busy and gets a
+  comment poke while parked, so a per-sandbox follower would hold a journal
+  connection for nothing. The ring-1 hand-run sandbox (Runbook) leaves it
+  unset; its checkpoint needs the follower.
 - Not hosted (F3 false) -> exit 0 at once, no output, no child process.
 - Hosted -> start a detached child (new session, stdin /dev/null, output
   appended to `<ATH>/debug/mail-follow.log`) and exit 0 at once. The
@@ -197,6 +203,9 @@ on the lock (F9). On a non-hosted workspace the pidfile never exists, so this
 is one `ateam` exec per minute per watcher that exits at once with no output.
 Doorbell and heartbeat exits need no extra call: the re-armed watcher makes
 the arm-time call.
+
+When `AGENT_TEAMS_HOST_FOLLOW=off` is set, the watcher makes neither the
+arm-time call nor the restart check (F9).
 
 ## F11 Ring-1 databases and homes
 
