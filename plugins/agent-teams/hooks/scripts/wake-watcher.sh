@@ -147,10 +147,15 @@ printf '%s\t%s' "$$" "$HOOK_SESSION_ID" > "$PIDFILE"
 # workspace, otherwise it detaches the follower. The pidfile above is written
 # first so the follower's exit handshake sees this watcher. The follower
 # outlives any one watcher, so nothing here stops it.
-if [ -x "$ATEAM" ]; then
-  mkdir -p "$ATH/debug" 2>/dev/null || true
-  "$ATEAM" mail follow </dev/null >>"$ATH/debug/mail-follow.log" 2>&1 || true
-fi
+# The poll loop re-runs the same call when the follower has died (see below),
+# so both sites share this function. It never fails under `set -e`.
+ensure_host_follower() {
+  if [ -x "$ATEAM" ]; then
+    mkdir -p "$ATH/debug" 2>/dev/null || true
+    "$ATEAM" mail follow </dev/null >>"$ATH/debug/mail-follow.log" 2>&1 || true
+  fi
+}
+ensure_host_follower
 
 # ── Heartbeat interval: 4 hours = 14400 seconds, just under the 24h timeout ──
 # Measured in AWAKE time, not wall-clock: a machine sleep spanning part of the
@@ -174,6 +179,12 @@ deadline=$(( arm_epoch + HEARTBEAT_SECS ))
 start_epoch=$arm_epoch
 prev_tick=$arm_epoch
 last_alive_log=$start_epoch
+# The host follower can die while watchers live (killed, OOM, crash). Every
+# FOLLOW_CHECK_SECS of awake time the loop checks the follower's pidfile and
+# re-runs the arm-time call if it is missing or dead (docs/hosted-beads.md,
+# F10 restart). A sleep gap pushes the next check out like it pushes deadline.
+FOLLOW_CHECK_SECS="${FOLLOW_CHECK_SECS:-60}"
+next_follow_check=$(( arm_epoch + FOLLOW_CHECK_SECS ))
 alive_interval=60   # log an "alive" tick every 60 seconds
 
 # still_open_and_enabled re-validates match_id against $PWD via the SAME
@@ -229,6 +240,7 @@ while true; do
   if [ "$gap" -ge "$HEARTBEAT_SLEEP_GAP_SECS" ]; then
     sleep_excess=$(( gap - 1 ))
     deadline=$(( deadline + sleep_excess ))
+    next_follow_check=$(( next_follow_check + sleep_excess ))
     hook_log_note "note" "sleep-gap-detected gap=${gap}s deadline-extended-by=${sleep_excess}s"
   fi
   prev_tick=$now
@@ -256,6 +268,16 @@ while true; do
       printf 'agent-teams: heartbeat re-arm for initiative %s — no new mail, do nothing.\n' "$match_id" >&2
     fi
     exit 2
+  fi
+
+  # Follower liveness check: restart the host follower if it died.
+  if [ "$now" -ge "$next_follow_check" ]; then
+    next_follow_check=$(( now + FOLLOW_CHECK_SECS ))
+    follower_pid=$(cat "$MAILBOX/host-follow.pid" 2>/dev/null || true)
+    if [ -z "$follower_pid" ] || ! kill -0 "$follower_pid" 2>/dev/null; then
+      hook_log_note "note" "follower-restart pid=${follower_pid:-none}"
+      ensure_host_follower
+    fi
   fi
 
   # Alive tick: log approximately every alive_interval seconds.
