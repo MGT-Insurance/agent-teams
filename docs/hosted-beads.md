@@ -187,6 +187,17 @@ follower on exit; the follower outlives any one watcher and exits by the F9
 lifetime rule. No hosted check in the shell; F9 makes it a no-op on
 non-hosted workspaces.
 
+Restart (DRI amendment): the follower can die while watchers live (killed,
+OOM, crash), and nothing else would restart it until a new watcher arms. So
+the poll loop also re-checks every `FOLLOW_CHECK_SECS` (default 60) of AWAKE
+time, using the loop's existing sleep-gap accounting: if
+`<ATH>/mailbox/host-follow.pid` is missing or its pid fails `kill -0`, run the
+same `"$ATEAM" mail follow ...` call again. The losing child of any race exits
+on the lock (F9). On a non-hosted workspace the pidfile never exists, so this
+is one `ateam` exec per minute per watcher that exits at once with no output.
+Doorbell and heartbeat exits need no extra call: the re-armed watcher makes
+the arm-time call.
+
 ## F11 Ring-1 databases and homes
 
 VALUE PENDING the DRI/human ruling on the global-DB fork; the names below are
