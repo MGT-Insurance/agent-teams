@@ -23,7 +23,7 @@ type mailCmd struct {
 	List   mailListKong   `cmd:"" name:"list"  help:"List recent cross-initiative mail (all statuses, including closed)."`
 	Close  mailCloseKong  `cmd:"" name:"close" help:"Close a message bead."`
 	Purge  mailPurgeKong  `cmd:"" name:"purge" help:"Permanently delete old closed message beads."`
-	Follow mailFollowKong `cmd:"" name:"follow" help:"On a hosted workspace, follow the events journal and ring the initiative's doorbell."`
+	Follow mailFollowKong `cmd:"" name:"follow" help:"On a hosted workspace, start the per-host follower that rings local initiatives' doorbells from the events journal."`
 }
 
 // ── hidden deprecated aliases ────────────────────────────────────────────────

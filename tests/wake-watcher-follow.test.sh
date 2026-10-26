@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# wake-watcher-follow.test.sh — wake-watcher.sh starts `ateam mail follow` and
-# stops it on every exit path (docs/hosted-beads.md, F10).
+# wake-watcher-follow.test.sh — wake-watcher.sh runs `ateam mail follow` (no
+# arguments) in the foreground right after it writes its own pidfile, and never
+# stops the follower on exit (docs/hosted-beads.md, F10).
 #
-# A stub `ateam` on CLAUDE_PLUGIN_ROOT/bin records its argv and pid, then
-# blocks. The watcher runs in the Steward's session dir (the follower wiring is
-# shared code, identical for any initiative watcher).
+# A stub `ateam` on CLAUDE_PLUGIN_ROOT/bin records its argv and whether the
+# watcher pidfile already existed, leaves a long-lived stand-in follower
+# running, and returns at once like the real verb. The watcher runs in the
+# Steward's session dir (the wiring is shared code, identical for any
+# initiative watcher).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,7 +17,12 @@ PASS=0; FAIL=0
 pass() { echo "PASS $*"; PASS=$((PASS+1)); }
 fail() { echo "FAIL $*"; FAIL=$((FAIL+1)); }
 
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d)
+cleanup() {
+  [ -f "$T/follower.pid" ] && kill "$(cat "$T/follower.pid")" 2>/dev/null || true
+  rm -rf "$T"
+}
+trap cleanup EXIT
 
 export AGENT_TEAMS_HOME="$T/ws"
 mkdir -p "$AGENT_TEAMS_HOME"
@@ -30,15 +38,25 @@ mkdir -p "$MAILBOX"
 PLUGIN="$T/plugin"
 mkdir -p "$PLUGIN/bin"
 ARGS="$T/stub.args"
-STUBPID="$T/stub.pid"
+CALLS="$T/stub.calls"
+SAW_PIDFILE="$T/stub.saw-pidfile"
+FOLLOWER="$T/follower.pid"
 cat > "$PLUGIN/bin/ateam" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" > "$STUB_ARGS"
-echo "$$" > "$STUB_PID"
-exec sleep 300
+echo x >> "$STUB_CALLS"
+if [ -s "$STUB_MAILBOX/steward.watcher.pid" ]; then echo yes > "$STUB_SAW"; else echo no > "$STUB_SAW"; fi
+echo "stub-follow-output"
+# Stand-in for the detached follower: outlives this process.
+if [ ! -s "$STUB_FOLLOWER" ]; then
+  sleep 300 </dev/null >/dev/null 2>&1 &
+  echo "$!" > "$STUB_FOLLOWER"
+fi
+exit 0
 EOF
 chmod +x "$PLUGIN/bin/ateam"
-export STUB_ARGS="$ARGS" STUB_PID="$STUBPID" CLAUDE_PLUGIN_ROOT="$PLUGIN"
+export STUB_ARGS="$ARGS" STUB_CALLS="$CALLS" STUB_SAW="$SAW_PIDFILE" STUB_FOLLOWER="$FOLLOWER" \
+  STUB_MAILBOX="$MAILBOX" CLAUDE_PLUGIN_ROOT="$PLUGIN"
 
 wait_until() {
   local max_ticks="$1"; shift
@@ -53,9 +71,9 @@ wait_until() {
 file_nonempty() { [ -s "$1" ]; }
 pid_dead() { ! kill -0 "$1" 2>/dev/null; }
 
-# run_case <name> <env assignments...> -> sets WPID; launches watcher, waits for stub.
+# launch <env assignments...> -> sets WPID; starts a watcher and waits for the stub.
 launch() {
-  rm -f "$ARGS" "$STUBPID" "$MAILBOX/steward.wake" "$MAILBOX/steward.watcher.pid"
+  rm -f "$ARGS" "$CALLS" "$SAW_PIDFILE" "$MAILBOX/steward.wake" "$MAILBOX/steward.watcher.pid"
   env "$@" bash -c 'cd "$1" && exec bash "$2" <<<"$3"' _ "$STEWARD_DIR" "$HOOKS/wake-watcher.sh" \
     '{"session_id":"follow-test"}' >"$T/watcher.out" 2>&1 &
   WPID=$!
@@ -63,65 +81,91 @@ launch() {
 
 check_start() {
   local label="$1"
-  if wait_until 50 file_nonempty "$STUBPID"; then
+  if wait_until 50 file_nonempty "$FOLLOWER" && wait_until 50 file_nonempty "$SAW_PIDFILE"; then
     pass "$label: stub ateam started"
   else
     fail "$label: stub ateam never started; watcher log: $(cat "$T/watcher.out")"
     return 1
   fi
-  local want="mail follow steward --parent-pid $WPID"
-  if [ "$(cat "$ARGS")" = "$want" ]; then
-    pass "$label: argv is '$want'"
+  if [ "$(cat "$ARGS")" = "mail follow" ]; then
+    pass "$label: argv is 'mail follow' (no initiative id, no --parent-pid)"
   else
-    fail "$label: argv '$(cat "$ARGS")' want '$want'"
+    fail "$label: argv '$(cat "$ARGS")' want 'mail follow'"
+  fi
+  if [ "$(cat "$SAW_PIDFILE")" = "yes" ]; then
+    pass "$label: watcher pidfile existed before ateam mail follow ran"
+  else
+    fail "$label: watcher pidfile was not written before ateam mail follow"
+  fi
+  if [ "$(wc -l < "$CALLS" | tr -d ' ')" = "1" ]; then
+    pass "$label: ateam mail follow ran exactly once"
+  else
+    fail "$label: ateam mail follow ran $(wc -l < "$CALLS" | tr -d ' ') times"
   fi
 }
 
-# ── Case A: doorbell exit stops the follower ────────────────────────────────
+follower_alive() { kill -0 "$(cat "$FOLLOWER")" 2>/dev/null; }
+
+# ── Case A: doorbell exit leaves the follower running ───────────────────────
 launch HEARTBEAT_SECS=14400
 if check_start A; then
-  stub=$(cat "$STUBPID")
   touch "$MAILBOX/steward.wake"
   rc=0; wait "$WPID" || rc=$?
   [ "$rc" = 2 ] && pass "A: watcher exited 2 on doorbell" || fail "A: watcher exit $rc, want 2"
-  if wait_until 30 pid_dead "$stub"; then
-    pass "A: follower stopped after doorbell exit"
+  sleep 0.3
+  follower_alive && pass "A: follower outlives the watcher" || fail "A: watcher exit killed the follower"
+  if grep -q 'stub-follow-output' "$AGENT_TEAMS_HOME/debug/mail-follow.log" 2>/dev/null; then
+    pass "A: follow output appended to debug/mail-follow.log"
   else
-    fail "A: follower pid $stub still alive after doorbell exit"; kill "$stub" 2>/dev/null || true
+    fail "A: debug/mail-follow.log missing the follow output"
   fi
 else
   kill "$WPID" 2>/dev/null || true
 fi
+kill "$(cat "$FOLLOWER" 2>/dev/null)" 2>/dev/null || true; rm -f "$FOLLOWER"
 
-# ── Case B: heartbeat exit stops the follower ───────────────────────────────
+# ── Case B: heartbeat exit leaves the follower running ──────────────────────
 launch HEARTBEAT_SECS=1
 if check_start B; then
-  stub=$(cat "$STUBPID")
   rc=0; wait "$WPID" || rc=$?
   [ "$rc" = 2 ] && pass "B: watcher exited 2 on heartbeat" || fail "B: watcher exit $rc, want 2"
-  if wait_until 30 pid_dead "$stub"; then
-    pass "B: follower stopped after heartbeat exit"
-  else
-    fail "B: follower pid $stub still alive after heartbeat exit"; kill "$stub" 2>/dev/null || true
-  fi
+  sleep 0.3
+  follower_alive && pass "B: follower outlives the watcher" || fail "B: watcher exit killed the follower"
 else
   kill "$WPID" 2>/dev/null || true
 fi
+kill "$(cat "$FOLLOWER" 2>/dev/null)" 2>/dev/null || true; rm -f "$FOLLOWER"
 
-# ── Case C: SIGTERM to the watcher stops the follower ───────────────────────
+# ── Case C: SIGTERM leaves the follower running and keeps hook_log's trap ───
 launch HEARTBEAT_SECS=14400
 if check_start C; then
-  stub=$(cat "$STUBPID")
   kill -TERM "$WPID"
   wait "$WPID" 2>/dev/null || true
-  if wait_until 30 pid_dead "$stub"; then
-    pass "C: follower stopped after SIGTERM"
+  sleep 0.3
+  follower_alive && pass "C: follower outlives a SIGTERMed watcher" || fail "C: SIGTERM killed the follower"
+  # The hook_log_start signal trap must be the one in force (no wrapper trap).
+  if grep -q 'signal-TERM' "$AGENT_TEAMS_HOME/debug/hook-debug.log" 2>/dev/null \
+     || grep -rqs 'signal-TERM' "$AGENT_TEAMS_HOME/debug" 2>/dev/null; then
+    pass "C: hook_log signal trap logged signal-TERM"
   else
-    fail "C: follower pid $stub still alive after SIGTERM"; kill "$stub" 2>/dev/null || true
+    fail "C: no signal-TERM entry from hook_log's trap under $AGENT_TEAMS_HOME/debug"
   fi
 else
   kill "$WPID" 2>/dev/null || true
 fi
+kill "$(cat "$FOLLOWER" 2>/dev/null)" 2>/dev/null || true; rm -f "$FOLLOWER"
+
+# ── Case D: no executable ateam -> the watcher still arms (steward branch) ──
+rm -f "$PLUGIN/bin/ateam"
+launch HEARTBEAT_SECS=14400
+sleep 0.6
+if kill -0 "$WPID" 2>/dev/null; then
+  pass "D: watcher armed without ateam"
+else
+  fail "D: watcher exited without ateam"
+fi
+kill "$WPID" 2>/dev/null || true
+wait "$WPID" 2>/dev/null || true
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
