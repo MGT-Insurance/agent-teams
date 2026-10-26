@@ -275,7 +275,11 @@ while true; do
     next_follow_check=$(( now + FOLLOW_CHECK_SECS ))
     follower_pid=$(cat "$MAILBOX/host-follow.pid" 2>/dev/null || true)
     if [ -z "$follower_pid" ] || ! kill -0 "$follower_pid" 2>/dev/null; then
-      hook_log_note "note" "follower-restart pid=${follower_pid:-none}"
+      # A missing pidfile is the normal state on a non-hosted workspace, so
+      # only a dead follower is worth a log line.
+      if [ -n "$follower_pid" ]; then
+        hook_log_note "note" "follower-restart pid=${follower_pid}"
+      fi
       ensure_host_follower
     fi
   fi
