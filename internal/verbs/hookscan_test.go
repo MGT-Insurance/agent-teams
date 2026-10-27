@@ -345,60 +345,117 @@ func TestHookScanBDErrorPropagates(t *testing.T) {
 	}
 }
 
-// fakeExecOKThenErrSessionList succeeds for hook-scan's own top-of-Run list
-// (`bd list --status=open --include-infra --json`) but fails for the
-// distinct, --include-infra-less list resolveInitiativeBySession issues
-// (`bd list --status=open --json`) — letting a test drive a bd failure
-// specifically on the session-first lookup while path resolution's own list
-// call keeps succeeding.
-func fakeExecOKThenErrSessionList(payload []bd.Issue) bd.ExecFunc {
+// ── one open list (agent-teams-c4i9.20.34.3) ────────────────────────────────
+
+// recordingExec returns the payload for every bd call and records each call's
+// argv, so a test can assert both the call count and the exact list command.
+func recordingExec(payload []bd.Issue, argvs *[][]string) bd.ExecFunc {
 	return func(_ string, args ...string) ([]byte, []byte, error) {
-		for _, a := range args {
-			if a == "--include-infra" {
-				out, err := json.Marshal(payload)
-				if err != nil {
-					panic(err)
-				}
-				return out, nil, nil
-			}
+		*argvs = append(*argvs, append([]string(nil), args...))
+		out, err := json.Marshal(payload)
+		if err != nil {
+			panic(err)
 		}
-		return nil, []byte("bd: something went wrong"), &testExecError{}
+		return out, nil, nil
 	}
 }
 
-// TestHookScanSessionFirstBDErrorPropagates verifies the ring .4 review fix
-// (agent-teams-y814.8, at-1k234): a bd error from the session-first
-// resolveInitiativeBySession call now propagates as a non-zero exit instead
-// of being silently swallowed via `err == nil && found` and falling through
-// to path resolution — matching hook-scan's documented contract that bd
-// failures return the error (hookscan.go's doc comment above Run).
-func TestHookScanSessionFirstBDErrorPropagates(t *testing.T) {
-	issues := []bd.Issue{
-		{ID: "at-111", Title: "Mine", Description: "worktree: /a/b/wt"},
-	}
+func runHookScanRecording(t *testing.T, issues []bd.Issue, args []string) (stdout string, argvs [][]string) {
+	t.Helper()
 	var outBuf, errBuf bytes.Buffer
-	client := bd.NewClientWithExec("/fake/home", fakeExecOKThenErrSessionList(issues))
-	ctx := &cli.Context{
-		Home:   "/fake/home",
-		BD:     client,
-		Stdout: &outBuf,
-		Stderr: &errBuf,
-	}
+	client := bd.NewClientWithExec("/fake/home", recordingExec(issues, &argvs))
+	ctx := &cli.Context{Home: "/fake/home", BD: client, Stdout: &outBuf, Stderr: &errBuf}
 	p, err := cli.NewParser()
 	if err != nil {
 		t.Fatalf("NewParser: %v", err)
 	}
 	verbs.RegisterHookScanKong(p)
-	kctx, parseErr := p.Parse([]string{"hook-scan", "/a/b/wt", "--session-id", "sess-any"})
+	kctx, parseErr := p.Parse(append([]string{"hook-scan"}, args...))
 	if parseErr != nil {
 		t.Fatalf("parse: %v", parseErr)
 	}
 	kctx.Bind(ctx)
-	if runErr := kctx.Run(ctx); runErr == nil {
-		t.Fatalf("hook-scan: err = nil, want a propagated bd error from the session-first lookup")
+	if runErr := kctx.Run(ctx); runErr != nil {
+		t.Fatalf("run: %v", runErr)
 	}
-	if strings.TrimSpace(outBuf.String()) != "" {
-		t.Errorf("stdout %q, want empty", outBuf.String())
+	return outBuf.String(), argvs
+}
+
+func assertOneInfraList(t *testing.T, argvs [][]string) {
+	t.Helper()
+	if len(argvs) != 1 {
+		t.Fatalf("bd invocations = %d (%v), want 1", len(argvs), argvs)
+	}
+	want := []string{"-C", "/fake/home", "list", "--status=open", "--include-infra", "--limit=0", "--json"}
+	if strings.Join(argvs[0], " ") != strings.Join(want, " ") {
+		t.Errorf("argv = %v, want %v", argvs[0], want)
+	}
+}
+
+// With --session-id, hook-scan lists once (was twice: its own list, then
+// resolveInitiativeBySession's), whether the tie hits or misses.
+func TestHookScanSessionIDOneBDCall(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "at-tied", Title: "Tied", Description: "worktree: /elsewhere\nsession: sess-1\n"},
+		{ID: "at-path", Title: "Path", Description: "worktree: " + path},
+		{ID: "msg-1", IssueType: "message", Assignee: "at-tied", Status: "open"},
+	}
+
+	stdout, argvs := runHookScanRecording(t, issues, []string{path, "--session-id", "sess-1"})
+	assertOneInfraList(t, argvs)
+	if !strings.Contains(stdout, "id: at-tied") || !strings.Contains(stdout, "unread: 1") {
+		t.Errorf("tie hit: stdout %q, want id: at-tied / unread: 1", stdout)
+	}
+
+	stdout, argvs = runHookScanRecording(t, issues, []string{path, "--session-id", "sess-untied"})
+	assertOneInfraList(t, argvs)
+	if !strings.Contains(stdout, "id: at-path") {
+		t.Errorf("tie miss: stdout %q, want path fallback id: at-path", stdout)
+	}
+}
+
+func TestHookScanByIDStillOneBDCall(t *testing.T) {
+	_, argvs := runHookScanRecording(t, nil, []string{"--id=steward"})
+	assertOneInfraList(t, argvs)
+}
+
+// A message wisp whose body quotes "session:" or "worktree:" lines, and an
+// ephemeral non-message row carrying them, are --include-infra rows only; they
+// must never win the session or path match.
+func TestHookScanInfraRowsNeverMatch(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "wisp-msg", IssueType: "message", Ephemeral: true, Assignee: "x", Status: "open",
+			Description: "quoting:\nsession: sess-1\nworktree: " + path + "\n"},
+		{ID: "wisp-task", IssueType: "task", Ephemeral: true,
+			Description: "session: sess-1\nworktree: " + path + "\n"},
+		{ID: "agent-1", IssueType: "agent", Description: "session: sess-1\nworktree: " + path + "\n"},
+		{ID: "at-real", Title: "Real", Description: "worktree: " + path + "\n"},
+	}
+
+	stdout, _ := runHookScanRecording(t, issues, []string{path, "--session-id", "sess-1"})
+	if !strings.Contains(stdout, "id: at-real") {
+		t.Errorf("stdout %q, want id: at-real (infra rows must not match)", stdout)
+	}
+
+	stdout, _ = runHookScanRecording(t, issues[:3], []string{path, "--session-id", "sess-1"})
+	if stdout != "" {
+		t.Errorf("stdout %q, want no match when only infra rows carry the session/worktree", stdout)
+	}
+}
+
+// Two same-runtime session matches never guess; hook-scan falls back to path.
+func TestHookScanSessionAmbiguousFallsBackToPath(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "at-1", Description: "worktree: /x\nsession: sess-1\n"},
+		{ID: "at-2", Description: "worktree: /y\nsession: sess-1\n"},
+		{ID: "at-path", Description: "worktree: " + path + "\n"},
+	}
+	stdout, _ := runHookScanRecording(t, issues, []string{path, "--session-id", "sess-1"})
+	if !strings.Contains(stdout, "id: at-path") {
+		t.Errorf("stdout %q, want id: at-path", stdout)
 	}
 }
 

@@ -78,14 +78,25 @@ func (c *tieSessionKong) Run(ctx *cli.Context) error {
 	}
 
 	initiativeID := c.InitiativeID
+	var tieErr error
 	if initiativeID == "" {
-		initiativeID, err = resolveMyInitiative(ctx, cwd)
+		// One open list resolves cwd to its initiative and serves the tie's
+		// target lookup and one-open-initiative guard.
+		open, err := listOpenIssues(ctx, false)
 		if err != nil {
+			return nil // can't list open initiatives — silent no-op
+		}
+		match := matchByWorktreeOrAncestor(open, cwd)
+		if match == nil {
 			return nil // no open initiative registered for cwd — silent no-op
 		}
+		initiativeID = match.ID
+		tieErr = appendSessionIDWith(ctx, open, initiativeID, sessionID)
+	} else {
+		tieErr = appendSessionID(ctx, initiativeID, sessionID)
 	}
 
-	if err := appendSessionID(ctx, initiativeID, sessionID); err != nil {
+	if err := tieErr; err != nil {
 		if errors.Is(err, errSessionTiedElsewhere) {
 			fmt.Fprintf(ctx.Stderr, "ateam tie-session: %v\n", err)
 			return nil
