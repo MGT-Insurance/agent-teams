@@ -142,7 +142,7 @@ func TestOpenMailWithDedupKey_QueryErrorPropagates(t *testing.T) {
 // ── closeMailAs ───────────────────────────────────────────────────────────────
 
 // TestCloseMailAs_LabelsNotesAndForceClosesEachMessage verifies the frozen
-// per-message order: label add, then note, then bd close --force.
+// per-message order: one update (label and note), then bd close --force.
 func TestCloseMailAs_LabelsNotesAndForceClosesEachMessage(t *testing.T) {
 	var calls [][]string
 	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
@@ -156,11 +156,9 @@ func TestCloseMailAs_LabelsNotesAndForceClosesEachMessage(t *testing.T) {
 		t.Fatalf("closeMailAs: %v", err)
 	}
 	want := [][]string{
-		{"label", "add", "at-m1", "delivery:moot"},
-		{"note", "at-m1", "PR merged; nothing to act on"},
+		{"update", "at-m1", "--add-label", "delivery:moot", "--append-notes", "PR merged; nothing to act on"},
 		{"close", "at-m1", "--force"},
-		{"label", "add", "at-m2", "delivery:moot"},
-		{"note", "at-m2", "PR merged; nothing to act on"},
+		{"update", "at-m2", "--add-label", "delivery:moot", "--append-notes", "PR merged; nothing to act on"},
 		{"close", "at-m2", "--force"},
 	}
 	if len(calls) != len(want) {
@@ -187,11 +185,16 @@ func TestCloseMailAs_EmptyNoteSkipsNoteCall(t *testing.T) {
 		t.Fatalf("closeMailAs: %v", err)
 	}
 	want := [][]string{
-		{"label", "add", "at-m1", "delivery:moot"},
+		{"update", "at-m1", "--add-label", "delivery:moot"},
 		{"close", "at-m1", "--force"},
 	}
 	if len(calls) != len(want) {
-		t.Fatalf("closeMailAs calls = %v, want %v (no note call)", calls, want)
+		t.Fatalf("closeMailAs calls = %v, want %v (no note)", calls, want)
+	}
+	for i, w := range want {
+		if !equalArgs(calls[i], w) {
+			t.Errorf("closeMailAs call[%d] = %v, want %v", i, calls[i], w)
+		}
 	}
 }
 
@@ -203,7 +206,7 @@ func TestCloseMailAs_PerMessageFailureDoesNotAbortTheRest(t *testing.T) {
 	labelErr := errors.New("label add failed")
 	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
 		calls = append(calls, append([]string(nil), args...))
-		if len(args) >= 3 && args[0] == "label" && args[2] == "at-m1" {
+		if len(args) >= 2 && args[0] == "update" && args[1] == "at-m1" {
 			return "", labelErr
 		}
 		return "", nil
@@ -212,19 +215,22 @@ func TestCloseMailAs_PerMessageFailureDoesNotAbortTheRest(t *testing.T) {
 
 	err := closeMailAs(ctx, []string{"at-m1", "at-m2"}, "delivery:moot", "note text")
 	if err == nil {
-		t.Fatal("closeMailAs: expected the label failure to be reported, got nil error")
+		t.Fatal("closeMailAs: expected the update failure to be reported, got nil error")
 	}
-	// Every step for both ids still ran despite at-m1's label failure.
+	// Every step for both ids still ran despite at-m1's update failure.
 	want := [][]string{
-		{"label", "add", "at-m1", "delivery:moot"},
-		{"note", "at-m1", "note text"},
+		{"update", "at-m1", "--add-label", "delivery:moot", "--append-notes", "note text"},
 		{"close", "at-m1", "--force"},
-		{"label", "add", "at-m2", "delivery:moot"},
-		{"note", "at-m2", "note text"},
+		{"update", "at-m2", "--add-label", "delivery:moot", "--append-notes", "note text"},
 		{"close", "at-m2", "--force"},
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("closeMailAs calls = %v, want %v", calls, want)
+	}
+	for i, w := range want {
+		if !equalArgs(calls[i], w) {
+			t.Errorf("closeMailAs call[%d] = %v, want %v", i, calls[i], w)
+		}
 	}
 }
 
