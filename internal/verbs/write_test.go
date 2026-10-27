@@ -361,6 +361,22 @@ func TestGate_NoteOverLimitNoteErrorStops(t *testing.T) {
 	}
 }
 
+// TestGate_EmptyNoteFileErrorsBeforeBD confirms an empty or whitespace-only
+// note file fails with "note text cannot be empty" and makes no bd call.
+func TestGate_EmptyNoteFileErrorsBeforeBD(t *testing.T) {
+	for _, body := range []string{"", " \n\t\n"} {
+		f := makeTempFile(t, body)
+		ctx, calls := newCtx(t, nil)
+		err := (&gateKong{ID: "at-2", File: f, Kind: "review"}).Run(ctx)
+		if err == nil || !strings.Contains(err.Error(), "note text cannot be empty") {
+			t.Errorf("body %q: err = %v, want note text cannot be empty", body, err)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("body %q: %d bd calls, want 0", body, len(*calls))
+		}
+	}
+}
+
 func TestGate_KindReview(t *testing.T) {
 	f := makeTempFile(t, "pr ready")
 	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})

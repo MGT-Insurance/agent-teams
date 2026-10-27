@@ -409,6 +409,9 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	if readErr != nil {
 		return fmt.Errorf("ateam gate: read note file: %w", readErr)
 	}
+	if strings.TrimSpace(string(noteBytes)) == "" {
+		return fmt.Errorf("note text cannot be empty")
+	}
 	// One bd update appends the note and adds both labels. A note over
 	// maxGateNoteArgBytes would risk the per-argv-string cap, so it goes
 	// through bd note --file and the labels get their own update.

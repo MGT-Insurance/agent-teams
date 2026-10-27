@@ -224,7 +224,9 @@ func TestHookScanCache_NoMatchDeletesEntry(t *testing.T) {
 	}
 }
 
-func TestHookScanCache_DisabledRepoStaysSilentOnFastPath(t *testing.T) {
+// A disabled repo's cache entry is untrusted, so every prompt rescans (one bd
+// call) and stays silent.
+func TestHookScanCache_DisabledRepoStaysSilentOnRescan(t *testing.T) {
 	home := t.TempDir()
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, repoconfig.FileName), []byte("disabled: true\n"), 0o644); err != nil {
@@ -235,9 +237,9 @@ func TestHookScanCache_DisabledRepoStaysSilentOnFastPath(t *testing.T) {
 	if calls != 1 || stdout != "" {
 		t.Fatalf("full: calls=%d stdout=%q", calls, stdout)
 	}
-	stdout, _, calls = cacheScan(t, home, nil, cachePath1, "--session-id", "s1")
-	if calls != 0 || stdout != "" {
-		t.Fatalf("fast: calls=%d stdout=%q", calls, stdout)
+	stdout, _, calls = cacheScan(t, home, []bd.Issue{issue}, cachePath1, "--session-id", "s1")
+	if calls != 1 || stdout != "" {
+		t.Fatalf("rescan: calls=%d stdout=%q", calls, stdout)
 	}
 }
 

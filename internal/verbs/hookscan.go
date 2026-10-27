@@ -160,6 +160,9 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 	}
 
 	if repo != "" && !repoconfig.Enabled(repo) {
+		// Unread was not counted, so the entry must not be trusted: mail sent
+		// while disabled has no doorbell, and re-enabling must rescan.
+		entry.Trusted = false
 		writeHookScanCache(ctx, cacheKey, entry)
 		return nil
 	}
