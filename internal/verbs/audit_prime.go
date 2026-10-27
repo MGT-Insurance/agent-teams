@@ -74,8 +74,8 @@ func checkGlobalPrimeBudget(ctx *cli.Context) bool {
 	sentinelOK := true
 	if hasMemories {
 		var errMemories, errChars error
-		maxMemories, errMemories = ctx.BD.Run("config", "get", primeMaxMemoriesKey)
-		maxChars, errChars = ctx.BD.Run("config", "get", primeMaxMemoryCharsKey)
+		maxMemories, errMemories = readConfigValue(ctx, primeMaxMemoriesKey)
+		maxChars, errChars = readConfigValue(ctx, primeMaxMemoryCharsKey)
 		if errMemories != nil || errChars != nil {
 			return true
 		}

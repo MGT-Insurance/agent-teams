@@ -5,6 +5,7 @@ package verbs
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -14,17 +15,31 @@ import (
 // buildQueryCtx wires a fake bd client that returns responses keyed by bd subcommand.
 func buildQueryCtx(t *testing.T, home string, responses map[string][]byte) (*cli.Context, *bytes.Buffer) {
 	t.Helper()
+	ctx, out, _ := buildQueryCtxRec(t, home, responses)
+	return ctx, out
+}
+
+// buildQueryCtxRec is buildQueryCtx plus a recording of every bd argv (after
+// the -C <home> prefix), so tests can assert the --readonly flag and call count.
+func buildQueryCtxRec(t *testing.T, home string, responses map[string][]byte) (*cli.Context, *bytes.Buffer, *[][]string) {
+	t.Helper()
 	out := &bytes.Buffer{}
+	calls := &[][]string{}
 	execFn := func(name string, args ...string) ([]byte, []byte, error) {
 		if name != "bd" {
 			t.Errorf("unexpected binary %q", name)
 			return nil, nil, nil
 		}
-		// args: [-C, home, subcommand, ...]
+		// args: [-C, home, [--readonly,] subcommand, ...]
 		if len(args) < 3 {
 			return nil, nil, nil
 		}
-		sub := args[2]
+		*calls = append(*calls, append([]string(nil), args[2:]...))
+		rest := args[2:]
+		if rest[0] == "--readonly" {
+			rest = rest[1:]
+		}
+		sub := rest[0]
 		resp, ok := responses[sub]
 		if !ok {
 			t.Errorf("unexpected subcommand %q", sub)
@@ -34,7 +49,17 @@ func buildQueryCtx(t *testing.T, home string, responses map[string][]byte) (*cli
 	}
 	client := bd.NewClientWithExec(home, execFn)
 	ctx := &cli.Context{Home: home, BD: client, Stdout: out, Stderr: &bytes.Buffer{}}
-	return ctx, out
+	return ctx, out, calls
+}
+
+// assertReadonlyMemoriesOnce fails unless calls is exactly one
+// bd --readonly memories --json invocation.
+func assertReadonlyMemoriesOnce(t *testing.T, calls [][]string) {
+	t.Helper()
+	want := []string{"--readonly", "memories", "--json"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
+		t.Errorf("bd calls = %v, want exactly one %v", calls, want)
+	}
 }
 
 // ── wsKong ────────────────────────────────────────────────────────────────────
@@ -118,13 +143,14 @@ func TestShowKongNilCtx(t *testing.T) {
 
 func TestLearningsKongFiltersRole(t *testing.T) {
 	memoriesJSON := []byte(`{"planner:foo":"body1","dri:bar":"should not appear"}` + "\n")
-	ctx, out := buildQueryCtx(t, "/ws", map[string][]byte{
+	ctx, out, calls := buildQueryCtxRec(t, "/ws", map[string][]byte{
 		"memories": memoriesJSON,
 	})
 	cmd := &learningsKong{Role: "planner"}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("learningsKong.Run: %v", err)
 	}
+	assertReadonlyMemoriesOnce(t, *calls)
 	got := out.String()
 	if !bytes.Contains([]byte(got), []byte("planner:foo")) {
 		t.Errorf("expected planner:foo in output; got: %q", got)
@@ -144,13 +170,14 @@ func TestLearningsKongNilCtx(t *testing.T) {
 
 func TestRecallKongFiltersQuery(t *testing.T) {
 	memoriesJSON := []byte(`{"planner:foo":"ship it fast","planner:bar":"slow path"}` + "\n")
-	ctx, out := buildQueryCtx(t, "/ws", map[string][]byte{
+	ctx, out, calls := buildQueryCtxRec(t, "/ws", map[string][]byte{
 		"memories": memoriesJSON,
 	})
 	cmd := &recallKong{Role: "planner", Query: "ship"}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("recallKong.Run: %v", err)
 	}
+	assertReadonlyMemoriesOnce(t, *calls)
 	got := out.String()
 	if !bytes.Contains([]byte(got), []byte("planner:foo")) {
 		t.Errorf("expected matching key planner:foo; got: %q", got)
@@ -170,12 +197,13 @@ func TestRecallKongNilCtx(t *testing.T) {
 
 func TestPrimeKongPrintsUserKeys(t *testing.T) {
 	memoriesJSON := []byte(`{"user:pref1":"always test","schema_version":1,"dri:foo":"bar"}` + "\n")
-	ctx, out := buildQueryCtx(t, "/ws", map[string][]byte{
+	ctx, out, calls := buildQueryCtxRec(t, "/ws", map[string][]byte{
 		"memories": memoriesJSON,
 	})
 	if err := (&primeKong{}).Run(ctx); err != nil {
 		t.Fatalf("primeKong.Run: %v", err)
 	}
+	assertReadonlyMemoriesOnce(t, *calls)
 	got := out.String()
 	if !bytes.Contains([]byte(got), []byte("pref1")) {
 		t.Errorf("expected user pref1 in output; got: %q", got)
@@ -195,12 +223,13 @@ func TestPrimeKongNilCtx(t *testing.T) {
 
 func TestRolesKongListsNamespaces(t *testing.T) {
 	memoriesJSON := []byte(`{"planner:foo":"a","dri:bar":"b","user:pref":"c"}` + "\n")
-	ctx, out := buildQueryCtx(t, "/ws", map[string][]byte{
+	ctx, out, calls := buildQueryCtxRec(t, "/ws", map[string][]byte{
 		"memories": memoriesJSON,
 	})
 	if err := (&rolesKong{}).Run(ctx); err != nil {
 		t.Fatalf("rolesKong.Run: %v", err)
 	}
+	assertReadonlyMemoriesOnce(t, *calls)
 	got := out.String()
 	for _, role := range []string{"dri", "planner", "user"} {
 		if !bytes.Contains([]byte(got), []byte(role)) {
