@@ -297,15 +297,22 @@ and never echo them. `scripts/sandbox/.gitignore` covers `.env*`,
    npm install --prefix scripts/sandbox
    ```
 
-5. Pull the Vercel env that holds the OIDC token (the `dispatcher` project,
-   production). Write it where the kit looks for it, which is gitignored:
+5. Pull the OIDC token from the test-only Vercel project `agent-teams-sandboxes`
+   in the MGT Insurance team. It has no env vars of its own. Delete it after
+   the test. Link a scratch directory to it, then pull its development env into
+   the file the kit reads, which is gitignored:
 
    ```sh
-   vercel env pull scripts/sandbox/.env.pulled --environment=production
+   vercel env pull <worktree>/scripts/sandbox/.env.pulled --environment=development
    ```
 
-   The token expires after about 12 hours. If `sb.mjs` fails with an auth
-   error, pull again.
+   Use an absolute path for `<worktree>`. `--cwd` resolves a relative path
+   against the linked directory, not your worktree. The file holds only
+   `VERCEL_OIDC_TOKEN`, and it expires after about 12 hours. If `sb.mjs` fails
+   with an auth error, pull again.
+
+   Dispatcher creates its own sandboxes with its own deployment's OIDC token
+   (dispatcher `docs/plan.md:109`). This project serves the hand-run kit only.
 
 6. Print the network policy and check it:
 
