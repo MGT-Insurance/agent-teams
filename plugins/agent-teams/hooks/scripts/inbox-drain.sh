@@ -52,12 +52,19 @@ command -v jq    >/dev/null 2>&1 || { HOOK_EXIT_REASON="missing-deps"; exit 0; }
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/watcher-pidfile.sh
 . "$(dirname "$0")/lib/watcher-pidfile.sh"
 
+# hook-scan's stderr carries one "scan: full reason=... cache_age=Ns" line when
+# a cache-expiry or untrusted-cache rescan found unread mail (see
+# internal/verbs/hookscan.go); it is captured for the mail-without-doorbell log
+# below and is otherwise discarded.
+scan_err_file=$(mktemp 2>/dev/null || true)
+
 if is_steward_cwd; then
   match_id="steward"
   # The Steward has no worktree: line to resolve, but still needs its unread
   # mail checked — `--id` skips path/worktree resolution and checks unread
   # mail directly for this already-known recipient (internal/verbs/hookscan.go).
-  scan_out=$("$ATEAM" hook-scan --id="$match_id" 2>/dev/null || true)
+  scan_out=$("$ATEAM" hook-scan --id="$match_id" 2>"${scan_err_file:-/dev/null}" || true)
+  scan_cache_key="$match_id"
 else
   # ── Resolve initiative id for $PWD (the worktree root OR any subdir) AND ───
   # check unread mail, both from ONE combined bd call. `ateam hook-scan` owns
@@ -65,14 +72,21 @@ else
   # this script must not re-derive it. --session-id (session_id_flag, computed
   # above) lets it resolve via the durable session tie first when cwd alone
   # would find nothing.
-  scan_out=$("$ATEAM" hook-scan "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
+  scan_out=$("$ATEAM" hook-scan "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>"${scan_err_file:-/dev/null}" || true)
+  scan_cache_key="$session_id_flag"
   match_id=$(printf '%s\n' "$scan_out" | sed -n 's/^id: //p')
   if [ -z "$match_id" ]; then
+    rm -f "$scan_err_file" 2>/dev/null || true
     HOOK_EXIT_REASON="no-open-match"
     exit 0
   fi
 fi
 unread=$(printf '%s\n' "$scan_out" | sed -n 's/^unread: //p')
+scan_note=""
+if [ -n "$scan_err_file" ]; then
+  scan_note=$(sed -n 's/^scan: full //p' "$scan_err_file" 2>/dev/null | head -n 1 || true)
+  rm -f "$scan_err_file" 2>/dev/null || true
+fi
 
 HOOK_INITIATIVE="$match_id"
 export HOOK_INITIATIVE
@@ -114,13 +128,29 @@ fi
 # remove it at fire time (their rewake can be lost); this is the single ack
 # point that the wake was actually delivered into a turn.
 DOORBELL="$MAILBOX/${match_id}.wake"
+doorbell_consumed=0
 if [ -f "$DOORBELL" ]; then
   rm -f "$DOORBELL"
+  doorbell_consumed=1
   hook_log_note "note" "doorbell-consumed initiative=${match_id}"
+  # hook-scan ran before this delete, so mail that landed after its list and
+  # rang this doorbell is not in its cached result. Drop the cache so the next
+  # prompt rescans (hook-scan marks the entry untrusted only when the doorbell
+  # existed before its own check).
+  case "$scan_cache_key" in
+    ''|*[!A-Za-z0-9._-]*) ;;
+    *) rm -f "$ATH/cache/hookscan/${scan_cache_key}.json" 2>/dev/null || true ;;
+  esac
 fi
 
 # ── Signal: unread mail, from the combined scan above; emit additionalContext ─
 if [ -n "$unread" ] && [ "$unread" -gt 0 ]; then
+  # A cache-expiry or untrusted-cache rescan found mail and no doorbell rang
+  # this prompt: the mail arrived without a doorbell.
+  if [ -n "$scan_note" ] && [ "$doorbell_consumed" = 0 ]; then
+    scan_age=$(printf '%s\n' "$scan_note" | sed -n 's/.*cache_age=\([0-9]*s\).*/\1/p')
+    hook_log_note "note" "mail-without-doorbell initiative=${match_id} unread=${unread} cache_age=${scan_age:-unknown}"
+  fi
   signal="You have $unread unread message(s) — run \`ateam mail inbox\` to read them."
   HOOK_EXIT_REASON="mail-signaled"
   jq -n --arg ctx "$signal" '{"additionalContext": $ctx}'

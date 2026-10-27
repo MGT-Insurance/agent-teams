@@ -69,6 +69,10 @@ func (c *tieSessionKong) Run(ctx *cli.Context) error {
 		return nil // no session id available — silent no-op
 	}
 
+	// A re-tie can change which initiative this session resolves to, so drop
+	// the hook-scan result cached for it.
+	deleteHookScanCache(ctx, sessionID)
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil // can't resolve cwd — silent no-op, never break session start
