@@ -39,6 +39,25 @@ func TestCondenseCheck_ZeroWritesOccur(t *testing.T) {
 	}
 }
 
+// TestCondenseCheck_MemoriesReadIsReadonly verifies the single memory-store
+// read goes out as bd --readonly memories --json.
+func TestCondenseCheck_MemoriesReadIsReadonly(t *testing.T) {
+	var calls []string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			calls = append(calls, strings.Join(args, " "))
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	if err := (&condenseCheckKong{}).Run(ctx); err != nil {
+		t.Fatalf("condense-check.Run: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "--readonly memories --json" {
+		t.Errorf("bd calls = %q, want exactly [--readonly memories --json]", calls)
+	}
+}
+
 // TestCondenseCheck_FireWhenFreshAloneExceedsThreshold verifies the sole
 // trigger: fresh-alone approx tokens > condenseFreshThresholdTokens fires,
 // regardless of how small hot∪fresh is.

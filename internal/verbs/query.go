@@ -596,7 +596,7 @@ func runLearnings(ctx *cli.Context, role string) error {
 
 	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
@@ -702,7 +702,7 @@ func runRecall(ctx *cli.Context, role, query string) error {
 	tokens := recallTokenize(query)
 
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
@@ -796,7 +796,7 @@ func recallMatchedTokens(tokens []string, key, body string) int {
 func runPrime(ctx *cli.Context) error {
 	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
@@ -842,7 +842,7 @@ func formatBody(s string) string {
 // runRoles lists the distinct role namespaces present in workspace memories.
 func runRoles(ctx *cli.Context) error {
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
@@ -902,7 +902,7 @@ type memoryRecord struct {
 // role) plus condense's slug/applied-join pattern (condenseKong.Run).
 func runMemoriesJSON(ctx *cli.Context) error {
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 

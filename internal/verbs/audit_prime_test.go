@@ -50,7 +50,7 @@ func auditPrimeBD(out, capValue string, calls *[]string) *fakeBD {
 			if calls != nil {
 				*calls = append(*calls, strings.Join(args, " "))
 			}
-			if len(args) > 0 && args[0] == "config" {
+			if len(args) > 1 && args[0] == "--readonly" && args[1] == "config" {
 				return capValue, nil
 			}
 			return out, nil
@@ -92,6 +92,31 @@ func TestAuditPrime_PassesWhenSuppressed(t *testing.T) {
 	}
 	if stderr.String() != "" {
 		t.Errorf("unexpected stderr: %q", stderr.String())
+	}
+}
+
+// Both cap reads go out as bd --readonly config get <key>, one call each.
+func TestAuditPrime_ConfigReadsAreReadonly(t *testing.T) {
+	home := auditPrimeWorkspace(t)
+	out := auditPrimeSuppressed + "\n## Persistent Memories (showing 1 of 3, alphabetical)\n\n" +
+		"> 2 more memories are not shown here (capped by max-memories=1).\n\n### " + primeCapSentinelKey + "\n" + primeCapSentinelBody + "\n"
+	var calls []string
+	ctx, _, _ := makeCtx(auditPrimeBD(out, primeMemoryCapValue, &calls), home)
+
+	if err := (&auditKong{}).Run(ctx); err != nil {
+		t.Fatalf("audit: err = %v, want nil", err)
+	}
+	for _, key := range []string{primeMaxMemoriesKey, primeMaxMemoryCharsKey} {
+		want := "--readonly config get " + key
+		n := 0
+		for _, c := range calls {
+			if c == want {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%q called %d times, want 1 (calls: %v)", want, n, calls)
+		}
 	}
 }
 

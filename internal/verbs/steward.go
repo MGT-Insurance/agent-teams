@@ -151,7 +151,7 @@ const primeCapSentinelBody = "Placeholder memory for ateam's prime-cap " +
 // reading first so it only calls `bd remember` when the key is missing or stale.
 func installSentinelMemory(ctx *cli.Context) error {
 	var existing map[string]any
-	if err := ctx.BD.RunJSON(&existing, "memories", "--json"); err == nil {
+	if err := readMemoriesJSON(ctx, &existing); err == nil {
 		if body, ok := existing[primeCapSentinelKey].(string); ok && body == primeCapSentinelBody {
 			return nil
 		}
