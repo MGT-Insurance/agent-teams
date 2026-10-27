@@ -44,11 +44,23 @@ Password: `~/.config/beads/credentials`, INI section
 (`bd dolt --help`: `BEADS_DOLT_PASSWORD` -> credentials `[host:port]` ->
 empty). No agent reads, prints, or copies it; the human-run kit moves it.
 
-V: the laptop already has that credentials section (section name checked,
-value not read). The sandbox gets the same section for the `eric_lloyd_ext`
-login: its text is the `credentials` field of Dispatcher's
-`GET /api/dolt/databases/credentials` response, saved as
-`~/.config/beads/ring1-ext.json`.
+Both halves use the `eric_lloyd_ext` login. Its credentials text is the
+`credentials` field of Dispatcher's `GET /api/dolt/databases/credentials`
+response, saved as `~/.config/beads/ring1-ext.json`. The sandbox gets it as
+`~/.config/beads/credentials`. The laptop gets it as a mode-600 file under
+`~/.agent-teams-ring1` (`ext.credentials`), and every laptop process sets
+`BEADS_CREDENTIALS_FILE` to that path, so the ring-1 kit never reads or writes
+the laptop's `~/.config/beads/credentials`.
+
+V (bd 1.3.0, hosted server): `bd init --server --external` authenticates only
+through `BEADS_DOLT_PASSWORD`. It ignores `BEADS_CREDENTIALS_FILE` and
+`~/.config/beads/credentials`, so on a fresh directory it fails with MySQL
+error 1045. Every other bd command reads the credentials file. The kit's
+`hosted_bd_init` (`scripts/sandbox/lib-hosted.sh`) bridges this: it parses the
+password for the `[host:port]` section from the file bd uses afterwards and sets
+`BEADS_DOLT_PASSWORD` for the `bd init` command only. The password is never in
+argv, never printed, and never exported. A missing section or password stops
+the script with a message that names the file, not the value.
 
 ## F3 Detection, Go
 
@@ -218,8 +230,8 @@ the recommended default.
 The databases are created by hand in Dispatcher **Settings**, "Additional
 databases" (short names `at`, `agent_teams`, `at_dev`; Dispatcher names them
 `beads_eric_lloyd_<name>`). Each starts EMPTY, with no beads schema. Two logins
-hold grants on them: `eric_lloyd` (the laptop) and `eric_lloyd_ext` (the
-sandbox, which has no access to `beads_eric_lloyd`). The first
+hold grants on them; ring 1 uses only `eric_lloyd_ext`, on both the laptop and
+the sandbox (it has no access to `beads_eric_lloyd`). The first
 `bd init --server --external ...` against a database (F1) gives it the schema and
 mints its `_project_id`. Run against a database that already has the schema, the
 same command adopts the existing `_project_id` and changes nothing, so every
@@ -249,9 +261,9 @@ contract items above (F1, F2, F5, F11, F12) define what the scripts build.
 
 Names used below, from F11: global database `beads_eric_lloyd_at` (prefix
 `at`), project database `beads_eric_lloyd_agent_teams` (prefix
-`agent-teams`), sandbox DB login `eric_lloyd_ext`, laptop DB login
-`eric_lloyd`, laptop home `~/.agent-teams-ring1`. The sandbox name is `ring1`, so its host identity is
-`sandbox-ring1` (F5).
+`agent-teams`), DB login `eric_lloyd_ext` for both the sandbox and the laptop,
+laptop home `~/.agent-teams-ring1`. The sandbox name is `ring1`, so its host
+identity is `sandbox-ring1` (F5).
 
 Never read, print, or commit a credentials file, `ring1-ext.json`, the pulled
 Vercel env file, or a token. The scripts move the credentials by path or stdin
@@ -271,11 +283,13 @@ and never echo them. `scripts/sandbox/.gitignore` covers `.env*`,
    checks both and stops with a message if either is wrong.
 2. Confirm the join bead is done: `sh scripts/build-binaries.sh` ran after the
    T1-T3 changes and the rebuilt `plugins/agent-teams/bin/` is committed.
-3. For the laptop half, confirm `eric_lloyd` has grants on both hosted
-   databases. The laptop uses your existing `eric_lloyd` login: its password
-   is already in `~/.config/beads/credentials` under the same section. Don't
-   change that file. `laptop-ring1.sh` never reads it; to use another login,
-   set `DB_USER`.
+3. The laptop half uses the same `eric_lloyd_ext` login as the sandbox.
+   `laptop-ring1.sh prepare` reads `ring1-ext.json` (the same validation as
+   `put-credentials.sh`), writes a mode-600 `~/.agent-teams-ring1/ext.credentials`,
+   and exports `BEADS_CREDENTIALS_FILE` pointing at it. It never reads or writes
+   `~/.config/beads/credentials`. Set `RING1_EXT_JSON` to read another file.
+   `bd init` ignores the credentials file (F2); the kit passes the password to
+   that one command through `BEADS_DOLT_PASSWORD` and nowhere else.
 4. Install the SDK once:
 
    ```sh
@@ -389,7 +403,8 @@ they stay out of git, but a forced add would commit them.
    ```
 
    `claude` runs with `AGENT_TEAMS_HOME=~/.agent-teams-ring1`,
-   `AGENT_TEAMS_HOST=laptop-ring1`, `BEADS_DOLT_SERVER_TLS=1`, and
+   `AGENT_TEAMS_HOST=laptop-ring1`, `BEADS_DOLT_SERVER_TLS=1`,
+   `BEADS_CREDENTIALS_FILE=~/.agent-teams-ring1/ext.credentials`, and
    `--plugin-dir` set to this worktree's `plugins/agent-teams`.
 
    `AGENT_TEAMS_HOST` is fixed on purpose. The macOS kernel hostname can

@@ -10,8 +10,10 @@
 #   bash laptop-ring1.sh status      bd dolt show for both workspaces
 #   bash laptop-ring1.sh teardown    remove ~/.agent-teams-ring1 and the scratch clone
 #
-# Needs ~/.config/beads/credentials to hold a [mgt-spike.dbs.hosted.doltdb.com:3306] section whose
-# password belongs to $DB_USER (default eric_lloyd, the existing laptop login). This script never reads that file.
+# Uses the same scoped login as the sandbox, eric_lloyd_ext. `prepare` builds a mode-600 credentials
+# file ($RING_HOME/ext.credentials) from ~/.config/beads/ring1-ext.json (override with
+# RING1_EXT_JSON) and every command exports BEADS_CREDENTIALS_FILE pointing at it. This script never
+# reads or writes ~/.config/beads/credentials. Needs jq.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 WT=${WORKTREE:-$(cd "$HERE/../.." && pwd)}
@@ -19,7 +21,7 @@ RING_HOME=${RING_HOME:-$HOME/.agent-teams-ring1}
 RING_WORK=${RING_WORK:-$HOME/.agent-teams-ring1-work}
 CLONE=$RING_WORK/agent-teams
 export HOSTED_HOST=${HOSTED_HOST:-mgt-spike.dbs.hosted.doltdb.com}
-export DB_USER=${DB_USER:-eric_lloyd}
+EXT_CREDS=$RING_HOME/ext.credentials
 GLOBAL_DB=${GLOBAL_DB:-beads_eric_lloyd_at}
 GLOBAL_PREFIX=${GLOBAL_PREFIX:-at}
 PROJECT_DB=${PROJECT_DB:-beads_eric_lloyd_agent_teams}
@@ -38,16 +40,24 @@ ring_env() {
   export AGENT_TEAMS_HOME=$RING_HOME
   export AGENT_TEAMS_HOST=$HOST_ID
   export BEADS_DOLT_SERVER_TLS=1
+  export BEADS_CREDENTIALS_FILE=$EXT_CREDS
   export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
   export PATH=$WT/plugins/agent-teams/bin:$PATH
 }
 
 case "${1:-}" in
   prepare)
+    . "$HERE/lib-ext.sh"
     . "$HERE/lib-hosted.sh"
+    ext_validate || exit 1
+    export DB_USER=$EXT_USER_NAME
     ring_env
     mkdir -p "$RING_HOME" "$RING_WORK"
     [ -d "$RING_HOME/.git" ] || git -C "$RING_HOME" init -q
+    ext_write_credentials "$EXT_CREDS"
+    # The credentials file sits inside a git repo; keep it out of any commit.
+    mkdir -p "$RING_HOME/.git/info"
+    grep -qx 'ext.credentials' "$RING_HOME/.git/info/exclude" 2>/dev/null || echo 'ext.credentials' >> "$RING_HOME/.git/info/exclude"
     hosted_workspace "$RING_HOME" "$GLOBAL_DB" "$GLOBAL_PREFIX"
     [ -d "$CLONE/.git" ] || git clone -q "$WT" "$CLONE"
     hosted_workspace "$CLONE" "$PROJECT_DB" "$PROJECT_PREFIX"
@@ -56,8 +66,8 @@ case "${1:-}" in
     ;;
   env)
     ring_env
-    printf 'export AGENT_TEAMS_HOME=%s\nexport AGENT_TEAMS_HOST=%s\nexport BEADS_DOLT_SERVER_TLS=1\nexport CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\nexport PATH=%s\n' \
-      "$RING_HOME" "$HOST_ID" "$PATH"
+    printf 'export AGENT_TEAMS_HOME=%s\nexport AGENT_TEAMS_HOST=%s\nexport BEADS_DOLT_SERVER_TLS=1\nexport BEADS_CREDENTIALS_FILE=%s\nexport CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\nexport PATH=%s\n' \
+      "$RING_HOME" "$HOST_ID" "$EXT_CREDS" "$PATH"
     ;;
   claude)
     shift
