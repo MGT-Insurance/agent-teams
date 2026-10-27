@@ -115,7 +115,10 @@ REMOTE rule: initiative X is remote to this host iff `Where` starts with
 `host:`, `Host() != ""`, and the rest `!= Host()`. Empty, `run:`, or anything
 else is NOT remote in ring 1 (today's behavior).
 
-Hosted-only (DRI amendment, ring 1): registration writes the `where:` line, and
+Hosted-only (DRI amendment, ring 1): registration writes the `where:` line
+(both `ateam dispatch` and `ateam register`; `register` appends it to the
+caller's body only when the body has no `where:` line, first-wins, and
+`Host() != ""`), and
 `mail send` and `resume` apply the REMOTE rule, only when
 `bd.HostedServer(<ATH>)` is ok. On an embedded or local-server workspace both
 behave exactly as before, even if a description carries a `where:` line. This

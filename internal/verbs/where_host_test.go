@@ -104,6 +104,100 @@ func dispatchWhere(t *testing.T, home string, wantLines int) {
 	}
 }
 
+// registerBody runs register on body against home and returns the body file
+// content bd create received.
+func registerBody(t *testing.T, home, body string) string {
+	t.Helper()
+	bodyFile := makeTempFile(t, body)
+	var captured string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if p, ok := strings.CutPrefix(a, "--body-file="); ok {
+					data, err := os.ReadFile(p)
+					if err != nil {
+						t.Fatalf("read body-file: %v", err)
+					}
+					captured = string(data)
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				return json.Unmarshal([]byte(`{"id":"at-reg1"}`), issue)
+			}
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, home)
+	if err := (&registerKong{Title: "T", File: bodyFile}).Run(ctx); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if captured == "" {
+		t.Fatal("body file not captured")
+	}
+	return captured
+}
+
+func TestRegister_Hosted_NoWhere_AppendsWhereHost(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "sandbox-1")
+	body := "repo: /r\nproblem: p\n"
+	got := registerBody(t, markHosted(t, t.TempDir()), body)
+	if want := body + "where: host:sandbox-1\n"; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+	if w := initiative.Of(bd.Issue{Description: got}).Where; w != "host:sandbox-1" {
+		t.Errorf("initiative.Of Where = %q", w)
+	}
+}
+
+func TestRegister_Hosted_WherePresent_Unchanged(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "sandbox-1")
+	body := "repo: /r\nwhere: run:at-abc\n"
+	if got := registerBody(t, markHosted(t, t.TempDir()), body); got != body {
+		t.Errorf("body = %q, want unchanged %q", got, body)
+	}
+}
+
+func TestRegister_NotHosted_Unchanged(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "sandbox-1")
+	body := "repo: /r\nproblem: p\n"
+	if got := registerBody(t, t.TempDir(), body); got != body {
+		t.Errorf("body = %q, want unchanged %q", got, body)
+	}
+}
+
+func TestRegister_Hosted_WithEpic_KeepsBothLines(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "sandbox-1")
+	home := markHosted(t, t.TempDir())
+	bodyFile := makeTempFile(t, "repo: /r\n")
+	var captured string
+	fbd := &fakeBD{
+		runJSONFn: func(dst any, args ...string) error {
+			for _, a := range args {
+				if p, ok := strings.CutPrefix(a, "--body-file="); ok {
+					data, _ := os.ReadFile(p)
+					captured = string(data)
+				}
+			}
+			if issue, ok := dst.(*bd.Issue); ok {
+				return json.Unmarshal([]byte(`{"id":"at-reg2"}`), issue)
+			}
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, home)
+	cmd := &registerKong{
+		Title: "T", File: bodyFile,
+		createEpic: func(string, string) (string, error) { return "at-epic1", nil },
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	f := initiative.Of(bd.Issue{Description: captured})
+	if f.Where != "host:sandbox-1" || f.Epic != "at-epic1" {
+		t.Errorf("where=%q epic=%q in body %q", f.Where, f.Epic, captured)
+	}
+}
+
 // remoteSendCmd returns a sendKong whose every delivery seam fails the test.
 func remoteSendCmd(t *testing.T, sf *sendFixture, recipient string) *sendKong {
 	t.Helper()

@@ -76,9 +76,13 @@ func (c *registerKong) Run(ctx *cli.Context) error {
 	// body. appendEpicToBody returns the original file path on any failure
 	// (fail-soft) or a temp file path + cleanup + epicID when it succeeds.
 	bodyFile := c.File
+	if whereBody, cleanup := appendWhereToBody(ctx, bodyFile); cleanup != nil {
+		bodyFile = whereBody
+		defer cleanup()
+	}
 	var epicID string
 	if c.createEpic != nil {
-		if modPath, eid, cleanup := appendEpicToBody(ctx, c.File, c.Title, c.createEpic); cleanup != nil {
+		if modPath, eid, cleanup := appendEpicToBody(ctx, bodyFile, c.Title, c.createEpic); cleanup != nil {
 			bodyFile = modPath
 			epicID = eid
 			defer cleanup()
@@ -1476,6 +1480,44 @@ func createEpicInRepo(repoPath, title string) (string, error) {
 		return "", fmt.Errorf("bd create epic: returned no id")
 	}
 	return issue.ID, nil
+}
+
+// appendWhereToBody is registration's half of the F6 where: rule
+// (docs/hosted-beads.md), matching dispatch: on a hosted workspace with a
+// non-empty Host(), it returns a temp copy of the body at originalPath with
+// "where: host:<Host()>" appended, plus a cleanup function. A body that
+// already carries a where: line is left alone (first-wins). It returns
+// ("", nil) when nothing is written or on any failure, so callers keep the
+// original file.
+func appendWhereToBody(ctx *cli.Context, originalPath string) (path string, cleanup func()) {
+	if _, hosted := bd.HostedServer(ctx.Home); !hosted {
+		return "", nil
+	}
+	host := workspace.Host()
+	if host == "" {
+		return "", nil
+	}
+	bodyBytes, err := os.ReadFile(originalPath)
+	if err != nil {
+		return "", nil
+	}
+	bodyStr := string(bodyBytes)
+	if initiative.Of(bd.Issue{Description: bodyStr}).Where != "" {
+		return "", nil
+	}
+	modified := strings.TrimRight(bodyStr, "\n") + "\nwhere: " + whereHostPrefix + host + "\n"
+	tmp, err := os.CreateTemp("", "ateam-register-where-*")
+	if err != nil {
+		return "", nil
+	}
+	if _, err := tmp.WriteString(modified); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", nil
+	}
+	tmp.Close()
+	tmpPath := tmp.Name()
+	return tmpPath, func() { os.Remove(tmpPath) }
 }
 
 // appendEpicToBody reads the file at originalPath, extracts the project repo
