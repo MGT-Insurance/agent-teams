@@ -332,6 +332,11 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 	return nil
 }
 
+// maxGateNoteArgBytes caps the note passed as one --append-notes argv string.
+// Linux limits a single argv string to 128 KiB (MAX_ARG_STRLEN), so a larger
+// note takes the bd note --file path.
+const maxGateNoteArgBytes = 64 * 1024
+
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *gateKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
@@ -396,25 +401,32 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		noteFile = tmpPath
 	}
 
-	out, runErr := ctx.BD.Run("note", c.ID, "--file="+noteFile)
-	if out != "" {
-		fmt.Fprintln(ctx.Stdout, out)
-	}
-	if runErr != nil {
-		return runErr
-	}
-	out, runErr = ctx.BD.Run("label", "add", c.ID, "human")
-	if out != "" {
-		fmt.Fprintln(ctx.Stdout, out)
-	}
-	if runErr != nil {
-		return runErr
-	}
 	gateLabel := "gate:" + c.Kind
 	if pr != "" {
 		gateLabel += ":" + pr
 	}
-	out, runErr = ctx.BD.Run("label", "add", c.ID, gateLabel)
+	noteBytes, readErr := os.ReadFile(noteFile)
+	if readErr != nil {
+		return fmt.Errorf("ateam gate: read note file: %w", readErr)
+	}
+	// One bd update appends the note and adds both labels. A note over
+	// maxGateNoteArgBytes would risk the per-argv-string cap, so it goes
+	// through bd note --file and the labels get their own update.
+	var updateArgs []string
+	if len(noteBytes) > maxGateNoteArgBytes {
+		out, runErr := ctx.BD.Run("note", c.ID, "--file="+noteFile)
+		if out != "" {
+			fmt.Fprintln(ctx.Stdout, out)
+		}
+		if runErr != nil {
+			return runErr
+		}
+		updateArgs = []string{"update", c.ID}
+	} else {
+		updateArgs = []string{"update", c.ID, "--append-notes", string(noteBytes)}
+	}
+	updateArgs = append(updateArgs, "--add-label", "human", "--add-label", gateLabel)
+	out, runErr := ctx.BD.Run(updateArgs...)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -543,16 +555,15 @@ func (c *clearGateKong) clearBareLegacy(ctx *cli.Context) error {
 	}
 
 	labels := append([]string{"human", "gate:review", "gate:question", "gate:live-test-review", externalReviewLabel}, extra...)
+	args := []string{"update", c.ID}
 	for _, label := range labels {
-		out, err := ctx.BD.Run("label", "remove", c.ID, label)
-		if out != "" {
-			fmt.Fprintln(ctx.Stdout, out)
-		}
-		if err != nil {
-			return err
-		}
+		args = append(args, "--remove-label", label)
 	}
-	return nil
+	out, err := ctx.BD.Run(args...)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	return err
 }
 
 // perPRGateLabels returns every label in labels that is a per-PR-suffixed
@@ -618,14 +629,16 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 		return cli.Usagef("ateam clear-gate: %s's gate is initiative-wide, not per-PR — run `ateam clear-gate %s` without --pr to clear it", c.ID, c.ID)
 	}
 
+	removeArgs := []string{"update", c.ID}
 	for _, base := range []string{"gate:review", "gate:question", "gate:live-test-review", externalReviewLabel} {
-		out, err := ctx.BD.Run("label", "remove", c.ID, base+":"+pr)
-		if out != "" {
-			fmt.Fprintln(ctx.Stdout, out)
-		}
-		if err != nil {
-			return err
-		}
+		removeArgs = append(removeArgs, "--remove-label", base+":"+pr)
+	}
+	out, err := ctx.BD.Run(removeArgs...)
+	if out != "" {
+		fmt.Fprintln(ctx.Stdout, out)
+	}
+	if err != nil {
+		return err
 	}
 
 	issueAfter, err := bd.ShowIssue(ctx.BD, c.ID)
@@ -641,7 +654,7 @@ func (c *clearGateKong) clearOnePR(ctx *cli.Context) error {
 	if anyGateLabelRemains(issueAfter.Labels) {
 		return nil
 	}
-	out, err := ctx.BD.Run("label", "remove", c.ID, "human")
+	out, err = ctx.BD.Run("label", "remove", c.ID, "human")
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
@@ -718,7 +731,8 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam close: no context")
 	}
-	if err := c.refuseIfUnreadReviewMail(ctx); err != nil {
+	issue, err := c.refuseIfUnreadReviewMail(ctx)
+	if err != nil {
 		return err
 	}
 	reason := c.Reason
@@ -731,7 +745,6 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 	}
 
 	var out string
-	var err error
 	if reason != "" {
 		out, err = ctx.BD.Run("close", c.ID, "--reason="+reason)
 	} else {
@@ -744,8 +757,11 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 		return err
 	}
 
-	c.runLocalMainUpdate(ctx)
-	c.sendCloseSignal(ctx)
+	// bd close changes only status, closed_at, and close_reason; both
+	// consumers read repo/worktree lines, labels, and title, so they reuse
+	// the issue the guard read.
+	c.runLocalMainUpdate(ctx, issue)
+	c.sendCloseSignal(ctx, issue)
 	return nil
 }
 
@@ -756,25 +772,27 @@ func (c *closeKong) Run(ctx *cli.Context) error {
 // initiatives, messaging.go:561). Non-review initiatives are never checked
 // here — closing them is unchanged. There is no override flag; a human who
 // truly needs to drop a message uses `ateam mail close <msg>` instead.
-func (c *closeKong) refuseIfUnreadReviewMail(ctx *cli.Context) error {
+//
+// Returns the issue it read so the post-close steps reuse it.
+func (c *closeKong) refuseIfUnreadReviewMail(ctx *cli.Context) (bd.Issue, error) {
 	issue, err := bd.ShowIssue(ctx.BD, c.ID)
 	if err != nil {
 		// Fail CLOSED: every other unread-mail check in this guard refuses
 		// the close on error, so a transient bd failure here must not fall
 		// through to a close that skips the review-shaped check entirely.
-		return fmt.Errorf("ateam close: reading %s: %w", c.ID, err)
+		return bd.Issue{}, fmt.Errorf("ateam close: reading %s: %w", c.ID, err)
 	}
 	if _, ok := initiative.ReviewPRURL(issue); !ok {
-		return nil
+		return issue, nil
 	}
 	messages, err := unreadMailFor(ctx, c.ID)
 	if err != nil {
-		return fmt.Errorf("ateam close: checking unread mail: %w", err)
+		return bd.Issue{}, fmt.Errorf("ateam close: checking unread mail: %w", err)
 	}
 	if len(messages) == 0 {
-		return nil
+		return issue, nil
 	}
-	return fmt.Errorf("ateam close: %s has %d unread message(s); run ateam mail inbox and handle them", c.ID, len(messages))
+	return bd.Issue{}, fmt.Errorf("ateam close: %s has %d unread message(s); run ateam mail inbox and handle them", c.ID, len(messages))
 }
 
 // closeSignalFarewell is posted into the initiative's Telegram topic (if
@@ -797,11 +815,7 @@ type topicCloser interface {
 // "nothing to do" cases (no thread label, no transport configured) are
 // silent skips — that's the normal state for most closes/installs; actual
 // transport errors during Send/CloseTopic are logged to stderr as warnings.
-func (c *closeKong) sendCloseSignal(ctx *cli.Context) {
-	issue, err := bd.ShowIssue(ctx.BD, c.ID)
-	if err != nil {
-		return
-	}
+func (c *closeKong) sendCloseSignal(ctx *cli.Context, issue bd.Issue) {
 	threadRef := threadLabelValue(issue.Labels)
 	if threadRef == "" {
 		return
@@ -841,13 +855,9 @@ func (c *closeKong) sendCloseSignal(ctx *cli.Context) {
 
 // runLocalMainUpdate best-effort fast-forwards the initiative's local main
 // checkout after a successful close. Never returns an error — any failure
-// (issue lookup, missing repo: line, script exec) is fail-soft: printed as a
+// (missing repo: line, script exec) is fail-soft: printed as a
 // one-line note and swallowed.
-func (c *closeKong) runLocalMainUpdate(ctx *cli.Context) {
-	issue, err := bd.ShowIssue(ctx.BD, c.ID)
-	if err != nil {
-		return
-	}
+func (c *closeKong) runLocalMainUpdate(ctx *cli.Context, issue bd.Issue) {
 	f := initiative.Of(issue)
 	repo := f.Repo
 	if repo == "" {
@@ -1059,7 +1069,7 @@ func (c *appliedKong) Run(ctx *cli.Context) error {
 	key := appliedKey(c.Role, c.Slug)
 
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
@@ -1332,7 +1342,7 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 	freshPrefix := prefix + "fresh:"
 
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
@@ -1400,7 +1410,7 @@ func (c *freshDrainKong) Run(ctx *cli.Context) error {
 	freshPrefix := c.Role + ":fresh:"
 
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return err
 	}
 
