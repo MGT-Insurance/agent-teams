@@ -9,6 +9,8 @@ New to agent-teams? Start with [GETTING-STARTED.md](GETTING-STARTED.md) for an e
 - [beads](https://github.com/gastownhall/beads) (`bd`) — hard dependency, no fallback.
 - Claude Code with plugins enabled.
 
+Make sure `bd` is on your `PATH` before running `/setup-agent-teams`, which checks for it.
+
 ## Install
 
 ```
