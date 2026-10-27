@@ -113,6 +113,7 @@ if (cmd === 'policy' && flag('--print')) {
   const p = await buildPolicy({ gateway: REDACTED, gh: flag('--gh') ? REDACTED : null });
   console.log(JSON.stringify(p, null, 2));
 } else if (cmd === 'policy') {
+  loadEnv();
   const sb = await get();
   await sb.update({ networkPolicy: await realPolicy() });
   console.log('policy updated', el());
