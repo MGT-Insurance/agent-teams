@@ -55,9 +55,11 @@ func RegisterMatchKong(p *cli.Parser) {
 //
 // Idempotent: if sessionID is already recorded on initiativeID (e.g. a
 // respawn reusing the same session id), this is a no-op — it returns before
-// listing open initiatives and before any write, which is stronger than
-// WithSession's own idempotency (that returns an unchanged description, which
-// would still cost a list and a redundant bd update here).
+// any write, which is stronger than WithSession's own idempotency (that
+// returns an unchanged description, which would still cost a redundant bd
+// update here). The one open list it reads serves both the target lookup and
+// the guard below; appendSessionIDWith takes that list from a caller that
+// already has it.
 //
 // One-open-initiative guard: before appending, scans every OPEN initiative;
 // if sessionID is already recorded on a DIFFERENT open initiative, returns an
@@ -77,16 +79,53 @@ func RegisterMatchKong(p *cli.Parser) {
 // The signature is load-bearing: tie_session.go calls this and is the only
 // other caller. Change the body, not the shape.
 func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	open, err := listOpenIssues(ctx, false)
+	if err != nil {
+		return fmt.Errorf("appendSessionID: %w", err)
+	}
+	return appendSessionIDWith(ctx, open, initiativeID, sessionID)
+}
+
+// validateSessionID rejects an empty or whitespace-bearing session id before
+// any bd read or write.
+func validateSessionID(sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("appendSessionID: sessionID must not be empty")
 	}
 	if strings.ContainsAny(sessionID, " \t\r\n") {
 		return fmt.Errorf("appendSessionID: sessionID must not contain whitespace: %q", sessionID)
 	}
+	return nil
+}
 
-	issue, err := bd.ShowIssue(ctx.BD, initiativeID)
-	if err != nil {
-		return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)
+// appendSessionIDWith is appendSessionID over an already-fetched plain open
+// initiative list (listOpenIssues(ctx, false)), so a caller that just listed
+// open initiatives does not list again. The target is read from open; only a
+// target absent from it (a closed initiative) falls back to bd.ShowIssue.
+// Guard, validation, idempotency, and the bd update --body-file write are
+// appendSessionID's.
+func appendSessionIDWith(ctx *cli.Context, open []bd.Issue, initiativeID, sessionID string) error {
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+
+	var issue bd.Issue
+	found := false
+	for _, iss := range open {
+		if iss.ID == initiativeID {
+			issue, found = iss, true
+			break
+		}
+	}
+	if !found {
+		var err error
+		issue, err = bd.ShowIssue(ctx.BD, initiativeID)
+		if err != nil {
+			return fmt.Errorf("appendSessionID: bd show %s: %w", initiativeID, err)
+		}
 	}
 	fields := initiative.Of(issue)
 	targetRuntime, err := sessionruntime.ResolveStored(fields.Runtime)
@@ -99,11 +138,7 @@ func appendSessionID(ctx *cli.Context, initiativeID, sessionID string) error {
 		}
 	}
 
-	var openIssues []bd.Issue
-	if err := ctx.BD.RunJSON(&openIssues, "list", "--status=open", "--json"); err != nil {
-		return fmt.Errorf("appendSessionID: list open initiatives: %w", err)
-	}
-	for _, other := range openIssues {
+	for _, other := range open {
 		if other.ID == initiativeID {
 			continue
 		}
@@ -184,30 +219,12 @@ func resolveInitiativeBySession(ctx *cli.Context, runtime sessionruntime.Kind, s
 		return bd.Issue{}, false, nil
 	}
 
-	var openIssues []bd.Issue
-	if err := ctx.BD.RunJSON(&openIssues, "list", "--status=open", "--json"); err != nil {
-		return bd.Issue{}, false, fmt.Errorf("resolveInitiativeBySession: list open initiatives: %w", err)
+	openIssues, err := listOpenIssues(ctx, false)
+	if err != nil {
+		return bd.Issue{}, false, fmt.Errorf("resolveInitiativeBySession: %w", err)
 	}
-
-	var match *bd.Issue
-	for i := range openIssues {
-		iss := &openIssues[i]
-		if !issueHasSession(*iss, sessionID) {
-			continue
-		}
-		issRuntime, err := sessionruntime.ResolveStored(initiative.Of(*iss).Runtime)
-		if err != nil || issRuntime != runtime {
-			continue
-		}
-		if match != nil {
-			return bd.Issue{}, false, nil // >1 match — never guess
-		}
-		match = iss
-	}
-	if match == nil {
-		return bd.Issue{}, false, nil
-	}
-	return *match, true, nil
+	issue, found := matchInitiativeBySession(openIssues, runtime, sessionID)
+	return issue, found, nil
 }
 
 // matchSessionsForInitiative returns the sessions tied to iss, ordered
@@ -454,18 +471,16 @@ func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam resolve-initiative: nil context")
 	}
 
-	var match *bd.Issue
-	if c.SessionID != "" {
-		if issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID); err == nil && found {
-			match = &issue
-		}
+	issues, err := listOpenIssues(ctx, false)
+	if err != nil {
+		return nil
 	}
 
+	var match *bd.Issue
+	if issue, found := matchInitiativeBySession(issues, sessionruntime.Claude, c.SessionID); found {
+		match = &issue
+	}
 	if match == nil {
-		var issues []bd.Issue
-		if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
-			return nil
-		}
 		match = matchByWorktreeOrAncestor(issues, c.Path)
 		if match == nil {
 			return nil

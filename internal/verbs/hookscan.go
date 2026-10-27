@@ -49,9 +49,8 @@ func RegisterHookScanKong(p *cli.Parser) {
 //     id directly.
 //
 // Both branches read the SAME single issue list fetched at the top of Run,
-// so either way this verb makes exactly one bd invocation — except when
-// SessionID resolves a match (see SessionID doc below), which costs one
-// additional bd call inside resolveInitiativeBySession.
+// so either way this verb makes exactly one bd invocation, including when
+// SessionID is given: the session match runs over that list too.
 type hookScanKong struct {
 	Path      string `arg:"" optional:"" name:"path" help:"Absolute path to resolve to its owning initiative, ancestor-or-self. Mutually exclusive with --id."`
 	ID        string `name:"id" help:"Skip path/worktree resolution; check unread mail directly for this already-known recipient id."`
@@ -85,13 +84,22 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam hook-scan: nil context")
 	}
 
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--include-infra", "--json"); err != nil {
+	issues, err := listOpenIssues(ctx, true)
+	if err != nil {
 		return err
 	}
 
 	id := c.ID
 	if id == "" {
+		// Match candidates are initiativeRows(issues): --include-infra widens
+		// the list beyond the plain --status=open resolveInitiativeKong uses
+		// (message, agent, role, and ephemeral rows), and a message body
+		// containing a literal "session: <id>" or "worktree: <path>" line
+		// could otherwise misroute to the message bead instead of the
+		// initiative that owns the session or worktree. Only initiatives carry
+		// those lines, so this is the same candidate set resolve-initiative
+		// sees.
+		candidates := initiativeRows(issues)
 		var match *bd.Issue
 		// Session-first, Claude runtime only: hook-scan serves the
 		// Claude-plugin shell hooks exclusively (wake-watcher.sh,
@@ -101,25 +109,11 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		// registered worktree (at-0xnp1): its durable session tie still
 		// resolves it even though the path-only match below would find
 		// nothing.
-		if c.SessionID != "" {
-			issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID)
-			if err != nil {
-				return err
-			}
-			if found {
-				match = &issue
-			}
+		if issue, found := matchInitiativeBySession(candidates, sessionruntime.Claude, c.SessionID); found {
+			match = &issue
 		}
 		if match == nil {
-			// Match candidates exclude message-type beads: --include-infra
-			// widens the list beyond the plain --status=open
-			// resolveInitiativeKong used, and a message body containing a
-			// literal "worktree: <path>" line could otherwise misroute to
-			// the message bead instead of the initiative that actually owns
-			// that worktree. Only initiatives carry a worktree: line, so
-			// excluding message-type is sufficient — other non-initiative
-			// beads (agent/role) have no worktree: line to match.
-			match = matchByWorktreeOrAncestor(excludeMessageType(issues), c.Path)
+			match = matchByWorktreeOrAncestor(candidates, c.Path)
 			if match == nil {
 				return nil
 			}
@@ -158,19 +152,4 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 	}
 	fmt.Fprintf(ctx.Stdout, "unread: %d\n", unread)
 	return nil
-}
-
-// excludeMessageType returns issues with IssueType != "message" — the
-// inverse of filterMessageType (messaging.go). Used to build the
-// match-candidate slice for matchByWorktreeOrAncestor so message beads,
-// which can never legitimately carry a worktree: line, are never match
-// candidates (see FIX 3 doc above Run).
-func excludeMessageType(issues []bd.Issue) []bd.Issue {
-	var out []bd.Issue
-	for _, iss := range issues {
-		if iss.IssueType != "message" {
-			out = append(out, iss)
-		}
-	}
-	return out
 }
