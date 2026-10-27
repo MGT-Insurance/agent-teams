@@ -150,6 +150,13 @@ func TestGateHandoffPairAcrossDifferentSpellings(t *testing.T) {
 		switch args[0] {
 		case "show":
 			return issueJSON(issue), nil
+		case "update":
+			// gate's single update carries --add-label flags.
+			for i, a := range args {
+				if a == "--add-label" && i+1 < len(args) {
+					issue.Labels = append(issue.Labels, args[i+1])
+				}
+			}
 		case "label":
 			if len(args) < 4 {
 				return "", nil

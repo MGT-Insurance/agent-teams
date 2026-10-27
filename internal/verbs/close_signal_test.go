@@ -27,6 +27,8 @@ type closeSignalFakeBD struct {
 	closeErr error
 	// closeCalls records the args passed to bd close
 	closeCalls [][]string
+	// showCalls counts bd show invocations
+	showCalls int
 }
 
 func (f *closeSignalFakeBD) Run(args ...string) (string, error) {
@@ -38,6 +40,7 @@ func (f *closeSignalFakeBD) Run(args ...string) (string, error) {
 		return "ok", nil
 	}
 	if len(args) >= 3 && args[0] == "show" && args[2] == "--json" {
+		f.showCalls++
 		raw, err := json.Marshal([]bd.Issue{f.issue})
 		if err != nil {
 			return "", err
@@ -101,6 +104,54 @@ func TestClose_SendsFarewellAndClosesTopic_WhenThreadLabelPresent(t *testing.T) 
 	}
 	if errBuf.String() != "" {
 		t.Errorf("expected no stderr warnings, got %q", errBuf.String())
+	}
+}
+
+// TestClose_ReadsIssueOnce_ReusedByLocalMainUpdateAndSignal confirms close
+// spawns one show (the guard's) plus one close, and that both post-close
+// consumers act on the issue the guard read: runLocalMainUpdate gets the repo
+// line and sendCloseSignal gets the thread label and title.
+func TestClose_ReadsIssueOnce_ReusedByLocalMainUpdateAndSignal(t *testing.T) {
+	nbd := &closeSignalFakeBD{
+		issue: bd.Issue{
+			ID:          "at-00o",
+			Title:       "my initiative",
+			Description: "repo: /some/repo\n",
+			Labels:      []string{"at-00o", "thread:999"},
+		},
+	}
+	ft := &fakeTopicCloserTransport{fakeTransport: fakeTransport{returnRef: "999"}}
+	var gotRepo string
+	cmd := &closeKong{
+		ID:                 "at-00o",
+		Reason:             "done",
+		runUpdateLocalMain: func(repoPath string) (string, error) { gotRepo = repoPath; return "", nil },
+		transportFor:       func(home string) (transport.Transport, error) { return ft, nil },
+	}
+	ctx, _, errBuf := newCloseSignalCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if nbd.showCalls != 1 {
+		t.Errorf("bd show calls = %d, want 1", nbd.showCalls)
+	}
+	if len(nbd.closeCalls) != 1 {
+		t.Fatalf("bd close calls = %d, want 1", len(nbd.closeCalls))
+	}
+	if got := strings.Join(nbd.closeCalls[0], " "); got != "close at-00o --reason=done" {
+		t.Errorf("close args = %q", got)
+	}
+	if gotRepo != "/some/repo" {
+		t.Errorf("runUpdateLocalMain repo = %q, want /some/repo", gotRepo)
+	}
+	if len(ft.calls) != 1 || ft.calls[0].ThreadRef != "999" || ft.calls[0].Title != "my initiative" {
+		t.Errorf("Send calls = %+v, want one to thread 999 titled %q", ft.calls, "my initiative")
+	}
+	if len(ft.closeTopicCalls) != 1 {
+		t.Errorf("CloseTopic calls = %v, want one", ft.closeTopicCalls)
+	}
+	if errBuf.String() != "" {
+		t.Errorf("unexpected stderr: %q", errBuf.String())
 	}
 }
 
