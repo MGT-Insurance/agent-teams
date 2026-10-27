@@ -257,8 +257,8 @@ func TestSendKong_NotRemote_ReachesLocalDelivery(t *testing.T) {
 		where  string
 		hosted bool
 	}{
-		{"", true}, {"host:laptop", true}, {"run:x", true},
-		{"host:sandbox-1", false}, // embedded home ignores where:
+		{"host:laptop", true},
+		{"", false}, {"host:sandbox-1", false}, // embedded home ignores where:
 	} {
 		where := tc.where
 		t.Run(fmt.Sprintf("where=%s,hosted=%t", where, tc.hosted), func(t *testing.T) {

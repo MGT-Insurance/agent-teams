@@ -3,7 +3,6 @@ package verbs
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
-	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
 // followHelperEnv switches the test binary into the detached-follower stand-in
@@ -57,8 +55,6 @@ type followHarness struct {
 	headOut string
 	headErr error
 	headQ   []string
-	where   map[string]string // initiative id -> where: value
-	lookups []string
 	alive   map[int]bool
 }
 
@@ -74,7 +70,7 @@ func newFollowHarness(t *testing.T, hosted bool) *followHarness {
 	if hosted {
 		followWriteHosted(t, home)
 	}
-	return &followHarness{t: t, home: home, headOut: `[{"head":10}]`, where: map[string]string{}, alive: map[int]bool{}}
+	return &followHarness{t: t, home: home, headOut: `[{"head":10}]`, alive: map[int]bool{}}
 }
 
 func followWriteHosted(t *testing.T, home string) {
@@ -133,14 +129,6 @@ func (h *followHarness) seams(c *mailFollowKong) {
 	if c.now == nil {
 		c.now = func() time.Time { return time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC) }
 	}
-	c.lookup = func(id string) (initiative.Fields, error) {
-		h.lookups = append(h.lookups, id)
-		w, ok := h.where[id]
-		if !ok {
-			return initiative.Fields{}, errors.New("no such initiative")
-		}
-		return initiative.Fields{Where: w}, nil
-	}
 	c.pidAlive = func(pid int) bool { return h.alive[pid] }
 }
 
@@ -173,7 +161,7 @@ func (h *followHarness) run(c *mailFollowKong) error {
 }
 
 func followRowJSON(seq, ts, op, typ, assignee string) string {
-	return `{"seq":` + seq + `,"ts":"` + ts + `","op":"` + op + `","issue":{"issue_type":"` + typ + `","assignee":"` + assignee + `"}}`
+	return `{"seq":` + seq + `,"ts":"` + ts + `","op":"` + op + `","issue_id":"at-m` + seq + `","issue":{"issue_type":"` + typ + `","assignee":"` + assignee + `","labels":["to-host:laptop-a"]}}`
 }
 
 func followMsg(seq, assignee string) string {
@@ -284,26 +272,18 @@ func mustAtoi(t *testing.T, s string) int {
 
 func TestMailFollowRingDecisions(t *testing.T) {
 	cases := []struct {
-		name       string
-		assignee   string
-		where      map[string]string
-		wantRing   bool
-		wantLookup bool
+		name     string
+		assignee string
+		wantRing bool
 	}{
-		{"local where host:", "at-a", map[string]string{"at-a": "host:laptop-a"}, true, true},
-		{"remote where host:", "at-a", map[string]string{"at-a": "host:sandbox-1"}, false, true},
-		{"empty where", "at-a", map[string]string{"at-a": ""}, true, true},
-		{"run where (reserved)", "at-a", map[string]string{"at-a": "run:bead-1"}, true, true},
-		{"lookup failure", "at-gone", map[string]string{}, true, true},
-		{"steward skips lookup", "steward", map[string]string{}, true, false},
-		{"unsafe assignee", "../evil", map[string]string{}, false, false},
-		{"empty assignee", "", map[string]string{}, false, false},
+		{"stamped local", "at-a", true},
+		{"unsafe assignee", "../evil", false},
+		{"empty assignee", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newFollowHarness(t, true)
 			h.writeSeq("10")
-			h.where = tc.where
 			h.steps = []followStep{{lines: []string{followMsg("11", tc.assignee)}}}
 			if err := h.run(&mailFollowKong{}); err != nil {
 				t.Fatal(err)
@@ -317,9 +297,6 @@ func TestMailFollowRingDecisions(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(h.home, "evil.wake")); err == nil {
 				t.Fatal("unsafe assignee escaped the mailbox")
-			}
-			if looked := len(h.lookups) > 0; looked != tc.wantLookup {
-				t.Fatalf("lookups=%v want lookup=%v", h.lookups, tc.wantLookup)
 			}
 			if h.seq() != "11" {
 				t.Fatalf("host.seq=%q want 11 (advances on every row)", h.seq())

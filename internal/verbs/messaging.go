@@ -24,6 +24,11 @@ import (
 // whereHostPrefix is the ring-1 grammar of the where: line (docs/hosted-beads.md F6).
 const whereHostPrefix = "host:"
 
+// toHostLabelPrefix is the label a hosted sender stamps on a message at create
+// with the recipient's host; the follower reads it from the journal row
+// (docs/hosted-beads.md F7).
+const toHostLabelPrefix = "to-host:"
+
 // remoteInitiative reports whether f runs on a host other than this one: the
 // workspace at home is hosted, f.Where starts with "host:", this host's
 // identity is known, and the rest differs from it (docs/hosted-beads.md F6).
@@ -84,7 +89,32 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	sender := resolveSender(ctx, c.Sender)
 
-	msgID, deduped, err := c.createOrDedupMessage(ctx, sender)
+	// On a hosted workspace the recipient is read BEFORE the message is created
+	// so its host can be stamped on the create row (docs/hosted-beads.md F7).
+	// Elsewhere the read stays after the create, as before.
+	var (
+		toHost    string
+		preIssue  bd.Issue
+		preWT     string
+		preErr    error
+		preloaded bool
+	)
+	if _, hosted := bd.HostedServer(ctx.Home); hosted && c.RecipientID != StewardHandle {
+		preIssue, preWT, preErr = recipientWorktree(ctx, c.RecipientID)
+		preloaded = true
+		var ok bool
+		if preErr == nil {
+			toHost, ok = strings.CutPrefix(initiative.Of(preIssue).Where, whereHostPrefix)
+		}
+		if preErr != nil {
+			return fmt.Errorf("ateam send: read recipient %s: %w; hosted mail needs a \"where: host:<name>\" line on the recipient, written by ateam register or dispatch", c.RecipientID, preErr)
+		}
+		if !ok || toHost == "" {
+			return fmt.Errorf("ateam send: hosted mail to %s needs a \"where: host:<name>\" line on the recipient, written by ateam register or dispatch", c.RecipientID)
+		}
+	}
+
+	msgID, deduped, err := c.createOrDedupMessage(ctx, sender, toHost)
 	if err != nil {
 		return err
 	}
@@ -102,7 +132,10 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	// machine-scoped singleton, not an initiative bead; recipientWorktree
 	// returns the zero-value bd.Issue for it, so Status is never "closed"
 	// and this never gates Steward mail.
-	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	recipIssue, wtPath, liveErr := preIssue, preWT, preErr
+	if !preloaded {
+		recipIssue, wtPath, liveErr = recipientWorktree(ctx, c.RecipientID)
+	}
 	if liveErr != nil {
 		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
 		return nil
@@ -248,7 +281,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 // hit, create nothing and return the existing open message's id (deduped =
 // true); mail send never refuses a recipient, so this only ever short-
 // circuits the create call, never the delivery steps that follow it.
-func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string, bool, error) {
+func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender, toHost string) (string, bool, error) {
 	if existingID, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey); err != nil {
 		return "", false, fmt.Errorf("ateam send: dedup lookup: %w", err)
 	} else if hit {
@@ -264,6 +297,9 @@ func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string
 		"--body-file=" + c.File,
 		"--title=message from " + sender,
 		"--json",
+	}
+	if toHost != "" {
+		createArgs = append(createArgs, "--labels="+toHostLabelPrefix+toHost)
 	}
 	if c.Thread != "" {
 		createArgs = append(createArgs, "--labels=thread:"+c.Thread)

@@ -20,7 +20,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
-	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
 
 // followHeadQuery reads the journal head for the F8 baseline. The table and
@@ -55,7 +55,6 @@ type mailFollowKong struct {
 	sleep     func(ctx context.Context, d time.Duration)
 	lifeSleep func(ctx context.Context, d time.Duration)
 	now       func() time.Time
-	lookup    func(id string) (initiative.Fields, error)
 	pidAlive  func(pid int) bool
 	tryLock   func(path string) (release func(), ok bool, err error)
 	spawn     func(ctx *cli.Context) error
@@ -74,9 +73,11 @@ type followRow struct {
 	TS    string `json:"ts"`
 	Op    string `json:"op"`
 	Issue *struct {
-		IssueType string `json:"issue_type"`
-		Assignee  string `json:"assignee"`
+		IssueType string   `json:"issue_type"`
+		Assignee  string   `json:"assignee"`
+		Labels    []string `json:"labels"`
 	} `json:"issue"`
+	IssueID string `json:"issue_id"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -258,15 +259,6 @@ func (c *mailFollowKong) defaults(ctx *cli.Context) {
 	if c.headQuery == nil {
 		c.headQuery = func(q string) (string, error) { return ctx.BD.Run("sql", "--json", q) }
 	}
-	if c.lookup == nil {
-		c.lookup = func(id string) (initiative.Fields, error) {
-			issue, err := bd.ShowIssue(ctx.BD, id)
-			if err != nil {
-				return initiative.Fields{}, err
-			}
-			return initiative.Of(issue), nil
-		}
-	}
 	if c.pidAlive == nil {
 		c.pidAlive = pidAlive
 	}
@@ -372,23 +364,27 @@ func (c *mailFollowKong) ringTarget(ctx *cli.Context, r followRow, notBefore tim
 			return "", false
 		}
 	}
-	if !c.localRecipient(ctx, id) {
+	if id == StewardHandle {
+		return id, true
+	}
+	var stamps []string
+	for _, l := range r.Issue.Labels {
+		if h, ok := strings.CutPrefix(l, toHostLabelPrefix); ok {
+			stamps = append(stamps, h)
+		}
+	}
+	if len(stamps) != 1 {
+		why := "has no to-host label"
+		if len(stamps) > 1 {
+			why = "has more than one to-host label"
+		}
+		fmt.Fprintf(ctx.Stderr, "ateam mail follow: message %s to %s %s; not ringing\n", r.IssueID, id, why)
+		return "", false
+	}
+	if h := workspace.Host(); h == "" || stamps[0] != h {
 		return "", false
 	}
 	return id, true
-}
-
-// localRecipient reports whether initiative id is local to this host. A failed
-// lookup counts as local: a stray doorbell is harmless, lost mail is not.
-func (c *mailFollowKong) localRecipient(ctx *cli.Context, id string) bool {
-	if id == StewardHandle {
-		return true
-	}
-	f, err := c.lookup(id)
-	if err != nil {
-		return true
-	}
-	return !remoteInitiative(ctx.Home, f)
 }
 
 func (c *mailFollowKong) ring(ctx *cli.Context, id string) {

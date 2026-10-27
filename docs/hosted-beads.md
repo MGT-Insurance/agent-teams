@@ -120,7 +120,12 @@ Hosted-only (DRI amendment, ring 1): registration writes the `where:` line
 caller's body only when the body has no `where:` line, first-wins, and
 `Host() != ""`), and
 `mail send` and `resume` apply the REMOTE rule, only when
-`bd.HostedServer(<ATH>)` is ok. On an embedded or local-server workspace both
+`bd.HostedServer(<ATH>)` is ok. Also hosted-only, `mail send` to any recipient
+other than `steward` reads the recipient before it creates the message and
+stamps `to-host:<name>` (the `<name>` of the recipient's `where: host:<name>`
+line) in the create call (F7). If the read fails, or `Where` is missing or not
+`host:<name>` with a non-empty name, send returns an error naming the recipient
+and creates no bead. On an embedded or local-server workspace all of these
 behave exactly as before, even if a description carries a `where:` line. This
 keeps a laptop whose kernel hostname changes with the network (macOS
 `os.Hostname()`) from reading its own initiatives as remote. Every ring-1 host
@@ -132,23 +137,31 @@ One follower per host (DRI amendment, ring 1, replaces the per-session
 follower). A journal row `r` is a MESSAGE row iff `r.op == "create"` AND
 `r.issue.issue_type == "message"`. Its recipient is `r.issue.assignee`.
 
-The follower rings recipient `ID` iff `ID` is LOCAL to this host:
+The sender stamps the recipient's host on the message (F6), so the follower
+decides from the journal row alone and makes no bd call per row. The follower
+rings recipient `ID` as follows:
 
-- `ID == "steward"` -> local.
-- Otherwise look up initiative `ID` in `<ATH>` and read `Where` with
-  `initiative.Of`. Local iff `Where` is empty, or `Where` is not `host:...`,
-  or the F6 REMOTE rule says not remote (`Host() == ""` or the rest equals
-  `Host()`).
-- Lookup fails (no such initiative, bd error) -> local. A stray doorbell is
-  harmless; lost mail is not.
+- `ID == "steward"` -> ring.
+- Otherwise read `r.issue.labels`. Exactly one label with the prefix `to-host:`
+  -> ring iff the rest equals `Host()` and `Host() != ""`.
+- No `to-host:` label, or more than one -> do not ring. Write one stderr line,
+  `ateam mail follow: message <issue_id> to <ID> has no to-host label; not
+  ringing` (or `has more than one to-host label`). The follower never exits and
+  never blocks on such a row: the checkpoint (F8) advances past it, so a restart
+  doesn't replay it.
+
+There is no fallback: no code path looks up the recipient or rings when the
+stamp is missing.
 
 Action: `touch <ATH>/mailbox/<ID>.wake`, the same file `ateam mail send`
 touches (`internal/verbs/messaging.go:99`).
 
-V: bd 1.3.0 journal row for `bd create --type=message --assignee=at-xyz` on a
-scratch db:
-`{"seq":1,"op":"create","issue_id":"jp-wisp-7hw","issue":{"issue_type":"message","assignee":"at-xyz","labels":["delivery:pending"],"ephemeral":true,...}}`.
-Message beads are ephemeral wisps.
+V: bd 1.3.0 journal row for a hosted `ateam mail send` to `at-xyz`, whose
+`where:` line is `host:laptop-ring1`:
+`{"seq":1,"op":"create","issue_id":"jp-wisp-7hw","issue":{"issue_type":"message","assignee":"at-xyz","labels":["delivery:pending","to-host:laptop-ring1"],"ephemeral":true,...}}`.
+Message beads are ephemeral wisps. Probe (ring 1 hosted DB): labels set in the
+create call appear in the create row's `labels`; labels added later arrive as
+separate update rows, so the stamp must be set at create.
 
 ## F8 Checkpoint
 
