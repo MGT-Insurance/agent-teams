@@ -45,7 +45,10 @@ Password: `~/.config/beads/credentials`, INI section
 empty). No agent reads, prints, or copies it; the human-run kit moves it.
 
 V: the laptop already has that credentials section (section name checked,
-value not read).
+value not read). The sandbox gets the same section for the `eric_lloyd_ext`
+login: its text is the `credentials` field of Dispatcher's
+`GET /api/dolt/databases/credentials` response, saved as
+`~/.config/beads/ring1-ext.json`.
 
 ## F3 Detection, Go
 
@@ -212,6 +215,17 @@ arm-time call nor the restart check (F9).
 VALUE PENDING the DRI/human ruling on the global-DB fork; the names below are
 the recommended default.
 
+The databases are created by hand in Dispatcher **Settings**, "Additional
+databases" (short names `at`, `agent_teams`, `at_dev`; Dispatcher names them
+`beads_eric_lloyd_<name>`). Each starts EMPTY, with no beads schema. Two logins
+hold grants on them: `eric_lloyd` (the laptop) and `eric_lloyd_ext` (the
+sandbox, which has no access to `beads_eric_lloyd`). The first
+`bd init --server --external ...` against a database (F1) gives it the schema and
+mints its `_project_id`. Run against a database that already has the schema, the
+same command adopts the existing `_project_id` and changes nothing, so every
+workspace setup runs it and none needs a separate "is it initialised" check.
+`hosted_workspace` prints `initialized` or `adopted` for each.
+
 - Global: hosted db `beads_eric_lloyd_at`, prefix `at`. Laptop uses
   `AGENT_TEAMS_HOME=~/.agent-teams-ring1`; the live `~/.agent-teams` is
   untouched in ring 1. Sandbox uses `AGENT_TEAMS_HOME=$HOME/.agent-teams`.
@@ -235,21 +249,26 @@ contract items above (F1, F2, F5, F11, F12) define what the scripts build.
 
 Names used below, from F11: global database `beads_eric_lloyd_at` (prefix
 `at`), project database `beads_eric_lloyd_agent_teams` (prefix
-`agent-teams`), sandbox DB login `eric_lloyd_ring1`, laptop DB login
+`agent-teams`), sandbox DB login `eric_lloyd_ext`, laptop DB login
 `eric_lloyd`, laptop home `~/.agent-teams-ring1`. The sandbox name is `ring1`, so its host identity is
 `sandbox-ring1` (F5).
 
-Never read, print, or commit a credentials file, the pulled Vercel env file,
-or a token. The scripts move the credentials file by path and never echo it.
-`scripts/sandbox/.gitignore` covers `.env*`, `node_modules`, `*.tgz`, and
-`credentials*`.
+Never read, print, or commit a credentials file, `ring1-ext.json`, the pulled
+Vercel env file, or a token. The scripts move the credentials by path or stdin
+and never echo them. `scripts/sandbox/.gitignore` covers `.env*`,
+`node_modules`, `*.tgz`, and `credentials*`.
 
 ### Before you start
 
-1. Confirm the human ops bead is done: both hosted databases exist, the
-   `eric_lloyd_ring1` login has grants on both, and the password is in
-   `~/.config/beads/ring1-sandbox.credentials` under the section
-   `[mgt-spike.dbs.hosted.doltdb.com:3306]`.
+1. Create the databases in Dispatcher **Settings**, "Additional databases",
+   with the short names `at` and `agent_teams` (`at_dev` is optional). They
+   start empty; the kit runs `bd init` on first use (F11). Then, signed in to
+   Dispatcher, save the response of
+   `https://dispatcher.mgtinsurance.ai/api/dolt/databases/credentials` as
+   `~/.config/beads/ring1-ext.json` (mode 600). Its `user` must be
+   `eric_lloyd_ext`, and its `credentials` must be the
+   `[mgt-spike.dbs.hosted.doltdb.com:3306]` section. `put-credentials.sh`
+   checks both and stops with a message if either is wrong.
 2. Confirm the join bead is done: `sh scripts/build-binaries.sh` ran after the
    T1-T3 changes and the rebuilt `plugins/agent-teams/bin/` is committed.
 3. For the laptop half, confirm `eric_lloyd` has grants on both hosted
@@ -296,7 +315,12 @@ or a token. The scripts move the credentials file by path and never echo it.
 
    `create` applies the policy and extends the timeout to the 24-hour cap.
 
-2. Copy the files in. The credentials file goes in with mode `600`:
+2. Copy the files in. `put-credentials.sh` reads `ring1-ext.json` with `jq`
+   and pipes the `credentials` text in through stdin with mode `600`, so the
+   password never appears in a command line or in output. To check the files
+   without a sandbox, run
+   `bash scripts/sandbox/put-credentials.sh --dry-run <dir>`; it writes into
+   `<dir>` and prints no secret. Set `RING1_EXT_JSON` to read another file.
 
    ```sh
    node scripts/sandbox/sb.mjs put scripts/sandbox/plugin.tgz plugin.tgz
@@ -304,10 +328,12 @@ or a token. The scripts move the credentials file by path and never echo it.
    node scripts/sandbox/sb.mjs put scripts/sandbox/install.sh install.sh
    node scripts/sandbox/sb.mjs put scripts/sandbox/start-dri.sh start-dri.sh
    node scripts/sandbox/sb.mjs put scripts/sandbox/resume-dri.sh resume-dri.sh
-   node scripts/sandbox/sb.mjs put ~/.config/beads/ring1-sandbox.credentials ring1.credentials 600
+   bash scripts/sandbox/put-credentials.sh --name ring1
    ```
 
-3. Install. The last lines of the output are the check for F1 and F2; they
+3. Install. `install.sh` moves the credentials to
+   `~/.config/beads/credentials` (mode `600`) and takes the login from
+   `ring1.user`. The last lines of the output are the check for F1 and F2; they
    must include `Server connection OK`:
 
    ```sh
@@ -315,7 +341,9 @@ or a token. The scripts move the credentials file by path and never echo it.
    ```
 
    `install.sh` installs bd 1.3.0, unpacks the plugin, writes the global and
-   project workspaces per F1, and writes `~/run-claude.sh`. The sandbox
+   project workspaces per F1 (each prints `initialized` on the first run
+   against an empty database, `adopted` after that), and writes
+   `~/run-claude.sh`. The sandbox
    clone of the agent-teams repo comes from `main`; to use another branch,
    prefix the command with `REPO_BRANCH=<branch>`.
 
@@ -464,5 +492,5 @@ command you ran and its output. Redact anything that looks like a secret.
    git status --porcelain -uall
    ```
 
-The hosted databases keep the ring-1 beads. Drop them through the human ops
-path if you want them gone.
+The hosted databases keep the ring-1 beads. Dispatcher owns the databases, so
+manage or remove them there.

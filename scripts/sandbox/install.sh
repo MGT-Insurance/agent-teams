@@ -4,7 +4,9 @@
 #
 # Expects, already put into $HOME:
 #   plugin.tgz          the plugin tarball from pack-plugin.sh (bin/ateam-linux-amd64 rebuilt)
-#   ring1.credentials   the DB credentials file (mode 600 via `put`); moved, never printed
+#   ring1.credentials   the eric_lloyd_ext credentials text (mode 600), piped in by
+#                       put-credentials.sh from ring1-ext.json; moved, never printed
+#   ring1.user          the login name from ring1-ext.json (`.user`); DB_USER defaults to it
 #   lib-hosted.sh       the shared hosted_workspace helper
 #
 # Contract: docs/hosted-beads.md F1, F2, F5, F11, F12.
@@ -16,7 +18,6 @@ BD_URL=${BD_URL:-https://github.com/gastownhall/beads/releases/download/v${BD_VE
 REPO_URL=${REPO_URL:-https://github.com/MGT-Insurance/agent-teams.git}
 REPO_BRANCH=${REPO_BRANCH:-main}
 export HOSTED_HOST=${HOSTED_HOST:-mgt-spike.dbs.hosted.doltdb.com}
-export DB_USER=${DB_USER:-eric_lloyd_ring1}
 GLOBAL_DB=${GLOBAL_DB:-beads_eric_lloyd_at}
 GLOBAL_PREFIX=${GLOBAL_PREFIX:-at}
 PROJECT_DB=${PROJECT_DB:-beads_eric_lloyd_agent_teams}
@@ -29,9 +30,10 @@ export AGENT_TEAMS_HOST=sandbox-$NAME
 export BEADS_DOLT_SERVER_TLS=1
 CLONE=$HOME/work/agent-teams
 
-for f in plugin.tgz ring1.credentials lib-hosted.sh; do
+for f in plugin.tgz ring1.credentials ring1.user lib-hosted.sh; do
   [ -f "$HOME/$f" ] || { echo "missing $HOME/$f (put it first)" >&2; exit 1; }
 done
+export DB_USER=${DB_USER:-$(cat "$HOME/ring1.user")}
 . "$HOME/lib-hosted.sh"
 mkdir -p "$HOME/bin" "$HOME/.local/bin" "$HOME/plugins" "$HOME/work" "$HOME/.claude" "$HOME/.config/beads"
 
@@ -55,7 +57,7 @@ mv -f "$HOME/ring1.credentials" "$HOME/.config/beads/credentials"
 chmod 600 "$HOME/.config/beads/credentials"
 
 echo "== git identity"
-git config --global user.email ring1-sandbox@example.com
+git config --global user.email ring1.sandbox@example.com
 git config --global user.name "ring1 sandbox"
 
 echo "== global workspace (F1, F11)"

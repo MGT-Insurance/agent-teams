@@ -2,7 +2,8 @@
 //
 //   node sb.mjs create [--name N] [--gh]   create a persistent sandbox, apply the policy, extend the timeout
 //   node sb.mjs exec '<cmd>' [--sudo]      run `bash -lc <cmd>` in the sandbox
-//   node sb.mjs put <local> <remote> [mode] copy a local file in (mode like 600); never prints contents
+//   node sb.mjs put <local> <remote> [mode] copy a local file in (mode like 600); never prints contents.
+//                                          <local> '-' reads stdin, so a secret never sits in argv
 //   node sb.mjs policy [--print] [--gh]    print (no network, no token) or apply the network policy
 //   node sb.mjs extend                     extend the session timeout to the 24 h cap
 //   node sb.mjs resume                     resume a stopped sandbox, then extend the timeout
@@ -142,7 +143,7 @@ if (cmd === 'policy' && flag('--print')) {
     const h = await sb.runCommand({ cmd: 'bash', args: ['-lc', 'printf %s "$HOME"'] });
     dest = `${(await h.stdout()).trim()}/${remote}`;
   }
-  await sb.writeFiles([{ path: dest, content: fs.readFileSync(local) }]);
+  await sb.writeFiles([{ path: dest, content: fs.readFileSync(local === '-' ? 0 : local) }]);
   if (mode) await sb.runCommand({ cmd: 'chmod', args: [mode, dest] });
   console.log('put ok', dest, mode || '', el());
 } else if (cmd === 'extend') {
