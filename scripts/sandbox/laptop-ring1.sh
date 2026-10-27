@@ -7,7 +7,7 @@
 #   bash laptop-ring1.sh prepare     create both hosted workspaces (F1, F11)
 #   bash laptop-ring1.sh env         print the exports for this half (eval "$(... env)")
 #   bash laptop-ring1.sh claude ...  launch claude with the ring-1 env and the worktree plugin
-#   bash laptop-ring1.sh status      bd dolt show for both workspaces
+#   bash laptop-ring1.sh status      bd dolt show plus a data-path read for both workspaces
 #   bash laptop-ring1.sh teardown    remove ~/.agent-teams-ring1 and the scratch clone
 #
 # Uses the same scoped login as the sandbox, eric_lloyd_ext. `prepare` builds a mode-600 credentials
@@ -79,6 +79,15 @@ case "${1:-}" in
     ring_env
     bd -C "$RING_HOME" dolt show
     bd -C "$CLONE" dolt show
+    # dolt show connects without TLS on bd 1.3.0, so it cannot prove F2. A real read can.
+    for ws in "$RING_HOME" "$CLONE"; do
+      if bd -C "$ws" list --limit 1 --json >/dev/null; then
+        echo "data path OK: $ws"
+      else
+        echo "data path FAILED: $ws (bd list errored; check BEADS_DOLT_SERVER_TLS and the credentials)" >&2
+        exit 1
+      fi
+    done
     ;;
   teardown)
     rm -rf "$RING_HOME" "$RING_WORK"

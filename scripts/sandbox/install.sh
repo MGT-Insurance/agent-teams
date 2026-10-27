@@ -97,4 +97,13 @@ chmod +x "$HOME/run-claude.sh"
 
 echo "== check"
 bd -C "$AGENT_TEAMS_HOME" dolt show
+# dolt show connects without TLS on bd 1.3.0, so it cannot prove F2. A real read can.
+for ws in "$AGENT_TEAMS_HOME" "$CLONE"; do
+  if bd -C "$ws" list --limit 1 --json >/dev/null; then
+    echo "data path OK: $ws"
+  else
+    echo "data path FAILED: $ws (bd list errored; check BEADS_DOLT_SERVER_TLS and the credentials)" >&2
+    exit 1
+  fi
+done
 echo "install done for sandbox-$NAME"

@@ -12,8 +12,9 @@ The selector is per workspace, in files, never in process env.
 - `<workspace>/.beads/metadata.json` =
   `{"database":"dolt","backend":"dolt","dolt_mode":"server","dolt_server_host":"mgt-spike.dbs.hosted.doltdb.com","dolt_server_user":"<user>","dolt_database":"<db>","project_id":"<the hosted db's _project_id>"}`
 - `<workspace>/.beads/dolt-server.port` = `3306`
-- `<workspace>/.beads/config.yaml` includes `events-journal: true` and the
-  db's `issue-prefix`.
+- `<workspace>/.beads/config.yaml` includes `events-journal: true`. The
+  `issue-prefix` comes from the database. `bd init` leaves `# issue-prefix`
+  commented out in `config.yaml`, and new ids still get the database's prefix.
 
 Made by the Dispatcher-proven recipe (dispatcher origin/main
 `src/lib/dolt/commands.ts`, `src/lib/bd.ts` `workspaceFiles`):
@@ -347,8 +348,12 @@ and never echo them. `scripts/sandbox/.gitignore` covers `.env*`,
 
 3. Install. `install.sh` moves the credentials to
    `~/.config/beads/credentials` (mode `600`) and takes the login from
-   `ring1.user`. The last lines of the output are the check for F1 and F2; they
-   must include `Server connection OK`:
+   `ring1.user`. The last lines of the output are the check for F1 and F2. They
+   must include one `data path OK: <workspace>` line for the global workspace
+   and one for the project clone. Each line comes from a real `bd list` read.
+   `bd dolt show` also prints `Server connection OK`, but on bd 1.3.0 it
+   connects without TLS, so that line does not prove F2. If a `data path`
+   check fails, `install.sh` exits non-zero and names the workspace:
 
    ```sh
    node scripts/sandbox/sb.mjs exec 'bash ~/install.sh ring1'
