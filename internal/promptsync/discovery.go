@@ -16,7 +16,7 @@ type Surface struct {
 
 func Discover(root string) ([]Surface, error) {
 	var surfaces []Surface
-	roleRoot := filepath.Join(root, "plugins", "agent-teams", "roles")
+	roleRoot := filepath.Join(root, "plugins", "agent-teams", "agents")
 	codexRoot := filepath.Join(root, "internal", "verbs", "codex_agents")
 	for _, required := range []string{roleRoot, codexRoot, filepath.Join(root, "plugins", "agent-teams", "skills"), filepath.Join(root, "plugins", "agent-teams-codex", "skills")} {
 		info, err := os.Stat(required)
@@ -30,7 +30,7 @@ func Discover(root string) ([]Surface, error) {
 		return nil, err
 	}
 	for _, item := range roles {
-		if !item.IsDir() && strings.HasSuffix(item.Name(), ".md") && item.Name() != "README.md" {
+		if !item.IsDir() && strings.HasSuffix(item.Name(), ".md") {
 			surfaces = append(surfaces, Surface{Path: relativeSlash(root, filepath.Join(roleRoot, item.Name())), Kind: KindRole})
 		}
 	}
@@ -123,9 +123,9 @@ func hasPathSegment(path, wanted string) bool {
 }
 
 func classifySurfacePath(path string) (Kind, string, Format, bool) {
-	if strings.HasPrefix(path, "plugins/agent-teams/roles/") {
-		rel := strings.TrimPrefix(path, "plugins/agent-teams/roles/")
-		if !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".md") && rel != "README.md" {
+	if strings.HasPrefix(path, "plugins/agent-teams/agents/") {
+		rel := strings.TrimPrefix(path, "plugins/agent-teams/agents/")
+		if !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".md") {
 			return KindRole, "claude", FormatMarkdown, true
 		}
 	}

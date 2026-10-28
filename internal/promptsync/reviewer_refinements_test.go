@@ -60,7 +60,7 @@ func TestReviewerRefinementSharedContract(t *testing.T) {
 	root := filepath.Join("..", "..")
 	paths := []string{
 		"promptsrc/agent-teams/roles/reviewer/shared-core.md",
-		"plugins/agent-teams/roles/reviewer.md",
+		"plugins/agent-teams/agents/reviewer.md",
 		"internal/verbs/codex_agents/agent-teams-reviewer.toml",
 	}
 	clauses := []string{
@@ -188,7 +188,7 @@ func TestReviewerF7ExecutableCallerContract(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, path := range []string{
 		"promptsrc/agent-teams/roles/reviewer/shared-core.md",
-		"plugins/agent-teams/roles/reviewer.md",
+		"plugins/agent-teams/agents/reviewer.md",
 		"internal/verbs/codex_agents/agent-teams-reviewer.toml",
 	} {
 		if err := reviewerF7SharedContractError(path, readReviewerRefinementFile(t, root, path)); err != nil {
