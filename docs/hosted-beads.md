@@ -94,8 +94,25 @@ Implemented by T1. When `HostedServer(home)` is ok:
 `internal/workspace/host.go`
 
 ```go
-func Host() string // $AGENT_TEAMS_HOST if non-empty, else os.Hostname(), "" on error.
+func Host(home string) string
 ```
+
+Precedence:
+
+1. `$AGENT_TEAMS_HOST` if non-empty.
+2. The id persisted in `<home>/host-id`.
+3. If that file is absent, `os.Hostname()`, which `Host` also writes to
+   `<home>/host-id` (temp file plus rename) so later calls return the same
+   value after the OS hostname changes. The seed is the current hostname, so
+   existing `where: host:` lines and `to-host:` stamps keep matching.
+
+If the file cannot be read or written, `Host` returns `os.Hostname()` for that
+call without an error, or `""` when the hostname cannot be read. Only hosted
+code paths call `Host`, so a non-hosted workspace never gets the file.
+
+`host-id` is per machine. Never copy it or commit it to another machine. If two
+machines share one `host-id`, each reads the other's hosted initiatives as
+local.
 
 The ring-1 sandbox kit sets `AGENT_TEAMS_HOST=sandbox-<sandbox name>`.
 
@@ -128,8 +145,9 @@ line) in the create call (F7). If the read fails, or `Where` is missing or not
 and creates no bead. On an embedded or local-server workspace all of these
 behave exactly as before, even if a description carries a `where:` line. This
 keeps a laptop whose kernel hostname changes with the network (macOS
-`os.Hostname()`) from reading its own initiatives as remote. Every ring-1 host
-sets a fixed `AGENT_TEAMS_HOST` for the same reason.
+`os.Hostname()`) from reading its own initiatives as remote. The persisted
+`host-id` (F5) fixes the identity after first use; a ring-1 host can also set a
+fixed `AGENT_TEAMS_HOST`.
 
 ## F7 Doorbell filter
 
@@ -460,8 +478,9 @@ they stay out of git, but a forced add would commit them.
    `--plugin-dir` set to this worktree's `plugins/agent-teams`.
 
    `AGENT_TEAMS_HOST` is fixed on purpose. The macOS kernel hostname can
-   change with the network, and `Host()` (F5) would then report a different
-   name, so the laptop's own initiatives would read as remote. The script
+   change with the network. The persisted `host-id` (F5) handles that drift
+   after first use, but a name that drifted before `host-id` was first written
+   stays as written, so the laptop's own initiatives would read as remote. The script
    exports the fixed value to the claude it launches, to every `ateam` it
    runs, and in the output of `env`. Override it with `AGENT_TEAMS_HOST`
    only if you keep the same value for the whole ring-1 run.

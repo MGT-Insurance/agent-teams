@@ -49,6 +49,8 @@ bd version
 echo "== plugin"
 rm -rf "$HOME/plugins/agent-teams"
 tar -xzf "$HOME/plugin.tgz" -C "$HOME/plugins"
+# Guard: AppleDouble files from a macOS pack would register as bogus agents.
+find "$HOME/plugins/agent-teams" -name '._*' -delete
 ln -sf "$HOME/plugins/agent-teams/bin/ateam" "$HOME/.local/bin/ateam"
 ateam --help >/dev/null && echo "ateam ok"
 
