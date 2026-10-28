@@ -17,7 +17,7 @@ import (
 // live on this machine (0 of 481 pre-2026-08-04 in_process_teammate sidecars
 // carry customAgentType) ─────────────────────────────────────────────────────
 
-const spawnCheckFixtureGood = `{"agentType":"planner-realtest","name":"planner-realtest","spawnDepth":0,"model":"opus","taskKind":"in_process_teammate","teamName":"session-b98b2e7e","customAgentType":"agent-teams-planner","permissionMode":"bypassPermissions"}`
+const spawnCheckFixtureGood = `{"agentType":"planner-realtest","name":"planner-realtest","spawnDepth":0,"model":"opus","taskKind":"in_process_teammate","teamName":"session-b98b2e7e","customAgentType":"agent-teams:planner","permissionMode":"bypassPermissions"}`
 
 const spawnCheckFixtureBad = `{"agentType":"namedplug","description":"named plugin scoped","name":"namedplug","spawnDepth":0,"model":"opus","taskKind":"in_process_teammate","teamName":"session-3e6b8eee","permissionMode":"bypassPermissions"}`
 
@@ -144,8 +144,8 @@ func TestScanSpawnCheck_GoodFixtureIsOK(t *testing.T) {
 	if f.Status != spawnCheckStatusOK {
 		t.Errorf("Status = %q, want %q", f.Status, spawnCheckStatusOK)
 	}
-	if f.CustomAgentType != "agent-teams-planner" {
-		t.Errorf("CustomAgentType = %q, want agent-teams-planner", f.CustomAgentType)
+	if f.CustomAgentType != "agent-teams:planner" {
+		t.Errorf("CustomAgentType = %q, want agent-teams:planner", f.CustomAgentType)
 	}
 	if f.Name != "planner-realtest" {
 		t.Errorf("Name = %q, want planner-realtest", f.Name)
@@ -161,8 +161,7 @@ func TestScanSpawnCheck_BadFixtureIsDropped(t *testing.T) {
 	root := t.TempDir()
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-bad", spawnCheckFixtureBad)
 	// The Agent tool_use call the sidecar was recovered from: a role was
-	// requested via the removed colon key, which is exactly the KNOWN-bad
-	// shape this verb was built to catch.
+	// requested via the plugin-scope key, but no definition attached.
 	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
 		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "namedplug", "named plugin scoped"))
 
@@ -338,7 +337,7 @@ func TestScanSpawnCheck_DescriptionDisambiguatesCollision(t *testing.T) {
 	putSpawnCheckSidecar(t, root, "proj", "sess1", "agent-dup", fixture)
 	putSpawnCheckParentTranscript(t, root, "proj", "sess1",
 		spawnCheckAgentToolUseLine(t, "general-purpose", "dup", "first call"),
-		spawnCheckAgentToolUseLine(t, "agent-teams-planner", "dup", "second call"))
+		spawnCheckAgentToolUseLine(t, "agent-teams:planner", "dup", "second call"))
 
 	findings, _, err := scanSpawnCheck(root, "", nil)
 	if err != nil {
@@ -348,8 +347,8 @@ func TestScanSpawnCheck_DescriptionDisambiguatesCollision(t *testing.T) {
 		t.Fatalf("findings = %v, want exactly 1", findings)
 	}
 	f := findings[0]
-	if f.RequestedType != "agent-teams-planner" {
-		t.Errorf("RequestedType = %q, want agent-teams-planner (the description-matched call)", f.RequestedType)
+	if f.RequestedType != "agent-teams:planner" {
+		t.Errorf("RequestedType = %q, want agent-teams:planner (the description-matched call)", f.RequestedType)
 	}
 	if f.Status != spawnCheckStatusDropped {
 		t.Errorf("Status = %q, want %q (role requested, no customAgentType)", f.Status, spawnCheckStatusDropped)
@@ -607,26 +606,32 @@ func TestSpawnCheckKong_Run_InvalidSince(t *testing.T) {
 	}
 }
 
-// TestSpawnCheckRoleNamesMatchRolesDir pins spawnCheckRoleNames to the actual
-// shipped role definitions. Without this, adding plugins/agent-teams/roles/
+func TestSpawnCheckIsRoleRequest_ColonOnly(t *testing.T) {
+	if !spawnCheckIsRoleRequest("agent-teams:planner") {
+		t.Error("agent-teams:planner should be a role request")
+	}
+	if spawnCheckIsRoleRequest("agent-teams-planner") {
+		t.Error("the retired hyphen key must not be a role request")
+	}
+}
+
+// TestSpawnCheckRoleNamesMatchAgentsDir pins spawnCheckRoleNames to the actual
+// shipped role definitions. Without this, adding plugins/agent-teams/agents/
 // <role>.md and forgetting this list produces NO failure anywhere: spawn-check
 // silently stops classifying that role's named spawns as role requests, so the
 // only guard that catches a teammate whose definition never attached quietly
 // stops watching the new role. That is the exact silent-miss spawn-check was
 // built to eliminate, so it must not be reintroducible by omission.
-func TestSpawnCheckRoleNamesMatchRolesDir(t *testing.T) {
-	dir := filepath.Join("..", "..", "plugins", "agent-teams", "roles")
+func TestSpawnCheckRoleNamesMatchAgentsDir(t *testing.T) {
+	dir := filepath.Join("..", "..", "plugins", "agent-teams", "agents")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Skipf("real roles dir not found at %s (unexpected repo layout?): %v", dir, err)
+		t.Skipf("real agents dir not found at %s (unexpected repo layout?): %v", dir, err)
 	}
 
 	var onDisk []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		if nonRoleFiles[e.Name()] {
 			continue
 		}
 		onDisk = append(onDisk, strings.TrimSuffix(e.Name(), ".md"))
@@ -640,7 +645,7 @@ func TestSpawnCheckRoleNamesMatchRolesDir(t *testing.T) {
 	sort.Strings(onDisk)
 
 	if !reflect.DeepEqual(got, onDisk) {
-		t.Errorf("spawnCheckRoleNames = %v, but roles/ ships %v.\n"+
+		t.Errorf("spawnCheckRoleNames = %v, but agents/ ships %v.\n"+
 			"Add the missing role(s) to spawnCheckRoleNames — otherwise spawn-check "+
 			"stops witnessing them and a generic teammate goes undetected.", got, onDisk)
 	}

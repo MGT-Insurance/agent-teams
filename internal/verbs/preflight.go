@@ -79,7 +79,7 @@ const (
 const (
 	// REASON-NO-SESSION: runs before launch; its own failure IS "no session
 	// can be launched" (contract artifact (1)(c)).
-	checkRolesPayloadBuilds = "roles-payload-builds"
+	checkRoleDefinitionsPresent = "role-definitions-present"
 	// REASON-NO-SESSION: reads the role files directly — the per-role learnings
 	// self-fetch wiring is a static property of the files, so checking all five
 	// roles costs nothing and needs no spawn (agent-teams-25s3, memories check).
@@ -94,11 +94,11 @@ const (
 	checkRoleTypeRegistered = "role-type-registered"
 )
 
-// preflightProbedRoleKey is the --agents payload key (and expected
+// preflightProbedRoleKey is the plugin-scope agent type (and expected
 // agentType under this verb's thin -p sidecars) for the role the skill
-// spawns (agent-teams-25s3.4 step 2: "agent-teams-implementer", hyphen key,
-// no model argument).
-const preflightProbedRoleKey = "agent-teams-implementer"
+// spawns: "agent-teams:implementer", the colon key, no model argument. The
+// role's definition is agents/implementer.md in the plugin root.
+const preflightProbedRoleKey = "agent-teams:implementer"
 
 // preflightProbeSpawnName is the fixed name the skill spawns its one
 // teammate under (agent-teams-25s3.4 step 2: `name: "preflight-probe"`).
@@ -107,30 +107,231 @@ const preflightProbedRoleKey = "agent-teams-implementer"
 // under this launch mode (agent-teams-25s3.19/.20 amendment).
 const preflightProbeSpawnName = "preflight-probe"
 
-// preflightProbedRolePresent confirms the built --agents payload carries an
-// entry for the role this verb's probe session requests
-// (preflightProbedRoleKey). Used by the pre-launch roles-payload-builds
-// guard (Run()), which must FAIL — not launch a probe session that requests
-// a role nobody can supply — when the probed role is missing from the
-// resolved roles directory.
-//
-// Renamed and simplified from preflightExpectedProbeModel by agent-teams-
-// 25s3.24 (RETIRE UNPINNED): the earlier version also returned the role's
-// declared model, read by role-model-attached's now-deleted precondition
-// gate. This function's only remaining job — and the only reason the
-// pre-launch guard needs it — is the presence check; the model value it used
-// to hand back has no caller left.
-func preflightProbedRolePresent(agentsJSON string) error {
-	var payload map[string]struct {
-		Model string `json:"model"`
+// errPreflightEnvironment marks failures of the ENVIRONMENT — no plugin root
+// could be located, or the temp copy could not be written — as distinct from
+// an install defect found INSIDE a plugin root that did resolve. Callers that
+// map failures to exit codes need the difference: an unresolvable root can
+// happen with a perfectly healthy install (wrong cwd, unset
+// $CLAUDE_PLUGIN_ROOT, binary run from a scratch path), so it is "the tool
+// could not run"; a missing or malformed role file inside a resolved root IS
+// the install being broken.
+var errPreflightEnvironment = errors.New("preflight environment")
+
+// preflightProbedRoleFile is the definition file of the probed role, relative
+// to the plugin root's agents/ directory.
+const preflightProbedRoleFile = "implementer.md"
+
+// resolvePreflightPluginRoot locates the plugin root whose agents/ directory
+// holds the role definitions: override when set, else $CLAUDE_PLUGIN_ROOT when
+// set, else the root beside the running ateam binary (filepath.Dir(self)/..,
+// after resolving symlinks) — bin/ and agents/ are siblings in both a dev
+// checkout and the marketplace cache copy. The first candidate with an
+// agents/ directory wins; an explicit override that lacks one fails without
+// falling back, so a typo in the pre-merge seam is not silently ignored. The
+// returned error names every path tried and wraps errPreflightEnvironment.
+func resolvePreflightPluginRoot(override string) (string, error) {
+	hasAgents := func(root string) bool {
+		info, err := os.Stat(filepath.Join(root, "agents"))
+		return err == nil && info.IsDir()
 	}
-	if err := json.Unmarshal([]byte(agentsJSON), &payload); err != nil {
-		return fmt.Errorf("parse --agents payload: %w", err)
+	unresolvable := func(tried []string) error {
+		return fmt.Errorf("resolve plugin root: no agents/ directory found; tried: %s: %w", strings.Join(tried, "; "), errPreflightEnvironment)
 	}
-	if _, ok := payload[preflightProbedRoleKey]; !ok {
-		return fmt.Errorf("--agents payload has no %q entry", preflightProbedRoleKey)
+
+	if override != "" {
+		if hasAgents(override) {
+			return override, nil
+		}
+		return "", unresolvable([]string{override + " (from --plugin-dir)"})
+	}
+
+	var tried []string
+	if root := os.Getenv("CLAUDE_PLUGIN_ROOT"); root != "" {
+		if hasAgents(root) {
+			return root, nil
+		}
+		tried = append(tried, root+" (from $CLAUDE_PLUGIN_ROOT)")
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		return "", unresolvable(append(tried, fmt.Sprintf("<self-binary unresolvable: %v>", err)))
+	}
+	if resolved, err := filepath.EvalSymlinks(self); err == nil {
+		self = resolved
+	}
+	root := filepath.Join(filepath.Dir(self), "..")
+	if hasAgents(root) {
+		return root, nil
+	}
+	return "", unresolvable(append(tried, root+" (relative to self binary "+self+")"))
+}
+
+// preflightValidateRoleFile checks one role definition's shape: an opening and
+// a closing frontmatter delimiter, a non-empty description, and a non-empty
+// body after the frontmatter. Claude Code registers a definition that fails
+// any of these as a generic agent or not at all, which is the silent failure
+// the probe exists to catch.
+func preflightValidateRoleFile(content string) error {
+	lines := strings.Split(content, "\n")
+	if strings.TrimSpace(lines[0]) != "---" {
+		return fmt.Errorf("missing opening frontmatter delimiter '---'")
+	}
+	closeIdx, hasDescription := -1, false
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			closeIdx = i
+			break
+		}
+		if key, val, ok := strings.Cut(lines[i], ":"); ok && strings.TrimSpace(key) == "description" && strings.Trim(strings.TrimSpace(val), `"'`) != "" {
+			hasDescription = true
+		}
+	}
+	if closeIdx == -1 {
+		return fmt.Errorf("missing closing frontmatter delimiter '---'")
+	}
+	if !hasDescription {
+		return fmt.Errorf("frontmatter missing a non-empty description")
+	}
+	if strings.TrimSpace(strings.Join(lines[closeIdx+1:], "\n")) == "" {
+		return fmt.Errorf("role body is empty after stripping frontmatter")
 	}
 	return nil
+}
+
+// preflightValidateRoleDefinitions validates every *.md file directly inside
+// agentsDir and requires the probed role's file to be among them. Claude Code
+// registers every .md in agents/ as an agent, so none may be skipped by name:
+// a stray non-role file there is itself a defect. Fails loud on any problem
+// rather than returning a partial result.
+func preflightValidateRoleDefinitions(agentsDir string) error {
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return fmt.Errorf("read agents dir %s: %w", agentsDir, err)
+	}
+	var found, probed bool
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(agentsDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read role file %s: %w", path, err)
+		}
+		if err := preflightValidateRoleFile(string(data)); err != nil {
+			return fmt.Errorf("parse role file %s: %w", path, err)
+		}
+		found = true
+		probed = probed || e.Name() == preflightProbedRoleFile
+	}
+	if !found {
+		return fmt.Errorf("no role *.md files found in %s", agentsDir)
+	}
+	if !probed {
+		return fmt.Errorf("the probed role's definition %s is missing from %s", preflightProbedRoleFile, agentsDir)
+	}
+	return nil
+}
+
+// preflightCopyPluginTree copies the plugin tree at src into the existing
+// directory dst. Regular files keep their permission bits and symlinks are
+// recreated as symlinks. The bin/ directory is not copied but linked: it holds
+// every platform's ateam binary, tens of megabytes the probe only executes,
+// and the copy's hooks reach those binaries through ${CLAUDE_PLUGIN_ROOT}/bin.
+func preflightCopyPluginTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if rel == "bin" {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			if err := os.Symlink(abs, target); err != nil {
+				return err
+			}
+			return filepath.SkipDir
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, 0o755)
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, info.Mode().Perm())
+		}
+		return nil
+	})
+}
+
+// preflightAppendTokenSection appends the token section to the probed role's
+// definition inside the COPY at pluginDir. The file is rewritten, never
+// appended in place: if the copy holds a symlink there, an in-place append
+// would write through it into the real install.
+func preflightAppendTokenSection(pluginDir, token string) error {
+	path := filepath.Join(pluginDir, "agents", preflightProbedRoleFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, fmt.Sprintf(preflightTokenSectionFormat, token)...), 0o644)
+}
+
+// preflightPreparePlugin is the production preflightPreparePluginFunc. It
+// resolves the plugin root, validates every role definition in it, copies the
+// root into a fresh temp directory, and appends the token section to the
+// copy's probed role. The install and the source tree are never written, and
+// the token reaches disk only inside the copy, which cleanup removes.
+//
+// Token hygiene, stated honestly: the copy's path is on the probe's argv and
+// the token sits in a readable file there, so a disobedient probe with Bash
+// could read it without the role ever attaching. checkRoleProseInContext's
+// pinned witness names that residual.
+func preflightPreparePlugin(pluginRoot, token string) (string, func(), error) {
+	root, err := resolvePreflightPluginRoot(pluginRoot)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := preflightValidateRoleDefinitions(filepath.Join(root, "agents")); err != nil {
+		return "", nil, err
+	}
+	tmp, err := os.MkdirTemp("", "ateam-preflight-plugin-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create probe plugin copy: %v: %w", err, errPreflightEnvironment)
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	if err := preflightCopyPluginTree(root, tmp); err != nil {
+		return "", cleanup, fmt.Errorf("copy plugin root %s: %v: %w", root, err, errPreflightEnvironment)
+	}
+	if err := preflightAppendTokenSection(tmp, token); err != nil {
+		return "", cleanup, fmt.Errorf("append the token section to the probe copy's %s: %v: %w", preflightProbedRoleFile, err, errPreflightEnvironment)
+	}
+	return tmp, cleanup, nil
 }
 
 // preflightExpectedTeammates is how many in_process_teammate sidecars a
@@ -170,9 +371,10 @@ const preflightBudgetAbortSubtype = "error_max_budget_usd"
 // line positions, verbatim spans — each false-red'd a healthy install before
 // UNPINNED, and UNPINNED itself was then overruled). Every earlier shape
 // assumed the question had to be about text ALREADY IN the role file, which
-// is why "a disobedient probe could just read roles/*.md" looked unclosable.
+// is why "a disobedient probe could just read agents/*.md" looked unclosable.
 // This one inverts the direction: mint a value the role file could never
-// contain, inject it into the probed role's prompt, and compare.
+// contain, append it to the probed role's definition in a temp plugin copy,
+// and compare.
 //
 // OWNERSHIP SPLIT, AND WHY THE COMPARE LOGIC LIVES HERE RATHER THAN IN THE
 // SKILL — the stated reason contract artifact (1)(c) requires before any
@@ -218,7 +420,7 @@ const checkRoleProseInContextID = "role-prose-in-context"
 const checkLearningsLoadedID = "learnings-loaded"
 
 // preflightProbedRoleName is the bare role name for `ateam learnings <role>`
-// — the probe spawns as the "agent-teams-implementer" agent type
+// — the probe spawns as the "agent-teams:implementer" agent type
 // (preflightProbedRoleKey), whose learnings live under the "implementer" role
 // key. Kept beside preflightProbedRoleKey so the two move together if the
 // probed role ever changes.
@@ -242,7 +444,7 @@ const (
 )
 
 // preflightTokenSectionFormat is the exact section appended to the probed
-// role's prompt in the --agents payload. FROZEN wording — verified working
+// role's definition in the probe's plugin copy. FROZEN wording — verified working
 // in the DRI's live control. An earlier phrasing that asked for "your
 // preflight token" by name failed: a HEALTHY agent replied NO-TOKEN because
 // it had the text but had not categorised it under that name. The skill's
@@ -265,32 +467,6 @@ func mintPreflightToken() string {
 		panic(fmt.Sprintf("ateam preflight: crypto/rand: %v", err))
 	}
 	return fmt.Sprintf("%x", b)
-}
-
-// injectPreflightToken appends the token section to the probed role's
-// prompt (preflightProbedRoleKey) inside the built --agents payload and
-// returns the re-marshaled payload. This touches ONLY the in-memory payload
-// on its way to argv — never a file, never a log (token-hygiene requirement
-// 2: the payload was already verified not to reach disk anywhere today, and
-// this function adds no new write path). Re-validates that the probed role
-// entry exists rather than trusting that a caller's earlier gate ran first.
-func injectPreflightToken(agentsJSON, token string) (string, error) {
-	var payload map[string]agentDefinition
-	if err := json.Unmarshal([]byte(agentsJSON), &payload); err != nil {
-		return "", fmt.Errorf("parse --agents payload: %w", err)
-	}
-	entry, ok := payload[preflightProbedRoleKey]
-	if !ok {
-		return "", fmt.Errorf("--agents payload has no %q entry", preflightProbedRoleKey)
-	}
-	entry.Prompt += fmt.Sprintf(preflightTokenSectionFormat, token)
-	payload[preflightProbedRoleKey] = entry
-
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("marshal --agents payload with token section: %w", err)
-	}
-	return string(b), nil
 }
 
 // checkRoleProseInContext computes the FINAL role-prose-in-context verdict.
@@ -324,15 +500,16 @@ func injectPreflightToken(agentsJSON, token string) (string, error) {
 //     genuinely wrong value): a generic mismatch.
 //
 // WITNESS WORDING IS PINNED (agent-teams-25s3.4 step 3, FROZEN): state the
-// raised bar, never claim uncheatability. The token rides on the --agents
-// argv (preflightLaunchArgs), so a disobedient probe with Bash could shell
-// out and read its parent process's argv mid-run without the role ever
+// raised bar, never claim uncheatability. The token sits in the temp plugin
+// copy's agents/implementer.md, and that copy's path is on the probe's
+// parent argv (preflightLaunchArgs), so a disobedient probe with Bash could
+// read the parent's argv, then the file, mid-run without the role ever
 // attaching — that residual is real and is named here, not hidden. This is
 // the fifth residual claimed in this initiative; the previous four were each
 // declared closed and each declaration was wrong, so this wording must never
 // be loosened into a stronger claim.
 func checkRoleProseInContext(observed, token string) preflightCheck {
-	const witness = "live probe (raised bar: a probe would have to ignore its instructions AND read its parent process's argv mid-run to obtain the token without the role attaching)"
+	const witness = "live probe (raised bar: a probe would have to ignore its instructions AND read its parent process's argv mid-run, find the temp plugin copy's path there, and read that copy's agents/implementer.md, to obtain the token without the role attaching)"
 
 	trimmed := strings.TrimSpace(observed)
 
@@ -350,7 +527,7 @@ func checkRoleProseInContext(observed, token string) preflightCheck {
 			Status:      preflightFail,
 			Detail:      fmt.Sprintf("token absent — probe replied %q", trimmed),
 			Witness:     witness,
-			Remediation: "the probe answered but reported no token — the probed role's assembled prompt likely never carried the injected Preflight self-check section; confirm --agents is present in the probe launch argv and that the probed role's definition attached",
+			Remediation: "the probe answered but reported no token — the probed role's assembled prompt likely never carried the Preflight self-check section appended to the probe's plugin copy; confirm the installed agent-teams plugin was disabled for the probe and that the copy's agents/implementer.md attached",
 		}
 	case preflightProbeNoAnswerSentinel:
 		return preflightCheck{
@@ -366,7 +543,7 @@ func checkRoleProseInContext(observed, token string) preflightCheck {
 			Status:      preflightFail,
 			Detail:      fmt.Sprintf("token mismatch — probe replied %q", trimmed),
 			Witness:     witness,
-			Remediation: "the probe answered with a value that doesn't match the injected token — confirm --agents is present in the probe launch argv and that the probed role's definition attached (or, if the probe was told it may read files, that this isn't the cheat-control shape reading roles/*.md directly)",
+			Remediation: "the probe answered with a value that doesn't match the injected token — confirm the installed agent-teams plugin was disabled for the probe and that the copy's agents/implementer.md attached (or, if the probe was told it may read files, that this isn't the cheat-control shape reading agents/*.md directly)",
 		}
 	}
 }
@@ -494,15 +671,15 @@ func preflightOverrideLearningsCheck(checks []preflightCheck, token string, plan
 var preflightRoleFiles = []string{"implementer", "planner", "investigator", "tester", "reviewer"}
 
 // preflightCheckLearningsWired is a REASON-NO-SESSION verb check: reads each
-// role file under rolesDir and FAILs if any lacks its `ateam learnings <role>`
+// role file under agentsDir and FAILs if any lacks its `ateam learnings <role>`
 // step-1 fetch — the instruction without which that role loads nothing. This
 // is the cheap per-role coverage; only implementer is exercised by a live
 // probe (learnings-loaded), the other four are covered by this wiring check.
-func preflightCheckLearningsWired(rolesDir string) preflightCheck {
-	witness := "each roles/*.md step-1 `ateam learnings <role>` self-fetch instruction"
+func preflightCheckLearningsWired(agentsDir string) preflightCheck {
+	witness := "each agents/*.md step-1 `ateam learnings <role>` self-fetch instruction"
 	var missing []string
 	for _, role := range preflightRoleFiles {
-		b, err := os.ReadFile(filepath.Join(rolesDir, role+".md"))
+		b, err := os.ReadFile(filepath.Join(agentsDir, role+".md"))
 		if err != nil {
 			missing = append(missing, role+" (unreadable)")
 			continue
@@ -522,18 +699,18 @@ func preflightCheckLearningsWired(rolesDir string) preflightCheck {
 }
 
 // productionPreflightLearningsWired is the default learningsWired: it resolves
-// the plugin roles directory and checks every role file's step-1 fetch. If the
-// roles dir can't be resolved it reports FAIL naming that — the wiring is
-// genuinely unknowable then.
-func productionPreflightLearningsWired() preflightCheck {
-	dir, err := resolveRolesDir()
+// the plugin root (pluginRoot, else the running install) and checks every role
+// file's step-1 fetch. If the root can't be resolved it reports FAIL naming
+// that — the wiring is genuinely unknowable then.
+func productionPreflightLearningsWired(pluginRoot string) preflightCheck {
+	root, err := resolvePreflightPluginRoot(pluginRoot)
 	if err != nil {
 		return preflightCheck{Check: checkLearningsWiredID, Status: preflightFail,
-			Detail:      "could not resolve the roles directory to check learnings wiring: " + err.Error(),
-			Witness:     "plugins/agent-teams/roles/*.md",
-			Remediation: "confirm the plugin roles directory resolves (see roles-payload-builds), then re-run"}
+			Detail:      "could not resolve the plugin root to check learnings wiring: " + err.Error(),
+			Witness:     "plugins/agent-teams/agents/*.md",
+			Remediation: "confirm the plugin root resolves (see role-definitions-present), then re-run"}
 	}
-	return preflightCheckLearningsWired(dir)
+	return preflightCheckLearningsWired(filepath.Join(root, "agents"))
 }
 
 // preflightOverrideTokenCheck replaces the skill's role-prose-in-context
@@ -613,7 +790,16 @@ type preflightEnvelope struct {
 // claude -p can exit non-zero while still emitting a valid result envelope
 // (e.g. an is_error result), and that envelope — not the process exit code
 // — is the precise signal downstream parsing decides on.
-type preflightLaunchFunc func(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) (stdout string, err error)
+type preflightLaunchFunc func(sessionID, skill, maxBudgetUSD, pluginDir string) (stdout string, err error)
+
+// preflightPreparePluginFunc builds the probe's plugin directory: a temp copy
+// of the plugin rooted at pluginRoot (empty means the running install) whose
+// agents/implementer.md ends with the token section. cleanup removes the copy
+// and is non-nil whenever the copy was created, even alongside an error.
+// Errors wrapping errPreflightEnvironment mean the tool could not run (exit
+// 2); any other error means a role definition is missing or malformed (FAIL,
+// exit 1). Injected so tests never depend on the install they run from.
+type preflightPreparePluginFunc func(pluginRoot, token string) (pluginDir string, cleanup func(), err error)
 
 // preflightSidecarScanFunc returns the in_process_teammate sidecars found
 // for sessionID at the moment it is called — ONE poll attempt, not a
@@ -627,26 +813,22 @@ type preflightKong struct {
 	MaxBudgetUSD string `name:"max-budget-usd" help:"Cap the probe session's API spend in USD. Unset: uncapped, passed through only when supplied."`
 	Skill        string `name:"skill" hidden:"" help:"Override the skill invoked by the probe session (for tests)."`
 	// PluginDir is a PRE-MERGE VERIFICATION SEAM, not a user-facing feature.
-	// The verb and the skill ship as one artifact but resolve through two
-	// paths: skills load from the MAIN CHECKOUT's marketplace plugin
-	// directory, not from a feature branch, so before this branch merges
-	// the probe session cannot reach /agent-teams:preflight through the
-	// ordinary path at all — there is no other way to exercise this verb
-	// end to end pre-merge. `claude --help` documents --plugin-dir as
-	// "Load a plugin from a directory or .zip for this session only", so
-	// it is session-scoped and leaves no residue. Hidden (never appears in
-	// --help — this is not an invitation to run preflight against an
-	// arbitrary plugin tree) and unset by default: empty means the flag is
-	// simply absent from argv, i.e. today's exact behavior.
-	PluginDir string `name:"plugin-dir" hidden:"" help:"Load the plugin from this directory for the probe session only (pre-merge verification seam)."`
+	// It names the plugin root the probe's temp copy is built from. Empty
+	// means the running install ($CLAUDE_PLUGIN_ROOT, else the root beside
+	// the ateam binary). Before a branch merges, the running install is the
+	// MAIN CHECKOUT's marketplace plugin, not the feature branch, so this is
+	// the only way to exercise the branch's role files and skill end to end.
+	// Hidden (never appears in --help — this is not an invitation to run
+	// preflight against an arbitrary plugin tree).
+	PluginDir string `name:"plugin-dir" hidden:"" help:"Build the probe's plugin copy from this plugin root instead of the running install (pre-merge verification seam)."`
 
-	buildAgentsPayload func() (string, error)   `kong:"-"`
-	launch             preflightLaunchFunc      `kong:"-"`
-	scanSidecars       preflightSidecarScanFunc `kong:"-"`
-	plantSentinel      preflightPlantFunc       `kong:"-"`
-	forgetSentinel     preflightForgetFunc      `kong:"-"`
-	learningsWired     func() preflightCheck    `kong:"-"`
-	sleep              func(time.Duration)      `kong:"-"` // nil => time.Sleep
+	preparePlugin  preflightPreparePluginFunc             `kong:"-"`
+	launch         preflightLaunchFunc                    `kong:"-"`
+	scanSidecars   preflightSidecarScanFunc               `kong:"-"`
+	plantSentinel  preflightPlantFunc                     `kong:"-"`
+	forgetSentinel preflightForgetFunc                    `kong:"-"`
+	learningsWired func(pluginRoot string) preflightCheck `kong:"-"`
+	sleep          func(time.Duration)                    `kong:"-"` // nil => time.Sleep
 }
 
 // preflightLimitsNote documents what this tool cannot verify — the "delete
@@ -679,13 +861,13 @@ func (c *preflightKong) Help() string {
 // RegisterPreflightKong registers the preflight verb onto p.
 func RegisterPreflightKong(p *cli.Parser) {
 	p.AddVerb("preflight", "Launch a live probe session and verify the agent-teams role/model/spawn plumbing end to end.", &preflightKong{
-		buildAgentsPayload: buildAgentsPayload,
-		launch:             productionPreflightLaunch,
-		scanSidecars:       productionScanTeammateSidecars,
-		plantSentinel:      productionPreflightPlant,
-		forgetSentinel:     productionPreflightForget,
-		learningsWired:     productionPreflightLearningsWired,
-		sleep:              time.Sleep,
+		preparePlugin:  preflightPreparePlugin,
+		launch:         productionPreflightLaunch,
+		scanSidecars:   productionScanTeammateSidecars,
+		plantSentinel:  productionPreflightPlant,
+		forgetSentinel: productionPreflightForget,
+		learningsWired: productionPreflightLearningsWired,
+		sleep:          time.Sleep,
 	})
 }
 
@@ -708,9 +890,9 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam preflight: nil context")
 	}
 
-	buildPayload := c.buildAgentsPayload
-	if buildPayload == nil {
-		buildPayload = buildAgentsPayload
+	prepare := c.preparePlugin
+	if prepare == nil {
+		prepare = preflightPreparePlugin
 	}
 	launch := c.launch
 	if launch == nil {
@@ -729,21 +911,33 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 		skill = preflightSkillName
 	}
 
-	// ── check 1: roles-payload-builds ────────────────────────────────────
-	agentsJSON, err := buildPayload()
+	// ── check 1: role-definitions-present ────────────────────────────────
+	//
+	// TOKEN PROBE (agent-teams-25s3.4 step 3, FROZEN): mint fresh, and have
+	// prepare append it to the probed role's definition in a TEMP COPY of the
+	// plugin root — never the install itself. The probe loads that copy. See
+	// the checkRoleProseInContext doc comment for the full design.
+	token := mintPreflightToken()
+	probePluginDir, cleanup, err := prepare(c.PluginDir, token)
+	if cleanup != nil {
+		defer cleanup()
+	}
 	if err != nil {
 		// STATUSES AND EXIT CODE MUST AGREE (agent-teams-25s3.2 artifact (7),
 		// interpretation note 2026-08-06). Exit 2 is an anti-false-green
 		// device for when the INSTRUMENT failed; using it alongside a FAIL
 		// says "the install is broken" and "I could not form a judgement" in
 		// one breath. The discriminator: could this condition exist on a
-		// HEALTHY install? An unresolvable roles dir — wrong cwd, unset
-		// $CLAUDE_PLUGIN_ROOT, binary run from a scratch path — yes, so it is
-		// environment: no FAIL, all SKIP, exit 2. A malformed role file
-		// inside a directory that DID resolve — no, that is the install
-		// being broken, which is what exit 1 means.
-		if errors.Is(err, errRolesDirUnresolvable) {
-			checks := preflightSkippedChecks("the roles directory could not be resolved; no probe session was launched")
+		// HEALTHY install? An unresolvable plugin root or a failed temp copy —
+		// wrong cwd, unset $CLAUDE_PLUGIN_ROOT, binary run from a scratch
+		// path, full disk — yes, so it is environment: no FAIL, all SKIP,
+		// exit 2. A missing or malformed role file inside a root that DID
+		// resolve — no, that is the install being broken, which is what exit 1
+		// means. Exit 1 also holds for the probed role's file being absent:
+		// that cannot happen on a healthy install, and exit 2 would read as
+		// infrastructure flakiness in CI and get retried instead of acted on.
+		if errors.Is(err, errPreflightEnvironment) {
+			checks := preflightSkippedChecks("the plugin root could not be resolved or copied; no probe session was launched")
 			result := buildPreflightResult(checks, "")
 			if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
 				return renderErr
@@ -752,64 +946,12 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 			return cli.Silent(2)
 		}
 		checks := append([]preflightCheck{{
-			Check:       checkRolesPayloadBuilds,
+			Check:       checkRoleDefinitionsPresent,
 			Status:      preflightFail,
 			Detail:      err.Error(),
-			Witness:     "plugins/agent-teams/roles/*.md",
-			Remediation: "fix the role file named above (missing/malformed frontmatter) so the --agents payload can be built, then re-run",
-		}}, preflightSkippedChecks("the --agents payload failed to build; no probe session was launched")...)
-		result := buildPreflightResult(checks, "")
-		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
-			return renderErr
-		}
-		return cli.Silent(1)
-	}
-
-	// The payload BUILDING is not the property. The property is that it
-	// carries the role the probe is about to request — buildPayload succeeds
-	// on any well-formed roles/ directory, including one the probed role has
-	// been deleted from. Live negative control (agent-teams-25s3.3,
-	// 2026-08-06): with roles/implementer.md removed, this check PASSED at
-	// 36733 bytes, the run spent $0.25, and the failure surfaced downstream
-	// as role-types-available with a remediation telling the operator to run
-	// the command they had just run. Asserting it here is REASON-NO-SESSION,
-	// deterministic, free, and can name the actual missing file.
-	if err := preflightProbedRolePresent(agentsJSON); err != nil {
-		checks := append([]preflightCheck{{
-			Check:       checkRolesPayloadBuilds,
-			Status:      preflightFail,
-			Detail:      fmt.Sprintf("--agents payload built (%d bytes) but carries no %q entry: %v", len(agentsJSON), preflightProbedRoleKey, err),
-			Witness:     "plugins/agent-teams/roles/*.md (built payload)",
-			Remediation: fmt.Sprintf("the probed role is missing from the resolved roles directory — restore roles/implementer.md (the %q definition), then re-run", preflightProbedRoleKey),
-		}}, preflightSkippedChecks("the --agents payload does not carry the probed role; no probe session was launched")...)
-		result := buildPreflightResult(checks, "")
-		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
-			return renderErr
-		}
-		// Exit 1, not 2: a FAIL was emitted, so a verdict WAS formed. A
-		// missing role file cannot happen on a healthy install — that is the
-		// install being broken, which is exactly what this tool exists to
-		// report. Exit 2 here would read as infrastructure flakiness in CI
-		// and get retried instead of acted on.
-		return cli.Silent(1)
-	}
-
-	// TOKEN PROBE (agent-teams-25s3.4 step 3, FROZEN): mint fresh and inject
-	// into the probed role's prompt ONLY, before this payload ever reaches
-	// argv. See the checkRoleProseInContext doc comment for the full design.
-	token := mintPreflightToken()
-	tokenizedAgentsJSON, err := injectPreflightToken(agentsJSON, token)
-	if err != nil {
-		// Unreachable in practice — preflightProbedRolePresent above already
-		// confirmed this payload carries preflightProbedRoleKey — guarded
-		// anyway rather than silently launching a session nothing will probe.
-		checks := append([]preflightCheck{{
-			Check:       checkRolesPayloadBuilds,
-			Status:      preflightFail,
-			Detail:      fmt.Sprintf("could not inject the preflight token into the probed role's prompt: %v", err),
-			Witness:     "plugins/agent-teams/roles/*.md (built payload)",
-			Remediation: "confirm roles/implementer.md still resolves and its frontmatter parses",
-		}}, preflightSkippedChecks("token injection failed; no probe session was launched")...)
+			Witness:     "plugins/agent-teams/agents/*.md",
+			Remediation: "fix or restore the role file named above (missing, or malformed frontmatter) under the plugin's agents/ directory, then re-run",
+		}}, preflightSkippedChecks("the role definitions did not validate; no probe session was launched")...)
 		result := buildPreflightResult(checks, "")
 		if renderErr := renderPreflight(ctx, result, c.JSON); renderErr != nil {
 			return renderErr
@@ -842,7 +984,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// looked locked up (reported 2026-08-10). stopProgress halts the
 	// heartbeat and waits for its goroutine before any later write.
 	stopProgress := preflightStartProgress(ctx, c.JSON, sessionID)
-	stdout, err := launch(sessionID, tokenizedAgentsJSON, skill, c.MaxBudgetUSD, c.PluginDir)
+	stdout, err := launch(sessionID, skill, c.MaxBudgetUSD, probePluginDir)
 	stopProgress()
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam preflight: could not launch the probe session: %v\n", err)
@@ -861,10 +1003,10 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	}
 
 	checks := []preflightCheck{{
-		Check:   checkRolesPayloadBuilds,
+		Check:   checkRoleDefinitionsPresent,
 		Status:  preflightPass,
-		Detail:  fmt.Sprintf("--agents payload built (%d bytes)", len(agentsJSON)),
-		Witness: "plugins/agent-teams/roles/*.md",
+		Detail:  "role definitions validated; probe plugin copy built with the token section",
+		Witness: "plugins/agent-teams/agents/*.md",
 	}}
 
 	// learnings-wired (REASON-NO-SESSION): every role loads learnings only via
@@ -872,7 +1014,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 	// files carry it, the cheap per-role coverage the live probe (implementer
 	// only) does not give.
 	if c.learningsWired != nil {
-		checks = append(checks, c.learningsWired())
+		checks = append(checks, c.learningsWired(c.PluginDir))
 	}
 
 	verdict, verdictErr := parsePreflightVerdict(envelope.Result)
@@ -922,7 +1064,7 @@ func (c *preflightKong) Run(ctx *cli.Context) error {
 }
 
 // preflightSkippedChecks returns SKIP entries for the three checks that
-// never ran because roles-payload-builds failed before any session could
+// never ran because role-definitions-present failed before any session could
 // be launched.
 func preflightSkippedChecks(reason string) []preflightCheck {
 	ids := []string{checkProbeSessionVerdict, checkSpawnRecordPresent, checkRoleTypeRegistered}
@@ -1013,10 +1155,10 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 	// before any spawn, writing no sidecar — measured live,
 	// agent-teams-25s3.19). This witnesses REGISTRATION, never ATTACHMENT:
 	// it does not prove the role's prose body was non-empty. That property
-	// is instead caught deterministically, pre-launch, by parseRoleFile's
-	// hard-fail (agentsjson.go) surfacing through roles-payload-builds — the
-	// two checks together cover what this initiative wants; this one alone
-	// does not.
+	// is instead caught deterministically, pre-launch, by
+	// preflightValidateRoleFile's hard-fail surfacing through
+	// role-definitions-present — the two checks together cover what this
+	// initiative wants; this one alone does not.
 	if sc.AgentType == preflightProbedRoleKey {
 		checks = append(checks, preflightCheck{Check: checkRoleTypeRegistered, Status: preflightPass, Detail: "agentType=" + preflightProbedRoleKey + " (type registered)", Witness: sc.Path + "#agentType"})
 	} else {
@@ -1024,7 +1166,7 @@ func preflightSidecarChecks(scan preflightSidecarScanFunc, sleep func(time.Durat
 		if got == "" {
 			got = "(absent)"
 		}
-		checks = append(checks, preflightCheck{Check: checkRoleTypeRegistered, Status: preflightFail, Detail: fmt.Sprintf("agentType=%s, want %s", got, preflightProbedRoleKey), Witness: sc.Path + "#agentType", Remediation: "the named spawn's role type did not resolve — confirm --agents is present in the probe launch argv and that roles/implementer.md still resolves"})
+		checks = append(checks, preflightCheck{Check: checkRoleTypeRegistered, Status: preflightFail, Detail: fmt.Sprintf("agentType=%s, want %s", got, preflightProbedRoleKey), Witness: sc.Path + "#agentType", Remediation: "the named spawn's role type did not resolve — confirm the plugin's agents/implementer.md still resolves and the installed agent-teams plugin was disabled for the probe"})
 	}
 
 	return checks
@@ -1100,7 +1242,7 @@ var preflightSkillOwnedChecks = []string{"role-types-available", "teammate-spawn
 
 // preflightSkillStandaloneStopID is the one owned check whose FAIL means
 // the skill stopped BY DESIGN before spawning anything (agent-teams-25s3.4
-// step 1: invoked in a session not launched with --agents). A verdict where
+// step 1: invoked in a session without the agent-teams role types). A verdict where
 // this FAILed and the other two owned ids are absent is COMPLETE — they
 // were never going to run — not an under-count.
 const preflightSkillStandaloneStopID = "role-types-available"
@@ -1205,21 +1347,6 @@ func newPreflightSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// preflightLaunchArgs returns the argv slice (everything after "claude") for
-// the probe session launch, per contract artifact (6). Extracted as a pure
-// function (mirroring bgSessionArgs, dispatch.go) so the argv itself is
-// testable without executing a real claude binary. No --settings: this
-// synchronous -p probe, launched and reaped inline by this verb, has
-// nothing to encode in it — bgSessionSettingsJSON's env map exists for
-// background-session role/initiative signaling (dispatch.go), which does
-// not apply here. Contract artifact (6)'s "<payload>" is the general argv
-// shape when a settings payload exists, not a mandate to always emit one.
-//
-// pluginDir is a PRE-MERGE VERIFICATION SEAM (see preflightKong.PluginDir):
-// --plugin-dir is appended ONLY when pluginDir is non-empty, so an unset
-// flag leaves the argv byte-identical to before this seam existed — a stray
-// --plugin-dir in an ordinary run would silently change which plugin tree
-// (and therefore which skill) the probe loads.
 // preflightStartProgress prints a launch notice and then a periodic elapsed
 // heartbeat to stderr while the blocking probe session runs, and returns a
 // stop function that halts the heartbeat and WAITS for its goroutine to exit
@@ -1257,36 +1384,97 @@ func preflightStartProgress(ctx *cli.Context, asJSON bool, sessionID string) fun
 	}
 }
 
-func preflightLaunchArgs(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) []string {
+// preflightLaunchArgs returns the argv slice (everything after "claude") for
+// the probe session launch, per contract artifact (6). Extracted as a pure
+// function (mirroring bgSessionArgs, dispatch.go) so the argv itself is
+// testable without executing a real claude binary.
+//
+// The probe loads its plugin from pluginDir, the tokenized temp copy built by
+// preflightPreparePlugin, and settingsJSON switches the installed plugin
+// off for this one session. Both are required together: with the installed
+// plugin also enabled, two plugins named agent-teams would each register
+// agent-teams:<role>, and the probe could attach the untokenized installed
+// definition instead of the copy's. Verified live (agent-teams-l7td.3 Q1):
+// --settings with enabledPlugins false plus --plugin-dir attaches the copy's
+// definition, and a named -p spawn of agent-teams:implementer returns the
+// token appended to the copy's agents/implementer.md.
+func preflightLaunchArgs(sessionID, skill, maxBudgetUSD, pluginDir, settingsJSON string) []string {
 	args := []string{
 		"-p",
 		"--session-id", sessionID,
 		"--output-format", "json",
-		"--agents", agentsJSON,
 		"--permission-mode", "bypassPermissions",
 		// "opus" is pinned by contract artifact (6), independent of the
 		// (now-deleted) role-model-attached check that used to also read
 		// this value for its precondition gate (agent-teams-25s3.24).
 		"--model", "opus",
+		"--settings", settingsJSON,
+		"--plugin-dir", pluginDir,
 	}
 	if maxBudgetUSD != "" {
 		args = append(args, "--max-budget-usd", maxBudgetUSD)
 	}
-	if pluginDir != "" {
-		args = append(args, "--plugin-dir", pluginDir)
-	}
 	return append(args, skill)
 }
 
+// preflightMarketplaceKeyPrefix selects the enabledPlugins keys of the
+// installed agent-teams plugin: "<plugin>@<marketplace>". The marketplace half
+// is whatever the user installed from, so it is discovered from the user
+// settings file rather than assumed.
+const preflightMarketplaceKeyPrefix = "agent-teams@"
+
+// preflightDefaultInstalledKey is the key the marketplace install uses, and
+// the only one assumed when the settings file names no agent-teams entry (an
+// install enabled outside the user settings file, such as project scope, is
+// not discovered).
+const preflightDefaultInstalledKey = "agent-teams@agent-teams"
+
+// preflightDisabledPluginsSettings builds the --settings payload that turns the
+// installed agent-teams plugin off for the probe session. It always disables
+// preflightDefaultInstalledKey and also every agent-teams@<marketplace> key
+// that userSettingsPath's enabledPlugins map names. A missing or unparsable
+// settings file contributes nothing: the probe then relies on the default key.
+func preflightDisabledPluginsSettings(userSettingsPath string) string {
+	disabled := map[string]bool{preflightDefaultInstalledKey: false}
+	if b, err := os.ReadFile(userSettingsPath); err == nil {
+		var s struct {
+			EnabledPlugins map[string]json.RawMessage `json:"enabledPlugins"`
+		}
+		if json.Unmarshal(b, &s) == nil {
+			for key := range s.EnabledPlugins {
+				if strings.HasPrefix(key, preflightMarketplaceKeyPrefix) {
+					disabled[key] = false
+				}
+			}
+		}
+	}
+	b, err := json.Marshal(map[string]any{"enabledPlugins": disabled})
+	if err != nil {
+		// A map[string]bool always marshals; keep the default rather than
+		// launching with no settings at all.
+		return `{"enabledPlugins":{"` + preflightDefaultInstalledKey + `":false}}`
+	}
+	return string(b)
+}
+
 // productionPreflightLaunch is the production preflightLaunchFunc.
-func productionPreflightLaunch(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir string) (string, error) {
+func productionPreflightLaunch(sessionID, skill, maxBudgetUSD, pluginDir string) (string, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return "", fmt.Errorf("'claude' not found in PATH")
 	}
 
-	args := preflightLaunchArgs(sessionID, agentsJSON, skill, maxBudgetUSD, pluginDir)
+	settingsPath := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		settingsPath = filepath.Join(home, ".claude", "settings.json")
+	}
+	args := preflightLaunchArgs(sessionID, skill, maxBudgetUSD, pluginDir, preflightDisabledPluginsSettings(settingsPath))
 
 	cmd := exec.Command("claude", args...)
+	// The copy's SessionStart hooks would otherwise re-point the user's real
+	// ~/.local/bin/ateam link at the throwaway copy (ensure-ateam-link.sh
+	// derives its target from CLAUDE_PLUGIN_ROOT). Its test-only link override
+	// sends that write into the copy instead, which is deleted after the run.
+	cmd.Env = append(os.Environ(), "AGENT_TEAMS_ATEAM_LINK="+filepath.Join(pluginDir, ".ateam-link"))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

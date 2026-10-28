@@ -1,15 +1,13 @@
 // Package verbs — spawncheck.go implements `ateam spawn-check`
 // (agent-teams-wf7o.6, contract agent-teams-wf7o.9 artifact (7)).
 //
-// WHY THIS EXISTS: after wf7o.16 moved the role definitions out of the
-// plugin's auto-registered agents/ directory into roles/, an UNNAMED spawn of
-// a missing subagent_type errors loudly (the registry rejects it). But a
-// NAMED teammate spawn of a type that resolves to nothing is silent — Claude
-// Code launches a generic agent with full tools and no error
-// (anthropics/claude-code#78234, #81746). The deny hook (wf7o.11) blocks the
-// one KNOWN-bad call shape (the removed agent-teams:<role> colon key), but a
-// stale prompt, an old transcript, or an interactively-launched session with
-// no --agents payload at all can still produce a silently-generic teammate.
+// WHY THIS EXISTS: the role definitions are plugin-scope agents
+// (plugins/agent-teams/agents/, spawned as agent-teams:<role>). An UNNAMED
+// spawn of a missing subagent_type errors loudly (the registry rejects it).
+// But a NAMED teammate spawn of a type that resolves to nothing is silent —
+// Claude Code launches a generic agent with full tools and no error. A stale
+// prompt, an old transcript, or a session where the plugin is not enabled can
+// therefore produce a silently-generic teammate.
 //
 // Nothing else in this design WITNESSES that a role definition actually
 // attached — everything else is a model of the harness's behavior. This verb
@@ -31,9 +29,9 @@
 // agent-teams-wf7o.19 CORRECTION: an empty customAgentType is NOT itself
 // proof of a dropped definition. Built-in types (general-purpose, Explore,
 // fork, claude-code-guide, ...) never carry customAgentType even when a
-// named spawn of one behaves exactly as intended — only a CLI/project/user
-// scope definition (i.e. one of the agent-teams-<role> hyphen keys)
-// populates it. So an empty customAgentType is ambiguous between "no
+// named spawn of one behaves exactly as intended — any custom (non-built-in)
+// definition populates it, including a plugin-scope agent-teams:<role> key.
+// So an empty customAgentType is ambiguous between "no
 // definition was ever expected" and "a definition was expected and did not
 // attach", and the sidecar alone cannot resolve that ambiguity: the
 // requested subagent_type is precisely the field the upstream bug discards
@@ -86,20 +84,19 @@ const (
 	spawnCheckStatusUnknown = "TYPE-UNKNOWN"
 )
 
-// spawnCheckRoleNames are the CLI-scope role definitions
-// `ateam dispatch`/`ateam resume` inject via --agents (execution.md's Spawn
-// rule). A named spawn requesting one of these — by either the correct
-// hyphen key or the removed colon key — is a request for a role definition
-// to attach; any other requested type (general-purpose, Explore, fork,
-// claude-code-guide, a plugin-scoped name, ...) is not.
+// spawnCheckRoleNames are the plugin-scope role definitions
+// (plugins/agent-teams/agents/, execution.md's Spawn rule). A named spawn
+// requesting agent-teams:<role> for one of these is a request for a role
+// definition to attach; any other requested type (general-purpose, Explore,
+// fork, claude-code-guide, ...) is not.
 //
-// This list must stay in step with plugins/agent-teams/roles/*.md. It is a
+// This list must stay in step with plugins/agent-teams/agents/*.md. It is a
 // literal rather than a directory scan because spawn-check reads harness
-// sidecars and must work even where the plugin's roles/ dir cannot be
+// sidecars and must work even where the plugin's agents/ dir cannot be
 // resolved — but a role missing here is INVISIBLE: spawn-check simply stops
 // classifying that role's spawns as role requests, so the one guard that
 // catches a silently-generic teammate stops watching it, with nothing going
-// red. TestSpawnCheckRoleNamesMatchRolesDir pins the two together.
+// red. TestSpawnCheckRoleNamesMatchAgentsDir pins the two together.
 var spawnCheckRoleNames = []string{"planner", "implementer", "reviewer", "tester", "investigator"}
 
 // RegisterSpawnCheckKong registers the spawn-check verb onto p.
@@ -342,16 +339,12 @@ func scanSpawnCheck(projectsRoot, sessionID string, since *time.Time) ([]spawnCh
 }
 
 // spawnCheckIsRoleRequest reports whether subagentType names one of the
-// agent-teams roles execution.md's Spawn rule injects via --agents — via
-// either the correct hyphen key (agent-teams-<role>, which DOES attach a
-// definition) or the removed colon key (agent-teams:<role>, which no longer
-// resolves to anything and is the historical KNOWN-bad shape this verb was
-// built to catch). Any other requested type (general-purpose, Explore, fork,
-// claude-code-guide, a plugin-scoped name, ...) is not a role request and
-// never carries customAgentType even when healthy.
+// agent-teams plugin-scope roles, via the agent-teams:<role> key. Any other
+// requested type (general-purpose, Explore, fork, claude-code-guide, ...) is
+// not a role request and never carries customAgentType even when healthy.
 func spawnCheckIsRoleRequest(subagentType string) bool {
 	for _, role := range spawnCheckRoleNames {
-		if subagentType == "agent-teams-"+role || subagentType == "agent-teams:"+role {
+		if subagentType == "agent-teams:"+role {
 			return true
 		}
 	}
@@ -559,7 +552,7 @@ func renderSpawnCheckText(w io.Writer, findings []spawnCheckFinding, droppedCoun
 	}
 
 	if droppedCount > 0 {
-		if _, err := fmt.Fprintf(w, "\n%d of %d teammate spawn(s) DEFINITION-DROPPED — the named role definition did not attach; that agent is running generic with full tools. Shut it down and respawn naming the hyphen key (agent-teams-<role>).\n", droppedCount, len(findings)); err != nil {
+		if _, err := fmt.Fprintf(w, "\n%d of %d teammate spawn(s) DEFINITION-DROPPED — the named role definition did not attach; that agent is running generic with full tools. Shut it down, confirm the agent-teams plugin is enabled (/setup-agent-teams), and respawn with subagent_type agent-teams:<role>.\n", droppedCount, len(findings)); err != nil {
 			return err
 		}
 	}

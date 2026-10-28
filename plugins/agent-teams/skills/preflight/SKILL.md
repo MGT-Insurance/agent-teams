@@ -3,7 +3,7 @@ name: preflight
 description: Verify an agent-teams install by spawning one real teammate and witnessing what it actually got. Use when asked to "run preflight", "check agent-teams is working", "verify the install", or when invoked as /agent-teams:preflight. This is the primary check — directly invocable inside an already-dispatched session as a first-class standalone mode, not a fallback. `ateam preflight` is a launcher on top of this skill for use OUTSIDE a dispatched session; it does not replace it.
 ---
 
-You verify that role teammates spawned from this session actually work, by spawning one real `agent-teams-implementer`, confirming it responds, asking it to echo back a one-time token the launching verb planted in its own prompt, and shutting it down. `ateam preflight` (a separate Go verb) exists to launch this skill from a session that has no role agents of its own yet, and it is also the process that mints the token and makes the final PASS/FAIL judgement on it — this skill asks the question and reports what came back, but never learns the correct answer (see Step 3).
+You verify that role teammates spawned from this session actually work, by spawning one real `agent-teams:implementer`, confirming it responds, asking it to echo back a one-time token the launching verb planted in its own prompt, and shutting it down. `ateam preflight` (a separate Go verb) exists to launch this skill from a session that does not have the plugin enabled, and it is also the process that mints the token and makes the final PASS/FAIL judgement on it — this skill asks the question and reports what came back, but never learns the correct answer (see Step 3).
 
 Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check-result and top-level JSON shapes, and exit-code handling. This skill implements the JSON side of that contract; it does not restate the reasoning behind it.
 
@@ -13,34 +13,34 @@ Contract: `agent-teams-25s3.2` (frozen) defines the status vocabulary, the check
 
 | check id | witnesses |
 |---|---|
-| `role-types-available` | `agent-teams-implementer` is a spawnable agent type in this session |
+| `role-types-available` | `agent-teams:implementer` is a spawnable agent type in this session |
 | `teammate-spawns` | the Agent tool call actually returns a response from the probe |
 | `role-prose-in-context` | the probe echoes back a one-time token the launching verb planted in its assembled prompt — proof the prompt it actually received carried the role's instructions, not just that some agent replied; see Step 3 |
 | `learnings-loaded` | the probe echoes back a one-time token the verb planted in the learnings store — proof it loaded its learnings in-session, not just that the store has content; works on a fresh machine; see Step 3b |
 
 ## Step 1 — role types available
 
-Check the "Available agent types for the Agent tool" listing already present in this session's context for `agent-teams-implementer`.
+Check the "Available agent types for the Agent tool" listing already present in this session's context for `agent-teams:implementer`.
 
 **If present:** continue to Step 2. Nothing is printed yet.
 
-**If absent:** this session has no agent-teams role agents at all — it was not launched by `ateam dispatch`/`ateam resume` (or by `ateam preflight`, which launches one for exactly this reason). That is a normal, expected way to invoke `/agent-teams:preflight` directly, not a broken run — report it accurately and stop. Do not spawn anything, and do not go to Step 2. Build one check object:
+**If absent:** this session has no agent-teams role agents at all, because the agent-teams plugin is not enabled in it. Invoking `/agent-teams:preflight` from a session without the plugin is a normal, expected use, not a broken run — report it accurately and stop. Do not spawn anything, and do not go to Step 2. Build one check object:
 
-`{"check":"role-types-available","status":"FAIL","detail":"agent-teams-implementer is not in this session's available agent types","witness":"available agent types listing in session context","remediation":"run \"ateam preflight\" to launch a dispatched probe session, or invoke this skill from inside a session already launched by \"ateam dispatch\"/\"ateam resume\""}`
+`{"check":"role-types-available","status":"FAIL","detail":"agent-teams:implementer is not in this session's available agent types","witness":"available agent types listing in session context","remediation":"run \"ateam preflight\" to launch a probe session with the plugin loaded, or enable the agent-teams plugin and invoke this skill again"}`
 
 Embed it as the sole element of the envelope and end your turn on this — the entire final message, bare, no fence, nothing before or after it:
 
 ```json
-{"checks":[{"check":"role-types-available","status":"FAIL","detail":"agent-teams-implementer is not in this session's available agent types","witness":"available agent types listing in session context","remediation":"run \"ateam preflight\" to launch a dispatched probe session, or invoke this skill from inside a session already launched by \"ateam dispatch\"/\"ateam resume\""}],"pass":0,"fail":1,"skip":0,"session_id":"<$CLAUDE_CODE_SESSION_ID>"}
+{"checks":[{"check":"role-types-available","status":"FAIL","detail":"agent-teams:implementer is not in this session's available agent types","witness":"available agent types listing in session context","remediation":"run \"ateam preflight\" to launch a probe session with the plugin loaded, or enable the agent-teams plugin and invoke this skill again"}],"pass":0,"fail":1,"skip":0,"session_id":"<$CLAUDE_CODE_SESSION_ID>"}
 ```
 
 ## Step 2 — spawn the probe teammate
 
-`role-types-available` passed. Hold this check object for Step 5's envelope — do not print it: `{"check":"role-types-available","status":"PASS","detail":"agent-teams-implementer is in this session's available agent types","witness":"available agent types listing in session context","remediation":""}`.
+`role-types-available` passed. Hold this check object for Step 5's envelope — do not print it: `{"check":"role-types-available","status":"PASS","detail":"agent-teams:implementer is in this session's available agent types","witness":"available agent types listing in session context","remediation":""}`.
 
 Spawn exactly one teammate via the Agent tool:
 
-- `subagent_type: "agent-teams-implementer"` — the hyphen key. Never the colon form; it no longer exists.
+- `subagent_type: "agent-teams:implementer"` — the plugin-scoped colon form.
 - `name: "preflight-probe"`
 - `mode: "bypassPermissions"`
 - **No `model` argument.** This is load-bearing (agent-teams-25s3.2 amendment): the sidecar's resolved model is only meaningful evidence on the Go side of this initiative when the caller passed none.
@@ -51,7 +51,7 @@ This spawn exists to exercise the spawn mechanism itself — its purpose is the 
 
 Hold the outcome for Step 5 — nothing is printed here either way:
 
-- If the Agent call errors, hangs with no response, or otherwise produces nothing, hold `{"check":"teammate-spawns","status":"FAIL","detail":"<what happened — error text or \"no response\">","witness":"live probe","remediation":"confirm claude is on PATH and the roles directory resolves; retry the spawn"}`.
+- If the Agent call errors, hangs with no response, or otherwise produces nothing, hold `{"check":"teammate-spawns","status":"FAIL","detail":"<what happened — error text or \"no response\">","witness":"live probe","remediation":"confirm claude is on PATH and the plugin's agents/ directory is present; retry the spawn"}`.
 - If it responds at all — with any content — hold `{"check":"teammate-spawns","status":"PASS","detail":"probe returned a response","witness":"live probe","remediation":""}`.
 
 This check is the WEAKER witness of "a teammate spawned." The authority is `spawn-record-present` (agent-teams-25s3.3) — the harness-written sidecar, verb-side — and if the two ever disagree, the sidecar wins.
@@ -60,7 +60,7 @@ Either way, continue to Step 3. If the spawn FAILed and there is no probe to ask
 
 ## Step 3 — role-prose-in-context (token probe)
 
-FROZEN mechanism (agent-teams-25s3.4 step 3). The VERB — never this skill — minted a fresh random token before launch and appended a section titled "Preflight self-check" to the probed role's prompt inside the `--agents` payload, carrying a line `PREFLIGHT-TOKEN: <value>`. This skill never learns that value; ground truth lives only in the process that never talks to the probe.
+FROZEN mechanism (agent-teams-25s3.4 step 3). The VERB — never this skill — minted a fresh random token before launch and appended a section titled "Preflight self-check" to the probed role's definition (agents/implementer.md) in a temporary copy of the plugin that the probe session loads in place of the installed one, carrying a line `PREFLIGHT-TOKEN: <value>`. This skill never learns that value; ground truth lives only in the process that never talks to the probe.
 
 Earlier shapes for this check (counting occurrences of a phrase, matching a line position, or asking for a verbatim or paraphrased reproduction of role text) each either passed a role-less agent or failed a healthy one — because they compared the probe's answer against the role FILE, when the probe only ever sees the assembled PROMPT (which also carries harness-injected text no role file contains, and strips frontmatter so file line numbers don't match). A random token sidesteps all of that: it has no textual relationship to any file content, so nothing can infer, paraphrase, or count its way to the right answer — the probe either has it verbatim in its prompt, or it does not.
 

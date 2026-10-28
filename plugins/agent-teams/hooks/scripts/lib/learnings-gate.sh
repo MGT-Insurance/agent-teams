@@ -53,8 +53,8 @@
 #   lg_read_pending <ath> <sid>          sets LG_PENDING_ROLE/_MAIN/_SUB; 1 if absent or malformed
 #   lg_drop_pending <ath> <sid>
 #   lg_record_spawn <ath> <sid> <name> <role>
-#   lg_known_subagent_role <role> <roles_dir>
-#   lg_resolve_subagent_role <ath> <sid> <agent_type> <roles_dir>
+#   lg_known_subagent_role <role> <agents_dir>
+#   lg_resolve_subagent_role <ath> <sid> <agent_type> <agents_dir>
 #                                        prints the role, or nothing
 #   lg_is_allowed_command <command> <role>
 #   lg_mark_loaded <ath> <sid> <agent_id>
@@ -149,21 +149,20 @@ lg_record_spawn() {
 }
 
 # ── Public: lg_known_subagent_role ───────────────────────────────────────────
-# True iff <role> is the basename of a roles/*.md file (README excluded).
+# True iff <role> is the basename of an agents/*.md file.
 lg_known_subagent_role() {
-  local role="$1" roles_dir="$2"
+  local role="$1" agents_dir="$2"
   valid_session_id "$role" || return 1
-  [ "$role" != "README" ] || return 1
-  [ -f "$roles_dir/$role.md" ]
+  [ -f "$agents_dir/$role.md" ]
 }
 
 # ── Public: lg_resolve_subagent_role ─────────────────────────────────────────
 lg_resolve_subagent_role() {
-  local ath="$1" sid="$2" agent_type="$3" roles_dir="$4" root role
+  local ath="$1" sid="$2" agent_type="$3" agents_dir="$4" root role
   case "$agent_type" in
-    agent-teams-*)
-      role="${agent_type#agent-teams-}"
-      lg_known_subagent_role "$role" "$roles_dir" && printf '%s' "$role"
+    agent-teams:*)
+      role="${agent_type#agent-teams:}"
+      lg_known_subagent_role "$role" "$agents_dir" && printf '%s' "$role"
       return 0
       ;;
   esac
@@ -171,7 +170,7 @@ lg_resolve_subagent_role() {
   root=$(lg_root "$ath" "$sid") || return 0
   [ -f "$root/spawns/$agent_type" ] || return 0
   role=$(head -n 1 "$root/spawns/$agent_type" 2>/dev/null) || return 0
-  lg_known_subagent_role "$role" "$roles_dir" && printf '%s' "$role"
+  lg_known_subagent_role "$role" "$agents_dir" && printf '%s' "$role"
   return 0
 }
 

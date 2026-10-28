@@ -147,9 +147,9 @@ stay tied to `<reviewed-sha>`.
 
 ### 8. Spawn the reviewer subagent
 
-Spawn one `agent-teams-reviewer` (`mode: bypassPermissions`,
+Spawn one `agent-teams:reviewer` (`mode: bypassPermissions`,
 `run_in_background: true`). It runs its own bare `ateam learnings reviewer`
-(step 1 of `roles/reviewer.md`); do not pipe it through `head`/`tail`.
+(step 1 of `agents/reviewer.md`); do not pipe it through `head`/`tail`.
 
 Include in the reviewer's prompt:
 
