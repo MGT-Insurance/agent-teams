@@ -90,6 +90,8 @@ cat > "$HOME/run-claude.sh" <<EOF
 export ANTHROPIC_BASE_URL=https://ai-gateway.vercel.sh/claude-code ANTHROPIC_AUTH_TOKEN=placeholder ANTHROPIC_API_KEY=
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 DISABLE_COMPACT=1
+# Non-secret: gh needs some token set; the api.github.com header transform injects the real one.
+export GH_TOKEN=placeholder
 cd "\$HOME/work/agent-teams"
 exec claude --permission-mode bypassPermissions --model $MODEL --plugin-dir "\$HOME/plugins/agent-teams" "\$@"
 EOF

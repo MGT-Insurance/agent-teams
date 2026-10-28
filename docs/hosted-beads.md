@@ -396,6 +396,11 @@ and never echo them. `scripts/sandbox/.gitignore` covers `.env*`,
    node scripts/sandbox/sb.mjs exec "bash ~/start-dri.sh 'Fix a typo in README.md. Open the PR from the scratch branch ring1-scratch.'"
    ```
 
+   `run-claude.sh` exports a non-secret `GH_TOKEN=placeholder`. `gh` then
+   uses the credential the firewall injects for `api.github.com`, so the DRI
+   can open a draft PR. A draft PR from the scratch branch is the expected
+   outcome.
+
    To watch the session, run
    `node scripts/sandbox/sb.mjs exec 'tmux capture-pane -p -t lead | tail -40'`.
 
