@@ -22,6 +22,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOKS="$ROOT/plugins/agent-teams/hooks/scripts"
 
+# Hermetic: don't pick up the parent session's id (the hooks tie/resolve by it).
+unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_SESSION_ID
+
 PASS=0; FAIL=0
 pass() { echo "PASS $*"; PASS=$((PASS+1)); }
 fail() { echo "FAIL $*"; FAIL=$((FAIL+1)); }
@@ -145,6 +148,8 @@ rm -f "$MAILBOX/steward.watcher.pid" "$MAILBOX/steward.wake"
 # resolve a real registered initiative via `ateam resolve-initiative`, from a
 # SUBDIRECTORY of the registered worktree rather than its root.
 mkdir -p "$T/wt/apps/nested"
+# The repo opt-in gate (repoconfig.Enabled) treats a repo without .agent-teams as disabled.
+: > "$T/wt/.agent-teams"
 printf 'problem: p\nrepo: %s\nworktree: %s\nbranch: feat/x\nteam: t\nmode: interactive\n' "$T/wt" "$T/wt" \
   > "$T/init-body.md"
 bd -C "$AGENT_TEAMS_HOME" create --title="Resolve target" --type=task --priority=2 \
