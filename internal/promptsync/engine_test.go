@@ -27,12 +27,12 @@ func TestKnownGoodDriftAndWriteControls(t *testing.T) {
 		t.Fatalf("report = %+v, want 6 outputs and 2 skill measurements", report)
 	}
 
-	rolePath := filepath.Join(root, "plugins/agent-teams/roles/planner.md")
+	rolePath := filepath.Join(root, "plugins/agent-teams/agents/planner.md")
 	mutatedRole := append(readFile(t, rolePath), []byte("hand edit\n")...)
 	writeFile(t, rolePath, mutatedRole)
 	before := snapshot(t, root)
 	_, err = Check(config)
-	if err == nil || !strings.Contains(err.Error(), "role.planner") || !strings.Contains(err.Error(), "plugins/agent-teams/roles/planner.md") {
+	if err == nil || !strings.Contains(err.Error(), "role.planner") || !strings.Contains(err.Error(), "plugins/agent-teams/agents/planner.md") {
 		t.Fatalf("role drift error = %v", err)
 	}
 	if after := snapshot(t, root); fmt.Sprint(after) != fmt.Sprint(before) {
@@ -40,7 +40,7 @@ func TestKnownGoodDriftAndWriteControls(t *testing.T) {
 	}
 
 	skillPath := filepath.Join(root, "plugins/agent-teams-codex/skills/dispatch-dri/SKILL.md")
-	writeFile(t, rolePath, readFile(t, filepath.Join("testdata", "clean", "plugins/agent-teams/roles/planner.md")))
+	writeFile(t, rolePath, readFile(t, filepath.Join("testdata", "clean", "plugins/agent-teams/agents/planner.md")))
 	writeFile(t, skillPath, append(readFile(t, skillPath), []byte("hand edit\n")...))
 	_, err = Check(config)
 	if err == nil || !strings.Contains(err.Error(), "skill.dispatch-dri") || !strings.Contains(err.Error(), "plugins/agent-teams-codex/skills/dispatch-dri/SKILL.md") {
@@ -63,7 +63,7 @@ func TestOrderedInputsPreserveExactBytesAndFinalNewline(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantClaude := "---\ndescription: Fixture planner\nmodel: fixture\n---\nSecond fragment.\nFinal fragment.\n"
-	if got := string(readFile(t, filepath.Join(root, "plugins/agent-teams/roles/planner.md"))); got != wantClaude {
+	if got := string(readFile(t, filepath.Join(root, "plugins/agent-teams/agents/planner.md"))); got != wantClaude {
 		t.Fatalf("ordered Claude bytes:\n got %q\nwant %q", got, wantClaude)
 	}
 	wantCodex := "name = \"fixture-planner\"\ndeveloper_instructions = \"\"\"\nRuntime-only intro.\nSecond fragment.\nFinal fragment.\n\"\"\"\n"
@@ -145,7 +145,7 @@ func TestMalformedManifestAndInputs(t *testing.T) {
 			name: "generated output cannot be canonical input",
 			mutate: func(t *testing.T, root string) {
 				path := rolesManifest(root)
-				data := strings.Replace(string(readFile(t, path)), `promptsrc/agent-teams/roles/shared.md`, `plugins/agent-teams/roles/planner.md`, 1)
+				data := strings.Replace(string(readFile(t, path)), `promptsrc/agent-teams/roles/shared.md`, `plugins/agent-teams/agents/planner.md`, 1)
 				writeFile(t, path, []byte(data))
 			},
 			want: "is also a canonical input",
@@ -166,9 +166,9 @@ func TestMalformedManifestAndInputs(t *testing.T) {
 func TestCoverageMissingUnclassifiedDuplicateAndKindMismatch(t *testing.T) {
 	t.Run("unclassified", func(t *testing.T) {
 		root := fixtureCopy(t)
-		writeFile(t, filepath.Join(root, "plugins/agent-teams/roles/reviewer.md"), []byte("unclassified\n"))
+		writeFile(t, filepath.Join(root, "plugins/agent-teams/agents/reviewer.md"), []byte("unclassified\n"))
 		_, err := Check(Config{Root: root})
-		if err == nil || !strings.Contains(err.Error(), "unclassified role surface: plugins/agent-teams/roles/reviewer.md") {
+		if err == nil || !strings.Contains(err.Error(), "unclassified role surface: plugins/agent-teams/agents/reviewer.md") {
 			t.Fatalf("error = %v", err)
 		}
 	})
@@ -219,7 +219,7 @@ func TestStrictAndTemporaryUnmigratedValidation(t *testing.T) {
 		Status: StatusTemporarilyUnmigrated,
 		Reason: "migration is dependency-gated",
 		Outputs: []Output{
-			{Path: "plugins/agent-teams/roles/legacy.md", Format: FormatMarkdown},
+			{Path: "plugins/agent-teams/agents/legacy.md", Format: FormatMarkdown},
 			{Path: "internal/verbs/codex_agents/legacy.toml", Format: FormatTOML},
 		},
 		source: "roles.json",

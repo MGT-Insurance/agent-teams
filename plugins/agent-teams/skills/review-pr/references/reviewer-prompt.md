@@ -1,6 +1,6 @@
 # Reviewer subagent prompt payload
 
-Step 8 spawns one `agent-teams-reviewer` subagent and includes the PR URL,
+Step 8 spawns one `agent-teams:reviewer` subagent and includes the PR URL,
 PR number, the whose-work phrasing, and the diff — plus one of the two
 instruction payloads below, verbatim, depending on whether step 5 detected
 a prior review.

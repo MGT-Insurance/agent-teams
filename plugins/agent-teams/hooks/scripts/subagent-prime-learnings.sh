@@ -3,7 +3,7 @@
 # never rendered into a spawned agent's context at any size (verified,
 # bbsz.15) — a role-learnings payload written here would reach nobody. Actual
 # delivery is the spawned agent's own on-spawn step 1, which unconditionally
-# self-fetches via `ateam learnings <role>` (roles/{implementer,planner,investigator,
+# self-fetches via `ateam learnings <role>` (agents/{implementer,planner,investigator,
 # tester,reviewer}.md). This hook's only job is to freshen the local memory
 # store (`ateam pull`) before that self-fetch runs, so it reads current data.
 # Silent no-op if ateam/jq not installed. Never fails.
@@ -15,8 +15,7 @@
 # identifies the definition at all (the sidecar's customAgentType does, but
 # that's not exposed here). So no regex can match a named spawn by role, and
 # the action below is role-independent anyway (ateam pull), so a catch-all
-# loses nothing. See plugins/agent-teams/roles/README.md for the full
-# workaround writeup this is part of.
+# loses nothing.
 #
 # THROTTLED: a catch-all fires for every subagent (Explore, general-purpose,
 # fork, nested spawns too), and the dolt sql-server serializes DOLT_PULL

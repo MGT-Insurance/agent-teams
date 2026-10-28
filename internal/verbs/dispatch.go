@@ -1282,12 +1282,10 @@ const reviewMCPConfigJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"h
 // driDefaultModel when non-empty. advisor, when non-empty, appends
 // "--advisor <advisor>" to the argv (a hidden claude CLI flag taking a model
 // alias). role and initiativeID are merged into --settings via
-// bgSessionSettingsJSON. agentsJSON is the --agents payload generated from
-// plugins/agent-teams/roles/*.md (agentsjson.go) — the workaround for
-// anthropics/claude-code#81746, see agent-teams-wf7o.9 — and is always
-// emitted; resolving/validating it is the CALLER's job (rawLaunchBGSession),
-// not this function's: bgSessionArgs stays pure and does not read the
-// filesystem or environment. autoCompactWindow is passed straight through to
+// bgSessionSettingsJSON. The role agents come from the enabled agent-teams
+// plugin (plugins/agent-teams/agents/), so no agent definitions ride the argv;
+// bgSessionArgs stays pure and does not read the filesystem or environment.
+// autoCompactWindow is passed straight through to
 // bgSessionSettingsJSON (which pins it into --settings when it parses to a
 // real token count — see bgSessionSettings for why) AND, when non-empty,
 // still appends "--autocompact <autoCompactWindow>" to the argv verbatim — no
@@ -1297,7 +1295,7 @@ const reviewMCPConfigJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"h
 // When empty (the default), argv AND the --settings payload are
 // byte-identical to before this parameter existed. Extracted so tests can
 // assert the argv without executing the command.
-func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, autoCompactWindow string) []string {
+func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, autoCompactWindow string) []string {
 	if model == "" {
 		model = driDefaultModel
 	}
@@ -1336,7 +1334,6 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON,
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
-	args = append(args, "--agents", agentsJSON)
 	return append(args, prompt)
 }
 
@@ -1412,13 +1409,7 @@ type rawLaunchFunc func(ctx *cli.Context, dir, prompt, model, advisor, role, ini
 // by the --launch-prompt production path and tests (via injection into
 // dispatchKong.launchRaw).
 //
-// Resolves the --agents payload (agentsjson.go) itself — bgSessionArgs stays
-// pure and does not read the filesystem — and fails loud (returns an error,
-// launches nothing) when that payload can't be built, per the fail-loud
-// contract in agent-teams-wf7o.9 artifact (4): a session launched without
-// --agents would silently run every named teammate as a generic agent.
-//
-// Also resolves the auto-compact window (driAutoCompactWindow) itself, here
+// Resolves the auto-compact window (driAutoCompactWindow) itself, here
 // rather than in launchBGSession, so the knob applies to every launch this
 // function makes — including --launch-prompt — not only the /dri path that
 // driAdvisorSettings is scoped to.
@@ -1426,16 +1417,12 @@ func rawLaunchBGSession(ctx *cli.Context, dir, prompt, model, advisor, role, ini
 	if _, err := exec.LookPath("claude"); err != nil {
 		return cli.Depf("ateam: 'claude' not found in PATH")
 	}
-	agentsJSON, err := buildAgentsPayload()
-	if err != nil {
-		return fmt.Errorf("ateam: build --agents payload: %w", err)
-	}
 	autoCompactWindow, err := driAutoCompactWindow(ctx.Home)
 	if err != nil {
 		return fmt.Errorf("ateam: %w", err)
 	}
 	name := filepath.Base(dir)
-	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID, agentsJSON, autoCompactWindow)
+	args := bgSessionArgs(name, prompt, model, advisor, role, initiativeID, autoCompactWindow)
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = dir
 	cmd.Stdout = ctx.Stdout

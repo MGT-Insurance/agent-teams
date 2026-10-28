@@ -14,7 +14,7 @@
       ],
       "outputs": [
         {
-          "path": "plugins/agent-teams/roles/planner.md",
+          "path": "plugins/agent-teams/agents/planner.md",
           "format": "markdown",
           "parts": ["claude-header", "shared"]
         },

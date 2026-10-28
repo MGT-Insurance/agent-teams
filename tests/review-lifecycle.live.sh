@@ -218,9 +218,8 @@ if [ "$WS_REPORT" != "$AGENT_TEAMS_HOME" ]; then
   exit 2
 fi
 
-# CLAUDE_PLUGIN_ROOT: dispatch's launch path (buildAgentsPayload) reads the
-# REAL plugins/agent-teams/roles/*.md — a workaround for Claude Code bug
-# #78234/#81746 (see plugins/agent-teams/roles/README.md). This is read-only.
+# CLAUDE_PLUGIN_ROOT: the plugin-scope role types load from the REAL
+# plugins/agent-teams/agents/*.md. This is read-only.
 export CLAUDE_PLUGIN_ROOT="$ROOT/plugins/agent-teams"
 
 # ── bd shim for S8 (reopen-failure injection) ────────────────────────────────
