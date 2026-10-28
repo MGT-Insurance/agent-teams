@@ -138,6 +138,8 @@ Follow references/wind-down.md exactly: shut down teammates -> remove worktrees 
 
 Default to `ateam learn`; `bd remember` only for repo-shared project facts. Contribute learnings as they form, not just at Phase 6. Tier mechanics (fresh/hot/cold): references/memory.md.
 
+The reviewer is the independent grader, not you. Reading a delegated diff yourself is triage, not review — your own read is not a substitute for an independent reviewer, and it is exactly where a convention violation dressed in a plausible in-code justification slips through (you read the comment, find it reasonable, and accept it; a reviewer graded against the actual rule would not). On any change touching a CONVENTION surface — env vs `process.env`, layer boundaries, logging levels, money/Decimal, date formatting — spawn `agent-teams-reviewer` to grade the diff against the CLAUDE.md rules before you push. "Small" or "single-implementer" is not a reason to skip it once the change lands on a convention surface.
+
 # Spawning a sibling initiative
 
 Dispatch scope-expanding work through **`/agent-teams:dispatch-dri`**; never hand-roll `claude --bg`. Re-launch an existing initiative with `ateam resume <id>` (`--supersede` only to replace a live session).
