@@ -354,3 +354,36 @@ func TestResumeKong_EmbeddedHome_IgnoresWhere(t *testing.T) {
 		t.Error("embedded home must resume locally despite a where: line")
 	}
 }
+
+// A live idle recipient on this host of a hosted workspace is never probed or
+// respawned: the follower rings the doorbell after a poll, so a 5 s wait would
+// misread a waking session as deaf (agent-teams-c4i9.20.29).
+func TestSendKong_Hosted_IdleLocalRecipient_SkipsDeafProbeAndRespawn(t *testing.T) {
+	t.Setenv("AGENT_TEAMS_HOST", "laptop")
+	sf := newSendFixture(t)
+	cmd := &sendKong{
+		RecipientID: "at-local",
+		File:        sf.file,
+		Sender:      "test-sender",
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
+		},
+		resumeFunc: func(*cli.Context, string, string, string) error {
+			t.Error("resumeFunc called for a live recipient")
+			return nil
+		},
+		sleeper:        func(time.Duration) { t.Error("sleeper called: the deaf probe must be skipped on hosted") },
+		doorbellExists: func(string) bool { t.Error("doorbellExists called"); return true },
+		respawnFunc: func(string) error {
+			t.Error("respawnFunc called on a hosted workspace")
+			return nil
+		},
+	}
+	ctx, stdout, _ := makeCtx(whereBD(sf, "at-local", "at-msg1", "host:laptop"), markHosted(t, sf.home))
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(stdout.String(), "deaf") {
+		t.Errorf("stdout mentions a deaf recipient: %s", stdout.String())
+	}
+}

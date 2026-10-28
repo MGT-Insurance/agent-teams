@@ -258,6 +258,15 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return nil
 	}
 
+	// Hosted: the journal follower rings the doorbell after a poll interval, so
+	// a 5 s wait can outrun a live recipient and respawning would interrupt it
+	// (agent-teams-c4i9.20.29). Skip the deaf probe and respawn; the doorbell
+	// stays and the watcher or the next turn delivers.
+	if _, hosted := bd.HostedServer(ctx.Home); hosted {
+		fmt.Fprintf(ctx.Stdout, "hosted workspace; doorbell will be picked up by the recipient's watcher\n")
+		return nil
+	}
+
 	// idle or pid-less: give an armed watcher a moment to deliver, then
 	// re-check the doorbell. inbox-drain is the only consumer now, so "gone"
 	// reliably means a turn saw it; "still present" means the recipient is
