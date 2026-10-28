@@ -450,35 +450,3 @@ var errFixtureRolesUnavailable = &fixtureError{"roles dir unavailable"}
 type fixtureError struct{ msg string }
 
 func (e *fixtureError) Error() string { return e.msg }
-
-// ---- bgSessionArgs: --agents flag -------------------------------------------
-
-// TestBGSessionArgs_AgentsFlag verifies "--agents" is emitted immediately
-// followed by the exact payload passed in, and that the prompt remains the
-// last argv element (agent-teams-wf7o.10 acceptance).
-func TestBGSessionArgs_AgentsFlag(t *testing.T) {
-	const payload = `{"agent-teams-planner":{"description":"d","prompt":"p","model":"opus"}}`
-	prompt := "/dri at-abc123"
-	args := bgSessionArgs("my-session", prompt, "", "", "", "", payload, "")
-
-	found := false
-	for i, a := range args {
-		if a == "--agents" {
-			if i+1 >= len(args) {
-				t.Fatal("--agents has no following value in argv")
-			}
-			if args[i+1] != payload {
-				t.Errorf("value after --agents = %q, want %q", args[i+1], payload)
-			}
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("argv missing --agents; got: %v", args)
-	}
-
-	if last := args[len(args)-1]; last != prompt {
-		t.Errorf("last argv element = %q, want %q (--agents payload must not push the prompt out of last position)", last, prompt)
-	}
-}

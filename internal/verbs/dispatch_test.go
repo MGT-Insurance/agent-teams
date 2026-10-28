@@ -1563,8 +1563,17 @@ func TestNewInitiative_MissingDRIArg(t *testing.T) {
 
 // ---- bgSessionArgs: argv shape and memory-routing flag ---------------------
 
+func TestBGSessionArgs_OmitsAgentsFlag(t *testing.T) {
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "")
+	for _, a := range args {
+		if a == "--agents" {
+			t.Fatalf("argv carries --agents; role agents come from the plugin: %v", args)
+		}
+	}
+}
+
 func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "")
 
 	// Locate --append-system-prompt and verify it is immediately followed by
 	// the canonical driSystemPromptAppend const (memoryRoutingRule +
@@ -1615,7 +1624,7 @@ func TestBGSessionArgs_ContainsAppendSystemPrompt(t *testing.T) {
 // (DRI-orchestration rules that don't apply and would just add per-turn
 // bloat on a session that isn't a DRI).
 func TestBGSessionArgs_ReviewPromptOmitsGuardrails(t *testing.T) {
-	args := bgSessionArgs("my-session", "/agent-teams:review-pr at-x", "", "", "dri", "at-x", "{}", "")
+	args := bgSessionArgs("my-session", "/agent-teams:review-pr at-x", "", "", "dri", "at-x", "")
 
 	found := false
 	for i, a := range args {
@@ -1642,7 +1651,7 @@ func TestBGSessionArgs_ReviewPromptOmitsGuardrails(t *testing.T) {
 func TestBGSessionArgs_ReviewPromptRestrictsMCPToDocsHound(t *testing.T) {
 	const wantJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"https://docs-hound.mgtinsurance.app/api/mcp"}}}`
 	prompt := "/agent-teams:review-pr at-x"
-	args := bgSessionArgs("my-session", prompt, "", "", "dri", "at-x", "{}", "")
+	args := bgSessionArgs("my-session", prompt, "", "", "dri", "at-x", "")
 	t.Logf("review-pr argv: %q", args)
 
 	strict, cfg := -1, -1
@@ -1671,7 +1680,7 @@ func TestBGSessionArgs_ReviewPromptRestrictsMCPToDocsHound(t *testing.T) {
 
 func TestBGSessionArgs_NonReviewPromptsGetNoMCPFlags(t *testing.T) {
 	for _, prompt := range []string{"/dri at-abc123", "/some-prompt", "/agent-teams:review-prx at-x"} {
-		args := bgSessionArgs("my-session", prompt, "", "", "", "", "{}", "")
+		args := bgSessionArgs("my-session", prompt, "", "", "", "", "")
 		for _, a := range args {
 			if a == "--strict-mcp-config" || a == "--mcp-config" {
 				t.Errorf("prompt %q: unexpected MCP flag %q in %v", prompt, a, args)
@@ -1685,7 +1694,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 	// bgSessionArgs now takes a raw prompt; the /dri prefix is added by the
 	// caller (launchBGSession), not by bgSessionArgs itself.
 	prompt := "/dri at-abc123"
-	args := bgSessionArgs(name, prompt, "", "", "", "", "{}", "")
+	args := bgSessionArgs(name, prompt, "", "", "", "", "")
 
 	// Required flags and their values must be present in correct positions.
 	checks := []struct {
@@ -1734,7 +1743,7 @@ func TestBGSessionArgs_StandardArgsPresent(t *testing.T) {
 // TestBGSessionArgs_ModelOverride verifies that a non-empty model argument
 // replaces the "claude-opus-4-8" default in the --model flag.
 func TestBGSessionArgs_ModelOverride(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "sonnet", "", "", "", "")
 
 	found := false
 	for i, a := range args {
@@ -1760,7 +1769,7 @@ func TestBGSessionArgs_ModelOverride(t *testing.T) {
 // TestBGSessionArgs_EmptyModelDefaultsToOpus verifies that an empty model
 // argument falls back to the "claude-opus-4-8" default.
 func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
-	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/some-prompt", "", "", "", "", "")
 
 	found := false
 	for i, a := range args {
@@ -1779,7 +1788,7 @@ func TestBGSessionArgs_EmptyModelDefaultsToOpus(t *testing.T) {
 // Per contract decision 7 (agent-teams-wvx2.1), this must be asserted at the
 // bgSessionArgs level (pure, no env reads).
 func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "sonnet", "opus", "", "", "")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1800,7 +1809,7 @@ func TestBGSessionArgs_AdvisorEnabled(t *testing.T) {
 // TestBGSessionArgs_AdvisorDisabled verifies the disabled/unset branch: model
 // defaults to "claude-opus-4-8" and no "--advisor" flag appears anywhere in argv.
 func TestBGSessionArgs_AdvisorDisabled(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "")
 
 	hasPair := func(flag, val string) bool {
 		for i, a := range args {
@@ -1950,7 +1959,7 @@ func TestDriAutoCompactWindow_RegressionWitness_ArgvCarriesFormattedTokens(t *te
 		t.Fatalf("driAutoCompactWindow(%q) = %q, want %q", home, window, "300000")
 	}
 
-	dispatchArgs := bgSessionArgs("sess", "/dri at-abc", "", "", "", "", "{}", window)
+	dispatchArgs := bgSessionArgs("sess", "/dri at-abc", "", "", "", "", window)
 	if !argvContainsSequence(dispatchArgs, "--autocompact", "300000") {
 		t.Errorf("bgSessionArgs argv missing \"--autocompact 300000\": %v", dispatchArgs)
 	}
@@ -2559,7 +2568,7 @@ func TestBGSessionArgs_SettingsAutoCompactWindow(t *testing.T) {
 		{role: "dri", initiativeID: "at-abc123", window: "1m", wantWindow: 1000000, wantKeys: true},
 		{role: "dri", initiativeID: "", window: "200", wantWindow: 200000, wantKeys: true},
 	} {
-		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, "{}", tc.window)
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", tc.role, tc.initiativeID, tc.window)
 		got := settingsValue(t, args)
 
 		var parsed map[string]any
@@ -2595,7 +2604,7 @@ func TestBGSessionArgs_SettingsAutoCompactWindow(t *testing.T) {
 // above): with autoCompactWindow == "", argv must not contain "--autocompact"
 // at all, so today's launches stay byte-identical.
 func TestBGSessionArgs_OmitsAutocompactFlagWhenEmpty(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "")
 	for _, a := range args {
 		if a == "--autocompact" {
 			t.Fatalf("argv must omit --autocompact when the window is empty; got: %v", args)
@@ -2611,7 +2620,7 @@ func TestBGSessionArgs_OmitsAutocompactFlagWhenEmpty(t *testing.T) {
 // altered here; the claude CLI itself owns validation.
 func TestBGSessionArgs_AutocompactFlagWhenSet(t *testing.T) {
 	for _, window := range []string{"450000", "500k", "1m", "200", "auto"} {
-		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}", window)
+		args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", window)
 
 		count := 0
 		for i, a := range args {
@@ -2652,7 +2661,7 @@ func settingsValue(t *testing.T, args []string) string {
 // path's merged --settings JSON: role and initiative id both present, in the
 // contract's documented field order (agent-teams-142k.1, PLAN.md §1).
 func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "dri", "at-abc123", "")
 	got := settingsValue(t, args)
 	want := `{"env":{"ATEAM_ROLE":"dri","ATEAM_INITIATIVE":"at-abc123"}}`
 	if got != want {
@@ -2664,7 +2673,7 @@ func TestBGSessionArgs_SettingsEnv_RoleAndInitiative(t *testing.T) {
 // bare-problem-statement case: role present, ATEAM_INITIATIVE omitted
 // entirely (not an empty string) when the launcher doesn't know the id.
 func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri a problem statement", "", "", "dri", "", "")
 	got := settingsValue(t, args)
 	want := `{"env":{"ATEAM_ROLE":"dri"}}`
 	if got != want {
@@ -2681,7 +2690,7 @@ func TestBGSessionArgs_SettingsEnv_RoleOnly(t *testing.T) {
 // map is the only thing ateam configures, so with nothing to say it says
 // nothing — an empty "{}" would read like an intent that went missing.
 func TestBGSessionArgs_SettingsEnv_Absent(t *testing.T) {
-	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "{}", "")
+	args := bgSessionArgs("my-session", "/dri at-abc123", "", "", "", "", "")
 	for _, a := range args {
 		if a == "--settings" {
 			t.Fatalf("argv must omit --settings when role and initiative id are both empty; got: %v", args)
