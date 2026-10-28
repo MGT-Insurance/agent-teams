@@ -1498,7 +1498,7 @@ func createEpicInRepo(repoPath, title string) (string, error) {
 // appendWhereToBody is registration's half of the F6 where: rule
 // (docs/hosted-beads.md), matching dispatch: on a hosted workspace with a
 // non-empty Host(), it returns a temp copy of the body at originalPath with
-// "where: host:<Host()>" appended, plus a cleanup function. A body that
+// "where: host:<Host(home)>" appended, plus a cleanup function. A body that
 // already carries a where: line is left alone (first-wins). It returns
 // ("", nil) when nothing is written or on any failure, so callers keep the
 // original file.
@@ -1506,7 +1506,7 @@ func appendWhereToBody(ctx *cli.Context, originalPath string) (path string, clea
 	if _, hosted := bd.HostedServer(ctx.Home); !hosted {
 		return "", nil
 	}
-	host := workspace.Host()
+	host := workspace.Host(ctx.Home)
 	if host == "" {
 		return "", nil
 	}

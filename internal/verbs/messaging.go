@@ -42,7 +42,7 @@ func remoteInitiative(home string, f initiative.Fields) bool {
 	if !ok {
 		return false
 	}
-	h := workspace.Host()
+	h := workspace.Host(home)
 	return h != "" && host != h
 }
 

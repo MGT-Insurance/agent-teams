@@ -358,7 +358,7 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		Standby:  c.Standby,
 	}
 	if _, hosted := bd.HostedServer(ctx.Home); hosted {
-		if h := workspace.Host(); h != "" {
+		if h := workspace.Host(ctx.Home); h != "" {
 			fields.Where = whereHostPrefix + h
 		}
 	}

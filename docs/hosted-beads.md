@@ -94,8 +94,21 @@ Implemented by T1. When `HostedServer(home)` is ok:
 `internal/workspace/host.go`
 
 ```go
-func Host() string // $AGENT_TEAMS_HOST if non-empty, else os.Hostname(), "" on error.
+func Host(home string) string
 ```
+
+Precedence:
+
+1. `$AGENT_TEAMS_HOST` if non-empty.
+2. The id persisted in `<home>/host-id`.
+3. If that file is absent, `os.Hostname()`, which `Host` also writes to
+   `<home>/host-id` (temp file plus rename) so later calls return the same
+   value after the OS hostname changes. The seed is the current hostname, so
+   existing `where: host:` lines and `to-host:` stamps keep matching.
+
+If the file cannot be read or written, `Host` returns `os.Hostname()` for that
+call without an error, or `""` when the hostname cannot be read. Only hosted
+code paths call `Host`, so a non-hosted workspace never gets the file.
 
 The ring-1 sandbox kit sets `AGENT_TEAMS_HOST=sandbox-<sandbox name>`.
 
@@ -128,8 +141,9 @@ line) in the create call (F7). If the read fails, or `Where` is missing or not
 and creates no bead. On an embedded or local-server workspace all of these
 behave exactly as before, even if a description carries a `where:` line. This
 keeps a laptop whose kernel hostname changes with the network (macOS
-`os.Hostname()`) from reading its own initiatives as remote. Every ring-1 host
-sets a fixed `AGENT_TEAMS_HOST` for the same reason.
+`os.Hostname()`) from reading its own initiatives as remote. The persisted
+`host-id` (F5) fixes the identity after first use; a ring-1 host can also set a
+fixed `AGENT_TEAMS_HOST`.
 
 ## F7 Doorbell filter
 
