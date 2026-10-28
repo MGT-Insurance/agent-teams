@@ -96,7 +96,7 @@ const (
 // resolved — but a role missing here is INVISIBLE: spawn-check simply stops
 // classifying that role's spawns as role requests, so the one guard that
 // catches a silently-generic teammate stops watching it, with nothing going
-// red. TestSpawnCheckRoleNamesMatchRolesDir pins the two together.
+// red. TestSpawnCheckRoleNamesMatchAgentsDir pins the two together.
 var spawnCheckRoleNames = []string{"planner", "implementer", "reviewer", "tester", "investigator"}
 
 // RegisterSpawnCheckKong registers the spawn-check verb onto p.

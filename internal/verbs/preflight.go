@@ -420,7 +420,7 @@ const checkRoleProseInContextID = "role-prose-in-context"
 const checkLearningsLoadedID = "learnings-loaded"
 
 // preflightProbedRoleName is the bare role name for `ateam learnings <role>`
-// — the probe spawns as the "agent-teams-implementer" agent type
+// — the probe spawns as the "agent-teams:implementer" agent type
 // (preflightProbedRoleKey), whose learnings live under the "implementer" role
 // key. Kept beside preflightProbedRoleKey so the two move together if the
 // probed role ever changes.

@@ -615,14 +615,14 @@ func TestSpawnCheckIsRoleRequest_ColonOnly(t *testing.T) {
 	}
 }
 
-// TestSpawnCheckRoleNamesMatchRolesDir pins spawnCheckRoleNames to the actual
+// TestSpawnCheckRoleNamesMatchAgentsDir pins spawnCheckRoleNames to the actual
 // shipped role definitions. Without this, adding plugins/agent-teams/agents/
 // <role>.md and forgetting this list produces NO failure anywhere: spawn-check
 // silently stops classifying that role's named spawns as role requests, so the
 // only guard that catches a teammate whose definition never attached quietly
 // stops watching the new role. That is the exact silent-miss spawn-check was
 // built to eliminate, so it must not be reintroducible by omission.
-func TestSpawnCheckRoleNamesMatchRolesDir(t *testing.T) {
+func TestSpawnCheckRoleNamesMatchAgentsDir(t *testing.T) {
 	dir := filepath.Join("..", "..", "plugins", "agent-teams", "agents")
 	entries, err := os.ReadDir(dir)
 	if err != nil {

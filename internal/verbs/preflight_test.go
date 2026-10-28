@@ -890,7 +890,7 @@ func TestPreflightKong_Run_TokenNeverWrittenToAnyFile(t *testing.T) {
 // role-prose-in-context never showed up. Must FAIL and name the missing id.
 func TestParsePreflightVerdict_MissingOwnedCheck_Fails(t *testing.T) {
 	verdictJSON := buildPreflightVerdictJSON(t, []preflightCheck{
-		{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available"},
+		{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams:implementer available"},
 		{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe"},
 		// role-prose-in-context is missing.
 	})
@@ -909,7 +909,7 @@ func TestParsePreflightVerdict_MissingOwnedCheck_Fails(t *testing.T) {
 // as missing checks.
 func TestParsePreflightVerdict_StandaloneStopAlone_DoesNotTripMissingCheck(t *testing.T) {
 	verdictJSON := buildPreflightVerdictJSON(t, []preflightCheck{
-		{Check: "role-types-available", Status: preflightFail, Detail: "agent-teams-implementer not in this session's available agent types", Remediation: "run `ateam preflight` rather than invoking the skill directly"},
+		{Check: "role-types-available", Status: preflightFail, Detail: "agent-teams:implementer not in this session's available agent types", Remediation: "run `ateam preflight` rather than invoking the skill directly"},
 	})
 	if _, err := parsePreflightVerdict(verdictJSON); err != nil {
 		t.Fatalf("parsePreflightVerdict: %v, want nil — a standalone-stop verdict is complete, not an under-count", err)
@@ -1111,7 +1111,7 @@ func TestPreflightKong_HappyPath_JSONShapeAndCostFooter(t *testing.T) {
 			// decorative green.
 			token := extractInjectedPreflightToken(t, pluginDir)
 			skillChecks := []preflightCheck{
-				{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams-implementer available", Witness: "session agent type list"},
+				{Check: "role-types-available", Status: preflightPass, Detail: "agent-teams:implementer available", Witness: "session agent type list"},
 				{Check: "teammate-spawns", Status: preflightPass, Detail: "spawned preflight-probe", Witness: "live probe"},
 				{Check: checkRoleProseInContextID, Status: preflightFail, Detail: token},
 				// learnings-loaded carries the header the probe reported from its
