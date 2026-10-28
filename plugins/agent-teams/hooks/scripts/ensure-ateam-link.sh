@@ -32,6 +32,7 @@ export HOOK_SESSION_ID
 
 # Log start BEFORE any guard check.
 hook_log_start "ensure-ateam-link.sh"
+hook_log_note "plugin-root" "$PLUGIN_ROOT"
 
 # C3: link path — env override exists solely so the test can sandbox it. Not
 # a user-facing feature; do not document it as one.
@@ -55,19 +56,96 @@ if [ -z "${AGENT_TEAMS_ATEAM_LINK:-}" ] && [ -z "${HOME:-}" ]; then
   exit 0
 fi
 
-# agent-teams-c4i9.20.35: a session running under a non-default
-# AGENT_TEAMS_HOME (a test or sandbox home) must not repoint the machine-wide
-# ~/.local/bin/ateam — that link serves every live session. Such a session
-# manages a link only when AGENT_TEAMS_ATEAM_LINK explicitly names one. The
-# default home (unset, or $HOME/.agent-teams) is unchanged.
-if [ -z "${AGENT_TEAMS_ATEAM_LINK:-}" ] && [ -n "${AGENT_TEAMS_HOME:-}" ]; then
-  _home="${AGENT_TEAMS_HOME%/}"
-  if [ "$_home" != "${HOME%/}/.agent-teams" ]; then
-    HOOK_EXIT_REASON="non-default-home"
-    exit 0
-  fi
-fi
+# agent-teams-c4i9.20.42: the default machine-wide link (~/.local/bin/ateam)
+# serves every live session, so only the INSTALLED plugin may repoint or create
+# it. A session loaded with `--plugin-dir <worktree>` (a test or sandbox copy)
+# resolves CLAUDE_PLUGIN_ROOT to that copy, and relinking from it hijacks every
+# other session. AGENT_TEAMS_HOME is deliberately NOT consulted: a custom home
+# is a supported install layout and says nothing about which plugin copy loaded.
+# When AGENT_TEAMS_ATEAM_LINK names a link explicitly, the caller owns that link
+# and the gate does not apply. Otherwise PLUGIN_ROOT must be one of:
+#   (a) under ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/, or
+#   (b) inside the installLocation of the "agent-teams" marketplace recorded in
+#       ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json
+#       (a directory-source marketplace loads from there, not from the cache),
+#       with no .git FILE (a git worktree marker) between PLUGIN_ROOT and that
+#       installLocation, inclusive.
+# Anything else, including a missing or unparseable known_marketplaces.json
+# when (a) does not match, declines with "not-installed-root". Paths compare
+# after physical resolution (pwd -P), not as raw strings.
 LINK="${AGENT_TEAMS_ATEAM_LINK:-$HOME/.local/bin/ateam}"
+
+# physical_dir <dir> -> prints the symlink-resolved absolute dir, or nothing.
+physical_dir() {
+  (cd "$1" 2>/dev/null && pwd -P) || true
+}
+
+# marketplace_install_location <known_marketplaces.json> -> prints the
+# "agent-teams" entry's installLocation, or nothing. Uses jq when present,
+# otherwise a brace-depth awk scan so a nested object or a later marketplace
+# entry can never supply the value.
+marketplace_install_location() {
+  local f="$1" v=""
+  [ -f "$f" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    v="$(jq -r '.["agent-teams"].installLocation // empty' "$f" 2>/dev/null || true)"
+  fi
+  if [ -z "$v" ]; then
+    v="$(tr -d '\n\r' <"$f" 2>/dev/null | awk '{
+      s = $0
+      if (!match(s, /"agent-teams"[ \t]*:[ \t]*\{/)) exit
+      rest = substr(s, RSTART + RLENGTH); depth = 1; body = ""
+      for (i = 1; i <= length(rest) && depth > 0; i++) {
+        c = substr(rest, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) break }
+        body = body c
+      }
+      if (match(body, /"installLocation"[ \t]*:[ \t]*"[^"]*"/)) {
+        m = substr(body, RSTART, RLENGTH)
+        sub(/^"installLocation"[ \t]*:[ \t]*"/, "", m); sub(/"$/, "", m)
+        gsub(/\\\//, "/", m)
+        print m
+      }
+    }' 2>/dev/null || true)"
+  fi
+  printf '%s' "$v"
+}
+
+# is_installed_root -> 0 iff PLUGIN_ROOT is the installed plugin (rule above).
+is_installed_root() {
+  local cfg root cache loc d
+  cfg="$(physical_dir "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}")"
+  root="$(physical_dir "$PLUGIN_ROOT")"
+  [ -n "$cfg" ] && [ -n "$root" ] || return 1
+  cache="$cfg/plugins/cache"
+  case "$root" in
+    "$cache"/*) return 0 ;;
+  esac
+  loc="$(marketplace_install_location "$cfg/plugins/known_marketplaces.json")"
+  [ -n "$loc" ] || return 1
+  loc="$(physical_dir "$loc")"
+  [ -n "$loc" ] || return 1
+  case "$root" in
+    "$loc" | "$loc"/*) ;;
+    *) return 1 ;;
+  esac
+  d="$root"
+  while :; do
+    [ -f "$d/.git" ] && return 1
+    if [ "$d" = "$loc" ] || [ "$d" = "/" ]; then break; fi
+    d="$(dirname "$d")"
+  done
+  return 0
+}
+
+# link_gate_ok -> 0 if this hook may repoint or create LINK. An explicit
+# AGENT_TEAMS_ATEAM_LINK bypasses the gate; the default link needs the
+# installed root.
+link_gate_ok() {
+  [ -n "${AGENT_TEAMS_ATEAM_LINK:-}" ] && return 0
+  is_installed_root
+}
 
 # C5: resolve a path through chained symlinks — same POSIX loop already used
 # by plugins/agent-teams/bin/ateam:11-19. Do not shell out to readlink -f or
@@ -227,6 +305,10 @@ if [ -L "$LINK" ]; then
     HOOK_EXIT_REASON="target-newer"
     exit 0
   fi
+  if ! link_gate_ok; then
+    HOOK_EXIT_REASON="not-installed-root"
+    exit 0
+  fi
   mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
   ln -sf "$WRAPPER" "$LINK" 2>/dev/null || true
   HOOK_EXIT_REASON="relinked"
@@ -234,6 +316,10 @@ if [ -L "$LINK" ]; then
 fi
 
 # (e) LINK does not exist -> create it. No prior install to compare against.
+if ! link_gate_ok; then
+  HOOK_EXIT_REASON="not-installed-root"
+  exit 0
+fi
 mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
 ln -sf "$WRAPPER" "$LINK" 2>/dev/null || true
 HOOK_EXIT_REASON="created"
