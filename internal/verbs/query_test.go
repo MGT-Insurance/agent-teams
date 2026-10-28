@@ -1207,7 +1207,7 @@ func TestLearningsCallsBDArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 bd call, got %d", len(calls))
 	}
-	wantArgs := []string{"-C", "/ws", "memories", "--json"}
+	wantArgs := []string{"-C", "/ws", "--readonly", "memories", "--json"}
 	for i, w := range wantArgs {
 		if i >= len(calls[0]) || calls[0][i] != w {
 			t.Errorf("bd args[%d] = %q, want %q (full: %v)", i, calls[0][i], w, calls[0])

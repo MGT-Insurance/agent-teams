@@ -31,10 +31,10 @@ type stewardRouteFakeBD struct {
 }
 
 func (f *stewardRouteFakeBD) Run(args ...string) (string, error) {
-	// gateKong.Run's own note/label calls, ahead of notify — no-op ok so this
+	// gateKong.Run's own update call, ahead of notify — no-op ok so this
 	// fake can drive a full gateKong.Run() (see
 	// TestGate_NotifyToStewardMarkerPresent_RoutesEndToEnd below).
-	if len(args) >= 1 && (args[0] == "note" || args[0] == "label") {
+	if len(args) >= 1 && (args[0] == "update" || args[0] == "note" || args[0] == "label") {
 		return "ok", nil
 	}
 	if len(args) >= 3 && args[0] == "show" && args[2] == "--json" {
@@ -322,9 +322,7 @@ func TestNotifyToSteward_FileNotFound_ReturnsError(t *testing.T) {
 func TestGate_NotifyToStewardFailureIsNonFatal(t *testing.T) {
 	f := makeTempFile(t, "should we proceed?")
 	ctx, calls := newCtx(t, []fakeResp{
-		{stdout: "ok"},                          // note
-		{stdout: "ok"},                          // label add human
-		{stdout: "ok"},                          // label add gate:question
+		{stdout: "ok"},                          // update (note + labels)
 		{err: fmt.Errorf("bd show: not found")}, // notifyToSteward's bd.ShowIssue
 	})
 	requireStewardMarker(t, ctx)
@@ -339,8 +337,8 @@ func TestGate_NotifyToStewardFailureIsNonFatal(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("gate must succeed even when notifyToSteward fails, got: %v", err)
 	}
-	if len(*calls) != 4 {
-		t.Fatalf("expected 4 bd calls (3 gate + 1 notifyToSteward show), got %d", len(*calls))
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 bd calls (1 gate update + 1 notifyToSteward show), got %d", len(*calls))
 	}
 	if !strings.Contains(errBuf.String(), "warning") {
 		t.Errorf("expected warning on stderr, got: %q", errBuf.String())
@@ -355,9 +353,7 @@ func TestGate_NotifyToStewardFailureIsNonFatal(t *testing.T) {
 func TestGate_NotifyToStewardNoMarker_NoMessageAndGateSucceeds(t *testing.T) {
 	f := makeTempFile(t, "should we proceed?")
 	ctx, calls := newCtx(t, []fakeResp{
-		{stdout: "ok"}, // note
-		{stdout: "ok"}, // label add human
-		{stdout: "ok"}, // label add gate:question
+		{stdout: "ok"}, // update (note + labels)
 	})
 	// No requireStewardMarker: this machine has no steward configured.
 	errBuf := ctx.Stderr.(*bytes.Buffer)
@@ -371,8 +367,8 @@ func TestGate_NotifyToStewardNoMarker_NoMessageAndGateSucceeds(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("gate must succeed with no steward marker, got: %v", err)
 	}
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 bd calls (gate only; notifyToSteward no-ops before any bd show/create), got %d", len(*calls))
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 bd call (gate only; notifyToSteward no-ops before any bd show/create), got %d", len(*calls))
 	}
 	if strings.Contains(errBuf.String(), "warning") {
 		t.Errorf("expected no warning on stderr (nil is a clean no-op, not a notify failure), got: %q", errBuf.String())

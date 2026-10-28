@@ -129,4 +129,5 @@ type Issue struct {
 	Assignee    string   `json:"assignee"`
 	IssueType   string   `json:"issue_type"`
 	CreatedBy   string   `json:"created_by"`
+	Ephemeral   bool     `json:"ephemeral"`
 }

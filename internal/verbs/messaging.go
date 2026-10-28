@@ -703,10 +703,15 @@ func resolveMyInitiative(ctx *cli.Context, cwd string) (string, error) {
 }
 
 func resolveMyInitiativeIssue(ctx *cli.Context, cwd string) (bd.Issue, error) {
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--json"); err != nil {
+	issues, err := listOpenIssues(ctx, false)
+	if err != nil {
 		return bd.Issue{}, err
 	}
+	return matchMyInitiativeIssue(issues, cwd)
+}
+
+// matchMyInitiativeIssue is the pure cwd-match core of resolveMyInitiativeIssue.
+func matchMyInitiativeIssue(issues []bd.Issue, cwd string) (bd.Issue, error) {
 	if match := matchByWorktreeOrAncestor(issues, cwd); match != nil {
 		return *match, nil
 	}
@@ -756,16 +761,19 @@ func resolveInboxRecipientRuntime(ctx *cli.Context, cwd string) (string, bool, e
 		return StewardHandle, false, nil
 	}
 
+	// One open list serves both the session-tie match and the cwd match.
+	issues, err := listOpenIssues(ctx, false)
+	if err != nil {
+		return "", false, err
+	}
 	if runtimeKind, sessionID, ok := currentRuntimeSessionID(); ok {
-		if issue, found, err := resolveInitiativeBySession(ctx, runtimeKind, sessionID); err != nil {
-			return "", false, err
-		} else if found {
+		if issue, found := matchInitiativeBySession(issues, runtimeKind, sessionID); found {
 			resolvedKind, runtimeErr := sessionruntime.ResolveStored(initiative.Of(issue).Runtime)
 			return issue.ID, runtimeErr == nil && resolvedKind == sessionruntime.Codex, nil
 		}
 	}
 
-	issue, err := resolveMyInitiativeIssue(ctx, cwd)
+	issue, err := matchMyInitiativeIssue(issues, cwd)
 	if err != nil {
 		return "", false, err
 	}
@@ -928,23 +936,16 @@ func senderFromNotes(notes string) string {
 // already-closed bead succeeds as a no-op, so a re-drain (or a duplicate
 // inbox read) never fails here.
 func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
-	// Add 'read' label (idempotent — bd label add is no-op if already present).
-	if _, err := ctx.BD.Run("label", "add", msgID, "read"); err != nil {
-		return fmt.Errorf("add read label: %w", err)
-	}
-	// Two-phase delivery ack labels.
-	if _, err := ctx.BD.Run("label", "add", msgID, "delivery:acked"); err != nil {
-		return fmt.Errorf("add delivery:acked: %w", err)
-	}
-	if _, err := ctx.BD.Run("label", "add", msgID, "delivery-acked-by:"+myID); err != nil {
-		return fmt.Errorf("add delivery-acked-by: %w", err)
-	}
-	if _, err := ctx.BD.Run("label", "add", msgID, "delivery-acked-at:"+ts); err != nil {
-		return fmt.Errorf("add delivery-acked-at: %w", err)
-	}
-	// Remove delivery:pending (idempotent).
-	if _, err := ctx.BD.Run("label", "remove", msgID, "delivery:pending"); err != nil {
-		return fmt.Errorf("remove delivery:pending: %w", err)
+	// One update for the read and two-phase delivery ack labels; label
+	// adds and the delivery:pending removal are idempotent.
+	if _, err := ctx.BD.Run("update", msgID,
+		"--add-label", "read",
+		"--add-label", "delivery:acked",
+		"--add-label", "delivery-acked-by:"+myID,
+		"--add-label", "delivery-acked-at:"+ts,
+		"--remove-label", "delivery:pending",
+	); err != nil {
+		return fmt.Errorf("ack message: %w", err)
 	}
 	// Auto-close on read. Fires only here (post-ack), never on delivery —
 	// unread/pending messages and messages to a dead initiative stay open.
@@ -953,6 +954,7 @@ func markMessageRead(ctx *cli.Context, msgID, myID, ts string) error {
 	// resolves to the git user — never the recipient. Mail is single-owner
 	// (only the recipient ever closes its own wisp), so the concurrent-
 	// reclaim race the guard protects against doesn't apply here.
+	// bd close, not update --status closed: only close records close_reason.
 	if _, err := ctx.BD.Run("close", msgID, "--force"); err != nil {
 		return fmt.Errorf("close message: %w", err)
 	}

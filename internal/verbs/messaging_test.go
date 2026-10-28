@@ -253,76 +253,11 @@ func TestInbox_DrainAndMark(t *testing.T) {
 		t.Fatalf("markMessageRead: %v", err)
 	}
 
-	// Verify the label calls were made in order.
-	var addedLabels []string
-	var removedLabels []string
-	for _, call := range labelCalls {
-		if len(call) >= 3 && call[0] == "label" && call[1] == "add" {
-			addedLabels = append(addedLabels, call[3])
-		}
-		if len(call) >= 3 && call[0] == "label" && call[1] == "remove" {
-			removedLabels = append(removedLabels, call[3])
-		}
-	}
-
-	for _, want := range []string{"read", "delivery:acked"} {
-		found := false
-		for _, l := range addedLabels {
-			if l == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("label %q not added; added: %v", want, addedLabels)
-		}
-	}
-
-	// delivery:pending must have been removed.
-	found := false
-	for _, l := range removedLabels {
-		if l == "delivery:pending" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("delivery:pending not removed; removed: %v", removedLabels)
-	}
-
-	// delivery-acked-by and delivery-acked-at labels must have been added.
-	foundBy := false
-	foundAt := false
-	for _, l := range addedLabels {
-		if strings.HasPrefix(l, "delivery-acked-by:") {
-			foundBy = true
-		}
-		if strings.HasPrefix(l, "delivery-acked-at:") {
-			foundAt = true
-		}
-	}
-	if !foundBy {
-		t.Errorf("delivery-acked-by: label not added; added: %v", addedLabels)
-	}
-	if !foundAt {
-		t.Errorf("delivery-acked-at: label not added; added: %v", addedLabels)
-	}
-
-	// markMessageRead must close the message bead (auto-close-on-read) —
-	// regression guard: a future refactor dropping or reordering this call
-	// should fail here, not just silently stop closing messages. --force is
-	// required: bd 1.3.0 refuses close when assignee (the recipient
-	// initiative) differs from actor (the git user).
-	closeCalled := false
-	for _, call := range labelCalls {
-		if len(call) == 3 && call[0] == "close" && call[1] == "at-wisp-m1" && call[2] == "--force" {
-			closeCalled = true
-			break
-		}
-	}
-	if !closeCalled {
-		t.Errorf("expected close --force call for at-wisp-m1; calls: %v", labelCalls)
-	}
+	// markMessageRead is exactly two bd processes: one update carrying every
+	// ack label, then the force-close. --force is required: bd 1.3.0 refuses
+	// close when assignee (the recipient initiative) differs from actor (the
+	// git user). close, not update --status closed, so close_reason is set.
+	assertAckArgv(t, labelCalls, "at-wisp-m1", myID, ts)
 
 	_ = stdout
 }
@@ -560,30 +495,7 @@ func TestResolveInboxRecipientRuntime_SessionTieResolvesFromUnregisteredCwd(t *t
 				t.Fatalf("markMessageRead: %v", err)
 			}
 
-			var added, removed []string
-			for _, call := range labelCalls {
-				if len(call) >= 4 && call[0] == "label" && call[1] == "add" {
-					added = append(added, call[3])
-				}
-				if len(call) >= 4 && call[0] == "label" && call[1] == "remove" {
-					removed = append(removed, call[3])
-				}
-			}
-			if !containsAll(added, "read", "delivery:acked") {
-				t.Errorf("markMessageRead: added labels %v missing read/delivery:acked", added)
-			}
-			if !containsAll(removed, "delivery:pending") {
-				t.Errorf("markMessageRead: removed labels %v missing delivery:pending", removed)
-			}
-			closeCalled := false
-			for _, call := range labelCalls {
-				if len(call) == 3 && call[0] == "close" && call[1] == "at-msg-1" && call[2] == "--force" {
-					closeCalled = true
-				}
-			}
-			if !closeCalled {
-				t.Errorf("markMessageRead: expected close --force call for at-msg-1; calls: %v", labelCalls)
-			}
+			assertAckArgv(t, labelCalls, "at-msg-1", id, "2026-09-02T00:00:00Z")
 		})
 	}
 }
@@ -1990,6 +1902,30 @@ func (f *fakeMailBD) Run(args ...string) (string, error) {
 	case "note":
 		f.noteCalls = append(f.noteCalls, args[2])
 		return "", nil
+	case "update":
+		// bd update <id> [--add-label L]... [--remove-label L]... [--append-notes N]
+		target := f.targetByID(args[1])
+		for i := 2; i+1 < len(args); i += 2 {
+			switch args[i] {
+			case "--add-label":
+				if target != nil && !hasLabel(target.Labels, args[i+1]) {
+					target.Labels = append(target.Labels, args[i+1])
+				}
+			case "--remove-label":
+				if target != nil {
+					out := target.Labels[:0]
+					for _, l := range target.Labels {
+						if l != args[i+1] {
+							out = append(out, l)
+						}
+					}
+					target.Labels = out
+				}
+			case "--append-notes":
+				f.noteCalls = append(f.noteCalls, args[i+1])
+			}
+		}
+		return "", nil
 	case "close":
 		id := args[1]
 		if id == f.closeErrFor {
@@ -2313,5 +2249,92 @@ func TestSendKong_ResumeOtherError_ExitsNonZeroMessageStaysQueued(t *testing.T) 
 	}
 	if len(open) != 1 {
 		t.Fatalf("expected exactly 1 open message after 3 retries with the same key, got %d: %v", len(open), open)
+	}
+}
+
+// assertAckArgv asserts the exact two-call sequence markMessageRead issues.
+func assertAckArgv(t *testing.T, calls [][]string, msgID, myID, ts string) {
+	t.Helper()
+	want := [][]string{
+		{"update", msgID,
+			"--add-label", "read",
+			"--add-label", "delivery:acked",
+			"--add-label", "delivery-acked-by:" + myID,
+			"--add-label", "delivery-acked-at:" + ts,
+			"--remove-label", "delivery:pending"},
+		{"close", msgID, "--force"},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("markMessageRead bd calls = %v, want exactly %d: %v", calls, len(want), want)
+	}
+	for i, w := range want {
+		if !equalArgs(calls[i], w) {
+			t.Errorf("markMessageRead call[%d] = %v, want %v", i, calls[i], w)
+		}
+	}
+}
+
+// TestMarkMessageRead_UpdateErrorSkipsClose preserves the early return on the
+// first failure: a failed ack update never closes the message.
+func TestMarkMessageRead_UpdateErrorSkipsClose(t *testing.T) {
+	var calls [][]string
+	updateErr := errors.New("update boom")
+	fbd := &fakeBD{runFn: func(args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if args[0] == "update" {
+			return "", updateErr
+		}
+		return "", nil
+	}}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+	err := markMessageRead(ctx, "at-m1", "at-me", "2026-09-02T00:00:00Z")
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("markMessageRead err = %v, want wrapping %v", err, updateErr)
+	}
+	if len(calls) != 1 || calls[0][0] != "update" {
+		t.Errorf("bd calls = %v, want only the failed update", calls)
+	}
+}
+
+// TestResolveInboxRecipientRuntime_OneOpenList counts bd processes: with a
+// session id and no tie the open list runs once (was twice), and with a tie
+// it still runs once.
+func TestResolveInboxRecipientRuntime_OneOpenList(t *testing.T) {
+	cwd := t.TempDir()
+	issues := []bd.Issue{
+		{ID: "at-by-cwd", Status: "open", Description: "worktree: " + cwd + "\n"},
+		{ID: "at-by-session", Status: "open", Description: "worktree: /elsewhere\nsession: sess-1\n"},
+	}
+	for _, tc := range []struct {
+		name    string
+		session string
+		wantID  string
+	}{
+		{"no_tie_falls_back_to_cwd", "sess-none", "at-by-cwd"},
+		{"tie_wins", "sess-1", "at-by-session"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(codexSessionIDEnvVar, "")
+			t.Setenv(sessionIDEnvVar, tc.session)
+			var lists [][]string
+			fbd := &fakeBD{runJSONFn: func(dst any, args ...string) error {
+				lists = append(lists, append([]string(nil), args...))
+				return json.Unmarshal(mustMarshal(issues), dst)
+			}}
+			ctx, _, _ := makeCtx(fbd, t.TempDir())
+
+			id, _, err := resolveInboxRecipientRuntime(ctx, cwd)
+			if err != nil {
+				t.Fatalf("resolveInboxRecipientRuntime: %v", err)
+			}
+			if id != tc.wantID {
+				t.Errorf("id = %q, want %q", id, tc.wantID)
+			}
+			want := []string{"list", "--status=open", "--limit=0", "--json"}
+			if len(lists) != 1 || !equalArgs(lists[0], want) {
+				t.Errorf("bd list calls = %v, want exactly one: %v", lists, want)
+			}
+		})
 	}
 }

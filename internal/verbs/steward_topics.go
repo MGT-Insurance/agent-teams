@@ -76,7 +76,7 @@ func isKnownStewardTopic(ctx *cli.Context, threadRef string) bool {
 	}
 
 	var raw map[string]any
-	if err := ctx.BD.RunJSON(&raw, "memories", "--json"); err != nil {
+	if err := readMemoriesJSON(ctx, &raw); err != nil {
 		return false
 	}
 
