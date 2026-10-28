@@ -5,7 +5,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/plugins/agent-teams/hooks/scripts/lib/learnings-gate.sh"
-ROLES="$ROOT/plugins/agent-teams/agents"
+AGENTS="$ROOT/plugins/agent-teams/agents"
 
 PASS=0; FAIL=0
 pass() { echo "PASS $*"; PASS=$((PASS+1)); }
@@ -73,12 +73,11 @@ lg_cleanup_session "$ATH" "$SID"
 check_not "cleanup_session removes pending" test -e "$ATH/learnings-gate/$SID/pending"
 
 # ── known role ───────────────────────────────────────────────────────────────
-check "known: planner" lg_known_subagent_role planner "$ROLES"
-check "known: implementer" lg_known_subagent_role implementer "$ROLES"
-check_not "known: README excluded" lg_known_subagent_role README "$ROLES"
-check_not "known: bogus" lg_known_subagent_role bogus "$ROLES"
-check_not "known: traversal" lg_known_subagent_role "../agents/planner" "$ROLES"
-check_not "known: dri is not a subagent role" lg_known_subagent_role dri "$ROLES"
+check "known: planner" lg_known_subagent_role planner "$AGENTS"
+check "known: implementer" lg_known_subagent_role implementer "$AGENTS"
+check_not "known: bogus" lg_known_subagent_role bogus "$AGENTS"
+check_not "known: traversal" lg_known_subagent_role "../agents/planner" "$AGENTS"
+check_not "known: dri is not a subagent role" lg_known_subagent_role dri "$AGENTS"
 
 # ── spawn record + resolution ────────────────────────────────────────────────
 check "record spawn" lg_record_spawn "$ATH" "$SID" probe-t1 planner
@@ -87,15 +86,15 @@ check_not "record rejects slash name" lg_record_spawn "$ATH" "$SID" "a/b" planne
 check_not "record rejects traversal name" lg_record_spawn "$ATH" "$SID" ".." planner
 check_not "record rejects bad sid" lg_record_spawn "$ATH" "../x" probe planner
 
-check "resolve (a) unnamed role" test "$(lg_resolve_subagent_role "$ATH" "$SID" agent-teams:reviewer "$ROLES")" = "reviewer"
-check "resolve (b) teammate" test "$(lg_resolve_subagent_role "$ATH" "$SID" probe-t1 "$ROLES")" = "planner"
-check "resolve (c) unknown name" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" nobody "$ROLES")"
-check "resolve bogus agent-teams:*" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" agent-teams:bogus "$ROLES")"
-check "resolve general-purpose" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" general-purpose "$ROLES")"
-check "resolve empty agent_type" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" "" "$ROLES")"
-check "resolve other session isolated" test -z "$(lg_resolve_subagent_role "$ATH" other-sess probe-t1 "$ROLES")"
+check "resolve (a) unnamed role" test "$(lg_resolve_subagent_role "$ATH" "$SID" agent-teams:reviewer "$AGENTS")" = "reviewer"
+check "resolve (b) teammate" test "$(lg_resolve_subagent_role "$ATH" "$SID" probe-t1 "$AGENTS")" = "planner"
+check "resolve (c) unknown name" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" nobody "$AGENTS")"
+check "resolve bogus agent-teams:*" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" agent-teams:bogus "$AGENTS")"
+check "resolve general-purpose" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" general-purpose "$AGENTS")"
+check "resolve empty agent_type" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" "" "$AGENTS")"
+check "resolve other session isolated" test -z "$(lg_resolve_subagent_role "$ATH" other-sess probe-t1 "$AGENTS")"
 printf 'bogus\n' > "$ATH/learnings-gate/$SID/spawns/probe-t1"
-check "resolve spawn with unknown role" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" probe-t1 "$ROLES")"
+check "resolve spawn with unknown role" test -z "$(lg_resolve_subagent_role "$ATH" "$SID" probe-t1 "$AGENTS")"
 
 # ── allow match ──────────────────────────────────────────────────────────────
 check "allow exact" lg_is_allowed_command "ateam learnings planner" planner

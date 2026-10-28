@@ -49,7 +49,7 @@ ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 export ATH
 
 script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || exit 0
-roles_dir="$script_dir/../../agents"
+agents_dir="$script_dir/../../agents"
 
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$script_dir/lib/hook-debug-log.sh" 2>/dev/null || exit 0
@@ -90,7 +90,7 @@ record_spawn_from() { # record_spawn_from <name> <agent-teams:role type> <event>
   local spawn_name="$1" spawn_type="$2" event="$3" spawn_role
   case "$spawn_type" in agent-teams:*) ;; *) return 0 ;; esac
   spawn_role="${spawn_type#agent-teams:}"
-  lg_known_subagent_role "$spawn_role" "$roles_dir" || return 0
+  lg_known_subagent_role "$spawn_role" "$agents_dir" || return 0
   lg_record_spawn "$ATH" "$session_id" "$spawn_name" "$spawn_role" || return 0
   hook_log_note "$event" "name=${spawn_name} role=${spawn_role}"
 }
@@ -138,7 +138,7 @@ if [ -z "$agent_id" ]; then
   fi
 else
   if valid_session_id "$agent_id" && [ ! -f "$root/loaded/$agent_id" ]; then
-    gate_role=$(lg_resolve_subagent_role "$ATH" "$session_id" "$agent_type" "$roles_dir")
+    gate_role=$(lg_resolve_subagent_role "$ATH" "$session_id" "$agent_type" "$agents_dir")
   fi
 fi
 

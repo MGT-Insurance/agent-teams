@@ -29,9 +29,9 @@
 // agent-teams-wf7o.19 CORRECTION: an empty customAgentType is NOT itself
 // proof of a dropped definition. Built-in types (general-purpose, Explore,
 // fork, claude-code-guide, ...) never carry customAgentType even when a
-// named spawn of one behaves exactly as intended — only a CLI/project/user
-// scope definition (i.e. one of the agent-teams:<role> plugin-scope keys)
-// populates it. So an empty customAgentType is ambiguous between "no
+// named spawn of one behaves exactly as intended — any custom (non-built-in)
+// definition populates it, including a plugin-scope agent-teams:<role> key.
+// So an empty customAgentType is ambiguous between "no
 // definition was ever expected" and "a definition was expected and did not
 // attach", and the sidecar alone cannot resolve that ambiguity: the
 // requested subagent_type is precisely the field the upstream bug discards
