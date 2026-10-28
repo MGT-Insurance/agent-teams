@@ -39,6 +39,8 @@ done
 ring_env() {
   export AGENT_TEAMS_HOME=$RING_HOME
   export AGENT_TEAMS_HOST=$HOST_ID
+  # Keeps the ensure-ateam-link hook off the machine-wide ~/.local/bin/ateam.
+  export AGENT_TEAMS_ATEAM_LINK=$RING_HOME/bin/ateam
   export BEADS_DOLT_SERVER_TLS=1
   export BEADS_CREDENTIALS_FILE=$EXT_CREDS
   export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
@@ -66,8 +68,8 @@ case "${1:-}" in
     ;;
   env)
     ring_env
-    printf 'export AGENT_TEAMS_HOME=%s\nexport AGENT_TEAMS_HOST=%s\nexport BEADS_DOLT_SERVER_TLS=1\nexport BEADS_CREDENTIALS_FILE=%s\nexport CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\nexport PATH=%s\n' \
-      "$RING_HOME" "$HOST_ID" "$EXT_CREDS" "$PATH"
+    printf 'export AGENT_TEAMS_HOME=%s\nexport AGENT_TEAMS_HOST=%s\nexport AGENT_TEAMS_ATEAM_LINK=%s\nexport BEADS_DOLT_SERVER_TLS=1\nexport BEADS_CREDENTIALS_FILE=%s\nexport CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\nexport PATH=%s\n' \
+      "$RING_HOME" "$HOST_ID" "$AGENT_TEAMS_ATEAM_LINK" "$EXT_CREDS" "$PATH"
     ;;
   claude)
     shift

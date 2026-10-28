@@ -448,4 +448,47 @@ AFTER_TARGET="$(readlink "$LINK")"
 assert_reason "T16 (two-hop cycle)" "unresolvable-link"
 echo "PASS T16 (two-hop cycle a -> b -> a — hook terminates without hanging and leaves the link untouched)"
 
+# ── T17: NON-DEFAULT AGENT_TEAMS_HOME — regression guard for agent-teams-c4i9.20.35
+# A test session under a non-default home relinked the machine-wide link and
+# hijacked every live session. HOME is a throwaway so the real
+# ~/.local/bin/ateam is never reachable from this case.
+last_reason() {
+  awk -F'\t' '$5=="exit"{line=$6} END{print line}' "$1" 2>/dev/null | sed -n 's/.*reason=//p'
+}
+
+T17_HOME="$T/case17/home"; assert_scratch_path "$T17_HOME"
+mkdir -p "$T17_HOME/.local/bin"
+MACHINE_LINK="$T17_HOME/.local/bin/ateam"; assert_scratch_path "$MACHINE_LINK"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+BEFORE_TARGET="$(readlink "$MACHINE_LINK")"
+T17_TEST_HOME="$T/case17/test-home"; assert_scratch_path "$T17_TEST_HOME"
+rc=0
+env -u AGENT_TEAMS_ATEAM_LINK HOME="$T17_HOME" AGENT_TEAMS_HOME="$T17_TEST_HOME" CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT" || rc=$?
+[ "$rc" -eq 0 ] || fail "T17a (non-default home): hook exited $rc, want 0"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17a (non-default home): machine-wide link was repointed ('$BEFORE_TARGET' -> '$(readlink "$MACHINE_LINK")')"
+[ "$(last_reason "$T17_TEST_HOME/debug/hooks.log")" = "non-default-home" ] || fail "T17a (non-default home): HOOK_EXIT_REASON was not 'non-default-home'"
+echo "PASS T17a (non-default AGENT_TEAMS_HOME without override — machine-wide link untouched)"
+
+# Same home, explicit override: manages exactly the named link.
+OVERRIDE_LINK="$T/case17/override/ateam"; assert_scratch_path "$OVERRIDE_LINK"
+env HOME="$T17_HOME" AGENT_TEAMS_HOME="$T17_TEST_HOME" AGENT_TEAMS_ATEAM_LINK="$OVERRIDE_LINK" CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT"
+[ "$("$OVERRIDE_LINK")" = "VERSION-B" ] || fail "T17b (non-default home, explicit override): override link was not created"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17b: machine-wide link changed"
+echo "PASS T17b (non-default home with AGENT_TEAMS_ATEAM_LINK — manages the named link only)"
+
+# Default home ($HOME/.agent-teams, and unset): unchanged behavior, relinks.
+for variant in explicit unset; do
+  H="$T/case17/home-$variant"; assert_scratch_path "$H"
+  mkdir -p "$H/.local/bin"
+  ln -s "$VERSION_A/bin/ateam" "$H/.local/bin/ateam"
+  if [ "$variant" = explicit ]; then
+    env -u AGENT_TEAMS_ATEAM_LINK HOME="$H" AGENT_TEAMS_HOME="$H/.agent-teams" CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT"
+  else
+    env -u AGENT_TEAMS_ATEAM_LINK -u AGENT_TEAMS_HOME HOME="$H" CLAUDE_PLUGIN_ROOT="$VERSION_B" "$SCRIPT"
+  fi
+  [ "$("$H/.local/bin/ateam")" = "VERSION-B" ] || fail "T17c ($variant default home): machine link was not relinked"
+  [ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "relinked" ] || fail "T17c ($variant default home): HOOK_EXIT_REASON was not 'relinked'"
+done
+echo "PASS T17c (default AGENT_TEAMS_HOME — behavior unchanged, machine link relinked)"
+
 echo "PASS"

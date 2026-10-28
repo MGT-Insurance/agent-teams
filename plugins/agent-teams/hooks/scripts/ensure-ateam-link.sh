@@ -54,6 +54,19 @@ if [ -z "${AGENT_TEAMS_ATEAM_LINK:-}" ] && [ -z "${HOME:-}" ]; then
   HOOK_EXIT_REASON="no-home"
   exit 0
 fi
+
+# agent-teams-c4i9.20.35: a session running under a non-default
+# AGENT_TEAMS_HOME (a test or sandbox home) must not repoint the machine-wide
+# ~/.local/bin/ateam — that link serves every live session. Such a session
+# manages a link only when AGENT_TEAMS_ATEAM_LINK explicitly names one. The
+# default home (unset, or $HOME/.agent-teams) is unchanged.
+if [ -z "${AGENT_TEAMS_ATEAM_LINK:-}" ] && [ -n "${AGENT_TEAMS_HOME:-}" ]; then
+  _home="${AGENT_TEAMS_HOME%/}"
+  if [ "$_home" != "${HOME%/}/.agent-teams" ]; then
+    HOOK_EXIT_REASON="non-default-home"
+    exit 0
+  fi
+fi
 LINK="${AGENT_TEAMS_ATEAM_LINK:-$HOME/.local/bin/ateam}"
 
 # C5: resolve a path through chained symlinks — same POSIX loop already used
