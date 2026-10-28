@@ -157,6 +157,24 @@ ensure_host_follower() {
 }
 ensure_host_follower
 
+# agent-teams-c4i9.20.28: the workspace counts as hosted when the follower's
+# pidfile exists and its pid is alive. On a hosted workspace the closed/disabled
+# check runs at arm time (the resolve-initiative above) and on the heartbeat,
+# not on each doorbell, because resolve-initiative costs ~2.8 s over the hosted
+# server and would delay every wake. Cached here, refreshed in the follower
+# check and the heartbeat branch. A missing or dead pidfile (including
+# AGENT_TEAMS_HOST_FOLLOW=off) keeps the per-doorbell check.
+hosted_follower=0
+refresh_hosted_follower() {
+  local fpid
+  hosted_follower=0
+  fpid=$(cat "$MAILBOX/host-follow.pid" 2>/dev/null || true)
+  if [ -n "$fpid" ] && kill -0 "$fpid" 2>/dev/null; then
+    hosted_follower=1
+  fi
+}
+refresh_hosted_follower
+
 # ── Heartbeat interval: 4 hours = 14400 seconds, just under the 24h timeout ──
 # Measured in AWAKE time, not wall-clock: a machine sleep spanning part of the
 # window would otherwise count toward it, so many watchers armed at similar
@@ -220,7 +238,7 @@ while true; do
   # SessionStart). inbox-drain.sh removes it when a turn actually starts, so
   # a lost rewake just means the next armed watcher fires again.
   if [ -f "$DOORBELL" ]; then
-    if ! still_open_and_enabled; then
+    if [ "$hosted_follower" != 1 ] && ! still_open_and_enabled; then
       HOOK_EXIT_REASON="closed-or-disabled"
       exit 0
     fi
@@ -252,6 +270,7 @@ while true; do
   # drift past that bound and risk crossing Claude Code's 24h hook timeout.
   wall_since_arm=$(( now - arm_epoch ))
   if [ "$now" -ge "$deadline" ] || [ "$wall_since_arm" -ge "$HEARTBEAT_SAFETY_SECS" ]; then
+    refresh_hosted_follower
     if ! still_open_and_enabled; then
       # Initiative closed, or its repo went disabled since this watcher
       # armed — stop pulsing, go quiet.
@@ -282,6 +301,7 @@ while true; do
       fi
       ensure_host_follower
     fi
+    refresh_hosted_follower
   fi
 
   # Alive tick: log approximately every alive_interval seconds.

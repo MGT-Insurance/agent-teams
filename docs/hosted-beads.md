@@ -239,6 +239,17 @@ the arm-time call.
 When `AGENT_TEAMS_HOST_FOLLOW=off` is set, the watcher makes neither the
 arm-time call nor the restart check (F9).
 
+Doorbell latency (amendment, agent-teams-c4i9.20.28): the workspace counts as
+hosted for the watcher when `<ATH>/mailbox/host-follow.pid` exists and its pid
+passes `kill -0`. The watcher checks this once at arm time, right after the
+arm-time `mail follow` call, and re-reads it in the follower check and in the
+heartbeat branch. While hosted, a doorbell fires at once: the
+closed/disabled check (`resolve-initiative`, about 2.8 s over the hosted
+server) runs at arm time and on the heartbeat, not on each doorbell. When
+`AGENT_TEAMS_HOST_FOLLOW=off` and no follower runs, or the pidfile is missing
+or stale, the watcher keeps the per-doorbell check, which is slower but still
+correct.
+
 ## F11 Ring-1 databases and homes
 
 VALUE PENDING the DRI/human ruling on the global-DB fork; the names below are
