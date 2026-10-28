@@ -1,0 +1,9 @@
+{
+  "name": "agent-teams-sandbox-kit",
+  "private": true,
+  "type": "module",
+  "description": "Hand-run Vercel sandbox kit for hosted beads (ring 1)",
+  "dependencies": {
+    "@vercel/sandbox": "3.8.0"
+  }
+}

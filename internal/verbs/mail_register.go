@@ -18,11 +18,12 @@ import (
 // and runs every node that has a Run method, so a Run here would fire on
 // every subcommand.
 type mailCmd struct {
-	Send  sendKong      `cmd:"" name:"send"  help:"Send a message to a recipient initiative."`
-	Inbox inboxKong     `cmd:"" name:"inbox" help:"Read and consume unread messages for this initiative."`
-	List  mailListKong  `cmd:"" name:"list"  help:"List recent cross-initiative mail (all statuses, including closed)."`
-	Close mailCloseKong `cmd:"" name:"close" help:"Close a message bead."`
-	Purge mailPurgeKong `cmd:"" name:"purge" help:"Permanently delete old closed message beads."`
+	Send   sendKong       `cmd:"" name:"send"  help:"Send a message to a recipient initiative."`
+	Inbox  inboxKong      `cmd:"" name:"inbox" help:"Read and consume unread messages for this initiative."`
+	List   mailListKong   `cmd:"" name:"list"  help:"List recent cross-initiative mail (all statuses, including closed)."`
+	Close  mailCloseKong  `cmd:"" name:"close" help:"Close a message bead."`
+	Purge  mailPurgeKong  `cmd:"" name:"purge" help:"Permanently delete old closed message beads."`
+	Follow mailFollowKong `cmd:"" name:"follow" help:"On a hosted workspace, start the per-host follower that rings local initiatives' doorbells from the events journal."`
 }
 
 // ── hidden deprecated aliases ────────────────────────────────────────────────

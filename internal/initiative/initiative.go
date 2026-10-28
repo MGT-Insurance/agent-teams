@@ -28,6 +28,11 @@ type Fields struct {
 	// initiative has opened. Same URL shape, different key, different
 	// initiative kind — no collision.
 	PRs []string
+	// Where is the "where: <value>" line: which host runs this initiative.
+	// Ring-1 grammar is "host:<Host()>"; "run:<bead>" is reserved for ring 2
+	// and not interpreted (docs/hosted-beads.md, F6). Single-valued,
+	// first-wins; "" when absent.
+	Where string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -52,7 +57,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -174,7 +179,7 @@ func first(lines map[string][]string, key string) string {
 // first-occurrence-wins; the multi-valued session, track-worktree, and pr
 // keys accumulate into Sessions, Tracks, and PRs in registration order.
 //
-// Of is the TYPED projection of all, and models twelve keys only — an
+// Of is the TYPED projection of all, and models thirteen keys only — an
 // initiative carrying an unmodeled canonical key (e.g. pr-url) has no Fields
 // member to hold it, so a caller that needs every stored key wants
 // JSONFields instead (package doc comment, frozen item 3).
@@ -197,6 +202,7 @@ func Of(iss bd.Issue) Fields {
 		Sessions: lines["session"],
 		Tracks:   lines["track-worktree"],
 		PRs:      lines["pr"],
+		Where:    first(lines, "where"),
 	}
 }
 
@@ -263,6 +269,7 @@ func New(f Fields) (WritePlan, error) {
 		{"mode", []string{f.Mode}},
 		{"runtime", []string{f.Runtime}},
 		{"epic", []string{f.Epic}},
+		{"where", []string{f.Where}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
@@ -296,6 +303,7 @@ func New(f Fields) (WritePlan, error) {
 	}
 	write("runtime", f.Runtime)
 	write("epic", f.Epic)
+	write("where", f.Where)
 	for _, s := range f.Sessions {
 		write("session", s)
 	}

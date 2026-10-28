@@ -234,3 +234,16 @@ func boundedPull(ctx context.Context, c *bd.Client, timeout time.Duration, stder
 var terminateHungPull = func(ctx context.Context, p inFlightPull) error {
 	return errors.New("terminateHungPull: not implemented")
 }
+
+// hostedSkipHost reports the hosted Dolt server host when the workspace at home
+// is bound to one (docs/hosted-beads.md, F3/F4). A hosted workspace has no local
+// replica and no local dolt sql-server, so pull, push, and the stale-pull probe
+// are skipped. It reads metadata.json only and never runs bd. An empty home
+// returns ("", false) so a context without a workspace keeps the embedded
+// behavior.
+func hostedSkipHost(home string) (host string, ok bool) {
+	if home == "" {
+		return "", false
+	}
+	return bd.HostedServer(home)
+}

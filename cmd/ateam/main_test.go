@@ -107,6 +107,20 @@ func TestRunCodexGateEventsPreInitFailOpen(t *testing.T) {
 	}
 }
 
+// An uninitialized workspace is never hosted, so `mail follow` exits 0 without
+// output or files instead of failing with 3 or 4 every minute.
+func TestRunMailFollowUninitializedIsSilentNoOp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGENT_TEAMS_HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	if code := run([]string{"mail", "follow"}); code != 0 {
+		t.Fatalf("run([mail follow]) uninitialized = %d, want 0", code)
+	}
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Fatalf("uninitialized mail follow created %d entries in the home", len(entries))
+	}
+}
+
 func TestRunSetupCodexPreInitDoesNotRequireBDOrWorkspace(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
 	codexHome := t.TempDir()

@@ -242,6 +242,9 @@ func sendAndLabelThread(ctx *cli.Context, id string, t transport.Transport, msg 
 			fmt.Fprintf(ctx.Stderr, "%s: ERROR: could not record thread label %q on %s after %d attempts — topic is replyable but UNROUTABLE: %v\n", errPrefix, label, id, labelWriteMaxAttempts, labErr)
 			return returnedRef, fmt.Errorf("record thread label %q on %s after %d attempts: %w", label, id, labelWriteMaxAttempts, labErr)
 		}
+		if _, hosted := hostedSkipHost(ctx.Home); hosted {
+			return returnedRef, nil
+		}
 		if _, pushErr := ctx.BD.Run("dolt", "push"); pushErr != nil {
 			fmt.Fprintf(ctx.Stderr, "%s: warning: could not push thread label for %s to remote (peers will pick it up on their next sync): %v\n", errPrefix, id, pushErr)
 		}

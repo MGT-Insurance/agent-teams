@@ -18,7 +18,33 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 	"github.com/mgt-insurance/agent-teams/internal/repoconfig"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
+
+// whereHostPrefix is the ring-1 grammar of the where: line (docs/hosted-beads.md F6).
+const whereHostPrefix = "host:"
+
+// toHostLabelPrefix is the label a hosted sender stamps on a message at create
+// with the recipient's host; the follower reads it from the journal row
+// (docs/hosted-beads.md F7).
+const toHostLabelPrefix = "to-host:"
+
+// remoteInitiative reports whether f runs on a host other than this one: the
+// workspace at home is hosted, f.Where starts with "host:", this host's
+// identity is known, and the rest differs from it (docs/hosted-beads.md F6).
+// On a non-hosted home nothing is remote. Empty, "run:", and anything else
+// are not remote.
+func remoteInitiative(home string, f initiative.Fields) bool {
+	if _, hosted := bd.HostedServer(home); !hosted {
+		return false
+	}
+	host, ok := strings.CutPrefix(f.Where, whereHostPrefix)
+	if !ok {
+		return false
+	}
+	h := workspace.Host()
+	return h != "" && host != h
+}
 
 // ── sendKong ──────────────────────────────────────────────────────────────────
 
@@ -63,7 +89,32 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	sender := resolveSender(ctx, c.Sender)
 
-	msgID, deduped, err := c.createOrDedupMessage(ctx, sender)
+	// On a hosted workspace the recipient is read BEFORE the message is created
+	// so its host can be stamped on the create row (docs/hosted-beads.md F7).
+	// Elsewhere the read stays after the create, as before.
+	var (
+		toHost    string
+		preIssue  bd.Issue
+		preWT     string
+		preErr    error
+		preloaded bool
+	)
+	if _, hosted := bd.HostedServer(ctx.Home); hosted && c.RecipientID != StewardHandle {
+		preIssue, preWT, preErr = recipientWorktree(ctx, c.RecipientID)
+		preloaded = true
+		var ok bool
+		if preErr == nil {
+			toHost, ok = strings.CutPrefix(initiative.Of(preIssue).Where, whereHostPrefix)
+		}
+		if preErr != nil {
+			return fmt.Errorf("ateam send: read recipient %s: %w; hosted mail needs a \"where: host:<name>\" line on the recipient, written by ateam register or dispatch", c.RecipientID, preErr)
+		}
+		if !ok || toHost == "" {
+			return fmt.Errorf("ateam send: hosted mail to %s needs a \"where: host:<name>\" line on the recipient, written by ateam register or dispatch", c.RecipientID)
+		}
+	}
+
+	msgID, deduped, err := c.createOrDedupMessage(ctx, sender, toHost)
 	if err != nil {
 		return err
 	}
@@ -81,7 +132,10 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	// machine-scoped singleton, not an initiative bead; recipientWorktree
 	// returns the zero-value bd.Issue for it, so Status is never "closed"
 	// and this never gates Steward mail.
-	recipIssue, wtPath, liveErr := recipientWorktree(ctx, c.RecipientID)
+	recipIssue, wtPath, liveErr := preIssue, preWT, preErr
+	if !preloaded {
+		recipIssue, wtPath, liveErr = recipientWorktree(ctx, c.RecipientID)
+	}
 	if liveErr != nil {
 		fmt.Fprintf(ctx.Stdout, "note: could not resolve recipient worktree (%v); skipping liveness check\n", liveErr)
 		return nil
@@ -89,6 +143,14 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 	if c.RecipientID != StewardHandle && recipIssue.Status == "closed" {
 		fmt.Fprintf(ctx.Stdout, "recipient %s is closed; message queued until reopened\n", c.RecipientID)
+		return nil
+	}
+
+	// A recipient that runs on another host is rung by the journal there
+	// (docs/hosted-beads.md F6): no local doorbell, liveness query, or resume.
+	if c.RecipientID != StewardHandle && remoteInitiative(ctx.Home, initiative.Of(recipIssue)) {
+		fmt.Fprintf(ctx.Stdout, "recipient %s runs on %s; the journal rings its doorbell\n",
+			c.RecipientID, initiative.Of(recipIssue).Where)
 		return nil
 	}
 
@@ -196,6 +258,15 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return nil
 	}
 
+	// Hosted: the journal follower rings the doorbell after a poll interval, so
+	// a 5 s wait can outrun a live recipient and respawning would interrupt it
+	// (agent-teams-c4i9.20.29). Skip the deaf probe and respawn; the doorbell
+	// stays and the watcher or the next turn delivers.
+	if _, hosted := bd.HostedServer(ctx.Home); hosted {
+		fmt.Fprintf(ctx.Stdout, "hosted workspace; doorbell will be picked up by the recipient's watcher\n")
+		return nil
+	}
+
 	// idle or pid-less: give an armed watcher a moment to deliver, then
 	// re-check the doorbell. inbox-drain is the only consumer now, so "gone"
 	// reliably means a turn saw it; "still present" means the recipient is
@@ -217,9 +288,11 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 // createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
 // hit, create nothing and return the existing open message's id (deduped =
-// true); mail send never refuses a recipient, so this only ever short-
-// circuits the create call, never the delivery steps that follow it.
-func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string, bool, error) {
+// true); on a non-hosted workspace mail send never refuses a recipient, so
+// this only ever short-circuits the create call, never the delivery steps that
+// follow it. On a hosted workspace send errors for a recipient with no
+// where: host line (F7).
+func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender, toHost string) (string, bool, error) {
 	if existingID, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey); err != nil {
 		return "", false, fmt.Errorf("ateam send: dedup lookup: %w", err)
 	} else if hit {
@@ -235,6 +308,9 @@ func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender string) (string
 		"--body-file=" + c.File,
 		"--title=message from " + sender,
 		"--json",
+	}
+	if toHost != "" {
+		createArgs = append(createArgs, "--labels="+toHostLabelPrefix+toHost)
 	}
 	if c.Thread != "" {
 		createArgs = append(createArgs, "--labels=thread:"+c.Thread)

@@ -127,6 +127,9 @@ type relayDoltPullFunc func(home string) error
 // queued behind, so a relay tick never waits on the server's pull lock
 // (agent-teams-qdeh.4).
 func defaultDoltPull(home string) error {
+	if _, hosted := hostedSkipHost(home); hosted {
+		return nil
+	}
 	_, err := guardedPull(context.Background(), bd.NewClient(home), pullModeBestEffort, pullTimeoutDefault, os.Stderr)
 	return err
 }

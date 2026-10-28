@@ -448,4 +448,151 @@ AFTER_TARGET="$(readlink "$LINK")"
 assert_reason "T16 (two-hop cycle)" "unresolvable-link"
 echo "PASS T16 (two-hop cycle a -> b -> a — hook terminates without hanging and leaves the link untouched)"
 
+# ── T17: INSTALLED-ROOT GATE — regression guard for agent-teams-c4i9.20.42 ──
+# A test session loaded with `--plugin-dir <worktree>` relinked the
+# machine-wide ~/.local/bin/ateam and hijacked every live session. Without
+# AGENT_TEAMS_ATEAM_LINK, the hook may repoint or create the default link only
+# when PLUGIN_ROOT is the installed plugin: under CLAUDE_CONFIG_DIR/plugins/cache,
+# or inside the "agent-teams" marketplace installLocation (a directory source)
+# with no git-worktree .git file on the way. HOME and CLAUDE_CONFIG_DIR are
+# throwaway, so the real ~/.local/bin/ateam and ~/.claude are never reachable.
+last_reason() {
+  awk -F'\t' '$5=="exit"{line=$6} END{print line}' "$1" 2>/dev/null | sed -n 's/.*reason=//p'
+}
+
+# t17_env <case> -> sets H (throwaway HOME), CFG (CLAUDE_CONFIG_DIR), MACHINE_LINK.
+t17_env() {
+  H="$T/case17/$1/home"; assert_scratch_path "$H"
+  CFG="$H/.claude"
+  MACHINE_LINK="$H/.local/bin/ateam"; assert_scratch_path "$MACHINE_LINK"
+  mkdir -p "$H/.local/bin" "$CFG/plugins"
+}
+
+# t17_marketplace <installLocation> — fake known_marketplaces.json with a decoy
+# entry after agent-teams, so a scan that bleeds past the entry is caught.
+t17_marketplace() {
+  cat > "$CFG/plugins/known_marketplaces.json" <<EOF
+{
+  "agent-teams": {
+    "source": { "source": "directory", "path": "$1" },
+    "installLocation": "$1",
+    "lastUpdated": "2026-01-01T00:00:00.000Z"
+  },
+  "other": {
+    "source": { "source": "directory", "path": "/elsewhere/other" },
+    "installLocation": "/elsewhere/other"
+  }
+}
+EOF
+}
+
+# t17_run <plugin-root> [extra env assignments...] — runs the hook with the
+# machine link unset so the gate applies; asserts exit 0.
+t17_run() {
+  local root="$1" rc=0; shift
+  env -u AGENT_TEAMS_ATEAM_LINK -u AGENT_TEAMS_HOME HOME="$H" CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$root" "$@" "$SCRIPT" || rc=$?
+  [ "$rc" -eq 0 ] || fail "T17 ($root): hook exited $rc, want 0"
+}
+
+# T17a: worktree root (.git FILE) under the default home declines; link unchanged.
+t17_env a
+WT="$T/case17/a/wt"; mkdir -p "$WT"
+t17_marketplace "$T/case17/a/installed-nowhere"
+printf 'gitdir: /somewhere/.git/worktrees/x\n' > "$WT/.git"
+make_versioned_root "$WT/plugins/agent-teams" "WT-ROOT" "0.95.0"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+BEFORE_TARGET="$(readlink "$MACHINE_LINK")"
+t17_run "$WT/plugins/agent-teams"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17a (worktree root): machine-wide link was repointed"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "not-installed-root" ] || fail "T17a (worktree root): reason was '$(last_reason "$H/.agent-teams/debug/hooks.log")', want 'not-installed-root'"
+grep -q "plugin-root	$WT/plugins/agent-teams" "$H/.agent-teams/debug/hooks.log" || fail "T17a (worktree root): resolved PLUGIN_ROOT was not logged"
+echo "PASS T17a (worktree --plugin-dir root, default home — machine link untouched)"
+
+# T17a2: a worktree root that IS the marketplace installLocation still declines.
+t17_env a2
+WT2="$T/case17/a2/wt"; mkdir -p "$WT2"
+printf 'gitdir: /somewhere/.git/worktrees/x\n' > "$WT2/.git"
+make_versioned_root "$WT2/plugins/agent-teams" "WT2-ROOT" "0.95.0"
+t17_marketplace "$WT2"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+BEFORE_TARGET="$(readlink "$MACHINE_LINK")"
+t17_run "$WT2/plugins/agent-teams"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17a2 (worktree installLocation): machine-wide link was repointed"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "not-installed-root" ] || fail "T17a2 (worktree installLocation): reason was not 'not-installed-root'"
+echo "PASS T17a2 (installLocation that is a git worktree — declines)"
+
+# T17b: cache-prefixed root relinks.
+t17_env b
+CACHE_ROOT="$CFG/plugins/cache/agent-teams/agent-teams/0.95.0"
+make_versioned_root "$CACHE_ROOT" "CACHE-ROOT" "0.95.0"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+t17_run "$CACHE_ROOT"
+[ "$("$MACHINE_LINK")" = "CACHE-ROOT" ] || fail "T17b (cache root): machine link was not relinked"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "relinked" ] || fail "T17b (cache root): reason was not 'relinked'"
+echo "PASS T17b (cache-prefixed root — relinks)"
+
+# T17c: root inside a directory-marketplace installLocation (.git DIRECTORY) relinks.
+t17_env c
+MKT="$T/case17/c/marketplace"; mkdir -p "$MKT/.git"
+make_versioned_root "$MKT/plugins/agent-teams" "MKT-ROOT" "0.95.0"
+t17_marketplace "$MKT"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+t17_run "$MKT/plugins/agent-teams"
+[ "$("$MACHINE_LINK")" = "MKT-ROOT" ] || fail "T17c (marketplace root): machine link was not relinked"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "relinked" ] || fail "T17c (marketplace root): reason was not 'relinked'"
+echo "PASS T17c (root inside directory-marketplace installLocation — relinks)"
+
+# T17d: custom AGENT_TEAMS_HOME plus the installed root relinks (the old
+# non-default-home block wrongly refused this supported layout).
+t17_env d
+MKT_D="$T/case17/d/marketplace"; mkdir -p "$MKT_D/.git"
+make_versioned_root "$MKT_D/plugins/agent-teams" "MKT-D-ROOT" "0.95.0"
+t17_marketplace "$MKT_D"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+CUSTOM_ATH="$T/case17/d/custom-ateam-home"; assert_scratch_path "$CUSTOM_ATH"
+t17_run "$MKT_D/plugins/agent-teams" AGENT_TEAMS_HOME="$CUSTOM_ATH"
+[ "$("$MACHINE_LINK")" = "MKT-D-ROOT" ] || fail "T17d (custom home, installed root): machine link was not relinked"
+[ "$(last_reason "$CUSTOM_ATH/debug/hooks.log")" = "relinked" ] || fail "T17d (custom home, installed root): reason was not 'relinked'"
+echo "PASS T17d (custom AGENT_TEAMS_HOME with the installed root — relinks)"
+
+# T17e: missing known_marketplaces.json plus a non-cache root declines; so does
+# an unparseable one.
+t17_env e
+NC_ROOT="$T/case17/e/plain/plugins/agent-teams"
+make_versioned_root "$NC_ROOT" "NC-ROOT" "0.95.0"
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+BEFORE_TARGET="$(readlink "$MACHINE_LINK")"
+t17_run "$NC_ROOT"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17e (no known_marketplaces.json): machine-wide link was repointed"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "not-installed-root" ] || fail "T17e (no known_marketplaces.json): reason was not 'not-installed-root'"
+printf 'this is { not json\n' > "$CFG/plugins/known_marketplaces.json"
+t17_run "$NC_ROOT"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17e (garbage known_marketplaces.json): machine-wide link was repointed"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "not-installed-root" ] || fail "T17e (garbage known_marketplaces.json): reason was not 'not-installed-root'"
+echo "PASS T17e (missing or unparseable known_marketplaces.json, non-cache root — declines)"
+
+# T17f: explicit AGENT_TEAMS_ATEAM_LINK bypasses the gate and manages only that link.
+t17_env f
+ln -s "$VERSION_A/bin/ateam" "$MACHINE_LINK"
+BEFORE_TARGET="$(readlink "$MACHINE_LINK")"
+OVERRIDE_LINK="$T/case17/f/override/ateam"; assert_scratch_path "$OVERRIDE_LINK"
+rc=0
+env HOME="$H" CLAUDE_CONFIG_DIR="$CFG" AGENT_TEAMS_ATEAM_LINK="$OVERRIDE_LINK" CLAUDE_PLUGIN_ROOT="$NC_ROOT" "$SCRIPT" || rc=$?
+[ "$rc" -eq 0 ] || fail "T17f (explicit link): hook exited $rc, want 0"
+[ "$("$OVERRIDE_LINK")" = "NC-ROOT" ] || fail "T17f (explicit link): override link was not created from a non-installed root"
+[ "$(readlink "$MACHINE_LINK")" = "$BEFORE_TARGET" ] || fail "T17f (explicit link): machine-wide link changed"
+echo "PASS T17f (explicit AGENT_TEAMS_ATEAM_LINK — gate bypassed, only the named link managed)"
+
+# T17g: absent machine link plus a worktree root creates nothing.
+t17_env g
+WT_G="$T/case17/g/wt"; mkdir -p "$WT_G"
+printf 'gitdir: /somewhere/.git/worktrees/x\n' > "$WT_G/.git"
+make_versioned_root "$WT_G/plugins/agent-teams" "WT-G-ROOT" "0.95.0"
+t17_marketplace "$T/case17/g/installed-nowhere"
+[ ! -e "$MACHINE_LINK" ] && [ ! -L "$MACHINE_LINK" ] || fail "T17g: setup error — machine link exists before the hook ran"
+t17_run "$WT_G/plugins/agent-teams"
+[ ! -e "$MACHINE_LINK" ] && [ ! -L "$MACHINE_LINK" ] || fail "T17g (absent link, worktree root): hook created the machine-wide link"
+[ "$(last_reason "$H/.agent-teams/debug/hooks.log")" = "not-installed-root" ] || fail "T17g (absent link, worktree root): reason was not 'not-installed-root'"
+echo "PASS T17g (absent link with a worktree root — nothing created)"
+
 echo "PASS"

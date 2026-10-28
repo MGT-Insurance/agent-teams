@@ -22,6 +22,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
 
@@ -356,6 +357,11 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		Runtime:  string(runtimeKind),
 		Standby:  c.Standby,
 	}
+	if _, hosted := bd.HostedServer(ctx.Home); hosted {
+		if h := workspace.Host(); h != "" {
+			fields.Where = whereHostPrefix + h
+		}
+	}
 
 	// Try to create a root epic bead in the project repo (fail-soft).
 	// repoRoot is already resolved above so no extraction is needed.
@@ -684,6 +690,10 @@ func (c *resumeKong) Run(ctx *cli.Context) error {
 		if err := c.codexCheck(context.Background(), ""); err != nil {
 			return fmt.Errorf("ateam resume: Codex runtime unavailable: %w", err)
 		}
+	}
+	if remoteInitiative(ctx.Home, f) {
+		fmt.Fprintf(ctx.Stderr, "ateam resume: %s runs on %s; resume it there\n", c.ID, f.Where)
+		return cli.Silent(1)
 	}
 	dir := f.Worktree
 	if dir == "" {

@@ -95,6 +95,13 @@ func run(args []string) int {
 		return cli.ExitCode(runErr)
 	}
 
+	// `mail follow` runs from every watcher at arm time and once a minute. An
+	// uninitialized workspace cannot be hosted, so it is a silent no-op rather
+	// than exit 3 or 4 on every call (docs/hosted-beads.md, F9).
+	if len(args) >= 2 && args[0] == "mail" && args[1] == "follow" && !workspace.Initialized(home) {
+		return 0
+	}
+
 	// Guard: bd must be in PATH before any verb (mirrors bash line 17).
 	if _, err := exec.LookPath("bd"); err != nil {
 		fmt.Fprintln(stderr, "ateam: 'bd' not found in PATH")
