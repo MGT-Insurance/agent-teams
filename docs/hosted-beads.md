@@ -110,6 +110,10 @@ If the file cannot be read or written, `Host` returns `os.Hostname()` for that
 call without an error, or `""` when the hostname cannot be read. Only hosted
 code paths call `Host`, so a non-hosted workspace never gets the file.
 
+`host-id` is per machine. Never copy it or commit it to another machine. If two
+machines share one `host-id`, each reads the other's hosted initiatives as
+local.
+
 The ring-1 sandbox kit sets `AGENT_TEAMS_HOST=sandbox-<sandbox name>`.
 
 ## F6 where: line
@@ -474,8 +478,9 @@ they stay out of git, but a forced add would commit them.
    `--plugin-dir` set to this worktree's `plugins/agent-teams`.
 
    `AGENT_TEAMS_HOST` is fixed on purpose. The macOS kernel hostname can
-   change with the network, and `Host()` (F5) would then report a different
-   name, so the laptop's own initiatives would read as remote. The script
+   change with the network. The persisted `host-id` (F5) handles that drift
+   after first use, but a name that drifted before `host-id` was first written
+   stays as written, so the laptop's own initiatives would read as remote. The script
    exports the fixed value to the claude it launches, to every `ateam` it
    runs, and in the output of `env`. Override it with `AGENT_TEAMS_HOST`
    only if you keep the same value for the whole ring-1 run.

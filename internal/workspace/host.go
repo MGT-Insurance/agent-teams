@@ -49,8 +49,12 @@ func writeHostFile(path, id string) {
 		return
 	}
 	_, werr := tmp.WriteString(id + "\n")
+	var serr error
+	if werr == nil {
+		serr = tmp.Sync()
+	}
 	cerr := tmp.Close()
-	if werr != nil || cerr != nil || os.Rename(tmp.Name(), path) != nil {
+	if werr != nil || serr != nil || cerr != nil || os.Rename(tmp.Name(), path) != nil {
 		os.Remove(tmp.Name())
 	}
 }
