@@ -54,8 +54,8 @@ func openMailWithDedupKey(ctx *cli.Context, id, key string) (string, bool, error
 	return messages[0].ID, true, nil
 }
 
-// closeMailAs labels every message in ids with label, appends note, then
-// force-closes it (bd close --force, same rationale as mail.go's
+// closeMailAs labels every message in ids with label and appends note in one
+// bd update, then force-closes it (bd close --force, same rationale as mail.go's
 // mailCloseKong: a message bead closes unconditionally regardless of any
 // pinned/gate state). Idempotent — bd close on an already-closed bead is a
 // no-op (mirrors markMessageRead, messaging.go). Every step runs for every
@@ -72,13 +72,12 @@ func closeMailAs(ctx *cli.Context, ids []string, label, note string) error {
 		}
 	}
 	for _, id := range ids {
-		if _, err := ctx.BD.Run("label", "add", id, label); err != nil {
-			report("label", id, err)
-		}
+		args := []string{"update", id, "--add-label", label}
 		if note != "" {
-			if _, err := ctx.BD.Run("note", id, note); err != nil {
-				report("note", id, err)
-			}
+			args = append(args, "--append-notes", note)
+		}
+		if _, err := ctx.BD.Run(args...); err != nil {
+			report("update", id, err)
 		}
 		if _, err := ctx.BD.Run("close", id, "--force"); err != nil {
 			report("close", id, err)

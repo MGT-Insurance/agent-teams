@@ -215,3 +215,24 @@ func TestShowIssue_BadJSON(t *testing.T) {
 		t.Errorf("expected 'unmarshal' in error, got: %v", err)
 	}
 }
+
+func TestIssue_EphemeralUnmarshal(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"true", `{"id":"a","ephemeral":true}`, true},
+		{"null", `{"id":"a","ephemeral":null}`, false},
+		{"absent", `{"id":"a"}`, false},
+	}
+	for _, c := range cases {
+		var iss bd.Issue
+		if err := json.Unmarshal([]byte(c.raw), &iss); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if iss.Ephemeral != c.want {
+			t.Errorf("%s: Ephemeral = %v, want %v", c.name, iss.Ephemeral, c.want)
+		}
+	}
+}

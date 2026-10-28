@@ -20,6 +20,7 @@ package verbs
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -48,10 +49,9 @@ func RegisterHookScanKong(p *cli.Parser) {
 //     can never find it). Skips resolution and checks unread mail for that
 //     id directly.
 //
-// Both branches read the SAME single issue list fetched at the top of Run,
-// so either way this verb makes exactly one bd invocation — except when
-// SessionID resolves a match (see SessionID doc below), which costs one
-// additional bd call inside resolveInitiativeBySession.
+// Both branches read the SAME single issue list, so a full scan makes exactly
+// one bd invocation, including when SessionID is given: the session match runs
+// over that list too. A quiet prompt makes none: see hookscan_cache.go.
 type hookScanKong struct {
 	Path      string `arg:"" optional:"" name:"path" help:"Absolute path to resolve to its owning initiative, ancestor-or-self. Mutually exclusive with --id."`
 	ID        string `name:"id" help:"Skip path/worktree resolution; check unread mail directly for this already-known recipient id."`
@@ -85,13 +85,47 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam hook-scan: nil context")
 	}
 
-	var issues []bd.Issue
-	if err := ctx.BD.RunJSON(&issues, "list", "--status=open", "--include-infra", "--json"); err != nil {
+	// Cache key: the --id value (steward form) or the session id (path form).
+	// With neither, there is no cache and every call takes the full path.
+	cacheKey := c.ID
+	if cacheKey == "" {
+		cacheKey = c.SessionID
+	}
+	now := time.Now()
+	cached, haveCache := readHookScanCache(ctx, cacheKey)
+	if haveCache && c.ID != "" && cached.ID != c.ID {
+		haveCache = false
+	}
+
+	// Fast path, no bd: a trusted, fresh cache entry with no unread mail and
+	// no doorbell. The id comes from the cache; the repo-enabled check is the
+	// same one the full path applies.
+	if haveCache && cached.Trusted && cached.fresh(now) && cached.Unread == 0 &&
+		!hookScanDoorbellPresent(ctx, cached.ID) {
+		if cached.Repo != "" && !repoconfig.Enabled(cached.Repo) {
+			return nil
+		}
+		fmt.Fprintf(ctx.Stdout, "id: %s\nunread: 0\n", cached.ID)
+		return nil
+	}
+
+	issues, err := listOpenIssues(ctx, true)
+	if err != nil {
 		return err
 	}
 
 	id := c.ID
+	repo := ""
 	if id == "" {
+		// Match candidates are initiativeRows(issues): --include-infra widens
+		// the list beyond the plain --status=open resolveInitiativeKong uses
+		// (message, agent, role, and ephemeral rows), and a message body
+		// containing a literal "session: <id>" or "worktree: <path>" line
+		// could otherwise misroute to the message bead instead of the
+		// initiative that owns the session or worktree. Only initiatives carry
+		// those lines, so this is the same candidate set resolve-initiative
+		// sees.
+		candidates := initiativeRows(issues)
 		var match *bd.Issue
 		// Session-first, Claude runtime only: hook-scan serves the
 		// Claude-plugin shell hooks exclusively (wake-watcher.sh,
@@ -101,33 +135,36 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		// registered worktree (at-0xnp1): its durable session tie still
 		// resolves it even though the path-only match below would find
 		// nothing.
-		if c.SessionID != "" {
-			issue, found, err := resolveInitiativeBySession(ctx, sessionruntime.Claude, c.SessionID)
-			if err != nil {
-				return err
-			}
-			if found {
-				match = &issue
-			}
+		if issue, found := matchInitiativeBySession(candidates, sessionruntime.Claude, c.SessionID); found {
+			match = &issue
 		}
 		if match == nil {
-			// Match candidates exclude message-type beads: --include-infra
-			// widens the list beyond the plain --status=open
-			// resolveInitiativeKong used, and a message body containing a
-			// literal "worktree: <path>" line could otherwise misroute to
-			// the message bead instead of the initiative that actually owns
-			// that worktree. Only initiatives carry a worktree: line, so
-			// excluding message-type is sufficient — other non-initiative
-			// beads (agent/role) have no worktree: line to match.
-			match = matchByWorktreeOrAncestor(excludeMessageType(issues), c.Path)
+			match = matchByWorktreeOrAncestor(candidates, c.Path)
 			if match == nil {
+				deleteHookScanCache(ctx, cacheKey)
 				return nil
 			}
 		}
-		if repo := initiative.Of(*match).Repo; repo != "" && !repoconfig.Enabled(repo) {
-			return nil
-		}
 		id = match.ID
+		repo = initiative.Of(*match).Repo
+	}
+
+	// Doorbell race guard: inbox-drain.sh deletes the doorbell after this verb
+	// returns, so mail that lands between the list above and that delete loses
+	// its doorbell. Mark the entry untrusted so the next prompt rescans.
+	entry := hookScanCacheEntry{
+		ID:        id,
+		Repo:      repo,
+		CheckedAt: now,
+		Trusted:   !hookScanDoorbellPresent(ctx, id),
+	}
+
+	if repo != "" && !repoconfig.Enabled(repo) {
+		// Unread was not counted, so the entry must not be trusted: mail sent
+		// while disabled has no doorbell, and re-enabling must rescan.
+		entry.Trusted = false
+		writeHookScanCache(ctx, cacheKey, entry)
+		return nil
 	}
 
 	// Duplicate-steward defense-in-depth backstop (agent-teams-e3mq.31),
@@ -142,8 +179,6 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		}
 	}
 
-	fmt.Fprintf(ctx.Stdout, "id: %s\n", id)
-
 	// unread predicate mirrors queryUnreadMessages/filterMessageType
 	// (messaging.go): type==message AND assignee==id AND status==open AND
 	// NOT label "read". Status==open is already guaranteed by the list call
@@ -156,21 +191,22 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 			unread++
 		}
 	}
-	fmt.Fprintf(ctx.Stdout, "unread: %d\n", unread)
-	return nil
-}
+	entry.Unread = unread
+	writeHookScanCache(ctx, cacheKey, entry)
 
-// excludeMessageType returns issues with IssueType != "message" — the
-// inverse of filterMessageType (messaging.go). Used to build the
-// match-candidate slice for matchByWorktreeOrAncestor so message beads,
-// which can never legitimately carry a worktree: line, are never match
-// candidates (see FIX 3 doc above Run).
-func excludeMessageType(issues []bd.Issue) []bd.Issue {
-	var out []bd.Issue
-	for _, iss := range issues {
-		if iss.IssueType != "message" {
-			out = append(out, iss)
+	// Tell inbox-drain.sh when this scan was a cache-expiry or untrusted-cache
+	// rescan that found mail, so it can log mail that arrived without a
+	// doorbell. A rescan forced by a doorbell or by cached unread mail (the
+	// per-prompt nag) is not a discovery and stays silent.
+	if unread > 0 && haveCache && cached.Unread == 0 && (!cached.Trusted || !cached.fresh(now)) {
+		reason := "ttl"
+		if !cached.Trusted {
+			reason = "untrusted"
 		}
+		age := max(now.Sub(cached.CheckedAt), 0)
+		fmt.Fprintf(ctx.Stderr, "scan: full reason=%s cache_age=%ds\n", reason, int(age.Seconds()))
 	}
-	return out
+
+	fmt.Fprintf(ctx.Stdout, "id: %s\nunread: %d\n", id, unread)
+	return nil
 }
