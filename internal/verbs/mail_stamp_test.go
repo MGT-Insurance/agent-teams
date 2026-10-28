@@ -99,7 +99,7 @@ func TestMailFollowRingsFromToHostLabel(t *testing.T) {
 		wantLog  string
 	}{
 		{"matching stamp rings", "at-a", []string{"delivery:pending", "to-host:laptop-a"}, true, ""},
-		{"other host does not ring", "at-a", []string{"to-host:sandbox-1"}, false, ""},
+		{"other host logs and skips", "at-a", []string{"to-host:sandbox-1"}, false, `message at-m1 to at-a is stamped for host "sandbox-1", this host is "laptop-a"; not ringing`},
 		{"no stamp logs and skips", "at-a", []string{"delivery:pending"}, false, "message at-m1 to at-a has no to-host label; not ringing"},
 		{"two stamps logs and skips", "at-a", []string{"to-host:laptop-a", "to-host:sandbox-1"}, false, "has more than one to-host label"},
 		{"steward rings without a stamp", "steward", []string{"delivery:pending"}, true, ""},

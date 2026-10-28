@@ -181,6 +181,27 @@ func TestMailFollowNotHostedExitsZeroAndSpawnsNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.home, "mailbox")); err == nil {
 		t.Fatal("non-hosted must not create the mailbox")
 	}
+	if _, err := os.Stat(filepath.Join(h.home, "debug")); err == nil {
+		t.Fatal("non-hosted must not create the debug directory or the log")
+	}
+}
+
+func TestMailFollowStampMismatchLogsTheDrop(t *testing.T) {
+	h := newFollowHarness(t, true)
+	h.writeSeq("10")
+	row := strings.Replace(followMsg("11", "at-xyz"), "to-host:laptop-a", "to-host:laptop-b", 1)
+	h.steps = []followStep{{lines: []string{row}}}
+	if err := h.run(&mailFollowKong{}); err != nil {
+		t.Fatal(err)
+	}
+	if h.rung() {
+		t.Fatal("a message stamped for another host must not ring")
+	}
+	for _, want := range []string{"at-m11", "laptop-b", "laptop-a"} {
+		if !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("stderr %q does not name %q", h.stderr.String(), want)
+		}
+	}
 }
 
 func TestMailFollowHostFollowOffIsInertOnHostedWorkspace(t *testing.T) {

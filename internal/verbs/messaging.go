@@ -288,8 +288,10 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 
 // createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
 // hit, create nothing and return the existing open message's id (deduped =
-// true); mail send never refuses a recipient, so this only ever short-
-// circuits the create call, never the delivery steps that follow it.
+// true); on a non-hosted workspace mail send never refuses a recipient, so
+// this only ever short-circuits the create call, never the delivery steps that
+// follow it. On a hosted workspace send errors for a recipient with no
+// where: host line (F7).
 func (c *sendKong) createOrDedupMessage(ctx *cli.Context, sender, toHost string) (string, bool, error) {
 	if existingID, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey); err != nil {
 		return "", false, fmt.Errorf("ateam send: dedup lookup: %w", err)

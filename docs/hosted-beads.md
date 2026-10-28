@@ -191,7 +191,9 @@ any of them).
   comment poke while parked, so a per-sandbox follower would hold a journal
   connection for nothing. The ring-1 hand-run sandbox (Runbook) leaves it
   unset; its checkpoint needs the follower.
-- Not hosted (F3 false) -> exit 0 at once, no output, no child process.
+- Not hosted (F3 false), or the workspace is uninitialized -> exit 0 at once,
+  no output, no child process, no directory or log file created. An
+  uninitialized workspace skips the usual exit 3 / exit 4 guards for this verb.
 - Hosted -> start a detached child (new session, stdin /dev/null, output
   appended to `<ATH>/debug/mail-follow.log`) and exit 0 at once. The
   caller never waits on the follower.

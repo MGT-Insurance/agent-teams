@@ -381,7 +381,9 @@ func (c *mailFollowKong) ringTarget(ctx *cli.Context, r followRow, notBefore tim
 		fmt.Fprintf(ctx.Stderr, "ateam mail follow: message %s to %s %s; not ringing\n", r.IssueID, id, why)
 		return "", false
 	}
-	if h := workspace.Host(); h == "" || stamps[0] != h {
+	h := workspace.Host()
+	if h == "" || stamps[0] != h {
+		fmt.Fprintf(ctx.Stderr, "ateam mail follow: message %s to %s is stamped for host %q, this host is %q; not ringing\n", r.IssueID, id, stamps[0], h)
 		return "", false
 	}
 	return id, true
