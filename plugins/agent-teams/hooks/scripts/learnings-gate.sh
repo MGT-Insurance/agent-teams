@@ -15,7 +15,7 @@
 #          resolves and that has no loaded/<agent_id> record.
 #      Allowing the exact command is also the clear: the main marker is
 #      removed, or the loaded record is written. Allowed Agent spawns of
-#      agent-teams-<role> with a name are recorded so the teammate's later
+#      agent-teams:<role> with a name are recorded so the teammate's later
 #      calls (agent_type = the name) resolve to a role.
 #      A SessionStart(compact) cannot say whether the main thread or an
 #      in-process subagent compacted (both carry the parent session_id), so
@@ -49,7 +49,7 @@ ATH="${AGENT_TEAMS_HOME:-${HOME:-}/.agent-teams}"
 export ATH
 
 script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || exit 0
-roles_dir="$script_dir/../../roles"
+roles_dir="$script_dir/../../agents"
 
 # shellcheck source=plugins/agent-teams/hooks/scripts/lib/hook-debug-log.sh
 . "$script_dir/lib/hook-debug-log.sh" 2>/dev/null || exit 0
@@ -85,11 +85,11 @@ valid_session_id "$session_id" || exit 0
 HOOK_SESSION_ID="$session_id"
 export HOOK_SESSION_ID
 
-# Record <name> -> <role> when subagent_type is a known agent-teams-<role>.
-record_spawn_from() { # record_spawn_from <name> <agent-teams-role type> <event>
+# Record <name> -> <role> when subagent_type is a known agent-teams:<role>.
+record_spawn_from() { # record_spawn_from <name> <agent-teams:role type> <event>
   local spawn_name="$1" spawn_type="$2" event="$3" spawn_role
-  case "$spawn_type" in agent-teams-*) ;; *) return 0 ;; esac
-  spawn_role="${spawn_type#agent-teams-}"
+  case "$spawn_type" in agent-teams:*) ;; *) return 0 ;; esac
+  spawn_role="${spawn_type#agent-teams:}"
   lg_known_subagent_role "$spawn_role" "$roles_dir" || return 0
   lg_record_spawn "$ATH" "$session_id" "$spawn_name" "$spawn_role" || return 0
   hook_log_note "$event" "name=${spawn_name} role=${spawn_role}"
@@ -104,13 +104,13 @@ fi
 root=$(lg_root "$ATH" "$session_id") || exit 0
 
 is_role_spawn=0
-case "$tool_name:$subagent_type" in Agent:agent-teams-*) is_role_spawn=1 ;; esac
+case "$tool_name:$subagent_type" in Agent:agent-teams:*) is_role_spawn=1 ;; esac
 # A gate root we cannot read is a doubt path: allow.
 if [ -d "$root" ] && { [ ! -r "$root" ] || [ ! -x "$root" ]; }; then exit 0; fi
 # Cheap exit: no gate dir, nothing to record, and not a role subagent (an
-# agent-teams-<role> agent_type is gated from its first call even when no
+# agent-teams:<role> agent_type is gated from its first call even when no
 # root exists yet, contract item 4).
-case "$agent_type" in agent-teams-*) is_role_agent=1 ;; *) is_role_agent=0 ;; esac
+case "$agent_type" in agent-teams:*) is_role_agent=1 ;; *) is_role_agent=0 ;; esac
 [ -d "$root" ] || [ "$is_role_spawn" -eq 1 ] || [ "$is_role_agent" -eq 1 ] || exit 0
 
 gate_role=""

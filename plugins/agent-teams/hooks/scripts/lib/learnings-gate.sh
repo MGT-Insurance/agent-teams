@@ -149,7 +149,7 @@ lg_record_spawn() {
 }
 
 # ── Public: lg_known_subagent_role ───────────────────────────────────────────
-# True iff <role> is the basename of a roles/*.md file (README excluded).
+# True iff <role> is the basename of an agents/*.md file (README excluded).
 lg_known_subagent_role() {
   local role="$1" roles_dir="$2"
   valid_session_id "$role" || return 1
@@ -161,8 +161,8 @@ lg_known_subagent_role() {
 lg_resolve_subagent_role() {
   local ath="$1" sid="$2" agent_type="$3" roles_dir="$4" root role
   case "$agent_type" in
-    agent-teams-*)
-      role="${agent_type#agent-teams-}"
+    agent-teams:*)
+      role="${agent_type#agent-teams:}"
       lg_known_subagent_role "$role" "$roles_dir" && printf '%s' "$role"
       return 0
       ;;
