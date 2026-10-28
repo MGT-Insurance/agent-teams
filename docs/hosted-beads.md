@@ -401,6 +401,12 @@ and never echo them. `scripts/sandbox/.gitignore` covers `.env*`,
    can open a draft PR. A draft PR from the scratch branch is the expected
    outcome.
 
+   `run-claude.sh` also launches with `--disallowedTools AskUserQuestion`. A
+   headless sandbox session can't answer that dialog, so a call would hang it.
+   The DRI asks through a gate instead: it raises the gate, ends the turn with
+   a plain-text question, and the answer arrives by mail and rings the
+   doorbell.
+
    To watch the session, run
    `node scripts/sandbox/sb.mjs exec 'tmux capture-pane -p -t lead | tail -40'`.
 

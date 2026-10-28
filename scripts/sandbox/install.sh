@@ -93,7 +93,7 @@ export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 DISABLE_COMPACT=1
 # Non-secret: gh needs some token set; the api.github.com header transform injects the real one.
 export GH_TOKEN=placeholder
 cd "\$HOME/work/agent-teams"
-exec claude --permission-mode bypassPermissions --model $MODEL --plugin-dir "\$HOME/plugins/agent-teams" "\$@"
+exec claude --permission-mode bypassPermissions --disallowedTools AskUserQuestion --model $MODEL --plugin-dir "\$HOME/plugins/agent-teams" "\$@"
 EOF
 chmod +x "$HOME/run-claude.sh"
 
