@@ -1296,21 +1296,6 @@ const reviewMCPConfigJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"h
 // byte-identical to before this parameter existed. Extracted so tests can
 // assert the argv without executing the command.
 func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, autoCompactWindow string) []string {
-	if model == "" {
-		model = driDefaultModel
-	}
-	args := []string{
-		"--bg",
-		"-n", name,
-		"--model", model,
-		"--permission-mode", "bypassPermissions",
-	}
-	if settings := bgSessionSettingsJSON(role, initiativeID, autoCompactWindow); settings != "" {
-		args = append(args, "--settings", settings)
-	}
-	if autoCompactWindow != "" {
-		args = append(args, "--autocompact", autoCompactWindow)
-	}
 	// driGuardrails are DRI-orchestration rules (delegate, don't implement;
 	// never merge unconfirmed; etc.) that make no sense for a non-DRI bg
 	// session — e.g. a review-pr session launched via --launch-prompt with
@@ -1324,13 +1309,37 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, autoCompact
 	if strings.HasPrefix(prompt, "/dri ") {
 		appendVal = driSystemPromptAppend
 	}
+	return append([]string{"--bg", "-n", name},
+		driSessionArgs(prompt, appendVal, model, advisor, role, initiativeID, autoCompactWindow)...)
+}
+
+// driSessionArgs is bgSessionArgs minus the leading "--bg", "-n", name, with
+// the --append-system-prompt value supplied by the caller instead of derived
+// from the prompt prefix. A caller whose prompt has no "/dri " prefix (a
+// resume wake text) but still needs driSystemPromptAppend passes it
+// explicitly, because claude --resume rebuilds the system prompt from the
+// flags of the new launch.
+func driSessionArgs(prompt, appendSystemPrompt, model, advisor, role, initiativeID, autoCompactWindow string) []string {
+	if model == "" {
+		model = driDefaultModel
+	}
+	args := []string{
+		"--model", model,
+		"--permission-mode", "bypassPermissions",
+	}
+	if settings := bgSessionSettingsJSON(role, initiativeID, autoCompactWindow); settings != "" {
+		args = append(args, "--settings", settings)
+	}
+	if autoCompactWindow != "" {
+		args = append(args, "--autocompact", autoCompactWindow)
+	}
 	// --mcp-config is variadic in claude 2.1.285: a positional argument that
 	// directly follows it is swallowed as another config path. The flag pair
 	// therefore goes before --append-system-prompt, never adjacent to the prompt.
 	if strings.HasPrefix(prompt, reviewPromptPrefix) {
 		args = append(args, "--strict-mcp-config", "--mcp-config", reviewMCPConfigJSON)
 	}
-	args = append(args, "--append-system-prompt", appendVal)
+	args = append(args, "--append-system-prompt", appendSystemPrompt)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}

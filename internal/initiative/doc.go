@@ -109,7 +109,10 @@
 //   - Every mutation of an EXISTING initiative — [WithSession], [WithTrack] —
 //     is strictly append-only: it takes the issue's current description
 //     unchanged and appends below it, never re-deriving or dropping any
-//     line.
+//     line. The one exception is [WithWhere] and [WithWorktree], which
+//     rewrite the value of the first existing line for their single-valued
+//     key in place and leave every other line byte-identical; when no such
+//     line exists they append like the others.
 //   - A future migration off this description format (e.g. to bd labels)
 //     must carry every canonical key found in the raw text, not merely the
 //     ones that happen to have a Fields member. A migration that moves only
@@ -132,6 +135,8 @@
 //	func New(f Fields) (WritePlan, error)                // WRITE SEAM (new initiatives only — see item 4)
 //	func WithSession(iss bd.Issue, id string) (WritePlan, error)
 //	func WithTrack(iss bd.Issue, path string) (WritePlan, error)
+//	func WithWhere(iss bd.Issue, value string) (WritePlan, error)   // replaces the first "where" line in place, else appends
+//	func WithWorktree(iss bd.Issue, path string) (WritePlan, error) // replaces the first "worktree" line in place, else appends
 //	func WithPR(iss bd.Issue, url string) (WritePlan, error)
 //
 //	type WritePlan struct {
