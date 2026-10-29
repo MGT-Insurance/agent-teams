@@ -29,6 +29,10 @@ const whereHostPrefix = "host:"
 // (docs/hosted-beads.md F7).
 const toHostLabelPrefix = "to-host:"
 
+// deafProbeWait is how long send waits for an idle recipient's watcher to
+// consume the doorbell before treating the recipient as deaf and respawning it.
+const deafProbeWait = 30 * time.Second
+
 // remoteInitiative reports whether f runs on a host other than this one: the
 // workspace at home is hosted, f.Where starts with "host:", this host's
 // identity is known, and the rest differs from it (docs/hosted-beads.md F6).
@@ -259,7 +263,7 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	}
 
 	// Hosted: the journal follower rings the doorbell after a poll interval, so
-	// a 5 s wait can outrun a live recipient and respawning would interrupt it
+	// the deaf-probe wait can outrun a live recipient and respawning would interrupt it
 	// (agent-teams-c4i9.20.29). Skip the deaf probe and respawn; the doorbell
 	// stays and the watcher or the next turn delivers.
 	if _, hosted := bd.HostedServer(ctx.Home); hosted {
@@ -271,13 +275,13 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	// re-check the doorbell. inbox-drain is the only consumer now, so "gone"
 	// reliably means a turn saw it; "still present" means the recipient is
 	// deaf and needs reviving.
-	c.sleeper(5 * time.Second)
+	c.sleeper(deafProbeWait)
 	if !c.doorbellExists(doorbellPath) {
 		fmt.Fprintf(ctx.Stdout, "doorbell consumed; delivery in progress\n")
 		return nil
 	}
 
-	fmt.Fprintf(ctx.Stdout, "doorbell still present after 5s; recipient is deaf — respawning %s\n", entry.ID)
+	fmt.Fprintf(ctx.Stdout, "doorbell still present after %s; recipient is deaf — respawning %s\n", deafProbeWait, entry.ID)
 	if err := c.respawnFunc(entry.ID); err != nil {
 		fmt.Fprintf(ctx.Stdout, "warning: respawn %s failed (%v); message %s remains queued for the next turn\n", entry.ID, err, msgID)
 		return nil

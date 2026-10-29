@@ -356,8 +356,8 @@ func TestResumeKong_EmbeddedHome_IgnoresWhere(t *testing.T) {
 }
 
 // A live idle recipient on this host of a hosted workspace is never probed or
-// respawned: the follower rings the doorbell after a poll, so a 5 s wait would
-// misread a waking session as deaf (agent-teams-c4i9.20.29).
+// respawned: the follower rings the doorbell after a poll, so the deaf-probe wait
+// could misread a waking session as deaf (agent-teams-c4i9.20.29).
 func TestSendKong_Hosted_IdleLocalRecipient_SkipsDeafProbeAndRespawn(t *testing.T) {
 	t.Setenv("AGENT_TEAMS_HOST", "laptop")
 	sf := newSendFixture(t)
