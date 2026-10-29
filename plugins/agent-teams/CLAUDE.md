@@ -76,7 +76,7 @@ Auto-rotates to `hooks.log.1` at ~5 MB. Tail it: `tail -f ~/.agent-teams/debug/h
 |---|---|
 | No entry at all | `ateam resume <id>` — fresh dispatch, creates the only entry |
 | `status: busy` or `status: waiting` | Wait — never touch it. Respawn would interrupt an in-flight tool call or drop a pending permission/AskUserQuestion dialog; the Stop-armed watcher picks up the doorbell the instant the turn ends |
-| `status: idle`, or no `pid` at all (tracked-but-dead) | Wait ~5s, then re-check the doorbell: gone means a turn already consumed it (done); still present means the recipient is deaf, so `claude respawn <shortid>` revives it **in place** — same `sessionId`, same single `claude agents` entry, full conversation preserved |
+| `status: idle`, or no `pid` at all (tracked-but-dead) | Wait ~30s, then re-check the doorbell: gone means a turn already consumed it (done); still present means the recipient is deaf, so `claude respawn <shortid>` revives it **in place** — same `sessionId`, same single `claude agents` entry, full conversation preserved |
 
 Respawn failure (e.g. `claude` not in PATH) only prints a warning — the mail is already a written bead, so a broken respawn never loses it.
 

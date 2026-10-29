@@ -1175,8 +1175,11 @@ func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sleptFor != 5*time.Second {
-		t.Errorf("expected a 5s wait before the doorbell re-check, got %v", sleptFor)
+	if deafProbeWait != 30*time.Second {
+		t.Errorf("deafProbeWait = %v, want 30s", deafProbeWait)
+	}
+	if sleptFor != 30*time.Second {
+		t.Errorf("expected a 30s wait before the doorbell re-check, got %v", sleptFor)
 	}
 	if respawnCalled {
 		t.Error("respawn should not be called when the doorbell was already consumed")
@@ -1804,7 +1807,7 @@ func TestSendKong_StewardRecipient_NoMatchingSession_QueuesWithoutResume(t *test
 
 // TestSendKong_StewardRecipient_IdleSession_DoorbellPersists_Respawns covers
 // the deaf-steward self-heal path: a live session whose cwd IS
-// StewardSessionDir, idle, with the doorbell still present after the 5s
+// StewardSessionDir, idle, with the doorbell still present after the 30s
 // recheck — respawnFunc must fire exactly like it would for any other
 // recipient.
 func TestSendKong_StewardRecipient_IdleSession_DoorbellPersists_Respawns(t *testing.T) {
