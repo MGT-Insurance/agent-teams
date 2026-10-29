@@ -88,7 +88,7 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	}
 	if plan.Description == issue.Description {
 		fmt.Fprintf(ctx.Stdout, "pr add: %s already recorded on %s\n", c.URL, c.InitiativeID)
-		return nil
+		return emitPRLabel(c.InitiativeID, c.URL)
 	}
 
 	tmpFile, err := os.CreateTemp("", "ateam-pr-add-*.txt")
@@ -107,6 +107,35 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam pr add: bd update %s: %w", c.InitiativeID, err)
 	}
 	fmt.Fprintf(ctx.Stdout, "pr add: recorded %s on %s\n", c.URL, c.InitiativeID)
+	return emitPRLabel(c.InitiativeID, c.URL)
+}
+
+// emitPRLabel asks the Dispatcher to label this run's bead with the PR's
+// prKey and repo, so the Dispatcher's fold binding routes the PR's check and
+// review rows to the run. It does nothing outside a Dispatcher run. The prKey
+// keeps the owner and repo capitalization of url verbatim, because the
+// Dispatcher matches labels by exact string against the webhook's
+// repository.full_name (CanonicalPRURL lowercases, so it is not used here).
+// It runs after the rail write and also on the already-recorded path, so a
+// label whose earlier append was lost is re-sent; label add is idempotent on
+// the Dispatcher side.
+func emitPRLabel(id, url string) error {
+	if _, _, ok := dispatcherRun(); !ok {
+		return nil
+	}
+	m := initiative.PRURLRE.FindStringSubmatch(url)
+	if m == nil {
+		return fmt.Errorf("ateam pr add: cannot label the Dispatcher run: %q is not a GitHub PR URL", url)
+	}
+	owner, repo, n := m[1], m[2], m[3]
+	op := outboxLabelOp{
+		Op:     "label",
+		Add:    []string{"prKey:" + owner + "/" + repo + "#" + n, "repo:" + repo},
+		Remove: []string{},
+	}
+	if err := appendOutboxOp(op); err != nil {
+		return fmt.Errorf("pr add: recorded %s on %s, but cannot label the Dispatcher run: %w", url, id, err)
+	}
 	return nil
 }
 

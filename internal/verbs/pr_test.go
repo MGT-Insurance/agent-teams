@@ -2,6 +2,8 @@
 package verbs
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,6 +193,127 @@ func TestPrAddKong_Run_NilContext(t *testing.T) {
 	cmd := &prAddKong{InitiativeID: "at-z", URL: "https://github.com/owner/repo/pull/1"}
 	if err := cmd.Run(nil); err == nil {
 		t.Error("expected error for nil context")
+	}
+}
+
+// ── prAddKong.Run: Dispatcher outbox label ────────────────────────────────────
+
+const dispatcherPR12 = "https://github.com/MGT-Insurance/dispatcher/pull/12"
+const dispatcherPR12Line = `{"op":"label","add":["prKey:MGT-Insurance/dispatcher#12","repo:dispatcher"],"remove":[]}` + "\n"
+
+// prAddFake returns a fakeBD holding one initiative whose update writes back
+// the new description, plus a counter of bd update calls.
+func prAddFake(t *testing.T, desc string) (*fakeBD, *int) {
+	t.Helper()
+	issue := bd.Issue{ID: "at-x", Description: desc}
+	updates := 0
+	return &fakeBD{runFn: func(args ...string) (string, error) {
+		switch args[0] {
+		case "show":
+			return issueJSON(issue), nil
+		case "update":
+			updates++
+			content, err := readFileT(t, strings.TrimPrefix(args[2], "--body-file="))
+			if err != nil {
+				t.Fatalf("read body file: %v", err)
+			}
+			issue.Description = content
+		}
+		return "", nil
+	}}, &updates
+}
+
+func readOutbox(t *testing.T, sup string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(sup, "outbox.jsonl"))
+	if err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	return string(b)
+}
+
+func TestPrAddKong_Run_NoOutboxOutsideDispatcherRun(t *testing.T) {
+	for _, set := range []bool{false, true} {
+		sup := t.TempDir()
+		t.Setenv("DSP_SUP", sup)
+		t.Setenv("DSP_BEAD", "") // registers restore of the original value
+		if !set {
+			os.Unsetenv("DSP_BEAD")
+		}
+		f, _ := prAddFake(t, "repo: /r\n")
+		ctx, stdout, _ := makeCtx(f, t.TempDir())
+		if err := (&prAddKong{InitiativeID: "at-x", URL: dispatcherPR12}).Run(ctx); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(sup, "outbox.jsonl")); !os.IsNotExist(err) {
+			t.Errorf("DSP_BEAD set=%v: outbox.jsonl must not exist (stat err %v)", set, err)
+		}
+		if want := "pr add: recorded " + dispatcherPR12 + " on at-x\n"; stdout.String() != want {
+			t.Errorf("stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestPrAddKong_Run_AppendsLabelOpInDispatcherRun(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "dsp-test")
+	t.Setenv("DSP_SUP", sup)
+	f, _ := prAddFake(t, "repo: /r\n")
+	ctx, _, _ := makeCtx(f, t.TempDir())
+	if err := (&prAddKong{InitiativeID: "at-x", URL: dispatcherPR12}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := readOutbox(t, sup); got != dispatcherPR12Line {
+		t.Errorf("outbox = %q, want %q", got, dispatcherPR12Line)
+	}
+}
+
+func TestPrAddKong_Run_AppendsLabelOpOnAlreadyRecordedPR(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "dsp-test")
+	t.Setenv("DSP_SUP", sup)
+	f, updates := prAddFake(t, "pr: "+dispatcherPR12+"\n")
+	ctx, stdout, _ := makeCtx(f, t.TempDir())
+	if err := (&prAddKong{InitiativeID: "at-x", URL: dispatcherPR12}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *updates != 0 || !strings.Contains(stdout.String(), "already recorded") {
+		t.Fatalf("expected the already-recorded path, updates=%d stdout=%q", *updates, stdout.String())
+	}
+	if got := readOutbox(t, sup); got != dispatcherPR12Line {
+		t.Errorf("outbox = %q, want %q", got, dispatcherPR12Line)
+	}
+}
+
+func TestPrAddKong_Run_TwoPRsAppendTwoLinesInOrder(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "dsp-test")
+	t.Setenv("DSP_SUP", sup)
+	f, _ := prAddFake(t, "repo: /r\n")
+	ctx, _, _ := makeCtx(f, t.TempDir())
+	for _, u := range []string{dispatcherPR12, "https://github.com/MGT-Insurance/midgard/pull/7"} {
+		if err := (&prAddKong{InitiativeID: "at-x", URL: u}).Run(ctx); err != nil {
+			t.Fatalf("Run(%s): %v", u, err)
+		}
+	}
+	want := dispatcherPR12Line +
+		`{"op":"label","add":["prKey:MGT-Insurance/midgard#7","repo:midgard"],"remove":[]}` + "\n"
+	if got := readOutbox(t, sup); got != want {
+		t.Errorf("outbox = %q, want %q", got, want)
+	}
+}
+
+func TestPrAddKong_Run_EmptyDspSupRecordsRailThenErrors(t *testing.T) {
+	t.Setenv("DSP_BEAD", "dsp-test")
+	t.Setenv("DSP_SUP", "")
+	f, updates := prAddFake(t, "repo: /r\n")
+	ctx, _, _ := makeCtx(f, t.TempDir())
+	err := (&prAddKong{InitiativeID: "at-x", URL: dispatcherPR12}).Run(ctx)
+	if *updates != 1 {
+		t.Errorf("rail write must happen before the error, updates=%d", *updates)
+	}
+	if err == nil || !strings.Contains(err.Error(), "DSP_SUP is empty") {
+		t.Fatalf("expected an error naming DSP_SUP, got %v", err)
 	}
 }
 
