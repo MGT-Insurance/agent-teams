@@ -69,15 +69,18 @@ func (c *tieSessionKong) Run(ctx *cli.Context) error {
 		return nil // no session id available — silent no-op
 	}
 
-	// A re-tie can change which initiative this session resolves to, so drop
-	// the hook-scan result cached for it.
-	deleteHookScanCache(ctx, sessionID)
-
+	// A re-tie can change which initiative this session resolves to, so the
+	// hook-scan result cached for it is dropped, except when it already names
+	// the initiative being tied: the async SessionStart tie runs after
+	// hook-scan seeded that entry, and wiping it would cost the first prompt a
+	// full scan. Each silent no-op path below drops it unconditionally.
 	cwd, err := os.Getwd()
 	if err != nil {
+		invalidateHookScanCacheUnless(ctx, sessionID, "")
 		return nil // can't resolve cwd — silent no-op, never break session start
 	}
 	if isStewardSession(ctx, cwd) {
+		invalidateHookScanCacheUnless(ctx, sessionID, "")
 		return nil // the Steward is not an initiative bead
 	}
 
@@ -88,15 +91,19 @@ func (c *tieSessionKong) Run(ctx *cli.Context) error {
 		// target lookup and one-open-initiative guard.
 		open, err := listOpenIssues(ctx, false)
 		if err != nil {
+			invalidateHookScanCacheUnless(ctx, sessionID, "")
 			return nil // can't list open initiatives — silent no-op
 		}
 		match := matchByWorktreeOrAncestor(open, cwd)
 		if match == nil {
+			invalidateHookScanCacheUnless(ctx, sessionID, "")
 			return nil // no open initiative registered for cwd — silent no-op
 		}
 		initiativeID = match.ID
+		invalidateHookScanCacheUnless(ctx, sessionID, initiativeID)
 		tieErr = appendSessionIDWith(ctx, open, initiativeID, sessionID)
 	} else {
+		invalidateHookScanCacheUnless(ctx, sessionID, initiativeID)
 		tieErr = appendSessionID(ctx, initiativeID, sessionID)
 	}
 

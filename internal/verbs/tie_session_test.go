@@ -352,3 +352,87 @@ func TestTieSessionKong_ParsesOptionalArgAndFlag(t *testing.T) {
 		t.Fatalf("Parse with no positional arg (must be optional): %v", err)
 	}
 }
+
+// ── hook-scan cache rule (agent-teams-c4i9.20.44.1) ─────────────────────────
+
+func tieCacheCtx(t *testing.T, cachedID string) *cli.Context {
+	t.Helper()
+	fbd := &fakeBD{
+		runFn: func(args ...string) (string, error) {
+			if args[0] == "show" {
+				return issueJSON(bd.Issue{ID: "at-target", Description: "problem: x\n"}), nil
+			}
+			return "", nil
+		},
+		runJSONFn: func(dst any, args ...string) error {
+			if issues, ok := dst.(*[]bd.Issue); ok {
+				*issues = []bd.Issue{{ID: "at-target", Status: "open", Description: "problem: x\n"}}
+			}
+			return nil
+		},
+	}
+	ctx, _, _ := makeCtx(fbd, t.TempDir())
+	if cachedID != "" {
+		writeHookScanCache(ctx, "sess-c", hookScanCacheEntry{ID: cachedID, Trusted: true})
+	}
+	return ctx
+}
+
+func TestTieSession_KeepsCacheNamingTiedInitiative(t *testing.T) {
+	ctx := tieCacheCtx(t, "at-target")
+	if err := (&tieSessionKong{InitiativeID: "at-target", SessionID: "sess-c"}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if e, ok := readHookScanCache(ctx, "sess-c"); !ok || e.ID != "at-target" {
+		t.Errorf("cache = %+v ok=%v, want entry for at-target kept", e, ok)
+	}
+}
+
+func TestTieSession_DeletesCacheNamingOtherInitiative(t *testing.T) {
+	ctx := tieCacheCtx(t, "at-other")
+	if err := (&tieSessionKong{InitiativeID: "at-target", SessionID: "sess-c"}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := readHookScanCache(ctx, "sess-c"); ok {
+		t.Error("cache naming a different initiative survived the tie")
+	}
+}
+
+func TestTieSession_NoMatchNoOpDeletesCache(t *testing.T) {
+	ctx := tieCacheCtx(t, "at-target") // cwd (this package dir) matches no worktree
+	if err := (&tieSessionKong{SessionID: "sess-c"}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := readHookScanCache(ctx, "sess-c"); ok {
+		t.Error("cache survived the no-match no-op")
+	}
+}
+
+func TestTieSession_StewardNoOpDeletesCache(t *testing.T) {
+	ctx := tieCacheCtx(t, "at-target")
+	sessionDir := StewardSessionDir(ctx)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(StewardSessionMarkerPath(ctx), []byte("steward\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(sessionDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origCwd); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err := (&tieSessionKong{SessionID: "sess-c"}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, ok := readHookScanCache(ctx, "sess-c"); ok {
+		t.Error("cache survived the steward no-op")
+	}
+}

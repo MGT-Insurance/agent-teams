@@ -607,3 +607,57 @@ func TestHookScanStewardGuard_NoPidfile_Proceeds(t *testing.T) {
 		t.Errorf("stdout %q missing id line", stdout)
 	}
 }
+
+// ── --hint-id (agent-teams-c4i9.20.44.1) ────────────────────────────────────
+
+func TestHookScanHintIDResolvesUnmatchedPathOneBDCall(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-hint", Title: "Hinted", Description: "worktree: /elsewhere\n"},
+		{ID: "msg-1", IssueType: "message", Assignee: "at-hint", Status: "open"},
+	}
+	stdout, argvs := runHookScanRecording(t, issues, []string{"/no/such/path", "--session-id", "untied", "--hint-id", "at-hint"})
+	assertOneInfraList(t, argvs)
+	if stdout != "id: at-hint\nunread: 1\n" {
+		t.Errorf("stdout %q, want id: at-hint / unread: 1", stdout)
+	}
+}
+
+func TestHookScanHintIDClosedOrMissingFallsThroughToPath(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{{ID: "at-path", Description: "worktree: " + path}}
+
+	// Not in the open list (closed or nonexistent): the path match wins.
+	stdout, _, code := runHookScan(t, issues, []string{path, "--hint-id", "at-closed"})
+	if code != 0 || stdout != "id: at-path\nunread: 0\n" {
+		t.Errorf("path fallback: code=%d stdout=%q", code, stdout)
+	}
+	// Nothing matches either: no output, exit 0.
+	stdout, _, code = runHookScan(t, issues, []string{"/no/such/path", "--hint-id", "at-closed"})
+	if code != 0 || stdout != "" {
+		t.Errorf("no match: code=%d stdout=%q, want empty exit 0", code, stdout)
+	}
+}
+
+func TestHookScanSessionTieBeatsHintBeatsPath(t *testing.T) {
+	path := "/a/b/wt"
+	issues := []bd.Issue{
+		{ID: "at-tied", Description: "worktree: /x\nsession: sess-1\n"},
+		{ID: "at-hint", Description: "worktree: /y\n"},
+		{ID: "at-path", Description: "worktree: " + path + "\n"},
+	}
+	stdout, _, _ := runHookScan(t, issues, []string{path, "--session-id", "sess-1", "--hint-id", "at-hint"})
+	if !strings.Contains(stdout, "id: at-tied") {
+		t.Errorf("tie vs hint: stdout %q, want id: at-tied", stdout)
+	}
+	stdout, _, _ = runHookScan(t, issues, []string{path, "--session-id", "sess-untied", "--hint-id", "at-hint"})
+	if !strings.Contains(stdout, "id: at-hint") {
+		t.Errorf("hint vs path: stdout %q, want id: at-hint", stdout)
+	}
+}
+
+func TestHookScanHintIDAndIDMutuallyExclusive(t *testing.T) {
+	_, _, code := runHookScan(t, nil, []string{"--id=steward", "--hint-id", "at-x"})
+	if code != 2 {
+		t.Errorf("exit code %d, want 2 (usage error)", code)
+	}
+}

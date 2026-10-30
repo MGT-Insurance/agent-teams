@@ -106,6 +106,17 @@ func deleteHookScanCache(ctx *cli.Context, key string) {
 	}
 }
 
+// invalidateHookScanCacheUnless removes the entry for key unless an entry
+// exists and names keepID. An empty keepID always removes it.
+func invalidateHookScanCacheUnless(ctx *cli.Context, key, keepID string) {
+	if keepID != "" {
+		if e, ok := readHookScanCache(ctx, key); ok && e.ID == keepID {
+			return
+		}
+	}
+	deleteHookScanCache(ctx, key)
+}
+
 // hookScanDoorbellPresent reports whether initiative id has an unconsumed
 // doorbell file.
 func hookScanDoorbellPresent(ctx *cli.Context, id string) bool {
