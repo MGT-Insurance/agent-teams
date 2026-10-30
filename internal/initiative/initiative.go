@@ -3,6 +3,7 @@ package initiative
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -244,7 +245,7 @@ func JSONFields(iss bd.Issue) map[string]any {
 // every unmodeled canonical key already on record would be silently dropped,
 // reintroducing the exact data loss this package exists to eliminate
 // (package doc comment, frozen item 4). To mutate an existing initiative use
-// WithSession or WithTrack instead.
+// WithSession, WithTrack, WithWhere, or WithWorktree instead.
 //
 // New rejects (does not silently sanitize) any field value containing a line
 // break. Problem in particular is free-form human text arriving from a
@@ -396,6 +397,58 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 		}
 	}
 	return WritePlan{Description: appendLine(iss.Description, "track-worktree", path)}, nil
+}
+
+// WithWhere returns the WritePlan that sets iss's single-valued "where" field
+// to value. See withSingleValued for the replace-or-append and idempotency
+// contract.
+func WithWhere(iss bd.Issue, value string) (WritePlan, error) {
+	return withSingleValued(iss, "where", value)
+}
+
+// WithWorktree returns the WritePlan that sets iss's single-valued "worktree"
+// field to path. See withSingleValued for the replace-or-append and
+// idempotency contract.
+func WithWorktree(iss bd.Issue, path string) (WritePlan, error) {
+	return withSingleValued(iss, "worktree", path)
+}
+
+// withSingleValued sets the single-valued field key to value on iss. It
+// replaces the value of the FIRST existing line for key — the one Of reads
+// under first-wins — and leaves every other byte of the description
+// untouched, so the line keeps its position. When no line exists it appends
+// one via appendLine. It is idempotent: if Of already returns value, the
+// WritePlan.Description is iss.Description, unchanged.
+//
+// value follows the WithTrack rules: non-empty, no line break, no leading or
+// trailing whitespace. key must be one of singleValuedKeys.
+func withSingleValued(iss bd.Issue, key, value string) (WritePlan, error) {
+	if !slices.Contains(singleValuedKeys, key) {
+		return WritePlan{}, fmt.Errorf("initiative.withSingleValued: %q is not a single-valued key", key)
+	}
+	if value == "" {
+		return WritePlan{}, fmt.Errorf("initiative: %s value must not be empty", key)
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return WritePlan{}, fmt.Errorf("initiative: %s value must not contain a line break: %q", key, value)
+	}
+	if hasEdgeWhitespace(value) {
+		return WritePlan{}, fmt.Errorf("initiative: %s value must not have leading or trailing whitespace: %q", key, value)
+	}
+	if first(all(iss), key) == value {
+		return WritePlan{Description: iss.Description}, nil
+	}
+	lines := strings.Split(iss.Description, "\n")
+	for i, line := range lines {
+		if k, _, ok := fieldLine(line); ok && k == key {
+			lines[i] = key + ": " + value
+			if strings.HasSuffix(line, "\r") {
+				lines[i] += "\r"
+			}
+			return WritePlan{Description: strings.Join(lines, "\n")}, nil
+		}
+	}
+	return WritePlan{Description: appendLine(iss.Description, key, value)}, nil
 }
 
 // PRURLRE matches a full GitHub PR URL:

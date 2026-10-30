@@ -30,6 +30,9 @@ type config struct {
 	AutoCompactWindow *int64  `toml:"auto_compact_window"`
 	UseAdvisors       *bool   `toml:"use_advisors"`
 	ClaudeDriModel    *string `toml:"claude_dri_model"`
+	CloudHome         *string `toml:"cloud_home"`
+	DispatcherBeads   *string `toml:"dispatcher_beads"`
+	DispatcherActor   *string `toml:"dispatcher_actor"`
 }
 
 // useAdvisorsDefault is the hardcoded value UseAdvisors returns when
@@ -108,6 +111,48 @@ func ClaudeDriModel(home string) (string, bool, error) {
 	return *cfg.ClaudeDriModel, true, nil
 }
 
+// CloudHome reads config.toml beneath home and returns the hosted global
+// workspace that `ateam dispatch --cloud` registers initiatives in. The
+// second result is false when the key is absent. As with RuntimeDefault,
+// every present key is validated.
+func CloudHome(home string) (string, bool, error) {
+	cfg, _, err := readConfig(home)
+	if err != nil {
+		return "", false, err
+	}
+	return optionalString(cfg.CloudHome)
+}
+
+// DispatcherBeads reads config.toml beneath home and returns the bd client
+// directory that points at the Dispatcher's beads database, where
+// `ateam dispatch --cloud` files run beads. The second result is false when
+// the key is absent.
+func DispatcherBeads(home string) (string, bool, error) {
+	cfg, _, err := readConfig(home)
+	if err != nil {
+		return "", false, err
+	}
+	return optionalString(cfg.DispatcherBeads)
+}
+
+// DispatcherActor reads config.toml beneath home and returns the Dispatcher
+// account (the email) that files cloud run beads. The second result is false
+// when the key is absent.
+func DispatcherActor(home string) (string, bool, error) {
+	cfg, _, err := readConfig(home)
+	if err != nil {
+		return "", false, err
+	}
+	return optionalString(cfg.DispatcherActor)
+}
+
+func optionalString(v *string) (string, bool, error) {
+	if v == nil {
+		return "", false, nil
+	}
+	return *v, true, nil
+}
+
 func readConfig(home string) (config, string, error) {
 	path := filepath.Join(home, FileName)
 	data, err := os.ReadFile(path)
@@ -163,12 +208,21 @@ func readConfig(home string) (config, string, error) {
 	if cfg.ClaudeDriModel != nil && *cfg.ClaudeDriModel == "" {
 		return config{}, path, fmt.Errorf("runtime config %s: claude_dri_model must not be empty", path)
 	}
+	for key, value := range map[string]*string{
+		"cloud_home":       cfg.CloudHome,
+		"dispatcher_beads": cfg.DispatcherBeads,
+		"dispatcher_actor": cfg.DispatcherActor,
+	} {
+		if value != nil && strings.TrimSpace(*value) == "" {
+			return config{}, path, fmt.Errorf("runtime config %s: %s must not be empty", path, key)
+		}
+	}
 	return cfg, path, nil
 }
 
 func knownKeyContext(data []byte) string {
 	var keys []string
-	for _, key := range []string{string(WorkRuntime), string(ReviewRuntime), "auto_compact_window", "use_advisors", "claude_dri_model"} {
+	for _, key := range []string{string(WorkRuntime), string(ReviewRuntime), "auto_compact_window", "use_advisors", "claude_dri_model", "cloud_home", "dispatcher_beads", "dispatcher_actor"} {
 		if bytes.Contains(data, []byte(key)) {
 			keys = append(keys, key)
 		}

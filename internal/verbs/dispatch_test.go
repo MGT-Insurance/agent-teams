@@ -29,6 +29,8 @@ type fakeGit struct {
 	worktreeExistsFn func(repoRoot, wtPath string) bool
 	addWorktreeFn    func(repoRoot, wtPath, branch, base string) error
 	removeWorktreeFn func(repoRoot, wtPath string) error
+	remoteURLFn      func(repoRoot string) (string, error)
+	remoteHeadFn     func(repoRoot, branch string) (string, error)
 }
 
 func (f *fakeGit) RepoRoot(dir string) (string, error) {
@@ -60,6 +62,19 @@ func (f *fakeGit) RemoveWorktree(repoRoot, wtPath string) error {
 		return f.removeWorktreeFn(repoRoot, wtPath)
 	}
 	return nil
+}
+
+func (f *fakeGit) RemoteURL(repoRoot string) (string, error) {
+	if f.remoteURLFn != nil {
+		return f.remoteURLFn(repoRoot)
+	}
+	return "https://github.com/MGT-Insurance/agent-teams", nil
+}
+func (f *fakeGit) RemoteHead(repoRoot, branch string) (string, error) {
+	if f.remoteHeadFn != nil {
+		return f.remoteHeadFn(repoRoot, branch)
+	}
+	return "0123456789abcdef0123456789abcdef01234567", nil
 }
 
 // fakeBD implements cli.BDRunner for tests.

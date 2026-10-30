@@ -68,9 +68,10 @@ Both launch the background session with `--permission-mode bypassPermissions` fo
 
 `ateam dispatch` can select a machine-local runtime default from
 `$AGENT_TEAMS_HOME/config.toml` (normally `~/.agent-teams/config.toml`). This
-file is the single source of truth for agent-teams machine configuration —
-nothing else (a plugin option, an environment variable) also feeds these
-settings. The initial recommended file is:
+file is the single source of truth for agent-teams machine configuration. The
+only exception is `dispatcher_actor`, which the `ATEAM_DISPATCHER_ACTOR`
+environment variable overrides (see [Cloud dispatch](#cloud-dispatch)). No
+plugin option feeds these settings. The initial recommended file is:
 
 ```toml
 work_runtime = "codex"
@@ -83,7 +84,7 @@ dispatch selects `work_runtime`. Resolution is an explicit concrete
 legacy `claude` fallback. `--runtime auto` skips only the explicit tier. A
 valid flag or environment value does not read the config for runtime selection.
 
-The file is strict, flat TOML with five optional keys. `work_runtime` and
+The file is strict, flat TOML with eight optional keys. `work_runtime` and
 `review_runtime` must each be exactly lowercase `claude` or `codex` when
 present. A missing file or missing selected runtime key falls through. When
 agent-teams reads this config, an invalid file stops the operation before a
@@ -130,6 +131,49 @@ own model; with `use_advisors` set `true`, the DRI session worker runs on
 (`--model sonnet --advisor <claude_dri_model>`).
 
 Open the native session view with `ateam runtime open claude`; attach to answer gates (`claude attach <id>` — the short id from that listing, not the session name, which does not resolve), or watch `/initiatives` for parked questions. Parked gates never stop work that doesn't depend on the answer.
+
+### Cloud dispatch
+
+Three more keys in the same file configure `ateam dispatch --cloud`, which
+hands an initiative to the Dispatcher instead of creating a local worktree:
+
+- `cloud_home` — the hosted global workspace where the initiative is registered.
+- `dispatcher_beads` — the `bd` client directory that points at the
+  Dispatcher's beads database, where `--cloud` files the run bead.
+- `dispatcher_actor` — the account email that files the run bead. The
+  `ATEAM_DISPATCHER_ACTOR` environment variable overrides it. Agent actors
+  (`agent:...`) are rejected, because the Dispatcher never autostarts them.
+
+`--cloud` needs all three, and a missing value stops the dispatch with a message
+that names the key. It also requires an `origin` remote owned by the
+`MGT-Insurance` organization; the match ignores case, and the run bead carries
+the canonical `MGT-Insurance` spelling.
+
+### Inside a Dispatcher run
+
+On a Dispatcher VM, the Dispatcher starts `ateam cloud-boot start` (first
+boot) or `ateam cloud-boot resume` (after a park) in the run's environment. The
+verb needs `DSP_BEAD`, `DSP_SUP`, `DSP_META_INITIATIVE`, and
+`AGENT_TEAMS_HOST_FOLLOW=off`, and it refuses to run without them.
+
+- `start` launches the DRI in a tmux session and records the run on the
+  initiative.
+- `resume` relaunches the DRI session that `start` recorded, with the wake
+  event from `$DSP_SUP/wake.json` in its prompt. If the saved state belongs to a
+  different `DSP_BEAD`, `resume` stops with an error instead of resuming
+  another run's session.
+
+Both verbs then poll the session. They exit 0 when the initiative closes, and
+exit 75 after the DRI has been idle for three consecutive polls, which tells
+the Dispatcher to park the run. A poll that fails (`bd show` or `claude agents`)
+is retried; after six consecutive failures the verb exits with an error. On
+any exit other than park or close, the verb kills the tmux session so no DRI
+outlives the run.
+
+Inside a run, `ateam pr add` also appends a `label` operation to
+`$DSP_SUP/outbox.jsonl`, so the Dispatcher routes that PR's check and review
+events to the run. It prints `pr add: labeled Dispatcher run <DSP_BEAD>` after
+the append. Outside a run, `pr add` writes no outbox entry.
 
 ## Eval suite
 

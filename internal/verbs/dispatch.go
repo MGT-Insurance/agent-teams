@@ -42,6 +42,8 @@ func RegisterDispatchKong(p *cli.Parser) {
 		runtimeStart:     startRuntimeWorker,
 		codexCheck:       sessionruntime.RequireCompatibleCodex,
 		setup:            runWorktreeSetup,
+		cloudBD:          defaultCloudBD,
+		fileRunBead:      defaultFileRunBead,
 	})
 	resumeCmd := newProductionResumeKong()
 	// agentsFunc/stopSession back the duplicate-live-session guard (see the
@@ -167,7 +169,8 @@ type dispatchKong struct {
 	Model        string `name:"model"         help:"Model override for the background session (Claude default: claude-opus-4-8; Codex default: user config)."`
 	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, config.toml-derived for the /dri path)."`
-	Topic        string `name:"topic"         help:"Mark a reserved initiative kind (only \"reviews\", for PR reviews). It opens no per-initiative Telegram topic, posts no message, and writes no thread: label on the initiative bead; the initiative bead is the whole record."`
+	Cloud        bool   `name:"cloud"         help:"Register the initiative in the hosted workspace (config cloud_home) and file a run bead with the Dispatcher, so a DRI starts in a Dispatcher VM instead of a local worktree. Needs cloud_home, dispatcher_beads, and dispatcher_actor (or $ATEAM_DISPATCHER_ACTOR) in config.toml. Claude runtime only; cannot combine with --no-launch, --launch-prompt, --standby, --topic, --model, or --advisor."`
+	Topic        string `name:"topic"        help:"Mark a reserved initiative kind (only \"reviews\", for PR reviews). It opens no per-initiative Telegram topic, posts no message, and writes no thread: label on the initiative bead; the initiative bead is the whole record."`
 	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
 	git          gitRunner                           `kong:"-"`
@@ -177,6 +180,8 @@ type dispatchKong struct {
 	runtimeStart runtimeStartFunc                    `kong:"-"`
 	codexCheck   func(context.Context, string) error `kong:"-"`
 	setup        worktreeSetupFunc                   `kong:"-"`
+	cloudBD      cloudBDFunc                         `kong:"-"`
+	fileRunBead  fileRunBeadFunc                     `kong:"-"`
 
 	// transportFor, transportEnabled, and labelAdd back the eager Telegram
 	// (or configured transport) topic creation below. Injected at
@@ -231,6 +236,23 @@ type transportEnabledFunc func(home string) bool
 // The message carries no "dispatch:" prefix of its own: unlike Run's errors,
 // kong prefixes what a Validate hook returns with "ateam: dispatch: ".
 func (c *dispatchKong) Validate() error {
+	if c.Cloud {
+		for _, f := range []struct {
+			flag string
+			set  bool
+		}{
+			{"--no-launch", c.NoLaunch},
+			{"--launch-prompt", c.LaunchPrompt != ""},
+			{"--standby", c.Standby},
+			{"--topic", c.Topic != ""},
+			{"--model", c.Model != ""},
+			{"--advisor", c.Advisor != ""},
+		} {
+			if f.set {
+				return cli.Usagef("--cloud cannot be combined with %s", f.flag)
+			}
+		}
+	}
 	if c.Topic != "" && c.Topic != ReviewsHandle {
 		return cli.Usagef("unknown --topic %q (supported: %s)", c.Topic, ReviewsHandle)
 	}
@@ -251,6 +273,9 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	})
 	if err != nil {
 		return cli.Usagef("dispatch: %v", err)
+	}
+	if c.Cloud && runtimeKind == sessionruntime.Codex {
+		return cli.Usagef("dispatch: --cloud supports the Claude runtime only; pass --runtime claude")
 	}
 	if runtimeKind == sessionruntime.Codex && c.Advisor != "" {
 		return cli.Usagef("dispatch: --advisor is only supported by the Claude runtime")
@@ -306,6 +331,10 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 	}
 	if resolvedSlug == "" {
 		return cli.Usagef("dispatch: --problem produced an empty slug; provide --slug explicitly")
+	}
+
+	if c.Cloud {
+		return c.runCloud(ctx, repoRoot, base, resolvedSlug)
 	}
 
 	// 4. Worktree path: <workspace.Home()>-worktrees/<slug>
@@ -1296,21 +1325,6 @@ const reviewMCPConfigJSON = `{"mcpServers":{"docs-hound":{"type":"http","url":"h
 // byte-identical to before this parameter existed. Extracted so tests can
 // assert the argv without executing the command.
 func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, autoCompactWindow string) []string {
-	if model == "" {
-		model = driDefaultModel
-	}
-	args := []string{
-		"--bg",
-		"-n", name,
-		"--model", model,
-		"--permission-mode", "bypassPermissions",
-	}
-	if settings := bgSessionSettingsJSON(role, initiativeID, autoCompactWindow); settings != "" {
-		args = append(args, "--settings", settings)
-	}
-	if autoCompactWindow != "" {
-		args = append(args, "--autocompact", autoCompactWindow)
-	}
 	// driGuardrails are DRI-orchestration rules (delegate, don't implement;
 	// never merge unconfirmed; etc.) that make no sense for a non-DRI bg
 	// session — e.g. a review-pr session launched via --launch-prompt with
@@ -1324,13 +1338,37 @@ func bgSessionArgs(name, prompt, model, advisor, role, initiativeID, autoCompact
 	if strings.HasPrefix(prompt, "/dri ") {
 		appendVal = driSystemPromptAppend
 	}
+	return append([]string{"--bg", "-n", name},
+		driSessionArgs(prompt, appendVal, model, advisor, role, initiativeID, autoCompactWindow)...)
+}
+
+// driSessionArgs is bgSessionArgs minus the leading "--bg", "-n", name, with
+// the --append-system-prompt value supplied by the caller instead of derived
+// from the prompt prefix. A caller whose prompt has no "/dri " prefix (a
+// resume wake text) but still needs driSystemPromptAppend passes it
+// explicitly, because claude --resume rebuilds the system prompt from the
+// flags of the new launch.
+func driSessionArgs(prompt, appendSystemPrompt, model, advisor, role, initiativeID, autoCompactWindow string) []string {
+	if model == "" {
+		model = driDefaultModel
+	}
+	args := []string{
+		"--model", model,
+		"--permission-mode", "bypassPermissions",
+	}
+	if settings := bgSessionSettingsJSON(role, initiativeID, autoCompactWindow); settings != "" {
+		args = append(args, "--settings", settings)
+	}
+	if autoCompactWindow != "" {
+		args = append(args, "--autocompact", autoCompactWindow)
+	}
 	// --mcp-config is variadic in claude 2.1.285: a positional argument that
 	// directly follows it is swallowed as another config path. The flag pair
 	// therefore goes before --append-system-prompt, never adjacent to the prompt.
 	if strings.HasPrefix(prompt, reviewPromptPrefix) {
 		args = append(args, "--strict-mcp-config", "--mcp-config", reviewMCPConfigJSON)
 	}
-	args = append(args, "--append-system-prompt", appendVal)
+	args = append(args, "--append-system-prompt", appendSystemPrompt)
 	if advisor != "" {
 		args = append(args, "--advisor", advisor)
 	}
@@ -1470,6 +1508,8 @@ type gitRunner interface {
 	WorktreeExists(repoRoot, wtPath string) bool
 	AddWorktree(repoRoot, wtPath, branch, base string) error
 	RemoveWorktree(repoRoot, wtPath string) error
+	RemoteURL(repoRoot string) (string, error)
+	RemoteHead(repoRoot, branch string) (string, error)
 }
 
 // The routing-field readers this file used to own (worktreePath, modeValue,
