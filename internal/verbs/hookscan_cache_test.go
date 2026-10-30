@@ -269,3 +269,28 @@ func TestHookScanCache_UnsafeKeyUsesNoCache(t *testing.T) {
 		t.Errorf("cache dir exists for an unsafe key: %v", err)
 	}
 }
+
+// A hint-resolved scan seeds the cache like any other resolution.
+func TestHookScanCache_HintResolvedWritesEntry(t *testing.T) {
+	home := t.TempDir()
+	stdout, _, calls := cacheScan(t, home, []bd.Issue{cacheInit}, "/no/such/path", "--session-id", "s1", "--hint-id", "at-111")
+	if calls != 1 || stdout != "id: at-111\nunread: 0\n" {
+		t.Fatalf("calls=%d stdout=%q", calls, stdout)
+	}
+	if e, ok := getCache(t, home, "s1"); !ok || e.ID != "at-111" || !e.Trusted {
+		t.Fatalf("cache = %+v ok=%v", e, ok)
+	}
+}
+
+// A hint naming no open initiative, with no path match, deletes the entry.
+func TestHookScanCache_HintMissNoMatchDeletesEntry(t *testing.T) {
+	home := t.TempDir()
+	putCache(t, home, "s1", cacheFile{ID: "at-111", CheckedAt: time.Now().Add(-time.Hour), Trusted: true})
+	stdout, _, _ := cacheScan(t, home, nil, "/no/such/path", "--session-id", "s1", "--hint-id", "at-gone")
+	if stdout != "" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	if _, ok := getCache(t, home, "s1"); ok {
+		t.Error("cache survived a hint-miss no-match scan")
+	}
+}

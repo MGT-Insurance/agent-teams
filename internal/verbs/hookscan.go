@@ -56,6 +56,7 @@ type hookScanKong struct {
 	Path      string `arg:"" optional:"" name:"path" help:"Absolute path to resolve to its owning initiative, ancestor-or-self. Mutually exclusive with --id."`
 	ID        string `name:"id" help:"Skip path/worktree resolution; check unread mail directly for this already-known recipient id."`
 	SessionID string `name:"session-id" help:"Current Claude session id — when Path resolution is in play, tried first via its durable initiative tie before falling back to Path. Ignored when --id is given."`
+	HintID    string `name:"hint-id" help:"Initiative id the launcher published (ATEAM_INITIATIVE). Tried after the session tie and before path resolution; ignored unless it names an open initiative in the scanned list. Ignored with --id."`
 }
 
 // Validate enforces the Path/ID exclusivity — exactly one must be given.
@@ -65,6 +66,9 @@ func (c *hookScanKong) Validate() error {
 	}
 	if c.Path != "" && c.ID != "" {
 		return cli.Usagef("ateam hook-scan: PATH and --id are mutually exclusive")
+	}
+	if c.HintID != "" && c.ID != "" {
+		return cli.Usagef("ateam hook-scan: --hint-id and --id are mutually exclusive")
 	}
 	return nil
 }
@@ -137,6 +141,19 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		// nothing.
 		if issue, found := matchInitiativeBySession(candidates, sessionruntime.Claude, c.SessionID); found {
 			match = &issue
+		}
+		// Launcher hint next: a claimed bg spare's cwd can lag its worktree
+		// while the async session tie has not landed yet, so the launcher's
+		// ATEAM_INITIATIVE names the initiative directly. Only an open
+		// initiative in the scanned list counts.
+		if match == nil && c.HintID != "" {
+			for _, row := range candidates {
+				if row.ID == c.HintID {
+					row := row
+					match = &row
+					break
+				}
+			}
 		}
 		if match == nil {
 			match = matchByWorktreeOrAncestor(candidates, c.Path)
