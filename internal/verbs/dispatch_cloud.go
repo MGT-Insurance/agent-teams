@@ -123,6 +123,7 @@ func cloudRunBeadBody(repoURL, base, sha, initiativeID, problem string) string {
 		"branch: " + base,
 		"sha: " + sha,
 		"type: ateam-dri",
+		"initiative: " + initiativeID,
 		"meta-initiative: " + initiativeID,
 		"start: auto",
 		"---",

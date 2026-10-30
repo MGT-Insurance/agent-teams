@@ -151,6 +151,7 @@ func TestDispatchCloud_HappyPath(t *testing.T) {
 		"branch: main\n" +
 		"sha: " + testCloudSHA + "\n" +
 		"type: ateam-dri\n" +
+		"initiative: at-cloud1\n" +
 		"meta-initiative: at-cloud1\n" +
 		"start: auto\n" +
 		"---\n" +
