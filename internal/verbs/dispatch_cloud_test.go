@@ -174,6 +174,22 @@ func TestDispatchCloud_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDispatchCloud_OwnerCheckIsCaseInsensitiveAndCanonicalizesURL(t *testing.T) {
+	h := newCloudHarness(t, fullCloudConfig)
+	h.cmd.git.(*fakeGit).remoteURLFn = func(string) (string, error) {
+		return "https://github.com/mgt-insurance/agent-teams", nil
+	}
+	if err := h.cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.HasPrefix(h.beadBody, "repo: https://github.com/MGT-Insurance/agent-teams\n") {
+		t.Errorf("run bead body should carry the canonical owner:\n%s", h.beadBody)
+	}
+	if !strings.Contains(h.createBody, "repo: https://github.com/MGT-Insurance/agent-teams\n") {
+		t.Errorf("initiative description should carry the canonical owner:\n%s", h.createBody)
+	}
+}
+
 func TestDispatchCloud_IDOnly(t *testing.T) {
 	h := newCloudHarness(t, fullCloudConfig)
 	h.cmd.IDOnly = true

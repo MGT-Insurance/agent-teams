@@ -145,9 +145,13 @@ func (c *dispatchKong) runCloud(ctx *cli.Context, repoRoot, base, slug string) e
 	if err != nil {
 		return fmt.Errorf("dispatch --cloud: %w", err)
 	}
-	if owner := strings.Split(strings.TrimPrefix(repoURL, "https://github.com/"), "/")[0]; owner != cloudOwner {
+	const ghPrefix = "https://github.com/"
+	rest := strings.TrimPrefix(repoURL, ghPrefix)
+	owner, path, _ := strings.Cut(rest, "/")
+	if !strings.HasPrefix(repoURL, ghPrefix) || !strings.EqualFold(owner, cloudOwner) {
 		return cli.Usagef("dispatch --cloud: origin %s is not owned by %s", repoURL, cloudOwner)
 	}
+	repoURL = ghPrefix + cloudOwner + "/" + path
 	sha, err := c.git.RemoteHead(repoRoot, base)
 	if err != nil {
 		return fmt.Errorf("dispatch --cloud: %w", err)

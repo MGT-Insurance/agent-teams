@@ -259,12 +259,16 @@ func TestPrAddKong_Run_AppendsLabelOpInDispatcherRun(t *testing.T) {
 	t.Setenv("DSP_BEAD", "dsp-test")
 	t.Setenv("DSP_SUP", sup)
 	f, _ := prAddFake(t, "repo: /r\n")
-	ctx, _, _ := makeCtx(f, t.TempDir())
+	ctx, stdout, _ := makeCtx(f, t.TempDir())
 	if err := (&prAddKong{InitiativeID: "at-x", URL: dispatcherPR12}).Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := readOutbox(t, sup); got != dispatcherPR12Line {
 		t.Errorf("outbox = %q, want %q", got, dispatcherPR12Line)
+	}
+	want := "pr add: recorded " + dispatcherPR12 + " on at-x\npr add: labeled Dispatcher run dsp-test\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
 	}
 }
 

@@ -27,7 +27,8 @@ type cbEnv struct {
 	desc     string
 	status   string
 	showN    int
-	closeAt  int // close the initiative at this show call (0 = never)
+	closeAt  int               // close the initiative at this show call (0 = never)
+	showErr  func(n int) error // fails the nth bd show when non-nil
 	updates  []string
 	tmux     [][]string
 	polls    []func() []agentSession
@@ -64,6 +65,11 @@ func newCBEnv(t *testing.T) *cbEnv {
 		switch args[0] {
 		case "show":
 			e.showN++
+			if e.showErr != nil {
+				if err := e.showErr(e.showN); err != nil {
+					return nil, nil, err
+				}
+			}
 			st := e.status
 			if e.closeAt != 0 && e.showN >= e.closeAt {
 				st = "closed"
@@ -268,6 +274,102 @@ func TestCloudBootLeadGoneIsError(t *testing.T) {
 	err := e.start()
 	if err == nil || cli.ExitCode(err) == cloudBootParkExit {
 		t.Fatalf("err = %v, want a non-park error", err)
+	}
+}
+
+func TestCloudBootToleratesTransientPollErrors(t *testing.T) {
+	e := newCBEnv(t)
+	e.common.IdlePolls = 1
+	e.leadSeq("sid-1", "busy", "idle")
+	// show 1 is the precondition check. Three bd shows fail, one poll succeeds
+	// (resetting the count), then five agent polls fail: eight errors in all,
+	// never more than five in a row.
+	e.showErr = func(n int) error {
+		if n >= 2 && n <= 4 {
+			return errors.New("bd flake")
+		}
+		return nil
+	}
+	calls := 0
+	inner := e.common.Agents
+	e.common.Agents = func() ([]agentSession, error) {
+		calls++
+		if calls >= 2 && calls <= 6 {
+			return nil, errors.New("agents flake")
+		}
+		return inner()
+	}
+	wantExit(t, e.start(), cloudBootParkExit)
+	if e.calls("kill-session") != 1 {
+		t.Errorf("kill-session calls = %d, want 1 (park only)", e.calls("kill-session"))
+	}
+}
+
+func TestCloudBootGivesUpAfterConsecutivePollErrorsAndKillsSession(t *testing.T) {
+	for name, fail := range map[string]func(e *cbEnv){
+		"bd show": func(e *cbEnv) { e.showErr = func(n int) error { return errNilIf(n == 1, errors.New("bd down")) } },
+		"agents": func(e *cbEnv) {
+			e.common.Agents = func() ([]agentSession, error) { return nil, errors.New("agents down") }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newCBEnv(t)
+			e.leadSeq("sid-1", "busy")
+			fail(e)
+			err := e.start()
+			if err == nil || cli.ExitCode(err) == cloudBootParkExit {
+				t.Fatalf("err = %v, want a non-park error", err)
+			}
+			if e.calls("kill-session") != 1 {
+				t.Errorf("kill-session calls = %d, want 1", e.calls("kill-session"))
+			}
+			if !strings.Contains(err.Error(), "6 consecutive poll errors") {
+				t.Errorf("err = %v, want 6 consecutive poll errors", err)
+			}
+		})
+	}
+}
+
+// errNilIf returns nil when skip is true, else err.
+func errNilIf(skip bool, err error) error {
+	if skip {
+		return nil
+	}
+	return err
+}
+
+func TestCloudBootLeadGoneKillsSession(t *testing.T) {
+	e := newCBEnv(t)
+	e.polls = []func() []agentSession{func() []agentSession { return nil }}
+	e.common.Tmux = func(args ...string) error {
+		e.tmux = append(e.tmux, args)
+		if args[0] == "has-session" {
+			return errors.New("no session")
+		}
+		return nil
+	}
+	if err := e.start(); err == nil {
+		t.Fatal("want error")
+	}
+	if e.calls("kill-session") != 1 {
+		t.Errorf("kill-session calls = %d, want 1", e.calls("kill-session"))
+	}
+}
+
+func TestCloudBootResumeRejectsStateFromAnotherRun(t *testing.T) {
+	e := newCBEnv(t)
+	e.desc = "repo: x\n"
+	state, _ := json.Marshal(cloudBootState{Initiative: "at-ab12", Session: "sid-9", Bead: "dsp-other"})
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".ateam-cloud-boot.json"), state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.leadSeq("sid-9", "idle")
+	err := e.resume()
+	if err == nil || !strings.Contains(err.Error(), "dsp-other") || cli.ExitCode(err) == cloudBootParkExit {
+		t.Fatalf("err = %v, want a mismatch error naming dsp-other", err)
+	}
+	if len(e.tmux) != 0 || len(e.updates) != 0 {
+		t.Errorf("side effects: tmux=%v updates=%d", e.tmux, len(e.updates))
 	}
 }
 

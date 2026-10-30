@@ -88,7 +88,7 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 	}
 	if plan.Description == issue.Description {
 		fmt.Fprintf(ctx.Stdout, "pr add: %s already recorded on %s\n", c.URL, c.InitiativeID)
-		return emitPRLabel(c.InitiativeID, c.URL)
+		return emitPRLabel(ctx, c.InitiativeID, c.URL)
 	}
 
 	tmpFile, err := os.CreateTemp("", "ateam-pr-add-*.txt")
@@ -107,7 +107,7 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam pr add: bd update %s: %w", c.InitiativeID, err)
 	}
 	fmt.Fprintf(ctx.Stdout, "pr add: recorded %s on %s\n", c.URL, c.InitiativeID)
-	return emitPRLabel(c.InitiativeID, c.URL)
+	return emitPRLabel(ctx, c.InitiativeID, c.URL)
 }
 
 // emitPRLabel asks the Dispatcher to label this run's bead with the PR's
@@ -119,8 +119,9 @@ func (c *prAddKong) Run(ctx *cli.Context) error {
 // It runs after the rail write and also on the already-recorded path, so a
 // label whose earlier append was lost is re-sent; label add is idempotent on
 // the Dispatcher side.
-func emitPRLabel(id, url string) error {
-	if _, _, ok := dispatcherRun(); !ok {
+func emitPRLabel(ctx *cli.Context, id, url string) error {
+	bead, _, ok := dispatcherRun()
+	if !ok {
 		return nil
 	}
 	m := initiative.PRURLRE.FindStringSubmatch(url)
@@ -136,6 +137,7 @@ func emitPRLabel(id, url string) error {
 	if err := appendOutboxOp(op); err != nil {
 		return fmt.Errorf("pr add: recorded %s on %s, but cannot label the Dispatcher run: %w", url, id, err)
 	}
+	fmt.Fprintf(ctx.Stdout, "pr add: labeled Dispatcher run %s\n", bead)
 	return nil
 }
 

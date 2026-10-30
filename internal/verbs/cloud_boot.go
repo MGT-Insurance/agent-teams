@@ -241,6 +241,9 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	if resume {
 		if data, err := os.ReadFile(statePath); err == nil && json.Unmarshal(data, &state) == nil && state.Initiative != "" && state.Session != "" {
 			haveState = true
+			if state.Bead != bead {
+				return fmt.Errorf("state file %s belongs to run %q, not this run %q; refusing to resume another run's session", statePath, state.Bead, bead)
+			}
 		}
 	}
 	var id string
@@ -336,19 +339,48 @@ func (c *cloudBootCommon) writeBody(ctx *cli.Context, id, body string) error {
 	return nil
 }
 
+// cloudBootMaxPollErrors is how many consecutive failed polls idleLoop
+// tolerates before it gives up.
+const cloudBootMaxPollErrors = 5
+
 // idleLoop polls until the initiative closes (exit 0), the DRI goes idle for
 // IdlePolls consecutive polls after Grace (exit 75), or the lead vanishes
-// while the initiative is open (error).
+// while the initiative is open (error). It tolerates up to
+// cloudBootMaxPollErrors consecutive poll errors. Every return other than park
+// and closed kills the tmux session, so no claude outlives the run.
 func (c *cloudBootCommon) idleLoop(ctx *cli.Context, id, sid, cwd string) error {
+	err := c.pollLoop(ctx, id, sid, cwd)
+	var silent *cli.SilentError
+	if err != nil && !(errors.As(err, &silent) && silent.Code == cloudBootParkExit) {
+		_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
+	}
+	return err
+}
+
+func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error {
 	var elapsed time.Duration
 	idle := 0
+	pollErrs := 0
+	// pollFailed records a failed poll; it returns an error once the budget is spent.
+	pollFailed := func(what string, err error) error {
+		pollErrs++
+		idle = 0
+		if pollErrs > cloudBootMaxPollErrors {
+			return fmt.Errorf("%s: %d consecutive poll errors, last: %w", what, pollErrs, err)
+		}
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: %s: %v (poll error %d/%d)\n", what, err, pollErrs, cloudBootMaxPollErrors)
+		return nil
+	}
 	for {
 		c.Sleep(c.Poll)
 		elapsed += c.Poll
 
 		iss, err := bd.ShowIssue(ctx.BD, id)
 		if err != nil {
-			return fmt.Errorf("bd show %s: %w", id, err)
+			if perr := pollFailed("bd show "+id, err); perr != nil {
+				return perr
+			}
+			continue
 		}
 		if iss.Status == "closed" {
 			_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
@@ -358,8 +390,12 @@ func (c *cloudBootCommon) idleLoop(ctx *cli.Context, id, sid, cwd string) error 
 
 		sessions, err := c.Agents()
 		if err != nil {
-			return fmt.Errorf("claude agents: %w", err)
+			if perr := pollFailed("claude agents", err); perr != nil {
+				return perr
+			}
+			continue
 		}
+		pollErrs = 0
 		var lead *agentSession
 		othersBusy := false
 		for i := range sessions {
