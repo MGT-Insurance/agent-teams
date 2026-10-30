@@ -68,9 +68,10 @@ Both launch the background session with `--permission-mode bypassPermissions` fo
 
 `ateam dispatch` can select a machine-local runtime default from
 `$AGENT_TEAMS_HOME/config.toml` (normally `~/.agent-teams/config.toml`). This
-file is the single source of truth for agent-teams machine configuration —
-nothing else (a plugin option, an environment variable) also feeds these
-settings. The initial recommended file is:
+file is the single source of truth for agent-teams machine configuration. The
+only exception is `dispatcher_actor`, which the `ATEAM_DISPATCHER_ACTOR`
+environment variable overrides (see [Cloud dispatch](#cloud-dispatch)). No
+plugin option feeds these settings. The initial recommended file is:
 
 ```toml
 work_runtime = "codex"
