@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# hook-tie-session-call.test.sh — session-start-inbox.sh's self-registration
-# call (agent-teams-zalv.3, at-ps11): the hook must call
-# `ateam tie-session --session-id "$HOOK_SESSION_ID"` fail-soft, without
-# depending on the real `ateam` binary or a live bd workspace for THIS
-# assertion — the tie-session verb's own no-op/idempotent/warn semantics are
-# covered by Go tests in internal/verbs/tie_session_test.go. This test only
-# checks the shell wiring: the call happens with the right args, and a
-# failing/erroring `ateam tie-session` never breaks the hook.
+# hook-tie-session-call.test.sh — session-start-tie.sh's self-registration
+# call (agent-teams-zalv.3, at-ps11): the async SessionStart hook must call
+# `ateam tie-session --session-id "$HOOK_SESSION_ID"` fail-soft and print
+# nothing to stdout, without depending on the real `ateam` binary or a live bd
+# workspace for THIS assertion — the tie-session verb's own no-op/idempotent/
+# warn semantics are covered by Go tests in internal/verbs/tie_session_test.go.
+# This test only checks the shell wiring: the call happens with the right args,
+# a failing/erroring `ateam tie-session` never breaks the hook, and the
+# blocking session-start-inbox.sh never calls tie-session.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/plugins/agent-teams/hooks/scripts/session-start-inbox.sh"
+SCRIPT="$ROOT/plugins/agent-teams/hooks/scripts/session-start-tie.sh"
+INBOX_SCRIPT="$ROOT/plugins/agent-teams/hooks/scripts/session-start-inbox.sh"
 
 PASS=0; FAIL=0
 pass() { echo "PASS $*"; PASS=$((PASS+1)); }
@@ -38,16 +40,8 @@ if [ "$1" = "tie-session" ]; then
   fi
   exit 0
 fi
-if [ "$1" = "resolve-initiative" ]; then
-  # The hook resolves cwd -> initiative id here before reaching the mail peek
-  # (agent-teams-ully.9). A stub id keeps this test's stated scope — shell
-  # wiring only, no dependence on real resolution, which is covered by
-  # tests/hook-compact-recovery.test.sh and internal/verbs/match_test.go.
-  echo "at-stub01"
-  exit 0
-fi
-if [ "$1" = "mail" ] && [ "${2:-}" = "inbox" ]; then
-  echo "no unread mail"
+if [ "$1" = "hook-scan" ]; then
+  printf 'id: at-stub01\nunread: 0\n'
   exit 0
 fi
 exit 0
@@ -72,8 +66,10 @@ bd -C "$AGENT_TEAMS_HOME" create --title="Hook test initiative" --type=task --pr
 # invocations below and falsely fail cases 1-4.
 unset ATEAM_INITIATIVE || true
 
+HOOKS_LOG="$AGENT_TEAMS_HOME/debug/hooks.log"
+
 # ── Case 1: normal session start -> tie-session called with the hook's
-# session id, and the script still exits 0 ─────────────────────────────────
+# session id, the script exits 0, and stdout stays empty ────────────────────
 : > "$CALL_LOG"
 if out=$(cd "$T/wt" && echo '{"session_id":"sess-abc123"}' | "$SCRIPT"); then
   rc=0
@@ -90,17 +86,14 @@ if grep -q '^tie-session --session-id sess-abc123$' "$CALL_LOG"; then
 else
   fail "case1: expected tie-session call not found in log: $(cat "$CALL_LOG")"
 fi
-# resolve-initiative also gets --session-id when known (agent-teams-y814.4.3,
-# at-1k234) so a launch-cwd-mismatched session still resolves via its durable
-# session tie instead of going deaf.
-if grep -q "^resolve-initiative $T/wt --session-id sess-abc123\$" "$CALL_LOG"; then
-  pass "case1: ateam resolve-initiative called with --session-id passthrough"
+if [ -z "$out" ]; then
+  pass "case1: no stdout"
 else
-  fail "case1: expected resolve-initiative --session-id call not found in log: $(cat "$CALL_LOG")"
+  fail "case1: expected empty stdout, got: $out"
 fi
 
-# ── Case 2: ateam tie-session fails -> hook is fail-soft, still exits 0 and
-# still gets to the mail-peek call ──────────────────────────────────────────
+# ── Case 2: ateam tie-session fails -> hook is fail-soft, still exits 0 with
+# empty stdout ──────────────────────────────────────────────────────────────
 : > "$CALL_LOG"
 export TIE_SESSION_EXIT=1
 if out2=$(cd "$T/wt" && echo '{"session_id":"sess-fail"}' | "$SCRIPT"); then
@@ -115,26 +108,20 @@ else
   pass "case2: script still exits 0 when ateam tie-session errors"
 fi
 if grep -q '^tie-session --session-id sess-fail$' "$CALL_LOG"; then
-  pass "case2: ateam tie-session was still called despite prior/next-run failure"
+  pass "case2: ateam tie-session was called"
 else
   fail "case2: expected tie-session call not found in log: $(cat "$CALL_LOG")"
 fi
-if grep -q '^mail inbox --peek$' "$CALL_LOG"; then
-  pass "case2: hook continued past the failing tie-session call to the mail-peek call"
+if [ -z "$out2" ]; then
+  pass "case2: no stdout when tie-session errors"
 else
-  fail "case2: hook did not reach the mail-peek call after tie-session errored: $(cat "$CALL_LOG")"
+  fail "case2: expected empty stdout, got: $out2"
 fi
 
 # ── Case 3: stdin has no parseable .session_id -> HOOK_SESSION_ID resolves
-# to the "unknown" sentinel (line 16's fallback; jq's own exit-0-empty-output
-# behavior on a truly empty pipe means garbage/unparseable stdin is what
-# actually exercises the `|| echo "unknown"` fallback here, not an empty
-# pipe). The hook still calls tie-session unconditionally (the no-op guard
-# for "unknown" lives in the verb — see internal/verbs/tie_session_test.go —
-# not in the hook), and since the stub produces no output for this call
-# (mirroring the verb's real silent no-op), nothing gets logged ────────────
+# to the "unknown" sentinel. The hook skips tie-session entirely and logs the
+# no-session-id exit reason ─────────────────────────────────────────────────
 : > "$CALL_LOG"
-HOOKS_LOG="$AGENT_TEAMS_HOME/debug/hooks.log"
 rm -f "$HOOKS_LOG"
 if out3=$(cd "$T/wt" && printf 'not-json' | "$SCRIPT"); then
   rc3=0
@@ -146,28 +133,20 @@ if [ "$rc3" -ne 0 ]; then
 else
   pass "case3: script exits 0 with no .session_id on stdin"
 fi
-if grep -q '^tie-session --session-id unknown$' "$CALL_LOG"; then
-  pass "case3: hook calls tie-session with the unknown sentinel (verb-level no-op is not this test's concern)"
+if grep -q '^tie-session' "$CALL_LOG"; then
+  fail "case3: tie-session must not be called without a session id: $(cat "$CALL_LOG")"
 else
-  fail "case3: expected tie-session call not found in log: $(cat "$CALL_LOG")"
+  pass "case3: tie-session not called for the unknown sentinel"
 fi
-if [ -f "$HOOKS_LOG" ] && grep -q 'tie-session:' "$HOOKS_LOG"; then
-  fail "case3: expected no tie-session note logged for a silent no-op, found: $(grep 'tie-session:' "$HOOKS_LOG")"
+if [ -f "$HOOKS_LOG" ] && grep -q 'no-session-id' "$HOOKS_LOG"; then
+  pass "case3: exit reason no-session-id logged"
 else
-  pass "case3: no tie-session note logged when the call produced no output"
-fi
-# resolve-initiative must NOT get --session-id when HOOK_SESSION_ID resolved
-# to the "unknown" sentinel (agent-teams-y814.4.3) — omitting it preserves
-# today's cwd-only behavior instead of passing the literal string "unknown".
-if grep -q "^resolve-initiative $T/wt\$" "$CALL_LOG"; then
-  pass "case3: ateam resolve-initiative called with no --session-id for the unknown sentinel"
-else
-  fail "case3: expected plain resolve-initiative call (no --session-id) not found in log: $(cat "$CALL_LOG")"
+  fail "case3: expected no-session-id in hook log: $(cat "$HOOKS_LOG" 2>/dev/null || echo MISSING)"
 fi
 
-# ── Case 4: tie-session emits a cross-open-initiative conflict warning ─────
+# ── Case 4: tie-session emits a cross-open-initiative conflict warning
 # (or any non-empty output) -> the hook must capture it and route it through
-# hook_log_note instead of swallowing it via >/dev/null ────────────────────
+# hook_log_note instead of swallowing it, and still print nothing to stdout ─
 : > "$CALL_LOG"
 rm -f "$HOOKS_LOG"
 export TIE_SESSION_OUTPUT="ateam tie-session: session sess-conflict already tied to at-other (open) -- not re-tying"
@@ -187,8 +166,13 @@ if [ -f "$HOOKS_LOG" ] && grep -q 'tie-session: ateam tie-session: session sess-
 else
   fail "case4: expected warning not found in hook log: $(cat "$HOOKS_LOG" 2>/dev/null || echo MISSING)"
 fi
+if [ -z "$out4" ]; then
+  pass "case4: warning is not printed to stdout"
+else
+  fail "case4: expected empty stdout, got: $out4"
+fi
 
-# ── Case 5: ATEAM_INITIATIVE set (launcher-published, agent-teams-rjh1.2) ──
+# ── Case 5: ATEAM_INITIATIVE set (launcher-published, agent-teams-rjh1.2)
 # -> tie-session is called with that id as the positional initiative-id arg,
 # ahead of --session-id, so the tie no longer depends on cwd resolution ────
 : > "$CALL_LOG"
@@ -210,9 +194,8 @@ else
   fail "case5: expected tie-session call not found in log: $(cat "$CALL_LOG")"
 fi
 
-# ── Case 6: ATEAM_INITIATIVE unset (the common case) -> no positional arg,
-# exactly cases 1-4's shape — guards against a regression that always adds
-# a (possibly empty) positional ────────────────────────────────────────────
+# ── Case 6: ATEAM_INITIATIVE unset (the common case) -> no positional arg —
+# guards against a regression that always adds a (possibly empty) positional ─
 : > "$CALL_LOG"
 if out6=$(cd "$T/wt" && echo '{"session_id":"sess-noinit"}' | "$SCRIPT"); then
   rc6=0
@@ -228,6 +211,19 @@ if grep -q '^tie-session --session-id sess-noinit$' "$CALL_LOG"; then
   pass "case6: ateam tie-session called with no positional arg when ATEAM_INITIATIVE is unset"
 else
   fail "case6: expected tie-session call not found in log: $(cat "$CALL_LOG")"
+fi
+
+# ── Case 7: the blocking session-start-inbox.sh never invokes tie-session ───
+: > "$CALL_LOG"
+if (cd "$T/wt" && echo '{"session_id":"sess-inbox"}' | "$INBOX_SCRIPT" >/dev/null); then
+  pass "case7: session-start-inbox.sh exits 0"
+else
+  fail "case7: session-start-inbox.sh exited non-zero"
+fi
+if grep -q 'tie-session' "$CALL_LOG"; then
+  fail "case7: session-start-inbox.sh invoked tie-session: $(cat "$CALL_LOG")"
+else
+  pass "case7: session-start-inbox.sh never invokes tie-session"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
