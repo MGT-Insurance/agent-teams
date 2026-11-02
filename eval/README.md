@@ -68,7 +68,12 @@ regardless of your cwd.
    `push skipped (no LANGFUSE_HOST set)` and exits successfully.
 4. **`scripts/eval push <RunID>`** — backfills a Langfuse push for a run
    that was collected before credentials existed, reading the persisted
-   `result.json`. Idempotent (trace id = RunID, dataset item id = TaskID).
+   `result.json`. Not idempotent: Langfuse does not deduplicate re-sent
+   spans ([Langfuse FAQ on tracing data updates](https://langfuse.com/faq/all/tracing-data-updates)),
+   so a second push of the same `RunID` adds a duplicate observation
+   to the same trace. A push sends the span before the scores, so if the
+   scores call fails, retrying re-sends the span. Scores still overwrite on a same-day re-push (their ids
+   are deterministic), and the dataset item is upserted on `TaskID`.
 5. **`scripts/eval clean <RunID>`** — removes the per-run git worktree and
    branch that `ateam dispatch` left behind under the fixture clone.
    Best-effort, not idempotent: re-running `clean` on an already-cleaned run
@@ -129,6 +134,21 @@ collection still succeeds and `result.json` is written — **`result.json` is
 the source of truth**, Langfuse is a convenience for cross-run comparison.
 If credentials are present, a push failure is a hard error even though
 `result.json` was already durably written by that point.
+
+A push sends, in order: the dataset (upsert by name), the dataset item
+(upsert by `TaskID`), one OTLP span to `/api/public/otel/v1/traces`, and the
+seven scores to `/api/public/ingestion`. The span carries the Langfuse
+experiment attributes (`langfuse.experiment.*`), which link the trace to its
+dataset item; one experiment exists per config, named
+`<config name>-<config hash>`. This replaces the trace-create ingestion event
+and `/api/public/dataset-run-items`, which Langfuse Cloud retires on
+November 16, 2026.
+
+The Langfuse trace id is `sha256(RunID)[:16]` in hex, not the `RunID`
+itself. To find a run in Langfuse, search for the trace metadata `runId`.
+Self-hosted Langfuse must serve the OTLP endpoint (added in v3.22.0) and
+support the `langfuse.experiment.*` span attributes. Check your version's
+release notes. The push sends the header `x-langfuse-ingestion-version: 4`.
 
 ## What is safe to run
 

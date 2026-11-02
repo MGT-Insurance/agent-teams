@@ -138,8 +138,11 @@ func TaskSpecPath(taskID string) string {
 
 // LoadResult reads a RunResult previously persisted by Collect at
 // eval/runs/<RunID>/result.json. Used by `eval push <RunID>` to backfill a
-// Langfuse push for a run collected before credentials existed — re-push is
-// idempotent (Push's trace id = RunID, dataset item id = TaskID).
+// Langfuse push for a run collected before credentials existed. Re-push is
+// not idempotent: Langfuse does not deduplicate re-sent span ids, so a second
+// push of the same RunID adds a duplicate observation to the same trace.
+// Scores still overwrite (deterministic ids, same-day) and the dataset item
+// is upserted on TaskID.
 func LoadResult(runID string) (RunResult, error) {
 	path := filepath.Join("eval", "runs", runID, "result.json")
 	data, err := os.ReadFile(path)

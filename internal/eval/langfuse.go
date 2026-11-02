@@ -3,6 +3,8 @@ package eval
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,10 +37,15 @@ const langfuseHTTPTimeout = 30 * time.Second
 // public API (https://api.reference.langfuse.com), verified against the
 // Fern-generated langfuse-python client (which mirrors the OpenAPI spec):
 //
-//	POST {host}/api/public/v2/datasets       — ensure dataset (idempotent by name)
+//	POST {host}/api/public/v2/datasets       — ensure dataset (idempotent by name); returns the dataset id
 //	POST {host}/api/public/dataset-items     — upsert dataset item (idempotent by id)
-//	POST {host}/api/public/ingestion         — batch: trace-create + score-create
-//	POST {host}/api/public/dataset-run-items — link a trace to an item under a run name
+//	POST {host}/api/public/otel/v1/traces    — one OTLP/JSON span: the trace root, carrying the
+//	                                           langfuse.experiment.* attributes that link it to the item
+//	POST {host}/api/public/ingestion         — batch: score-create only
+//
+// Langfuse Cloud retires the legacy trace ingestion event and the legacy
+// dataset run-item link endpoint on November 16, 2026; the OTLP span
+// replaces both.
 type langfuseClient struct {
 	host       string
 	publicKey  string
@@ -46,8 +53,9 @@ type langfuseClient struct {
 	httpClient *http.Client
 }
 
-// Push creates/reuses a dataset item for task, records an experiment run
-// tagged by cfg.Name+Hash(), and attaches metrics + judge as scores. See the
+// Push creates/reuses a dataset item for task, records the run as one OTLP
+// span carrying experiment attributes (experiment name = cfg.Name+"-"+Hash()),
+// and attaches metrics + judge as scores. See the
 // LANGFUSE MAPPING section of agent-teams-grft.1 for the canonical score
 // names: cost_usd, n_total_tokens, n_toolcalls, n_turns, latency_s,
 // correctness (numeric); objective_floor_pass (boolean).
@@ -101,21 +109,40 @@ func newLangfuseClientFromEnv() (*langfuseClient, error) {
 }
 
 func (c *langfuseClient) push(res RunResult, task TaskSpec) error {
-	if err := c.ensureDataset(); err != nil {
+	datasetID, err := c.ensureDataset()
+	if err != nil {
 		return fmt.Errorf("eval: langfuse push: ensure dataset: %w", err)
 	}
 	if err := c.upsertDatasetItem(task); err != nil {
 		return fmt.Errorf("eval: langfuse push: upsert dataset item: %w", err)
 	}
-	if err := c.pushTraceAndScores(res, task); err != nil {
-		return fmt.Errorf("eval: langfuse push: push trace/scores: %w", err)
+	if err := c.exportSpan(res, task, datasetID); err != nil {
+		return fmt.Errorf("eval: langfuse push: export span: %w", err)
 	}
-	runName := res.Config.Name + "-" + res.Config.Hash()
-	if err := c.linkDatasetRunItem(runName, task.ID, res.RunID); err != nil {
-		return fmt.Errorf("eval: langfuse push: link dataset run item: %w", err)
+	if err := c.pushScores(res); err != nil {
+		return fmt.Errorf("eval: langfuse push: push scores (the span was already sent; a retry re-sends it): %w", err)
 	}
 	return nil
 }
+
+// sha256Hex returns the lowercase hex of the first n bytes of
+// sha256(utf8(s)) starting at offset off.
+func sha256Hex(s string, off, n int) string {
+	d := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(d[off : off+n])
+}
+
+// traceIDFor derives the 32-hex OTLP trace id from runID: sha256(runID)[0:16].
+// This equals the Langfuse SDK create_trace_id(seed=runID). RunID itself is
+// not a valid OTLP trace id.
+func traceIDFor(runID string) string { return sha256Hex(runID, 0, 16) }
+
+// spanIDFor derives the 16-hex root span id from runID: sha256(runID)[16:24].
+func spanIDFor(runID string) string { return sha256Hex(runID, 16, 8) }
+
+// experimentIDFor derives the 32-hex experiment id from runName:
+// sha256(runName)[0:16], so every run under one config shares an experiment.
+func experimentIDFor(runName string) string { return sha256Hex(runName, 0, 16) }
 
 // ensureDataset creates the corpus dataset. Verified against the Langfuse
 // server route (createDatasetForApi -> upsertDataset in
@@ -127,8 +154,19 @@ func (c *langfuseClient) push(res RunResult, task TaskSpec) error {
 // passes an explicit id that collides with a differently-named dataset,
 // which this call never does. So calling this repeatedly with the same name
 // is genuinely idempotent and no separate get-first check is needed.
-func (c *langfuseClient) ensureDataset() error {
-	return c.post("/api/public/v2/datasets", map[string]any{"name": langfuseDataset}, nil)
+// Returns the dataset id from the response; an empty id is an error because
+// the experiment span attributes need it.
+func (c *langfuseClient) ensureDataset() (string, error) {
+	var ds struct {
+		ID string `json:"id"`
+	}
+	if err := c.post("/api/public/v2/datasets", map[string]any{"name": langfuseDataset}, &ds); err != nil {
+		return "", err
+	}
+	if ds.ID == "" {
+		return "", fmt.Errorf("dataset response has no id")
+	}
+	return ds.ID, nil
 }
 
 // upsertDatasetItem maps TaskSpec -> dataset item per the CONTRACT: input =
@@ -149,40 +187,138 @@ func (c *langfuseClient) upsertDatasetItem(task TaskSpec) error {
 	return c.post("/api/public/dataset-items", body, nil)
 }
 
-// pushTraceAndScores creates a trace representing this run (id = res.RunID,
-// so re-pushing the same run updates the same trace) and attaches the seven
-// canonical scores to it, in a single ingestion batch call.
-func (c *langfuseClient) pushTraceAndScores(res RunResult, task TaskSpec) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+// otlpAttr is one OTLP/JSON KeyValue. Value is a single-key object such as
+// {"stringValue": "x"} or {"arrayValue": {...}}.
+type otlpAttr struct {
+	Key   string         `json:"key"`
+	Value map[string]any `json:"value"`
+}
 
-	events := []map[string]any{
-		{
-			"id":        newEventID(),
-			"timestamp": now,
-			"type":      "trace-create",
-			"body": map[string]any{
-				"id":     res.RunID,
-				"name":   res.TaskID,
-				"input":  task.Problem,
-				"output": res.Judge.Rationale,
-				"tags":   []string{res.Config.Name, res.Config.Hash()},
-				"metadata": map[string]any{
-					"config": res.Config,
-					"taskId": res.TaskID,
-				},
-			},
-		},
+func otlpString(key, v string) otlpAttr {
+	return otlpAttr{Key: key, Value: map[string]any{"stringValue": v}}
+}
+
+func otlpStringArray(key string, vs ...string) otlpAttr {
+	vals := make([]map[string]any, 0, len(vs))
+	for _, v := range vs {
+		vals = append(vals, map[string]any{"stringValue": v})
 	}
+	return otlpAttr{Key: key, Value: map[string]any{"arrayValue": map[string]any{"values": vals}}}
+}
+
+// mustJSON marshals v for use as an OTLP string attribute. The inputs are
+// plain structs and maps, so a marshal failure is a programming error.
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("eval: mustJSON: %v", err))
+	}
+	return string(b)
+}
+
+// buildSpanRequest builds the single-span ExportTraceServiceRequest that
+// represents this run: the trace root, with the Langfuse trace and
+// experiment attributes on it. Timestamps are decimal strings of Unix
+// nanoseconds (OTLP/JSON encodes 64-bit ints as strings); the span starts
+// WallClockSeconds before end.
+func buildSpanRequest(res RunResult, task TaskSpec, datasetID string, end time.Time) map[string]any {
+	traceID := traceIDFor(res.RunID)
+	spanID := spanIDFor(res.RunID)
+	runName := res.Config.Name + "-" + res.Config.Hash()
+	start := end.Add(-time.Duration(res.Metrics.WallClockSeconds * float64(time.Second)))
+
+	attrs := []otlpAttr{
+		otlpString("langfuse.trace.name", res.TaskID),
+		otlpStringArray("langfuse.trace.tags", res.Config.Name, res.Config.Hash()),
+		otlpString("langfuse.trace.metadata.runId", res.RunID),
+		otlpString("langfuse.trace.metadata.taskId", res.TaskID),
+		otlpString("langfuse.trace.metadata.config", mustJSON(res.Config)),
+		otlpString("langfuse.observation.input", mustJSON(map[string]any{
+			"problem":    task.Problem,
+			"fixtureRef": task.FixtureRef,
+		})),
+		otlpString("langfuse.observation.output", res.Judge.Rationale),
+		otlpString("langfuse.experiment.id", experimentIDFor(runName)),
+		otlpString("langfuse.experiment.name", runName),
+		otlpString("langfuse.experiment.dataset.id", datasetID),
+		otlpString("langfuse.experiment.item.id", task.ID),
+		otlpString("langfuse.experiment.item.root_observation_id", spanID),
+		otlpString("langfuse.experiment.item.expected_output", mustJSON(map[string]any{
+			"acceptanceCriteria": task.AcceptanceCriteria,
+		})),
+	}
+
+	span := map[string]any{
+		"traceId":           traceID,
+		"spanId":            spanID,
+		"name":              res.TaskID,
+		"kind":              1,
+		"startTimeUnixNano": fmt.Sprintf("%d", start.UnixNano()),
+		"endTimeUnixNano":   fmt.Sprintf("%d", end.UnixNano()),
+		"attributes":        attrs,
+	}
+	return map[string]any{
+		"resourceSpans": []any{map[string]any{
+			"resource": map[string]any{
+				"attributes": []otlpAttr{otlpString("service.name", "agent-teams-eval")},
+			},
+			"scopeSpans": []any{map[string]any{
+				"scope": map[string]any{"name": "agent-teams-eval"},
+				"spans": []any{span},
+			}},
+		}},
+	}
+}
+
+// exportSpan sends the run's root span to Langfuse's OTLP endpoint. It
+// replaces the retired legacy trace event and dataset run-item link: the
+// langfuse.experiment.* attributes tie the trace to its dataset item and
+// experiment. A 2xx whose body reports partialSuccess.rejectedSpans > 0 is
+// an error.
+func (c *langfuseClient) exportSpan(res RunResult, task TaskSpec, datasetID string) error {
+	var resp struct {
+		PartialSuccess struct {
+			RejectedSpans json.Number `json:"rejectedSpans"`
+			ErrorMessage  string      `json:"errorMessage"`
+		} `json:"partialSuccess"`
+	}
+	req := buildSpanRequest(res, task, datasetID, time.Now().UTC())
+	hdr := map[string]string{"x-langfuse-ingestion-version": "4"}
+	if err := c.postWithHeaders("/api/public/otel/v1/traces", req, hdr, &resp); err != nil {
+		return err
+	}
+	// OTLP/JSON encodes int64 as a string; accept either form.
+	rejected, err := resp.PartialSuccess.RejectedSpans.Int64()
+	if resp.PartialSuccess.RejectedSpans != "" && err != nil {
+		return fmt.Errorf("otlp response: bad rejectedSpans %q", resp.PartialSuccess.RejectedSpans)
+	}
+	if rejected > 0 {
+		return fmt.Errorf("otlp export rejected %d span(s): %s", rejected, resp.PartialSuccess.ErrorMessage)
+	}
+	return nil
+}
+
+// pushScores attaches the seven canonical scores to the run's root
+// observation in a single ingestion batch call. The score id is
+// traceId-name, so a same-day re-push overwrites instead of duplicating.
+func (c *langfuseClient) pushScores(res RunResult) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	traceID := traceIDFor(res.RunID)
+	spanID := spanIDFor(res.RunID)
+
+	var events []map[string]any
 	for _, s := range canonicalScores(res) {
 		events = append(events, map[string]any{
 			"id":        newEventID(),
 			"timestamp": now,
 			"type":      "score-create",
 			"body": map[string]any{
-				"traceId":  res.RunID,
-				"name":     s.name,
-				"value":    s.value,
-				"dataType": s.dataType,
+				"id":            traceID + "-" + s.name,
+				"traceId":       traceID,
+				"observationId": spanID,
+				"name":          s.name,
+				"value":         s.value,
+				"dataType":      s.dataType,
 			},
 		})
 	}
@@ -228,24 +364,16 @@ func canonicalScores(res RunResult) []langfuseScore {
 	}
 }
 
-// linkDatasetRunItem records the experiment run: it links res.RunID's trace
-// to task's dataset item under runName (cfg.Name+Hash()). Two runs of the
-// same task under different configs produce two distinct run names linked
-// to the same datasetItemId — the comparison primitive.
-func (c *langfuseClient) linkDatasetRunItem(runName, datasetItemID, traceID string) error {
-	body := map[string]any{
-		"runName":       runName,
-		"datasetItemId": datasetItemID,
-		"traceId":       traceID,
-	}
-	return c.post("/api/public/dataset-run-items", body, nil)
-}
-
 // post issues a JSON POST to path with HTTP Basic Auth (public key as
 // username, secret key as password, per Langfuse's public API auth
 // scheme), decoding a 2xx response into out (if non-nil) and returning a
 // descriptive error otherwise.
 func (c *langfuseClient) post(path string, body, out any) error {
+	return c.postWithHeaders(path, body, nil, out)
+}
+
+// postWithHeaders is post with extra request headers.
+func (c *langfuseClient) postWithHeaders(path string, body any, headers map[string]string, out any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -256,6 +384,9 @@ func (c *langfuseClient) post(path string, body, out any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.SetBasicAuth(c.publicKey, c.secretKey)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
