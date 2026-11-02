@@ -210,6 +210,8 @@ func TestPush_HappyPath(t *testing.T) {
 
 	cfg := ConfigFingerprint{Name: "opus-noadvisor", DRIModel: "opus"}
 	task := testTask()
+	// Differs from res.TaskID so the item-id assertions pin task.ID as the source.
+	task.ID = "task-spec-id"
 	res := testResult(cfg)
 
 	if err := Push(res, task); err != nil {

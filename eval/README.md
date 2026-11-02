@@ -69,8 +69,10 @@ regardless of your cwd.
 4. **`scripts/eval push <RunID>`** — backfills a Langfuse push for a run
    that was collected before credentials existed, reading the persisted
    `result.json`. Not idempotent: Langfuse does not deduplicate re-sent
-   spans, so a second push of the same `RunID` adds a duplicate observation
-   to the same trace. Scores still overwrite on a same-day re-push (their ids
+   spans ([Langfuse FAQ on tracing data updates](https://langfuse.com/faq/all/tracing-data-updates)),
+   so a second push of the same `RunID` adds a duplicate observation
+   to the same trace. A push sends the span before the scores, so if the
+   scores call fails, retrying re-sends the span. Scores still overwrite on a same-day re-push (their ids
    are deterministic), and the dataset item is upserted on `TaskID`.
 5. **`scripts/eval clean <RunID>`** — removes the per-run git worktree and
    branch that `ateam dispatch` left behind under the fixture clone.
@@ -144,8 +146,9 @@ November 16, 2026.
 
 The Langfuse trace id is `sha256(RunID)[:16]` in hex, not the `RunID`
 itself. To find a run in Langfuse, search for the trace metadata `runId`.
-Self-hosted Langfuse needs a version that serves the OTLP endpoint (v3.22.0
-or later) and accepts the `x-langfuse-ingestion-version: 4` header.
+Self-hosted Langfuse must serve the OTLP endpoint (added in v3.22.0) and
+support the `langfuse.experiment.*` span attributes. Check your version's
+release notes. The push sends the header `x-langfuse-ingestion-version: 4`.
 
 ## What is safe to run
 

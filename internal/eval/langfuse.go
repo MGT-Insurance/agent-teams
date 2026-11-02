@@ -120,7 +120,7 @@ func (c *langfuseClient) push(res RunResult, task TaskSpec) error {
 		return fmt.Errorf("eval: langfuse push: export span: %w", err)
 	}
 	if err := c.pushScores(res); err != nil {
-		return fmt.Errorf("eval: langfuse push: push scores: %w", err)
+		return fmt.Errorf("eval: langfuse push: push scores (the span was already sent; a retry re-sends it): %w", err)
 	}
 	return nil
 }
