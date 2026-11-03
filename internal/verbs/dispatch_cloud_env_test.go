@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ sub="$3"
 echo "$sub tls=$BEADS_DOLT_SERVER_TLS journal=$BD_EVENTS_JOURNAL" >> "` + log + `"
 case "$sub" in
   create) echo "` + id + `" ;;
-  sql) printf '%s' "` + journalOut + `" ;;
+  sql) [ -n "$FAKE_BD_SQL_FAIL" ] && { echo "tls handshake failed" >&2; exit 1; }; printf '%s' "` + journalOut + `" ;;
   *) echo '{}' ;;
 esac
 `
@@ -60,15 +61,33 @@ func TestDefaultFileRunBead_SetsTLSAndJournalAndVerifies(t *testing.T) {
 }
 
 func TestDefaultFileRunBead_MissingJournalRowIsError(t *testing.T) {
-	installFakeBD(t, "dsp-2", "")
+	log := installFakeBD(t, "dsp-2", "")
 	_, err := defaultFileRunBead("/dsp", "me@example.com", "title", "body")
 	if err == nil {
 		t.Fatal("want error when the journal has no create row")
 	}
-	for _, want := range []string{"dsp-2", "bd_events_journal", "events-journal"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q", err, want)
-		}
+	var pce *postCreateError
+	if !errors.As(err, &pce) || pce.Kind != postCreateNoRow || pce.ID != "dsp-2" {
+		t.Fatalf("err = %#v, want no-row postCreateError for dsp-2", err)
+	}
+	if !pce.Closed {
+		t.Errorf("orphan run bead not closed: %v", pce.CloseErr)
+	}
+	if got := readLog(t, log); !strings.Contains(got, "close tls=1 journal=1") {
+		t.Errorf("calls %q missing close with the run bead env", got)
+	}
+}
+
+func TestDefaultFileRunBead_SQLFailureIsCheckFailedAndClosesNothing(t *testing.T) {
+	log := installFakeBD(t, "dsp-3", "")
+	t.Setenv("FAKE_BD_SQL_FAIL", "1")
+	_, err := defaultFileRunBead("/dsp", "me@example.com", "title", "body")
+	var pce *postCreateError
+	if !errors.As(err, &pce) || pce.Kind != postCreateCheckFailed || pce.ID != "dsp-3" {
+		t.Fatalf("err = %#v, want check-failed postCreateError for dsp-3", err)
+	}
+	if strings.Contains(readLog(t, log), "close ") {
+		t.Error("a failed check must not close the run bead")
 	}
 }
 
