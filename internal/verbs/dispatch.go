@@ -173,15 +173,16 @@ type dispatchKong struct {
 	Topic        string `name:"topic"        help:"Mark a reserved initiative kind (only \"reviews\", for PR reviews). It opens no per-initiative Telegram topic, posts no message, and writes no thread: label on the initiative bead; the initiative bead is the whole record."`
 	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
-	git          gitRunner                           `kong:"-"`
-	launch       launchFunc                          `kong:"-"`
-	createEpic   epicCreatorFunc                     `kong:"-"`
-	launchRaw    rawLaunchFunc                       `kong:"-"`
-	runtimeStart runtimeStartFunc                    `kong:"-"`
-	codexCheck   func(context.Context, string) error `kong:"-"`
-	setup        worktreeSetupFunc                   `kong:"-"`
-	cloudBD      cloudBDFunc                         `kong:"-"`
-	fileRunBead  fileRunBeadFunc                     `kong:"-"`
+	git          gitRunner                                  `kong:"-"`
+	launch       launchFunc                                 `kong:"-"`
+	createEpic   epicCreatorFunc                            `kong:"-"`
+	launchRaw    rawLaunchFunc                              `kong:"-"`
+	runtimeStart runtimeStartFunc                           `kong:"-"`
+	codexCheck   func(context.Context, string) error        `kong:"-"`
+	setup        worktreeSetupFunc                          `kong:"-"`
+	cloudBD      cloudBDFunc                                `kong:"-"`
+	hostedSetup  func(ctx *cli.Context, checkSentinel bool) `kong:"-"`
+	fileRunBead  fileRunBeadFunc                            `kong:"-"`
 
 	// transportFor, transportEnabled, and labelAdd back the eager Telegram
 	// (or configured transport) topic creation below. Injected at

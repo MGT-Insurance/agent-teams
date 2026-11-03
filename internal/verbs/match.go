@@ -281,11 +281,14 @@ func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSe
 
 // findOffenders returns issues carrying no worktree routing field — work
 // beads that leaked into the global workspace, which holds only
-// initiative-tracking beads.
+// initiative-tracking beads. A "mode: cloud" registration is an initiative
+// even without a worktree: dispatch --cloud writes none, and cloud-boot adds
+// it only when the run starts.
 func findOffenders(issues []bd.Issue) []bd.Issue {
 	var out []bd.Issue
 	for _, iss := range issues {
-		if initiative.Of(iss).Worktree == "" {
+		f := initiative.Of(iss)
+		if f.Worktree == "" && f.Mode != "cloud" {
 			out = append(out, iss)
 		}
 	}
