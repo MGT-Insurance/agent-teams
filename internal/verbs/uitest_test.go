@@ -3,8 +3,12 @@ package verbs
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +26,7 @@ type uiHarness struct {
 	stderr fmtBuf
 	deps   *uiTestDeps
 
+	httpGets  []*http.Request
 	gitCalls  [][]string
 	bdReads   [][]string
 	filed     []uiFiled
@@ -122,8 +127,54 @@ func eriKD2WComments() []uiTestComment {
 	return []uiTestComment{
 		{Author: "job:ui-test", CreatedAt: "2026-11-02T13:49:40Z", Text: "attempt 1: launching ui-test on https://github.com/MGT-Insurance/midgard.git @ a596ac48"},
 		{Author: "job:ui-test", CreatedAt: "2026-11-02T13:53:14Z", Text: "attempt 1: passed (exit 0)\n\n✓ build:packages (7s)\n✓ server (23s)\n✓ test (48s)"},
-		{Author: "agent:tester", CreatedAt: "2026-11-02T13:59:00Z", Text: "run: cmvzbm7eh00070fl8c73fiwxa\n\n| # | Verdict | Evidence | Screenshot |\n|---|---|---|---|\n| 1 | PASS | Home rendered signed-in | 01-home.png |"},
+		{Author: "agent:tester", CreatedAt: "2026-11-02T13:59:00Z", Text: "run: " + uiRunID + "\n\n| # | Verdict | Evidence | Screenshot |\n|---|---|---|---|\n| 1 | PASS | Home rendered signed-in | 01-home.png |"},
 	}
+}
+
+const uiRunID = "cmvzbm7eh00070fl8c73fiwxa"
+
+// uiShotURLPrefix hosts the fake signed links; uiFarExp is after the harness
+// clock (1_800_000_000) and uiPastExp is before it.
+const (
+	uiShotURLPrefix = "https://dispatcher.example/api/runs/" + uiRunID + "/artifacts/"
+	uiFarExp        = 1_800_600_000
+	uiPastExp       = 1_799_000_000
+)
+
+// uiSignedLink returns "<name> <url>", the value of one artifact: line.
+func uiSignedLink(name string, exp int) string {
+	return name + " " + uiShotURLPrefix + url.PathEscape(name) + "?exp=" + strconv.Itoa(exp) + "&sig=SECRETSIG"
+}
+
+// finalizerComment is the job:ui-test comment in the CONTRACT 3 layout: run:
+// on line 2 and a screenshots block, one artifact: line per link.
+func finalizerComment(links ...string) uiTestComment {
+	lines := []string{"attempt 1: passed (exit 0)", "run: " + uiRunID, "", "✓ test (48s)", "screenshots: " + strconv.Itoa(len(links)) + " (links expire 2026-11-09T13:53:14Z)"}
+	for _, l := range links {
+		lines = append(lines, "artifact: "+l)
+	}
+	return uiTestComment{Author: "job:ui-test", CreatedAt: "2026-11-02T13:53:15Z", Text: strings.Join(lines, "\n")}
+}
+
+// withFinalizer returns the eri-kd2w thread plus a finalizer comment.
+func withFinalizer(links ...string) []uiTestComment {
+	return append(eriKD2WComments(), finalizerComment(links...))
+}
+
+// fakePNG answers every GET with a PNG; h.httpGets records the requests.
+func (h *uiHarness) fakePNG() {
+	h.deps.httpDo = func(req *http.Request) (*http.Response, error) {
+		h.httpGets = append(h.httpGets, req)
+		return pngResponse(200, "image/png", "PNGDATA"), nil
+	}
+}
+
+func pngResponse(code int, contentType, body string) *http.Response {
+	h := http.Header{}
+	if contentType != "" {
+		h.Set("Content-Type", contentType)
+	}
+	return &http.Response{StatusCode: code, Header: h, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
 }
 
 const eriKD2WDescription = "repo: https://github.com/MGT-Insurance/midgard.git\nbranch: main\nsha: a596ac48d7db3de795ecda54184bde858c44eac5\ntype: ui-test\nagent: tester\nfix: none\nscope: mithril\n---\nTiming probe.\n"
@@ -284,14 +335,22 @@ func TestUITest_BeadBodyGolden(t *testing.T) {
 func TestUITest_WaitVerdictExit0WritesVerdictMD(t *testing.T) {
 	h := newUIHarness(t, uiFullConfig)
 	h.polls = []uiTestBead{closedBead("done")}
-	h.comments = eriKD2WComments()
+	h.fakePNG()
+	h.comments = withFinalizer(uiSignedLink("01-home.png", uiFarExp), uiSignedLink("02-detail.png", uiFarExp))
 	out, err := h.wait(time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	verdictPath := filepath.Join(out, "verdict.md")
-	if got := h.stdout.String(); got != verdictPath+"\n" {
-		t.Errorf("stdout = %q", got)
+	shot1 := filepath.Join(out, "screenshots", "01-home.png")
+	shot2 := filepath.Join(out, "screenshots", "02-detail.png")
+	if got := h.stdout.String(); got != verdictPath+"\n"+shot1+"\n"+shot2+"\n" {
+		t.Errorf("stdout = %q, want verdict.md then the two PNG paths", got)
+	}
+	for _, p := range []string{shot1, shot2} {
+		if b, err := os.ReadFile(p); err != nil || string(b) != "PNGDATA" {
+			t.Errorf("%s = %q, %v", p, b, err)
+		}
 	}
 	data, err := os.ReadFile(verdictPath)
 	if err != nil {
@@ -304,8 +363,7 @@ func TestUITest_WaitVerdictExit0WritesVerdictMD(t *testing.T) {
 		"run: cmvzbm7eh00070fl8c73fiwxa\n",
 		"branch: main\n",
 		"sha: a596ac48d7db3de795ecda54184bde858c44eac5\n",
-		"screenshots:\n",
-		"missing:\n",
+		"screenshots:\n" + shot1 + "\n" + shot2 + "\nmissing:\n\n",
 		"\n| 1 | PASS | Home rendered signed-in | 01-home.png |",
 	} {
 		if !strings.Contains(got, want) {
@@ -315,6 +373,17 @@ func TestUITest_WaitVerdictExit0WritesVerdictMD(t *testing.T) {
 	if strings.Contains(got, "attempt 1") {
 		t.Error("verdict.md includes a job:ui-test comment")
 	}
+	if strings.Contains(got, "sig=") || strings.Contains(got, "SECRETSIG") {
+		t.Error("verdict.md copied a signed URL")
+	}
+	if len(h.httpGets) != 2 {
+		t.Fatalf("GETs = %d, want 2", len(h.httpGets))
+	}
+	for _, req := range h.httpGets {
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+			t.Errorf("request carries credentials: %v", req.Header)
+		}
+	}
 }
 
 func TestUITest_WaitVerdictIsNewestTesterRun(t *testing.T) {
@@ -323,8 +392,8 @@ func TestUITest_WaitVerdictIsNewestTesterRun(t *testing.T) {
 	h.comments = append(eriKD2WComments(),
 		uiTestComment{Author: "agent:tester", CreatedAt: "2026-11-02T14:05:00Z", Text: "run: second-run\n\nsecond verdict"})
 	out, err := h.wait(time.Minute)
-	if err != nil {
-		t.Fatal(err)
+	if exitOf(err) != 7 { // the second run has no finalizer comment, so no links
+		t.Fatalf("exit = %d, want 7 (%v)", exitOf(err), err)
 	}
 	data, _ := os.ReadFile(filepath.Join(out, "verdict.md"))
 	if !strings.Contains(string(data), "run: second-run\n") || strings.Contains(string(data), "cmvzbm7eh") {
@@ -408,7 +477,8 @@ func TestUITest_WaitPendingExit3AfterPollingEvery30s(t *testing.T) {
 func TestUITest_WaitPollsUntilClosed(t *testing.T) {
 	h := newUIHarness(t, uiFullConfig)
 	h.polls = []uiTestBead{{ID: "dsp-ui1", Status: "open"}, {ID: "dsp-ui1", Status: "in_progress"}, closedBead("done")}
-	h.comments = eriKD2WComments()
+	h.fakePNG()
+	h.comments = withFinalizer(uiSignedLink("01-home.png", uiFarExp))
 	if _, err := h.wait(5 * time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +490,8 @@ func TestUITest_WaitPollsUntilClosed(t *testing.T) {
 func TestUITest_WaitRetriesOneTransientReadFailure(t *testing.T) {
 	h := newUIHarness(t, uiFullConfig)
 	h.polls = []uiTestBead{closedBead("done")}
-	h.comments = eriKD2WComments()
+	h.fakePNG()
+	h.comments = withFinalizer(uiSignedLink("01-home.png", uiFarExp))
 	inner := h.deps.bdRead
 	failed := false
 	h.deps.bdRead = func(dir string, args ...string) ([]byte, error) {

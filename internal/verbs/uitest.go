@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,8 @@ type uiTestDeps struct {
 	bdRead func(dir string, args ...string) ([]byte, error)
 	now    func() time.Time
 	sleep  func(time.Duration)
+	// httpDo performs one screenshot GET.
+	httpDo func(*http.Request) (*http.Response, error)
 }
 
 func (d *uiTestDeps) resolved() uiTestDeps {
@@ -85,6 +88,9 @@ func (d *uiTestDeps) resolved() uiTestDeps {
 	}
 	if r.sleep == nil {
 		r.sleep = time.Sleep
+	}
+	if r.httpDo == nil {
+		r.httpDo = defaultUITestHTTP
 	}
 	return r
 }
@@ -449,19 +455,6 @@ type uiTestWaitKong struct {
 	Timeout time.Duration `name:"timeout" default:"9m" help:"How long to wait for the verdict (max 9m30s). Exit 3 when it elapses."`
 
 	deps *uiTestDeps
-	// shots downloads the run's screenshots into <out>/screenshots. Nil skips
-	// the step.
-	shots uiShotsFunc
-}
-
-// uiShotsFunc downloads the screenshots for runID listed in comments into
-// outDir/screenshots and reports what it fetched and what failed.
-type uiShotsFunc func(comments []uiTestComment, runID, outDir string) uiShotResult
-
-// uiShotResult is the outcome of the screenshot step.
-type uiShotResult struct {
-	Paths   []string // absolute PNG paths, one per downloaded artifact
-	Missing []string // one "<name> <reason>" line per failure
 }
 
 // Validate rejects an out-of-range --timeout before any bd call.
@@ -500,7 +493,7 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 		}
 		switch bead.Status {
 		case "closed":
-			return c.finish(ctx, bead, comments, out)
+			return c.finish(ctx, d, bead, comments, out)
 		case "blocked":
 			if n := len(comments); n > 0 && strings.HasPrefix(strings.TrimSpace(comments[n-1].Text), "question:") {
 				fmt.Fprintln(ctx.Stdout, strings.TrimSpace(comments[n-1].Text))
@@ -517,10 +510,10 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 }
 
 // finish maps a closed bead to an exit code and writes the output files.
-func (c *uiTestWaitKong) finish(ctx *cli.Context, bead uiTestBead, comments []uiTestComment, out string) error {
+func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, bead uiTestBead, comments []uiTestComment, out string) error {
 	verdict, runID, hasVerdict := uiTestVerdict(comments)
 	if hasVerdict && !strings.Contains(strings.ToLower(bead.CloseReason), "fail") {
-		return c.writeVerdict(ctx, bead, comments, verdict, runID, out)
+		return c.writeVerdict(ctx, d, bead, comments, verdict, runID, out)
 	}
 	if reason, ok := uiTestIneligible(comments); ok && !hasVerdict {
 		fmt.Fprintf(ctx.Stderr, "ui-test wait: Dispatcher cannot run this repo (%s); test locally\n", firstLine(reason))
@@ -541,13 +534,13 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, bead uiTestBead, comments []ui
 	return cli.Silent(uiExitFailed)
 }
 
-// writeVerdict writes verdict.md (plus screenshots when the downloader is
-// wired) and prints its path followed by one PNG path per line. Exit 0, or 7
-// when screenshots are missing.
-func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, bead uiTestBead, comments []uiTestComment, verdict uiTestComment, runID, out string) error {
-	var shots uiShotResult
-	if c.shots != nil {
-		shots = c.shots(comments, runID, out)
+// writeVerdict downloads the run's screenshots, writes verdict.md, and prints
+// its path followed by one PNG path per line. Exit 0 only when at least one
+// screenshot was downloaded and none is missing; otherwise exit 7.
+func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, bead uiTestBead, comments []uiTestComment, verdict uiTestComment, runID, out string) error {
+	shots := uiDownloadShots(d, comments, runID, out)
+	if shots.Err != nil {
+		return fmt.Errorf("ui-test wait: screenshots: %w", shots.Err)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "bead: %s\nurl: %s%s\nrun: %s\nbranch: %s\nsha: %s\n",
@@ -573,7 +566,7 @@ func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, bead uiTestBead, comment
 	for _, p := range shots.Paths {
 		fmt.Fprintln(ctx.Stdout, p)
 	}
-	if len(shots.Missing) > 0 {
+	if len(shots.Missing) > 0 || len(shots.Paths) == 0 {
 		return cli.Silent(uiExitNoImages)
 	}
 	return nil

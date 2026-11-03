@@ -168,13 +168,20 @@ key.
   otherwise).
 - `ateam ui-test wait <bead-id> --out <dir> [--timeout <duration>]` polls the
   bead every 30 seconds for up to `--timeout` (default 9 minutes, maximum 9
-  minutes 30 seconds) and writes `verdict.md` under `--out`.
+  minutes 30 seconds) and writes `verdict.md` under `--out`. It also downloads
+  each screenshot from the signed links in the Dispatcher's comment into
+  `<out>/screenshots/`, and prints the `verdict.md` path followed by one PNG
+  path per line. The requests send no credentials: the signature in the link is
+  the credential, and `verdict.md` never copies a link.
 
 A repository needs a ui-test catalog in the Dispatcher. Without one, the
 Dispatcher rejects the bead and `wait` exits 5, which means "test locally".
 
-Exit codes: 0 verdict, 2 failed, 3 still pending (run the same command again),
-4 the tester asked a question, 5 ineligible or not configured, 6 not pushed.
+Exit codes: 0 verdict with every screenshot downloaded, 2 failed, 3 still
+pending (run the same command again), 4 the tester asked a question, 5
+ineligible or not configured, 6 not pushed, 7 verdict without all of its
+screenshots (a link expired or failed, or the run stored none). On 7,
+`verdict.md` lists each missing screenshot and the reason under `missing:`.
 
 ### Inside a Dispatcher run
 
