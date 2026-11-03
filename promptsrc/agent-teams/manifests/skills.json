@@ -366,6 +366,15 @@
       ]
     },
     {
+      "id": "reference.setup-agent-teams.dispatcher",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Optional Dispatcher setup is a Claude-plugin add-on with no Codex setup counterpart.",
+      "outputs": [
+        {"path": "plugins/agent-teams/skills/setup-agent-teams/references/dispatcher.md", "format": "markdown"}
+      ]
+    },
+    {
       "id": "skill.bg-session",
       "kind": "skill",
       "status": "runtime-only",

@@ -84,3 +84,23 @@ investigator/implementer/planner — a fresh plan gate if it reshapes the work �
 then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped
 for the PR before approval. The ask stays REVIEW throughout — never frame this
 as "ready to merge."
+
+## Optional: live verification via Dispatcher
+
+Applies only when the tester reports a bead id from `ateam ui-test file`. If
+the tester reports exit 5, nothing here applies: start a dev server as before.
+
+- **Push first.** Before each Dispatcher live test and after each fix batch,
+  push the real integration branch: `git push -u origin <branch>`, never force.
+  If the tester still reports exit 6, push and re-spawn it. Open no PR until
+  Phase 5. In midgard a branch push without a PR deploys nothing: `vercel.json`
+  sets `deploymentEnabled` for `main` only, the CI push trigger is `main` only,
+  and the branch deploy workflows need an open PR. In other repos, check the
+  deploy triggers first.
+- **Dev server.** Start one only for exit 5 or for local-only items the tester
+  names.
+- **Proof.** Raise live-test-review with `--attach <png>` for every PNG the
+  tester reports and `--attach <verdict.md>`. Put the bead URL in the summary
+  file.
+- **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a
+  question gate. Never raise live-test-review without images.

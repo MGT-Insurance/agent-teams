@@ -268,6 +268,10 @@ npx @playwright/cli --help
 
 If that prints usage output, the CLI is available and the tester can use it for live UI verification (session model: `open` a named session with `-s=<name>` before targeting it with any other command; see `plugins/agent-teams/agents/tester.md` for the two operational gotchas).
 
+## 7a. Dispatcher remote live tests (OPTIONAL — default skip)
+
+Ask: "Do you use Dispatcher for remote live tests?" On skip (the default), write nothing; live tests stay local. On yes, follow `references/dispatcher.md`.
+
 ## 8. Register a repo's worktree-setup hook (OPTIONAL — one-time per repo)
 
 When a worktree needs live env wiring — running a dev server, creds-dependent validation (e.g. socotra), a pre-commit hook that requires it — an agent runs `ateam worktree-setup <wtPath>` to provision the gitignored files the repo needs (e.g. `.vercel` link, env files). No separate `pnpm install` first: the midgard hook installs dependencies itself when the worktree lacks them, before pulling. Manual usage and pre-existing or resumed worktrees remain on-demand. By contrast, every fresh agent-teams-managed primary or delegated worktree gets a mandatory automatic setup attempt before its agent runs Node tooling; a failed attempt is reported and does not block the later managed lifecycle. No registered hook is an exit-0 no-op. A configured hook that is missing or fails emits a loud diagnostic and makes standalone `ateam worktree-setup` exit 1, so callers can detect incomplete provisioning without exposing hook output or credentials.
