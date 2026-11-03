@@ -441,6 +441,24 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 		return runErr
 	}
 
+	// Inside a Dispatcher run the VM has no steward marker, so the notify path
+	// below no-ops. File the ask as a mail through the run's outbox instead.
+	// A failure warns and never fails the gate.
+	if _, _, inRun := dispatcherRun(); inRun {
+		askText := string(noteBytes)
+		if structuredUsed {
+			askText = buildAskMessage(&gateAsk{
+				decision:       c.Decision,
+				recommendation: c.Recommendation,
+				alternative:    c.Alternative,
+				contextFile:    c.ContextFile,
+			})
+		}
+		if err := appendOutboxOp(newGateMailOp(c.ID, c.Kind, askText)); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: outbox mail failed (gate still recorded): %v\n", err)
+		}
+	}
+
 	// Best-effort steward routing: fire the notify path so the ask reaches
 	// the Steward. notifyToSteward gates on its own steward-marker presence
 	// check (e3mq.24); no transport-configured precondition belongs here

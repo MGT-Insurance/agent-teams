@@ -48,6 +48,33 @@ func (o outboxLabelOp) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(o))
 }
 
+// maxGateOutboxAskRunes caps the ask text in a gate outbox mail body.
+const maxGateOutboxAskRunes = 8000
+
+// outboxMailOp is the outbox line that asks the Dispatcher to file a mail
+// bead: {"op":"file","type":"mail","title":...,"body":...}. The field order
+// is part of the Dispatcher contract.
+type outboxMailOp struct {
+	Op    string `json:"op"`
+	Type  string `json:"type"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+// newGateMailOp builds the mail op for a gate on initiative id. The body
+// carries no agent: header. It truncates ask to maxGateOutboxAskRunes runes.
+func newGateMailOp(id, kind, ask string) outboxMailOp {
+	if r := []rune(ask); len(r) > maxGateOutboxAskRunes {
+		ask = string(r[:maxGateOutboxAskRunes])
+	}
+	return outboxMailOp{
+		Op:    "file",
+		Type:  "mail",
+		Title: id + ": " + kind + " gate",
+		Body:  "initiative: " + id + "\nkind: " + kind + "\n---\n" + ask,
+	}
+}
+
 // appendOutboxOp appends op as one JSON line to the run's outbox file. It does
 // nothing outside a Dispatcher run. The line goes out in a single write, and a
 // marshal error writes nothing.
