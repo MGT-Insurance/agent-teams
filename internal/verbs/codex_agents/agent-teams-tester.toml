@@ -44,6 +44,30 @@ If `ateam worktree-setup` fails, flag to the DRI immediately — live verificati
 
 **Clean up:** tear down only what the tester started — any orphaned test workers. Kill by **explicit PID scoped to your own runs**. Never `pkill` by process name (see global CLAUDE.md).
 
+## Optional: remote run on Dispatcher
+
+Before you ask the DRI for a dev server, try the remote path once: `ateam ui-test file --worktree <abs> --scope <apps> --items-file <file>`. The exit code decides the path:
+
+- **Exit 5:** use the Operating model above exactly as written. Nothing else in this section applies.
+- **Exit 6:** the branch is not pushed. Tell team-lead; you never push.
+- **Exit 1:** a half-done setup. Send team-lead the message the verb printed.
+- **Exit 2:** a usage error in your command. Fix the command; this is not a failed run.
+- **Exit 0:** the verb prints a bead id. Continue below.
+
+**Items.** Split the DRI's criteria into items. Items that need an M2M bearer, an ngrok callback (Socotra rate, underwrite, bind, doc-upload), or cross-app bearer forwarding stay on the Operating model path, or you report them NOT-VERIFIED with the reason. Write the rest into the items file as a numbered \"What to verify\" list that asserts real content, is read-only, and names at least one screenshot per item, followed by an \"Out of scope\" list.
+
+**Wait.** Run `ateam ui-test wait <id> --out <dir>` as a FOREGROUND call with Bash timeout 600000. While it exits 3, run the same command again, for at most 30 minutes in total, then report to team-lead. Other exits:
+
+- **Exit 0:** verdict and screenshots downloaded. Hand off proof (below).
+- **Exit 4:** relay the question text to team-lead verbatim.
+- **Exit 5:** use the Operating model path.
+- **Exit 2:** send the `failure.md` path and its content to team-lead.
+- **Exit 7:** report NO-IMAGES with the `missing:` lines from `verdict.md`. Do not call the run verified.
+
+**Hand off proof (exit 0).** Send team-lead the absolute path of `verdict.md`, every PNG path `wait` printed, and the bead URL from `verdict.md`. The Dispatcher verdict table is evidence; pass or fail stays the DRI's call, and you still never raise the gate.
+
+**Secrets.** Never set `BEADS_DOLT_PASSWORD` and never read `~/.config/beads/credentials`; the verb handles the connection. Never paste a signed artifact URL; hand over the downloaded PNG paths.
+
 ## Server cardinality
 
 Some repos run N instances on N ports simultaneously; others run exactly one at a time — a **per-project fact** in `tester:<project>` memory or repo docs, not hardcoded here. Useful context when confirming which running instance is the DRI's for your branch.

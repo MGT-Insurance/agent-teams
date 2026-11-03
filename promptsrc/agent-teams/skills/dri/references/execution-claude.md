@@ -52,6 +52,15 @@ The tester hands its proof (screenshots, payload/log files, a short summary) to 
 
 **Feedback loop.** A requested change can pull in any mix of investigator/implementer/planner — a fresh plan gate if it reshapes the work — then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped for the PR before approval. The ask stays REVIEW throughout — never frame this as "ready to merge."
 
+## Optional: live verification via Dispatcher
+
+Applies only when the tester reports a bead id from `ateam ui-test file`. If the tester reports exit 5, nothing here applies: start a dev server as before.
+
+- **Push first.** Before each Dispatcher live test and after each fix batch, push the real integration branch: `git push -u origin <branch>`, never force. If the tester still reports exit 6, push and re-spawn it. Open no PR until Phase 5. In midgard a branch push without a PR deploys nothing: `vercel.json` sets `deploymentEnabled` for `main` only, the CI push trigger is `main` only, and the branch deploy workflows need an open PR. In other repos, check the deploy triggers first.
+- **Dev server.** Start one only for exit 5 or for local-only items the tester names.
+- **Proof.** Raise live-test-review with `--attach <png>` for every PNG the tester reports and `--attach <verdict.md>`. Put the bead URL in the summary file.
+- **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a question gate. Never raise live-test-review without images.
+
 ## Why the background re-wake bug forces "never end a turn waiting on work"
 
 A background task's completion does not reliably re-invoke an idle in-process subagent in Claude Code — the finish notification queues but never starts a turn, and the subagent's own background task can be killed when its turn ends (Claude Code issues #92563, #83627, #87675, #76203, all open as of 2026-09-22). A top-level session gets a native re-wake; a spawned teammate does not. Treat "Never end a turn waiting on work" (shared execution contract, above) as unconditional for any teammate regardless of whether this bug is ever fixed — relax it only once those issues close.
@@ -75,6 +84,6 @@ Peer-to-peer work coordination (rebase now, I own file X, I merged the shared co
 
 - Planner plans; never writes feature code.
 - Implementers write the code + a few simple core-path verification tests (not all tests up front, not edge cases); may stop and ask for live verification instead of writing more; never push/merge; stop-and-ask over guessing.
-- Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification; routes back to the implementer only genuinely implementer-owned core-path gaps. Only the DRI starts a dev server; testers never start one — they drive and observe an instance the DRI has already brought up.
+- Tester runs suites, AUTHORS edge-case/non-happy-path tests + E2E/fixtures, and owns live verification (or an optional Dispatcher remote run); routes back to the implementer only genuinely implementer-owned core-path gaps. Only the DRI starts a dev server; testers never start one — they drive and observe an instance the DRI has already brought up.
 - Reviewer never fixes; the DRI routes its findings to fresh implementers.
 - All roles file discovery beads; the DRI triages them.

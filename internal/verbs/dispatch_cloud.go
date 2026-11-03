@@ -58,7 +58,24 @@ var runBeadIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // and bd writes a journal row only when the journal is on, so after the create
 // it checks that a create row exists for the new id and fails loudly if not.
 func defaultFileRunBead(dir, actor, title, body string) (string, error) {
-	f, err := os.CreateTemp("", "ateam-run-bead-*.txt")
+	return createJournaledBead(dir, append(os.Environ(), runBeadEnv...), "ateam-run-bead-*.txt",
+		[]string{
+			"--title", title,
+			"--type", "task",
+			"--priority", "2",
+			"--labels", "type:ateam-dri",
+			"--actor", actor,
+		}, body, "created without an events-journal row; closed by ateam dispatch")
+}
+
+// createJournaledBead runs `bd -C dir create <createArgs> --body-file <tmp>
+// --silent` with env (the full process environment, which must carry
+// runBeadEnv), checks the returned id, and verifies the events-journal create
+// row. With no row it closes the orphan bead with orphanReason. A failure after
+// the create is a *postCreateError naming the bead. Both `dispatch --cloud` and
+// `ui-test file` file their beads through it.
+func createJournaledBead(dir string, env []string, tmpPattern string, createArgs []string, body, orphanReason string) (string, error) {
+	f, err := os.CreateTemp("", tmpPattern)
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
@@ -70,15 +87,10 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("write temp file: %w", err)
 	}
-	cmd := exec.Command("bd", "-C", dir, "create",
-		"--title", title,
-		"--type", "task",
-		"--priority", "2",
-		"--labels", "type:ateam-dri",
-		"--actor", actor,
-		"--body-file", f.Name(),
-		"--silent")
-	cmd.Env = append(os.Environ(), runBeadEnv...)
+	args := append([]string{"-C", dir, "create"}, createArgs...)
+	args = append(args, "--body-file", f.Name(), "--silent")
+	cmd := exec.Command("bd", args...)
+	cmd.Env = env
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -95,9 +107,9 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 	if !runBeadIDPattern.MatchString(id) {
 		return "", fmt.Errorf("bd create returned an unexpected id %q", id)
 	}
-	if perr := verifyJournalRow(dir, id); perr != nil {
+	if perr := verifyJournalRow(dir, env, id); perr != nil {
 		if perr.Kind == postCreateNoRow {
-			perr.CloseErr = closeRunBead(dir, id, "created without an events-journal row; closed by ateam dispatch")
+			perr.CloseErr = closeRunBead(dir, env, id, orphanReason)
 			perr.Closed = perr.CloseErr == nil
 		}
 		return "", perr
@@ -106,9 +118,9 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 }
 
 // closeRunBead closes the run bead id in dir with the same env as create.
-func closeRunBead(dir, id, reason string) error {
+func closeRunBead(dir string, env []string, id, reason string) error {
 	cmd := exec.Command("bd", "-C", dir, "close", id, "--reason="+reason)
-	cmd.Env = append(os.Environ(), runBeadEnv...)
+	cmd.Env = env
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if _, err := cmd.Output(); err != nil {
@@ -150,9 +162,9 @@ func journalQuery(id string) string {
 // verifyJournalRow returns a *postCreateError unless bd_events_journal in dir
 // holds a create row for id. The query asks for the row's issue_id rather than
 // a count, so the check does not depend on bd's table output format.
-func verifyJournalRow(dir, id string) *postCreateError {
+func verifyJournalRow(dir string, env []string, id string) *postCreateError {
 	cmd := exec.Command("bd", "-C", dir, "sql", journalQuery(id))
-	cmd.Env = append(os.Environ(), runBeadEnv...)
+	cmd.Env = env
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
