@@ -16,6 +16,7 @@ package procx
 import (
 	"bytes"
 	"context"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -32,7 +33,16 @@ import (
 // deadline), and the whole process group — including any grandchild the
 // command spawned — is killed before RunBounded returns.
 func RunBounded(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error) {
+	return RunBoundedEnv(ctx, nil, name, args...)
+}
+
+// RunBoundedEnv is RunBounded with extra KEY=VALUE entries appended to the
+// inherited process environment. A nil extraEnv inherits it unchanged.
+func RunBoundedEnv(ctx context.Context, extraEnv []string, name string, args ...string) (stdout, stderr []byte, err error) {
 	cmd := exec.Command(name, args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	// Setpgid makes this child the leader of its own process group (pgid ==
 	// its own pid), so -pid below targets the whole group, not just it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

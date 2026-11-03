@@ -138,8 +138,10 @@ Three more keys in the same file configure `ateam dispatch --cloud`, which
 hands an initiative to the Dispatcher instead of creating a local worktree:
 
 - `cloud_home` — the hosted global workspace where the initiative is registered.
-- `dispatcher_beads` — the `bd` client directory that points at the
-  Dispatcher's beads database, where `--cloud` files the run bead.
+- `dispatcher_beads` — a `bd` client directory bound to your main
+  `beads_<user>` database, where `--cloud` files the run bead. The Dispatcher
+  autostarts only run beads in that main database; a bead filed in an
+  Additional Database never starts.
 - `dispatcher_actor` — the account email that files the run bead. The
   `ATEAM_DISPATCHER_ACTOR` environment variable overrides it. Agent actors
   (`agent:...`) are rejected, because the Dispatcher never autostarts them.
@@ -148,6 +150,14 @@ hands an initiative to the Dispatcher instead of creating a local worktree:
 that names the key. It also requires an `origin` remote owned by the
 `MGT-Insurance` organization; the match ignores case, and the run bead carries
 the canonical `MGT-Insurance` spelling.
+
+The Dispatcher discovers new run beads only through bd's events journal
+(`bd_events_journal`), which bd writes only when the journal is on. `--cloud`
+sets `BEADS_DOLT_SERVER_TLS=1` for its `cloud_home` calls, and both that and
+`BD_EVENTS_JOURNAL=1` for its `dispatcher_beads` calls, then checks that the journal holds a create row
+for the new run bead. If the row is missing, the dispatch fails and names the
+bead. In that case, run `bd config set events-journal true` in the
+`dispatcher_beads` directory and file the bead again.
 
 ### Inside a Dispatcher run
 
