@@ -139,15 +139,42 @@ hands an initiative to the Dispatcher instead of creating a local worktree:
 
 - `cloud_home` — the hosted global workspace where the initiative is registered.
 - `dispatcher_beads` — the `bd` client directory that points at the
-  Dispatcher's beads database, where `--cloud` files the run bead.
+  Dispatcher's beads database, where `--cloud` files the run bead. Optional:
+  `ateam ui-test` also reads it, and it is off when the key is unset.
 - `dispatcher_actor` — the account email that files the run bead. The
   `ATEAM_DISPATCHER_ACTOR` environment variable overrides it. Agent actors
   (`agent:...`) are rejected, because the Dispatcher never autostarts them.
+  Optional unless `dispatcher_beads` is set.
 
 `--cloud` needs all three, and a missing value stops the dispatch with a message
 that names the key. It also requires an `origin` remote owned by the
 `MGT-Insurance` organization; the match ignores case, and the run bead carries
 the canonical `MGT-Insurance` spelling.
+
+### Optional: remote live testing with Dispatcher
+
+`ateam ui-test` lets a tester run a live UI test on the Dispatcher instead of
+on your machine. It is an add-on: it is off unless `dispatcher_beads` is set in
+`config.toml`. Without that key, both subcommands print `Dispatcher not
+configured; test locally` and exit 5, and the tester tests locally exactly as
+before. If you set `dispatcher_beads`, also set `dispatcher_actor` (or
+`ATEAM_DISPATCHER_ACTOR`); with the actor missing, the verbs exit 1 and name the
+key.
+
+- `ateam ui-test file --worktree <abs> --scope <apps> --items-file <path>
+  [--test-user <email>] [--title <text>]` files a ui-test bead for the
+  worktree's branch and prints the bead id. The branch's HEAD must already be on
+  `origin` (exit 6 otherwise), and `origin` must be a GitHub repository (exit 5
+  otherwise).
+- `ateam ui-test wait <bead-id> --out <dir> [--timeout <duration>]` polls the
+  bead every 30 seconds for up to `--timeout` (default 9 minutes, maximum 9
+  minutes 30 seconds) and writes `verdict.md` under `--out`.
+
+A repository needs a ui-test catalog in the Dispatcher. Without one, the
+Dispatcher rejects the bead and `wait` exits 5, which means "test locally".
+
+Exit codes: 0 verdict, 2 failed, 3 still pending (run the same command again),
+4 the tester asked a question, 5 ineligible or not configured, 6 not pushed.
 
 ### Inside a Dispatcher run
 

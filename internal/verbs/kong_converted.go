@@ -1657,4 +1657,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterPreflightKong(p)
 	RegisterPRKong(p)
 	RegisterCloudBootKong(p)
+	RegisterUITestKong(p)
 }
