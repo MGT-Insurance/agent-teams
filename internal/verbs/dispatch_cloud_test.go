@@ -33,6 +33,9 @@ type cloudHarness struct {
 	launched     bool
 	worktreeMade bool
 	laptopCalls  int
+
+	setupHomes    []string
+	setupSentinel bool
 }
 
 type fmtBuf interface{ String() string }
@@ -98,6 +101,10 @@ func newCloudHarness(t *testing.T, config string) *cloudHarness {
 			h.t.Error("cloud dispatch must skip the project epic")
 			return "", nil
 		},
+		hostedSetup: func(c *cli.Context, checkSentinel bool) {
+			h.setupHomes = append(h.setupHomes, c.Home)
+			h.setupSentinel = checkSentinel
+		},
 		cloudBD: func(home string) cli.BDRunner {
 			h.cloudHomes = append(h.cloudHomes, home)
 			return h.cloudBD
@@ -121,6 +128,9 @@ func TestDispatchCloud_HappyPath(t *testing.T) {
 	h := newCloudHarness(t, fullCloudConfig)
 	if err := h.cmd.Run(h.ctx); err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if len(h.setupHomes) != 1 || h.setupHomes[0] != "/hosted" || h.setupSentinel {
+		t.Errorf("hosted setup homes = %v sentinel = %v, want [/hosted] and no sentinel check", h.setupHomes, h.setupSentinel)
 	}
 	if h.worktreeMade || h.launched {
 		t.Errorf("worktree made = %v, launched = %v; want neither", h.worktreeMade, h.launched)

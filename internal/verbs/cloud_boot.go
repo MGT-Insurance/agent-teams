@@ -231,6 +231,10 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	if advisor != "" {
 		return errors.New("use_advisors is enabled; the advisor flag leaks into every subagent, so cloud boot refuses it")
 	}
+	// Fail-soft: the boot itself does not need the setup, but a missing piece
+	// breaks later steps (for example `ateam audit` needs PRIME.md), so a
+	// failure is loud on stderr and the boot continues.
+	ensureHostedHomeSetupSoft(ctx, true)
 	statePath, err := cloudBootStatePath()
 	if err != nil {
 		return fmt.Errorf("resolve home: %w", err)
