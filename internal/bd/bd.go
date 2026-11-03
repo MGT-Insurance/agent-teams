@@ -32,6 +32,16 @@ func NewClient(home string) *Client {
 	return &Client{home: home, ctxExec: procx.RunBounded}
 }
 
+// NewClientWithEnv returns a Client bound to home using the real bd binary,
+// with extraEnv (KEY=VALUE entries) added to every bd process's environment.
+// Use it for a workspace that needs env the rest of the process must not carry,
+// such as BEADS_DOLT_SERVER_TLS=1 for a hosted Dolt server.
+func NewClientWithEnv(home string, extraEnv ...string) *Client {
+	return &Client{home: home, ctxExec: func(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+		return procx.RunBoundedEnv(ctx, extraEnv, name, args...)
+	}}
+}
+
 // NewClientWithExec returns a Client that uses execFn instead of os/exec, for
 // tests that don't care about ctx. execFn is adapted into a ContextExecFunc
 // that ignores ctx, so Run (which calls RunContext with

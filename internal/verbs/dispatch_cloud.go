@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -30,14 +31,31 @@ type fileRunBeadFunc func(dir, actor, title, body string) (id string, err error)
 // the laptop workspace ctx.BD points at.
 type cloudBDFunc func(home string) cli.BDRunner
 
-func defaultCloudBD(home string) cli.BDRunner { return bd.NewClient(home) }
+// hostedTLSEnv is the env every bd call against the hosted Dolt server needs:
+// the server rejects non-TLS connections, and bd has no persisted setting for
+// it (--server-tls on init is not persisted).
+const hostedTLSEnv = "BEADS_DOLT_SERVER_TLS=1"
+
+// runBeadEnv is the env for the calls against the Dispatcher's database. The
+// Dispatcher's autostart reads only the events journal, which bd writes only
+// when it is on.
+var runBeadEnv = []string{hostedTLSEnv, "BD_EVENTS_JOURNAL=1"}
+
+func defaultCloudBD(home string) cli.BDRunner { return bd.NewClientWithEnv(home, hostedTLSEnv) }
+
+// runBeadIDPattern is the shape of a bd issue id. The id is interpolated into
+// the journal query, so anything else is refused.
+var runBeadIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // defaultFileRunBead runs
 //
 //	bd -C <dir> create --title <title> --type task --priority 2
 //	  --labels type:ateam-dri --actor <actor> --body-file <tmp> --silent
 //
-// with BEADS_DOLT_SERVER_TLS=1, the way the Dispatcher's own bd wrapper does.
+// with BEADS_DOLT_SERVER_TLS=1 (the way the Dispatcher's own bd wrapper does)
+// and BD_EVENTS_JOURNAL=1. Dispatcher autostart reads only bd_events_journal,
+// and bd writes a journal row only when the journal is on, so after the create
+// it checks that a create row exists for the new id and fails loudly if not.
 func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 	f, err := os.CreateTemp("", "ateam-run-bead-*.txt")
 	if err != nil {
@@ -59,7 +77,7 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 		"--actor", actor,
 		"--body-file", f.Name(),
 		"--silent")
-	cmd.Env = append(os.Environ(), "BEADS_DOLT_SERVER_TLS=1")
+	cmd.Env = append(os.Environ(), runBeadEnv...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -73,7 +91,32 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("bd create returned no id")
 	}
+	if err := verifyJournalRow(dir, id); err != nil {
+		return "", err
+	}
 	return id, nil
+}
+
+// verifyJournalRow returns an error unless bd_events_journal in dir holds a
+// create row for id. The query asks for the row's issue_id rather than a
+// count, so the check does not depend on bd's table output format.
+func verifyJournalRow(dir, id string) error {
+	if !runBeadIDPattern.MatchString(id) {
+		return fmt.Errorf("bd create returned an unexpected id %q", id)
+	}
+	cmd := exec.Command("bd", "-C", dir, "sql",
+		fmt.Sprintf("select issue_id from bd_events_journal where issue_id = '%s' and op = 'create' limit 1", id))
+	cmd.Env = append(os.Environ(), runBeadEnv...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("run bead %s was filed, but checking its events-journal row failed: %w: %s", id, err, strings.TrimSpace(stderr.String()))
+	}
+	if !strings.Contains(string(out), id) {
+		return fmt.Errorf("run bead %s was filed but has no create row in bd_events_journal, so the Dispatcher will never start it; enable the journal for %s (bd config set events-journal true) and re-file", id, dir)
+	}
+	return nil
 }
 
 // cloudSettings is the resolved --cloud configuration.
