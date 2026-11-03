@@ -329,3 +329,62 @@ func TestDispatchCloud_GitFailuresWriteNothing(t *testing.T) {
 		}
 	}
 }
+
+func closeCallFor(h *cloudHarness) []string {
+	for _, call := range h.cloudCalls {
+		if call[0] == "close" {
+			return call
+		}
+	}
+	return nil
+}
+
+func TestDispatchCloud_NoJournalRowClosesInitiativeAccurately(t *testing.T) {
+	h := newCloudHarness(t, fullCloudConfig)
+	h.cmd.fileRunBead = func(_, _, _, _ string) (string, error) {
+		return "", &postCreateError{ID: "dsp-run9", Kind: postCreateNoRow, Closed: true, Msg: "no create row in bd_events_journal"}
+	}
+	err := h.cmd.Run(h.ctx)
+	if err == nil || strings.Contains(err.Error(), "not filed") ||
+		!strings.Contains(err.Error(), "dsp-run9") || !strings.Contains(err.Error(), "events-journal is on") {
+		t.Fatalf("err = %v", err)
+	}
+	closed := closeCallFor(h)
+	if len(closed) != 3 || closed[1] != "at-cloud1" ||
+		closed[2] != "--reason=cloud run bead dsp-run9 created without an events-journal row; closed it" {
+		t.Errorf("close call = %v", closed)
+	}
+}
+
+func TestDispatchCloud_NoJournalRowRunBeadCloseFailureNamesID(t *testing.T) {
+	h := newCloudHarness(t, fullCloudConfig)
+	h.cmd.fileRunBead = func(_, _, _, _ string) (string, error) {
+		return "", &postCreateError{ID: "dsp-run9", Kind: postCreateNoRow, CloseErr: errors.New("boom"), Msg: "no create row"}
+	}
+	err := h.cmd.Run(h.ctx)
+	if err == nil || !strings.Contains(err.Error(), "failed to close run bead dsp-run9") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDispatchCloud_JournalCheckFailedLeavesInitiativeOpen(t *testing.T) {
+	h := newCloudHarness(t, fullCloudConfig)
+	h.cmd.fileRunBead = func(_, _, _, _ string) (string, error) {
+		return "", &postCreateError{ID: "dsp-run7", Kind: postCreateCheckFailed, Cause: errors.New("tls"), Msg: "checking its events-journal row failed: tls"}
+	}
+	err := h.cmd.Run(h.ctx)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	for _, want := range []string{"dsp-run7", "at-cloud1", "may have succeeded", "bd -C /dsp sql", "bd_events_journal"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+	if c := closeCallFor(h); c != nil {
+		t.Errorf("initiative must stay open, got close call %v", c)
+	}
+	if !strings.Contains(h.noteText, "dsp-run7") {
+		t.Errorf("note = %q, want run bead id", h.noteText)
+	}
+}

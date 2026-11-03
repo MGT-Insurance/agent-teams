@@ -1,10 +1,12 @@
 package verbs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -30,14 +32,31 @@ type fileRunBeadFunc func(dir, actor, title, body string) (id string, err error)
 // the laptop workspace ctx.BD points at.
 type cloudBDFunc func(home string) cli.BDRunner
 
-func defaultCloudBD(home string) cli.BDRunner { return bd.NewClient(home) }
+// hostedTLSEnv is the env every bd call against the hosted Dolt server needs:
+// the server rejects non-TLS connections, and bd has no persisted setting for
+// it (--server-tls on init is not persisted).
+const hostedTLSEnv = "BEADS_DOLT_SERVER_TLS=1"
+
+// runBeadEnv is the env for the calls against the Dispatcher's database. The
+// Dispatcher's autostart reads only the events journal, which bd writes only
+// when it is on.
+var runBeadEnv = []string{hostedTLSEnv, "BD_EVENTS_JOURNAL=1"}
+
+func defaultCloudBD(home string) cli.BDRunner { return bd.NewClientWithEnv(home, hostedTLSEnv) }
+
+// runBeadIDPattern is the shape of a bd issue id. The id is interpolated into
+// the journal query, so anything else is refused.
+var runBeadIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // defaultFileRunBead runs
 //
 //	bd -C <dir> create --title <title> --type task --priority 2
 //	  --labels type:ateam-dri --actor <actor> --body-file <tmp> --silent
 //
-// with BEADS_DOLT_SERVER_TLS=1, the way the Dispatcher's own bd wrapper does.
+// with BEADS_DOLT_SERVER_TLS=1 (the way the Dispatcher's own bd wrapper does)
+// and BD_EVENTS_JOURNAL=1. Dispatcher autostart reads only bd_events_journal,
+// and bd writes a journal row only when the journal is on, so after the create
+// it checks that a create row exists for the new id and fails loudly if not.
 func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 	f, err := os.CreateTemp("", "ateam-run-bead-*.txt")
 	if err != nil {
@@ -59,7 +78,7 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 		"--actor", actor,
 		"--body-file", f.Name(),
 		"--silent")
-	cmd.Env = append(os.Environ(), "BEADS_DOLT_SERVER_TLS=1")
+	cmd.Env = append(os.Environ(), runBeadEnv...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -73,7 +92,79 @@ func defaultFileRunBead(dir, actor, title, body string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("bd create returned no id")
 	}
+	if !runBeadIDPattern.MatchString(id) {
+		return "", fmt.Errorf("bd create returned an unexpected id %q", id)
+	}
+	if perr := verifyJournalRow(dir, id); perr != nil {
+		if perr.Kind == postCreateNoRow {
+			perr.CloseErr = closeRunBead(dir, id, "created without an events-journal row; closed by ateam dispatch")
+			perr.Closed = perr.CloseErr == nil
+		}
+		return "", perr
+	}
 	return id, nil
+}
+
+// closeRunBead closes the run bead id in dir with the same env as create.
+func closeRunBead(dir, id, reason string) error {
+	cmd := exec.Command("bd", "-C", dir, "close", id, "--reason="+reason)
+	cmd.Env = append(os.Environ(), runBeadEnv...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// postCreateKind says which check failed after bd create succeeded.
+type postCreateKind int
+
+const (
+	// postCreateNoRow means the journal query ran and found no create row.
+	postCreateNoRow postCreateKind = iota
+	// postCreateCheckFailed means the journal query itself failed, so whether
+	// the row exists is unknown.
+	postCreateCheckFailed
+)
+
+// postCreateError reports a failure after the run bead ID was created. Unlike a
+// create failure, the bead exists in the Dispatcher's database.
+type postCreateError struct {
+	ID, Dir  string
+	Kind     postCreateKind
+	Cause    error  // the query failure, for postCreateCheckFailed
+	Closed   bool   // postCreateNoRow: the orphan run bead was closed
+	CloseErr error  // postCreateNoRow: why closing it failed
+	Msg      string // the underlying description
+}
+
+func (e *postCreateError) Error() string { return e.Msg }
+func (e *postCreateError) Unwrap() error { return e.Cause }
+
+// journalQuery is the bd sql query that looks up the create row for id.
+func journalQuery(id string) string {
+	return fmt.Sprintf("select issue_id from bd_events_journal where issue_id = '%s' and op = 'create' limit 1", id)
+}
+
+// verifyJournalRow returns a *postCreateError unless bd_events_journal in dir
+// holds a create row for id. The query asks for the row's issue_id rather than
+// a count, so the check does not depend on bd's table output format.
+func verifyJournalRow(dir, id string) *postCreateError {
+	cmd := exec.Command("bd", "-C", dir, "sql", journalQuery(id))
+	cmd.Env = append(os.Environ(), runBeadEnv...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return &postCreateError{ID: id, Dir: dir, Kind: postCreateCheckFailed, Cause: err,
+			Msg: fmt.Sprintf("checking its events-journal row failed: %v: %s", err, strings.TrimSpace(stderr.String()))}
+	}
+	if !strings.Contains(string(out), id) {
+		return &postCreateError{ID: id, Dir: dir, Kind: postCreateNoRow,
+			Msg: "no create row in bd_events_journal"}
+	}
+	return nil
 }
 
 // cloudSettings is the resolved --cloud configuration.
@@ -228,6 +319,10 @@ func (c *dispatchKong) runCloud(ctx *cli.Context, repoRoot, base, slug string) e
 	runBead, err := fileBead(settings.dispatcherBeads, settings.actor, c.Problem,
 		cloudRunBeadBody(repoURL, base, sha, issue.ID, c.Problem))
 	if err != nil {
+		var pce *postCreateError
+		if errors.As(err, &pce) {
+			return c.handlePostCreate(ctx, cloud, settings, issue.ID, pce)
+		}
 		reason := fmt.Sprintf("cloud run bead not filed: %v", err)
 		if _, closeErr := cloud.Run("close", issue.ID, "--reason="+reason); closeErr != nil {
 			return fmt.Errorf("dispatch: %s; also failed to close initiative %s (close it manually): %v", reason, issue.ID, closeErr)
@@ -264,4 +359,30 @@ func noteOn(runner cli.BDRunner, id, text string) error {
 	}
 	_, err = runner.Run("note", id, "--file="+f.Name())
 	return err
+}
+
+// handlePostCreate handles a failure after the run bead was created. With no
+// journal row the Dispatcher never sees the bead, so the initiative is closed.
+// When the check itself failed the row may exist, so nothing is closed and the
+// run bead is recorded on the initiative.
+func (c *dispatchKong) handlePostCreate(ctx *cli.Context, cloud cli.BDRunner, settings cloudSettings, initID string, pce *postCreateError) error {
+	if pce.Kind == postCreateCheckFailed {
+		if err := noteOn(cloud, initID, fmt.Sprintf("cloud run bead %s was filed; its events-journal check failed, so the dispatch may have succeeded", pce.ID)); err != nil {
+			fmt.Fprintf(ctx.Stderr, "dispatch: warning: could not note run bead on %s (fail-soft): %v\n", initID, err)
+		}
+		return fmt.Errorf("dispatch: run bead %s was filed in %s for initiative %s, but %s; the dispatch may have succeeded and the initiative is still open. Check with: BEADS_DOLT_SERVER_TLS=1 bd -C %s sql \"%s\" (a row means the Dispatcher will start it)",
+			pce.ID, settings.dispatcherBeads, initID, pce.Msg, settings.dispatcherBeads, journalQuery(pce.ID))
+	}
+	advice := fmt.Sprintf("check that dispatcher_beads (%s) is bound to the main beads_<user> database and that events-journal is on, then re-run dispatch", settings.dispatcherBeads)
+	var reason, runBeadNote string
+	if pce.Closed {
+		reason = fmt.Sprintf("cloud run bead %s created without an events-journal row; closed it", pce.ID)
+	} else {
+		reason = fmt.Sprintf("cloud run bead %s created without an events-journal row; could not close it", pce.ID)
+		runBeadNote = fmt.Sprintf("; also failed to close run bead %s (close it manually with bd -C %s close %s): %v", pce.ID, settings.dispatcherBeads, pce.ID, pce.CloseErr)
+	}
+	if _, closeErr := cloud.Run("close", initID, "--reason="+reason); closeErr != nil {
+		return fmt.Errorf("dispatch: %s%s; also failed to close initiative %s (close it manually): %v; %s", reason, runBeadNote, initID, closeErr, advice)
+	}
+	return fmt.Errorf("dispatch: %s%s; %s", reason, runBeadNote, advice)
 }
