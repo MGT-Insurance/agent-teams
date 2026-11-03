@@ -39,6 +39,7 @@ Before you ask the DRI for a dev server, try the remote path once: `ateam ui-tes
 - **Exit 5:** use the Operating model above exactly as written. Nothing else in this section applies.
 - **Exit 6:** the branch is not pushed. Tell team-lead; you never push.
 - **Exit 1:** a half-done setup. Send team-lead the message the verb printed.
+- **Exit 2:** a usage error in your command. Fix the command; this is not a failed run.
 - **Exit 0:** the verb prints a bead id. Continue below.
 
 **Items.** Split the DRI's criteria into items. Items that need an M2M bearer, an ngrok callback (Socotra rate, underwrite, bind, doc-upload), or cross-app bearer forwarding stay on the Operating model path, or you report them NOT-VERIFIED with the reason. Write the rest into the items file as a numbered "What to verify" list that asserts real content, is read-only, and names at least one screenshot per item, followed by an "Out of scope" list.

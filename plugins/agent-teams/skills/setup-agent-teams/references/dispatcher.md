@@ -12,5 +12,6 @@ Ask the human: "Do you use Dispatcher for remote live tests?" Default is skip. O
      --server-tls --remote '' --prefix <prefix> --non-interactive --skip-hooks)
    ```
 
-4. **Verify with no password set.** `BEADS_DOLT_SERVER_TLS=1 bd -C <folder> list --limit 1` must succeed. If it fails, report the error text and stop; do not write the config.
-5. **Config.** Write `dispatcher_beads = <folder>` and `dispatcher_actor = <the engineer's email>` to `~/.agent-teams/config.toml`. Confirm with `ateam ui-test file --help`.
+4. **Events journal.** The Dispatcher starts a bead only from its events-journal row, and bd writes that row only when the journal is on. Run `bd -C <folder> config set events-journal true`.
+5. **Verify with no password set.** `BEADS_DOLT_SERVER_TLS=1 bd -C <folder> list --limit 1` must succeed. If it fails, report the error text and stop; do not write the config.
+6. **Config.** Write `dispatcher_beads = <folder>` and `dispatcher_actor = <the engineer's email>` to `~/.agent-teams/config.toml`. Confirm with `ateam ui-test file --help`.

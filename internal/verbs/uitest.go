@@ -234,7 +234,8 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 
 	items, err := os.ReadFile(c.ItemsFile)
 	if err != nil {
-		return cli.Usagef("ui-test file: --items-file %q: %v", c.ItemsFile, err)
+		// A plain error (exit 1): a usage error exits 2, which callers read as FAILED.
+		return fmt.Errorf("ui-test file: --items-file %q: %v", c.ItemsFile, err)
 	}
 	title := c.Title
 	if title == "" {
@@ -276,10 +277,12 @@ func defaultUITestGit(dir string, args ...string) (string, int, error) {
 	return stdout.String(), 0, err
 }
 
-// uiTestBDEnv is the environment every Dispatcher bd call runs with. It never
-// sets or reads BEADS_DOLT_PASSWORD: bd reads ~/.config/beads/credentials.
+// uiTestBDEnv is the environment every Dispatcher bd call runs with: the same
+// TLS and events-journal settings as the run-bead calls of dispatch --cloud
+// (runBeadEnv), plus cgo DNS. It never sets or reads BEADS_DOLT_PASSWORD: bd
+// reads ~/.config/beads/credentials.
 func uiTestBDEnv() []string {
-	return append(os.Environ(), "BEADS_DOLT_SERVER_TLS=1", "GODEBUG=netdns=cgo")
+	return append(append(os.Environ(), runBeadEnv...), "GODEBUG=netdns=cgo")
 }
 
 // defaultUITestFileBead runs
@@ -287,43 +290,31 @@ func uiTestBDEnv() []string {
 //	bd -C <dir> create --title <title> --type task --priority 1
 //	  --assignee agent:tester --labels <labels> --actor <actor>
 //	  --body-file <tmp> --silent
+//
+// through createJournaledBead: the Dispatcher starts a bead only from its
+// events-journal row, so a missing row closes the bead and fails.
 func defaultUITestFileBead(dir, actor, title string, labels []string, body string) (string, error) {
-	f, err := os.CreateTemp("", "ateam-ui-test-*.txt")
-	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
+	id, err := createJournaledBead(dir, uiTestBDEnv(), "ateam-ui-test-*.txt",
+		[]string{
+			"--title", title,
+			"--type", "task",
+			"--priority", "1",
+			"--assignee", "agent:tester",
+			"--labels", strings.Join(labels, ","),
+			"--actor", actor,
+		}, body, "created without an events-journal row; closed by ateam ui-test")
+	var pce *postCreateError
+	if !errors.As(err, &pce) {
+		return id, err
 	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(body); err != nil {
-		f.Close()
-		return "", fmt.Errorf("write temp file: %w", err)
+	switch {
+	case pce.Kind == postCreateCheckFailed:
+		return "", fmt.Errorf("bead %s was filed but %s; the Dispatcher may still start it (check bd_events_journal in %s)", pce.ID, pce.Msg, pce.Dir)
+	case pce.Closed:
+		return "", fmt.Errorf("bead %s was created without an events-journal row and has been closed; run: bd -C %s config set events-journal true", pce.ID, pce.Dir)
+	default:
+		return "", fmt.Errorf("bead %s was created without an events-journal row and could not be closed (close it manually with bd -C %s close %s): %v", pce.ID, pce.Dir, pce.ID, pce.CloseErr)
 	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("write temp file: %w", err)
-	}
-	cmd := exec.Command("bd", "-C", dir, "create",
-		"--title", title,
-		"--type", "task",
-		"--priority", "1",
-		"--assignee", "agent:tester",
-		"--labels", strings.Join(labels, ","),
-		"--actor", actor,
-		"--body-file", f.Name(),
-		"--silent")
-	cmd.Env = uiTestBDEnv()
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("bd create: %w: %s", err, msg)
-		}
-		return "", fmt.Errorf("bd create: %w", err)
-	}
-	id := strings.TrimSpace(string(out))
-	if id == "" {
-		return "", fmt.Errorf("bd create returned no id")
-	}
-	return id, nil
 }
 
 func defaultUITestBDRead(dir string, args ...string) ([]byte, error) {
@@ -508,7 +499,7 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 			return c.finish(ctx, d, bead, comments, out)
 		case "blocked":
 			if n := len(comments); n > 0 && strings.HasPrefix(strings.TrimSpace(comments[n-1].Text), "question:") {
-				fmt.Fprintln(ctx.Stdout, strings.TrimSpace(comments[n-1].Text))
+				fmt.Fprintln(ctx.Stdout, uiRedactArtifactURLs(strings.TrimSpace(comments[n-1].Text)))
 				return cli.Silent(uiExitQuestion)
 			}
 		}
@@ -524,7 +515,7 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 // finish maps a closed bead to an exit code and writes the output files.
 func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, bead uiTestBead, comments []uiTestComment, out string) error {
 	verdict, runID, hasVerdict := uiTestVerdict(comments)
-	if hasVerdict && !strings.Contains(strings.ToLower(bead.CloseReason), "fail") {
+	if hasVerdict && !uiTestClosedFailed(bead.CloseReason) {
 		return c.writeVerdict(ctx, d, bead, comments, verdict, runID, out)
 	}
 	if reason, ok := uiTestIneligible(comments); ok {
@@ -534,7 +525,7 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, bead uiTestBead,
 	text := "bead " + c.ID + " closed without a verdict comment"
 	for i := len(comments) - 1; i >= 0; i-- {
 		if strings.HasPrefix(comments[i].Author, "job:") || strings.HasPrefix(strings.TrimSpace(comments[i].Text), "rejected:") {
-			text = comments[i].Text
+			text = uiRedactArtifactURLs(comments[i].Text)
 			break
 		}
 	}
@@ -544,6 +535,32 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, bead uiTestBead,
 	}
 	fmt.Fprintln(ctx.Stdout, path)
 	return cli.Silent(uiExitFailed)
+}
+
+// uiTestClosedFailed reports whether the Dispatcher closed the bead as failed.
+// It writes the close reason "failed", so match that word at the start; a
+// reason such as "passed, 0 failed checks" keeps the verdict.
+func uiTestClosedFailed(closeReason string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(closeReason)), "failed")
+}
+
+// uiRedactArtifactURLs keeps the name on each "artifact: <name> <url>" line and
+// drops the URL, which is a signed bearer link good for seven days.
+func uiRedactArtifactURLs(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if rest, ok := strings.CutPrefix(t, "artifact:"); ok {
+			rest = strings.TrimSpace(rest)
+			if cut := strings.LastIndexAny(rest, " \t"); cut >= 0 {
+				rest = strings.TrimSpace(rest[:cut])
+			} else {
+				rest = ""
+			}
+			lines[i] = "artifact: " + rest + " <url redacted>"
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // writeVerdict downloads the run's screenshots, writes verdict.md, and prints
