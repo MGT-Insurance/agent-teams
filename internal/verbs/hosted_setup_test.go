@@ -129,3 +129,46 @@ type failBD struct{}
 
 func (failBD) Run(...string) (string, error) { return "", os.ErrPermission }
 func (failBD) RunJSON(any, ...string) error  { return os.ErrPermission }
+
+// firstFailBD fails the first bd call and succeeds afterward.
+type firstFailBD struct {
+	recBD
+	failed bool
+}
+
+func (f *firstFailBD) Run(args ...string) (string, error) {
+	if !f.failed {
+		f.failed = true
+		f.calls = append(f.calls, strings.Join(args, " "))
+		return "", os.ErrPermission
+	}
+	return f.recBD.Run(args...)
+}
+
+func TestEnsureHostedHomeSetup_ContinuesPastFailedItem(t *testing.T) {
+	ctx, _, _ := hostedSetupCtx(t, "", false)
+	fb := &firstFailBD{}
+	ctx.BD = fb
+	err := ensureHostedHomeSetup(ctx, false)
+	if err == nil || !strings.Contains(err.Error(), "set events-journal") {
+		t.Fatalf("err = %v, want it to name the events-journal failure", err)
+	}
+	if _, serr := os.Stat(filepath.Join(ctx.Home, ".beads", "PRIME.md")); serr != nil {
+		t.Errorf("PRIME.md not installed after an earlier item failed: %v", serr)
+	}
+	if !strings.Contains(strings.Join(fb.calls, "\n"), "prime.max-memories") {
+		t.Errorf("caps not attempted after failure: %q", fb.calls)
+	}
+}
+
+func TestReadBeadsConfigKeys_DeeperNestingReadsUnset(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	body := "prime:\n  other:\n    max-memories: 1\n  max-memory-chars: 1\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := readBeadsConfigKeys(cfg)
+	if v, ok := got["prime.max-memories"]; ok {
+		t.Errorf("prime.max-memories = %q, want unset", v)
+	}
+}
