@@ -159,6 +159,12 @@ for the new run bead. If the row is missing, the dispatch fails and names the
 bead. In that case, run `bd config set events-journal true` in the
 `dispatcher_beads` directory and file the bead again.
 
+`--cloud` and `ateam cloud-boot` also set up the hosted `cloud_home` itself, so
+you don't need to run `ateam steward init` there. Whenever one opens it, it
+turns on `events-journal`, installs `.beads/PRIME.md` and the prime caps, and
+writes the prime-cap sentinel memory, skipping anything already set. A failure
+prints a warning to stderr and doesn't stop the dispatch or the boot.
+
 ### Inside a Dispatcher run
 
 On a Dispatcher VM, the Dispatcher starts `ateam cloud-boot start` (first

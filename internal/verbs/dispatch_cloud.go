@@ -282,6 +282,12 @@ func (c *dispatchKong) runCloud(ctx *cli.Context, repoRoot, base, slug string) e
 		newCloudBD = defaultCloudBD
 	}
 	cloud := newCloudBD(settings.home)
+	// Fail-soft: registering the initiative does not need the setup.
+	setup := c.hostedSetup
+	if setup == nil {
+		setup = ensureHostedHomeSetupSoft
+	}
+	setup(&cli.Context{Home: settings.home, BD: cloud, Stdout: ctx.Stdout, Stderr: ctx.Stderr}, false)
 
 	shortTitle := c.Problem
 	if len(shortTitle) > 72 {

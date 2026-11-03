@@ -139,6 +139,23 @@ func TestAuditOffenders(t *testing.T) {
 	}
 }
 
+func TestAuditCloudRegistrationWithoutWorktreeIsNotAnOffender(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cloud", Title: "Cloud Init", Description: "repo: https://github.com/o/r\nbranch: b\nmode: cloud\nruntime: claude"},
+		{ID: "at-bad", Title: "Leaked Bead", Description: "mode: bg\nno worktree line here"},
+	}
+	_, stderr, code := runVerb(t, "audit", issues, nil)
+	if code != 1 {
+		t.Errorf("exit code %d, want 1 (at-bad still leaks)", code)
+	}
+	if strings.Contains(stderr, "at-cloud") {
+		t.Errorf("stderr flags the cloud registration: %q", stderr)
+	}
+	if !strings.Contains(stderr, "at-bad") {
+		t.Errorf("stderr %q missing the plain offender", stderr)
+	}
+}
+
 func TestAuditBDError(t *testing.T) {
 	// bd error: treat as clean (no offenders), exit 0 with clean message.
 	_, _, code := runVerbErr(t, "audit", nil)

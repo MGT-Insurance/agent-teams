@@ -33,6 +33,20 @@ type cbEnv struct {
 	tmux     [][]string
 	polls    []func() []agentSession
 	pollN    int
+	setupLog []string // bd calls made by hosted-home setup, joined by spaces
+}
+
+// seedHostedSetup marks the fake hosted home as already set up: journal and
+// prime caps in config.yaml, and PRIME.md present.
+func seedHostedSetup(t *testing.T, home string) {
+	t.Helper()
+	cfg := "events-journal: true\nprime:\n    max-memories: 1\n    max-memory-chars: 1\n"
+	if err := os.WriteFile(filepath.Join(home, ".beads", "config.yaml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".beads", "PRIME.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newCBEnv(t *testing.T) *cbEnv {
@@ -52,6 +66,7 @@ func newCBEnv(t *testing.T) *cbEnv {
 		[]byte(`{"dolt_mode":"server","dolt_server_host":"db.example.com"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	seedHostedSetup(t, home)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("DSP_BEAD", "dsp-run1")
 	t.Setenv("DSP_SUP", e.sup)
@@ -63,6 +78,13 @@ func newCBEnv(t *testing.T) *cbEnv {
 			args = args[2:]
 		}
 		switch args[0] {
+		case "config", "remember", "--readonly", "memories":
+			e.setupLog = append(e.setupLog, strings.Join(args, " "))
+			if args[0] == "--readonly" || args[0] == "memories" {
+				body, _ := json.Marshal(map[string]string{primeCapSentinelKey: primeCapSentinelBody})
+				return body, nil, nil
+			}
+			return nil, nil, nil
 		case "show":
 			e.showN++
 			if e.showErr != nil {
@@ -205,6 +227,48 @@ func TestCloudBootStartHappyPath(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".ateam-cloud-boot.json"))
 	if err != nil || !strings.Contains(string(data), `"session":"sid-1"`) {
 		t.Errorf("state file: %q, %v", data, err)
+	}
+}
+
+func TestCloudBootSetupAllSetOnlyChecksSentinel(t *testing.T) {
+	e := newCBEnv(t)
+	e.leadSeq("sid-1", "idle")
+	e.common.IdlePolls = 1
+	wantExit(t, e.start(), cloudBootParkExit)
+	if len(e.setupLog) != 1 || !strings.Contains(e.setupLog[0], "memories") {
+		t.Errorf("setup bd calls = %q, want only the sentinel read", e.setupLog)
+	}
+}
+
+func TestCloudBootInstallsMissingSetupBeforeLaunchOnStartAndResume(t *testing.T) {
+	for name, run := range map[string]func(e *cbEnv) error{
+		"start":  (*cbEnv).start,
+		"resume": (*cbEnv).resume,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newCBEnv(t)
+			_ = os.Remove(filepath.Join(e.ctx.Home, ".beads", "config.yaml"))
+			_ = os.Remove(filepath.Join(e.ctx.Home, ".beads", "PRIME.md"))
+			state, _ := json.Marshal(cloudBootState{Initiative: "at-ab12", Session: "sid-1", Bead: "dsp-run1"})
+			if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".ateam-cloud-boot.json"), state, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			e.leadSeq("sid-1", "idle")
+			e.common.IdlePolls = 1
+			wantExit(t, run(e), cloudBootParkExit)
+			joined := strings.Join(e.setupLog, "\n")
+			for _, want := range []string{"config set events-journal true", "config set prime.max-memories 1", "config set prime.max-memory-chars 1"} {
+				if !strings.Contains(joined, want) {
+					t.Errorf("setup calls missing %q:\n%s", want, joined)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(e.ctx.Home, ".beads", "PRIME.md")); err != nil {
+				t.Errorf("PRIME.md not installed: %v", err)
+			}
+			if e.calls("new-session") != 1 {
+				t.Errorf("new-session calls = %d, want 1 (setup must not block the launch)", e.calls("new-session"))
+			}
+		})
 	}
 }
 
