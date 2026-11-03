@@ -417,6 +417,23 @@ func TestUITest_WaitIneligibleExit5(t *testing.T) {
 	}
 }
 
+// TestUITest_WaitNoCatalogWithRunVerdictExit5 replays the comment shapes of the
+// live eri-4x5kr bead: Dispatcher launches the job, the resolve fails, and the
+// tester still posts a run: comment before the bead closes failed.
+func TestUITest_WaitNoCatalogWithRunVerdictExit5(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	h.polls = []uiTestBead{closedBead("failed")}
+	h.comments = []uiTestComment{
+		{Author: "job:ui-test", CreatedAt: "2026-11-03T01:25:26Z", Text: "attempt 1: launching ui-test on https://github.com/MGT-Insurance/agent-teams.git @ 98ecdfc1402a6cf7cf0b1ccdd31b8ddac2f14147"},
+		{Author: "job:ui-test", CreatedAt: "2026-11-03T01:26:42Z", Text: "attempt 1: FAILED (exit 94)\n\n\n\n```\n=== resolve job ui-test\nresolve failed: job not found: ui-test\n\n```"},
+		{Author: "agent:tester", CreatedAt: "2026-11-03T01:27:49Z", Text: "run: cmw00a2rv00020fift3u316td\n\nThe run failed before reaching my script.\n\n| 1 | NOT-VERIFIED | none |"},
+		{Author: "agent:tester", CreatedAt: "2026-11-03T01:28:04Z", Text: "Run never reached my script: MGT-Insurance/agent-teams has no job catalog."},
+	}
+	if _, err := h.wait(time.Minute); exitOf(err) != 5 {
+		t.Errorf("exit = %d, want 5 (%v)", exitOf(err), err)
+	}
+}
+
 func TestUITest_WaitOtherNotStartedExit2WritesFailureMD(t *testing.T) {
 	h := newUIHarness(t, uiFullConfig)
 	h.polls = []uiTestBead{closedBead("failed")}

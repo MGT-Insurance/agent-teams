@@ -416,11 +416,23 @@ func uiTestVerdict(comments []uiTestComment) (c uiTestComment, runID string, ok 
 	return c, "", false
 }
 
-var ineligibleReasonRE = regexp.MustCompile(`(?i)no such job|catalog|unknown (job|type)`)
+var ineligibleReasonRE = regexp.MustCompile(`(?i)no such job|job not found|catalog|unknown (job|type)`)
 
-// uiTestIneligible reports whether the newest comment starting rejected: or
-// not started: means the repo has no ui-test catalog in the Dispatcher.
+// uiNoCatalogMarker is the Dispatcher log line for a repo with no ui-test job.
+const uiNoCatalogMarker = "resolve failed: job not found"
+
+// uiTestIneligible reports whether the repo has no ui-test catalog in the
+// Dispatcher: the newest job:ui-test comment shows a failed job resolve, or the
+// newest comment starting rejected: or not started: matches the regex.
 func uiTestIneligible(comments []uiTestComment) (reason string, ok bool) {
+	for i := len(comments) - 1; i >= 0; i-- {
+		if comments[i].Author == "job:ui-test" {
+			if strings.Contains(comments[i].Text, uiNoCatalogMarker) {
+				return comments[i].Text, true
+			}
+			break
+		}
+	}
 	for i := len(comments) - 1; i >= 0; i-- {
 		text := strings.TrimSpace(comments[i].Text)
 		switch {
@@ -515,7 +527,7 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, bead uiTestBead,
 	if hasVerdict && !strings.Contains(strings.ToLower(bead.CloseReason), "fail") {
 		return c.writeVerdict(ctx, d, bead, comments, verdict, runID, out)
 	}
-	if reason, ok := uiTestIneligible(comments); ok && !hasVerdict {
+	if reason, ok := uiTestIneligible(comments); ok {
 		fmt.Fprintf(ctx.Stderr, "ui-test wait: Dispatcher cannot run this repo (%s); test locally\n", firstLine(reason))
 		return cli.Silent(uiExitIneligible)
 	}
