@@ -1,10 +1,15 @@
 package verbs
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // dispatcherRun reports whether this process runs inside a Dispatcher run:
@@ -75,9 +80,30 @@ func newGateMailOp(id, kind, ask string) outboxMailOp {
 	}
 }
 
-// appendOutboxOp appends op as one JSON line to the run's outbox file. It does
-// nothing outside a Dispatcher run. The line goes out in a single write, and a
-// marshal error writes nothing.
+// outboxHelperExitInvalid is the exit code of $DSP_SUP/bin/outbox-append for
+// input that is not valid JSON. The helper writes nothing in that case.
+const outboxHelperExitInvalid = 2
+
+// outboxHelper returns the path of $DSP_SUP/bin/outbox-append when it is a
+// regular executable file, and "" otherwise.
+func outboxHelper(sup string) string {
+	p := filepath.Join(sup, "bin", "outbox-append")
+	if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+		return p
+	}
+	return ""
+}
+
+// appendOutboxOp appends op as one JSON line to the run's outbox. It does
+// nothing outside a Dispatcher run. A marshal error writes nothing.
+//
+// When $DSP_SUP/bin/outbox-append is executable, it receives the line on stdin
+// and appends and publishes it; ateam doesn't touch the outbox file. Exit code
+// 2 (invalid JSON) is an error. Any other exit code counts as success, because
+// the helper has already appended the line. The helper's stdout and stderr go
+// to ateam's stderr, so ateam's own stdout stays parseable. Without the helper
+// (an older Dispatcher or a local run), the line goes out in a single direct
+// append.
 func appendOutboxOp(op any) error {
 	path, err := outboxPath()
 	if err != nil || path == "" {
@@ -87,13 +113,39 @@ func appendOutboxOp(op any) error {
 	if err != nil {
 		return err
 	}
+	line = append(line, '\n')
+	if helper := outboxHelper(filepath.Dir(path)); helper != "" {
+		return runOutboxHelper(helper, line)
+	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
+	if _, err := f.Write(line); err != nil {
 		f.Close()
 		return err
 	}
 	return f.Close()
+}
+
+// runOutboxHelper pipes line to the outbox-append helper at path.
+func runOutboxHelper(path string, line []byte) error {
+	var stderr bytes.Buffer
+	cmd := exec.Command(path)
+	cmd.Stdin = bytes.NewReader(line)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &exitErr):
+		if exitErr.ExitCode() == outboxHelperExitInvalid {
+			return fmt.Errorf("outbox-append rejected the line as invalid JSON: %s", strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	default:
+		return fmt.Errorf("run outbox-append: %w", err)
+	}
 }
