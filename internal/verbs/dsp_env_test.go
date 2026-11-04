@@ -166,6 +166,22 @@ func TestDspEnvOutboxAppendOpHelperExitCodes(t *testing.T) {
 	}
 }
 
+func TestDspEnvOutboxAppendOpExit2ReportsNothingWritten(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "bd-1")
+	t.Setenv("DSP_SUP", sup)
+	writeOutboxHelper(t, sup, 0o755, 2, "outbox-append: nothing written: lock timeout")
+	err := appendOutboxOp(outboxLabelOp{Op: "label"})
+	if err == nil {
+		t.Fatal("exit 2: want an error")
+	}
+	for _, want := range []string{"outbox-append wrote nothing: ", "lock timeout"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
 func TestDspEnvOutboxAppendOpNonExecutableHelperFallsBack(t *testing.T) {
 	sup := t.TempDir()
 	t.Setenv("DSP_BEAD", "bd-1")

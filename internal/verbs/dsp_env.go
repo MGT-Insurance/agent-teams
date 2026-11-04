@@ -80,9 +80,10 @@ func newGateMailOp(id, kind, ask string) outboxMailOp {
 	}
 }
 
-// outboxHelperExitInvalid is the exit code of $DSP_SUP/bin/outbox-append for
-// input that is not valid JSON. The helper writes nothing in that case.
-const outboxHelperExitInvalid = 2
+// outboxHelperExitNothingWritten is the exit code of $DSP_SUP/bin/outbox-append
+// when it wrote nothing: invalid JSON, a lock timeout, an fs error, or node
+// missing. Its stderr names the cause.
+const outboxHelperExitNothingWritten = 2
 
 // outboxHelper returns the path of $DSP_SUP/bin/outbox-append when it is a
 // regular executable file, and "" otherwise.
@@ -99,8 +100,8 @@ func outboxHelper(sup string) string {
 //
 // When $DSP_SUP/bin/outbox-append is executable, it receives the line on stdin
 // and appends and publishes it; ateam doesn't touch the outbox file. Exit code
-// 2 (invalid JSON) is an error. Any other exit code counts as success, because
-// the helper has already appended the line. The helper's stdout and stderr go
+// 2 (nothing written) is an error. Any other exit code counts as success,
+// because the helper has already appended the line. The helper's stdout and stderr go
 // to ateam's stderr, so ateam's own stdout stays parseable. Without the helper
 // (an older Dispatcher or a local run), the line goes out in a single direct
 // append.
@@ -141,8 +142,8 @@ func runOutboxHelper(path string, line []byte) error {
 	case err == nil:
 		return nil
 	case errors.As(err, &exitErr):
-		if exitErr.ExitCode() == outboxHelperExitInvalid {
-			return fmt.Errorf("outbox-append rejected the line as invalid JSON: %s", strings.TrimSpace(stderr.String()))
+		if exitErr.ExitCode() == outboxHelperExitNothingWritten {
+			return fmt.Errorf("outbox-append wrote nothing: %s",strings.TrimSpace(stderr.String()))
 		}
 		return nil
 	default:
