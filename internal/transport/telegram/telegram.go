@@ -613,7 +613,7 @@ func withCaption(label, caption string) string {
 }
 
 // parseMentions extracts @-mentioned usernames from msg's "mention" entities
-// ("text_mention" entities are for users without usernames and never apply to
+// and from "bot_command" entities of the form "/cmd@username" ("text_mention" entities are for users without usernames and never apply to
 // bots, so they're ignored). Telegram entity Offset/Length are UTF-16 code
 // unit counts, not bytes or runes, so msg.Text is re-encoded to UTF-16 before
 // slicing — otherwise a multi-byte character before the mention would
@@ -625,13 +625,18 @@ func (t *Telegram) parseMentions(msg *message) (mentions []string, mentionsSelf 
 	}
 	units := utf16.Encode([]rune(msg.Text))
 	for _, e := range msg.Entities {
-		if e.Type != "mention" {
+		if e.Type != "mention" && e.Type != "bot_command" {
 			continue
 		}
 		if e.Offset < 0 || e.Length < 0 || e.Offset+e.Length > len(units) {
 			continue
 		}
-		name := strings.ToLower(strings.TrimPrefix(string(utf16.Decode(units[e.Offset:e.Offset+e.Length])), "@"))
+		raw := string(utf16.Decode(units[e.Offset : e.Offset+e.Length]))
+		if e.Type == "bot_command" {
+			// "/cmd@username" addresses a bot; a bare "/cmd" names no one.
+			_, raw, _ = strings.Cut(raw, "@")
+		}
+		name := strings.ToLower(strings.TrimPrefix(raw, "@"))
 		if name == "" {
 			continue
 		}

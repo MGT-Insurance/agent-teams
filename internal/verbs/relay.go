@@ -173,6 +173,7 @@ func RegisterRelayKong(p *cli.Parser) {
 		claimsLocally:       claimsInitiativeLocally,
 		isFallbackResponder: isFallbackResponder,
 		knownStewardTopic:   isKnownStewardTopic,
+		cloudOwned:          defaultCloudOwned(workspace.Home()),
 	})
 }
 
@@ -192,6 +193,10 @@ type relayKong struct {
 	claimsLocally       claimsLocallyFunc       `kong:"-"`
 	isFallbackResponder isFallbackResponderFunc `kong:"-"`
 	knownStewardTopic   knownStewardTopicFunc   `kong:"-"`
+
+	// cloudOwned skips replies in cloud-owned topics (relay_cloud_owned.go,
+	// which states the removal condition). Nil means "never owned".
+	cloudOwned relayCloudOwnedFunc `kong:"-"`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -415,6 +420,19 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 			}
 		}
 		untied = len(open) == 0
+	}
+
+	// Cloud-owned topic: the hosted workspace labels it, so the Dispatcher
+	// handles it. Skip with no ack and no mail. A query error falls through
+	// to the behavior below.
+	if untied && c.cloudOwned != nil {
+		owned, err := c.cloudOwned(label)
+		if err != nil {
+			transport.Logf(ctx.Stderr, 2, "hosted label check for %q failed: %v — continuing", label, err)
+		} else if owned {
+			transport.Logf(ctx.Stderr, 2, "thread %q is cloud-owned (hosted label) — skipping", reply.ThreadRef)
+			return nil
+		}
 	}
 
 	if untied {
