@@ -143,7 +143,7 @@ func runOutboxHelper(path string, line []byte) error {
 		return nil
 	case errors.As(err, &exitErr):
 		if exitErr.ExitCode() == outboxHelperExitNothingWritten {
-			return fmt.Errorf("outbox-append wrote nothing: %s",strings.TrimSpace(stderr.String()))
+			return fmt.Errorf("outbox-append wrote nothing: %s", strings.TrimSpace(stderr.String()))
 		}
 		return nil
 	default:
