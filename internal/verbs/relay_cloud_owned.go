@@ -29,8 +29,10 @@ import (
 // cloudOwnedTimeout bounds the hosted label query. Receive handles replies
 // serially, so an unbounded query against an unreachable hosted server would
 // stall getUpdates; a timeout surfaces as an error and handleReply continues
-// down the unrouted path.
-const cloudOwnedTimeout = 5 * time.Second
+// down the unrouted path. The hosted lookup takes about 2.8s per call
+// (measured November 5, 2026), so the bound leaves wide margin: a timeout
+// on a healthy server would misroute the reply this check exists to prevent.
+const cloudOwnedTimeout = 10 * time.Second
 
 // relayCloudOwnedFunc reports whether the hosted workspace holds an
 // initiative (open or closed) carrying label. Injected so tests can
