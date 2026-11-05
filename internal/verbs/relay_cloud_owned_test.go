@@ -1,8 +1,10 @@
 package verbs
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
 
 type cloudOwnedHarness struct {
@@ -148,36 +151,67 @@ func TestCloudOwned_DefaultUnsetCloudHomeIsNotOwned(t *testing.T) {
 	}
 }
 
-type fakeCloudRunner struct {
-	out  string
-	err  error
-	args []string
-}
-
-func (f *fakeCloudRunner) Run(args ...string) (string, error) { return f.out, f.err }
-func (f *fakeCloudRunner) RunJSON(dst any, args ...string) error {
-	f.args = args
-	if f.err != nil {
-		return f.err
+func fakeCloudRun(out string, err error, got *[]string) cloudRunFunc {
+	return func(_ context.Context, args ...string) (string, error) {
+		if got != nil {
+			*got = args
+		}
+		return out, err
 	}
-	return json.Unmarshal([]byte(f.out), dst)
 }
 
 func TestCloudOwned_LabelExistsQueriesAllStatuses(t *testing.T) {
-	r := &fakeCloudRunner{out: `[{"id":"dsp-1","status":"closed"}]`}
-	owned, err := cloudLabelExists(r, "thread:77")
+	var args []string
+	owned, err := cloudLabelExists(fakeCloudRun(`[{"id":"dsp-1","status":"closed"}]`, nil, &args), "thread:77", time.Second)
 	if err != nil || !owned {
 		t.Fatalf("got (%v, %v), want (true, nil)", owned, err)
 	}
-	if got := strings.Join(r.args, " "); got != "list --all --label=thread:77 --json --limit 1" {
+	if got := strings.Join(args, " "); got != "list --all --label=thread:77 --json --limit 1" {
 		t.Errorf("bd args = %q", got)
 	}
-	r = &fakeCloudRunner{out: `[]`}
-	if owned, err := cloudLabelExists(r, "thread:78"); err != nil || owned {
+	if owned, err := cloudLabelExists(fakeCloudRun(`[]`, nil, nil), "thread:78", time.Second); err != nil || owned {
 		t.Errorf("empty result: got (%v, %v), want (false, nil)", owned, err)
 	}
-	r = &fakeCloudRunner{err: errors.New("boom")}
-	if _, err := cloudLabelExists(r, "thread:79"); err == nil {
+	if _, err := cloudLabelExists(fakeCloudRun("", errors.New("boom"), nil), "thread:79", time.Second); err == nil {
 		t.Error("runner error must propagate")
+	}
+	if _, err := cloudLabelExists(fakeCloudRun("not json", nil, nil), "thread:80", time.Second); err == nil {
+		t.Error("bad JSON must error")
+	}
+}
+
+func TestCloudOwned_HungQueryTimesOut(t *testing.T) {
+	blocked := func(ctx context.Context, _ ...string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	start := time.Now()
+	owned, err := cloudLabelExists(blocked, "thread:77", 50*time.Millisecond)
+	if owned || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got (%v, %v), want (false, DeadlineExceeded)", owned, err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("took %v, want about the 50ms bound", d)
+	}
+}
+
+func TestCloudOwned_DefaultSameWorkspaceIsNotOwned(t *testing.T) {
+	home := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, cloud := range map[string]string{"same": home, "trailing slash": home + "/", "symlink": link} {
+		cfg := "cloud_home = \"" + cloud + "\"\n"
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := workspaceconfig.CloudHome(home); err != nil || !ok || got == "" {
+			t.Fatalf("%s: config not read: (%q, %v, %v)", name, got, ok, err)
+		}
+		owned, err := defaultCloudOwned(home)("thread:77")
+		if err != nil || owned {
+			t.Errorf("%s: got (%v, %v), want (false, nil) with no hosted query", name, owned, err)
+		}
 	}
 }

@@ -424,7 +424,10 @@ func (c *relayKong) handleReply(ctx *cli.Context, reply transport.Reply) error {
 
 	// Cloud-owned topic: the hosted workspace labels it, so the Dispatcher
 	// handles it. Skip with no ack and no mail. A query error falls through
-	// to the behavior below.
+	// to the behavior below. This runs on every machine, before the
+	// isFallbackResponder gate: a non-fallback machine still runs the closed
+	// safety net below, which can mail the Steward, so the hosted check must
+	// precede it.
 	if untied && c.cloudOwned != nil {
 		owned, err := c.cloudOwned(label)
 		if err != nil {
