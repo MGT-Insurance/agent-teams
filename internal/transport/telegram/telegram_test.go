@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -1550,6 +1551,57 @@ func TestReceive_MentionsSelf_CallsGetMeExactlyOnce(t *testing.T) {
 	}
 	if len(received[0].Mentions) != 1 || received[0].Mentions[0] != "stewardbot" {
 		t.Errorf("Mentions: got %v, want [stewardbot]", received[0].Mentions)
+	}
+}
+
+// TestReceive_BotCommandMention proves "/cmd@username" bot_command entities
+// count as mentions, so another bot's pairing command is recognizable as
+// addressed elsewhere, while a bare "/cmd" names no one.
+func TestReceive_BotCommandMention(t *testing.T) {
+	const chatID = "-100111222333"
+	chatIDInt, _ := strconv.ParseInt(chatID, 10, 64)
+
+	cases := []struct {
+		name         string
+		text         string
+		length       int
+		wantMentions []string
+		wantSelf     bool
+	}{
+		{"other bot", "/start@OtherBot abc123", 15, []string{"otherbot"}, false},
+		{"self", "/status@StewardBot", 18, []string{"stewardbot"}, true},
+		{"bare command", "/start abc123", 6, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			updates := []map[string]any{{
+				"update_id": 1,
+				"message": map[string]any{
+					"message_id": 10,
+					"text":       tc.text,
+					"entities":   []map[string]any{{"type": "bot_command", "offset": 0, "length": tc.length}},
+					"chat":       map[string]any{"id": chatIDInt},
+				},
+			}}
+			srv, _ := newMentionTestServer("stewardbot", updates)
+			defer srv.Close()
+			tg := newTestTelegram(t, srv, chatID)
+
+			var received []transport.Reply
+			_ = tg.Receive(func(r transport.Reply) error {
+				received = append(received, r)
+				return fmt.Errorf("stop")
+			})
+			if len(received) != 1 {
+				t.Fatalf("got %d replies, want 1", len(received))
+			}
+			if got := received[0].Mentions; !reflect.DeepEqual(got, tc.wantMentions) {
+				t.Errorf("Mentions: got %v, want %v", got, tc.wantMentions)
+			}
+			if received[0].MentionsSelf != tc.wantSelf {
+				t.Errorf("MentionsSelf: got %v, want %v", received[0].MentionsSelf, tc.wantSelf)
+			}
+		})
 	}
 }
 
