@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,6 +110,96 @@ func TestDspEnvOutboxAppendOpMarshalErrorWritesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sup, "outbox.jsonl")); !os.IsNotExist(err) {
 		t.Errorf("outbox file exists after a marshal error: %v", err)
+	}
+}
+
+// writeOutboxHelper installs a fake $DSP_SUP/bin/outbox-append that copies its
+// stdin to $DSP_SUP/helper-stdin, prints msg to stderr, and exits with code.
+func writeOutboxHelper(t *testing.T, sup string, mode os.FileMode, code int, msg string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(sup, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\ncat > %q\necho %q >&2\nexit %d\n", filepath.Join(sup, "helper-stdin"), msg, code)
+	if err := os.WriteFile(filepath.Join(sup, "bin", "outbox-append"), []byte(script), mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDspEnvOutboxAppendOpUsesHelper(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "bd-1")
+	t.Setenv("DSP_SUP", sup)
+	writeOutboxHelper(t, sup, 0o755, 0, "published")
+
+	if err := appendOutboxOp(outboxLabelOp{Op: "label", Add: []string{"a"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(sup, "helper-stdin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"op":"label","add":["a"],"remove":[]}` + "\n"; string(got) != want {
+		t.Errorf("helper stdin = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(sup, "outbox.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("ateam wrote outbox.jsonl despite the helper: %v", err)
+	}
+}
+
+func TestDspEnvOutboxAppendOpHelperExitCodes(t *testing.T) {
+	for _, c := range []struct {
+		code    int
+		wantErr bool
+	}{{0, false}, {1, false}, {2, true}, {3, false}} {
+		sup := t.TempDir()
+		t.Setenv("DSP_BEAD", "bd-1")
+		t.Setenv("DSP_SUP", sup)
+		writeOutboxHelper(t, sup, 0o755, c.code, "bad json here")
+		err := appendOutboxOp(outboxLabelOp{Op: "label"})
+		if (err != nil) != c.wantErr {
+			t.Errorf("exit %d: err = %v, wantErr %v", c.code, err, c.wantErr)
+		}
+		if c.wantErr && (err == nil || !strings.Contains(err.Error(), "bad json here")) {
+			t.Errorf("exit %d: error %v lacks the helper's stderr", c.code, err)
+		}
+	}
+}
+
+func TestDspEnvOutboxAppendOpExit2ReportsNothingWritten(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "bd-1")
+	t.Setenv("DSP_SUP", sup)
+	writeOutboxHelper(t, sup, 0o755, 2, "outbox-append: nothing written: lock timeout")
+	err := appendOutboxOp(outboxLabelOp{Op: "label"})
+	if err == nil {
+		t.Fatal("exit 2: want an error")
+	}
+	for _, want := range []string{"outbox-append wrote nothing: ", "lock timeout"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+func TestDspEnvOutboxAppendOpNonExecutableHelperFallsBack(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "bd-1")
+	t.Setenv("DSP_SUP", sup)
+	writeOutboxHelper(t, sup, 0o644, 0, "unused")
+
+	if err := appendOutboxOp(outboxLabelOp{Op: "label"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(sup, "outbox.jsonl"))
+	if err != nil {
+		t.Fatalf("direct append did not run: %v", err)
+	}
+	if want := `{"op":"label","add":[],"remove":[]}` + "\n"; string(data) != want {
+		t.Errorf("outbox = %q, want %q", data, want)
+	}
+	if _, err := os.Stat(filepath.Join(sup, "helper-stdin")); !os.IsNotExist(err) {
+		t.Errorf("non-executable helper ran: %v", err)
 	}
 }
 
