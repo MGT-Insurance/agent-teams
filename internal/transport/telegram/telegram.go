@@ -613,7 +613,8 @@ func withCaption(label, caption string) string {
 }
 
 // parseMentions extracts @-mentioned usernames from msg's "mention" entities
-// and from "bot_command" entities of the form "/cmd@username" ("text_mention" entities are for users without usernames and never apply to
+// and from "bot_command" entities of the form "/cmd@username"
+// ("text_mention" entities are for users without usernames and never apply to
 // bots, so they're ignored). Telegram entity Offset/Length are UTF-16 code
 // unit counts, not bytes or runes, so msg.Text is re-encoded to UTF-16 before
 // slicing — otherwise a multi-byte character before the mention would
