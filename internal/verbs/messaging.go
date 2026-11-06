@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +90,12 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	// File must exist.
 	if _, err := os.Stat(c.File); err != nil {
 		return cli.Usagef("ateam send: file not found: %s", c.File)
+	}
+
+	// Inside a Dispatcher run, mail to the steward goes through the run outbox:
+	// nothing is written to at and no doorbell is touched.
+	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID == StewardHandle {
+		return c.sendStewardThroughOutbox(ctx)
 	}
 
 	sender := resolveSender(ctx, c.Sender)
@@ -290,6 +297,24 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	return nil
 }
 
+// sendStewardThroughOutbox appends a kind: message mail op for the steward to
+// the run outbox. The initiative is the run's DSP_META_INITIATIVE.
+func (c *sendKong) sendStewardThroughOutbox(ctx *cli.Context) error {
+	id := os.Getenv("DSP_META_INITIATIVE")
+	if id == "" {
+		return errors.New("ateam send: DSP_META_INITIATIVE is empty; cannot address the steward from this run")
+	}
+	text, err := os.ReadFile(c.File)
+	if err != nil {
+		return fmt.Errorf("ateam send: read %s: %w", c.File, err)
+	}
+	if err := appendOutboxOp(newMessageMailOp(id, string(text))); err != nil {
+		return fmt.Errorf("ateam send: outbox: %w", err)
+	}
+	fmt.Fprintln(ctx.Stdout, "sent to steward through the run outbox")
+	return nil
+}
+
 // createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
 // hit, create nothing and return the existing open message's id (deduped =
 // true); on a non-hosted workspace mail send never refuses a recipient, so
@@ -385,9 +410,16 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam inbox: getwd: %w", err)
 	}
 
+	_, sup, inRun := dispatcherRun()
+	inRun = inRun && sup != ""
+
 	myID, codexRecipient, err := resolveInboxRecipientRuntime(ctx, cwd)
 	if err != nil {
-		return nil
+		if !inRun {
+			return nil
+		}
+		// Inside a run, run messages need no initiative lookup.
+		myID = ""
 	}
 
 	// Session-of-record guard (agent-teams-e3mq.31): only the Steward path
@@ -401,21 +433,38 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 		}
 	}
 
-	messages, err := queryUnreadMessages(ctx, myID)
-	if err != nil {
-		return fmt.Errorf("ateam inbox: query: %w", err)
+	var messages []bd.Issue
+	if myID != "" {
+		messages, err = queryUnreadMessages(ctx, myID)
+		if err != nil {
+			return fmt.Errorf("ateam inbox: query: %w", err)
+		}
+	}
+
+	var runInbox runInboxState
+	if inRun {
+		runInbox = readRunInbox(ctx, sup, !c.Peek && !c.JSON)
 	}
 
 	if c.Peek {
-		if len(messages) == 0 {
+		if n := len(runInbox.files) + len(runInbox.repeats) + len(messages); n == 0 {
 			fmt.Fprintln(ctx.Stdout, "no unread mail")
 		} else {
-			fmt.Fprintf(ctx.Stdout, "%d unread message(s)\n", len(messages))
+			fmt.Fprintf(ctx.Stdout, "%d unread message(s)\n", n)
 		}
 		return nil
 	}
 
-	if len(messages) == 0 {
+	if n := len(runInbox.files) + len(runInbox.repeats); c.JSON && n > 0 {
+		fmt.Fprintf(ctx.Stderr, "ateam inbox: %d run message(s) not shown in --json; run ateam mail inbox\n", n)
+	}
+	consumeRun := inRun && !c.JSON
+
+	if len(messages) == 0 && !(consumeRun && len(runInbox.files) > 0) {
+		if consumeRun {
+			// Only repeats (if any): clear them without printing a reminder.
+			runInbox.ack(ctx)
+		}
 		fmt.Fprintln(ctx.Stdout, "no unread mail")
 		if codexRecipient {
 			reconcileCodexInboxDoorbell(ctx, myID)
@@ -430,7 +479,15 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 		}
 		fmt.Fprintln(ctx.Stdout, string(raw))
 	} else {
-		printMessagesBlock(ctx, messages)
+		var shown []inboxFile
+		if consumeRun {
+			shown = runInbox.files
+		}
+		printInboxBlock(ctx, shown, messages)
+	}
+
+	if consumeRun {
+		runInbox.ack(ctx)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -444,6 +501,119 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 	}
 
 	return nil
+}
+
+// runInboxState is the run-message files found under $DSP_SUP/inbox.
+type runInboxState struct {
+	sup     string
+	files   []inboxFile // new messages, sorted by seq
+	repeats []int       // seqs whose inbox/read/<seq>.json already exists
+}
+
+// readRunInbox parses $DSP_SUP/inbox/*.json. A file whose name is not a
+// positive integer seq, or whose content does not parse, is named on stderr;
+// with quarantine it is also moved to inbox/bad/ so it is not counted again.
+func readRunInbox(ctx *cli.Context, sup string, quarantine bool) runInboxState {
+	st := runInboxState{sup: sup}
+	for _, name := range listInboxJSON(sup) {
+		seq, ok := inboxSeq(name)
+		var f inboxFile
+		var err error
+		if !ok {
+			err = errors.New("name is not <positive integer>.json")
+		} else {
+			var data []byte
+			if data, err = os.ReadFile(filepath.Join(sup, "inbox", name)); err == nil {
+				err = json.Unmarshal(data, &f)
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam inbox: skip %s: %v\n", name, err)
+			if quarantine {
+				quarantineInboxFile(ctx, sup, name)
+			}
+			continue
+		}
+		f.Seq = seq
+		if _, statErr := os.Stat(filepath.Join(sup, "inbox", "read", name)); statErr == nil {
+			st.repeats = append(st.repeats, seq)
+			continue
+		}
+		st.files = append(st.files, f)
+	}
+	sort.Slice(st.files, func(i, j int) bool { return st.files[i].Seq < st.files[j].Seq })
+	sort.Ints(st.repeats)
+	return st
+}
+
+// quarantineInboxFile moves inbox/<name> to inbox/bad/<name>.
+func quarantineInboxFile(ctx *cli.Context, sup, name string) {
+	bad := filepath.Join(sup, "inbox", "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam inbox: create bad dir: %v\n", err)
+		return
+	}
+	if err := os.Rename(filepath.Join(sup, "inbox", name), filepath.Join(bad, name)); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam inbox: quarantine %s: %v\n", name, err)
+		return
+	}
+	fmt.Fprintf(ctx.Stderr, "ateam inbox: moved %s to inbox/bad/\n", name)
+}
+
+// maxAckSeqs is Dispatcher's cap on seqs in one ack line.
+const maxAckSeqs = 100
+
+// ack appends ack lines of at most maxAckSeqs seqs covering every new and
+// repeated seq. After a chunk appends, its new files move to inbox/read/ and
+// its repeats are deleted. After a failed append, later chunks stay untouched.
+func (r runInboxState) ack(ctx *cli.Context) {
+	repeat := map[int]bool{}
+	var seqs []int
+	for _, s := range r.repeats {
+		repeat[s] = true
+		seqs = append(seqs, s)
+	}
+	for _, f := range r.files {
+		seqs = append(seqs, f.Seq)
+	}
+	sort.Ints(seqs)
+	inbox := filepath.Join(r.sup, "inbox")
+	for len(seqs) > 0 {
+		n := min(len(seqs), maxAckSeqs)
+		chunk := seqs[:n]
+		seqs = seqs[n:]
+		if err := appendOutboxOp(outboxAckOp{Op: "ack", Seqs: chunk}); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam inbox: ack failed: %v; messages stay unread\n", err)
+			return
+		}
+		if err := os.MkdirAll(filepath.Join(inbox, "read"), 0o755); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam inbox: create read dir: %v\n", err)
+			return
+		}
+		for _, seq := range chunk {
+			name := strconv.Itoa(seq) + ".json"
+			var err error
+			if repeat[seq] {
+				err = os.Remove(filepath.Join(inbox, name))
+			} else {
+				err = os.Rename(filepath.Join(inbox, name), filepath.Join(inbox, "read", name))
+			}
+			if err != nil {
+				fmt.Fprintf(ctx.Stderr, "ateam inbox: clear %s: %v\n", name, err)
+			}
+		}
+	}
+}
+
+// printInboxBlock prints run messages first, then at mail, in one block.
+func printInboxBlock(ctx *cli.Context, runMsgs []inboxFile, messages []bd.Issue) {
+	fmt.Fprintln(ctx.Stdout, "<system-reminder>")
+	fmt.Fprintf(ctx.Stdout, "You have %d unread message(s):\n", len(runMsgs)+len(messages))
+	for _, m := range runMsgs {
+		fmt.Fprintf(ctx.Stdout, "\nfrom %s (run comment %d, %s):\n%s\n", m.Author, m.Seq, m.At, m.Text)
+	}
+	printMessageEntries(ctx, messages)
+	fmt.Fprintln(ctx.Stdout, "</system-reminder>")
 }
 
 func queryUnreadMessages(ctx *cli.Context, recipientID string) ([]bd.Issue, error) {
@@ -918,10 +1088,12 @@ func filterMessageType(issues []bd.Issue) []bd.Issue {
 	return out
 }
 
-// printMessagesBlock writes messages as a <system-reminder>-style block to ctx.Stdout.
-func printMessagesBlock(ctx *cli.Context, messages []bd.Issue) {
-	fmt.Fprintln(ctx.Stdout, "<system-reminder>")
-	fmt.Fprintf(ctx.Stdout, "You have %d unread message(s):\n", len(messages))
+// printMessageEntries prints each at message and the re-read footer. It prints
+// nothing for an empty list.
+func printMessageEntries(ctx *cli.Context, messages []bd.Issue) {
+	if len(messages) == 0 {
+		return
+	}
 	for _, msg := range messages {
 		sender := senderFromNotes(msg.Notes)
 		if sender == "" {
@@ -933,7 +1105,6 @@ func printMessagesBlock(ctx *cli.Context, messages []bd.Issue) {
 	for _, msg := range messages {
 		fmt.Fprintf(ctx.Stdout, "  ateam show %s\n", msg.ID)
 	}
-	fmt.Fprintln(ctx.Stdout, "</system-reminder>")
 }
 
 // senderFromNotes extracts the sender from a "from: <sender>" line in notes.

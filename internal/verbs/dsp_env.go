@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -78,6 +79,70 @@ func newGateMailOp(id, kind, ask string) outboxMailOp {
 		Title: id + ": " + kind + " gate",
 		Body:  "initiative: " + id + "\nkind: " + kind + "\n---\n" + ask,
 	}
+}
+
+// newMessageMailOp builds the mail op for a kind: message note from the DRI of
+// initiative id to the steward. It truncates text like newGateMailOp.
+func newMessageMailOp(id, text string) outboxMailOp {
+	if r := []rune(text); len(r) > maxGateOutboxAskRunes {
+		text = string(r[:maxGateOutboxAskRunes])
+	}
+	return outboxMailOp{
+		Op:    "file",
+		Type:  "mail",
+		Title: id + ": message",
+		Body:  "initiative: " + id + "\nkind: message\n---\n" + text,
+	}
+}
+
+// outboxAckOp is the outbox line that acknowledges run messages:
+// {"op":"ack","seqs":[...]}.
+type outboxAckOp struct {
+	Op   string `json:"op"`
+	Seqs []int  `json:"seqs"`
+}
+
+// inboxFile is one run message a Dispatcher wrote to $DSP_SUP/inbox/<seq>.json.
+type inboxFile struct {
+	Seq    int    `json:"seq"`
+	Author string `json:"author"`
+	Text   string `json:"text"`
+	At     string `json:"at"`
+}
+
+// inboxSeq parses an inbox file name "<seq>.json" with a positive integer seq.
+func inboxSeq(name string) (int, bool) {
+	seq, err := strconv.Atoi(strings.TrimSuffix(name, ".json"))
+	return seq, err == nil && seq > 0 && strings.HasSuffix(name, ".json")
+}
+
+// listInboxJSON returns the names of all *.json files directly under
+// $DSP_SUP/inbox (not read/ or bad/), sorted. A missing directory yields none.
+func listInboxJSON(sup string) []string {
+	entries, err := os.ReadDir(filepath.Join(sup, "inbox"))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// listInboxNames returns the names from listInboxJSON that "ateam mail inbox"
+// can clear: "<seq>.json" with a positive integer seq. hook-scan and the
+// resume notice count only these.
+func listInboxNames(sup string) []string {
+	var names []string
+	for _, n := range listInboxJSON(sup) {
+		if _, ok := inboxSeq(n); ok {
+			names = append(names, n)
+		}
+	}
+	return names
 }
 
 // outboxHelperExitNothingWritten is the exit code of $DSP_SUP/bin/outbox-append

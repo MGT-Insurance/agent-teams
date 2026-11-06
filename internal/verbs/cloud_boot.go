@@ -149,6 +149,43 @@ func resolveCloudPluginDir(flag string, executable func() (string, error)) (stri
 	return dir, nil
 }
 
+// cloudInboxNotice is the resume prompt when the supervisor inbox holds run
+// messages. The dash is U+2014.
+const cloudInboxNotice = "Dispatcher resumed this parked run. You have new mail — run `ateam mail inbox` to read it."
+
+// writeInboxRing creates $DSP_SUP/inbox and writes the executable
+// $DSP_SUP/bin/inbox-ring. Dispatcher runs the script after it writes an inbox
+// file; the script touches the initiative's doorbell so the Stop hook wakes
+// the DRI. Both paths are fixed at write time and single-quoted.
+func writeInboxRing(home, sup, id string) error {
+	if err := os.MkdirAll(filepath.Join(sup, "inbox"), 0o755); err != nil {
+		return fmt.Errorf("create inbox dir: %w", err)
+	}
+	binDir := filepath.Join(sup, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("create bin dir: %w", err)
+	}
+	mailbox := shellQuote(filepath.Join(home, "mailbox"))
+	wake := shellQuote(filepath.Join(home, "mailbox", id+".wake"))
+	script := "#!/bin/sh\n" +
+		"# Written by ateam cloud-boot. Dispatcher runs this after it writes $DSP_SUP/inbox/<seq>.json.\n" +
+		"mkdir -p " + mailbox + " && touch " + wake + "\n"
+	path := filepath.Join(binDir, "inbox-ring")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		return fmt.Errorf("write inbox-ring: %w", err)
+	}
+	// WriteFile keeps the mode of an existing file and applies the umask.
+	if err := os.Chmod(path, 0o755); err != nil {
+		return fmt.Errorf("chmod inbox-ring: %w", err)
+	}
+	return nil
+}
+
+// shellQuote single-quotes s for /bin/sh.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // cloudWakePrompt builds the resume prompt from wake (nil = no usable event).
 func cloudWakePrompt(id string, wake *cloudWake) string {
 	if wake == nil {
@@ -263,6 +300,11 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	if iss.Status == "closed" {
 		return fmt.Errorf("initiative %s is closed", id)
 	}
+	// Fail-soft: the turn-start count still delivers inbox files without the
+	// doorbell script.
+	if err := writeInboxRing(ctx.Home, sup, id); err != nil {
+		fmt.Fprintf(ctx.Stderr, "WARNING: inbox-ring setup failed (continuing): %v\n", err)
+	}
 
 	var sid string
 	args := []string{"new-session", "-d", "-s", cloudBootTmuxName, "-c", cwd,
@@ -277,7 +319,11 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 			}
 			sid = sessions[len(sessions)-1]
 		}
-		prompt = cloudWakePrompt(id, readCloudWake(sup))
+		if len(listInboxNames(sup)) > 0 {
+			prompt = cloudInboxNotice
+		} else {
+			prompt = cloudWakePrompt(id, readCloudWake(sup))
+		}
 		args = append(args, "--resume", sid)
 	} else {
 		sid = c.NewID()

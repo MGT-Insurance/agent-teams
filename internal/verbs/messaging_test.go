@@ -808,7 +808,7 @@ func TestPrintMessagesBlock_FooterPresent(t *testing.T) {
 		{ID: "at-wisp-f2", IssueType: "message", Notes: "from: agent-b", Description: "body two"},
 	}
 	ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
-	printMessagesBlock(ctx, messages)
+	printInboxBlock(ctx, nil, messages)
 
 	out := stdout.String()
 	if !strings.Contains(out, "ateam show at-wisp-f1") {
@@ -833,7 +833,7 @@ func TestPrintMessagesBlock_SingleMessage(t *testing.T) {
 		{ID: "at-solo", IssueType: "message", Notes: "from: x", Description: "only"},
 	}
 	ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
-	printMessagesBlock(ctx, messages)
+	printInboxBlock(ctx, nil, messages)
 
 	out := stdout.String()
 	if !strings.Contains(out, "ateam show at-solo") {
