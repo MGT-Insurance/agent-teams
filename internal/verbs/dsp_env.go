@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -109,9 +110,15 @@ type inboxFile struct {
 	At     string `json:"at"`
 }
 
-// listInboxNames returns the sorted names of the *.json files directly under
-// $DSP_SUP/inbox (not read/). A missing directory yields none.
-func listInboxNames(sup string) []string {
+// inboxSeq parses an inbox file name "<seq>.json" with a positive integer seq.
+func inboxSeq(name string) (int, bool) {
+	seq, err := strconv.Atoi(strings.TrimSuffix(name, ".json"))
+	return seq, err == nil && seq > 0 && strings.HasSuffix(name, ".json")
+}
+
+// listInboxJSON returns the names of all *.json files directly under
+// $DSP_SUP/inbox (not read/ or bad/), sorted. A missing directory yields none.
+func listInboxJSON(sup string) []string {
 	entries, err := os.ReadDir(filepath.Join(sup, "inbox"))
 	if err != nil {
 		return nil
@@ -120,6 +127,19 @@ func listInboxNames(sup string) []string {
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
 			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// listInboxNames returns the names from listInboxJSON that "ateam mail inbox"
+// can clear: "<seq>.json" with a positive integer seq. hook-scan and the
+// resume notice count only these.
+func listInboxNames(sup string) []string {
+	var names []string
+	for _, n := range listInboxJSON(sup) {
+		if _, ok := inboxSeq(n); ok {
+			names = append(names, n)
 		}
 	}
 	return names

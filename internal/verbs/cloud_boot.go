@@ -300,8 +300,10 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	if iss.Status == "closed" {
 		return fmt.Errorf("initiative %s is closed", id)
 	}
+	// Fail-soft: the turn-start count still delivers inbox files without the
+	// doorbell script.
 	if err := writeInboxRing(ctx.Home, sup, id); err != nil {
-		return err
+		fmt.Fprintf(ctx.Stderr, "WARNING: inbox-ring setup failed (continuing): %v\n", err)
 	}
 
 	var sid string

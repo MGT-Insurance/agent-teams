@@ -158,19 +158,29 @@ func TestInboxRun_RepeatIsNotPrintedButIsAckedAndRemoved(t *testing.T) {
 	}
 }
 
-func TestInboxRun_BadJSONSkippedAndLeftInPlace(t *testing.T) {
+func TestInboxRun_PoisonFilesMovedToBadAndNotCounted(t *testing.T) {
 	e := newRunInboxEnv(t, 0)
 	e.putInbox("4", "{not json")
+	e.putInbox("abc", inboxMsg5)
+	e.putInbox("0", inboxMsg5)
 	e.putInbox("5", inboxMsg5)
 
+	if n := len(listInboxNames(e.sup)); n != 2 {
+		t.Fatalf("listInboxNames = %d, want 2 (4.json and 5.json)", n)
+	}
 	if err := (&inboxKong{}).Run(e.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(e.stderr.String(), "ateam inbox: skip 4.json:") {
-		t.Errorf("stderr = %q", e.stderr.String())
+	for _, name := range []string{"4.json", "abc.json", "0.json"} {
+		if !strings.Contains(e.stderr.String(), "skip "+name) {
+			t.Errorf("stderr does not name %s: %q", name, e.stderr.String())
+		}
+		if e.exists("inbox/"+name) || !e.exists("inbox/bad/"+name) {
+			t.Errorf("%s not quarantined to inbox/bad/", name)
+		}
 	}
-	if !e.exists("inbox/4.json") {
-		t.Error("bad file must stay")
+	if n := len(listInboxNames(e.sup)); n != 0 {
+		t.Errorf("%d files still counted after the inbox was cleared", n)
 	}
 	if got, want := e.helperStdin(), `{"op":"ack","seqs":[5]}`+"\n"; got != want {
 		t.Errorf("ack line = %q, want %q", got, want)

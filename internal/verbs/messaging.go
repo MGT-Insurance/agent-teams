@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -444,7 +443,7 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 
 	var runInbox runInboxState
 	if inRun {
-		runInbox = readRunInbox(ctx, sup)
+		runInbox = readRunInbox(ctx, sup, !c.Peek && !c.JSON)
 	}
 
 	if c.Peek {
@@ -461,7 +460,11 @@ func (c *inboxKong) Run(ctx *cli.Context) error {
 	}
 	consumeRun := inRun && !c.JSON
 
-	if len(messages) == 0 && !(consumeRun && runInbox.any()) {
+	if len(messages) == 0 && !(consumeRun && len(runInbox.files) > 0) {
+		if consumeRun {
+			// Only repeats (if any): clear them without printing a reminder.
+			runInbox.ack(ctx)
+		}
 		fmt.Fprintln(ctx.Stdout, "no unread mail")
 		if codexRecipient {
 			reconcileCodexInboxDoorbell(ctx, myID)
@@ -507,20 +510,18 @@ type runInboxState struct {
 	repeats []int       // seqs whose inbox/read/<seq>.json already exists
 }
 
-// any reports whether there is anything to print or acknowledge.
-func (r runInboxState) any() bool { return len(r.files) > 0 || len(r.repeats) > 0 }
-
-// readRunInbox parses $DSP_SUP/inbox/*.json. A file that does not parse is
-// reported on stderr and left in place.
-func readRunInbox(ctx *cli.Context, sup string) runInboxState {
+// readRunInbox parses $DSP_SUP/inbox/*.json. A file whose name is not a
+// positive integer seq, or whose content does not parse, is named on stderr;
+// with quarantine it is also moved to inbox/bad/ so it is not counted again.
+func readRunInbox(ctx *cli.Context, sup string, quarantine bool) runInboxState {
 	st := runInboxState{sup: sup}
-	for _, name := range listInboxNames(sup) {
-		seq, err := strconv.Atoi(strings.TrimSuffix(name, ".json"))
-		if err == nil && seq <= 0 {
-			err = errors.New("seq must be positive")
-		}
+	for _, name := range listInboxJSON(sup) {
+		seq, ok := inboxSeq(name)
 		var f inboxFile
-		if err == nil {
+		var err error
+		if !ok {
+			err = errors.New("name is not <positive integer>.json")
+		} else {
 			var data []byte
 			if data, err = os.ReadFile(filepath.Join(sup, "inbox", name)); err == nil {
 				err = json.Unmarshal(data, &f)
@@ -528,6 +529,9 @@ func readRunInbox(ctx *cli.Context, sup string) runInboxState {
 		}
 		if err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam inbox: skip %s: %v\n", name, err)
+			if quarantine {
+				quarantineInboxFile(ctx, sup, name)
+			}
 			continue
 		}
 		f.Seq = seq
@@ -542,36 +546,61 @@ func readRunInbox(ctx *cli.Context, sup string) runInboxState {
 	return st
 }
 
-// ack appends one ack line for every new and repeated seq, then moves new files
-// to inbox/read/ and deletes repeats. If the append fails, the files stay.
+// quarantineInboxFile moves inbox/<name> to inbox/bad/<name>.
+func quarantineInboxFile(ctx *cli.Context, sup, name string) {
+	bad := filepath.Join(sup, "inbox", "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam inbox: create bad dir: %v\n", err)
+		return
+	}
+	if err := os.Rename(filepath.Join(sup, "inbox", name), filepath.Join(bad, name)); err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam inbox: quarantine %s: %v\n", name, err)
+		return
+	}
+	fmt.Fprintf(ctx.Stderr, "ateam inbox: moved %s to inbox/bad/\n", name)
+}
+
+// maxAckSeqs is Dispatcher's cap on seqs in one ack line.
+const maxAckSeqs = 100
+
+// ack appends ack lines of at most maxAckSeqs seqs covering every new and
+// repeated seq. After a chunk appends, its new files move to inbox/read/ and
+// its repeats are deleted. After a failed append, later chunks stay untouched.
 func (r runInboxState) ack(ctx *cli.Context) {
-	seqs := slices.Clone(r.repeats)
+	repeat := map[int]bool{}
+	var seqs []int
+	for _, s := range r.repeats {
+		repeat[s] = true
+		seqs = append(seqs, s)
+	}
 	for _, f := range r.files {
 		seqs = append(seqs, f.Seq)
 	}
-	if len(seqs) == 0 {
-		return
-	}
 	sort.Ints(seqs)
-	if err := appendOutboxOp(outboxAckOp{Op: "ack", Seqs: seqs}); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam inbox: ack failed: %v; messages stay unread\n", err)
-		return
-	}
 	inbox := filepath.Join(r.sup, "inbox")
-	if err := os.MkdirAll(filepath.Join(inbox, "read"), 0o755); err != nil {
-		fmt.Fprintf(ctx.Stderr, "ateam inbox: create read dir: %v\n", err)
-		return
-	}
-	for _, f := range r.files {
-		name := strconv.Itoa(f.Seq) + ".json"
-		if err := os.Rename(filepath.Join(inbox, name), filepath.Join(inbox, "read", name)); err != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam inbox: move %s: %v\n", name, err)
+	for len(seqs) > 0 {
+		n := min(len(seqs), maxAckSeqs)
+		chunk := seqs[:n]
+		seqs = seqs[n:]
+		if err := appendOutboxOp(outboxAckOp{Op: "ack", Seqs: chunk}); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam inbox: ack failed: %v; messages stay unread\n", err)
+			return
 		}
-	}
-	for _, seq := range r.repeats {
-		name := strconv.Itoa(seq) + ".json"
-		if err := os.Remove(filepath.Join(inbox, name)); err != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam inbox: remove %s: %v\n", name, err)
+		if err := os.MkdirAll(filepath.Join(inbox, "read"), 0o755); err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam inbox: create read dir: %v\n", err)
+			return
+		}
+		for _, seq := range chunk {
+			name := strconv.Itoa(seq) + ".json"
+			var err error
+			if repeat[seq] {
+				err = os.Remove(filepath.Join(inbox, name))
+			} else {
+				err = os.Rename(filepath.Join(inbox, name), filepath.Join(inbox, "read", name))
+			}
+			if err != nil {
+				fmt.Fprintf(ctx.Stderr, "ateam inbox: clear %s: %v\n", name, err)
+			}
 		}
 	}
 }
@@ -1057,11 +1086,6 @@ func filterMessageType(issues []bd.Issue) []bd.Issue {
 		}
 	}
 	return out
-}
-
-// printMessagesBlock writes messages as a <system-reminder>-style block to ctx.Stdout.
-func printMessagesBlock(ctx *cli.Context, messages []bd.Issue) {
-	printInboxBlock(ctx, nil, messages)
 }
 
 // printMessageEntries prints each at message and the re-read footer. It prints
