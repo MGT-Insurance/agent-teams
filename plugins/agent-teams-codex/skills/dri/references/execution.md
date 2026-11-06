@@ -153,6 +153,7 @@ as "ready to merge."
 
 Applies only when the tester reports a bead id from `ateam ui-test file`. If
 the tester reports exit 5, nothing here applies: start a dev server as before.
+The same flow, screenshots included, works in a cloud run.
 
 - **Push first.** Before each Dispatcher live test and after each fix batch,
   push the real integration branch: `git push -u origin <branch>`, never force.

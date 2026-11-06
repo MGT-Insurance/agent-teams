@@ -51,6 +51,8 @@ type uiFiled struct {
 func newUIHarness(t *testing.T, config string) *uiHarness {
 	t.Helper()
 	t.Setenv(dispatcherActorEnv, "")
+	t.Setenv("DSP_BEAD", "")
+	t.Setenv("DSP_API_URL", "")
 	home := t.TempDir()
 	if config != "" {
 		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o644); err != nil {
