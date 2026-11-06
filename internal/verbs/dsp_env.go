@@ -80,6 +80,51 @@ func newGateMailOp(id, kind, ask string) outboxMailOp {
 	}
 }
 
+// newMessageMailOp builds the mail op for a kind: message note from the DRI of
+// initiative id to the steward. It truncates text like newGateMailOp.
+func newMessageMailOp(id, text string) outboxMailOp {
+	if r := []rune(text); len(r) > maxGateOutboxAskRunes {
+		text = string(r[:maxGateOutboxAskRunes])
+	}
+	return outboxMailOp{
+		Op:    "file",
+		Type:  "mail",
+		Title: id + ": message",
+		Body:  "initiative: " + id + "\nkind: message\n---\n" + text,
+	}
+}
+
+// outboxAckOp is the outbox line that acknowledges run messages:
+// {"op":"ack","seqs":[...]}.
+type outboxAckOp struct {
+	Op   string `json:"op"`
+	Seqs []int  `json:"seqs"`
+}
+
+// inboxFile is one run message a Dispatcher wrote to $DSP_SUP/inbox/<seq>.json.
+type inboxFile struct {
+	Seq    int    `json:"seq"`
+	Author string `json:"author"`
+	Text   string `json:"text"`
+	At     string `json:"at"`
+}
+
+// listInboxNames returns the sorted names of the *.json files directly under
+// $DSP_SUP/inbox (not read/). A missing directory yields none.
+func listInboxNames(sup string) []string {
+	entries, err := os.ReadDir(filepath.Join(sup, "inbox"))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
 // outboxHelperExitNothingWritten is the exit code of $DSP_SUP/bin/outbox-append
 // when it wrote nothing: invalid JSON, a lock timeout, an fs error, or node
 // missing. Its stderr names the cause.

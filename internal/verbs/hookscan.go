@@ -96,6 +96,12 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		cacheKey = c.SessionID
 	}
 	now := time.Now()
+	// Inside a Dispatcher run, unread run messages are files in the supervisor
+	// inbox. They count toward unread even when the cache is trusted.
+	inboxN := 0
+	if _, sup, ok := dispatcherRun(); ok && sup != "" {
+		inboxN = len(listInboxNames(sup))
+	}
 	cached, haveCache := readHookScanCache(ctx, cacheKey)
 	if haveCache && c.ID != "" && cached.ID != c.ID {
 		haveCache = false
@@ -109,7 +115,7 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		if cached.Repo != "" && !repoconfig.Enabled(cached.Repo) {
 			return nil
 		}
-		fmt.Fprintf(ctx.Stdout, "id: %s\nunread: 0\n", cached.ID)
+		fmt.Fprintf(ctx.Stdout, "id: %s\nunread: %d\n", cached.ID, inboxN)
 		return nil
 	}
 
@@ -224,6 +230,6 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		fmt.Fprintf(ctx.Stderr, "scan: full reason=%s cache_age=%ds\n", reason, int(age.Seconds()))
 	}
 
-	fmt.Fprintf(ctx.Stdout, "id: %s\nunread: %d\n", id, unread)
+	fmt.Fprintf(ctx.Stdout, "id: %s\nunread: %d\n", id, unread+inboxN)
 	return nil
 }
