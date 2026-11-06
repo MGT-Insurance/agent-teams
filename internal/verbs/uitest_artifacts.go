@@ -132,7 +132,10 @@ func uiShotExpired(link string, now time.Time) bool {
 // uiDownloadShots fetches every artifact link for runID into
 // <out>/screenshots. The requests carry no Authorization header and no cookie:
 // the signature in the URL is the credential.
-func uiDownloadShots(d uiTestDeps, comments []uiTestComment, runID, out string) uiShotResult {
+//
+// A non-nil rt fetches each artifact through the run-tools artifact op instead;
+// no link is read, so none can be expired.
+func uiDownloadShots(d uiTestDeps, rt *uiRunTools, comments []uiTestComment, runID, out string) uiShotResult {
 	var res uiShotResult
 	links, found := uiParseShotLinks(comments, runID)
 	switch {
@@ -151,11 +154,17 @@ func uiDownloadShots(d uiTestDeps, comments []uiTestComment, runID, out string) 
 	used := map[string]bool{}
 	for _, a := range links.Artifacts {
 		file := uiShotFileName(a.Name, used)
-		if uiShotExpired(a.URL, d.now()) {
-			res.Missing = append(res.Missing, file+" "+shotExpired)
-			continue
+		var data []byte
+		var reason string
+		if rt != nil {
+			data, reason = uiFetchPNG(d, func() (*http.Request, error) { return rt.artifactRequest(runID, a.Name) })
+		} else {
+			if uiShotExpired(a.URL, d.now()) {
+				res.Missing = append(res.Missing, file+" "+shotExpired)
+				continue
+			}
+			data, reason = uiFetchPNG(d, func() (*http.Request, error) { return http.NewRequest(http.MethodGet, a.URL, nil) })
 		}
-		data, reason := uiFetchPNG(d, a.URL)
 		if reason != "" {
 			res.Missing = append(res.Missing, file+" "+reason)
 			continue
@@ -170,20 +179,20 @@ func uiDownloadShots(d uiTestDeps, comments []uiTestComment, runID, out string) 
 	return res
 }
 
-// uiFetchPNG GETs link with one retry on a 5xx or a timeout. It returns the
+// uiFetchPNG sends the request mk builds with one retry on a 5xx or a timeout. It returns the
 // PNG bytes, or a failure reason (http-<code>, not-png, too-large, network).
 // The reason never contains the URL.
-func uiFetchPNG(d uiTestDeps, link string) (data []byte, reason string) {
+func uiFetchPNG(d uiTestDeps, mk func() (*http.Request, error)) (data []byte, reason string) {
 	for attempt := 0; ; attempt++ {
-		data, reason, retry := uiFetchOnce(d, link)
+		data, reason, retry := uiFetchOnce(d, mk)
 		if reason == "" || !retry || attempt == 1 {
 			return data, reason
 		}
 	}
 }
 
-func uiFetchOnce(d uiTestDeps, link string) (data []byte, reason string, retry bool) {
-	req, err := http.NewRequest(http.MethodGet, link, nil)
+func uiFetchOnce(d uiTestDeps, mk func() (*http.Request, error)) (data []byte, reason string, retry bool) {
+	req, err := mk()
 	if err != nil {
 		return nil, shotNetwork, false
 	}

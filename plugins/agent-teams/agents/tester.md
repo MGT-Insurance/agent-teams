@@ -48,6 +48,8 @@ If `ateam worktree-setup` fails, flag to the DRI immediately — live verificati
 
 ## Optional: remote run on Dispatcher
 
+Inside a cloud DRI run, `ateam ui-test file` reaches the Dispatcher through the run's tool, so `dispatcher_beads` is not needed.
+
 Before you ask the DRI for a dev server, try the remote path once: `ateam ui-test file --worktree <abs> --scope <apps> --items-file <file>`. The exit code decides the path:
 
 - **Exit 5:** use the Operating model above exactly as written. Nothing else in this section applies.

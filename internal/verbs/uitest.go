@@ -198,9 +198,13 @@ type uiTestFileKong struct {
 // a missing actor), origin form (exit 5), pushed (exit 6), then file.
 func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 	d := c.deps.resolved()
-	settings, err := uiTestGate(ctx)
-	if err != nil {
-		return err
+	rt, inRun := uiRunToolsFromEnv()
+	var settings uiTestSettings
+	if !inRun {
+		var err error
+		if settings, err = uiTestGate(ctx); err != nil {
+			return err
+		}
 	}
 
 	originOut, code, err := d.git(c.Worktree, "remote", "get-url", "origin")
@@ -240,6 +244,9 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 	title := c.Title
 	if title == "" {
 		title = branch
+	}
+	if inRun {
+		return c.fileViaRunTools(ctx, d, rt, branch, sha, string(items))
 	}
 	id, err := d.fileBead(settings.beadsDir, settings.actor, "ui-test: "+title,
 		[]string{"type:ui-test", "agent:tester", "repo:" + repo},
@@ -472,9 +479,15 @@ func (c *uiTestWaitKong) Validate() error {
 // question, or --timeout elapses.
 func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 	d := c.deps.resolved()
-	settings, err := uiTestGate(ctx)
-	if err != nil {
-		return err
+	rt, inRun := uiRunToolsFromEnv()
+	var settings uiTestSettings
+	if inRun {
+		rt.bead = c.ID
+	} else {
+		var err error
+		if settings, err = uiTestGate(ctx); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(c.Out, 0o755); err != nil {
 		return fmt.Errorf("ui-test wait: --out: %w", err)
@@ -486,17 +499,20 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 
 	deadline := d.now().Add(c.Timeout)
 	for {
-		bead, err := uiTestFetchBead(d, settings.beadsDir, c.ID)
-		if err != nil {
-			return fmt.Errorf("ui-test wait: %w", err)
+		var bead uiTestBead
+		var comments []uiTestComment
+		var err error
+		if inRun {
+			bead, comments, err = rt.beadGet(d, c.ID)
+		} else if bead, err = uiTestFetchBead(d, settings.beadsDir, c.ID); err == nil {
+			comments, err = uiTestFetchComments(d, settings.beadsDir, c.ID)
 		}
-		comments, err := uiTestFetchComments(d, settings.beadsDir, c.ID)
 		if err != nil {
 			return fmt.Errorf("ui-test wait: %w", err)
 		}
 		switch bead.Status {
 		case "closed":
-			return c.finish(ctx, d, bead, comments, out)
+			return c.finish(ctx, d, rt, bead, comments, out)
 		case "blocked":
 			if n := len(comments); n > 0 && strings.HasPrefix(strings.TrimSpace(comments[n-1].Text), "question:") {
 				fmt.Fprintln(ctx.Stdout, uiRedactArtifactURLs(strings.TrimSpace(comments[n-1].Text)))
@@ -513,10 +529,10 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 }
 
 // finish maps a closed bead to an exit code and writes the output files.
-func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, bead uiTestBead, comments []uiTestComment, out string) error {
+func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, bead uiTestBead, comments []uiTestComment, out string) error {
 	verdict, runID, hasVerdict := uiTestVerdict(comments)
 	if hasVerdict && !uiTestClosedFailed(bead.CloseReason) {
-		return c.writeVerdict(ctx, d, bead, comments, verdict, runID, out)
+		return c.writeVerdict(ctx, d, rt, bead, comments, verdict, runID, out)
 	}
 	if reason, ok := uiTestIneligible(comments); ok {
 		fmt.Fprintf(ctx.Stderr, "ui-test wait: Dispatcher cannot run this repo (%s); test locally\n", firstLine(reason))
@@ -566,8 +582,8 @@ func uiRedactArtifactURLs(text string) string {
 // writeVerdict downloads the run's screenshots, writes verdict.md, and prints
 // its path followed by one PNG path per line. Exit 0 only when at least one
 // screenshot was downloaded and none is missing; otherwise exit 7.
-func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, bead uiTestBead, comments []uiTestComment, verdict uiTestComment, runID, out string) error {
-	shots := uiDownloadShots(d, comments, runID, out)
+func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, bead uiTestBead, comments []uiTestComment, verdict uiTestComment, runID, out string) error {
+	shots := uiDownloadShots(d, rt, comments, runID, out)
 	if shots.Err != nil {
 		return fmt.Errorf("ui-test wait: screenshots: %w", shots.Err)
 	}
