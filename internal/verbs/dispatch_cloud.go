@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -403,4 +405,157 @@ func (c *dispatchKong) handlePostCreate(ctx *cli.Context, cloud cli.BDRunner, se
 		return fmt.Errorf("dispatch: %s%s; also failed to close initiative %s (close it manually): %v; %s", reason, runBeadNote, initID, closeErr, advice)
 	}
 	return fmt.Errorf("dispatch: %s%s; %s", reason, runBeadNote, advice)
+}
+
+// kebabSlugPattern is the shape of a --slug accepted in register-only mode.
+var kebabSlugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// cutTitle returns s cut to at most max bytes, backing up to a rune boundary
+// so the result stays valid UTF-8.
+func cutTitle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// repoNamePattern is the shape of a GitHub repository name.
+var repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// parseCloudRepoURL normalizes a --repo-url: https://github.com/<owner>/<name>
+// with an optional trailing "/" and ".git". The owner must equal cloudOwner
+// case-insensitively and is rewritten to cloudOwner. It returns the canonical
+// URL and the repository name.
+func parseCloudRepoURL(raw string) (url, name string, err error) {
+	const ghPrefix = "https://github.com/"
+	bad := cli.Usagef("dispatch: --repo-url %q must look like %s%s/<name>", raw, ghPrefix, cloudOwner)
+	rest, ok := strings.CutPrefix(raw, ghPrefix)
+	if !ok {
+		return "", "", bad
+	}
+	rest = strings.TrimSuffix(rest, "/")
+	rest = strings.TrimSuffix(rest, ".git")
+	owner, name, found := strings.Cut(rest, "/")
+	if !found || !strings.EqualFold(owner, cloudOwner) {
+		return "", "", bad
+	}
+	if !repoNamePattern.MatchString(name) || name == "." || name == ".." {
+		return "", "", bad
+	}
+	return ghPrefix + cloudOwner + "/" + name, name, nil
+}
+
+// registerOnlyResult is the one JSON line --register-only prints.
+type registerOnlyResult struct {
+	Initiative string `json:"initiative"`
+	Repo       string `json:"repo"`
+	Branch     string `json:"branch"`
+	Team       string `json:"team"`
+	Mode       string `json:"mode"`
+}
+
+// resolveRegisterOnlyHome returns the hosted workspace a register-only
+// initiative goes to: config cloud_home, else home itself when it is bound to
+// a hosted Dolt server.
+func resolveRegisterOnlyHome(home string) (string, error) {
+	cloudHome, ok, err := workspaceconfig.CloudHome(home)
+	if err != nil {
+		return "", fmt.Errorf("dispatch --register-only: %w", err)
+	}
+	if ok {
+		return cloudHome, nil
+	}
+	if _, hosted := bd.HostedServer(home); hosted {
+		return home, nil
+	}
+	return "", cli.Usagef("dispatch --register-only: no hosted workspace: set cloud_home in %s/%s, or point AGENT_TEAMS_HOME at a workspace bound to a hosted Dolt server", home, workspaceconfig.FileName)
+}
+
+// runCloudRegisterOnly registers a cloud initiative in the hosted workspace
+// and prints one JSON line. It needs no git checkout, no repoconfig opt-in, no
+// dispatcher_beads, and no dispatcher_actor. It files no run bead, runs no
+// hosted-home setup, and writes no note.
+func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
+	repoURL, repoName, err := parseCloudRepoURL(c.RepoURL)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Problem) == "" {
+		return cli.Usagef("dispatch: --problem must not be blank")
+	}
+	if strings.ContainsAny(c.Problem, "\r\n") {
+		return cli.Usagef("dispatch: --problem must be a single line")
+	}
+	slug := c.Slug
+	if slug == "" {
+		slug = gitutil.Slugify(c.Problem)
+	}
+	if slug == "" {
+		return cli.Usagef("dispatch: --problem produced an empty slug; provide --slug explicitly")
+	}
+	if !kebabSlugPattern.MatchString(slug) || gitutil.Slugify(slug) != slug {
+		return cli.Usagef("dispatch: --slug %q must be a kebab-case slug (ASCII lowercase letters, digits, and single hyphens, at most 50 characters)", slug)
+	}
+	home, err := resolveRegisterOnlyHome(ctx.Home)
+	if err != nil {
+		return err
+	}
+
+	team := gitutil.Slugify(repoName) + "-" + slug
+	plan, err := initiative.New(initiative.Fields{
+		Problem: c.Problem,
+		Repo:    repoURL,
+		Branch:  slug,
+		Team:    team,
+		Mode:    "cloud",
+		Runtime: "claude",
+	})
+	if err != nil {
+		return cli.Usagef("dispatch: %v", err)
+	}
+
+	shortTitle := cutTitle(c.Problem, 72)
+	tmp, err := os.CreateTemp("", "ateam-dispatch-*.txt")
+	if err != nil {
+		return fmt.Errorf("dispatch: create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(plan.Description); err != nil {
+		tmp.Close()
+		return fmt.Errorf("dispatch: write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("dispatch: write temp file: %w", err)
+	}
+
+	newCloudBD := c.cloudBD
+	if newCloudBD == nil {
+		newCloudBD = defaultCloudBD
+	}
+	var issue bd.Issue
+	if err := newCloudBD(home).RunJSON(&issue, "create",
+		"--title="+shortTitle,
+		"--type=task",
+		"--priority=2",
+		"--body-file="+tmp.Name(),
+		"--json",
+	); err != nil {
+		return fmt.Errorf("dispatch: register initiative in %s: %w", home, err)
+	}
+	if issue.ID == "" {
+		return fmt.Errorf("dispatch: bd create in %s returned no id", home)
+	}
+
+	line, err := json.Marshal(registerOnlyResult{
+		Initiative: issue.ID, Repo: repoURL, Branch: slug, Team: team, Mode: "cloud",
+	})
+	if err != nil {
+		return fmt.Errorf("dispatch: %w", err)
+	}
+	fmt.Fprintf(ctx.Stdout, "%s\n", line)
+	return nil
 }

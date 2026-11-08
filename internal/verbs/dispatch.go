@@ -171,6 +171,8 @@ type dispatchKong struct {
 	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, config.toml-derived for the /dri path)."`
 	Cloud        bool   `name:"cloud"         help:"Register the initiative in the hosted workspace (config cloud_home) and file a run bead with the Dispatcher, so a DRI starts in a Dispatcher VM instead of a local worktree. Needs cloud_home, dispatcher_beads, and dispatcher_actor (or $ATEAM_DISPATCHER_ACTOR) in config.toml. Claude runtime only; cannot combine with --no-launch, --launch-prompt, --standby, --topic, --model, or --advisor."`
 	Topic        string `name:"topic"        help:"Mark a reserved initiative kind (only \"reviews\", for PR reviews). It opens no per-initiative Telegram topic, posts no message, and writes no thread: label on the initiative bead; the initiative bead is the whole record."`
+	RegisterOnly bool   `name:"register-only" help:"With --cloud: only register the initiative in the hosted workspace and print one JSON line {initiative,repo,branch,team,mode}. Needs --repo-url; no local checkout, no run bead, no dispatcher_beads or dispatcher_actor. The destination is config cloud_home, else $AGENT_TEAMS_HOME when it is bound to a hosted Dolt server. Cannot combine with --repo, --base-branch, --body-file, or --id-only."`
+	RepoURL      string `name:"repo-url"      help:"With --register-only: the GitHub repository URL, https://github.com/MGT-Insurance/<name> (a trailing .git or / is accepted)."`
 	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
 	git          gitRunner                                  `kong:"-"`
@@ -254,6 +256,29 @@ func (c *dispatchKong) Validate() error {
 			}
 		}
 	}
+	if c.RegisterOnly {
+		if !c.Cloud {
+			return cli.Usagef("--register-only requires --cloud")
+		}
+		if c.RepoURL == "" {
+			return cli.Usagef("--register-only requires --repo-url")
+		}
+		for _, f := range []struct {
+			flag string
+			set  bool
+		}{
+			{"--repo", c.Repo != ""},
+			{"--base-branch", c.BaseBranch != ""},
+			{"--body-file", c.BodyFile != ""},
+			{"--id-only", c.IDOnly},
+		} {
+			if f.set {
+				return cli.Usagef("--register-only cannot be combined with %s", f.flag)
+			}
+		}
+	} else if c.RepoURL != "" {
+		return cli.Usagef("--repo-url requires --register-only")
+	}
 	if c.Topic != "" && c.Topic != ReviewsHandle {
 		return cli.Usagef("unknown --topic %q (supported: %s)", c.Topic, ReviewsHandle)
 	}
@@ -285,6 +310,10 @@ func (c *dispatchKong) Run(ctx *cli.Context) error {
 		if err := c.codexCheck(context.Background(), ""); err != nil {
 			return fmt.Errorf("dispatch: Codex runtime unavailable: %w", err)
 		}
+	}
+
+	if c.RegisterOnly {
+		return c.runCloudRegisterOnly(ctx)
 	}
 
 	// 1. Resolve repo root.

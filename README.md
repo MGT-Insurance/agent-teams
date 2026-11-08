@@ -167,6 +167,25 @@ turns on `events-journal`, installs `.beads/PRIME.md` and the prime caps, and
 writes the prime-cap sentinel memory, skipping anything already set. A failure
 prints a warning to stderr and doesn't stop the dispatch or the boot.
 
+#### Register-only mode
+
+A caller without a git checkout, such as the cloud steward, registers an
+initiative and files the run bead itself:
+
+```bash
+ateam dispatch --cloud --register-only --repo-url https://github.com/MGT-Insurance/<repo> --problem "<one line>" [--slug <kebab>]
+```
+
+This writes one initiative bead and prints one JSON line,
+`{"initiative","repo","branch","team","mode"}`. It needs no checkout, no
+`dispatcher_beads`, and no `dispatcher_actor`, and it files no run bead, so it
+runs as whatever `BEADS_ACTOR` is set. The destination is `cloud_home` when set,
+otherwise `AGENT_TEAMS_HOME` when that workspace is bound to a hosted Dolt
+server; with neither, the command exits 2. `--repo-url` must name a repository
+owned by `MGT-Insurance` (case-insensitive; a trailing `.git` or `/` is
+accepted). `--register-only` refuses `--repo`, `--base-branch`, `--body-file`,
+and `--id-only`, plus every flag `--cloud` refuses.
+
 ### Optional: remote live testing with Dispatcher
 
 `ateam ui-test` lets a tester run a live UI test on the Dispatcher instead of
