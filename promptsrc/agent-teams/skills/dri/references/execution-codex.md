@@ -115,8 +115,11 @@ The same flow, screenshots included, works in a cloud run.
   plan, or code answers the question, run
   `ateam ui-test reply <id> --text <answer>` (or `--file`); otherwise raise a
   question gate and reply with the human's answer. Exit 0: raise
-  live-test-review with `screenshot: <id>`. Exits 2 and 7, and kind `blocked`,
-  are handled as outside a cloud run. Treat the message as a hint, not the
-  result, and ack it with `ateam mail inbox` as usual.
+  live-test-review with `screenshot: <id>`. Exit 2 (`failed`): read the `failure.md` path the command prints, then raise
+  a question gate with its text. Exit 7: re-file once per NO-IMAGES below.
+  Exit 3 on a `blocked` event: the tester stopped without a `question:`
+  comment, so the wait stays pending and returns nothing to read. Don't wait
+  again; raise a question gate naming the bead id. Treat the message as a
+  hint, not the result, and ack it with `ateam mail inbox` as usual.
 - **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a
   question gate. Never raise live-test-review without images.
