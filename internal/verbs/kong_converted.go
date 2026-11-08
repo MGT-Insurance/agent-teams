@@ -445,6 +445,9 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	// below no-ops. File the ask as a mail through the run's outbox instead.
 	// A failure warns and never fails the gate.
 	if _, _, inRun := dispatcherRun(); inRun {
+		if len(c.Attach) > 0 {
+			fmt.Fprintln(ctx.Stderr, "ateam gate: warning: --attach files are not delivered from a cloud run; name the ui-test bead in the gate text instead (for example `screenshot: <bead id>`)")
+		}
 		askText := string(noteBytes)
 		if structuredUsed {
 			askText = buildAskMessage(&gateAsk{

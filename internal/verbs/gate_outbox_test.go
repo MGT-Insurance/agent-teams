@@ -145,3 +145,49 @@ func TestGateOutbox_FailureIsNonFatal(t *testing.T) {
 		})
 	}
 }
+
+func TestGateOutbox_AttachWarnsInRun(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "dsp-1")
+	t.Setenv("DSP_SUP", sup)
+	f := makeTempFile(t, "proof")
+	shot := makeTempFile(t, "png")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&gateKong{ID: "at-5", File: f, Kind: "live-test-review", Attach: []string{shot}}).Run(ctx); err != nil {
+		t.Fatalf("gate must still succeed: %v", err)
+	}
+	stderr := ctx.Stderr.(interface{ String() string }).String()
+	if strings.Count(stderr, "--attach files are not delivered from a cloud run") != 1 || !strings.Contains(stderr, "screenshot: <bead id>") {
+		t.Errorf("want exactly one attach warning, got %q", stderr)
+	}
+	if len(outboxLines(t, sup)) != 1 {
+		t.Errorf("mail op must still be filed")
+	}
+}
+
+func TestGateOutbox_NoAttachNoWarningInRun(t *testing.T) {
+	t.Setenv("DSP_BEAD", "dsp-1")
+	t.Setenv("DSP_SUP", t.TempDir())
+	f := makeTempFile(t, "proof")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&gateKong{ID: "at-5", File: f, Kind: "live-test-review"}).Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if strings.Contains(ctx.Stderr.(interface{ String() string }).String(), "not delivered") {
+		t.Errorf("no warning expected without --attach")
+	}
+}
+
+func TestGateOutbox_AttachNoWarningLocally(t *testing.T) {
+	t.Setenv("DSP_BEAD", "")
+	os.Unsetenv("DSP_BEAD")
+	f := makeTempFile(t, "proof")
+	shot := makeTempFile(t, "png")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&gateKong{ID: "at-5", File: f, Kind: "live-test-review", Attach: []string{shot}}).Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if strings.Contains(ctx.Stderr.(interface{ String() string }).String(), "not delivered") {
+		t.Errorf("no warning expected locally")
+	}
+}
