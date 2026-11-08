@@ -277,3 +277,110 @@ func TestRunTools_ConfiguredLaptopPathUnchangedWhenEnvUnset(t *testing.T) {
 		t.Errorf("filed=%v stdout=%q", h.filed, h.stdout.String())
 	}
 }
+
+func (h *uiHarness) reply(id, text, file string) error {
+	cmd := &uiTestReplyKong{ID: id, Text: text, File: file, deps: h.deps}
+	return cmd.Run(h.ctx)
+}
+
+func TestRunTools_ReplySendsBeadReplyBodyWithoutAuthAndPrintsStatus(t *testing.T) {
+	srv := newC0Server(t, func(w http.ResponseWriter, _ map[string]any) {
+		writeJSON(w, 200, map[string]any{"id": "dsp-ui9", "status": "in_progress", "comment": map[string]any{"id": "c1", "created_at": "2026-11-08T00:00:00Z"}})
+	})
+	h := newUIHarness(t, "")
+	inRun(t, srv)
+	if err := h.reply("dsp-ui9", "use qa@example.com", ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := h.stdout.String(); got != "dsp-ui9 in_progress\n" {
+		t.Errorf("stdout = %q", got)
+	}
+	got := srv.requests[0]
+	if len(got) != 3 || got["op"] != "bead_reply" || got["id"] != "dsp-ui9" || got["text"] != "use qa@example.com" {
+		t.Errorf("body = %v, want exactly {op,id,text}", got)
+	}
+	if a := srv.headers[0].Get("Authorization"); a != "" {
+		t.Errorf("ateam sent Authorization %q; the firewall adds it", a)
+	}
+}
+
+func TestRunTools_ReplyFileReadsText(t *testing.T) {
+	srv := newC0Server(t, func(w http.ResponseWriter, _ map[string]any) {
+		writeJSON(w, 200, map[string]any{"id": "dsp-ui9", "status": "open"})
+	})
+	h := newUIHarness(t, "")
+	inRun(t, srv)
+	if err := h.reply("dsp-ui9", "", h.itemsFile("the answer\n")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if srv.requests[0]["text"] != "the answer" {
+		t.Errorf("text = %q, want the trimmed file content", srv.requests[0]["text"])
+	}
+}
+
+func TestRunTools_ReplyHTTPErrorsExit1(t *testing.T) {
+	cases := []struct {
+		code int
+		want string
+	}{
+		{404, "HTTP 404: no such bead"},
+		{409, "409 bead is closed"},
+		{401, "401 not authorized"},
+	}
+	for _, c := range cases {
+		msg := map[int]string{404: "no such bead", 409: "bead is closed", 401: "nope"}[c.code]
+		srv := newC0Server(t, func(w http.ResponseWriter, _ map[string]any) { writeJSON(w, c.code, map[string]any{"error": msg}) })
+		h := newUIHarness(t, "")
+		inRun(t, srv)
+		err := h.reply("dsp-ui9", "x", "")
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("code %d: err = %v, want containing %q", c.code, err, c.want)
+		}
+		if exitOf(err) != 1 {
+			t.Errorf("code %d: exit = %d, want 1", c.code, exitOf(err))
+		}
+		if h.stdout.String() != "" {
+			t.Errorf("code %d: stdout = %q, want empty", c.code, h.stdout.String())
+		}
+	}
+}
+
+func TestRunTools_ReplyOutsideRunExits5(t *testing.T) {
+	h := newUIHarness(t, "")
+	err := h.reply("dsp-ui9", "x", "")
+	if exitOf(err) != uiExitIneligible {
+		t.Fatalf("exit = %d, want %d (%v)", exitOf(err), uiExitIneligible, err)
+	}
+	if !strings.Contains(h.stderr.String(), "needs a cloud run") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+func TestRunTools_ReplyRequiresExactlyOneSource(t *testing.T) {
+	for _, c := range []*uiTestReplyKong{{ID: "x"}, {ID: "x", Text: "a", File: "/f"}} {
+		if err := c.Validate(); err == nil {
+			t.Errorf("Validate(%+v) = nil, want a usage error", c)
+		}
+	}
+	if err := (&uiTestReplyKong{ID: "x", Text: "a"}).Validate(); err != nil {
+		t.Errorf("Validate(text) = %v", err)
+	}
+}
+
+func TestRunTools_WaitFailureTextSkipsAnswerComments(t *testing.T) {
+	srv := newC0Server(t, func(w http.ResponseWriter, _ map[string]any) {
+		writeJSON(w, 200, rtBead("closed", "failed",
+			uiTestComment{Author: "job:ui-test", CreatedAt: "2026-11-08T10:00:00Z", Text: "not started: budget exceeded"},
+			uiTestComment{Author: "job:run-1", CreatedAt: "2026-11-08T10:05:00Z", Text: "answer: use qa@example.com"}))
+	})
+	h := newUIHarness(t, "")
+	inRun(t, srv)
+	out, err := h.rtWait(time.Minute)
+	if exitOf(err) != uiExitFailed {
+		t.Fatalf("exit = %d, want %d (%v)", exitOf(err), uiExitFailed, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(out, "failure.md"))
+	if !strings.Contains(string(data), "not started: budget exceeded") || strings.Contains(string(data), "answer:") {
+		t.Errorf("failure.md = %q, want the job text and not the answer", data)
+	}
+}
