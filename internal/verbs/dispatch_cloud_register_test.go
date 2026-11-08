@@ -270,6 +270,26 @@ func TestRegisterOnly_ProblemAndSlug(t *testing.T) {
 	}
 }
 
+func TestRegisterOnly_SlugMustBeSlugified(t *testing.T) {
+	for _, slug := range []string{"good-slug", "a", "fix-123"} {
+		h := registerOnlyHarness(t, registerOnlyConfig)
+		h.cmd.Slug = slug
+		if err := h.cmd.Run(h.ctx); err != nil {
+			t.Errorf("slug %q: %v", slug, err)
+		}
+	}
+	for _, slug := range []string{"a b", "a'b", "A", "a;b", "$(x)", "a--b", "-a", "a-", "a\nb", "../x"} {
+		h := registerOnlyHarness(t, registerOnlyConfig)
+		h.cmd.Slug = slug
+		if err := h.cmd.Run(h.ctx); !isUsage(err) {
+			t.Errorf("slug %q: Run = %v, want usage error", slug, err)
+		}
+		if len(h.cloudCalls) != 0 || len(h.cloudHomes) != 0 || h.stdout.String() != "" {
+			t.Errorf("slug %q: bd used or stdout written", slug)
+		}
+	}
+}
+
 func TestRegisterOnly_CreateFailureWritesNothingToStdout(t *testing.T) {
 	h := registerOnlyHarness(t, registerOnlyConfig)
 	h.cloudBD.runJSONFn = func(any, ...string) error { return errors.New("dolt unavailable") }

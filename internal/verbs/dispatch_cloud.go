@@ -477,6 +477,9 @@ func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
 	if slug == "" {
 		return cli.Usagef("dispatch: --problem produced an empty slug; provide --slug explicitly")
 	}
+	if gitutil.Slugify(slug) != slug {
+		return cli.Usagef("dispatch: --slug %q must be a kebab-case slug (lowercase letters, digits, and single hyphens)", slug)
+	}
 	home, err := resolveRegisterOnlyHome(ctx.Home)
 	if err != nil {
 		return err
