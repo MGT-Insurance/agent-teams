@@ -5,6 +5,10 @@
 // routes inbound human replies back into the system. The transport does not
 // know about initiatives — that mapping is the relay's responsibility.
 //
+// The telegram transport talks to Telegram directly; the dispatcher transport
+// (a cloud run's choice) sends the same posts and topic closes through
+// Dispatcher's run-tools route.
+//
 // # Adding a new transport
 //
 // Implement the Transport interface in a sub-package, register it in For, and

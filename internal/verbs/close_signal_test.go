@@ -7,13 +7,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/transport/dispatcher"
 )
+
+var registerDispatcherOnce sync.Once
 
 // ── closeSignalFakeBD ────────────────────────────────────────────────────────
 
@@ -270,4 +277,55 @@ type fakeTopicCloserTransport struct {
 func (f *fakeTopicCloserTransport) CloseTopic(threadRef string) error {
 	f.closeTopicCalls = append(f.closeTopicCalls, threadRef)
 	return f.closeTopicErr
+}
+
+// TestClose_ThroughRealDispatcherTransport_PostsFarewellThenClosesTopic wires
+// the real dispatcher transport (selected by AGENT_TEAMS_TRANSPORT, as in a
+// cloud run) to an httptest server standing in for Dispatcher, and asserts
+// ateam close sends the farewell post and then the topic close.
+func TestClose_ThroughRealDispatcherTransport_PostsFarewellThenClosesTopic(t *testing.T) {
+	registerDispatcherOnce.Do(func() { transport.RegisterTransport("dispatcher", dispatcher.Factory) })
+
+	var reqs []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body is not JSON: %s", raw)
+		}
+		reqs = append(reqs, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"initiative":"at-00o","thread_ref":"999","parts":1,"already_closed":false}`)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENT_TEAMS_TRANSPORT", "dispatcher")
+	t.Setenv("DSP_BEAD", "dsp-run1")
+	t.Setenv("DSP_API_URL", srv.URL)
+	t.Setenv("AGENT_TEAMS_HOME", t.TempDir())
+
+	nbd := &closeSignalFakeBD{issue: bd.Issue{ID: "at-00o", Title: "my initiative", Labels: []string{"at-00o", "thread:999"}}}
+	cmd := &closeKong{
+		ID:                 "at-00o",
+		runUpdateLocalMain: func(repoPath string) (string, error) { return "", fmt.Errorf("no repo") },
+	}
+	ctx, _, errBuf := newCloseSignalCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if errBuf.String() != "" {
+		t.Errorf("unexpected stderr warnings: %q", errBuf.String())
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("%d run-tools requests, want 2 (post, close): %v", len(reqs), reqs)
+	}
+	post, closeReq := reqs[0], reqs[1]
+	if post["op"] != "telegram_post" || post["initiative"] != "at-00o" || post["text"] != closeSignalFarewell || post["title"] != "my initiative" {
+		t.Errorf("first request = %v, want telegram_post of the farewell", post)
+	}
+	if _, has := post["thread_ref"]; has {
+		t.Errorf("post carries thread_ref: %v", post)
+	}
+	if closeReq["op"] != "telegram_close" || closeReq["thread_ref"] != "999" {
+		t.Errorf("second request = %v, want telegram_close thread_ref 999", closeReq)
+	}
 }
