@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -406,6 +407,22 @@ func (c *dispatchKong) handlePostCreate(ctx *cli.Context, cloud cli.BDRunner, se
 	return fmt.Errorf("dispatch: %s%s; %s", reason, runBeadNote, advice)
 }
 
+// kebabSlugPattern is the shape of a --slug accepted in register-only mode.
+var kebabSlugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// cutTitle returns s cut to at most max bytes, backing up to a rune boundary
+// so the result stays valid UTF-8.
+func cutTitle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // repoNamePattern is the shape of a GitHub repository name.
 var repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
@@ -467,6 +484,9 @@ func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(c.Problem) == "" {
+		return cli.Usagef("dispatch: --problem must not be blank")
+	}
 	if strings.ContainsAny(c.Problem, "\r\n") {
 		return cli.Usagef("dispatch: --problem must be a single line")
 	}
@@ -477,8 +497,8 @@ func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
 	if slug == "" {
 		return cli.Usagef("dispatch: --problem produced an empty slug; provide --slug explicitly")
 	}
-	if gitutil.Slugify(slug) != slug {
-		return cli.Usagef("dispatch: --slug %q must be a kebab-case slug (lowercase letters, digits, and single hyphens)", slug)
+	if !kebabSlugPattern.MatchString(slug) || gitutil.Slugify(slug) != slug {
+		return cli.Usagef("dispatch: --slug %q must be a kebab-case slug (ASCII lowercase letters, digits, and single hyphens, at most 50 characters)", slug)
 	}
 	home, err := resolveRegisterOnlyHome(ctx.Home)
 	if err != nil {
@@ -498,10 +518,7 @@ func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
 		return cli.Usagef("dispatch: %v", err)
 	}
 
-	shortTitle := c.Problem
-	if len(shortTitle) > 72 {
-		shortTitle = shortTitle[:72]
-	}
+	shortTitle := cutTitle(c.Problem, 72)
 	tmp, err := os.CreateTemp("", "ateam-dispatch-*.txt")
 	if err != nil {
 		return fmt.Errorf("dispatch: create temp file: %w", err)

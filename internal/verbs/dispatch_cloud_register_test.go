@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/alecthomas/kong"
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
 
@@ -287,6 +290,88 @@ func TestRegisterOnly_SlugMustBeSlugified(t *testing.T) {
 		if len(h.cloudCalls) != 0 || len(h.cloudHomes) != 0 || h.stdout.String() != "" {
 			t.Errorf("slug %q: bd used or stdout written", slug)
 		}
+	}
+}
+
+func TestRegisterOnly_SlugMustBeASCII(t *testing.T) {
+	for _, slug := range []string{"é", "café-x", "日本語", "a-é"} {
+		h := registerOnlyHarness(t, registerOnlyConfig)
+		h.cmd.Slug = slug
+		if err := h.cmd.Run(h.ctx); !isUsage(err) {
+			t.Errorf("slug %q: Run = %v, want usage error", slug, err)
+		}
+		if len(h.cloudCalls) != 0 || h.stdout.String() != "" {
+			t.Errorf("slug %q: bd used or stdout written", slug)
+		}
+	}
+}
+
+func TestRegisterOnly_BlankProblemIsUsageError(t *testing.T) {
+	for _, problem := range []string{" ", "\t", "   "} {
+		for _, slug := range []string{"", "explicit-slug"} {
+			h := registerOnlyHarness(t, registerOnlyConfig)
+			h.cmd.Problem, h.cmd.Slug = problem, slug
+			if err := h.cmd.Run(h.ctx); !isUsage(err) {
+				t.Errorf("problem %q slug %q: Run = %v, want usage error", problem, slug, err)
+			}
+			if len(h.cloudCalls) != 0 || len(h.cloudHomes) != 0 || h.stdout.String() != "" {
+				t.Errorf("problem %q slug %q: bd used or stdout written", problem, slug)
+			}
+		}
+	}
+}
+
+func TestRegisterOnly_TitleCutKeepsValidUTF8(t *testing.T) {
+	h := registerOnlyHarness(t, registerOnlyConfig)
+	// The em dash occupies bytes 70-72, so a cut at byte 72 would split it.
+	h.cmd.Problem = strings.Repeat("a", 70) + "— tail"
+	if err := h.cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	title := strings.TrimPrefix(h.cloudCalls[0][1], "--title=")
+	if !utf8.ValidString(title) || len(title) > 72 {
+		t.Errorf("title %q: valid UTF-8 = %v, len = %d; want valid and <= 72", title, utf8.ValidString(title), len(title))
+	}
+	if title != strings.Repeat("a", 70) {
+		t.Errorf("title = %q, want the 70 a's before the em dash", title)
+	}
+}
+
+// TestRegisterOnly_KongArgv drives the real kong parser, so the flag names,
+// the Validate hook, and the Run wiring are guarded together.
+func TestRegisterOnly_KongArgv(t *testing.T) {
+	build := func(h *cloudHarness) (*cli.Parser, *dispatchKong) {
+		cmd := &dispatchKong{cloudBD: h.cmd.cloudBD}
+		p, err := cli.NewParser(kong.Exit(func(int) {}))
+		if err != nil {
+			t.Fatalf("NewParser: %v", err)
+		}
+		p.AddVerb("dispatch", "Dispatch.", cmd)
+		return p, cmd
+	}
+
+	h := registerOnlyHarness(t, registerOnlyConfig)
+	p, cmd := build(h)
+	if _, err := p.Parse([]string{"dispatch", "--cloud", "--register-only",
+		"--repo-url", "https://github.com/MGT-Insurance/midgard", "--problem", "Fix the widget"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(h.stdout.String(), `"initiative":"at-cloud1"`) {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+
+	h = registerOnlyHarness(t, registerOnlyConfig)
+	p, _ = build(h)
+	_, err := p.Parse([]string{"dispatch", "--cloud", "--register-only",
+		"--repo-url", "https://github.com/MGT-Insurance/midgard", "--problem", "x", "--body-file", "/etc/passwd"})
+	if err == nil || !strings.Contains(err.Error(), "--body-file") {
+		t.Errorf("Parse = %v, want a --body-file refusal", err)
+	}
+	if len(h.cloudCalls) != 0 {
+		t.Errorf("bd used on a refused invocation: %v", h.cloudCalls)
 	}
 }
 
