@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/transport"
 	"github.com/mgt-insurance/agent-teams/internal/transport/dispatcher"
@@ -198,6 +199,41 @@ func TestAuthFailuresSurfaceC6Text(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestStalledServer_ReturnsErrorInsteadOfBlocking(t *testing.T) {
+	register()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	t.Setenv("DSP_BEAD", "dsp-run1")
+	t.Setenv("DSP_API_URL", srv.URL+"/")
+	defer dispatcher.SetClientTimeout(100 * time.Millisecond)()
+	tr := newT(t)
+
+	run := func(name string, f func() error) {
+		done := make(chan error, 1)
+		go func() { done <- f() }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Errorf("%s: want a timeout error, got nil", name)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s blocked past the test deadline", name)
+		}
+	}
+	run("Send", func() error {
+		_, err := tr.Send(transport.OutboundMessage{InitiativeID: "i1", Body: "hi"})
+		return err
+	})
+	run("CloseTopic", func() error { return tr.(closer).CloseTopic("ref") })
 }
 
 func TestReceive_ErrorsAtOnce(t *testing.T) {

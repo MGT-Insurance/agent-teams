@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/runtools"
 	"github.com/mgt-insurance/agent-teams/internal/transport"
@@ -17,6 +18,13 @@ import (
 
 // maxTitleRunes is the longest topic title the run-tools route accepts.
 const maxTitleRunes = 500
+
+// requestTimeout bounds each HTTP request to Dispatcher, so a stalled
+// connection makes Send and CloseTopic return an error instead of blocking.
+const requestTimeout = 45 * time.Second
+
+// clientTimeout is requestTimeout; tests shorten it.
+var clientTimeout = requestTimeout
 
 // Dispatcher posts to and closes the run's own initiative topic through
 // Dispatcher.
@@ -32,7 +40,7 @@ func Factory(home string) (transport.Transport, error) {
 	if !ok {
 		return nil, errors.New("dispatcher transport: DSP_BEAD and DSP_API_URL must be set (only inside a Dispatcher run)")
 	}
-	return &Dispatcher{client: c, do: http.DefaultClient.Do}, nil
+	return &Dispatcher{client: c, do: (&http.Client{Timeout: clientTimeout}).Do}, nil
 }
 
 // Name returns "dispatcher".
