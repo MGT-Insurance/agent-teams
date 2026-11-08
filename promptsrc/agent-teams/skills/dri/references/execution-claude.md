@@ -59,6 +59,7 @@ Applies only when the tester reports a bead id from `ateam ui-test file`. If the
 - **Push first.** Before each Dispatcher live test and after each fix batch, push the real integration branch: `git push -u origin <branch>`, never force. If the tester still reports exit 6, push and re-spawn it. Open no PR until Phase 5. In midgard a branch push without a PR deploys nothing: `vercel.json` sets `deploymentEnabled` for `main` only, the CI push trigger is `main` only, and the branch deploy workflows need an open PR. In other repos, check the deploy triggers first.
 - **Dev server.** Start one only for exit 5 or for local-only items the tester names.
 - **Proof.** Raise live-test-review with `--attach <png>` for every PNG the tester reports and `--attach <verdict.md>`. Put the bead URL in the summary file.
+- **Cloud run.** `--attach` is not delivered from a cloud run. Put `screenshot: <ui-test bead id>` in the gate text, and the steward posts the image.
 - **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a question gate. Never raise live-test-review without images.
 
 ## Why the background re-wake bug forces "never end a turn waiting on work"

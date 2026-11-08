@@ -167,5 +167,8 @@ The same flow, screenshots included, works in a cloud run.
 - **Proof.** Raise live-test-review with `--attach <png>` for every PNG the
   tester reports and `--attach <verdict.md>`. Put the bead URL in the summary
   file.
+- **Cloud run.** `--attach` is not delivered from a cloud run. Put
+  `screenshot: <ui-test bead id>` in the gate text, and the steward posts the
+  image.
 - **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a
   question gate. Never raise live-test-review without images.
