@@ -105,6 +105,40 @@ func TestPagePublish_401NamesPagesTool(t *testing.T) {
 	}
 }
 
+func TestPagePublish_CreateDoesNotRetry5xx(t *testing.T) {
+	pageInRun(t)
+	calls := 0
+	cmd := &pagePublishKong{httpDo: func(*http.Request) (*http.Response, error) {
+		calls++
+		return pageResp(503, `{"error":"down"}`), nil
+	}}
+	_, _, err := pageTestRun(t, cmd)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+func TestPagePublish_RepublishRetries5xxOnce(t *testing.T) {
+	pageInRun(t)
+	calls := 0
+	cmd := &pagePublishKong{URL: "abc", httpDo: func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return pageResp(503, `{"error":"down"}`), nil
+		}
+		return pageResp(200, `{"id":"abc","url":"https://d.example/pages/abc","version":2,"created":false}`), nil
+	}}
+	if _, _, err := pageTestRun(t, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2", calls)
+	}
+}
+
 func TestPagePublish_Registered(t *testing.T) {
 	parser, err := cli.NewParser()
 	if err != nil {

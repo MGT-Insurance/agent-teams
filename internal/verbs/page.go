@@ -80,7 +80,13 @@ func (c *pagePublishKong) Run(ctx *cli.Context) error {
 			return fmt.Errorf("page publish: --url %q has no page id", c.URL)
 		}
 	}
-	data, err := client.Call(do, "page_publish", req, 1)
+	// A create retried after a lost response would make a second page, so only
+	// a republish, which is idempotent in effect, retries.
+	retries := 0
+	if req.Page != "" {
+		retries = 1
+	}
+	data, err := client.Call(do, "page_publish", req, retries)
 	if err != nil {
 		return fmt.Errorf("page publish: %w", err)
 	}
