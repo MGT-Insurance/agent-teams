@@ -48,8 +48,9 @@ func RegisterUITestKong(p *cli.Parser) {
 // uiTestCmd is the kong parent struct for `ateam ui-test <subcommand>`. It has
 // no Run method: kong would run it for every subcommand (see mail_register.go).
 type uiTestCmd struct {
-	File uiTestFileKong `cmd:"" name:"file" help:"File a ui-test bead for a pushed branch in the Dispatcher's beads database; prints the bead id."`
-	Wait uiTestWaitKong `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it (and screenshots) under --out."`
+	File  uiTestFileKong  `cmd:"" name:"file" help:"File a ui-test bead for a pushed branch in the Dispatcher's beads database; prints the bead id."`
+	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it (and screenshots) under --out."`
+	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a ui-test bead (cloud run only); prints '<id> <status>'."`
 }
 
 // uiTestDeps are the seams that keep `ui-test` off the network and the clock
@@ -514,8 +515,8 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 		case "closed":
 			return c.finish(ctx, d, rt, bead, comments, out)
 		case "blocked":
-			if n := len(comments); n > 0 && strings.HasPrefix(strings.TrimSpace(comments[n-1].Text), "question:") {
-				fmt.Fprintln(ctx.Stdout, uiRedactArtifactURLs(strings.TrimSpace(comments[n-1].Text)))
+			if q, ok := uiTestPendingQuestion(comments); ok {
+				fmt.Fprintln(ctx.Stdout, uiRedactArtifactURLs(strings.TrimSpace(q)))
 				return cli.Silent(uiExitQuestion)
 			}
 		}
@@ -526,6 +527,24 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 		}
 		d.sleep(min(uiPollInterval, remaining))
 	}
+}
+
+// uiTestPendingQuestion returns the newest comment whose first non-empty line
+// starts with "question:" (any case), among the trailing run of "agent:tester"
+// comments. A comment by any other author ends the run, so an answer from the
+// host, another agent, or a Dispatcher job clears the question. comments must
+// be sorted oldest first.
+func uiTestPendingQuestion(comments []uiTestComment) (string, bool) {
+	for i := len(comments) - 1; i >= 0; i-- {
+		c := comments[i]
+		if c.Author != "agent:tester" {
+			return "", false
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.Text)), "question:") {
+			return c.Text, true
+		}
+	}
+	return "", false
 }
 
 // finish maps a closed bead to an exit code and writes the output files.
@@ -540,6 +559,9 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, 
 	}
 	text := "bead " + c.ID + " closed without a verdict comment"
 	for i := len(comments) - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(comments[i].Text), "answer:") {
+			continue
+		}
 		if strings.HasPrefix(comments[i].Author, "job:") || strings.HasPrefix(strings.TrimSpace(comments[i].Text), "rejected:") {
 			text = uiRedactArtifactURLs(comments[i].Text)
 			break
@@ -620,4 +642,51 @@ func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, rt *uiRunT
 func firstLine(s string) string {
 	first, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return first
+}
+
+// uiTestReplyKong implements `ateam ui-test reply`.
+type uiTestReplyKong struct {
+	ID   string `arg:"" name:"bead-id" help:"The ui-test bead id the tester asked its question on."`
+	Text string `name:"text" help:"The answer text. Use this or --file."`
+	File string `name:"file" help:"File holding the answer text. Use this or --text."`
+
+	deps *uiTestDeps
+}
+
+// Validate requires exactly one of --text and --file.
+func (c *uiTestReplyKong) Validate() error {
+	if (c.Text == "") == (c.File == "") {
+		return cli.Usagef("ui-test reply: pass exactly one of --text or --file")
+	}
+	return nil
+}
+
+// Run posts the answer through the run's Dispatcher and prints "<id> <status>".
+// Outside a Dispatcher run it exits 5.
+func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
+	d := c.deps.resolved()
+	rt, inRun := uiRunToolsFromEnv()
+	if !inRun {
+		fmt.Fprintln(ctx.Stderr, "ui-test reply: needs a cloud run (DSP_BEAD and DSP_API_URL); answer the tester through bd instead")
+		return cli.Silent(uiExitIneligible)
+	}
+	text := c.Text
+	if c.File != "" {
+		b, err := os.ReadFile(c.File)
+		if err != nil {
+			// A plain error (exit 1): a usage error exits 2, which callers read as FAILED.
+			return fmt.Errorf("ui-test reply: --file %q: %v", c.File, err)
+		}
+		text = string(b)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("ui-test reply: the answer text is empty")
+	}
+	status, err := rt.beadReply(d, c.ID, text)
+	if err != nil {
+		return fmt.Errorf("ui-test reply: %w", err)
+	}
+	fmt.Fprintf(ctx.Stdout, "%s %s\n", c.ID, status)
+	return nil
 }

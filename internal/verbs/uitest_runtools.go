@@ -65,6 +65,22 @@ func (rt *uiRunTools) beadGet(d uiTestDeps, id string) (uiTestBead, []uiTestComm
 	return r.uiTestBead, r.Comments, nil
 }
 
+// beadReply posts the answer as a comment on the bead and returns the bead's
+// status after the write.
+func (rt *uiRunTools) beadReply(d uiTestDeps, id, text string) (string, error) {
+	data, err := rt.call(d, "bead_reply", map[string]string{"op": "bead_reply", "id": id, "text": text})
+	if err != nil {
+		return "", err
+	}
+	var r struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil || r.Status == "" {
+		return "", fmt.Errorf("run-tools bead_reply: unexpected response")
+	}
+	return r.Status, nil
+}
+
 // fileViaRunTools posts the ui_test_file op. It prints the bead id on stdout
 // and its url on stderr, so callers that capture stdout still get the id.
 func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, branch, sha, items string) error {
