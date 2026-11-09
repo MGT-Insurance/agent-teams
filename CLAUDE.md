@@ -95,6 +95,10 @@ seam. The supported entry point is `scripts/eval` (a `go run ./cmd/eval`
 wrapper anchored at the repo root). See `eval/README.md` for the full cost
 model and lifecycle.
 
+## Dispatcher cloud steward (optional)
+
+If you also maintain the Dispatcher cloud steward (`MGT-Insurance/dispatcher`, `users/eric.lloyd/agents/steward.md`), mirror any rule change in `plugins/agent-teams/skills/steward/` there. Its sync map is in `users/eric.lloyd/agents/README.md`. If you don't use Dispatcher, ignore this.
+
 ## Architecture Overview
 
 Two shipped artifacts in one repo:

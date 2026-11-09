@@ -34,6 +34,10 @@ change increments only that runtime's patch; patches never decrease or reset
 within a minor line. Keep the Claude marketplace and plugin versions identical.
 See `docs/plugin-versioning.md` for the complete release contract and examples.
 
+## Dispatcher cloud steward (optional)
+
+If you also maintain the Dispatcher cloud steward (`MGT-Insurance/dispatcher`, `users/eric.lloyd/agents/steward.md`), mirror any rule change in `plugins/agent-teams/skills/steward/` there. Its sync map is in `users/eric.lloyd/agents/README.md`. If you don't use Dispatcher, ignore this.
+
 ## Non-Interactive Shell Commands
 
 **ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
