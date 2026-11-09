@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -50,7 +51,8 @@ func RegisterUITestKong(p *cli.Parser) {
 type uiTestCmd struct {
 	File  uiTestFileKong  `cmd:"" name:"file" help:"File a ui-test bead for a pushed branch in the Dispatcher's beads database; prints the bead id."`
 	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it (and screenshots) under --out."`
-	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a ui-test bead (cloud run only); prints '<id> <status>'."`
+	Watch uiTestWatchKong `cmd:"" name:"watch" help:"Watch a ui-test bead and mail its stop events (question, blocked, done, failed, expired) to the initiative."`
+	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a ui-test bead; prints '<id> <status>'."`
 }
 
 // uiTestDeps are the seams that keep `ui-test` off the network and the clock
@@ -64,10 +66,15 @@ type uiTestDeps struct {
 	// bdRead runs `bd -C dir args...` and returns stdout only; stderr is kept
 	// out of the JSON and surfaces in err.
 	bdRead func(dir string, args ...string) ([]byte, error)
-	now    func() time.Time
-	sleep  func(time.Duration)
+	// bdWrite runs `bd -C dir args... --actor actor` and returns stdout; stderr
+	// surfaces in err. It is never retried: a retried comment posts twice.
+	bdWrite func(dir, actor string, args ...string) ([]byte, error)
+	now     func() time.Time
+	sleep   func(time.Duration)
 	// httpDo performs one screenshot GET.
 	httpDo func(*http.Request) (*http.Response, error)
+	// watch holds the stop-watcher seams used by `ui-test file`.
+	watch *uiWatchDeps
 }
 
 func (d *uiTestDeps) resolved() uiTestDeps {
@@ -83,6 +90,9 @@ func (d *uiTestDeps) resolved() uiTestDeps {
 	}
 	if r.bdRead == nil {
 		r.bdRead = defaultUITestBDRead
+	}
+	if r.bdWrite == nil {
+		r.bdWrite = defaultUITestBDWrite
 	}
 	if r.now == nil {
 		r.now = time.Now
@@ -186,11 +196,12 @@ func uiTestBeadBody(repoURL, branch, sha, scope, testUser, items string) string 
 
 // uiTestFileKong implements `ateam ui-test file`.
 type uiTestFileKong struct {
-	Worktree  string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
-	Scope     string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
-	ItemsFile string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
-	TestUser  string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
-	Title     string `name:"title" help:"Bead title suffix; defaults to the branch name."`
+	Worktree   string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
+	Scope      string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
+	ItemsFile  string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
+	TestUser   string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
+	Title      string `name:"title" help:"Bead title suffix; defaults to the branch name."`
+	Initiative string `name:"initiative" help:"Initiative to mail the stop events to (local filing only); default: the owner of --worktree, else of the current directory."`
 
 	deps *uiTestDeps
 }
@@ -256,6 +267,7 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ui-test file: %w", err)
 	}
 	fmt.Fprintln(ctx.Stdout, id)
+	startUITestWatch(ctx, d.watch.resolved(), id, c.Initiative, c.Worktree)
 	return nil
 }
 
@@ -339,12 +351,28 @@ func defaultUITestBDRead(dir string, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// uiTestBead is the subset of `bd show --json` that wait reads.
+// defaultUITestBDWrite runs one bd write as actor. Callers must not retry it.
+func defaultUITestBDWrite(dir, actor string, args ...string) ([]byte, error) {
+	cmd := exec.Command("bd", append(append([]string{"-C", dir}, args...), "--actor", actor)...)
+	cmd.Env = uiTestBDEnv()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("%w: %s", err, msg)
+		}
+		return nil, err
+	}
+	return stdout.Bytes(), nil
+}
+
+// uiTestBead is the subset of `bd show --json` that wait and reply read.
 type uiTestBead struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	CloseReason string `json:"close_reason"`
+	ID          string   `json:"id"`
+	Labels      []string `json:"labels"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	CloseReason string   `json:"close_reason"`
 }
 
 // uiTestComment is the subset of `bd comments --json` that wait reads.
@@ -661,14 +689,27 @@ func (c *uiTestReplyKong) Validate() error {
 	return nil
 }
 
-// Run posts the answer through the run's Dispatcher and prints "<id> <status>".
-// Outside a Dispatcher run it exits 5.
+// uiAnswerText returns text unchanged if it starts with "answer:" (any case),
+// else prefixed with "answer: ". It matches the Dispatcher's replyFiledBead.
+func uiAnswerText(text string) string {
+	if strings.HasPrefix(strings.ToLower(text), "answer:") {
+		return text
+	}
+	return "answer: " + text
+}
+
+// Run posts the answer and prints "<id> <status>". In a Dispatcher run it posts
+// through the run's Dispatcher; otherwise it writes the comment through bd
+// against the configured Dispatcher beads database.
 func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
 	d := c.deps.resolved()
 	rt, inRun := uiRunToolsFromEnv()
+	var settings uiTestSettings
 	if !inRun {
-		fmt.Fprintln(ctx.Stderr, "ui-test reply: needs a cloud run (DSP_BEAD and DSP_API_URL); answer the tester through bd instead")
-		return cli.Silent(uiExitIneligible)
+		var err error
+		if settings, err = uiTestGate(ctx); err != nil {
+			return err
+		}
 	}
 	text := c.Text
 	if c.File != "" {
@@ -683,10 +724,54 @@ func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
 	if text == "" {
 		return fmt.Errorf("ui-test reply: the answer text is empty")
 	}
-	status, err := rt.beadReply(d, c.ID, text)
+	var status string
+	var err error
+	if inRun {
+		status, err = rt.beadReply(d, c.ID, text)
+	} else {
+		status, err = c.replyViaBD(d, settings, text)
+	}
 	if err != nil {
 		return fmt.Errorf("ui-test reply: %w", err)
 	}
 	fmt.Fprintf(ctx.Stdout, "%s %s\n", c.ID, status)
 	return nil
+}
+
+// replyViaBD writes the answer comment through bd as the configured actor and,
+// for a blocked bead, moves it to in_progress. It posts at most once.
+func (c *uiTestReplyKong) replyViaBD(d uiTestDeps, s uiTestSettings, text string) (string, error) {
+	bead, err := uiTestFetchBead(d, s.beadsDir, c.ID)
+	if err != nil {
+		return "", err
+	}
+	if bead.Status == "closed" {
+		return "", fmt.Errorf("bead %s is closed", c.ID)
+	}
+	if !slices.Contains(bead.Labels, "type:ui-test") {
+		return "", fmt.Errorf("%s is not a ui-test bead", c.ID)
+	}
+	tmp, err := os.CreateTemp("", "ateam-ui-test-reply-*.txt")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	_, werr := tmp.WriteString(uiAnswerText(text))
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return "", werr
+	}
+	if _, err := d.bdWrite(s.beadsDir, s.actor, "comment", c.ID, "--file", tmp.Name(), "--json"); err != nil {
+		return "", fmt.Errorf("bd comment %s: %w", c.ID, err)
+	}
+	status := bead.Status
+	if status == "blocked" {
+		if _, err := d.bdWrite(s.beadsDir, s.actor, "update", c.ID, "--status", "in_progress", "--json"); err != nil {
+			return "", fmt.Errorf("answer posted on %s but status move failed: %w", c.ID, err)
+		}
+		status = "in_progress"
+	}
+	return status, nil
 }

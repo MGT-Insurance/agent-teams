@@ -197,17 +197,38 @@ before. If you set `dispatcher_beads`, also set `dispatcher_actor` (or
 key.
 
 - `ateam ui-test file --worktree <abs> --scope <apps> --items-file <path>
-  [--test-user <email>] [--title <text>]` files a ui-test bead for the
-  worktree's branch and prints the bead id. The branch's HEAD must already be on
+  [--test-user <email>] [--title <text>] [--initiative <id>]` files a ui-test
+  bead for the worktree's branch and prints the bead id. On a laptop, it then
+  starts the stop watcher (see `watch` below) for the initiative named by
+  `--initiative`, else the one that owns `--worktree`, and prints `watching
+  <bead-id> for <initiative>` on stderr. The branch's HEAD must already be on
   `origin` (exit 6 otherwise), and `origin` must be a GitHub repository (exit 5
   otherwise).
-- `ateam ui-test wait <bead-id> --out <dir> [--timeout <duration>]` polls the
-  bead every 30 seconds for up to `--timeout` (default 9 minutes, maximum 9
-  minutes 30 seconds) and writes `verdict.md` under `--out`. It also downloads
-  each screenshot from the signed links in the Dispatcher's comment into
-  `<out>/screenshots/`, and prints the `verdict.md` path followed by one PNG
-  path per line. The requests send no credentials: the signature in the link is
-  the credential, and `verdict.md` never copies a link.
+- `ateam ui-test wait <bead-id> --out <dir> [--timeout <duration>]` reads the
+  bead's state. It polls every 30 seconds for up to `--timeout` (default 9
+  minutes, maximum 9 minutes 30 seconds) and writes `verdict.md` under
+  `--out`. It also downloads each screenshot from the signed links in the
+  Dispatcher's comment into `<out>/screenshots/`, and prints the `verdict.md`
+  path followed by one PNG path per line. The requests send no credentials:
+  the signature in the link is the credential, and `verdict.md` never copies a
+  link. The tester never runs `wait`; the DRI runs it with a short `--timeout`
+  after a stop event.
+- `ateam ui-test reply <bead-id> (--text <text> | --file <path>)` answers the
+  tester's question. In a cloud run it goes through the run's tool. On a
+  laptop it posts an `answer: <text>` comment through `bd` as
+  `dispatcher_actor` and, if the bead is `blocked`, moves it to `in_progress`.
+- `ateam ui-test watch <bead-id> [--initiative <id>]` watches a filed bead on
+  a laptop and mails `ui-test <id> <kind>` to the initiative each time the
+  bead stops (`question`, `blocked`, `done`, or `failed`). `ui-test file`
+  starts it automatically. After 24 hours it mails `expired` and exits. To
+  re-arm it after a reboot or a killed watcher, run `ateam ui-test watch
+  <bead-id>`; the command is idempotent. A cloud run gets these events from
+  the Dispatcher instead.
+
+The tester files the bead, reports its id, and stops. It never waits. The DRI
+ends its turn, and the stop event (the Dispatcher's in a cloud run, the
+watcher's mail on a laptop) wakes it to run `wait`, then `reply` for a
+question or act on the verdict.
 
 A repository needs a ui-test catalog in the Dispatcher. Without one, the
 Dispatcher rejects the bead and `wait` exits 5, which means "test locally".
