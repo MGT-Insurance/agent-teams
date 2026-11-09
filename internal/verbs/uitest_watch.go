@@ -46,6 +46,8 @@ var uiWatchIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 type uiWatchDeps struct {
 	// resolve returns the open initiative that owns path, or "" when none does.
 	resolve func(ctx *cli.Context, path string) (string, error)
+	// exists reports whether initiative is a registered initiative.
+	exists func(ctx *cli.Context, initiative string) error
 	// spawn starts the detached watcher child for the bead.
 	spawn func(ctx *cli.Context, beadID, initiative string) error
 	// send mails body to the initiative under dedupKey.
@@ -61,6 +63,9 @@ func (w *uiWatchDeps) resolved() uiWatchDeps {
 	}
 	if r.resolve == nil {
 		r.resolve = resolveUIWatchInitiative
+	}
+	if r.exists == nil {
+		r.exists = uiWatchInitiativeExists
 	}
 	if r.spawn == nil {
 		r.spawn = uiWatchSpawn
@@ -126,9 +131,12 @@ func uiStopKind(bead uiTestBead, comments []uiTestComment) (kind, question strin
 }
 
 // uiWatchDedupKey is the mail dedup key of one stop event.
-func uiWatchDedupKey(id, kind, question string) string {
+// gen counts how many times the watcher saw the bead leave a stop state, so a
+// repeated identical question after a reply gets a new key while a retry of the
+// same stop keeps its key.
+func uiWatchDedupKey(id, kind, question string, gen int) string {
 	sum := sha256.Sum256([]byte(question))
-	return "ui-test:" + id + ":" + kind + ":" + hex.EncodeToString(sum[:])[:12]
+	return fmt.Sprintf("ui-test:%s:%s:%s:g%d", id, kind, hex.EncodeToString(sum[:])[:12], gen)
 }
 
 // uiTestWatchKong implements `ateam ui-test watch`.
@@ -174,7 +182,7 @@ func (c *uiTestWatchKong) Run(ctx *cli.Context) error {
 			return fmt.Errorf("ui-test watch: no open initiative owns %s; pass --initiative", cwd)
 		}
 	}
-	if err := w.spawn(ctx, c.ID, initiative); err != nil {
+	if err := uiWatchStart(ctx, w, c.ID, initiative); err != nil {
 		return fmt.Errorf("ui-test watch: %w", err)
 	}
 	fmt.Fprintf(ctx.Stdout, "watching %s for %s\n", c.ID, initiative)
@@ -187,11 +195,30 @@ func (c *uiTestWatchKong) Run(ctx *cli.Context) error {
 func startUITestWatch(ctx *cli.Context, w uiWatchDeps, id, initiative, worktree string) {
 	init, err := uiWatchInitiativeFor(ctx, w, initiative, worktree)
 	if err == nil {
-		err = w.spawn(ctx, id, init)
+		err = uiWatchStart(ctx, w, id, init)
 	}
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "ui-test file: no stop watcher (%v); run: ateam ui-test watch %s\n", err, id)
+		return
 	}
+	fmt.Fprintf(ctx.Stderr, "watching %s for %s\n", id, init)
+}
+
+// uiWatchStart checks that the initiative exists, then spawns the watcher, so a
+// mistyped initiative fails at the command instead of in the detached log.
+func uiWatchStart(ctx *cli.Context, w uiWatchDeps, id, initiative string) error {
+	if err := w.exists(ctx, initiative); err != nil {
+		return err
+	}
+	return w.spawn(ctx, id, initiative)
+}
+
+// uiWatchInitiativeExists looks the initiative up the way `ateam show` does.
+func uiWatchInitiativeExists(ctx *cli.Context, initiative string) error {
+	if _, err := ctx.BD.Run("show", initiative); err != nil {
+		return fmt.Errorf("unknown initiative %q: %w", initiative, err)
+	}
+	return nil
 }
 
 func uiWatchInitiativeFor(ctx *cli.Context, w uiWatchDeps, initiative, worktree string) (string, error) {
@@ -309,8 +336,9 @@ func runUIWatchChild(ctx *cli.Context, d uiTestDeps, w uiWatchDeps, s uiTestSett
 		return nil
 	}
 	defer func() {
+		// Never unlink the lock file: a second watcher holding the old inode
+		// and a third creating a fresh file would both hold the lock.
 		release()
-		os.Remove(lockPath)
 		os.Remove(pidPath)
 	}()
 	if err := writeFollowPidfile(pidPath); err != nil {
@@ -327,7 +355,9 @@ func uiWatchLoop(ctx *cli.Context, d uiTestDeps, w uiWatchDeps, s uiTestSettings
 		fmt.Fprintf(ctx.Stdout, "%s ui-test watch %s: %s\n", d.now().Format(time.RFC3339), id, fmt.Sprintf(format, a...))
 	}
 	deadline := d.now().Add(uiWatchExpiry)
+	logf("started: bead %s, initiative %s, pid %d", id, initiative, os.Getpid())
 	lastKey := ""
+	gen := 0
 	expiredTries := 0
 	for {
 		bead, err := uiTestFetchBead(d, s.beadsDir, id)
@@ -338,9 +368,12 @@ func uiWatchLoop(ctx *cli.Context, d uiTestDeps, w uiWatchDeps, s uiTestSettings
 		if err != nil {
 			logf("read failed: %v", err)
 		} else if kind, q := uiStopKind(bead, comments); kind == uiKindNone {
+			if lastKey != "" {
+				gen++
+			}
 			lastKey = ""
 		} else if key := kind + "\x00" + q; key != lastKey {
-			if err := w.send(ctx, initiative, uiTestStopEvent(id, kind, q), uiWatchDedupKey(id, kind, q)); err != nil {
+			if err := w.send(ctx, initiative, uiTestStopEvent(id, kind, q), uiWatchDedupKey(id, kind, q, gen)); err != nil {
 				logf("send %s failed: %v", kind, err)
 			} else {
 				lastKey = key

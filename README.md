@@ -200,7 +200,8 @@ key.
   [--test-user <email>] [--title <text>] [--initiative <id>]` files a ui-test
   bead for the worktree's branch and prints the bead id. On a laptop, it then
   starts the stop watcher (see `watch` below) for the initiative named by
-  `--initiative`, else the one that owns `--worktree`. The branch's HEAD must already be on
+  `--initiative`, else the one that owns `--worktree`, and prints `watching
+  <bead-id> for <initiative>` on stderr. The branch's HEAD must already be on
   `origin` (exit 6 otherwise), and `origin` must be a GitHub repository (exit 5
   otherwise).
 - `ateam ui-test wait <bead-id> --out <dir> [--timeout <duration>]` reads the

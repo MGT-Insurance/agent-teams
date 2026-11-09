@@ -21,9 +21,12 @@ type fakeWatch struct {
 	resolveFn func(path string) (string, error)
 	spawns    [][2]string // beadID, initiative
 	spawnErr  error
+	existsErr error
+	checked   []string
 	sends     []sentMail
 	sendFn    func(n int) error // n is the 1-based send attempt
 	attempts  int
+	onAttempt func(key string)
 	lockHeld  bool
 }
 
@@ -40,12 +43,19 @@ func (f *fakeWatch) deps() *uiWatchDeps {
 			}
 			return "at-init", nil
 		},
+		exists: func(_ *cli.Context, initiative string) error {
+			f.checked = append(f.checked, initiative)
+			return f.existsErr
+		},
 		spawn: func(_ *cli.Context, id, initiative string) error {
 			f.spawns = append(f.spawns, [2]string{id, initiative})
 			return f.spawnErr
 		},
 		send: func(_ *cli.Context, initiative, body, key string) error {
 			f.attempts++
+			if f.onAttempt != nil {
+				f.onAttempt(key)
+			}
 			if f.sendFn != nil {
 				if err := f.sendFn(f.attempts); err != nil {
 					return err
@@ -172,8 +182,12 @@ func TestUITestWatch_QuestionAnswerQuestionDoneSendsThreeThenExits(t *testing.T)
 	if r.fw.sends[0].initiative != "at-init" {
 		t.Errorf("initiative = %q", r.fw.sends[0].initiative)
 	}
-	if k := r.fw.sends[0].key; !strings.HasPrefix(k, "ui-test:dsp-ui1:question:") || len(k) != len("ui-test:dsp-ui1:question:")+12 {
+	if k := r.fw.sends[0].key; !strings.HasPrefix(k, "ui-test:dsp-ui1:question:") || !strings.HasSuffix(k, ":g0") {
 		t.Errorf("dedup key = %q", k)
+	}
+	// The answered-then-repeated question is a new stop: its key differs.
+	if r.fw.sends[0].key == r.fw.sends[1].key {
+		t.Errorf("repeat question reused key %q", r.fw.sends[1].key)
 	}
 }
 
@@ -230,6 +244,83 @@ func TestUITestWatch_SendFailureRetriesNextTick(t *testing.T) {
 	}
 }
 
+func TestUITestWatch_SameStopRetryKeepsKeyRepeatAfterNoneChangesIt(t *testing.T) {
+	q := "question: which?"
+	// The first question send fails and retries; then a none state and the
+	// identical question again.
+	r := newWatchRig(t, blockedQ(q), blockedQ(q),
+		watchState{bead: uiBead("in_progress", "type:ui-test")}, blockedQ(q),
+		watchState{bead: uiTestBead{ID: "dsp-ui1", Status: "closed"}})
+	var failedKey string
+	r.fw.sendFn = func(n int) error {
+		if n == 1 {
+			return errors.New("mail down")
+		}
+		return nil
+	}
+	r.fw.onAttempt = func(key string) {
+		if failedKey == "" {
+			failedKey = key
+		}
+	}
+	if err := r.runChild(); err != nil {
+		t.Fatal(err)
+	}
+	// sends: retry of q (same key as the failed attempt), q after none (new key), done.
+	if len(r.fw.sends) != 3 || r.fw.sends[0].key != failedKey || r.fw.sends[1].key == failedKey {
+		t.Fatalf("failed key = %q, sends = %+v", failedKey, r.fw.sends)
+	}
+}
+
+func TestUITestWatch_ChildLogsStartedLine(t *testing.T) {
+	r := newWatchRig(t, watchState{bead: uiTestBead{ID: "dsp-ui1", Status: "closed"}})
+	if err := r.runChild(); err != nil {
+		t.Fatal(err)
+	}
+	first := strings.SplitN(r.h.stdout.String(), "\n", 2)[0]
+	if !strings.Contains(first, "started: bead dsp-ui1, initiative at-init, pid ") {
+		t.Errorf("first log line = %q", first)
+	}
+}
+
+func TestUITestWatch_UnknownInitiativeExits1WithoutSpawning(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	fw := newFakeWatch()
+	fw.existsErr = errors.New("not found")
+	err := (&uiTestWatchKong{ID: "dsp-ui1", Initiative: "at-typo", deps: h.deps, watch: fw.deps()}).Run(h.ctx)
+	if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "not found") || len(fw.spawns) != 0 {
+		t.Errorf("err = %v (exit %d), spawns = %v", err, exitOf(err), fw.spawns)
+	}
+}
+
+func TestUITestFile_WatchingLineOnStderrOnly(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	fw := newFakeWatch()
+	h.deps.watch = fw.deps()
+	if err := h.file("x"); err != nil {
+		t.Fatal(err)
+	}
+	if h.stdout.String() != "dsp-ui1\n" {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+	if !strings.Contains(h.stderr.String(), "watching dsp-ui1 for at-init\n") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+func TestUITestFile_UnknownInitiativeGivesNoWatcherLine(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	fw := newFakeWatch()
+	fw.existsErr = errors.New("not found")
+	h.deps.watch = fw.deps()
+	if err := h.file("x"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.spawns) != 0 || !strings.Contains(h.stderr.String(), "ui-test file: no stop watcher (not found); run: ateam ui-test watch dsp-ui1") || strings.Contains(h.stderr.String(), "watching ") {
+		t.Errorf("spawns = %v, stderr = %q", fw.spawns, h.stderr.String())
+	}
+}
+
 func TestUITestWatch_ReadErrorLogsAndContinues(t *testing.T) {
 	r := newWatchRig(t, watchState{bead: uiTestBead{ID: "dsp-ui1", Status: "closed"}})
 	r.failRd = func(tick int) error {
@@ -257,7 +348,7 @@ func TestUITestWatch_LockHeldExitsWithoutSending(t *testing.T) {
 	}
 }
 
-func TestUITestWatch_ChildCleansLockAndPidfile(t *testing.T) {
+func TestUITestWatch_ChildRemovesPidfileKeepsLock(t *testing.T) {
 	r := newWatchRig(t, watchState{bead: uiTestBead{ID: "dsp-ui1", Status: "closed"}})
 	r.fw.sendFn = func(int) error {
 		// While the loop runs, the pidfile exists and a second lock fails.
@@ -273,10 +364,12 @@ func TestUITestWatch_ChildCleansLockAndPidfile(t *testing.T) {
 	if err := r.runChild(); err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{"dsp-ui1.pid", "dsp-ui1.lock"} {
-		if _, err := os.Stat(filepath.Join(r.h.ctx.Home, "uitest", n)); !os.IsNotExist(err) {
-			t.Errorf("%s left behind (err %v)", n, err)
-		}
+	if _, err := os.Stat(filepath.Join(r.h.ctx.Home, "uitest", "dsp-ui1.pid")); !os.IsNotExist(err) {
+		t.Errorf("pidfile left behind (err %v)", err)
+	}
+	// The lock file stays: unlinking it races a concurrent re-arm.
+	if _, err := os.Stat(filepath.Join(r.h.ctx.Home, "uitest", "dsp-ui1.lock")); err != nil {
+		t.Errorf("lock file removed: %v", err)
 	}
 }
 

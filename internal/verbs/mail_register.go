@@ -66,9 +66,9 @@ func (c *mailListAliasKong) Run(ctx *cli.Context) error {
 	return c.mailListKong.Run(ctx)
 }
 
-// newSendKong returns a sendKong carrying every production DI default. Any
-// non-test construction of sendKong goes through it: a bare literal leaves the
-// func seams nil and Run panics on the first delivery.
+// newSendKong returns a sendKong carrying every production DI default. Callers
+// that want the production defaults construct through it: a bare literal leaves
+// the func seams nil and Run panics on the first delivery.
 func newSendKong() sendKong {
 	return sendKong{
 		agentsFunc:     defaultAgentsJSONAll,
