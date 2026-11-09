@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Strip the Dispatcher run env so this test never writes to a cloud run's real outbox.
+for v in $(compgen -e | grep '^DSP_'); do unset "$v"; done
 # multi-machine-routing.test.sh — two-machine exactly-once routing test
 # (agent-teams-5y8a.6, the loop-closing verification for the multi-machine
 # steward/relay initiative agent-teams-5y8a). Modeled on tests/steward-loop.test.sh

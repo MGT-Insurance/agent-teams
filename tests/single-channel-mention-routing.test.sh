@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Strip the Dispatcher run env so this test never writes to a cloud run's real outbox.
+for v in $(compgen -e | grep '^DSP_'); do unset "$v"; done
 # single-channel-mention-routing.test.sh — two-machine @mention routing test
 # (agent-teams-4x83.5, the loop-closing verification for the single-channel
 # steward-addressing initiative agent-teams-4x83). Modeled on
