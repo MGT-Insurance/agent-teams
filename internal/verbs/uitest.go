@@ -529,15 +529,15 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 	}
 }
 
-// uiTestPendingQuestion returns the newest comment whose first line starts with
-// "question:" (any case) among the trailing run of tester-authored comments
-// ("agent:" authors). The run ends at the last comment by any other author, so
-// an answer from the host or a Dispatcher job clears the question. comments
-// must be sorted oldest first.
+// uiTestPendingQuestion returns the newest comment whose first non-empty line
+// starts with "question:" (any case), among the trailing run of "agent:tester"
+// comments. A comment by any other author ends the run, so an answer from the
+// host, another agent, or a Dispatcher job clears the question. comments must
+// be sorted oldest first.
 func uiTestPendingQuestion(comments []uiTestComment) (string, bool) {
 	for i := len(comments) - 1; i >= 0; i-- {
 		c := comments[i]
-		if !strings.HasPrefix(c.Author, "agent:") {
+		if c.Author != "agent:tester" {
 			return "", false
 		}
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.Text)), "question:") {
