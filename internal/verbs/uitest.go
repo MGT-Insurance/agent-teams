@@ -51,7 +51,8 @@ func RegisterUITestKong(p *cli.Parser) {
 type uiTestCmd struct {
 	File  uiTestFileKong  `cmd:"" name:"file" help:"File a ui-test bead for a pushed branch in the Dispatcher's beads database; prints the bead id."`
 	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it (and screenshots) under --out."`
-	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a ui-test bead ; prints '<id> <status>'."`
+	Watch uiTestWatchKong `cmd:"" name:"watch" help:"Watch a ui-test bead and mail its stop events (question, blocked, done, failed, expired) to the initiative."`
+	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a ui-test bead; prints '<id> <status>'."`
 }
 
 // uiTestDeps are the seams that keep `ui-test` off the network and the clock
@@ -72,6 +73,8 @@ type uiTestDeps struct {
 	sleep   func(time.Duration)
 	// httpDo performs one screenshot GET.
 	httpDo func(*http.Request) (*http.Response, error)
+	// watch holds the stop-watcher seams used by `ui-test file`.
+	watch *uiWatchDeps
 }
 
 func (d *uiTestDeps) resolved() uiTestDeps {
@@ -193,11 +196,12 @@ func uiTestBeadBody(repoURL, branch, sha, scope, testUser, items string) string 
 
 // uiTestFileKong implements `ateam ui-test file`.
 type uiTestFileKong struct {
-	Worktree  string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
-	Scope     string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
-	ItemsFile string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
-	TestUser  string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
-	Title     string `name:"title" help:"Bead title suffix; defaults to the branch name."`
+	Worktree   string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
+	Scope      string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
+	ItemsFile  string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
+	TestUser   string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
+	Title      string `name:"title" help:"Bead title suffix; defaults to the branch name."`
+	Initiative string `name:"initiative" help:"Initiative to mail the stop events to (local filing only); default: the owner of --worktree, else of the current directory."`
 
 	deps *uiTestDeps
 }
@@ -263,6 +267,7 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ui-test file: %w", err)
 	}
 	fmt.Fprintln(ctx.Stdout, id)
+	startUITestWatch(ctx, d.watch.resolved(), id, c.Initiative, c.Worktree)
 	return nil
 }
 
@@ -724,7 +729,7 @@ func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
 	if inRun {
 		status, err = rt.beadReply(d, c.ID, text)
 	} else {
-		status, err = c.replyViaBD(ctx, d, settings, text)
+		status, err = c.replyViaBD(d, settings, text)
 	}
 	if err != nil {
 		return fmt.Errorf("ui-test reply: %w", err)
@@ -735,7 +740,7 @@ func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
 
 // replyViaBD writes the answer comment through bd as the configured actor and,
 // for a blocked bead, moves it to in_progress. It posts at most once.
-func (c *uiTestReplyKong) replyViaBD(ctx *cli.Context, d uiTestDeps, s uiTestSettings, text string) (string, error) {
+func (c *uiTestReplyKong) replyViaBD(d uiTestDeps, s uiTestSettings, text string) (string, error) {
 	bead, err := uiTestFetchBead(d, s.beadsDir, c.ID)
 	if err != nil {
 		return "", err
