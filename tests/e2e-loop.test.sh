@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Strip the Dispatcher run env so this test never writes to a cloud run's real outbox.
+for v in $(compgen -e | grep '^DSP_'); do unset "$v"; done
 # e2e-loop.test.sh — stub-transport round-trip test.
 #
 # Exercises the full composed pipeline across real process boundaries:

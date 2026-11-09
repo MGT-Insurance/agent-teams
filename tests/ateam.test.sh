@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Strip the Dispatcher run env so this test never writes to a cloud run's real outbox.
+for v in $(compgen -e | grep '^DSP_'); do unset "$v"; done
 # Tests for the `ateam` binary exercised through the POSIX dispatch wrapper.
 # All cases call bare `ateam` via the wrapper so they validate the shipped model.
 # Mirrors tests/hook-compact-recovery.test.sh structure.
