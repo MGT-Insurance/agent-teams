@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/mgt-insurance/agent-teams/internal/testenv"
 )
 
 // TestMain guarantees no test in this package ever shells out to the real
@@ -19,7 +21,12 @@ import (
 // discounting still can, via setMachineSleepLog or a direct assignment
 // (restored via t.Cleanup/defer) — this only replaces the otherwise-real
 // default every other test silently inherited.
+//
+// It also strips the inherited DSP_* variables: inside a cloud Dispatcher run
+// they are set, and verbs called in-process would append fixture ops to that
+// run's real outbox. Tests that need a DSP_* value use t.Setenv.
 func TestMain(m *testing.M) {
+	testenv.UnsetDispatcherEnv()
 	machineSleepLog = func() (string, error) { return "", nil }
 	os.Exit(m.Run())
 }
