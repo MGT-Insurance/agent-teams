@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -500,5 +501,28 @@ func TestUITestWatch_RegisteredWithFrozenFlags(t *testing.T) {
 	}
 	if _, err := parser.Parse([]string{"ui-test", "file", "--worktree", "/wt", "--scope", "m", "--items-file", "/i", "--initiative", "at-x"}); err != nil {
 		t.Errorf("file --initiative: %v", err)
+	}
+}
+
+// TestUIWatchSendCmdHasAllDefaults guards the detached watcher against a
+// nil-func panic: every func-typed field on the command it runs must be wired.
+func TestUIWatchSendCmdHasAllDefaults(t *testing.T) {
+	c := uiWatchSendCmd("at-x", "/tmp/f", "k")
+	if c.RecipientID != "at-x" || c.File != "/tmp/f" || c.Sender != uiWatchSender || c.DedupKey != "k" {
+		t.Fatalf("fields not set: %+v", c)
+	}
+	v := reflect.ValueOf(c).Elem()
+	n := 0
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).Kind() != reflect.Func {
+			continue
+		}
+		n++
+		if v.Field(i).IsNil() {
+			t.Errorf("sendKong.%s is nil", v.Type().Field(i).Name)
+		}
+	}
+	if n == 0 {
+		t.Fatal("found no func fields; test is vacuous")
 	}
 }

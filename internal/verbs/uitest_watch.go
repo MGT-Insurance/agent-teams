@@ -282,7 +282,14 @@ func uiWatchSend(ctx *cli.Context, initiative, body, dedupKey string) error {
 	if werr != nil {
 		return werr
 	}
-	return (&sendKong{RecipientID: initiative, File: tmp.Name(), Sender: uiWatchSender, DedupKey: dedupKey}).Run(ctx)
+	return uiWatchSendCmd(initiative, tmp.Name(), dedupKey).Run(ctx)
+}
+
+// uiWatchSendCmd builds the production send command for a watcher mail.
+func uiWatchSendCmd(initiative, file, dedupKey string) *sendKong {
+	c := newSendKong()
+	c.RecipientID, c.File, c.Sender, c.DedupKey = initiative, file, uiWatchSender, dedupKey
+	return &c
 }
 
 // runUIWatchChild takes the per-bead lock and runs the loop; a held lock means
