@@ -112,12 +112,15 @@ func newCBEnv(t *testing.T) *cbEnv {
 	}
 	var out, errb bytes.Buffer
 	e.ctx = &cli.Context{Home: home, BD: bd.NewClientWithExec(t.TempDir(), exec), Stdout: &out, Stderr: &errb}
+	// A fake clock that Sleep advances, so drain waits finish instantly.
+	clk := &fakeClock{base: time.Unix(1_700_000_000, 0)}
 	e.common = cloudBootCommon{
 		PluginDir: e.pluginDr,
 		Poll:      time.Second,
 		IdlePolls: 3,
 		Tmux:      func(args ...string) error { e.tmux = append(e.tmux, args); return nil },
-		Sleep:     func(time.Duration) {},
+		Sleep:     clk.advance,
+		Now:       clk.Now,
 		NewID:     func() string { return "sid-1" },
 		LookPath:  func(f string) (string, error) { return "/bin/" + f, nil },
 		Getwd:     func() (string, error) { return e.cwd, nil },

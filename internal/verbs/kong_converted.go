@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -831,18 +830,12 @@ const closeSignalFarewell = "This initiative is closed. Messages posted in this 
 
 const closeFailureReasonMax = 120
 
-var (
-	closeReasonURL    = regexp.MustCompile(`\S+://\S+`)
-	closeReasonSecret = regexp.MustCompile(`\d{5,}|[A-Za-z0-9_-]{24,}`)
-)
-
 // closeFailureNote is the follow-up post when CloseTopic fails. The reason is
-// the error's first line with URLs, chat ids, and token-shaped strings
-// replaced, cut to closeFailureReasonMax characters.
+// the error redacted by sentlog.RedactError (URLs reduced to scheme://host,
+// long digit runs and token-shaped strings replaced), cut to its first line
+// and closeFailureReasonMax characters.
 func closeFailureNote(err error) string {
-	reason, _, _ := strings.Cut(strings.TrimSpace(err.Error()), "\n")
-	reason = closeReasonURL.ReplaceAllString(reason, "<redacted>")
-	reason = closeReasonSecret.ReplaceAllString(reason, "<redacted>")
+	reason, _, _ := strings.Cut(strings.TrimSpace(sentlog.RedactError(err)), "\n")
 	if r := []rune(reason); len(r) > closeFailureReasonMax {
 		reason = string(r[:closeFailureReasonMax]) + "..."
 	}

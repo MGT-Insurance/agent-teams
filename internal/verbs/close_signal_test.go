@@ -119,7 +119,7 @@ func TestClose_SendsFarewellAndClosesTopic_WhenThreadLabelPresent(t *testing.T) 
 
 // TestClose_CloseTopicFailure_PostsOneSecretFreeNote confirms a CloseTopic
 // failure produces exactly one extra "Couldn't close this topic" post, with
-// URLs, chat ids, and token-shaped text removed from the reason.
+// URL paths, chat ids, and token-shaped text removed from the reason.
 func TestClose_CloseTopicFailure_PostsOneSecretFreeNote(t *testing.T) {
 	nbd := &closeSignalFakeBD{
 		issue: bd.Issue{ID: "at-00o", Title: "my initiative", Labels: []string{"at-00o", "thread:999"}},
@@ -145,7 +145,7 @@ func TestClose_CloseTopicFailure_PostsOneSecretFreeNote(t *testing.T) {
 	if !strings.HasPrefix(note, "Couldn't close this topic: ") || !strings.HasSuffix(note, ".") {
 		t.Errorf("note = %q, want \"Couldn't close this topic: <reason>.\"", note)
 	}
-	for _, leak := range []string{"telegram.org", "AAH", "123456789", "1001234567890", "://"} {
+	for _, leak := range []string{"AAH", "123456789", "1001234567890", "/bot", "closeForumTopic"} {
 		if strings.Contains(note, leak) {
 			t.Errorf("note = %q leaks %q", note, leak)
 		}

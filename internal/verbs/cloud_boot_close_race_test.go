@@ -119,6 +119,7 @@ func TestCloudBootClosedWaitsForInFlightCloseBeforeKill(t *testing.T) {
 	firstSleep := true
 	c := &cloudBootCommon{
 		Poll: 15 * time.Second, IdlePolls: 3, Grace: 60 * time.Second,
+		Now: time.Now,
 		Tmux: func(args ...string) error {
 			if args[0] == "kill-session" {
 				log.add("kill")
@@ -166,38 +167,80 @@ func TestCloudBootClosedWaitsForInFlightCloseBeforeKill(t *testing.T) {
 }
 
 // closedLoopEnv returns a cloud-boot env whose initiative closes on the first
-// loop poll and whose Sleep records the drain-poll total.
-func closedLoopEnv(t *testing.T) (*cbEnv, *time.Duration) {
+// loop poll, with a fake clock. The clock advances by each drain Sleep and by
+// agentCost per Agents call once the initiative is closed, so clk.used is the
+// wall time the drain used.
+func closedLoopEnv(t *testing.T, agentCost time.Duration) (*cbEnv, *fakeClock) {
 	t.Helper()
 	e := newCBEnv(t)
 	e.closeAt = 2 // show 1 is the precondition check; 2 is the first loop poll
-	var drained time.Duration
+	clk := &fakeClock{base: time.Unix(1_700_000_000, 0)}
+	e.common.Now = clk.Now
 	e.common.Sleep = func(d time.Duration) {
 		if d == cloudBootCloseDrainPoll {
-			drained += d
+			clk.advance(d)
 		}
 	}
-	return e, &drained
+	inner := e.common.Agents
+	e.common.Agents = func() ([]agentSession, error) {
+		if e.showN >= e.closeAt {
+			clk.advance(agentCost)
+		}
+		return inner()
+	}
+	return e, clk
 }
 
+type fakeClock struct {
+	base time.Time
+	used time.Duration
+}
+
+func (c *fakeClock) Now() time.Time          { return c.base.Add(c.used) }
+func (c *fakeClock) advance(d time.Duration) { c.used += d }
+
+// TestCloudBootClosedDrainIsBounded proves the bound holds in wall time: a
+// lead that stays busy, with and without Agents calls that fail slowly, ends
+// the drain within one poll interval plus one Agents call of the cap.
 func TestCloudBootClosedDrainIsBounded(t *testing.T) {
-	e, drained := closedLoopEnv(t)
-	e.leadSeq("sid-1", "busy") // busy forever: the last poll repeats
-	if err := e.start(); err != nil {
-		t.Fatalf("err = %v, want nil (exit 0)", err)
+	cases := map[string]struct {
+		agentCost time.Duration
+		agentsErr bool
+	}{
+		"busy forever":           {},
+		"agents errors, 5s each": {agentCost: 5 * time.Second, agentsErr: true},
 	}
-	if n := e.calls("kill-session"); n != 1 {
-		t.Errorf("kill-session calls = %d, want 1", n)
-	}
-	if *drained < cloudBootCloseDrain || *drained >= cloudBootCloseDrain+cloudBootCloseDrainPoll {
-		t.Errorf("drained %v, want >= %v and < %v", *drained, cloudBootCloseDrain, cloudBootCloseDrain+cloudBootCloseDrainPoll)
-	}
-	stderr := e.ctx.Stderr.(*bytes.Buffer).String()
-	if !strings.Contains(stderr, "lead still busy after") {
-		t.Errorf("stderr = %q, want the drain timeout named", stderr)
-	}
-	if !strings.Contains(stderr, "initiative at-ab12 closed") {
-		t.Errorf("stderr = %q, want the closed line", stderr)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, clk := closedLoopEnv(t, tc.agentCost)
+			e.leadSeq("sid-1", "busy") // busy forever: the last poll repeats
+			if tc.agentsErr {
+				e.common.Agents = func() ([]agentSession, error) {
+					if e.showN >= e.closeAt {
+						clk.advance(tc.agentCost)
+						return nil, fmt.Errorf("claude agents: timed out")
+					}
+					return []agentSession{lead("sid-1", "busy")}, nil
+				}
+			}
+			if err := e.start(); err != nil {
+				t.Fatalf("err = %v, want nil (exit 0)", err)
+			}
+			if n := e.calls("kill-session"); n != 1 {
+				t.Errorf("kill-session calls = %d, want 1", n)
+			}
+			maxWall := cloudBootCloseDrain + cloudBootCloseDrainPoll + tc.agentCost
+			if clk.used < cloudBootCloseDrain || clk.used > maxWall {
+				t.Errorf("drain wall time %v, want >= %v and <= %v", clk.used, cloudBootCloseDrain, maxWall)
+			}
+			stderr := e.ctx.Stderr.(*bytes.Buffer).String()
+			if !strings.Contains(stderr, "lead still busy after") {
+				t.Errorf("stderr = %q, want the drain timeout named", stderr)
+			}
+			if !strings.Contains(stderr, "initiative at-ab12 closed") {
+				t.Errorf("stderr = %q, want the closed line", stderr)
+			}
+		})
 	}
 }
 
@@ -210,7 +253,7 @@ func TestCloudBootClosedLeadGoneOrIdleKillsAtOnce(t *testing.T) {
 	}
 	for name, setup := range cases {
 		t.Run(name, func(t *testing.T) {
-			e, drained := closedLoopEnv(t)
+			e, clk := closedLoopEnv(t, 0)
 			setup(e)
 			if err := e.start(); err != nil {
 				t.Fatalf("err = %v, want nil (exit 0)", err)
@@ -218,8 +261,8 @@ func TestCloudBootClosedLeadGoneOrIdleKillsAtOnce(t *testing.T) {
 			if n := e.calls("kill-session"); n != 1 {
 				t.Errorf("kill-session calls = %d, want 1", n)
 			}
-			if *drained != 0 {
-				t.Errorf("drained %v, want no drain sleep", *drained)
+			if clk.used != 0 {
+				t.Errorf("drain wall time %v, want no drain sleep", clk.used)
 			}
 		})
 	}
