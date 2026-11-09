@@ -628,3 +628,194 @@ func TestUITest_RegisteredWithFrozenFlags(t *testing.T) {
 		t.Errorf("command = %q", got)
 	}
 }
+
+// bdWrite records the bd write seam of a local reply.
+type bdWrite struct {
+	dir, actor string
+	args       []string
+	file       string // content of the --file argument, read during the call
+}
+
+// replyLocal wires a configured harness for the local (bd) reply path. bead is
+// served by bdRead; fail, when non-nil, decides each write's error by its verb.
+func replyLocal(t *testing.T, bead uiTestBead, fail func(verb string) error) (*uiHarness, *[]bdWrite) {
+	t.Helper()
+	h := newUIHarness(t, uiFullConfig)
+	h.polls = []uiTestBead{bead}
+	writes := &[]bdWrite{}
+	h.deps.bdWrite = func(dir, actor string, args ...string) ([]byte, error) {
+		w := bdWrite{dir: dir, actor: actor, args: args}
+		for i, a := range args {
+			if a == "--file" {
+				b, err := os.ReadFile(args[i+1])
+				if err != nil {
+					t.Errorf("--file unreadable during the call: %v", err)
+				}
+				w.file = string(b)
+			}
+		}
+		*writes = append(*writes, w)
+		if fail != nil {
+			if err := fail(args[0]); err != nil {
+				return nil, err
+			}
+		}
+		return []byte("{}"), nil
+	}
+	return h, writes
+}
+
+func uiBead(status string, labels ...string) uiTestBead {
+	return uiTestBead{ID: "dsp-ui1", Status: status, Labels: labels}
+}
+
+func TestUITestReply_NotConfiguredExits5WithoutTouchingBD(t *testing.T) {
+	h := newUIHarness(t, "")
+	h.deps.bdWrite = func(string, string, ...string) ([]byte, error) {
+		t.Error("bdWrite called")
+		return nil, nil
+	}
+	err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
+	if exitOf(err) != 5 || !strings.Contains(h.stderr.String(), "Dispatcher not configured; test locally") {
+		t.Errorf("exit = %d, stderr = %q", exitOf(err), h.stderr.String())
+	}
+	if len(h.bdReads) != 0 {
+		t.Errorf("bdRead called: %v", h.bdReads)
+	}
+}
+
+func TestUITestReply_BlockedBeadCommentsThenMovesToInProgress(t *testing.T) {
+	h, writes := replyLocal(t, uiBead("blocked", "type:ui-test"), nil)
+	if err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "use alice", deps: h.deps}).Run(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*writes) != 2 {
+		t.Fatalf("writes = %v, want comment then update", *writes)
+	}
+	c, u := (*writes)[0], (*writes)[1]
+	if c.dir != "/dsp" || c.actor != "eric@example.com" || c.args[0] != "comment" || c.args[1] != "dsp-ui1" || c.file != "answer: use alice" {
+		t.Errorf("comment write = %+v", c)
+	}
+	if u.actor != "eric@example.com" || strings.Join(u.args, " ") != "update dsp-ui1 --status in_progress --json" {
+		t.Errorf("update write = %+v", u)
+	}
+	if h.stdout.String() != "dsp-ui1 in_progress\n" {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+}
+
+func TestUITestReply_OpenAndInProgressBeadsOnlyComment(t *testing.T) {
+	for _, status := range []string{"open", "in_progress"} {
+		h, writes := replyLocal(t, uiBead(status, "type:ui-test"), nil)
+		if err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "go on", deps: h.deps}).Run(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(*writes) != 1 || (*writes)[0].args[0] != "comment" {
+			t.Errorf("%s: writes = %v, want one comment", status, *writes)
+		}
+		if want := "dsp-ui1 " + status + "\n"; h.stdout.String() != want {
+			t.Errorf("%s: stdout = %q, want %q", status, h.stdout.String(), want)
+		}
+	}
+}
+
+func TestUITestReply_AnswerPrefixNotDoubled(t *testing.T) {
+	for in, want := range map[string]string{"Answer: x": "Answer: x", "answer:x": "answer:x", "plain": "answer: plain"} {
+		h, writes := replyLocal(t, uiBead("blocked", "type:ui-test"), nil)
+		if err := (&uiTestReplyKong{ID: "dsp-ui1", Text: in, deps: h.deps}).Run(h.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := (*writes)[0].file; got != want {
+			t.Errorf("text %q posted as %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestUITestReply_ClosedOrNonUITestBeadExits1WithoutWriting(t *testing.T) {
+	for name, c := range map[string]struct {
+		bead uiTestBead
+		want string
+	}{
+		"closed":      {uiBead("closed", "type:ui-test"), "bead dsp-ui1 is closed"},
+		"not ui-test": {uiBead("blocked", "type:bug"), "dsp-ui1 is not a ui-test bead"},
+		"no labels":   {uiBead("blocked"), "dsp-ui1 is not a ui-test bead"},
+	} {
+		h, writes := replyLocal(t, c.bead, nil)
+		err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
+		if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "ui-test reply: "+c.want) {
+			t.Errorf("%s: err = %v (exit %d)", name, err, exitOf(err))
+		}
+		if len(*writes) != 0 {
+			t.Errorf("%s: writes = %v", name, *writes)
+		}
+	}
+}
+
+func TestUITestReply_ActorEnvBeatsConfigAndAgentActorRefused(t *testing.T) {
+	h, writes := replyLocal(t, uiBead("open", "type:ui-test"), nil)
+	t.Setenv(dispatcherActorEnv, "env@example.com")
+	if err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*writes)[0].actor; got != "env@example.com" {
+		t.Errorf("actor = %q", got)
+	}
+
+	h, writes = replyLocal(t, uiBead("open", "type:ui-test"), nil)
+	t.Setenv(dispatcherActorEnv, "agent:tester")
+	err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
+	if exitOf(err) != 1 || len(*writes) != 0 {
+		t.Errorf("agent actor: exit = %d, writes = %v", exitOf(err), *writes)
+	}
+}
+
+func TestUITestReply_TransientCommentErrorIsNotRetried(t *testing.T) {
+	h, writes := replyLocal(t, uiBead("blocked", "type:ui-test"), func(string) error { return errors.New("dial tcp: i/o timeout") })
+	err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
+	if exitOf(err) != 1 {
+		t.Errorf("exit = %d (%v)", exitOf(err), err)
+	}
+	if len(*writes) != 1 {
+		t.Errorf("writes = %d, want exactly one attempt", len(*writes))
+	}
+}
+
+func TestUITestReply_UpdateFailureReportsPostedAnswerAndDoesNotRepost(t *testing.T) {
+	h, writes := replyLocal(t, uiBead("blocked", "type:ui-test"), func(verb string) error {
+		if verb == "update" {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
+	if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "ui-test reply: answer posted on dsp-ui1 but status move failed: boom") {
+		t.Errorf("err = %v (exit %d)", err, exitOf(err))
+	}
+	comments := 0
+	for _, w := range *writes {
+		if w.args[0] == "comment" {
+			comments++
+		}
+	}
+	if comments != 1 || len(*writes) != 2 {
+		t.Errorf("writes = %v, want one comment then one update", *writes)
+	}
+	if h.stdout.String() != "" {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+}
+
+func TestUITestReply_FileSourceAndEmptyText(t *testing.T) {
+	h, writes := replyLocal(t, uiBead("open", "type:ui-test"), nil)
+	if err := (&uiTestReplyKong{ID: "dsp-ui1", File: h.itemsFile("  from file\n"), deps: h.deps}).Run(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if (*writes)[0].file != "answer: from file" {
+		t.Errorf("file text = %q", (*writes)[0].file)
+	}
+	h, writes = replyLocal(t, uiBead("open", "type:ui-test"), nil)
+	err := (&uiTestReplyKong{ID: "dsp-ui1", File: h.itemsFile("  \n"), deps: h.deps}).Run(h.ctx)
+	if exitOf(err) != 1 || len(*writes) != 0 {
+		t.Errorf("empty: exit = %d, writes = %v", exitOf(err), *writes)
+	}
+}

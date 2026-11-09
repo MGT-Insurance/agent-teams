@@ -345,17 +345,6 @@ func TestRunTools_ReplyHTTPErrorsExit1(t *testing.T) {
 	}
 }
 
-func TestRunTools_ReplyOutsideRunExits5(t *testing.T) {
-	h := newUIHarness(t, "")
-	err := h.reply("dsp-ui9", "x", "")
-	if exitOf(err) != uiExitIneligible {
-		t.Fatalf("exit = %d, want %d (%v)", exitOf(err), uiExitIneligible, err)
-	}
-	if !strings.Contains(h.stderr.String(), "needs a cloud run") {
-		t.Errorf("stderr = %q", h.stderr.String())
-	}
-}
-
 func TestRunTools_ReplyRequiresExactlyOneSource(t *testing.T) {
 	for _, c := range []*uiTestReplyKong{{ID: "x"}, {ID: "x", Text: "a", File: "/f"}} {
 		if err := c.Validate(); err == nil {
