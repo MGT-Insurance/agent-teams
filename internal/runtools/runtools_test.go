@@ -81,6 +81,7 @@ func TestError_Mapping(t *testing.T) {
 		{"bead_get", 401, ``, "this run's job has no ui-test tool"},
 		{"telegram_post", 401, ``, "run-tools telegram_post: 401 not authorized; this run's job has no telegram tool, or the run is finished"},
 		{"telegram_close", 401, ``, "this run's job has no telegram tool"},
+		{"page_publish", 401, ``, "run-tools page_publish: 401 not authorized; this run's job has no pages tool, or the run is finished"},
 		{"ui_test_file", 409, `{"error":"cap 20"}`, "run-tools ui_test_file: 409 cap 20"},
 		{"ui_test_file", 409, ``, "409 ui-test cap reached for this run, or budget refused"},
 		{"telegram_post", 409, `{"error":"No Telegram chat is paired"}`, "run-tools telegram_post: HTTP 409: No Telegram chat is paired"},
