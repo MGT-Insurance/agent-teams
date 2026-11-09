@@ -20,6 +20,9 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
+	"github.com/mgt-insurance/agent-teams/internal/transport"
+	"github.com/mgt-insurance/agent-teams/internal/workspace"
 )
 
 const (
@@ -58,6 +61,9 @@ type cloudBootCommon struct {
 	Executable func() (string, error)            `kong:"-"`
 	LookPath   func(file string) (string, error) `kong:"-"`
 	Getwd      func() (string, error)            `kong:"-"`
+	// CloseTopic closes the initiative's Telegram topic by thread ref; nil
+	// falls back to the configured transport's topicCloser capability.
+	CloseTopic func(threadRef string) error `kong:"-"`
 }
 
 type cloudBootStartKong struct{ cloudBootCommon }
@@ -112,6 +118,41 @@ func (c *cloudBootCommon) deps() {
 	}
 	if c.Getwd == nil {
 		c.Getwd = os.Getwd
+	}
+	if c.CloseTopic == nil {
+		c.CloseTopic = defaultCloseTopic
+	}
+}
+
+// defaultCloseTopic closes the topic through the configured transport. No
+// transport or no topicCloser capability is a silent skip (nil).
+func defaultCloseTopic(threadRef string) error {
+	t, err := transport.For(workspace.Home())
+	if err != nil {
+		return nil
+	}
+	closer, ok := transport.Capability[topicCloser](t)
+	if !ok {
+		return nil
+	}
+	return closer.CloseTopic(threadRef)
+}
+
+// closeTopicFailOpen closes the initiative's topic when it carries a thread
+// label. Never fails the caller: an error is one redacted stderr line. No
+// farewell is posted (ateam close owns that); already-closed is a quiet 200.
+func (c *cloudBootCommon) closeTopicFailOpen(ctx *cli.Context, iss bd.Issue) {
+	threadRef := threadLabelValue(iss.Labels)
+	if threadRef == "" {
+		return
+	}
+	closeTopic := c.CloseTopic
+	if closeTopic == nil { // reached without deps() (direct loop callers)
+		closeTopic = defaultCloseTopic
+	}
+	if err := closeTopic(threadRef); err != nil {
+		reason, _, _ := strings.Cut(strings.TrimSpace(sentlog.RedactError(err)), "\n")
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: closing topic failed: %s\n", reason)
 	}
 }
 
@@ -302,6 +343,7 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 		return fmt.Errorf("bd show %s: %w", id, err)
 	}
 	if iss.Status == "closed" {
+		c.closeTopicFailOpen(ctx, iss)
 		return fmt.Errorf("initiative %s is closed", id)
 	}
 	// Fail-soft: the turn-start count still delivers inbox files without the
@@ -482,6 +524,7 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 		}
 		if iss.Status == "closed" {
 			c.waitLeadIdle(ctx, sid)
+			c.closeTopicFailOpen(ctx, iss)
 			_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: initiative %s closed\n", id)
 			return nil

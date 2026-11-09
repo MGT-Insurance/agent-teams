@@ -33,6 +33,7 @@ type cbEnv struct {
 	tmux     [][]string
 	polls    []func() []agentSession
 	pollN    int
+	labels   []string // labels on the fake initiative
 	setupLog []string // bd calls made by hosted-home setup, joined by spaces
 }
 
@@ -96,7 +97,7 @@ func newCBEnv(t *testing.T) *cbEnv {
 			if e.closeAt != 0 && e.showN >= e.closeAt {
 				st = "closed"
 			}
-			raw, _ := json.Marshal([]bd.Issue{{ID: "at-ab12", Status: st, Description: e.desc}})
+			raw, _ := json.Marshal([]bd.Issue{{ID: "at-ab12", Status: st, Description: e.desc, Labels: e.labels}})
 			return raw, nil, nil
 		case "update":
 			body, err := os.ReadFile(strings.TrimPrefix(args[2], "--body-file="))
@@ -540,5 +541,96 @@ func TestResolveCloudPluginDirFromSymlinkedBinary(t *testing.T) {
 	}
 	if _, err := resolveCloudPluginDir(t.TempDir(), nil); err == nil {
 		t.Error("dir without plugin.json must error")
+	}
+}
+
+// topicEnv wires a recording CloseTopic and an event log shared with Agents and
+// tmux so call order can be asserted.
+func topicEnv(e *cbEnv, closeErr error) (events *[]string, closes *[]string) {
+	ev, cl := []string{}, []string{}
+	innerAgents := e.common.Agents
+	e.common.Agents = func() ([]agentSession, error) {
+		ev = append(ev, "agents")
+		return innerAgents()
+	}
+	e.common.Tmux = func(args ...string) error {
+		e.tmux = append(e.tmux, args)
+		if args[0] == "kill-session" {
+			ev = append(ev, "kill")
+		}
+		return nil
+	}
+	e.common.CloseTopic = func(ref string) error {
+		ev = append(ev, "close")
+		cl = append(cl, ref)
+		return closeErr
+	}
+	return &ev, &cl
+}
+
+func TestCloudBootClosedMidLoopClosesTopicBeforeKill(t *testing.T) {
+	e := newCBEnv(t)
+	e.labels = []string{"x", "thread:123"}
+	e.leadSeq("sid-1", "busy")
+	e.closeAt = 4
+	ev, cl := topicEnv(e, nil)
+	if err := e.start(); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(*cl) != 1 || (*cl)[0] != "123" {
+		t.Fatalf("CloseTopic calls = %v, want [123]", *cl)
+	}
+	order := strings.Join(*ev, ",")
+	if !strings.HasSuffix(order, "agents,close,kill") {
+		t.Errorf("order = %s, want ...agents,close,kill (after waitLeadIdle, before kill)", order)
+	}
+}
+
+func TestCloudBootClosedMidLoopCloseTopicErrorStillExitsZero(t *testing.T) {
+	e := newCBEnv(t)
+	e.labels = []string{"thread:123"}
+	e.leadSeq("sid-1", "busy")
+	e.closeAt = 4
+	topicEnv(e, errors.New("boom https://api.telegram.org/bot123:ABC/closeForumTopic\nsecond line"))
+	if err := e.start(); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if e.calls("kill-session") != 1 {
+		t.Errorf("kill-session calls = %d, want 1", e.calls("kill-session"))
+	}
+	stderr := e.ctx.Stderr.(*bytes.Buffer).String()
+	if n := strings.Count(stderr, "cloud-boot: closing topic failed: "); n != 1 {
+		t.Errorf("failure lines = %d in %q, want 1", n, stderr)
+	}
+	if strings.Contains(stderr, "bot123:ABC") || strings.Contains(stderr, "second line") {
+		t.Errorf("stderr not redacted/single-line: %q", stderr)
+	}
+}
+
+func TestCloudBootClosedMidLoopNoThreadLabelSkipsClose(t *testing.T) {
+	e := newCBEnv(t)
+	e.leadSeq("sid-1", "busy")
+	e.closeAt = 4
+	_, cl := topicEnv(e, nil)
+	if err := e.start(); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(*cl) != 0 {
+		t.Errorf("CloseTopic calls = %v, want none", *cl)
+	}
+}
+
+func TestCloudBootBootOnClosedInitiativeClosesTopicAndErrors(t *testing.T) {
+	e := newCBEnv(t)
+	e.status = "closed"
+	e.labels = []string{"thread:123"}
+	e.leadSeq("sid-1", "busy")
+	_, cl := topicEnv(e, nil)
+	err := e.start()
+	if err == nil || !strings.Contains(err.Error(), "initiative at-ab12 is closed") {
+		t.Fatalf("err = %v, want the existing closed error", err)
+	}
+	if len(*cl) != 1 || (*cl)[0] != "123" {
+		t.Errorf("CloseTopic calls = %v, want [123]", *cl)
 	}
 }
