@@ -475,6 +475,43 @@ func TestUITest_WaitQuestionExit4PrintsQuestion(t *testing.T) {
 	}
 }
 
+func TestUITest_WaitQuestionFollowedByTesterNoteStillExit4(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	h.polls = []uiTestBead{{ID: "dsp-ui1", Status: "blocked"}}
+	h.comments = []uiTestComment{
+		{Author: "agent:tester", CreatedAt: "2026-11-02T13:59:00Z", Text: "question: which page?"},
+		{Author: "agent:tester", CreatedAt: "2026-11-02T13:59:05Z", Text: "Waiting on host..."},
+	}
+	_, err := h.wait(time.Minute)
+	if exitOf(err) != 4 {
+		t.Fatalf("exit = %d, want 4 (%v)", exitOf(err), err)
+	}
+	if got := h.stdout.String(); got != "question: which page?\n" {
+		t.Errorf("stdout = %q", got)
+	}
+}
+
+func TestUITest_WaitAnsweredQuestionIsNotPending(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	h.polls = []uiTestBead{{ID: "dsp-ui1", Status: "blocked"}}
+	h.comments = []uiTestComment{
+		{Author: "agent:tester", CreatedAt: "2026-11-02T13:59:00Z", Text: "question: which page?"},
+		{Author: "job:ateam-dri", CreatedAt: "2026-11-02T13:59:30Z", Text: "answer: the home page"},
+	}
+	if _, err := h.wait(time.Minute); exitOf(err) != 3 {
+		t.Fatalf("exit = %d, want 3 (still pending)", exitOf(err))
+	}
+}
+
+func TestUITest_WaitQuestionPrefixIsCaseInsensitive(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	h.polls = []uiTestBead{{ID: "dsp-ui1", Status: "blocked"}}
+	h.comments = []uiTestComment{{Author: "agent:tester", CreatedAt: "2026-11-02T13:59:00Z", Text: "Question: which page?"}}
+	if _, err := h.wait(time.Minute); exitOf(err) != 4 {
+		t.Fatalf("exit = %d, want 4", exitOf(err))
+	}
+}
+
 func TestUITest_WaitPendingExit3AfterPollingEvery30s(t *testing.T) {
 	h := newUIHarness(t, uiFullConfig)
 	h.polls = []uiTestBead{{ID: "dsp-ui1", Status: "in_progress"}}
