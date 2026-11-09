@@ -97,6 +97,7 @@ func newUIHarness(t *testing.T, config string) *uiHarness {
 		},
 		now:   func() time.Time { return h.clock },
 		sleep: func(d time.Duration) { h.slept = append(h.slept, d); h.clock = h.clock.Add(d) },
+		watch: newFakeWatch().deps(),
 	}
 	return h
 }
