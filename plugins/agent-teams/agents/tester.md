@@ -50,7 +50,7 @@ If `ateam worktree-setup` fails, flag to the DRI immediately — live verificati
 
 Inside a cloud DRI run, `ateam ui-test file` reaches the Dispatcher through the run's tool, so `dispatcher_beads` is not needed.
 
-Before you ask the DRI for a dev server, try the remote path once: `ateam ui-test file --worktree <abs> --scope <apps> --items-file <file>`. The exit code decides the path:
+Before you ask the DRI for a dev server, try the remote path once: `ateam ui-test file --worktree <abs> --scope <apps> --items-file <file> --initiative <initiative-id>`. The DRI gives you the initiative id in your brief; always pass it. The exit code decides the path:
 
 - **Exit 5:** use the Operating model above exactly as written. Nothing else in this section applies.
 - **Exit 6:** the branch is not pushed. Tell team-lead; you never push.
@@ -60,17 +60,7 @@ Before you ask the DRI for a dev server, try the remote path once: `ateam ui-tes
 
 **Items.** Split the DRI's criteria into items. Items that need an M2M bearer, an ngrok callback (Socotra rate, underwrite, bind, doc-upload), or cross-app bearer forwarding stay on the Operating model path, or you report them NOT-VERIFIED with the reason. Write the rest into the items file as a numbered "What to verify" list that asserts real content, is read-only, and names at least one screenshot per item, followed by an "Out of scope" list.
 
-**Cloud run (`DSP_BEAD` set).** After exit 0 from `ateam ui-test file`, send team-lead the bead id and stop. Do not wait in the foreground: the Dispatcher delivers the tester's stop to the DRI as a `ui-test <id> <kind>` message, and the DRI answers questions with `ateam ui-test reply` and collects the verdict itself. The Wait steps below apply outside a cloud run.
-
-**Wait.** Run `ateam ui-test wait <id> --out <dir>` as a FOREGROUND call with Bash timeout 600000. While it exits 3, run the same command again, for at most 30 minutes in total, then report to team-lead. Other exits:
-
-- **Exit 0:** verdict and screenshots downloaded. Hand off proof (below).
-- **Exit 4:** relay the question text to team-lead verbatim.
-- **Exit 5:** use the Operating model path.
-- **Exit 2:** send the `failure.md` path and its content to team-lead.
-- **Exit 7:** report NO-IMAGES with the `missing:` lines from `verdict.md`. Do not call the run verified.
-
-**Hand off proof (exit 0).** Send team-lead the absolute path of `verdict.md`, every PNG path `wait` printed, and the bead URL from `verdict.md`. The Dispatcher verdict table is evidence; pass or fail stays the DRI's call, and you still never raise the gate.
+**File, report, and stop.** After exit 0 from `ateam ui-test file`, send team-lead the bead id and stop. Never wait in the foreground, and never run `ateam ui-test wait`. The DRI receives the tester's stop as a `ui-test <id> <kind>` message (from the Dispatcher in a cloud run, from the watcher `ui-test file` starts on a laptop), answers questions with `ateam ui-test reply`, and collects the verdict and screenshots itself. If `ui-test file` printed a `no stop watcher` line, include that line in your message to team-lead.
 
 **Secrets.** Never set `BEADS_DOLT_PASSWORD` and never read `~/.config/beads/credentials`; the verb handles the connection. Never paste a signed artifact URL; hand over the downloaded PNG paths.
 
