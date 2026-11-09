@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Strip the Dispatcher run env so this test never writes to a cloud run's real outbox.
+for v in $(compgen -e | grep '^DSP_'); do unset "$v"; done
 # review-lifecycle.live.sh — LOOP L5 live lifecycle harness (agent-teams-8st0.23).
 #
 # Drives a real ateam binary (ATEAM_BIN) and the real bd/git binaries end to

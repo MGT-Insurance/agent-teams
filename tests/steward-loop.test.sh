@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Strip the Dispatcher run env so this test never writes to a cloud run's real outbox.
+for v in $(compgen -e | grep '^DSP_'); do unset "$v"; done
 # steward-loop.test.sh — stub-transport round-trip test for the full Steward
 # loop (agent-teams-e3mq.6, LOOP Track F). Modeled on tests/e2e-loop.test.sh
 # (same isolation pattern: temp AGENT_TEAMS_HOME, scratch bd db, stub

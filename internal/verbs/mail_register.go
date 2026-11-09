@@ -66,29 +66,29 @@ func (c *mailListAliasKong) Run(ctx *cli.Context) error {
 	return c.mailListKong.Run(ctx)
 }
 
+// newSendKong returns a sendKong carrying every production DI default. Callers
+// that want the production defaults construct through it: a bare literal leaves
+// the func seams nil and Run panics on the first delivery.
+func newSendKong() sendKong {
+	return sendKong{
+		agentsFunc:     defaultAgentsJSONAll,
+		resumeFunc:     defaultResume,
+		codexWake:      defaultCodexWake,
+		sleeper:        defaultSleeper,
+		doorbellExists: defaultDoorbellExists,
+		respawnFunc:    defaultRespawn,
+	}
+}
+
 // RegisterMailKong registers the unified `mail` parent verb and the 3 hidden
 // deprecated aliases (send, inbox, debug-mail) onto p.
 func RegisterMailKong(p *cli.Parser) {
 	p.AddVerb("mail", "Send, read, list, close, and purge cross-initiative mail.", &mailCmd{
-		Send: sendKong{
-			agentsFunc:     defaultAgentsJSONAll,
-			resumeFunc:     defaultResume,
-			codexWake:      defaultCodexWake,
-			sleeper:        defaultSleeper,
-			doorbellExists: defaultDoorbellExists,
-			respawnFunc:    defaultRespawn,
-		},
+		Send: newSendKong(),
 	})
 
 	p.AddHiddenVerb("send", "Deprecated: use `ateam mail send`.", &sendAliasKong{
-		sendKong: sendKong{
-			agentsFunc:     defaultAgentsJSONAll,
-			resumeFunc:     defaultResume,
-			codexWake:      defaultCodexWake,
-			sleeper:        defaultSleeper,
-			doorbellExists: defaultDoorbellExists,
-			respawnFunc:    defaultRespawn,
-		},
+		sendKong: newSendKong(),
 	})
 	p.AddHiddenVerb("inbox", "Deprecated: use `ateam mail inbox`.", &inboxAliasKong{})
 	p.AddHiddenVerb("debug-mail", "Deprecated: use `ateam mail list`.", &mailListAliasKong{})
