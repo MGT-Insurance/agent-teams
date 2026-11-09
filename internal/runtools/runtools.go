@@ -1,6 +1,6 @@
 // Package runtools is the client of the Dispatcher run-tools route
 // (POST /api/run-tools), the HTTP endpoint a cloud run uses for the tools its
-// job grants: ui-test and telegram. The run's firewall adds the bearer token,
+// job grants: ui-test, telegram, and pages. The run's firewall adds the bearer token,
 // so this client sends none. Both the ui-test verbs and the dispatcher
 // transport build on it, so there is one client and one error mapping.
 package runtools
@@ -45,11 +45,15 @@ func FromEnv() (*Client, bool) {
 
 // Request builds the JSON POST for body.
 func (c *Client) Request(body any) (*http.Request, error) {
-	b, err := json.Marshal(body)
-	if err != nil {
+	// Encode without HTML escaping: a page body is mostly < > &, and the
+	// default escaping inflates each to six bytes against the server's body cap.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(body); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, c.Endpoint, bytes.NewReader(b))
+	req, err := http.NewRequest(http.MethodPost, c.Endpoint, &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -61,6 +65,9 @@ func (c *Client) Request(body any) (*http.Request, error) {
 func toolFamily(op string) string {
 	if strings.HasPrefix(op, "telegram_") {
 		return "telegram"
+	}
+	if strings.HasPrefix(op, "page_") {
+		return "pages"
 	}
 	return "ui-test"
 }

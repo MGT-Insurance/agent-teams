@@ -239,6 +239,16 @@ ineligible or not configured, 6 not pushed, 7 verdict without all of its
 screenshots (a link expired or failed, or the run stored none). On 7,
 `verdict.md` lists each missing screenshot and the reason under `missing:`.
 
+### Optional: publish a page from a Dispatcher run
+
+`ateam page publish <file> [--title <text>] [--url <page url or id>]` publishes
+a self-contained HTML file as a Dispatcher page and prints its URL on stdout. It
+is the cloud-run stand-in for the Artifact tool. It works only inside a
+Dispatcher run whose job has the `pages` tool; elsewhere it prints `page
+publish: not in a Dispatcher run; use the Artifact tool` and exits 5. Any
+signed-in Dispatcher user can view the page. To update a page in place, pass its
+URL or id with `--url`; stderr reports `created v1` or `updated v<N>`.
+
 ### Inside a Dispatcher run
 
 On a Dispatcher VM, the Dispatcher starts `ateam cloud-boot start` (first
