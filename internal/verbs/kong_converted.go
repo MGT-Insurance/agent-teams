@@ -824,8 +824,23 @@ func (c *closeKong) refuseIfUnreadReviewMail(ctx *cli.Context) (bd.Issue, error)
 }
 
 // closeSignalFarewell is posted into the initiative's Telegram topic (if
-// one exists) immediately before the topic is closed via sendCloseSignal.
-const closeSignalFarewell = "This initiative is closed. The topic is now closed as a signal — you can reopen it from the Telegram UI anytime; messages posted here will be routed to the Steward."
+// one exists) immediately before sendCloseSignal closes the topic. It makes
+// no claim about the topic's state, because CloseTopic can fail or never run.
+const closeSignalFarewell = "This initiative is closed. Messages posted in this topic are routed to the Steward."
+
+const closeFailureReasonMax = 120
+
+// closeFailureNote is the follow-up post when CloseTopic fails. The reason is
+// the error redacted by sentlog.RedactError (URLs reduced to scheme://host,
+// long digit runs and token-shaped strings replaced), cut to its first line
+// and closeFailureReasonMax characters.
+func closeFailureNote(err error) string {
+	reason, _, _ := strings.Cut(strings.TrimSpace(sentlog.RedactError(err)), "\n")
+	if r := []rune(reason); len(r) > closeFailureReasonMax {
+		reason = string(r[:closeFailureReasonMax]) + "..."
+	}
+	return fmt.Sprintf("Couldn't close this topic: %s.", reason)
+}
 
 // topicCloser is an optional transport capability (Telegram forum topics
 // implement it) for closing a thread as a visible "this is done" signal.
@@ -878,6 +893,10 @@ func (c *closeKong) sendCloseSignal(ctx *cli.Context, issue bd.Issue) {
 	}
 	if closeErr := closer.CloseTopic(threadRef); closeErr != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam close: warning: closing topic failed: %v\n", closeErr)
+		msg.Body = closeFailureNote(closeErr)
+		if _, sendErr := t.Send(msg); sendErr != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam close: warning: close-failure note failed: %v\n", sendErr)
+		}
 	}
 }
 

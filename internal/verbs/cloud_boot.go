@@ -53,6 +53,7 @@ type cloudBootCommon struct {
 	Tmux       func(args ...string) error        `kong:"-"`
 	Agents     func() ([]agentSession, error)    `kong:"-"`
 	Sleep      func(time.Duration)               `kong:"-"`
+	Now        func() time.Time                  `kong:"-"`
 	NewID      func() string                     `kong:"-"`
 	Executable func() (string, error)            `kong:"-"`
 	LookPath   func(file string) (string, error) `kong:"-"`
@@ -96,6 +97,9 @@ func (c *cloudBootCommon) deps() {
 	}
 	if c.Sleep == nil {
 		c.Sleep = time.Sleep
+	}
+	if c.Now == nil {
+		c.Now = time.Now
 	}
 	if c.NewID == nil {
 		c.NewID = newUUIDv4
@@ -393,11 +397,27 @@ func (c *cloudBootCommon) writeBody(ctx *cli.Context, id, body string) error {
 // tolerates before it gives up.
 const cloudBootMaxPollErrors = 5
 
+const (
+	// cloudBootCloseDrain bounds, in wall time, how long a closed initiative
+	// waits for the lead's turn to end before the kill. A normal ateam close
+	// finishes in 2 to 4 s. The measured worst case after bd close is the
+	// update-local-main git step (no timeout) plus a 45 s farewell Send, two
+	// 45 s CloseTopic tries, and a 45 s failure-note Send: about 180 s plus
+	// git. The bound leaves headroom over the 180 s but does not cover a hung
+	// git step; past it, cloud-boot kills the lead.
+	cloudBootCloseDrain = 4 * time.Minute
+	// cloudBootCloseDrainPoll is the interval between lead status checks
+	// while draining.
+	cloudBootCloseDrainPoll = 2 * time.Second
+)
+
 // idleLoop polls until the initiative closes (exit 0), the DRI goes idle for
 // IdlePolls consecutive polls after Grace (exit 75), or the lead vanishes
 // while the initiative is open (error). It tolerates up to
-// cloudBootMaxPollErrors consecutive poll errors. Every return other than park
-// and closed kills the tmux session, so no claude outlives the run.
+// cloudBootMaxPollErrors consecutive poll errors. A closed initiative waits for
+// the lead's turn to end (waitLeadIdle, bounded) before the kill, so an in-flight
+// ateam close finishes. Every return other than park and closed kills the tmux
+// session, so no claude outlives the run.
 func (c *cloudBootCommon) idleLoop(ctx *cli.Context, id, sid, cwd string) error {
 	err := c.pollLoop(ctx, id, sid, cwd)
 	var silent *cli.SilentError
@@ -405,6 +425,34 @@ func (c *cloudBootCommon) idleLoop(ctx *cli.Context, id, sid, cwd string) error 
 		_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
 	}
 	return err
+}
+
+// waitLeadIdle blocks until the lead session is gone or not busy, or
+// cloudBootCloseDrain has passed. ateam close writes the bd close before it
+// posts the farewell and closes the topic, so the kill that follows a closed
+// initiative must wait for the lead's turn to end, or it ends ateam close
+// mid-send. Agents errors count as still busy. The bound is measured with
+// c.Now, so slow Agents calls count against it.
+func (c *cloudBootCommon) waitLeadIdle(ctx *cli.Context, sid string) {
+	deadline := c.Now().Add(cloudBootCloseDrain)
+	for {
+		if sessions, err := c.Agents(); err == nil {
+			busy := false
+			for _, s := range sessions {
+				if s.SessionID == sid && s.Status == "busy" {
+					busy = true
+				}
+			}
+			if !busy {
+				return
+			}
+		}
+		if !c.Now().Before(deadline) {
+			fmt.Fprintf(ctx.Stderr, "cloud-boot: lead still busy after %s; stopping it\n", cloudBootCloseDrain)
+			return
+		}
+		c.Sleep(cloudBootCloseDrainPoll)
+	}
 }
 
 func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error {
@@ -433,6 +481,7 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 			continue
 		}
 		if iss.Status == "closed" {
+			c.waitLeadIdle(ctx, sid)
 			_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: initiative %s closed\n", id)
 			return nil

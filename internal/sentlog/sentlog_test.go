@@ -353,3 +353,22 @@ func TestRedactErrorStripsURLCredentials(t *testing.T) {
 		t.Fatalf("RedactError should drop the path entirely, got: %q", got)
 	}
 }
+
+// TestRedactErrorStripsBareSecrets verifies that digit runs of 5 or more and
+// token-shaped strings of 24 or more characters outside any URL are replaced,
+// while short numbers and ordinary words stay readable.
+func TestRedactErrorStripsBareSecrets(t *testing.T) {
+	got := RedactError(errors.New("chat -1001234567890 rejected key AAH-secretTokenValue_abcdefghijklmnop (code 400)"))
+	for _, leak := range []string{"1001234567890", "AAH-secret"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("RedactError leaked %q: %q", leak, got)
+		}
+	}
+	want := "chat -<redacted> rejected key <redacted> (code 400)"
+	if got != want {
+		t.Errorf("RedactError = %q, want %q", got, want)
+	}
+	if got := RedactError(errors.New("status 4096 for topic")); got != "status 4096 for topic" {
+		t.Errorf("RedactError changed a 4-digit number: %q", got)
+	}
+}

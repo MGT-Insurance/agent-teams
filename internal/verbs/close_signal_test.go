@@ -106,11 +106,52 @@ func TestClose_SendsFarewellAndClosesTopic_WhenThreadLabelPresent(t *testing.T) 
 	if !strings.Contains(ft.calls[0].Body, "closed") {
 		t.Errorf("farewell body = %q, want it to mention the topic is closed", ft.calls[0].Body)
 	}
+	if strings.Contains(ft.calls[0].Body, "is now closed") {
+		t.Errorf("farewell body = %q, must not claim the topic is closed before CloseTopic runs", ft.calls[0].Body)
+	}
 	if len(ft.closeTopicCalls) != 1 || ft.closeTopicCalls[0] != "999" {
 		t.Errorf("CloseTopic calls = %v, want [\"999\"]", ft.closeTopicCalls)
 	}
 	if errBuf.String() != "" {
 		t.Errorf("expected no stderr warnings, got %q", errBuf.String())
+	}
+}
+
+// TestClose_CloseTopicFailure_PostsOneSecretFreeNote confirms a CloseTopic
+// failure produces exactly one extra "Couldn't close this topic" post, with
+// URL paths, chat ids, and token-shaped text removed from the reason.
+func TestClose_CloseTopicFailure_PostsOneSecretFreeNote(t *testing.T) {
+	nbd := &closeSignalFakeBD{
+		issue: bd.Issue{ID: "at-00o", Title: "my initiative", Labels: []string{"at-00o", "thread:999"}},
+	}
+	token := "123456789:AAH-secretTokenValue_abcdefghijklmnop"
+	ft := &fakeTopicCloserTransport{
+		fakeTransport: fakeTransport{returnRef: "999"},
+		closeTopicErr: fmt.Errorf("Post \"https://api.telegram.org/bot%s/closeForumTopic\": chat -1001234567890 topic not found", token),
+	}
+	cmd := &closeKong{
+		ID:                 "at-00o",
+		runUpdateLocalMain: func(repoPath string) (string, error) { return "", fmt.Errorf("no repo") },
+		transportFor:       func(home string) (transport.Transport, error) { return ft, nil },
+	}
+	ctx, _, _ := newCloseSignalCtx(nbd)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(ft.calls) != 2 {
+		t.Fatalf("Send calls = %d, want 2 (farewell, failure note)", len(ft.calls))
+	}
+	note := ft.calls[1].Body
+	if !strings.HasPrefix(note, "Couldn't close this topic: ") || !strings.HasSuffix(note, ".") {
+		t.Errorf("note = %q, want \"Couldn't close this topic: <reason>.\"", note)
+	}
+	for _, leak := range []string{"AAH", "123456789", "1001234567890", "/bot", "closeForumTopic"} {
+		if strings.Contains(note, leak) {
+			t.Errorf("note = %q leaks %q", note, leak)
+		}
+	}
+	if !strings.Contains(note, "topic not found") {
+		t.Errorf("note = %q, want the readable part of the reason kept", note)
 	}
 }
 
