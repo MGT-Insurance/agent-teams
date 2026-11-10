@@ -146,7 +146,7 @@ func TestReadMemoriesJSON(t *testing.T) {
 		f := &recordingBD{}
 		ctx, _, _ := makeCtx(f, t.TempDir())
 		var dst map[string]any
-		if err := readMemoriesJSON(ctx, &dst); err != nil {
+		if err := readMemoriesJSON(ctx.BD, &dst); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(f.calls, [][]string{ro}) {
@@ -157,7 +157,7 @@ func TestReadMemoriesJSON(t *testing.T) {
 		f := &recordingBD{jsonErr: []error{errors.New("ro")}}
 		ctx, _, _ := makeCtx(f, t.TempDir())
 		var dst map[string]any
-		if err := readMemoriesJSON(ctx, &dst); err != nil {
+		if err := readMemoriesJSON(ctx.BD, &dst); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(f.calls, [][]string{ro, rw}) {
@@ -168,7 +168,7 @@ func TestReadMemoriesJSON(t *testing.T) {
 		f := &recordingBD{jsonErr: []error{errors.New("ro"), errors.New("rw")}}
 		ctx, _, _ := makeCtx(f, t.TempDir())
 		var dst map[string]any
-		err := readMemoriesJSON(ctx, &dst)
+		err := readMemoriesJSON(ctx.BD, &dst)
 		if err == nil || err.Error() != "rw" {
 			t.Errorf("err = %v, want rw", err)
 		}
