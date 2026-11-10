@@ -156,6 +156,38 @@ func TestAuditCloudRegistrationWithoutWorktreeIsNotAnOffender(t *testing.T) {
 	}
 }
 
+func TestAuditCondenseLockIssueIsNotAnOffender(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-condense-lock", Title: "condense lock", Status: "closed"},
+		{ID: "zz-condense-lock", Title: "condense lock", Status: "closed"},
+	}
+	stdout, stderr, code := runVerb(t, "audit", issues, nil)
+	if code != 0 {
+		t.Errorf("exit code %d, want 0; stderr %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "audit: clean") {
+		t.Errorf("stdout %q, want audit: clean", stdout)
+	}
+
+	// Only the id suffix is exempt: any other issue without a worktree leaks.
+	issues = append(issues,
+		bd.Issue{ID: "at-notlock", Title: "Leaked Bead", Description: "no worktree"},
+		bd.Issue{ID: "at-condense-lock-extra", Title: "Lookalike", Description: "no worktree"},
+	)
+	_, stderr, code = runVerb(t, "audit", issues, nil)
+	if code != 1 {
+		t.Errorf("exit code %d, want 1", code)
+	}
+	for _, want := range []string{"at-notlock", "at-condense-lock-extra"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr %q missing offender %s", stderr, want)
+		}
+	}
+	if strings.Contains(stderr, "- at-condense-lock ") || strings.Contains(stderr, "zz-condense-lock") {
+		t.Errorf("stderr flags a condense-lock issue: %q", stderr)
+	}
+}
+
 func TestAuditBDError(t *testing.T) {
 	// bd error: treat as clean (no offenders), exit 0 with clean message.
 	_, _, code := runVerbErr(t, "audit", nil)
