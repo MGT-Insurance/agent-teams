@@ -634,3 +634,162 @@ func TestCloudBootBootOnClosedInitiativeClosesTopicAndErrors(t *testing.T) {
 		t.Errorf("CloseTopic calls = %v, want [123]", *cl)
 	}
 }
+
+// writeInstructionSource fills <pluginDr>/cloud/instructions with files.
+func writeInstructionSource(t *testing.T, e *cbEnv, files map[string]string) string {
+	t.Helper()
+	dir := filepath.Join(e.pluginDr, "cloud", "instructions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func seedResumeState(t *testing.T) {
+	t.Helper()
+	state, _ := json.Marshal(cloudBootState{Initiative: "at-ab12", Session: "sid-1", Bead: "dsp-run1"})
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".ateam-cloud-boot.json"), state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (e *cbEnv) stderr() string { return e.ctx.Stderr.(*bytes.Buffer).String() }
+
+func TestCloudBootInstallsInstructionsOnStartAndResume(t *testing.T) {
+	for name, run := range map[string]func(e *cbEnv) error{"start": (*cbEnv).start, "resume": (*cbEnv).resume} {
+		t.Run(name, func(t *testing.T) {
+			e := newCBEnv(t)
+			seedResumeState(t)
+			src := writeInstructionSource(t, e, map[string]string{"dri.md": "dri body\n", "tester.md": "tester body\n", "README.txt": "not an instruction"})
+			dst := filepath.Join(e.ctx.Home, "instructions")
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dst, "stale.md"), []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dst, "dri.md"), []byte("outdated"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			e.leadSeq("sid-1", "idle")
+			e.common.IdlePolls = 1
+			wantExit(t, run(e), cloudBootParkExit)
+
+			entries, err := os.ReadDir(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, en := range entries {
+				got = append(got, en.Name())
+			}
+			if want := []string{"dri.md", "tester.md"}; !slices.Equal(got, want) {
+				t.Errorf("instructions dir = %v, want %v", got, want)
+			}
+			if b, _ := os.ReadFile(filepath.Join(dst, "dri.md")); string(b) != "dri body\n" {
+				t.Errorf("dri.md = %q, want the source body", b)
+			}
+			wantLine := "cloud-boot: installed 2 instruction files from " + src + "\n"
+			if !strings.Contains(e.stderr(), wantLine) {
+				t.Errorf("stderr missing %q:\n%s", wantLine, e.stderr())
+			}
+			if e.calls("new-session") != 1 {
+				t.Errorf("new-session calls = %d, want 1", e.calls("new-session"))
+			}
+		})
+	}
+}
+
+func TestCloudBootMissingInstructionSourceWarnsAndContinues(t *testing.T) {
+	for name, run := range map[string]func(e *cbEnv) error{"start": (*cbEnv).start, "resume": (*cbEnv).resume} {
+		t.Run(name, func(t *testing.T) {
+			e := newCBEnv(t)
+			seedResumeState(t)
+			e.leadSeq("sid-1", "idle")
+			e.common.IdlePolls = 1
+			wantExit(t, run(e), cloudBootParkExit)
+			if want := "cloud-boot: WARNING: cannot read instruction files from " + filepath.Join(e.pluginDr, "cloud", "instructions"); !strings.Contains(e.stderr(), want) {
+				t.Errorf("stderr missing %q:\n%s", want, e.stderr())
+			}
+			if e.calls("new-session") != 1 {
+				t.Errorf("new-session calls = %d, want 1 (a missing source must not block the launch)", e.calls("new-session"))
+			}
+		})
+	}
+}
+
+func TestCloudBootWarnsWhenJQMissing(t *testing.T) {
+	for name, run := range map[string]func(e *cbEnv) error{"start": (*cbEnv).start, "resume": (*cbEnv).resume} {
+		for _, hasJQ := range []bool{false, true} {
+			t.Run(name+map[bool]string{false: "/no-jq", true: "/jq"}[hasJQ], func(t *testing.T) {
+				e := newCBEnv(t)
+				seedResumeState(t)
+				if !hasJQ {
+					e.common.LookPath = func(f string) (string, error) {
+						if f == "jq" {
+							return "", errors.New("not found")
+						}
+						return "/bin/" + f, nil
+					}
+				}
+				e.leadSeq("sid-1", "idle")
+				e.common.IdlePolls = 1
+				wantExit(t, run(e), cloudBootParkExit)
+				got := strings.Contains(e.stderr(),
+					"cloud-boot: WARNING: jq not on PATH; the learnings gate hook will not enforce learnings loading\n")
+				if got == hasJQ {
+					t.Errorf("jq warning printed = %v with jq present = %v", got, hasJQ)
+				}
+				if e.calls("new-session") != 1 {
+					t.Errorf("new-session calls = %d, want 1 (jq warning is not fatal)", e.calls("new-session"))
+				}
+			})
+		}
+	}
+}
+
+// TestCommittedCloudInstructions checks the real committed files: six roles,
+// the recognizable header, and the size cap, then installs them into a scratch
+// home and reads one back through `ateam instructions`.
+func TestCommittedCloudInstructions(t *testing.T) {
+	pluginDir := filepath.Join("..", "..", "plugins", "agent-teams")
+	src := filepath.Join(pluginDir, cloudInstructionsRel)
+	roles := []string{"dri", "planner", "implementer", "tester", "reviewer", "investigator"}
+	for _, role := range roles {
+		data, err := os.ReadFile(filepath.Join(src, role+".md"))
+		if err != nil {
+			t.Fatalf("%s: %v", role, err)
+		}
+		if len(data) > instructionsCapBytes {
+			t.Errorf("%s.md is %d bytes, cap is %d", role, len(data), instructionsCapBytes)
+		}
+		header := "Cloud config for a Dispatcher ateam-dri run. Extends the shipped " + role + " role; never overrides its guardrails"
+		if !strings.HasPrefix(string(data), header) {
+			t.Errorf("%s.md does not start with %q", role, header)
+		}
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(roles) {
+		t.Errorf("%d files in %s, want exactly the %d roles", len(entries), src, len(roles))
+	}
+
+	home := t.TempDir()
+	t.Setenv("AGENT_TEAMS_HOME", home)
+	var out, errb bytes.Buffer
+	ctx := &cli.Context{Home: home, Stdout: &out, Stderr: &errb}
+	installCloudInstructions(ctx, pluginDir)
+	if err := runInstructions(ctx, "dri"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "source: " + filepath.Join(home, "instructions", "dri.md"); !strings.Contains(out.String(), want) {
+		t.Errorf("ateam instructions dri output missing %q:\n%s", want, out.String())
+	}
+}
