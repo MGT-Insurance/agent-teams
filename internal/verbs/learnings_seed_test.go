@@ -255,6 +255,11 @@ func TestSeedEmbeddedIntegration(t *testing.T) {
 		t.Skip("bd not on PATH")
 	}
 	t.Setenv("DSP_BEAD", "")
+	// HOME is redirected so bd neither reads the user's ~/.beads config (whose
+	// sync.remote makes init clone the real agent-teams database) nor writes
+	// outside the temp dir.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("BEADS_DIR", "")
 	root := t.TempDir()
 	localDir, hostedDir := filepath.Join(root, "local"), filepath.Join(root, "hosted")
 	for _, d := range []string{localDir, hostedDir} {
@@ -271,6 +276,17 @@ func TestSeedEmbeddedIntegration(t *testing.T) {
 		}
 	}
 	localBD, hostedBD := bd.NewClient(localDir), bd.NewClient(hostedDir)
+	for _, c := range []*bd.Client{localBD, hostedBD} {
+		var fresh map[string]any
+		if err := readMemoriesJSON(c, &fresh); err != nil {
+			t.Fatal(err)
+		}
+		for k := range fresh {
+			if k != "schema_version" {
+				t.Fatalf("fresh scratch db already holds memory %q: bd init cloned a remote", k)
+			}
+		}
+	}
 	local := localMemories()
 	local["implementer:hot:multi"] = "line one\nline two\t\"quoted\" <tag> & \\ end"
 	for k, v := range local {
