@@ -1702,4 +1702,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterCloudBootKong(p)
 	RegisterUITestKong(p)
 	RegisterPageKong(p)
+	RegisterLearningsSeed(p)
 }
