@@ -6,7 +6,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped implementer rol
 - Flag any observable UI behavior to the DRI. Live UI checks run through the Dispatcher ui-test run tool, not a local browser.
 
 ## Checks (midgard)
-- Lint: `pnpm exec mgt-eslint <changed files>` from the package dir. oxlint (`pnpm lint:local`) misses `import/order` and `require-await`.
+- Lint: `pnpm lint:changed --typed`. Never run the full `pnpm lint`.
 - Typecheck: `pnpm --filter <pkg> typecheck` once before you hand the branch back. Run `pnpm build:packages` first if `dist` is stale.
 - Tests: `pnpm vitest run <path> --no-file-parallelism` for the files you changed. Never run the full lint, typecheck, or suite.
 - Pull request CI skips typecheck and the type-aware lint. They run only in the merge queue, so an unchecked type error reaches the queue.

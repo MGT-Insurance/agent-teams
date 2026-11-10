@@ -10,5 +10,5 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped tester role; ne
 - Don't start a long-lived dev server. The DRI owns server lifecycle.
 
 ## Checks (midgard)
-- Run targeted checks for the scope under test, once each: `pnpm exec mgt-eslint <files>`, `pnpm --filter <pkg> typecheck`, and `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
+- Run targeted checks for the scope under test, once each: `pnpm lint:changed --typed`, `pnpm --filter <pkg> typecheck`, and `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
 - Pull request CI skips typecheck and the type-aware lint. They run only in the merge queue, so your targeted run is the pre-merge signal.

@@ -7,7 +7,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped reviewer role; 
 ## Checks (midgard)
 - Lead with the adversarial read of the diff. Most findings come from reasoning, not from running suites.
 - Pull request CI skips typecheck and the type-aware lint. They run only in the merge queue, so "CI already ran it" is false on a PR.
-- If the review needs the CI-equivalent gate, run the targeted form once: `pnpm --filter <pkg> typecheck`, `pnpm exec mgt-eslint <changed files>`, and `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
+- If the review needs the CI-equivalent gate, run the targeted form once: `pnpm --filter <pkg> typecheck`, `pnpm lint:changed --typed`, and `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
 
 ## Deprecated BOP API
 - Never suggest changes to the BOP-specific quote API, external or internal. It is deprecated and being replaced by the new quote API.

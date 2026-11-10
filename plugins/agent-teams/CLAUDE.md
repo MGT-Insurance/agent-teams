@@ -136,7 +136,7 @@ It is additive only: the instructions extend a role's shipped definition and can
 
 In a Dispatcher run, the instruction files come from `plugins/agent-teams/cloud/instructions/`, and `ateam cloud-boot` rewrites them into `$AGENT_TEAMS_HOME/instructions/` on each boot (start and resume).
 
-Today only the reviewer fetches this on spawn (`plugins/agent-teams/agents/reviewer.md`); the other roles don't yet self-fetch it. This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
+Every role loads its file on spawn by running `ateam instructions <role>` (the DRI does so in the DRI skill's Phase 0). This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
 
 ### Three-tier memory model (fresh / hot / cold)
 

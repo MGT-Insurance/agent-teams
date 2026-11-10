@@ -12,10 +12,10 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped dri role; never
 - Don't start a ui-test watcher. The Dispatcher sends the `ui-test <id> <kind>` events.
 
 ## Learnings
-- Don't run the condense skill or fresh-drain. A separate cloud curator job does that.
-- Learnings you write here reach the laptop when the human runs `ateam learnings-sync` there. At wind-down, skip that step in this run.
+- Learnings you write go to the hosted store. A laptop reads the same store when its config sets `cloud_home`.
+- Run the wind-down condense as usual. A lock in the hosted store keeps a laptop and a cloud run from condensing at the same time.
 
 ## Checks (midgard)
-- Give implementers and testers these rules. Use `pnpm exec mgt-eslint <changed files>` and `pnpm --filter <pkg> typecheck` once. Run tests with `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
+- Give implementers and testers these rules. Use `pnpm lint:changed --typed` and `pnpm --filter <pkg> typecheck` once. Run tests with `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
 - Pull request CI skips typecheck and the type-aware lint. They run only in the merge queue, so the local targeted check is the pre-merge signal.
 - Commit locally and batch fixes into one push. After reviews resolve, comment `/test` once before queueing. Use one shared worktree per cohesive PR.
