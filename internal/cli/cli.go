@@ -14,6 +14,7 @@ import (
 type Context struct {
 	Home   string    // resolved workspace home (AGENT_TEAMS_HOME or $HOME/.agent-teams)
 	BD     BDRunner  // bd client bound to Home
+	Learn  BDRunner  // bd client for role and user learnings; same as BD unless cloud_home routes learnings to the hosted workspace
 	Stdout io.Writer // defaults to os.Stdout
 	Stderr io.Writer // defaults to os.Stderr
 }

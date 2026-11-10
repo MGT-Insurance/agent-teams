@@ -59,8 +59,8 @@ func (c *condenseCheckKong) Run(ctx *cli.Context) error {
 	}
 
 	var raw map[string]any
-	if err := readMemoriesJSON(ctx, &raw); err != nil {
-		return err
+	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+		return learnReadFailure(ctx, "condense-check", err)
 	}
 
 	roles := c.roles(raw)

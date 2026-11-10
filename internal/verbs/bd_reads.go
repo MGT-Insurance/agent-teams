@@ -76,11 +76,11 @@ func matchInitiativeBySession(issues []bd.Issue, runtime sessionruntime.Kind, se
 // readMemoriesJSON runs bd --readonly memories --json into dst; if that
 // returns an error it retries once as bd memories --json, so the failure path
 // is unchanged (covers a store that needs a write-mode open).
-func readMemoriesJSON(ctx *cli.Context, dst any) error {
-	if err := ctx.BD.RunJSON(dst, "--readonly", "memories", "--json"); err == nil {
+func readMemoriesJSON(r cli.BDRunner, dst any) error {
+	if err := r.RunJSON(dst, "--readonly", "memories", "--json"); err == nil {
 		return nil
 	}
-	return ctx.BD.RunJSON(dst, "memories", "--json")
+	return r.RunJSON(dst, "memories", "--json")
 }
 
 // readConfigValue runs bd --readonly config get <key> with the same one-retry
