@@ -222,6 +222,55 @@ func classifyAttachment(path string) string {
 	}
 }
 
+// verdictBeadIDs returns the ui-test bead ids named by the first line
+// (`bead: <id>`) of every attached file called verdict.md, which
+// `ateam ui-test wait` writes. Ids that fail uiWatchIDRE are ignored; the
+// result is deduplicated in first-seen order.
+func verdictBeadIDs(attach []string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, p := range attach {
+		if filepath.Base(p) != "verdict.md" {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		first, _, _ := strings.Cut(string(data), "\n")
+		rest, ok := strings.CutPrefix(first, "bead:")
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(rest)
+		if !uiWatchIDRE.MatchString(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// prependScreenshotLines puts a `screenshot: <id>` line at the top of ask for
+// each id not already named by such a line, so the mail's length cap never
+// cuts it.
+func prependScreenshotLines(ask string, ids []string) string {
+	have := map[string]bool{}
+	for _, l := range strings.Split(ask, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(l), "screenshot:"); ok {
+			have[strings.TrimSpace(rest)] = true
+		}
+	}
+	var prefix strings.Builder
+	for _, id := range ids {
+		if !have[id] {
+			prefix.WriteString("screenshot: " + id + "\n")
+		}
+	}
+	return prefix.String() + ask
+}
+
 // gateNotifyFunc is called after gate labels are set to route the ask —
 // plus any --attach proof attachments, already classified — to the
 // Steward. Injected so tests can verify invocations and simulate failures
@@ -445,7 +494,8 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	// below no-ops. File the ask as a mail through the run's outbox instead.
 	// A failure warns and never fails the gate.
 	if _, _, inRun := dispatcherRun(); inRun {
-		if len(c.Attach) > 0 {
+		uiBeads := verdictBeadIDs(c.Attach)
+		if len(c.Attach) > 0 && len(uiBeads) == 0 {
 			fmt.Fprintln(ctx.Stderr, "ateam gate: warning: --attach files are not delivered from a cloud run; name the ui-test bead in the gate text instead (for example `screenshot: <bead id>`)")
 		}
 		askText := string(noteBytes)
@@ -457,6 +507,7 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 				contextFile:    c.ContextFile,
 			})
 		}
+		askText = prependScreenshotLines(askText, uiBeads)
 		if err := appendOutboxOp(newGateMailOp(c.ID, c.Kind, askText)); err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam gate: warning: outbox mail failed (gate still recorded): %v\n", err)
 		}
