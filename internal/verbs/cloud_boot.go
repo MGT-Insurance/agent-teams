@@ -454,11 +454,12 @@ func installCloudInstructions(ctx *cli.Context, pluginDir string) {
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: read %s failed (continuing): %v\n", e.Name(), err)
 			continue
 		}
+		// A failed write keeps the name in want so the stale pass leaves the
+		// previous copy in place.
+		want[e.Name()] = true
 		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: write %s failed (continuing): %v\n", e.Name(), err)
-			continue
 		}
-		want[e.Name()] = true
 	}
 	if existing, err := os.ReadDir(dst); err == nil {
 		for _, e := range existing {

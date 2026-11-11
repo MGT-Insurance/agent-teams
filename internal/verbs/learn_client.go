@@ -13,10 +13,16 @@ import (
 // With cloud_home unset, or naming the same workspace as home, it returns
 // local itself, so ctx.Learn == ctx.BD and every learnings verb sends the same
 // bd argv to the same home as before. With cloud_home naming another
-// workspace it returns a client bound to that hosted workspace. A malformed
-// config.toml yields a runner whose every call fails.
+// workspace it returns a client bound to that hosted workspace. An error in
+// config.toml that doesn't involve cloud_home (an unknown key, a bad value for
+// another key) doesn't affect learnings: the file is then read for cloud_home
+// alone. A bad cloud_home value, or a file that isn't valid TOML and mentions
+// cloud_home, yields a runner whose every call fails.
 func NewLearnClient(home string, local cli.BDRunner) cli.BDRunner {
 	cloudHome, ok, err := workspaceconfig.CloudHome(home)
+	if err != nil {
+		cloudHome, ok, err = workspaceconfig.CloudHomeLenient(home)
+	}
 	if err != nil {
 		return &errRunner{err: fmt.Errorf("ateam: learnings store: %w", err)}
 	}
@@ -92,10 +98,10 @@ func learnReadFailure(ctx *cli.Context, verb string, err error) error {
 }
 
 // learnWriteFailure maps a failed write (learn, forget, applied, fresh-drain)
-// to the NOT saved error, or returns err unchanged.
+// to the may-not-be-saved error, or returns err unchanged.
 func learnWriteFailure(ctx *cli.Context, verb string, err error) error {
 	if learnUnreachable(ctx, err) {
-		return fmt.Errorf("ateam %s: learnings store unreachable (%s): NOT saved; retry later", verb, learnStoreName(ctx))
+		return fmt.Errorf("ateam %s: learnings store unreachable (%s): may not be saved; retry later", verb, learnStoreName(ctx))
 	}
 	return err
 }
@@ -104,7 +110,7 @@ func learnWriteFailure(ctx *cli.Context, verb string, err error) error {
 // also reports how many keys moved before the first failed call.
 func freshDrainFailure(ctx *cli.Context, moved int, err error) error {
 	if learnUnreachable(ctx, err) {
-		return fmt.Errorf("ateam fresh-drain: learnings store unreachable (%s): NOT saved; retry later (moved %d keys)", learnStoreName(ctx), moved)
+		return fmt.Errorf("ateam fresh-drain: learnings store unreachable (%s): may not be saved; retry later (moved %d keys)", learnStoreName(ctx), moved)
 	}
 	return err
 }

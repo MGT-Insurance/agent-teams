@@ -103,6 +103,37 @@ func TestNewLearnClient(t *testing.T) {
 			t.Errorf("got %T, want *bd.Client", got)
 		}
 	})
+	t.Run("config error unrelated to cloud_home keeps learnings local", func(t *testing.T) {
+		for _, cfg := range []string{"unknown_key = 1\n", "unknown_key = [\n", "work_runtime = \"bogus\"\n"} {
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := NewLearnClient(home, local); got != cli.BDRunner(local) {
+				t.Errorf("config %q: got %T, want the local runner", cfg, got)
+			}
+		}
+	})
+	t.Run("valid cloud_home survives an unrelated unknown key", func(t *testing.T) {
+		home := t.TempDir()
+		cfg := "unknown_key = 1\ncloud_home = \"" + t.TempDir() + "\"\n"
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := NewLearnClient(home, local).(*bd.Client); !ok {
+			t.Error("want a hosted *bd.Client")
+		}
+	})
+	t.Run("bad cloud_home value stays a loud error", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("unknown_key = 1\ncloud_home = \"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := NewLearnClient(home, local)
+		if _, err := got.Run("memories"); err == nil || !strings.HasPrefix(err.Error(), "ateam: learnings store:") {
+			t.Errorf("Run err = %v", err)
+		}
+	})
 	t.Run("malformed config yields a failing runner", func(t *testing.T) {
 		home := t.TempDir()
 		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("cloud_home = [\n"), 0o600); err != nil {
@@ -306,7 +337,7 @@ func TestLearnVerbs_Unreachable(t *testing.T) {
 			}
 		}
 	})
-	t.Run("writes say NOT saved", func(t *testing.T) {
+	t.Run("writes say may not be saved", func(t *testing.T) {
 		for _, vc := range learnVerbCases(t) {
 			switch vc.name {
 			case "learn", "forget", "applied":
@@ -317,7 +348,7 @@ func TestLearnVerbs_Unreachable(t *testing.T) {
 			f.err = errors.New(unreachableMsg)
 			ctx, _ := hostedCtx(t, f)
 			err := vc.run(t, ctx)
-			want := "ateam " + vc.name + ": learnings store unreachable (" + store + "): NOT saved; retry later"
+			want := "ateam " + vc.name + ": learnings store unreachable (" + store + "): may not be saved; retry later"
 			if err == nil || err.Error() != want {
 				t.Errorf("%s: err = %v, want %q", vc.name, err, want)
 			}
@@ -333,7 +364,7 @@ func TestLearnVerbs_Unreachable(t *testing.T) {
 		f.failRunAt = 2 // run 0,1 = remember+forget of a; run 2 = remember b fails
 		ctx, _ := hostedCtx(t, f)
 		err := (&freshDrainKong{Role: "dri"}).Run(ctx)
-		want := "ateam fresh-drain: learnings store unreachable (" + store + "): NOT saved; retry later (moved 1 keys)"
+		want := "ateam fresh-drain: learnings store unreachable (" + store + "): may not be saved; retry later (moved 1 keys)"
 		if err == nil || err.Error() != want {
 			t.Fatalf("err = %v, want %q", err, want)
 		}
@@ -363,12 +394,12 @@ func TestLearnVerbs_HostedConnectionFailureFailsOpen(t *testing.T) {
 			t.Errorf("stdout = %q, want %q", out.String(), want)
 		}
 	}
-	// A write fails with the NOT saved message.
+	// A write fails with the may-not-be-saved message.
 	f := newLearnFake()
 	f.err = errors.New(hostedTimeoutMsg)
 	ctx, _ := hostedCtx(t, f)
 	err := (&forgetKong{Role: "dri", Slug: "hot:x"}).Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "NOT saved; retry later") {
+	if err == nil || !strings.Contains(err.Error(), "may not be saved; retry later") {
 		t.Errorf("forget err = %v", err)
 	}
 }
@@ -398,8 +429,8 @@ func TestLearnVerbs_BreakerOpenFailsOpen(t *testing.T) {
 	f.err = errors.New(breakerOpenMsg)
 	ctx, _ = hostedCtx(t, f)
 	err := (&learnKong{Role: "dri", Slug: "hot:x", File: file}).Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "NOT saved; retry later") {
-		t.Errorf("learn err = %v, want NOT saved; retry later", err)
+	if err == nil || !strings.Contains(err.Error(), "may not be saved; retry later") {
+		t.Errorf("learn err = %v, want may not be saved; retry later", err)
 	}
 }
 

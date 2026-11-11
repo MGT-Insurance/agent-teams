@@ -793,3 +793,35 @@ func TestCommittedCloudInstructions(t *testing.T) {
 		t.Errorf("ateam instructions dri output missing %q:\n%s", want, out.String())
 	}
 }
+
+// TestInstallCloudInstructions_FailedWriteKeepsPreviousFile proves a failed
+// write leaves the previous good copy in place instead of the stale pass
+// removing it.
+func TestInstallCloudInstructions_FailedWriteKeepsPreviousFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	pluginDir := t.TempDir()
+	src := filepath.Join(pluginDir, cloudInstructionsRel)
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "dri.md"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	prev := filepath.Join(home, "instructions", "dri.md")
+	if err := os.MkdirAll(filepath.Dir(prev), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prev, []byte("old"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	ctx := &cli.Context{Home: home, Stdout: &out, Stderr: &errb}
+	installCloudInstructions(ctx, pluginDir)
+	got, err := os.ReadFile(prev)
+	if err != nil || string(got) != "old" {
+		t.Errorf("previous file = %q, %v; want it kept as \"old\"\nstderr: %s", got, err, errb.String())
+	}
+}
