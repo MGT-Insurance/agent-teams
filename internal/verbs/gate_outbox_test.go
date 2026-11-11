@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
 // outboxLines reads the run's outbox file and returns its non-empty lines.
@@ -189,5 +191,106 @@ func TestGateOutbox_AttachNoWarningLocally(t *testing.T) {
 	}
 	if strings.Contains(ctx.Stderr.(interface{ String() string }).String(), "not delivered") {
 		t.Errorf("no warning expected locally")
+	}
+}
+
+// writeVerdict writes a verdict.md under its own temp dir and returns its path.
+func writeVerdict(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "verdict.md")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write verdict: %v", err)
+	}
+	return p
+}
+
+func runGateInRun(t *testing.T, g *gateKong) (body, stderr string) {
+	t.Helper()
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "dsp-1")
+	t.Setenv("DSP_SUP", sup)
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := g.Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	lines := outboxLines(t, sup)
+	if len(lines) != 1 {
+		t.Fatalf("want 1 outbox line, got %d", len(lines))
+	}
+	return decodeMail(t, lines[0])["body"], ctx.Stderr.(interface{ String() string }).String()
+}
+
+func TestGateOutbox_VerdictNamesScreenshotInRun(t *testing.T) {
+	v := writeVerdict(t, "bead: dsp-9\nverdict: pass\n")
+	shot := makeTempFile(t, "png")
+	body, stderr := runGateInRun(t, &gateKong{ID: "at-5", File: makeTempFile(t, "proof"), Kind: "live-test-review", Attach: []string{v, shot}})
+	want := "initiative: at-5\nkind: live-test-review\n---\nscreenshot: dsp-9\nproof"
+	if body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+	if strings.Contains(stderr, "not delivered") {
+		t.Errorf("no warning expected, got %q", stderr)
+	}
+}
+
+func TestGateOutbox_VerdictDedupesAgainstAsk(t *testing.T) {
+	v := writeVerdict(t, "bead: dsp-9\n")
+	body, _ := runGateInRun(t, &gateKong{ID: "at-5", File: makeTempFile(t, "see\nscreenshot: dsp-9\n"), Kind: "question", Attach: []string{v}})
+	if n := strings.Count(body, "screenshot: dsp-9"); n != 1 {
+		t.Errorf("screenshot line count = %d, want 1: %q", n, body)
+	}
+}
+
+func TestGateOutbox_VerdictStructuredAndMultiple(t *testing.T) {
+	v1 := writeVerdict(t, "bead: dsp-9\n")
+	v2 := writeVerdict(t, "bead: dsp-10\n")
+	v3 := writeVerdict(t, "bead: dsp-9\n")
+	body, _ := runGateInRun(t, &gateKong{ID: "at-9", Kind: "review", Decision: "Ship it?", Recommendation: "Yes", Alternative: "No", Attach: []string{v1, v2, v3}})
+	want := "initiative: at-9\nkind: review\n---\nscreenshot: dsp-9\nscreenshot: dsp-10\nShip it?\n\nRecommended: Yes\nAlternative: No"
+	if body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+}
+
+func TestGateOutbox_VerdictWithoutValidBeadKeepsWarning(t *testing.T) {
+	for name, content := range map[string]string{
+		"no bead line": "verdict: pass\nbead: dsp-9\n",
+		"invalid id":   "bead: -bad id\n",
+		"empty id":     "bead:\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := writeVerdict(t, content)
+			body, stderr := runGateInRun(t, &gateKong{ID: "at-5", File: makeTempFile(t, "proof"), Kind: "question", Attach: []string{v}})
+			if strings.Contains(body, "screenshot:") {
+				t.Errorf("no screenshot line expected: %q", body)
+			}
+			if strings.Count(stderr, "--attach files are not delivered from a cloud run") != 1 {
+				t.Errorf("want warning kept, got %q", stderr)
+			}
+		})
+	}
+}
+
+func TestGateOutbox_VerdictLocalUnchanged(t *testing.T) {
+	sup := t.TempDir()
+	t.Setenv("DSP_BEAD", "")
+	os.Unsetenv("DSP_BEAD")
+	t.Setenv("DSP_SUP", sup)
+	v := writeVerdict(t, "bead: dsp-9\n")
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}})
+	var got []Attachment
+	g := &gateKong{ID: "at-5", File: makeTempFile(t, "proof"), Kind: "question", Attach: []string{v}}
+	g.notify = func(_ *cli.Context, _ string, _ string, a []Attachment) error { got = a; return nil }
+	if err := g.Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sup, "outbox.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("no outbox expected locally")
+	}
+	if len(got) != 1 || got[0].Path != v || got[0].Kind != "document" {
+		t.Errorf("notify attachments = %+v", got)
+	}
+	if s := ctx.Stderr.(interface{ String() string }).String(); s != "" {
+		t.Errorf("stderr = %q, want empty", s)
 	}
 }
