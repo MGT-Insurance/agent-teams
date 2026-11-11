@@ -93,10 +93,12 @@ Follow [execution.md](references/execution.md). In short:
    DRI branch. Route tester findings to fresh implementers.
 4. Spawn `agent-teams-tester` for non-happy-path tests and live verification.
    Do not spawn `agent-teams-reviewer` here — it moves to Phase 5, after the
-   live-test-review gate clears. If the tester's `ateam ui-test file` accepts
-   the run (optional add-on), the tester verifies remotely instead (see
-   [execution.md](references/execution.md), "Optional: live verification via
-   Dispatcher").
+   live-test-review gate clears. Each tester brief carries the initiative id
+   and never picks the path; the exit code of the tester's
+   `ateam ui-test file` does (5: you start a dev server; 6: you push). No
+   browser is NOT VERIFIED, never a render-only pass. See
+   [execution.md](references/execution.md), "Live verification via
+   Dispatcher".
 5. The loop closes only when the complete loop-closing set is merged and a
    real end-to-end exercise passes on the integrated branch. Unit tests alone
    are not loop closure. A tester live pass closes this engineering loop but
