@@ -123,6 +123,39 @@ func CloudHome(home string) (string, bool, error) {
 	return optionalString(cfg.CloudHome)
 }
 
+// CloudHomeLenient reads only the cloud_home key from config.toml beneath home
+// and ignores every other key, so an unknown key or a bad value elsewhere in
+// the file does not affect the result. The second result is false when the
+// file is absent or does not set cloud_home. It returns an error when
+// cloud_home is empty, or when the file is not valid TOML and mentions
+// cloud_home.
+func CloudHomeLenient(home string) (string, bool, error) {
+	path := filepath.Join(home, FileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read runtime config %s: %w", path, err)
+	}
+	var only struct {
+		CloudHome *string `toml:"cloud_home"`
+	}
+	if err := toml.Unmarshal(data, &only); err != nil {
+		if bytes.Contains(data, []byte("cloud_home")) {
+			return "", false, fmt.Errorf("parse runtime config %s: invalid TOML near key %q", path, "cloud_home")
+		}
+		return "", false, nil
+	}
+	if only.CloudHome == nil {
+		return "", false, nil
+	}
+	if strings.TrimSpace(*only.CloudHome) == "" {
+		return "", false, fmt.Errorf("runtime config %s: cloud_home must not be empty", path)
+	}
+	return *only.CloudHome, true, nil
+}
+
 // DispatcherBeads reads config.toml beneath home and returns the bd client
 // directory that points at the Dispatcher's beads database, where
 // `ateam dispatch --cloud` files run beads. The second result is false when

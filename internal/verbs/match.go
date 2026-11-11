@@ -283,10 +283,14 @@ func matchSessionsForInitiative(sessions []agentSession, iss bd.Issue) []agentSe
 // beads that leaked into the global workspace, which holds only
 // initiative-tracking beads. A "mode: cloud" registration is an initiative
 // even without a worktree: dispatch --cloud writes none, and cloud-boot adds
-// it only when the run starts.
+// it only when the run starts. The closed condense-lock issue (id ending in
+// condenseLockBeadSuffix) is infrastructure, not a leak, and is skipped.
 func findOffenders(issues []bd.Issue) []bd.Issue {
 	var out []bd.Issue
 	for _, iss := range issues {
+		if strings.HasSuffix(iss.ID, condenseLockBeadSuffix) {
+			continue
+		}
 		f := initiative.Of(iss)
 		if f.Worktree == "" && f.Mode != "cloud" {
 			out = append(out, iss)

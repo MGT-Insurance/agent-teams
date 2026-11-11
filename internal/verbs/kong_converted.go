@@ -805,11 +805,11 @@ func (c *learnKong) Run(ctx *cli.Context) error {
 		return learnCapError(tier, capBytes, len(content))
 	}
 	key := learnKey(c.Role, c.Slug)
-	out, runErr := ctx.BD.Run("remember", "--key="+key, content)
+	out, runErr := learnBD(ctx).Run("remember", "--key="+key, content)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	return runErr
+	return learnWriteFailure(ctx, "learn", runErr)
 }
 
 // ── close ─────────────────────────────────────────────────────────────────────
@@ -1159,11 +1159,11 @@ func (c *forgetKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam forget: no context")
 	}
 	key := c.Role + ":" + c.Slug
-	out, err := ctx.BD.Run("forget", key)
+	out, err := learnBD(ctx).Run("forget", key)
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	return err
+	return learnWriteFailure(ctx, "forget", err)
 }
 
 // ── applied ───────────────────────────────────────────────────────────────────
@@ -1204,8 +1204,8 @@ func (c *appliedKong) Run(ctx *cli.Context) error {
 	key := appliedKey(c.Role, c.Slug)
 
 	var raw map[string]any
-	if err := readMemoriesJSON(ctx, &raw); err != nil {
-		return err
+	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+		return learnWriteFailure(ctx, "applied", err)
 	}
 
 	var rec appliedRecord
@@ -1224,11 +1224,11 @@ func (c *appliedKong) Run(ctx *cli.Context) error {
 		return err
 	}
 
-	out, err := ctx.BD.Run("remember", "--key="+key, string(body))
+	out, err := learnBD(ctx).Run("remember", "--key="+key, string(body))
 	if out != "" {
 		fmt.Fprintln(ctx.Stdout, out)
 	}
-	return err
+	return learnWriteFailure(ctx, "applied", err)
 }
 
 // condenseBareSlug derives the bare slug (no tier prefix) from a "<role>:..."
@@ -1477,8 +1477,8 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 	freshPrefix := prefix + "fresh:"
 
 	var raw map[string]any
-	if err := readMemoriesJSON(ctx, &raw); err != nil {
-		return err
+	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+		return learnReadFailure(ctx, "condense", err)
 	}
 
 	var keys []string
@@ -1545,8 +1545,8 @@ func (c *freshDrainKong) Run(ctx *cli.Context) error {
 	freshPrefix := c.Role + ":fresh:"
 
 	var raw map[string]any
-	if err := readMemoriesJSON(ctx, &raw); err != nil {
-		return err
+	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+		return freshDrainFailure(ctx, 0, err)
 	}
 
 	var freshKeys []string
@@ -1560,17 +1560,20 @@ func (c *freshDrainKong) Run(ctx *cli.Context) error {
 	}
 	sort.Strings(freshKeys)
 
+	learn := learnBD(ctx)
+	moved := 0
 	for _, k := range freshKeys {
 		slug := k[len(freshPrefix):]
 		body := raw[k].(string)
 		coldKey := c.Role + ":" + slug
 
-		if _, err := ctx.BD.Run("remember", "--key="+coldKey, body); err != nil {
-			return err
+		if _, err := learn.Run("remember", "--key="+coldKey, body); err != nil {
+			return freshDrainFailure(ctx, moved, err)
 		}
-		if _, err := ctx.BD.Run("forget", k); err != nil {
-			return err
+		if _, err := learn.Run("forget", k); err != nil {
+			return freshDrainFailure(ctx, moved, err)
 		}
+		moved++
 	}
 
 	fmt.Fprintf(ctx.Stdout, "fresh-drain %s: drained %d\n", c.Role, len(freshKeys))
@@ -1779,4 +1782,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterCloudBootKong(p)
 	RegisterUITestKong(p)
 	RegisterPageKong(p)
+	RegisterLearningsSeed(p)
 }
