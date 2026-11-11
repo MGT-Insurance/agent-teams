@@ -87,8 +87,9 @@ as "ready to merge."
 
 ## Live verification via Dispatcher
 
-The tester brief always carries the initiative id and never picks the path: no
-dev-server instruction, no fallback. The tester runs `ateam ui-test file`
+When Dispatcher is set up, on a laptop or in a cloud run, this remote run is
+the default live verification, not an option. The tester brief always carries
+the initiative id and never picks the path: no dev-server instruction, no fallback. The tester runs `ateam ui-test file`
 first, and its exit code picks the path. Exit 5 means no Dispatcher is set up:
 start a dev server as before, and nothing else in this section applies. A
 tester with no browser reports NOT VERIFIED; never accept a render-only check

@@ -46,7 +46,7 @@ If `ateam worktree-setup` fails, flag to the DRI immediately — live verificati
 
 **Clean up:** tear down only what the tester started — any orphaned test workers. Kill by **explicit PID scoped to your own runs**. Never `pkill` by process name (see global CLAUDE.md).
 
-## Remote run on Dispatcher (try first)
+## Remote run on Dispatcher (the default)
 
 Before you ask the DRI for a dev server, try the remote path once: `ateam ui-test file --worktree <abs> --scope <apps> --items-file <file> --initiative <initiative-id>`. Do this even when your brief names a dev server or a fallback: the exit code picks the path, not the brief. Pass the initiative id from your brief; if the brief has none, omit `--initiative` and tell team-lead. The exit code decides the path:
 

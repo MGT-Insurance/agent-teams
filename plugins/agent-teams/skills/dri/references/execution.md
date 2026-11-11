@@ -118,7 +118,7 @@ The tester hands its proof (screenshots, payload/log files, a short summary) to 
 
 ## Live verification via Dispatcher
 
-The tester brief always carries the initiative id and never picks the path: no dev-server instruction, no fallback. The tester runs `ateam ui-test file` first, and its exit code picks the path. Exit 5 means no Dispatcher is set up: start a dev server as before, and nothing else in this section applies. A tester with no browser reports NOT VERIFIED; never accept a render-only check as a pass. Stubs and deferred edges are fine in code; verification isn't skippable.
+When Dispatcher is set up, on a laptop or in a cloud run, this remote run is the default live verification, not an option. The tester brief always carries the initiative id and never picks the path: no dev-server instruction, no fallback. The tester runs `ateam ui-test file` first, and its exit code picks the path. Exit 5 means no Dispatcher is set up: start a dev server as before, and nothing else in this section applies. A tester with no browser reports NOT VERIFIED; never accept a render-only check as a pass. Stubs and deferred edges are fine in code; verification isn't skippable.
 
 - **Push first.** Before each Dispatcher live test and after each fix batch, push the real integration branch: `git push -u origin <branch>`, never force. If the tester still reports exit 6, push and re-spawn it. Open no PR until Phase 5. In midgard a branch push without a PR deploys nothing: `vercel.json` sets `deploymentEnabled` for `main` only, the CI push trigger is `main` only, and the branch deploy workflows need an open PR. In other repos, check the deploy triggers first.
 - **Dev server.** Start one only for exit 5 or for local-only items the tester names.
