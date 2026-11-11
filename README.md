@@ -270,6 +270,24 @@ is retried; after six consecutive failures the verb exits with an error. On
 any exit other than park or close, the verb kills the tmux session so no DRI
 outlives the run.
 
+When `config.toml` sets `cloud_home`, the learnings verbs (`learnings`, `learn`,
+`recall`, `applied`, `forget`, `fresh-drain`, and `condense-lock`) read and write
+the hosted workspace instead of the local one. If the hosted store is
+unreachable, the verb reports `learnings store unreachable` and doesn't fall
+back to local data. Write verbs add `may not be saved; retry later`, and `learnings`
+and `prime` print a continue-without line and exit 0.
+
+`ateam learnings-seed [--dry-run]` copies local learnings to the hosted
+workspace one time. It copies only keys that the hosted store doesn't have, so
+running it again doesn't overwrite hosted edits. With `--dry-run`, it prints the
+per-namespace counts, the keys whose hosted value differs, and the number of
+keys it would import, and writes nothing.
+
+On each boot (`start` and `resume`), `ateam cloud-boot` copies the role
+instruction files from `plugins/agent-teams/cloud/instructions/` into
+`$AGENT_TEAMS_HOME/instructions/`, so `ateam instructions <role>` prints them
+inside a Dispatcher run.
+
 Inside a run, `ateam pr add` also appends a `label` operation to
 `$DSP_SUP/outbox.jsonl`, so the Dispatcher routes that PR's check and review
 events to the run. It prints `pr add: labeled Dispatcher run <DSP_BEAD>` after

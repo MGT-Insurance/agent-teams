@@ -5,7 +5,7 @@
 ateam condense-lock acquire
 ```
 
-If this exits with **code 5** (lock held by another session), log:
+If this exits with **code 5** (lock held, or learnings store unreachable), log:
 
 ```
 condense in progress elsewhere — skipping, fresh flushes next run
@@ -31,4 +31,4 @@ Then apply the condense procedure (Design hot set → Apply batch → **Drain fr
 ateam condense-lock release
 ```
 
-Release in ALL exit paths (success and error). The held-skip path (Step 0 exit-5) never acquired the lock, so no release is needed there.
+Release in ALL exit paths (success and error). The Step 0 exit-5 skip never acquired the lock, so it needs no release.

@@ -120,6 +120,7 @@ func run(args []string) int {
 	cliCtx := &cli.Context{
 		Home:   home,
 		BD:     bdClient,
+		Learn:  verbs.NewLearnClient(home, bdClient),
 		Stdout: stdout,
 		Stderr: stderr,
 	}

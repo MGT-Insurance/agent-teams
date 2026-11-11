@@ -121,6 +121,8 @@ hung config: tick_interval=20m0s stuck_threshold=2h0m0s wake_attempts_before_ale
 
 Default to `ateam learn`. Use `bd remember` only for repo-shared project facts. Never MEMORY.md.
 
+**Hosted learnings store.** When `config.toml` in the workspace sets `cloud_home`, the learnings verbs (`learnings`, `recall`, `prime`, `roles`, `memories-json`, `condense-check`, `learn`, `forget`, `applied`, `condense`, `fresh-drain`, `condense-lock`, and `learnings-seed`) read and write the hosted workspace, the same store Dispatcher runs use. Without `cloud_home`, nothing changes. Steward topics, the prime-cap sentinel, `pull`, `sync`, `audit`, and every initiative, mail, relay, dispatch, and cloud-boot verb stay on the local workspace. `ateam learnings-seed [--dry-run]` copies local role and user learnings into the hosted store once; it writes only keys the hosted store lacks and never overwrites a hosted value. The local copy stays in place as a frozen backup, and removing `cloud_home` switches the laptop back to it. If the hosted store is unreachable, `ateam learnings` and `ateam prime` print a `learnings store unreachable` notice and exit 0, so the session continues without learnings. Other reads fail with that message, and writes (`learn`, `forget`, `applied`, `fresh-drain`) exit non-zero without saving or queueing.
+
 ### Machine-local instructions (`ateam instructions <role>`)
 
 This is the route for a human who wants to give a role standing custom direction and does NOT want it to replicate or be autonomously edited. `ateam learn <role> …` is the wrong tool for that job even though it also produces "durable direction to an agent": it writes to the global workspace's beads DB, which syncs to every machine via `refs/dolt/data`, and the condense agent may demote, merge, reword, or evict it with no human gate (see Condensing below). A machine-local instruction file has neither property, and that is the whole reason it exists:
@@ -132,7 +134,9 @@ Cap: 4096 bytes. A file over cap is refused, not truncated — silently cutting 
 
 It is additive only: the instructions extend a role's shipped definition and cannot override the role's hard guardrails (e.g. the reviewer's never-fix, never-push, never-merge rules). Tool output arrives after the agent definition has already become the system prompt, so it cannot revoke what that prompt already established.
 
-Today only the reviewer fetches this on spawn (`plugins/agent-teams/agents/reviewer.md`); the other roles don't yet self-fetch it. This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
+In a Dispatcher run, the instruction files come from `plugins/agent-teams/cloud/instructions/`, and `ateam cloud-boot` rewrites them into `$AGENT_TEAMS_HOME/instructions/` on each boot (start and resume).
+
+Every role loads its file on spawn by running `ateam instructions <role>` (the DRI does so in the DRI skill's Phase 0). This is not a loophole in "Never MEMORY.md" above — it is a separate, machine-local channel with different guarantees, not a place to dump project or role knowledge that belongs in `bd remember` or `ateam learn`.
 
 ### Three-tier memory model (fresh / hot / cold)
 
@@ -160,6 +164,8 @@ Role memories use a three-tier key convention — the tier is encoded in the key
 Condensing is **lock-guarded** via `ateam condense-lock`. Use the `/agent-teams:condense` skill (no arg = all roles; `<role>` arg = single role) — do not call `ateam condense <role>` directly. The skill acquires the lock, skips cleanly if another session holds it, emits the condense packet FIRST (`ateam condense <role>`) for agent curation, drains fresh into cold only afterward (`ateam fresh-drain <role>`, deterministic, no LLM, once the curated hot set has been written), and releases the lock on all exit paths.
 
 **That order is load-bearing — do not "tidy" it back.** The packet marks tiers by the prefix a key carries at read time, and `ateam fresh-drain` prints only a count, never the key list. Draining first would leave the just-served, un-curated entries shape-identical to long-settled cold in the packet, and those are precisely the entries the run must judge for promotion. Keeping the drain last also keeps `ateam condense` a pure read: a run that dies before curation has mutated nothing and retries clean.
+
+The lock is a closed bd issue, `<prefix>-condense-lock`, in the learnings store when `cloud_home` is set or `DSP_BEAD` is non-empty (inside a Dispatcher run), so a laptop and the cloud serialize on one lock. Otherwise it is the local file lock. If the learnings store is unreachable, `ateam condense-lock acquire` exits 5, the same code as a held lock, and the skill skips the run.
 
 The condense agent applies changes directly via `ateam learn` and `ateam forget` — cold writes use `ateam learn <role> cold:<slug> --file <f>` (since bare `ateam learn` now writes fresh). There is NO human-review gate and NO staged diff — the agent acts autonomously.
 

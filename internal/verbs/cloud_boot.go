@@ -317,6 +317,10 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	// breaks later steps (for example `ateam audit` needs PRIME.md), so a
 	// failure is loud on stderr and the boot continues.
 	ensureHostedHomeSetupSoft(ctx, true)
+	installCloudInstructions(ctx, pluginDir)
+	if _, err := c.LookPath("jq"); err != nil {
+		fmt.Fprintln(ctx.Stderr, cloudJQWarning)
+	}
 	statePath, err := cloudBootStatePath()
 	if err != nil {
 		return fmt.Errorf("resolve home: %w", err)
@@ -414,6 +418,60 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	}
 	fmt.Fprintf(ctx.Stderr, "cloud-boot: launched session %s for %s\n", sid, id)
 	return c.idleLoop(ctx, id, sid, cwd)
+}
+
+// cloudInstructionsRel is where the committed per-role instruction files live,
+// relative to the plugin root.
+const cloudInstructionsRel = "cloud/instructions"
+
+// cloudJQWarning is printed when jq is missing: learnings-gate.sh exits 0
+// without jq, so no role agent is gated.
+const cloudJQWarning = "cloud-boot: WARNING: jq not on PATH; the learnings gate hook will not enforce learnings loading"
+
+// installCloudInstructions mirrors <pluginDir>/cloud/instructions/*.md into
+// <home>/instructions/ so `ateam instructions <role>` finds them, and removes
+// files there that the source no longer has. It is fail-soft: a missing source
+// directory or an unwritable file prints a WARNING and the boot continues.
+func installCloudInstructions(ctx *cli.Context, pluginDir string) {
+	src := filepath.Join(pluginDir, cloudInstructionsRel)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: cannot read instruction files from %s (continuing without them): %v\n", src, err)
+		return
+	}
+	dst := filepath.Join(ctx.Home, "instructions")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: create %s failed (continuing): %v\n", dst, err)
+		return
+	}
+	want := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: read %s failed (continuing): %v\n", e.Name(), err)
+			continue
+		}
+		// A failed write keeps the name in want so the stale pass leaves the
+		// previous copy in place.
+		want[e.Name()] = true
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o644); err != nil {
+			fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: write %s failed (continuing): %v\n", e.Name(), err)
+		}
+	}
+	if existing, err := os.ReadDir(dst); err == nil {
+		for _, e := range existing {
+			if e.IsDir() || want[e.Name()] {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dst, e.Name())); err != nil {
+				fmt.Fprintf(ctx.Stderr, "cloud-boot: WARNING: remove stale %s failed (continuing): %v\n", e.Name(), err)
+			}
+		}
+	}
+	fmt.Fprintf(ctx.Stderr, "cloud-boot: installed %d instruction files from %s\n", len(want), src)
 }
 
 func (c *cloudBootCommon) writeBody(ctx *cli.Context, id, body string) error {
