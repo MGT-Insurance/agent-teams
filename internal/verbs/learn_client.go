@@ -51,13 +51,15 @@ func learnRemote(ctx *cli.Context) bool {
 // isStoreUnreachable reports whether err means the Dolt server could not be
 // reached: bd's "Dolt server unreachable" text, or the go-sql-driver and net
 // texts bd passes through when a hosted connection dies ("invalid connection",
-// "i/o timeout", "connection refused", "no such host").
+// "i/o timeout", "connection refused", "no such host"), or bd's "circuit breaker
+// is open" text, which bd returns without contacting the server while its
+// breaker cools down after repeated failures.
 func isStoreUnreachable(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	for _, s := range []string{"Dolt server unreachable", "invalid connection", "i/o timeout", "connection refused", "no such host"} {
+	for _, s := range []string{"Dolt server unreachable", "invalid connection", "i/o timeout", "connection refused", "no such host", "circuit breaker is open"} {
 		if strings.Contains(msg, s) {
 			return true
 		}

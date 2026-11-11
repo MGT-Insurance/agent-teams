@@ -373,6 +373,36 @@ func TestLearnVerbs_HostedConnectionFailureFailsOpen(t *testing.T) {
 	}
 }
 
+// breakerOpenMsg is the literal bd output while its circuit breaker is open
+// after repeated hosted failures.
+const breakerOpenMsg = "Error: failed to open database: dolt circuit breaker is open: server appears down, failing fast (cooldown 5s)"
+
+func TestLearnVerbs_BreakerOpenFailsOpen(t *testing.T) {
+	const store = "/hosted/ws"
+	f := newLearnFake()
+	f.err = errors.New(breakerOpenMsg)
+	ctx, out := hostedCtx(t, f)
+	if err := runLearnings(ctx, "dri"); err != nil {
+		t.Fatalf("learnings err = %v, want exit 0", err)
+	}
+	want := "[learnings store unreachable (" + store + "): continuing WITHOUT dri learnings]\n"
+	if out.String() != want {
+		t.Errorf("stdout = %q, want %q", out.String(), want)
+	}
+
+	file := filepath.Join(t.TempDir(), "body.txt")
+	if err := os.WriteFile(file, []byte("body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f = newLearnFake()
+	f.err = errors.New(breakerOpenMsg)
+	ctx, _ = hostedCtx(t, f)
+	err := (&learnKong{Role: "dri", Slug: "hot:x", File: file}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOT saved; retry later") {
+		t.Errorf("learn err = %v, want NOT saved; retry later", err)
+	}
+}
+
 func TestLearnVerbs_NonConnectionErrorStillFails(t *testing.T) {
 	raw := errors.New(`Error: database "x" not found`)
 	f := newLearnFake()
