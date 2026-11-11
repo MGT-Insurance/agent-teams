@@ -236,8 +236,8 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 						problems = append(problems, fmt.Sprintf("%s (%s): output %s references missing input %q", entry.ID, where, output.Path, part))
 					}
 				}
-			} else if len(output.Parts) != 0 || len(output.InstructionParts) != 0 || output.SkillBudget != nil {
-				problems = append(problems, fmt.Sprintf("%s (%s): classified-only output %s cannot have parts, instruction_parts, or a skill budget", entry.ID, where, output.Path))
+			} else if len(output.Parts) != 0 || len(output.InstructionParts) != 0 {
+				problems = append(problems, fmt.Sprintf("%s (%s): classified-only output %s cannot have parts or instruction_parts", entry.ID, where, output.Path))
 			}
 			switch output.Format {
 			case FormatMarkdown, FormatTOML:
