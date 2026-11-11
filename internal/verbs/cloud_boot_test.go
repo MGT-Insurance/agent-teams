@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -134,7 +135,9 @@ func newCBEnv(t *testing.T) *cbEnv {
 		LookPath:  func(f string) (string, error) { return "/bin/" + f, nil },
 		Getwd:     func() (string, error) { return e.cwd, nil },
 		// Hermetic by default: no test touches a real git repo unless it opts in.
-		Git: func(string, ...string) (string, error) { return "", errors.New("git disabled in test") },
+		Git: func(context.Context, string, ...string) (string, error) {
+			return "", errors.New("git disabled in test")
+		},
 		Agents: func() ([]agentSession, error) {
 			i := e.pollN
 			if i >= len(e.polls) {

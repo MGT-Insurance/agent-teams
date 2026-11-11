@@ -18,21 +18,31 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
-const (
-	// cloudBootGitTimeout bounds each git call so a stuck push cannot hold the
-	// run's exit.
+const cloudBootWIPMessage = "WIP: unsaved work from a failed cloud run"
+
+// Tunables, vars so tests can shrink them. cloudBootGitTimeout bounds each git
+// call and cloudBootWIPBudget the whole save, so a stuck remote cannot hold the
+// run's exit. cloudBootWaitDelay is how long after a timeout git's pipes may
+// stay open (a git-remote-https or ssh grandchild can hold them) before the
+// call gives up.
+var (
 	cloudBootGitTimeout = 60 * time.Second
-	cloudBootWIPMessage = "WIP: unsaved work from a failed cloud run"
+	cloudBootWIPBudget  = 2 * time.Minute
+	cloudBootWaitDelay  = 3 * time.Second
 )
 
-// runGitBounded runs git in dir with a timeout and no credential prompt, and
-// returns its trimmed stdout.
-func runGitBounded(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cloudBootGitTimeout)
+// cloudGitFunc runs git in dir, bounded by ctx, and returns its trimmed stdout.
+type cloudGitFunc func(ctx context.Context, dir string, args ...string) (string, error)
+
+// runGitBounded runs git with no credential prompt, bounded by the shorter of
+// ctx and cloudBootGitTimeout.
+func runGitBounded(ctx context.Context, dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, cloudBootGitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.WaitDelay = cloudBootWaitDelay
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr string
@@ -81,32 +91,43 @@ func parseWorktreeList(porcelain string) []cloudWorktree {
 
 // saveWIP preserves the run checkout's unsaved work: for each worktree with
 // uncommitted changes or commits on no remote branch, it commits the changes
-// (git add -A, so .gitignore applies) and force-pushes HEAD to a wip/ ref on
-// origin, then notes the ref on the initiative. Failures are logged to stderr
-// and skipped; it never changes the caller's exit.
+// (git add -A, so .gitignore applies; .claude/ is excluded) and pushes HEAD to a
+// wip/ ref on origin without force, then notes the ref on the initiative. The
+// whole step shares one deadline. Failures are logged to stderr and skipped; it
+// never changes the caller's exit.
 func (c *cloudBootCommon) saveWIP(ctx *cli.Context, id, cwd string) {
 	git := c.Git
 	if git == nil {
 		git = runGitBounded
 	}
-	list, err := git(cwd, "worktree", "list", "--porcelain")
+	bctx, cancel := context.WithTimeout(context.Background(), cloudBootWIPBudget)
+	defer cancel()
+	list, err := git(bctx, cwd, "worktree", "list", "--porcelain")
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "cloud-boot: save wip: %v\n", err)
 		return
 	}
+	used := map[string]bool{}
 	for _, wt := range parseWorktreeList(list) {
-		if err := c.saveWorktreeWIP(ctx, git, id, wt); err != nil {
+		if err := bctx.Err(); err != nil {
+			fmt.Fprintf(ctx.Stderr, "cloud-boot: save wip: out of time, skipping %s: %v\n", wt.Dir, err)
+			continue
+		}
+		if err := c.saveWorktreeWIP(bctx, ctx, git, used, id, wt); err != nil {
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: save wip %s: %v\n", wt.Dir, err)
 		}
 	}
 }
 
-func (c *cloudBootCommon) saveWorktreeWIP(ctx *cli.Context, git func(string, ...string) (string, error), id string, wt cloudWorktree) error {
-	dirty, err := git(wt.Dir, "status", "--porcelain")
+// wipExcludeClaude keeps a Claude session's local settings out of the save.
+const wipExcludeClaude = ":(exclude).claude"
+
+func (c *cloudBootCommon) saveWorktreeWIP(bctx context.Context, ctx *cli.Context, git cloudGitFunc, used map[string]bool, id string, wt cloudWorktree) error {
+	dirty, err := git(bctx, wt.Dir, "status", "--porcelain", "--", ".", wipExcludeClaude)
 	if err != nil {
 		return err
 	}
-	unpushed, err := git(wt.Dir, "rev-list", "HEAD", "--not", "--remotes", "--max-count=1")
+	unpushed, err := git(bctx, wt.Dir, "rev-list", "HEAD", "--not", "--remotes", "--max-count=1")
 	if err != nil {
 		return err
 	}
@@ -114,44 +135,79 @@ func (c *cloudBootCommon) saveWorktreeWIP(ctx *cli.Context, git func(string, ...
 		return nil
 	}
 	if dirty != "" {
-		if _, err := git(wt.Dir, "add", "-A"); err != nil {
+		if _, err := git(bctx, wt.Dir, "add", "-A", "--", ".", wipExcludeClaude); err != nil {
 			return err
 		}
-		if _, err := git(wt.Dir, "-c", "user.name=ateam cloud-boot", "-c", "user.email=ateam@localhost",
-			"-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", cloudBootWIPMessage); err != nil {
+		// Dirty submodule content shows in status but stages nothing.
+		staged, err := git(bctx, wt.Dir, "diff", "--cached", "--name-only")
+		if err != nil {
 			return err
+		}
+		if staged != "" {
+			if _, err := git(bctx, wt.Dir, "-c", "user.name=ateam cloud-boot", "-c", "user.email=ateam@localhost",
+				"-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", cloudBootWIPMessage); err != nil {
+				return err
+			}
+		} else if unpushed == "" {
+			return nil
 		}
 	}
-	sha, err := git(wt.Dir, "rev-parse", "HEAD")
+	sha, err := git(bctx, wt.Dir, "rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}
 	ref := wipRefName(id, wt.Branch, wt.Dir)
-	if _, err := git(wt.Dir, "push", "--no-verify", "--force", "origin", "HEAD:refs/heads/"+ref); err != nil {
+	if used[ref] {
+		ref += "-" + sha[:min(7, len(sha))]
+	}
+	push := func(ref string) error {
+		_, err := git(bctx, wt.Dir, "push", "--no-verify", "origin", "HEAD:refs/heads/"+ref)
 		return err
 	}
+	if err := push(ref); err != nil {
+		// A rejected push means the ref exists with other work; never overwrite it.
+		ref += "-" + sha[:min(7, len(sha))]
+		if err2 := push(ref); err2 != nil {
+			return err2
+		}
+	}
+	used[ref] = true
 	fmt.Fprintf(ctx.Stderr, "cloud-boot: saved wip %s at %s\n", ref, sha)
 	dsp, _, _ := dispatcherRun()
-	return c.noteWIP(ctx, id, fmt.Sprintf("wip saved: %s at %s from run %s", ref, sha, dsp))
+	return c.noteWIP(bctx, ctx, id, fmt.Sprintf("wip saved: %s at %s from run %s", ref, sha, dsp))
 }
 
 // noteWIP adds a bd note on the initiative through ctx.BD, the same path
 // reap and hung-tick use.
-func (c *cloudBootCommon) noteWIP(ctx *cli.Context, id, text string) error {
+// The BD seam takes no context, so the call runs in a goroutine and is
+// abandoned when bctx expires.
+func (c *cloudBootCommon) noteWIP(bctx context.Context, ctx *cli.Context, id, text string) error {
 	tmp, err := os.CreateTemp("", "ateam-cloud-boot-wip-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(text + "\n"); err != nil {
 		tmp.Close()
+		os.Remove(tmp.Name())
 		return err
 	}
 	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
 		return err
 	}
-	if _, err := ctx.BD.Run("note", id, "--file="+tmp.Name()); err != nil {
-		return fmt.Errorf("bd note: %w", err)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ctx.BD.Run("note", id, "--file="+tmp.Name())
+		os.Remove(tmp.Name())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("bd note: %w", err)
+		}
+		return nil
+	case <-bctx.Done():
+		return fmt.Errorf("bd note: %w", bctx.Err())
 	}
-	return nil
 }

@@ -66,7 +66,7 @@ type cloudBootCommon struct {
 	CloseTopic func(threadRef string) error `kong:"-"`
 	// Git runs git in dir and returns its stdout; nil falls back to the real
 	// git with a per-call timeout (see runGitBounded).
-	Git func(dir string, args ...string) (string, error) `kong:"-"`
+	Git cloudGitFunc `kong:"-"`
 }
 
 type cloudBootStartKong struct{ cloudBootCommon }
