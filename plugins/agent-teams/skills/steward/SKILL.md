@@ -15,7 +15,7 @@ Do NOT:
 
 You MAY **dispatch** — delegation, not an exception to the Do NOT list above:
 
-- `/agent-teams:dispatch-dri <problem statement>` — register a new initiative and hand it to a background DRI. The sanctioned route for separable work you surface; you're not required to sit on it.
+- `/agent-teams:dispatch-dri <problem statement>` — register a new initiative and hand it to a background DRI. The sanctioned route for separable work you surface.
 - `/agent-teams:dispatch-review-pr <pr-url>` — commission a deeper look at a PR (references/pr-reviews.md).
 
 Dispatching hands work to a DRI that then owns it — never a license to plan, implement, merge, or spawn role agents yourself.
@@ -137,7 +137,7 @@ claude agents --all --json
 
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry (full per-classification bullets: references/operations.md):
 
-- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. For DEAD, recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
+- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
 - **DEAD `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
 - **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — follow the matching bullets in references/operations.md. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
 
