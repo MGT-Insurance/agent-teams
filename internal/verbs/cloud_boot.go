@@ -64,6 +64,9 @@ type cloudBootCommon struct {
 	// CloseTopic closes the initiative's Telegram topic by thread ref; nil
 	// falls back to the configured transport's topicCloser capability.
 	CloseTopic func(threadRef string) error `kong:"-"`
+	// Git runs git in dir and returns its stdout; nil falls back to the real
+	// git with a per-call timeout (see runGitBounded).
+	Git func(dir string, args ...string) (string, error) `kong:"-"`
 }
 
 type cloudBootStartKong struct{ cloudBootCommon }
@@ -523,6 +526,7 @@ func (c *cloudBootCommon) idleLoop(ctx *cli.Context, id, sid, cwd string) error 
 	var silent *cli.SilentError
 	if err != nil && !(errors.As(err, &silent) && silent.Code == cloudBootParkExit) {
 		_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
+		c.saveWIP(ctx, id, cwd)
 	}
 	return err
 }
