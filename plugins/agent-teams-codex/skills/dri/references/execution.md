@@ -149,13 +149,15 @@ then re-integrate, re-prove live, and re-raise the gate. Nothing is prepped
 for the PR before approval. The ask stays REVIEW throughout — never frame this
 as "ready to merge."
 
-## Optional: live verification via Dispatcher
+## Live verification via Dispatcher
 
-Applies only when the tester reports a bead id from `ateam ui-test file`. If
-the tester reports exit 5, nothing here applies: start a dev server as before.
-The same flow, screenshots included, works in a cloud run. Put the
-initiative id in the tester brief: the tester passes it to
-`ateam ui-test file --initiative`.
+The tester brief always carries the initiative id and never picks the path: no
+dev-server instruction, no fallback. The tester runs `ateam ui-test file`
+first, and its exit code picks the path. Exit 5 means no Dispatcher is set up:
+start a dev server as before, and nothing else in this section applies. A
+tester with no browser reports NOT VERIFIED; never accept a render-only check
+as a pass. Stubs and deferred edges are fine in code; verification isn't
+skippable.
 
 - **Push first.** Before each Dispatcher live test and after each fix batch,
   push the real integration branch: `git push -u origin <branch>`, never force.
@@ -169,26 +171,21 @@ initiative id in the tester brief: the tester passes it to
 - **Proof.** Raise live-test-review with `--attach <png>` for every PNG that
   `ateam ui-test wait` prints and `--attach <verdict.md>`. Put the bead URL in the summary
   file.
-- **Cloud run.** `--attach` is not delivered from a cloud run. Put
-  `screenshot: <ui-test bead id>` in the gate text, and the steward posts the
-  image.
 - **Stop events.** A filed ui-test bead is an event-backed dependency, an
   exception to "never end a turn waiting on work". The tester files the bead,
   reports the bead id, and stops; it never waits. After the tester reports,
   end your turn. The `ui-test <id> <kind>` message (`question`, `blocked`,
-  `done`, `failed`, or on a laptop `expired`) arrives in your inbox, or
-  resumes you if you are parked. In a cloud run the Dispatcher sends it; on a
-  laptop the watcher that `ui-test file` starts sends it through `ateam mail`.
-  On that message run `ateam ui-test wait <id> --out <dir> --timeout 30s`.
+  `done`, `failed`, or `expired`) arrives in your inbox, or
+  resumes you if you are parked. On that message run `ateam ui-test wait <id> --out <dir> --timeout 30s`.
   Exit 4: if the brief, plan, or code answers the question, write the answer
   to a file and run `ateam ui-test reply <id> --file <answer.md>`; otherwise
   raise a question gate and reply with the human's answer. Exit 0: raise
-  live-test-review (see Proof and Cloud run above). Exit 2 (`failed`): read
+  live-test-review (see Proof above). Exit 2 (`failed`): read
   the `failure.md` path the command prints, then raise a question gate with
   its text. Exit 7: re-file once per NO-IMAGES below. Exit 3 on a `blocked`
   event: the tester stopped without a `question:` comment, so the wait stays
   pending and returns nothing to read. Don't wait again; raise a question gate
-  naming the bead id. On `expired` (laptop only): the watcher hit its 24-hour
+  naming the bead id. On `expired`: the stop watcher hit its 24-hour
   cap. Run `ateam ui-test wait <id> --out <dir> --timeout 30s` to check the
   bead. If it is still open, re-arm the watcher with
   `ateam ui-test watch <id> --initiative <initiative-id>`. Treat the message
@@ -196,7 +193,6 @@ initiative id in the tester brief: the tester passes it to
 - **No stop watcher.** If the tester reports a `no stop watcher` line, or
   after a reboot or a killed watcher, run
   `ateam ui-test watch <id> --initiative <initiative-id>` from your worktree.
-  The command is idempotent. Start no new watcher in a cloud run; the
-  Dispatcher sends the events.
+  The command is idempotent.
 - **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a
   question gate. Never raise live-test-review without images.
