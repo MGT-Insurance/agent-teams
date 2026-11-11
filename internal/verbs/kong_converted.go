@@ -307,6 +307,10 @@ type gateKong struct {
 	// Kind applies to both forms.
 	Kind string `name:"kind" enum:"review,question,live-test-review" default:"question" help:"Gate kind: review, question, or live-test-review."`
 
+	// Plan marks the gate as asking the human to approve a plan. It makes the
+	// plan-page link check explicit instead of depending on the decision text.
+	Plan bool `name:"plan" help:"This gate asks the human to approve a plan; the ask must carry the plan page URL (or a line starting \"no plan page:\"). Valid only with --kind question."`
+
 	// Attach is a repeatable proof-attachment path (screenshot, HAR, log,
 	// etc.), independent of which body form (--file or --decision) is used.
 	// Every path is validated in Validate (exists, ≤10 MB, no TAB/newline —
@@ -340,6 +344,9 @@ type gateKong struct {
 //   - If neither form is provided: --file required error.
 //   - Prose form: file must exist.
 func (c *gateKong) Validate(_ *kong.Context) error {
+	if c.Plan && c.Kind != "question" {
+		return cli.Usagef("ateam gate: --plan requires --kind question (got %q)", c.Kind)
+	}
 	for _, p := range c.Attach {
 		if strings.ContainsAny(p, "\t\n") {
 			return cli.Usagef("ateam gate: --attach path contains a tab or newline (breaks the envelope encoding): %q", p)
@@ -375,7 +382,7 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 			}
 			askText += "\n" + string(data)
 		}
-		return checkPlanGateLink(c.Kind, c.Decision, askText)
+		return checkPlanGateLink(c.Plan, c.Kind, c.Decision, askText)
 	}
 
 	// Prose form: --file must be supplied.
@@ -389,23 +396,25 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 	if err != nil {
 		return cli.Usagef("ateam gate: file not found: %s", c.File)
 	}
-	return checkPlanGateLink(c.Kind, string(data), string(data))
+	return checkPlanGateLink(c.Plan, c.Kind, string(data), string(data))
 }
 
-// planGateMarker matches a plan-approval gate's decision (contract
-// agent-teams-a8er.1 item 1).
-var planGateMarker = regexp.MustCompile(`(?i)^approve\s+(the\s+)?plan\b`)
+// planGateMarker is the fallback text match for a plan-approval gate raised
+// without --plan (contract agent-teams-a8er.7 item B): a first line that starts
+// with "Approve" and contains the word "plan".
+var planGateMarker = regexp.MustCompile(`(?i)^approve\b[^\n]*\bplan\b`)
 
 // planGateNoPageLine matches the "no plan page:" escape line.
 var planGateNoPageLine = regexp.MustCompile(`(?m)^no plan page:`)
 
 const planGateLinkMsg = `ateam gate: a plan-approval gate needs the plan page URL. Publish the plan (the Artifact tool in Claude Code, or ateam page publish <file> --title "<title>" in a Dispatcher run) and put the URL as the first line of --context-file. If you cannot publish, add a line starting "no plan page:" with the reason.`
 
-// checkPlanGateLink refuses a --kind=question gate whose decision (for prose,
-// its first non-blank line) is a plan approval and whose ask text has neither
-// an "https://" URL nor a "no plan page:" line.
-func checkPlanGateLink(kind, decision, askText string) error {
-	if kind != "question" || !planGateMarker.MatchString(strings.TrimSpace(decision)) {
+// checkPlanGateLink refuses a --kind=question gate that is a plan approval and
+// whose ask text has neither an "https://" URL nor a "no plan page:" line. A
+// gate is a plan approval when --plan is set, or (fallback) when its decision
+// (for prose, its first non-blank line) matches planGateMarker.
+func checkPlanGateLink(plan bool, kind, decision, askText string) error {
+	if kind != "question" || !(plan || planGateMarker.MatchString(strings.TrimSpace(decision))) {
 		return nil
 	}
 	if strings.Contains(askText, "https://") || planGateNoPageLine.MatchString(askText) {
