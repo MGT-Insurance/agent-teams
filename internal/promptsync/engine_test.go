@@ -521,3 +521,51 @@ func snapshot(t *testing.T, root string) map[string][32]byte {
 	}
 	return result
 }
+
+func runtimeOnlySkillEntry(path string, minHeadroom int) Entry {
+	return Entry{
+		ID:     "skill.runtime-fixture",
+		Kind:   KindSkill,
+		Status: StatusRuntimeOnly,
+		Reason: "fixture",
+		Outputs: []Output{{
+			Path:        path,
+			Format:      FormatMarkdown,
+			SkillBudget: &SkillBudget{BaseDirectory: "/installed/fixture", MinHeadroom: minHeadroom},
+		}},
+		source: "skills.json",
+	}
+}
+
+func TestRuntimeOnlySkillBudgetIsMeasuredFromDisk(t *testing.T) {
+	const path = "plugins/agent-teams/skills/fixture/SKILL.md"
+	committed := []byte("---\nname: fixture\n---\n" + strings.Repeat("x", SkillUTF16Limit-100) + "\n")
+	reader := func(string) ([]byte, error) { return committed, nil }
+	config := Config{Root: "/root", ReadFile: reader}
+
+	entry := runtimeOnlySkillEntry(path, 1000)
+	if err := validateEntries([]Entry{entry}, false); err != nil {
+		t.Fatalf("runtime-only skill_budget on SKILL.md must validate: %v", err)
+	}
+	_, report, err := renderAll(config, []Entry{entry})
+	if err == nil || !strings.Contains(err.Error(), "requires at least 1000 headroom") {
+		t.Fatalf("over-budget runtime-only SKILL.md error = %v", err)
+	}
+	if len(report.Measurements) != 1 {
+		t.Fatalf("measurements = %+v", report.Measurements)
+	}
+
+	_, report, err = renderAll(config, []Entry{runtimeOnlySkillEntry(path, 10)})
+	if err != nil {
+		t.Fatalf("under-budget runtime-only SKILL.md: %v", err)
+	}
+	if len(report.Measurements) != 1 || report.Measurements[0].Headroom < 10 {
+		t.Fatalf("measurements = %+v", report.Measurements)
+	}
+
+	reference := runtimeOnlySkillEntry("plugins/agent-teams/skills/fixture/references/notes.md", 10)
+	reference.Kind = KindReference
+	if err := validateEntries([]Entry{reference}, false); err == nil || !strings.Contains(err.Error(), "invalid skill_budget") {
+		t.Fatalf("skill_budget on a non-SKILL.md output error = %v", err)
+	}
+}

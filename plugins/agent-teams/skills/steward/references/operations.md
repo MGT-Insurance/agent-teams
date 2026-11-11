@@ -66,6 +66,17 @@ SKILL.md §2's scan bullets key off a subset of these. One JSON entry per open i
 
 `wp_trip_eligible:true` is the busy-forever case, and means all three of: `mode:bg`, git/bead artifacts flat for ≥30 min, and a claimed bead. The mechanical wake carries that evidence with it, so the Steward does not recompute it.
 
+## Every-wake scan — per-entry bullets
+
+Moved from SKILL.md §2 ("Every wake — scan"), unchanged. SKILL.md keeps a short summary of these.
+
+- **STUCK, `hung:true`** — idle past threshold, no gate raised. Escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`) — judgment call, never autonomous. Reply returns as an ordinary steward-reply; record under `unblock-action`.
+- **DEAD, `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
+- **DEAD, `cwd_present:true`, `dead_hung:true`** — escalate like STUCK, recommending `claude respawn <shortid>` (finding the shortid: references/operations.md) vs. leave-it. No autonomous revive; also wakes you mechanically at 15 min.
+- **WORKING, `wp_trip_eligible:true`** — the busy-forever case; the wake carries the evidence. Busy + recent command + no failure tokens → "healthy, watching". Otherwise → nudge like STUCK; record under `unblock-action`. An automatic alert fires at 1h flat, not yours to trigger — watch until a git/bead change resets the clock.
+- **STUCK under threshold, AWAITING-HUMAN, or WORKING without `wp_trip_eligible`** — no action.
+- **`mode:interactive`** — excluded from every mechanical path; visible for judgment only.
+
 ## Ledger CLI
 
 `ateam steward ledger record` REJECTS a `corrected` verdict submitted without `--decision` — the flag is required there and optional on `accepted`. The rejection is deliberate: a `corrected` row with no record of what the human actually decided is the one shape of ledger entry that teaches nothing.
@@ -78,3 +89,31 @@ Two ways to disable it (paths below are under the workspace root — `$AGENT_TEA
 
 - **Manual**: delete `<workspace>/steward/session` (the marker lives inside it). Routing stops immediately; `ateam steward init` re-creates it idempotently if you want it back.
 - **`ateam steward remove`**: the supported way to de-steward a machine. Removes the session dir (marker included) and the doorbell (`<workspace>/mailbox/steward.wake`); idempotent (nothing to remove is still a success). Keeps THREE files by default — `<workspace>/steward/ledger.jsonl`, `<workspace>/steward/briefing-thread` and `<workspace>/steward/reviews-thread` — and prints them under `kept (carry these when relocating the Steward to another machine):`. Copy over all three, not just the ledger: each thread-ref file is per-machine storage, and `reviews-thread` is what lets this machine's relay recognize replies in an existing Reviews topic (nothing posts there any more), so leaving it behind routes those replies through the unrouted-reply path instead. Pass `--purge` to delete all three instead. It also reports (never modifies) how many unread messages are still assigned to the `steward` handle, so mid-flight mail is visible before you walk away.
+
+## Attribution questions ("Was that you?")
+
+Moved from SKILL.md §2, unchanged.
+
+Never answer from your own session state or memory — context compacts, and any record of what you sent compacts with it. Run `ateam sent --since <window> --json [--sender <kind>] [--initiative <id>]` and answer from the records.
+
+- `sender`: one of six constants — `notify`, `notify-briefing`, `notify-direct`, `dispatch`, `close`, `relay-hung` — the verb, not a session. `relay-hung` is the hung-tick's automatic alert; its `session_id` may match yours (the relay inherits whoever started it), but `sender` is authoritative, not `session_id`/`steward_cwd`/`pid`.
+- `UNDECLARED` — a call site didn't identify itself; say so, don't guess.
+- No matching record means the log shows nothing for that window, not "I didn't send it" — absence never proves non-authorship.
+
+## Cross-initiative briefings
+
+Moved from SKILL.md §7, unchanged.
+
+Material spanning initiatives — prioritization calls, a machine-wide roundup, the four-hour heartbeat, anything not scoped to one DRI — goes to the briefing topic, never one initiative's:
+
+```bash
+ateam notify briefing --file <msg-file>
+```
+
+Use `briefing` only when the message doesn't belong to one initiative. Otherwise: `ateam notify <initiative-id>` (per-initiative) or `ateam notify direct` (outside any initiative, always with `--to`, see steward-direct §2).
+
+## No HANDOFF.md
+
+Moved from SKILL.md §6, unchanged.
+
+One accepted consequence: you cannot keep the `HANDOFF.md` progress note the global CLAUDE.md asks of every session — intended, not an oversight; your notes and ledger ARE the handoff record. Never relocate the file to comply, and never disable the isolation guard for the workspace repo.
