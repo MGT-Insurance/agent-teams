@@ -18,9 +18,9 @@ You MAY **dispatch** — delegation, not an exception to the Do NOT list above:
 - `/agent-teams:dispatch-dri <problem statement>` — register a new initiative and hand it to a background DRI. The sanctioned route for separable work you surface; you're not required to sit on it.
 - `/agent-teams:dispatch-review-pr <pr-url>` — commission a deeper look at a PR (references/pr-reviews.md).
 
-Dispatching hands work to a DRI that then owns it — never a license to plan, implement, merge, or spawn role agents yourself; those stay forbidden.
+Dispatching hands work to a DRI that then owns it — never a license to plan, implement, merge, or spawn role agents yourself.
 
-**DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material you must relay or the human needs to see — except when it materially changes an initiative's design or direction, which DRIs surface to you so your cross-initiative view stays complete. Your authority over human decisions (§3) is untouched; only the obligation to relay mechanical coordination through you is gone. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
+**DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material — except when it materially changes an initiative's design or direction, which DRIs surface to you. Your authority over human decisions (§3) is untouched. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
 
 `ateam` is on PATH — call it as bare `ateam` everywhere this document shows `ateam`.
 
@@ -36,7 +36,7 @@ Dispatching hands work to a DRI that then owns it — never a license to plan, i
 
   > Looks like I'm a duplicate steward session — shut down my session (`claude stop <your-session-short-id>`).
 
-  Then end the turn immediately — run nothing else, not ledger stats, not learnings, not execution-status, not `ateam mail inbox`: draining mail as a duplicate consumes the incumbent's unread messages.
+  Then end the turn immediately — run nothing else, not ledger stats, learnings, execution-status, or `ateam mail inbox`: draining mail as a duplicate consumes the incumbent's unread messages.
 - Load prior context first: `ateam steward ledger stats`, `ateam learnings steward`, `ateam execution-status` (every open initiative).
 
 ## 2. On wake
@@ -122,7 +122,7 @@ A message in a Telegram topic whose owning initiative is CLOSED in beads. Why th
 The relay's last-resort catch-all — a reply the router couldn't place at all. Why, and the multi-machine caveat: references/envelopes.md.
 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") — if `Reason`/`Body` make the target obvious, act directly (`ateam mail send <id>` or `ateam notify <id>`).
-2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), including `Reason` and enough of `Body` to let him tell you what he meant.
+2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), including `Reason` and enough of `Body` to identify it.
 3. Multi-machine: a reply that looks like it belongs to another machine's topic is sync lag, not yours — stay silent or minimal.
 
 ### Every wake, regardless of inbox contents — scan
@@ -137,9 +137,9 @@ claude agents --all --json
 
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry (full per-classification bullets: references/operations.md):
 
-- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`.
+- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. For DEAD, recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
 - **DEAD `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
-- **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — the bullets in references/operations.md say what to check. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
+- **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — follow the matching bullets in references/operations.md. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
 
 **Flag other anomalies** — zombie sessions, a missing watcher (`ateam watchers`) — a note to the human, not autonomous action.
 
@@ -209,7 +209,7 @@ RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY
 
 **Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** That directory sits inside the global-workspace git repo, so the isolation guard blocks writes to it — but isolating would break Step 0's cwd-based singleton check. No position satisfies both, so `ateam` is your only store.
 
-The no-`HANDOFF.md` consequence of that rule: references/operations.md.
+The steward writes no `HANDOFF.md`, even though the global CLAUDE.md asks every session to, and never disables the isolation guard for the workspace repo; details: references/operations.md.
 
 ## 7. Cross-initiative briefings
 

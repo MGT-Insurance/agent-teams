@@ -45,6 +45,18 @@ func TestGatePlanLink(t *testing.T) {
 		{"passes: Approve the plan with URL", func(t *testing.T) *gateKong {
 			return &gateKong{ID: "at-1", Kind: "question", Decision: "Approve the plan for x", ContextFile: makeTempFile(t, url)}
 		}, false},
+		{"refused: Approve the plan with colon", func(t *testing.T) *gateKong {
+			return &gateKong{ID: "at-1", Kind: "question", Decision: "Approve the plan: x"}
+		}, true},
+		{"refused: APPROVE PLAN uppercase", func(t *testing.T) *gateKong {
+			return &gateKong{ID: "at-1", Kind: "question", Decision: "APPROVE PLAN x"}
+		}, true},
+		{"refused: prose first line Approve the plan", func(t *testing.T) *gateKong {
+			return &gateKong{ID: "at-1", Kind: "question", File: makeTempFile(t, "Approve the plan\nbody\n")}
+		}, true},
+		{"untouched: Approve planning is not the marker", func(t *testing.T) *gateKong {
+			return &gateKong{ID: "at-1", Kind: "question", Decision: "Approve planning budget"}
+		}, false},
 		{"untouched: review kind", func(t *testing.T) *gateKong {
 			return &gateKong{ID: "at-1", Kind: "review", Decision: "Approve plan: x"}
 		}, false},
