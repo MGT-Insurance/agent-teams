@@ -344,6 +344,48 @@ func TestLearnVerbs_Unreachable(t *testing.T) {
 	})
 }
 
+// hostedTimeoutMsg is the literal bd output of a live hosted read that timed
+// out; it carries none of bd's "Dolt server unreachable" text.
+const hostedTimeoutMsg = "[mysql] 2026/11/10 12:26:30 packets.go:58 read tcp 192.168.1.155:50420->44.243.111.100:3306: i/o timeout\n" +
+	`Error: failed to open database: failed to check if database "beads_eric_lloyd_at" exists on server mgt-spike.dbs.hosted.doltdb.com:3306: invalid connection`
+
+func TestLearnVerbs_HostedConnectionFailureFailsOpen(t *testing.T) {
+	const store = "/hosted/ws"
+	for _, msg := range []string{hostedTimeoutMsg, "dial tcp 1.2.3.4:3306: connect: connection refused", "dial tcp: lookup h: no such host"} {
+		f := newLearnFake()
+		f.err = errors.New(msg)
+		ctx, out := hostedCtx(t, f)
+		if err := runLearnings(ctx, "dri"); err != nil {
+			t.Fatalf("%q: learnings err = %v, want exit 0", msg, err)
+		}
+		want := "[learnings store unreachable (" + store + "): continuing WITHOUT dri learnings]\n"
+		if out.String() != want {
+			t.Errorf("stdout = %q, want %q", out.String(), want)
+		}
+	}
+	// A write fails with the NOT saved message.
+	f := newLearnFake()
+	f.err = errors.New(hostedTimeoutMsg)
+	ctx, _ := hostedCtx(t, f)
+	err := (&forgetKong{Role: "dri", Slug: "hot:x"}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "NOT saved; retry later") {
+		t.Errorf("forget err = %v", err)
+	}
+}
+
+func TestLearnVerbs_NonConnectionErrorStillFails(t *testing.T) {
+	raw := errors.New(`Error: database "x" not found`)
+	f := newLearnFake()
+	f.err = raw
+	ctx, out := hostedCtx(t, f)
+	if err := runLearnings(ctx, "dri"); err != raw {
+		t.Errorf("err = %v, want the raw error", err)
+	}
+	if strings.Contains(out.String(), "learnings store unreachable") {
+		t.Errorf("stdout = %q, want no unreachable line", out.String())
+	}
+}
+
 // TestLearnVerbs_UnreachableKeepsTodaysPathWhenLocal proves the same error
 // with learnings kept local (Learn == BD) is returned unchanged.
 func TestLearnVerbs_UnreachableKeepsTodaysPathWhenLocal(t *testing.T) {
