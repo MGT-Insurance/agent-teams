@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -359,6 +360,7 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 		if c.Decision == "" {
 			return cli.Usagef("ateam gate: --decision required when using structured form")
 		}
+		askText := c.Decision + "\n" + c.Recommendation + "\n" + c.Alternative
 		if len(c.Decision) > 120 {
 			return cli.Usagef("ateam gate: --decision exceeds 120 chars (got %d)", len(c.Decision))
 		}
@@ -371,8 +373,9 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 			if trimmed := len(strings.TrimRight(string(data), "\n")); trimmed > 280 {
 				return cli.Usagef("ateam gate: --context-file content exceeds 280 chars (got %d)", trimmed)
 			}
+			askText += "\n" + string(data)
 		}
-		return nil
+		return checkPlanGateLink(c.Kind, c.Decision, askText)
 	}
 
 	// Prose form: --file must be supplied.
@@ -382,7 +385,33 @@ func (c *gateKong) Validate(_ *kong.Context) error {
 	if _, err := os.Stat(c.File); err != nil {
 		return cli.Usagef("ateam gate: file not found: %s", c.File)
 	}
-	return nil
+	data, err := os.ReadFile(c.File)
+	if err != nil {
+		return cli.Usagef("ateam gate: file not found: %s", c.File)
+	}
+	return checkPlanGateLink(c.Kind, string(data), string(data))
+}
+
+// planGateMarker matches a plan-approval gate's decision (contract
+// agent-teams-a8er.1 item 1).
+var planGateMarker = regexp.MustCompile(`(?i)^approve\s+(the\s+)?plan\b`)
+
+// planGateNoPageLine matches the "no plan page:" escape line.
+var planGateNoPageLine = regexp.MustCompile(`(?m)^no plan page:`)
+
+const planGateLinkMsg = `ateam gate: a plan-approval gate needs the plan page URL. Publish the plan (the Artifact tool in Claude Code, or ateam page publish <file> --title "<title>" in a Dispatcher run) and put the URL as the first line of --context-file. If you cannot publish, add a line starting "no plan page:" with the reason.`
+
+// checkPlanGateLink refuses a --kind=question gate whose decision (for prose,
+// its first non-blank line) is a plan approval and whose ask text has neither
+// an "https://" URL nor a "no plan page:" line.
+func checkPlanGateLink(kind, decision, askText string) error {
+	if kind != "question" || !planGateMarker.MatchString(strings.TrimSpace(decision)) {
+		return nil
+	}
+	if strings.Contains(askText, "https://") || planGateNoPageLine.MatchString(askText) {
+		return nil
+	}
+	return cli.Usagef("%s", planGateLinkMsg)
 }
 
 // maxGateNoteArgBytes caps the note passed as one --append-notes argv string.
