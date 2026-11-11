@@ -73,7 +73,7 @@ must return its final report to this parent. It must load
 Require a contract bead first, then the smallest loop-closing bead set that
 exercises observable behavior end to end. Enhancement beads stay blocked until
 that loop closes. Present the plan and raise a plan-approval QUESTION gate
-before implementation unless the work is truly trivial and already fully
+with `--plan` before implementation unless the work is truly trivial and already fully
 specified. A pivot always invalidates any earlier gate skip.
 
 ## Phase 4: execute

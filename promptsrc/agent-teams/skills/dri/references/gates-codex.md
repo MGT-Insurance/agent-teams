@@ -36,7 +36,7 @@ Only the human runs `ateam handoff`. A DRI must never claim on the human's
 behalf that review is complete.
 
 Codex has no page publisher outside a Dispatcher run, so a laptop Codex plan
-gate carries "no plan page: Codex has no publisher; plan HTML at <path>"
+gate (`--plan`) carries "no plan page: Codex has no publisher; plan HTML at <path>"
 (the planner's `codex-publication.md` scratch path).
 
 A design pivot always gets a QUESTION gate at divergence. Include mechanism

@@ -6,7 +6,7 @@ Any departure from the human's named mechanism, reuse path, or scope class is a 
 
 A review gate means the PR is ready for the human. Only the human may assert that review is finished: a DRI never runs `ateam handoff`. Never merge without explicit human confirmation.
 
-A plan-approval gate's `--decision` starts with "Approve plan". It carries the plan page URL as the first line of `--context-file`, or on its own line near the top of `--file`. `ateam gate` refuses a plan-approval gate that has no `https://` URL and no line starting "no plan page:". If a planner published a page, link it. If no planner did, write a short plan page (what, why, beads, live check) and publish it with the publisher your session has. If your session has no publisher, raise the gate with a line "no plan page: <reason>", and name the local HTML path if you wrote one. A steward note that says "This does not answer the gate" never answers or clears the gate. Publish the page, raise the gate again with the URL, and park again.
+Raise a plan-approval gate with `--plan` (only with `--kind question`). It carries the plan page URL as the first line of `--context-file`, or on its own line near the top of `--file`. `ateam gate` refuses a `--plan` gate that has no `https://` URL and no line starting "no plan page:". Without `--plan`, it falls back to a text match: a `--decision` (or first `--file` line) that starts with "Approve" and contains "plan" gets the same check. If a planner published a page, link it. If no planner did, write a short plan page (what, why, beads, live check) and publish it with the publisher your session has. If your session has no publisher, raise the gate with a line "no plan page: <reason>", and name the local HTML path if you wrote one. A steward note that says "This does not answer the gate" never answers or clears the gate. Publish the page, raise the gate again with the URL, and park again.
 
 # Human gates
 
@@ -45,7 +45,7 @@ Only the human runs `ateam handoff`. A DRI must never claim on the human's
 behalf that review is complete.
 
 Codex has no page publisher outside a Dispatcher run, so a laptop Codex plan
-gate carries "no plan page: Codex has no publisher; plan HTML at <path>"
+gate (`--plan`) carries "no plan page: Codex has no publisher; plan HTML at <path>"
 (the planner's `codex-publication.md` scratch path).
 
 A design pivot always gets a QUESTION gate at divergence. Include mechanism
