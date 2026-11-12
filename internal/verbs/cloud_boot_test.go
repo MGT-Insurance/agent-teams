@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -30,6 +31,7 @@ type cbEnv struct {
 	closeAt  int               // close the initiative at this show call (0 = never)
 	showErr  func(n int) error // fails the nth bd show when non-nil
 	updates  []string
+	notes    []string // bd notes written on the initiative
 	tmux     [][]string
 	polls    []func() []agentSession
 	pollN    int
@@ -107,6 +109,13 @@ func newCBEnv(t *testing.T) *cbEnv {
 			e.desc = string(body)
 			e.updates = append(e.updates, e.desc)
 			return nil, nil, nil
+		case "note":
+			body, err := os.ReadFile(strings.TrimPrefix(args[2], "--file="))
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.notes = append(e.notes, strings.TrimSpace(string(body)))
+			return nil, nil, nil
 		}
 		t.Fatalf("unexpected bd call %v", args)
 		return nil, nil, nil
@@ -125,6 +134,10 @@ func newCBEnv(t *testing.T) *cbEnv {
 		NewID:     func() string { return "sid-1" },
 		LookPath:  func(f string) (string, error) { return "/bin/" + f, nil },
 		Getwd:     func() (string, error) { return e.cwd, nil },
+		// Hermetic by default: no test touches a real git repo unless it opts in.
+		Git: func(context.Context, string, ...string) (string, error) {
+			return "", errors.New("git disabled in test")
+		},
 		Agents: func() ([]agentSession, error) {
 			i := e.pollN
 			if i >= len(e.polls) {
