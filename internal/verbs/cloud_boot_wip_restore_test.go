@@ -103,3 +103,207 @@ func TestCloudBoot_RestartRestoresSavedWIP(t *testing.T) {
 		t.Errorf("%s is not a fast-forward of attempt 1's save %s: %v", tip, saved, err)
 	}
 }
+
+// launchAppendPrompt returns the --append-system-prompt value of the
+// new-session call, or "" when none was made.
+func launchAppendPrompt(e *cbEnv) string {
+	for _, args := range e.tmux {
+		if args[0] != "new-session" {
+			continue
+		}
+		for i, a := range args {
+			if a == "--append-system-prompt" && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// freshSandbox simulates the next attempt's sandbox: it deletes the given
+// directories and re-clones the run checkout at its same path.
+func freshSandbox(t *testing.T, remote, runDir string, gone ...string) {
+	t.Helper()
+	for _, d := range append([]string{runDir}, gone...) {
+		if err := os.RemoveAll(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitT(t, t.TempDir(), "clone", remote, runDir)
+}
+
+func currentBranch(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "<no checkout: " + err.Error() + ">"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestCloudBoot_RestartRecreatesEveryWorktree: attempt 1 saves the run checkout
+// and two track worktrees; attempt 2 starts in a fresh sandbox and must have all
+// three back at their original paths and branches before the session launches.
+func TestCloudBoot_RestartRecreatesEveryWorktree(t *testing.T) {
+	e := newCBEnv(t)
+	remote := wipRepo(t, e)
+	run := e.cwd
+	trackRoot := filepath.Join(t.TempDir(), "proj-worktrees")
+	if err := os.MkdirAll(trackRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wtA := filepath.Join(trackRoot, "team-track-a")
+	wtB := filepath.Join(trackRoot, "team-track-b")
+
+	// Attempt 1 work.
+	writeFileT(t, filepath.Join(run, "run-dirty.txt"), "run uncommitted\n")
+	gitT(t, run, "worktree", "add", "-b", "track-a", wtA)
+	writeFileT(t, filepath.Join(wtA, "a-committed.txt"), "a committed\n")
+	gitT(t, wtA, "add", "-A")
+	gitT(t, wtA, "commit", "-m", "track-a work")
+	writeFileT(t, filepath.Join(wtA, "a-dirty.txt"), "a uncommitted\n")
+	gitT(t, run, "worktree", "add", "-b", "feature/b", wtB)
+	writeFileT(t, filepath.Join(wtB, "b-committed.txt"), "b committed\n")
+	gitT(t, wtB, "add", "-A")
+	gitT(t, wtB, "commit", "-m", "feature/b work")
+
+	failingLaunch(e, func() {})
+	if err := e.start(); err == nil {
+		t.Fatal("attempt 1: want the lead-gone error")
+	}
+	refsAfter1 := remoteRefs(t, remote)
+	if n := len(strings.Split(refsAfter1, "\n")); refsAfter1 == "" || n != 3 {
+		t.Fatalf("attempt 1 wip refs = %q, want 3", refsAfter1)
+	}
+
+	// Attempt 2: fresh sandbox, worktree directories gone.
+	freshSandbox(t, remote, run, trackRoot)
+	e.notes = nil
+	type want struct{ dir, branch, file, body string }
+	wants := []want{
+		{run, "main", "run-dirty.txt", "run uncommitted\n"},
+		{wtA, "track-a", "a-committed.txt", "a committed\n"},
+		{wtA, "track-a", "a-dirty.txt", "a uncommitted\n"},
+		{wtB, "feature/b", "b-committed.txt", "b committed\n"},
+	}
+	var launched bool
+	failingLaunch(e, func() {
+		launched = true
+		for _, w := range wants {
+			if got := currentBranch(w.dir); got != w.branch {
+				t.Errorf("at launch, %s is on %q, want branch %q", w.dir, got, w.branch)
+			}
+			b, err := os.ReadFile(filepath.Join(w.dir, w.file))
+			if err != nil {
+				t.Errorf("at launch, %s missing saved file %s: %v", w.dir, w.file, err)
+			} else if string(b) != w.body {
+				t.Errorf("at launch, %s/%s = %q, want %q", w.dir, w.file, b, w.body)
+			}
+		}
+		// The session adds more work in every worktree that came back.
+		for _, d := range []string{run, wtA, wtB} {
+			if _, err := os.Stat(d); err == nil {
+				writeFileT(t, filepath.Join(d, "attempt2.txt"), "attempt 2 work\n")
+			}
+		}
+	})
+	if err := e.start(); err == nil {
+		t.Fatal("attempt 2: want the lead-gone error")
+	}
+	if !launched {
+		t.Fatal("attempt 2: session never launched")
+	}
+	prompt := launchAppendPrompt(e)
+	if !strings.Contains(prompt, "Restored at boot") {
+		t.Errorf("--append-system-prompt has no \"Restored at boot\" list")
+	}
+	for _, br := range []string{"main", "track-a", "feature/b"} {
+		if !strings.Contains(prompt, br) {
+			t.Errorf("--append-system-prompt does not name restored branch %q", br)
+		}
+	}
+
+	// Each wip ref fast-forwards: no -<sha7> fork refs after attempt 2's save.
+	if got := remoteRefs(t, remote); got != refsAfter1 {
+		t.Errorf("wip refs after attempt 2 = %q, want the same set as after attempt 1: %q", got, refsAfter1)
+	}
+}
+
+// TestCloudBoot_RestartLeavesDivergedSaveForModel: a saved branch whose origin
+// tip moved between attempts is neither merged nor moved; the model is told.
+func TestCloudBoot_RestartLeavesDivergedSaveForModel(t *testing.T) {
+	e := newCBEnv(t)
+	remote := wipRepo(t, e)
+	run := e.cwd
+	trackRoot := filepath.Join(t.TempDir(), "proj-worktrees")
+	if err := os.MkdirAll(trackRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wtD := filepath.Join(trackRoot, "team-track-d")
+
+	gitT(t, run, "worktree", "add", "-b", "track-d", wtD)
+	gitT(t, wtD, "push", "origin", "track-d")
+	writeFileT(t, filepath.Join(wtD, "saved-only.txt"), "saved\n")
+	gitT(t, wtD, "add", "-A")
+	gitT(t, wtD, "commit", "-m", "unpushed track-d work")
+
+	failingLaunch(e, func() {})
+	if err := e.start(); err == nil {
+		t.Fatal("attempt 1: want the lead-gone error")
+	}
+	saved := gitT(t, remote, "rev-parse", "wip/at-ab12/track-d")
+
+	// Someone moves origin's track-d between attempts, without the save.
+	other := filepath.Join(t.TempDir(), "other")
+	gitT(t, t.TempDir(), "clone", remote, other)
+	gitT(t, other, "checkout", "track-d")
+	writeFileT(t, filepath.Join(other, "moved-on.txt"), "someone else\n")
+	gitT(t, other, "add", "-A")
+	gitT(t, other, "commit", "-m", "origin moved")
+	gitT(t, other, "push", "origin", "track-d")
+	moved := gitT(t, remote, "rev-parse", "track-d")
+
+	freshSandbox(t, remote, run, trackRoot)
+	e.notes = nil
+	var launched bool
+	failingLaunch(e, func() {
+		launched = true
+		// Any local track-d must not hold the saved work.
+		if tip, err := exec.Command("git", "-C", run, "rev-parse", "--verify", "-q", "refs/heads/track-d").Output(); err == nil {
+			got := strings.TrimSpace(string(tip))
+			if got == saved {
+				t.Errorf("local track-d was moved to the saved tip %s", saved)
+			}
+			if exec.Command("git", "-C", run, "merge-base", "--is-ancestor", saved, got).Run() == nil {
+				t.Errorf("local track-d %s contains the diverged save %s", got, saved)
+			}
+			if merges := gitT(t, run, "rev-list", "--merges", "refs/heads/track-d"); merges != "" {
+				t.Errorf("local track-d has merge commits: %q", merges)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(wtD, "saved-only.txt")); err == nil {
+			t.Errorf("saved-only.txt is present in the restored track-d checkout")
+		}
+		if currentBranch(wtD) == "track-d" {
+			if merges := gitT(t, wtD, "rev-list", "--merges", "HEAD"); merges != "" {
+				t.Errorf("track-d checkout has merge commits: %q", merges)
+			}
+		}
+	})
+	if err := e.start(); err == nil {
+		t.Fatal("attempt 2: want the lead-gone error")
+	}
+	if !launched {
+		t.Fatal("attempt 2: session never launched")
+	}
+	if got := gitT(t, remote, "rev-parse", "track-d"); got != moved {
+		t.Errorf("origin track-d = %s, want it left at %s", got, moved)
+	}
+	prompt := launchAppendPrompt(e)
+	i := strings.Index(prompt, "Needs you")
+	if i < 0 {
+		t.Fatalf("--append-system-prompt has no \"Needs you\" list")
+	}
+	if !strings.Contains(prompt[i:], "track-d") {
+		t.Errorf("\"Needs you\" list does not name diverged branch track-d: %q", prompt[i:])
+	}
+}
