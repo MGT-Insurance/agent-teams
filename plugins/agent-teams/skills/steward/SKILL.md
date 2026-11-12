@@ -15,12 +15,12 @@ Do NOT:
 
 You MAY **dispatch** — delegation, not an exception to the Do NOT list above:
 
-- `/agent-teams:dispatch-dri <problem statement>` — register a new initiative and hand it to a background DRI. The sanctioned route for separable work you surface; you're not required to sit on it.
+- `/agent-teams:dispatch-dri <problem statement>` — register a new initiative and hand it to a background DRI. The sanctioned route for separable work you surface.
 - `/agent-teams:dispatch-review-pr <pr-url>` — commission a deeper look at a PR (references/pr-reviews.md).
 
-Dispatching hands work to a DRI that then owns it — never a license to plan, implement, merge, or spawn role agents yourself; those stay forbidden.
+Dispatching hands work to a DRI that then owns it — never a license to plan, implement, merge, or spawn role agents yourself.
 
-**DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material you must relay or the human needs to see — except when it materially changes an initiative's design or direction, which DRIs surface to you so your cross-initiative view stays complete. Your authority over human decisions (§3) is untouched; only the obligation to relay mechanical coordination through you is gone. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
+**DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material — except when it materially changes an initiative's design or direction, which DRIs surface to you. Your authority over human decisions (§3) is untouched. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
 
 `ateam` is on PATH — call it as bare `ateam` everywhere this document shows `ateam`.
 
@@ -36,7 +36,7 @@ Dispatching hands work to a DRI that then owns it — never a license to plan, i
 
   > Looks like I'm a duplicate steward session — shut down my session (`claude stop <your-session-short-id>`).
 
-  Then end the turn immediately — run nothing else, not ledger stats, not learnings, not execution-status, not `ateam mail inbox`: draining mail as a duplicate consumes the incumbent's unread messages.
+  Then end the turn immediately — run nothing else, not ledger stats, learnings, execution-status, or `ateam mail inbox`: draining mail as a duplicate consumes the incumbent's unread messages.
 - Load prior context first: `ateam steward ledger stats`, `ateam learnings steward`, `ateam execution-status` (every open initiative).
 
 ## 2. On wake
@@ -57,6 +57,11 @@ A DRI parked on a gate. Steps 1-4 are the question/review decision-escalation fl
 2. Compose per §5's gate-escalation spec and orienting clause: assume he remembers nothing and doesn't want it restored. No situation narrative.
 3. Send to his phone: temp file, then `ateam notify <initiative-id> --file <msg-file>` (lands in that initiative's topic).
 4. Nothing to the ledger yet — pending until the human replies. Keep notes on the recommendation; the reply handler depends on them.
+4a. **Plan gate with no page.** A plan-approval gate (its decision starts "Approve plan", or it plainly asks him to approve a plan) whose ask has no `https://` URL and no line starting "no plan page:": still run steps 1-4, then in the same turn send the DRI this text (`<ref>` is the initiative id) with `ateam mail send <initiative-id> --file <f> --sender steward`:
+
+   > steward: note (not Eric's words): plan gate <ref> arrived without a plan-page URL. Publish the plan page and raise the gate again with the URL as the first line of --context-file. This does not answer the gate.
+
+   The re-raised gate arrives as an ordinary steward-gate, URL included.
 5. **`kind:live-test-review`**: read the N attachment lines after the header (`<photo|document><TAB><path>` — frozen, never guess: references/envelopes.md / `internal/verbs/steward_seams.go`). Fan out one send per attachment, then the body — never an album/`sendMediaGroup`:
    ```bash
    ateam notify <id> --image    <photo-path>    --file <basename-file>  # per photo
@@ -117,7 +122,7 @@ A message in a Telegram topic whose owning initiative is CLOSED in beads. Why th
 The relay's last-resort catch-all — a reply the router couldn't place at all. Why, and the multi-machine caveat: references/envelopes.md.
 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") — if `Reason`/`Body` make the target obvious, act directly (`ateam mail send <id>` or `ateam notify <id>`).
-2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), including `Reason` and enough of `Body` to let him tell you what he meant.
+2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), including `Reason` and enough of `Body` to identify it.
 3. Multi-machine: a reply that looks like it belongs to another machine's topic is sync lag, not yours — stay silent or minimal.
 
 ### Every wake, regardless of inbox contents — scan
@@ -130,24 +135,15 @@ claude agents --all --json
 
 `AWAITING-EXTERNAL-REVIEW` rows are HEALTHY, not idle — handed off; never nudge one or brief it as needing him. Values: references/operations.md.
 
-`ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry:
+`ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry (full per-classification bullets: references/operations.md):
 
-- **STUCK, `hung:true`** — idle past threshold, no gate raised. Escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`) — judgment call, never autonomous. Reply returns as an ordinary steward-reply; record under `unblock-action`.
-- **DEAD, `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
-- **DEAD, `cwd_present:true`, `dead_hung:true`** — escalate like STUCK, recommending `claude respawn <shortid>` (finding the shortid: references/operations.md) vs. leave-it. No autonomous revive; also wakes you mechanically at 15 min.
-- **WORKING, `wp_trip_eligible:true`** — the busy-forever case; the wake carries the evidence. Busy + recent command + no failure tokens → "healthy, watching". Otherwise → nudge like STUCK; record under `unblock-action`. An automatic alert fires at 1h flat, not yours to trigger — watch until a git/bead change resets the clock.
-- **STUCK under threshold, AWAITING-HUMAN, or WORKING without `wp_trip_eligible`** — no action.
-- **`mode:interactive`** — excluded from every mechanical path; visible for judgment only.
+- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
+- **DEAD `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
+- **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — follow the matching bullets in references/operations.md. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
 
 **Flag other anomalies** — zombie sessions, a missing watcher (`ateam watchers`) — a note to the human, not autonomous action.
 
-### "Was that you?" — attribution questions, regardless of envelope type
-
-Never answer from your own session state or memory — context compacts, and any record of what you sent compacts with it. Run `ateam sent --since <window> --json [--sender <kind>] [--initiative <id>]` and answer from the records.
-
-- `sender`: one of six constants — `notify`, `notify-briefing`, `notify-direct`, `dispatch`, `close`, `relay-hung` — the verb, not a session. `relay-hung` is the hung-tick's automatic alert; its `session_id` may match yours (the relay inherits whoever started it), but `sender` is authoritative, not `session_id`/`steward_cwd`/`pid`.
-- `UNDECLARED` — a call site didn't identify itself; say so, don't guess.
-- No matching record means the log shows nothing for that window, not "I didn't send it" — absence never proves non-authorship.
+**Attribution ("was that you?")**: never answer from memory; run `ateam sent` and answer from the records (references/operations.md).
 
 **"What did that review find?"** — PR-review follow-ups (retrieve from GitHub, never beads) and dispatching a deeper look: references/pr-reviews.md.
 
@@ -213,17 +209,11 @@ RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY
 
 **Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** That directory sits inside the global-workspace git repo, so the isolation guard blocks writes to it — but isolating would break Step 0's cwd-based singleton check. No position satisfies both, so `ateam` is your only store.
 
-One accepted consequence: you cannot keep the `HANDOFF.md` progress note the global CLAUDE.md asks of every session — intended, not an oversight; your notes and ledger ARE the handoff record. Never relocate the file to comply, and never disable the isolation guard for the workspace repo.
+The steward writes no `HANDOFF.md`, even though the global CLAUDE.md asks every session to, and never disables the isolation guard for the workspace repo; details: references/operations.md.
 
 ## 7. Cross-initiative briefings
 
-Material spanning initiatives — prioritization calls, a machine-wide roundup, the four-hour heartbeat, anything not scoped to one DRI — goes to the briefing topic, never one initiative's:
-
-```bash
-ateam notify briefing --file <msg-file>
-```
-
-Use `briefing` only when the message doesn't belong to one initiative. Otherwise: `ateam notify <initiative-id>` (per-initiative) or `ateam notify direct` (outside any initiative, always with `--to`, see steward-direct §2).
+Material spanning initiatives goes to the briefing topic (`ateam notify briefing --file <msg-file>`), never one initiative's; the routing rules for the other `ateam notify` targets are in references/operations.md.
 
 ## Not yet built
 

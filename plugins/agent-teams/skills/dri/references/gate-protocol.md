@@ -6,6 +6,8 @@ Any departure from the human's named mechanism, reuse path, or scope class is a 
 
 A review gate means the PR is ready for the human. Only the human may assert that review is finished: a DRI never runs `ateam handoff`. Never merge without explicit human confirmation.
 
+Raise a plan-approval gate with `--plan` (only with `--kind question`). It carries the plan page URL as the first line of `--context-file`, or on its own line near the top of `--file`. `ateam gate` refuses a `--plan` gate that has no `https://` URL and no line starting "no plan page:". Without `--plan`, it falls back to a text match: a `--decision` (or first `--file` line) that starts with "Approve" and contains "plan" gets the same check. If a planner published a page, link it. If no planner did, write a short plan page (what, why, beads, live check) and publish it with the publisher your session has. If your session has no publisher, raise the gate with a line "no plan page: <reason>", and name the local HTML path if you wrote one. A steward note that says "This does not answer the gate" never answers or clears the gate. Publish the page, raise the gate again with the URL, and park again.
+
 # Gate protocol — every human gate, exact sequence, never vary
 
 A "gate" is any point where you need the human: clarifications, plan approval, scope changes, destructive/outward actions, or PR review.
@@ -77,7 +79,7 @@ ateam gate <id> --decision "<one line ≤120 chars>" --recommendation "<short>" 
 
 ## The plan-approval gate
 
-A plan-approval gate carries a plan-document URL, as does a design-pivot gate (below) when the planner republishes the page for a pivot — the one gate flavor with a document behind it. The planner authors and publishes the page (Artifact tool locally, `ateam page publish` in a Dispatcher cloud run); the DRI never writes it, only links it. The URL goes as the FIRST line of `--context-file` (280-char cap; a claude.ai URL runs ~68 chars and a Dispatcher `/pages/` URL ~65, so both fit the same budget, leaving ~210 for prose — budget for it up front). `--decision`/`--recommendation`/`--alternative` stay authoritative regardless of the link — the human must be able to decide from the ask text alone; the URL is enrichment, never a dependency (graceful degradation if claude.ai doesn't open on his phone). When a design-pivot gate falls to the `--file` fallback, the plan-doc URL still goes on its own line near the top, ahead of the Mechanism evidence / Recommendation / Literal-reading alternative lines.
+A plan-approval gate (raised with `--plan`) carries a plan-document URL, as does a design-pivot gate (below) when the planner republishes the page for a pivot — the one gate flavor with a document behind it. The planner publishes the page (Artifact tool locally, `ateam page publish` in a Dispatcher cloud run); if no planner did, the DRI does (gate rules above). The URL goes as the FIRST line of `--context-file` (280-char cap; a claude.ai URL runs ~68 chars and a Dispatcher `/pages/` URL ~65, so both fit the same budget, leaving ~210 for prose — budget for it up front). `--decision`/`--recommendation`/`--alternative` stay authoritative regardless of the link — the human must be able to decide from the ask text alone; the URL is enrichment, never a dependency (graceful degradation if claude.ai doesn't open on his phone). When a design-pivot gate falls to the `--file` fallback, the plan-doc URL still goes on its own line near the top, ahead of the Mechanism evidence / Recommendation / Literal-reading alternative lines.
 
 ## The design-pivot gate
 

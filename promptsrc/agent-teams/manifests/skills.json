@@ -504,7 +504,11 @@
       "kind": "skill",
       "status": "runtime-only",
       "reason": "Claude persistent-team stewardship and session control have no Codex counterpart skill requirement.",
-      "outputs": [{"path": "plugins/agent-teams/skills/steward/SKILL.md", "format": "markdown"}]
+      "outputs": [{
+        "path": "plugins/agent-teams/skills/steward/SKILL.md",
+        "format": "markdown",
+        "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/steward", "min_headroom": 1000}
+      }]
     },
     {
       "id": "reference.steward.envelopes",

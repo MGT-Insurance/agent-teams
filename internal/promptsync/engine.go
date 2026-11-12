@@ -143,6 +143,21 @@ func renderAll(config Config, entries []Entry) ([]renderedOutput, Report, error)
 	var problems []string
 	for _, entry := range entries {
 		if entry.Status != StatusPaired {
+			for _, output := range entry.Outputs {
+				if output.SkillBudget == nil {
+					continue
+				}
+				committed, err := reader(filepath.Join(config.Root, filepath.FromSlash(output.Path)))
+				if err != nil {
+					problems = append(problems, fmt.Sprintf("%s: committed SKILL.md %s is unreadable for its skill_budget: %v", entry.ID, output.Path, err))
+					continue
+				}
+				measurement, err := measureSkill(entry.ID, output.Path, committed, *output.SkillBudget)
+				report.Measurements = append(report.Measurements, measurement)
+				if err != nil {
+					problems = append(problems, err.Error())
+				}
+			}
 			continue
 		}
 		contents := map[string][]byte{}
