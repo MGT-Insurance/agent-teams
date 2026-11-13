@@ -3,215 +3,174 @@ package verbs
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
-	"github.com/mgt-insurance/agent-teams/internal/sessionruntime"
 )
 
-// recordingBD records every argv and answers from a per-call script. A call
-// past the end of the script returns the zero response.
-type recordingBD struct {
-	calls   [][]string
-	runResp []bdResp
-	jsonErr []error
-	issues  []bd.Issue
-}
-
-type bdResp struct {
-	out string
-	err error
-}
-
-func (r *recordingBD) Run(args ...string) (string, error) {
-	i := len(r.calls)
-	r.calls = append(r.calls, args)
-	if i < len(r.runResp) {
-		return r.runResp[i].out, r.runResp[i].err
-	}
-	return "", nil
-}
-
-func (r *recordingBD) RunJSON(dst any, args ...string) error {
-	i := len(r.calls)
-	r.calls = append(r.calls, args)
-	if i < len(r.jsonErr) && r.jsonErr[i] != nil {
-		return r.jsonErr[i]
-	}
-	if r.issues != nil {
-		return unmarshalIssues(dst, r.issues...)
-	}
-	return nil
-}
-
-func TestListOpenIssues_Argv(t *testing.T) {
-	cases := []struct {
-		infra bool
-		want  []string
-	}{
-		{false, []string{"list", "--status=open", "--limit=0", "--json"}},
-		{true, []string{"list", "--status=open", "--include-infra", "--limit=0", "--json"}},
-	}
-	for _, c := range cases {
-		f := &recordingBD{issues: []bd.Issue{{ID: "at-1"}}}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		got, err := listOpenIssues(ctx, c.infra)
+// handlerRunner builds a bd client whose every call is answered by fn, and
+// returns the argv (minus the leading -C <home>) of each call in order.
+func handlerRunner(t *testing.T, fn func(args []string) (string, error)) (*bd.Client, *[][]string) {
+	t.Helper()
+	var calls [][]string
+	c := bd.NewClientWithExec(t.TempDir(), func(_ string, args ...string) ([]byte, []byte, error) {
+		if len(args) >= 2 && args[0] == "-C" {
+			args = args[2:]
+		}
+		calls = append(calls, args)
+		out, err := fn(args)
 		if err != nil {
-			t.Fatalf("listOpenIssues(%v): %v", c.infra, err)
+			return nil, []byte(err.Error()), err
 		}
-		if len(got) != 1 || got[0].ID != "at-1" {
-			t.Errorf("listOpenIssues(%v) = %+v", c.infra, got)
-		}
-		if len(f.calls) != 1 || !reflect.DeepEqual(f.calls[0], c.want) {
-			t.Errorf("listOpenIssues(%v) argv = %v, want %v", c.infra, f.calls, c.want)
-		}
+		return []byte(out), nil, nil
+	})
+	return c, &calls
+}
+
+func isWholeStoreRead(args []string) bool {
+	return reflect.DeepEqual(args, []string{"--readonly", "memories", "--json"}) ||
+		reflect.DeepEqual(args, []string{"memories", "--json"})
+}
+
+func isSQLCall(args []string) bool {
+	return len(args) == 4 && args[0] == "--readonly" && args[1] == "sql" && args[2] == "--json"
+}
+
+const wholeStoreJSON = `{"dri:hot:a":"A","user:x":"X","schema_version":1}`
+
+func TestReadMemoriesByPrefix_ArgvAndRows(t *testing.T) {
+	c, calls := handlerRunner(t, func(args []string) (string, error) {
+		return `[{"k":"dri:hot:a","v":"A"},{"k":"dri:fresh:b","v":"B"}]`, nil
+	})
+	got, err := readMemoriesByPrefix(c, "dri:hot:", "dri:fresh:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"dri:hot:a": "A", "dri:fresh:b": "B"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %v, want exactly one", *calls)
+	}
+	wantQ := "SELECT SUBSTRING(`key`, 11) AS k, `value` AS v FROM config WHERE `key` LIKE 'kv.memory.dri:hot:%' OR `key` LIKE 'kv.memory.dri:fresh:%'"
+	if !reflect.DeepEqual((*calls)[0], []string{"--readonly", "sql", "--json", wantQ}) {
+		t.Fatalf("argv = %q", (*calls)[0])
 	}
 }
 
-func TestListOpenIssues_ErrorNotRetried(t *testing.T) {
-	f := &recordingBD{jsonErr: []error{errors.New("boom")}}
-	ctx, _, _ := makeCtx(f, t.TempDir())
-	if _, err := listOpenIssues(ctx, false); err == nil {
-		t.Fatal("want error")
+func TestReadMemoriesByPrefix_SinglePrefixQuery(t *testing.T) {
+	c, calls := handlerRunner(t, func([]string) (string, error) { return `[{"k":"user:a","v":"A"}]`, nil })
+	if _, err := readMemoriesByPrefix(c, "user:"); err != nil {
+		t.Fatal(err)
 	}
-	if len(f.calls) != 1 {
-		t.Errorf("calls = %d, want 1", len(f.calls))
-	}
-}
-
-func TestInitiativeRows_DropsInfraAndEphemeral(t *testing.T) {
-	in := []bd.Issue{
-		{ID: "task", IssueType: "task"},
-		{ID: "epic", IssueType: "epic"},
-		{ID: "msg", IssueType: "message"},
-		{ID: "agent", IssueType: "agent"},
-		{ID: "role", IssueType: "role"},
-		{ID: "wisp", IssueType: "task", Ephemeral: true},
-	}
-	got := initiativeRows(in)
-	var ids []string
-	for _, iss := range got {
-		ids = append(ids, iss.ID)
-	}
-	if want := []string{"task", "epic"}; !reflect.DeepEqual(ids, want) {
-		t.Errorf("initiativeRows ids = %v, want %v", ids, want)
+	q := (*calls)[0][3]
+	if !strings.HasSuffix(q, "WHERE `key` LIKE 'kv.memory.user:%'") || strings.Contains(q, " OR ") {
+		t.Fatalf("query = %q", q)
 	}
 }
 
-func TestMatchInitiativeBySession(t *testing.T) {
-	cases := []struct {
-		name      string
-		issues    []bd.Issue
-		runtime   sessionruntime.Kind
-		sessionID string
-		wantID    string
-	}{
-		{"empty id", []bd.Issue{{ID: "a", Description: "session: s\n"}}, sessionruntime.Claude, "", ""},
-		{"zero matches", []bd.Issue{{ID: "a", Description: "session: other\n"}}, sessionruntime.Claude, "s", ""},
-		{"one match", []bd.Issue{
-			{ID: "a", Description: "session: other\n"},
-			{ID: "b", Description: "session: s\n"},
-		}, sessionruntime.Claude, "s", "b"},
-		{"two same-runtime", []bd.Issue{
-			{ID: "a", Description: "session: s\n"},
-			{ID: "b", Description: "session: s\n"},
-		}, sessionruntime.Claude, "s", ""},
-		{"other runtime excluded", []bd.Issue{
-			{ID: "a", Description: "runtime: codex\nsession: s\n"},
-		}, sessionruntime.Claude, "s", ""},
-		{"other runtime does not make a dup", []bd.Issue{
-			{ID: "a", Description: "runtime: codex\nsession: s\n"},
-			{ID: "b", Description: "session: s\n"},
-		}, sessionruntime.Claude, "s", "b"},
-		{"invalid runtime skipped", []bd.Issue{
-			{ID: "a", Description: "runtime: bogus\nsession: s\n"},
-			{ID: "b", Description: "session: s\n"},
-		}, sessionruntime.Claude, "s", "b"},
+func TestReadMemoriesByPrefix_LikeEscaping(t *testing.T) {
+	c, calls := handlerRunner(t, func([]string) (string, error) { return `[{"k":"a_b:x","v":"1"}]`, nil })
+	if _, err := readMemoriesByPrefix(c, "a_b:"); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			iss, ok := matchInitiativeBySession(c.issues, c.runtime, c.sessionID)
-			if ok != (c.wantID != "") || iss.ID != c.wantID {
-				t.Errorf("got (%q, %v), want id %q", iss.ID, ok, c.wantID)
+	if q := (*calls)[0][3]; !strings.Contains(q, `'kv.memory.a\_b:%'`) {
+		t.Fatalf("underscore not escaped: %q", q)
+	}
+	if got := likeEscaper.Replace(`a\b%c_d`); got != `a\\b\%c\_d` {
+		t.Fatalf("likeEscaper = %q", got)
+	}
+}
+
+func TestReadMemoriesByPrefix_DisallowedPrefixFallsBack(t *testing.T) {
+	for _, bad := range []string{"it's:", "a b:", "x`y", "a%", ""} {
+		c, calls := handlerRunner(t, func(args []string) (string, error) {
+			if isWholeStoreRead(args) {
+				return wholeStoreJSON, nil
 			}
+			t.Errorf("unexpected call %v", args)
+			return "", nil
 		})
+		got, err := readMemoriesByPrefix(c, "dri:", bad)
+		if err != nil || len(got) != 3 {
+			t.Fatalf("prefix %q: got %v err %v", bad, got, err)
+		}
+		if len(*calls) != 1 || !isWholeStoreRead((*calls)[0]) {
+			t.Fatalf("prefix %q: calls = %v", bad, *calls)
+		}
 	}
 }
 
-func TestReadMemoriesJSON(t *testing.T) {
-	ro := []string{"--readonly", "memories", "--json"}
-	rw := []string{"memories", "--json"}
-
-	t.Run("readonly succeeds, no retry", func(t *testing.T) {
-		f := &recordingBD{}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		var dst map[string]any
-		if err := readMemoriesJSON(ctx.BD, &dst); err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(f.calls, [][]string{ro}) {
-			t.Errorf("calls = %v", f.calls)
-		}
-	})
-	t.Run("readonly fails, retried once", func(t *testing.T) {
-		f := &recordingBD{jsonErr: []error{errors.New("ro")}}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		var dst map[string]any
-		if err := readMemoriesJSON(ctx.BD, &dst); err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(f.calls, [][]string{ro, rw}) {
-			t.Errorf("calls = %v", f.calls)
-		}
-	})
-	t.Run("both fail, retry error returned", func(t *testing.T) {
-		f := &recordingBD{jsonErr: []error{errors.New("ro"), errors.New("rw")}}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		var dst map[string]any
-		err := readMemoriesJSON(ctx.BD, &dst)
-		if err == nil || err.Error() != "rw" {
-			t.Errorf("err = %v, want rw", err)
-		}
-		if len(f.calls) != 2 {
-			t.Errorf("calls = %d, want 2", len(f.calls))
-		}
-	})
+func TestReadMemoriesByPrefix_NoPrefixesFallsBack(t *testing.T) {
+	c, calls := handlerRunner(t, func([]string) (string, error) { return wholeStoreJSON, nil })
+	got, err := readMemoriesByPrefix(c)
+	if err != nil || len(got) != 3 || len(*calls) != 1 || !isWholeStoreRead((*calls)[0]) {
+		t.Fatalf("got %v err %v calls %v", got, err, *calls)
+	}
 }
 
-func TestReadConfigValue(t *testing.T) {
-	ro := []string{"--readonly", "config", "get", "k"}
-	rw := []string{"config", "get", "k"}
+func TestReadMemoriesByPrefix_NonUnreachableErrorFallsBack(t *testing.T) {
+	for _, msg := range []string{"Error: 'bd sql' is not yet supported in embedded mode", "unknown command \"sql\""} {
+		c, calls := handlerRunner(t, func(args []string) (string, error) {
+			if isSQLCall(args) {
+				return "", errors.New(msg)
+			}
+			return wholeStoreJSON, nil
+		})
+		got, err := readMemoriesByPrefix(c, "dri:")
+		if err != nil || len(got) != 3 {
+			t.Fatalf("%q: got %v err %v", msg, got, err)
+		}
+		if len(*calls) != 2 || !isWholeStoreRead((*calls)[1]) {
+			t.Fatalf("%q: calls = %v", msg, *calls)
+		}
+	}
+}
 
-	t.Run("readonly succeeds, no retry", func(t *testing.T) {
-		f := &recordingBD{runResp: []bdResp{{out: "v"}}}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		got, err := readConfigValue(ctx, "k")
-		if err != nil || got != "v" {
-			t.Fatalf("got (%q, %v)", got, err)
+func TestReadMemoriesByPrefix_UnreachableReturnedAfterOneCall(t *testing.T) {
+	c, calls := handlerRunner(t, func([]string) (string, error) {
+		return "", errors.New("Dolt server unreachable")
+	})
+	_, err := readMemoriesByPrefix(c, "dri:")
+	if err == nil || !isStoreUnreachable(err) {
+		t.Fatalf("err = %v, want unreachable", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %v, want exactly one", *calls)
+	}
+}
+
+func TestReadMemoriesByPrefix_ZeroRowsDriftGuard(t *testing.T) {
+	t.Run("count positive returns empty", func(t *testing.T) {
+		c, calls := handlerRunner(t, func(args []string) (string, error) {
+			if isSQLCall(args) && strings.Contains(args[3], "COUNT(*)") {
+				return `[{"n":42}]`, nil
+			}
+			return `[]`, nil
+		})
+		got, err := readMemoriesByPrefix(c, "nobody:")
+		if err != nil || len(got) != 0 || got == nil {
+			t.Fatalf("got %v err %v", got, err)
 		}
-		if !reflect.DeepEqual(f.calls, [][]string{ro}) {
-			t.Errorf("calls = %v", f.calls)
+		if len(*calls) != 2 || (*calls)[1][3] != memoryRowCountQuery {
+			t.Fatalf("calls = %v", *calls)
 		}
 	})
-	t.Run("readonly fails, retried once", func(t *testing.T) {
-		f := &recordingBD{runResp: []bdResp{{err: errors.New("ro")}, {out: "v2"}}}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		got, err := readConfigValue(ctx, "k")
-		if err != nil || got != "v2" {
-			t.Fatalf("got (%q, %v)", got, err)
-		}
-		if !reflect.DeepEqual(f.calls, [][]string{ro, rw}) {
-			t.Errorf("calls = %v", f.calls)
-		}
-	})
-	t.Run("both fail", func(t *testing.T) {
-		f := &recordingBD{runResp: []bdResp{{err: errors.New("ro")}, {err: errors.New("rw")}}}
-		ctx, _, _ := makeCtx(f, t.TempDir())
-		if _, err := readConfigValue(ctx, "k"); err == nil || err.Error() != "rw" {
-			t.Errorf("err = %v, want rw", err)
-		}
-		if len(f.calls) != 2 {
-			t.Errorf("calls = %d, want 2", len(f.calls))
+	t.Run("count zero falls back", func(t *testing.T) {
+		c, calls := handlerRunner(t, func(args []string) (string, error) {
+			if isWholeStoreRead(args) {
+				return wholeStoreJSON, nil
+			}
+			if strings.Contains(args[3], "COUNT(*)") {
+				return `[{"n":0}]`, nil
+			}
+			return `[]`, nil
+		})
+		got, err := readMemoriesByPrefix(c, "dri:")
+		if err != nil || len(got) != 3 || len(*calls) != 3 || !isWholeStoreRead((*calls)[2]) {
+			t.Fatalf("got %v err %v calls %v", got, err, *calls)
 		}
 	})
 }
