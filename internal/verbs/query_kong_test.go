@@ -239,7 +239,7 @@ func TestRolesKongListsNamespaces(t *testing.T) {
 	if err := (&rolesKong{}).Run(ctx); err != nil {
 		t.Fatalf("rolesKong.Run: %v", err)
 	}
-	assertReadonlyMemoriesOnce(t, *calls)
+	assertSizesRead(t, *calls)
 	got := out.String()
 	for _, role := range []string{"dri", "planner", "user"} {
 		if !bytes.Contains([]byte(got), []byte(role)) {

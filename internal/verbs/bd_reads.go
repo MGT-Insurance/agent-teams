@@ -158,6 +158,56 @@ func readMemoriesByPrefix(r cli.BDRunner, prefixes ...string) (map[string]any, e
 	return out, nil
 }
 
+// memorySizesQuery lists every stored memory outside the applied: counter
+// namespace as its key (without the kv.memory. prefix) and the byte length of
+// its body. LENGTH counts bytes, as Go's len does. The applied: namespace is
+// excluded because both callers skip it as a role and no role's tiers contain
+// it; the counters are most of the rows.
+const memorySizesQuery = "SELECT SUBSTRING(`key`, 11) AS k, LENGTH(`value`) AS n FROM config WHERE `key` LIKE 'kv.memory.%' AND `key` NOT LIKE 'kv.memory.applied:%'"
+
+// memorySizesOf returns the byte length of each string body in raw.
+func memorySizesOf(raw map[string]any) map[string]int {
+	sizes := make(map[string]int, len(raw))
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			sizes[k] = len(s)
+		}
+	}
+	return sizes
+}
+
+// readMemorySizes returns every memory key mapped to its body's byte length,
+// for the verbs that enumerate roles and sum sizes but never print a body. One
+// bd sql call moves the keys and lengths, not the bodies.
+//
+// It falls back to the whole-store read, reduced to the same map, when the sql
+// call fails for a reason other than an unreachable store (embedded mode, a bd
+// without sql) and when the query returns no rows, which also covers a bd that
+// moved the kv.memory. row layout. An unreachable-store error is returned
+// unchanged after one call.
+func readMemorySizes(r cli.BDRunner) (map[string]int, error) {
+	var rows []struct {
+		K string `json:"k"`
+		N int    `json:"n"`
+	}
+	if err := r.RunJSON(&rows, "--readonly", "sql", "--json", memorySizesQuery); err != nil {
+		if isStoreUnreachable(err) {
+			return nil, err
+		}
+	} else if len(rows) > 0 {
+		sizes := make(map[string]int, len(rows))
+		for _, row := range rows {
+			sizes[row.K] = row.N
+		}
+		return sizes, nil
+	}
+	var raw map[string]any
+	if err := readMemoriesJSON(r, &raw); err != nil {
+		return nil, err
+	}
+	return memorySizesOf(raw), nil
+}
+
 // readConfigValue runs bd --readonly config get <key> with the same one-retry
 // fallback.
 func readConfigValue(ctx *cli.Context, key string) (string, error) {

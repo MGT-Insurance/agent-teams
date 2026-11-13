@@ -229,7 +229,7 @@ func TestLearnVerbs_ArgvUnchangedWithoutCloudHome(t *testing.T) {
 		"learnings":      {scopedArgv("dri:hot:", "dri:fresh:")},
 		"recall":         {scopedArgv("dri:")},
 		"prime":          {scopedArgv("user:")},
-		"roles":          {memRO},
+		"roles":          {{"--readonly", "sql", "--json", memorySizesQuery}},
 		"memories-json":  {memRO},
 		"condense-check": {scopedArgv("dri:")},
 		"condense":       {scopedArgv("dri:", "applied:dri:")},

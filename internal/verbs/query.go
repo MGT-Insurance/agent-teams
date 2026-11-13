@@ -868,16 +868,13 @@ func formatBody(s string) string {
 
 // runRoles lists the distinct role namespaces present in workspace memories.
 func runRoles(ctx *cli.Context) error {
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	sizes, err := readMemorySizes(learnBD(ctx))
+	if err != nil {
 		return learnReadFailure(ctx, "roles", err)
 	}
 
 	seen := make(map[string]struct{})
-	for k, v := range raw {
-		if _, ok := v.(string); !ok {
-			continue
-		}
+	for k := range sizes {
 		idx := strings.Index(k, ":")
 		if idx < 0 {
 			continue

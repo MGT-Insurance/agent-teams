@@ -37,6 +37,16 @@ func storeSQLAnswer(query string, store map[string]any) []byte {
 		b, _ := json.Marshal([]map[string]int{{"n": n}})
 		return b
 	}
+	if query == memorySizesQuery {
+		rows := []map[string]any{}
+		for k, v := range store {
+			if s, ok := v.(string); ok {
+				rows = append(rows, map[string]any{"k": k, "n": len(s)})
+			}
+		}
+		b, _ := json.Marshal(rows)
+		return b
+	}
 	prefixes := sqlPrefixesOf(query)
 	rows := []map[string]string{}
 	for k, v := range store {
@@ -55,6 +65,16 @@ func storeSQLAnswer(query string, store map[string]any) []byte {
 	return b
 }
 
+// assertSizesRead fails unless calls is exactly one key-and-length bd sql call
+// and no whole-store memories read.
+func assertSizesRead(t *testing.T, calls [][]string) {
+	t.Helper()
+	want := [][]string{{"--readonly", "sql", "--json", memorySizesQuery}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Errorf("bd calls = %v, want %v", calls, want)
+	}
+}
+
 // assertScopedReads fails unless calls holds no whole-store memories read and
 // its bd sql calls name exactly want (one prefix list per call, in order).
 func assertScopedReads(t *testing.T, calls [][]string, want ...[]string) {
@@ -64,7 +84,7 @@ func assertScopedReads(t *testing.T, calls [][]string, want ...[]string) {
 		if isWholeStoreRead(c) {
 			t.Errorf("whole-store memories read issued: %v", c)
 		}
-		if isSQLCall(c) && c[3] != memoryRowCountQuery { // the drift-guard count names no prefixes
+		if isSQLCall(c) && c[3] != memoryRowCountQuery && c[3] != memorySizesQuery { // neither names prefixes
 			got = append(got, sqlPrefixesOf(c[3]))
 		}
 	}
