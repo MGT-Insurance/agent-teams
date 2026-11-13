@@ -1212,8 +1212,8 @@ func (c *appliedKong) Run(ctx *cli.Context) error {
 	}
 	key := appliedKey(c.Role, c.Slug)
 
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	raw, err := readMemoriesByPrefix(learnBD(ctx), key)
+	if err != nil {
 		return learnWriteFailure(ctx, "applied", err)
 	}
 
@@ -1485,8 +1485,8 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 	hotPrefix := prefix + "hot:"
 	freshPrefix := prefix + "fresh:"
 
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	raw, err := readMemoriesByPrefix(learnBD(ctx), prefix, "applied:"+c.Role+":")
+	if err != nil {
 		return learnReadFailure(ctx, "condense", err)
 	}
 
@@ -1553,8 +1553,8 @@ func (c *freshDrainKong) Run(ctx *cli.Context) error {
 	}
 	freshPrefix := c.Role + ":fresh:"
 
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	raw, err := readMemoriesByPrefix(learnBD(ctx), freshPrefix)
+	if err != nil {
 		return freshDrainFailure(ctx, 0, err)
 	}
 

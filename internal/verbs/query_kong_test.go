@@ -40,6 +40,15 @@ func buildQueryCtxRec(t *testing.T, home string, responses map[string][]byte) (*
 			rest = rest[1:]
 		}
 		sub := rest[0]
+		if sub == "sql" {
+			// Scoped memory read: answer from the scripted memories store.
+			var store map[string]any
+			if err := json.Unmarshal(responses["memories"], &store); err != nil {
+				t.Errorf("sql call without a scripted memories store: %v", err)
+				return nil, nil, nil
+			}
+			return storeSQLAnswer(rest[len(rest)-1], store), nil, nil
+		}
 		resp, ok := responses[sub]
 		if !ok {
 			t.Errorf("unexpected subcommand %q", sub)
@@ -150,7 +159,8 @@ func TestLearningsKongFiltersRole(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("learningsKong.Run: %v", err)
 	}
-	assertReadonlyMemoriesOnce(t, *calls)
+	// No hot/fresh keys exist, so the all-role fallback adds one wider read.
+	assertScopedReads(t, *calls, []string{"planner:hot:", "planner:fresh:"}, []string{"planner:"})
 	got := out.String()
 	if !bytes.Contains([]byte(got), []byte("planner:foo")) {
 		t.Errorf("expected planner:foo in output; got: %q", got)
@@ -177,7 +187,7 @@ func TestRecallKongFiltersQuery(t *testing.T) {
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatalf("recallKong.Run: %v", err)
 	}
-	assertReadonlyMemoriesOnce(t, *calls)
+	assertScopedReads(t, *calls, []string{"planner:"})
 	got := out.String()
 	if !bytes.Contains([]byte(got), []byte("planner:foo")) {
 		t.Errorf("expected matching key planner:foo; got: %q", got)
@@ -203,7 +213,7 @@ func TestPrimeKongPrintsUserKeys(t *testing.T) {
 	if err := (&primeKong{}).Run(ctx); err != nil {
 		t.Fatalf("primeKong.Run: %v", err)
 	}
-	assertReadonlyMemoriesOnce(t, *calls)
+	assertScopedReads(t, *calls, []string{"user:"})
 	got := out.String()
 	if !bytes.Contains([]byte(got), []byte("pref1")) {
 		t.Errorf("expected user pref1 in output; got: %q", got)

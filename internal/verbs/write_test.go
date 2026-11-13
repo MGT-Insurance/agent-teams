@@ -2623,16 +2623,18 @@ func TestForget_ForwardsBDOutput(t *testing.T) {
 // ── applied ───────────────────────────────────────────────────────────────────
 
 func TestApplied_FirstCallCreatesCountOne(t *testing.T) {
-	ctx, calls := newCtx(t, []fakeResp{{stdout: "{}"}, {stdout: "ok"}})
+	// Scoped read finds no applied row; the drift-guard count shows the store
+	// is populated; then the write.
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "[]"}, {stdout: `[{"n":5}]`}, {stdout: "ok"}})
 	err := (&appliedKong{Role: "planner", Slug: "foo"}).Run(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected 2 bd calls, got %d: %+v", len(*calls), *calls)
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 bd calls, got %d: %+v", len(*calls), *calls)
 	}
-	assertArgs(t, *calls, 0, []string{"--readonly", "memories", "--json"})
-	call := (*calls)[1]
+	assertScopedReads(t, [][]string{(*calls)[0].args}, []string{"applied:planner:foo"})
+	call := (*calls)[2]
 	if call.args[0] != "remember" {
 		t.Fatalf("args[0] = %q, want remember", call.args[0])
 	}
@@ -2653,11 +2655,11 @@ func TestApplied_FirstCallCreatesCountOne(t *testing.T) {
 
 func TestApplied_SecondCallIncrementsAndUpdatesTimestamp(t *testing.T) {
 	existingBody := `{"count":1,"last_applied":"2020-01-01T00:00:00Z"}`
-	raw, err := json.Marshal(map[string]any{"applied:planner:foo": existingBody})
+	row, err := json.Marshal([]map[string]string{{"k": "applied:planner:foo", "v": existingBody}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, calls := newCtx(t, []fakeResp{{stdout: string(raw)}, {stdout: "ok"}})
+	ctx, calls := newCtx(t, []fakeResp{{stdout: string(row)}, {stdout: "ok"}})
 	if err := (&appliedKong{Role: "planner", Slug: "foo"}).Run(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

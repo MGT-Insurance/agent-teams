@@ -49,7 +49,8 @@ type condenseCheckKong struct {
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
-// Read-only: the only bd call is `memories --json`. Zero writes — mirrored by
+// Read-only: the only bd calls are memory reads (a scoped bd sql read for an
+// explicit role, `memories --json` for all roles). Zero writes — mirrored by
 // TestCondenseCheck_ZeroWritesOccur alongside
 // write_test.go:TestCondense_ZeroWritesOccur. Exit code is always 0
 // regardless of verdict (SEAM 1) — verdict is data, not a process outcome.
@@ -59,7 +60,15 @@ func (c *condenseCheckKong) Run(ctx *cli.Context) error {
 	}
 
 	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	var err error
+	if c.Role != "" {
+		raw, err = readMemoriesByPrefix(learnBD(ctx), c.Role+":")
+	} else {
+		// The all-roles form enumerates roles from every key, so it needs the
+		// whole store.
+		err = readMemoriesJSON(learnBD(ctx), &raw)
+	}
+	if err != nil {
 		return learnReadFailure(ctx, "condense-check", err)
 	}
 
