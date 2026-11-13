@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -792,11 +793,44 @@ func anyGateLabelRemains(labels []string) bool {
 // ── learn ─────────────────────────────────────────────────────────────────────
 
 // learnKong is the kong-converted form of learn.
-// Takes positional <role> and <slug>, and a required --file flag.
+// Takes positional <role> and <slug>, and exactly one body source: --body
+// (inline text), --file <path>, or --file - (stdin).
 type learnKong struct {
 	Role string `arg:"" name:"role" help:"Role name (e.g. planner, implementer)."`
 	Slug string `arg:"" name:"slug" help:"Memory slug; prefix with hot:, fresh:, or cold: to target a tier."`
-	File string `name:"file" help:"Path to file containing memory content (required)." required:""`
+	File string `name:"file" help:"Path to file containing memory content; '-' reads stdin. Exactly one of --file or --body is required."`
+	Body string `name:"body" help:"Memory content as inline text (for callers that cannot pass stdin or create a file). Exactly one of --file or --body is required."`
+
+	// stdin is the reader for --file -; nil means os.Stdin. Tests inject one.
+	stdin io.Reader `kong:"-"`
+}
+
+// content resolves the body from exactly one source.
+func (c *learnKong) content() (string, error) {
+	if c.File != "" && c.Body != "" {
+		return "", cli.Usagef("ateam learn: --file and --body are mutually exclusive; pass exactly one")
+	}
+	switch {
+	case c.Body != "":
+		return strings.TrimRight(c.Body, "\n"), nil
+	case c.File == "-":
+		r := c.stdin
+		if r == nil {
+			r = os.Stdin
+		}
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return "", cli.Usagef("ateam learn: reading stdin: %v", err)
+		}
+		return strings.TrimRight(string(data), "\n"), nil
+	case c.File != "":
+		data, err := os.ReadFile(c.File)
+		if err != nil {
+			return "", cli.Usagef("ateam learn: file not found: %s", c.File)
+		}
+		return strings.TrimRight(string(data), "\n"), nil
+	}
+	return "", cli.Usagef("ateam learn: a body is required; pass --body <text> or --file <path> (--file - reads stdin)")
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
@@ -804,11 +838,10 @@ func (c *learnKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam learn: no context")
 	}
-	data, err := os.ReadFile(c.File)
+	content, err := c.content()
 	if err != nil {
-		return cli.Usagef("ateam learn: file not found: %s", c.File)
+		return err
 	}
-	content := strings.TrimRight(string(data), "\n")
 	tier, capBytes := learnCap(c.Slug)
 	if len(content) > capBytes {
 		return learnCapError(tier, capBytes, len(content))
