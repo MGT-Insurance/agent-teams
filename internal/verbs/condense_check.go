@@ -49,7 +49,8 @@ type condenseCheckKong struct {
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
-// Read-only: the only bd call is `memories --json`. Zero writes — mirrored by
+// Read-only: the only bd calls are memory reads (a scoped bd sql read for an
+// explicit role, a key-and-length bd sql read for all roles). Zero writes — mirrored by
 // TestCondenseCheck_ZeroWritesOccur alongside
 // write_test.go:TestCondense_ZeroWritesOccur. Exit code is always 0
 // regardless of verdict (SEAM 1) — verdict is data, not a process outcome.
@@ -58,15 +59,27 @@ func (c *condenseCheckKong) Run(ctx *cli.Context) error {
 		return fmt.Errorf("ateam condense-check: no context")
 	}
 
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
-		return learnReadFailure(ctx, "condense-check", err)
+	var sizes map[string]int
+	if c.Role != "" {
+		raw, err := readMemoriesByPrefix(learnBD(ctx), c.Role+":")
+		if err != nil {
+			return learnReadFailure(ctx, "condense-check", err)
+		}
+		sizes = memorySizesOf(raw)
+	} else {
+		// The all-roles form enumerates roles from every key but needs only
+		// each body's length, so it reads key + length, not the bodies.
+		var err error
+		sizes, err = readMemorySizes(learnBD(ctx))
+		if err != nil {
+			return learnReadFailure(ctx, "condense-check", err)
+		}
 	}
 
-	roles := c.roles(raw)
+	roles := c.roles(sizes)
 	results := make([]condenseCheckRoleResult, 0, len(roles))
 	for _, role := range roles {
-		results = append(results, condenseCheckForRole(raw, role))
+		results = append(results, condenseCheckForRole(sizes, role))
 	}
 
 	if c.JSON {
@@ -82,16 +95,13 @@ func (c *condenseCheckKong) Run(ctx *cli.Context) error {
 // "applied" (neither is a learnings role; see rolesKong/runRoles in
 // query.go, which this mirrors but does not call — query.go is owned by a
 // different track and this file must stay file-disjoint from it).
-func (c *condenseCheckKong) roles(raw map[string]any) []string {
+func (c *condenseCheckKong) roles(sizes map[string]int) []string {
 	if c.Role != "" {
 		return []string{c.Role}
 	}
 
 	seen := make(map[string]struct{})
-	for k, v := range raw {
-		if _, ok := v.(string); !ok {
-			continue
-		}
+	for k := range sizes {
 		idx := strings.Index(k, ":")
 		if idx < 0 {
 			continue
@@ -112,17 +122,14 @@ func (c *condenseCheckKong) roles(raw map[string]any) []string {
 }
 
 // condenseCheckForRole computes the full measurement + verdict for one role
-// out of the already-fetched memories map raw.
-func condenseCheckForRole(raw map[string]any, role string) condenseCheckRoleResult {
+// out of the already-fetched memory body lengths (key -> byte length).
+func condenseCheckForRole(sizes map[string]int, role string) condenseCheckRoleResult {
 	hotPrefix := role + ":hot:"
 	freshPrefix := role + ":fresh:"
 	rolePrefix := role + ":"
 
 	var hotKeys, freshKeys, allRoleKeys []string
-	for k, v := range raw {
-		if _, ok := v.(string); !ok {
-			continue
-		}
+	for k := range sizes {
 		switch {
 		case strings.HasPrefix(k, hotPrefix):
 			hotKeys = append(hotKeys, k)
@@ -173,15 +180,14 @@ func condenseCheckForRole(raw map[string]any, role string) condenseCheckRoleResu
 	// "chars", so the two figures are directly comparable.
 	learningsBytes := 0
 	for i, k := range servedKeys {
-		body, _ := raw[k].(string)
-		learningsBytes += len(k) + 1 + len(body) + 1
+		learningsBytes += len(k) + 1 + sizes[k] + 1
 		if i < len(servedKeys)-1 {
 			learningsBytes++ // blank-line separator
 		}
 	}
 
-	freshBytes := sumBodyBytes(raw, freshKeys)
-	hotBytes := sumBodyBytes(raw, hotKeys)
+	freshBytes := sumBodyBytes(sizes, freshKeys)
+	hotBytes := sumBodyBytes(sizes, hotKeys)
 
 	approxTokens := learningsBytes / condenseApproxTokensDivisor
 	freshApproxTokens := freshBytes / condenseApproxTokensDivisor
@@ -206,14 +212,11 @@ func condenseCheckForRole(raw map[string]any, role string) condenseCheckRoleResu
 	}
 }
 
-// sumBodyBytes sums the byte length of the string bodies for keys in raw.
-// Non-string or absent values contribute 0.
-func sumBodyBytes(raw map[string]any, keys []string) int {
+// sumBodyBytes sums the body byte lengths for keys in sizes.
+func sumBodyBytes(sizes map[string]int, keys []string) int {
 	total := 0
 	for _, k := range keys {
-		if body, ok := raw[k].(string); ok {
-			total += len(body)
-		}
+		total += sizes[k]
 	}
 	return total
 }

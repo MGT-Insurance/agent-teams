@@ -1187,9 +1187,8 @@ func TestLearningsMissingRoleReturnsUsageError(t *testing.T) {
 
 func TestLearningsCallsBDArgs(t *testing.T) {
 	var calls [][]string
-	// The new implementation calls `memories --json`, not `memories <role>`.
-	// captureArgs returns "result\n" which is not valid JSON; use a JSON stub.
-	emptyJSON := []byte("{}\n")
+	// The scoped sql read answers with one hot row.
+	emptyJSON := []byte(`[{"k":"planner:hot:a","v":"A"}]` + "\n")
 	execFn := func(name string, args ...string) ([]byte, []byte, error) {
 		cp := make([]string, len(args))
 		copy(cp, args)
@@ -1207,10 +1206,16 @@ func TestLearningsCallsBDArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 bd call, got %d", len(calls))
 	}
-	wantArgs := []string{"-C", "/ws", "--readonly", "memories", "--json"}
+	wantArgs := []string{"-C", "/ws", "--readonly", "sql", "--json"}
 	for i, w := range wantArgs {
 		if i >= len(calls[0]) || calls[0][i] != w {
 			t.Errorf("bd args[%d] = %q, want %q (full: %v)", i, calls[0][i], w, calls[0])
+		}
+	}
+	q := calls[0][len(calls[0])-1]
+	for _, want := range []string{"'kv.memory.planner:hot:%'", "'kv.memory.planner:fresh:%'"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("sql query %q does not name %s", q, want)
 		}
 	}
 }

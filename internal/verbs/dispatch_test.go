@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -90,6 +91,12 @@ func (f *fakeBD) Run(args ...string) (string, error) {
 	return "", nil
 }
 func (f *fakeBD) RunJSON(dst any, args ...string) error {
+	// fakeBD scripts the whole-store memories shape. A scoped memory read
+	// (bd sql) answers like embedded-mode bd, so readMemoriesByPrefix takes
+	// its whole-store fallback and these fixtures keep serving it.
+	if slices.Contains(args, "sql") {
+		return errors.New("Error: 'bd sql' is not yet supported in embedded mode")
+	}
 	if f.runJSONFn != nil {
 		return f.runJSONFn(dst, args...)
 	}

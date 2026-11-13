@@ -586,6 +586,17 @@ func gateKind(labels []string) string {
 	}
 }
 
+// hasStringKeyWithPrefix reports whether raw holds a string-valued key that
+// starts with prefix.
+func hasStringKeyWithPrefix(raw map[string]any, prefix string) bool {
+	for k, v := range raw {
+		if _, ok := v.(string); ok && strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // runLearnings prints full bodies of memories for role. Serves the union of
 // HOT keys (prefix `role+":hot:"`) and FRESH keys (prefix `role+":fresh:"`).
 // Falls back to ALL `role:` keys when both sets are empty.
@@ -594,13 +605,24 @@ func runLearnings(ctx *cli.Context, role string) error {
 	freshPrefix := role + ":fresh:"
 	rolePrefix := role + ":"
 
-	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	// Scoped read of the two served tiers; the map tolerates non-string values
+	// (e.g. schema_version: 1) on the whole-store fallback path.
+	raw, err := readMemoriesByPrefix(learnBD(ctx), hotPrefix, freshPrefix)
+	if err != nil {
 		if learnServeUnreachable(ctx, role, err) {
 			return nil
 		}
 		return err
+	}
+	if !hasStringKeyWithPrefix(raw, hotPrefix) && !hasStringKeyWithPrefix(raw, freshPrefix) {
+		// Neither tier exists: the all-role fallback below needs every
+		// role: key, so widen the scope with one more call.
+		if raw, err = readMemoriesByPrefix(learnBD(ctx), rolePrefix); err != nil {
+			if learnServeUnreachable(ctx, role, err) {
+				return nil
+			}
+			return err
+		}
 	}
 
 	// Collect hot, fresh, and all-role keys in one pass.
@@ -704,8 +726,8 @@ func runRecall(ctx *cli.Context, role, query string) error {
 	rolePrefix := role + ":"
 	tokens := recallTokenize(query)
 
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	raw, err := readMemoriesByPrefix(learnBD(ctx), rolePrefix)
+	if err != nil {
 		return learnReadFailure(ctx, "recall", err)
 	}
 
@@ -797,9 +819,8 @@ func recallMatchedTokens(tokens []string, key, body string) int {
 // runPrime prints cross-project user preferences from bd memories.
 // Filters to keys with the "user:" prefix, caps at 12, and truncates each body to ~300 chars.
 func runPrime(ctx *cli.Context) error {
-	// Use map[string]any to tolerate non-string values (e.g. schema_version: 1).
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	raw, err := readMemoriesByPrefix(learnBD(ctx), "user:")
+	if err != nil {
 		if learnServeUnreachable(ctx, "user", err) {
 			return nil
 		}
@@ -847,16 +868,13 @@ func formatBody(s string) string {
 
 // runRoles lists the distinct role namespaces present in workspace memories.
 func runRoles(ctx *cli.Context) error {
-	var raw map[string]any
-	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
+	sizes, err := readMemorySizes(learnBD(ctx))
+	if err != nil {
 		return learnReadFailure(ctx, "roles", err)
 	}
 
 	seen := make(map[string]struct{})
-	for k, v := range raw {
-		if _, ok := v.(string); !ok {
-			continue
-		}
+	for k := range sizes {
 		idx := strings.Index(k, ":")
 		if idx < 0 {
 			continue

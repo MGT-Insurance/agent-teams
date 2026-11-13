@@ -4,6 +4,8 @@ package verbs
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -81,6 +83,129 @@ func readMemoriesJSON(r cli.BDRunner, dst any) error {
 		return nil
 	}
 	return r.RunJSON(dst, "memories", "--json")
+}
+
+// memoryPrefixAllowed is the allowlist for a prefix interpolated into SQL: bd
+// sql has no bind parameters, so a prefix outside it never reaches the query.
+var memoryPrefixAllowed = regexp.MustCompile(`^[A-Za-z0-9:._-]+$`)
+
+// likeEscaper escapes the LIKE metacharacters in a prefix.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// memoryRowCountQuery counts every stored memory row. The scoped read runs it
+// only after a zero-row result, to tell an empty prefix from a bd that moved
+// the kv.memory. row layout.
+const memoryRowCountQuery = "SELECT COUNT(*) AS n FROM config WHERE `key` LIKE 'kv.memory.%'"
+
+// readMemoriesByPrefix returns the memories whose key starts with any of
+// prefixes, in the same map[string]any shape readMemoriesJSON fills. It reads
+// the config rows bd stores memories in (key kv.memory.<memory-key>) with one
+// bd sql call, so the transfer is the scoped rows, not the whole store.
+//
+// It returns the whole-store read when prefixes is empty, when any prefix
+// fails memoryPrefixAllowed, when the sql call fails for a reason other than
+// an unreachable store (embedded mode, a bd without sql, bad JSON), and when
+// the scoped query returns no rows while the store holds no kv.memory. rows at
+// all. An unreachable-store error is returned unchanged after one call.
+func readMemoriesByPrefix(r cli.BDRunner, prefixes ...string) (map[string]any, error) {
+	whole := func() (map[string]any, error) {
+		var raw map[string]any
+		if err := readMemoriesJSON(r, &raw); err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+	if len(prefixes) == 0 {
+		return whole()
+	}
+	clauses := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		if !memoryPrefixAllowed.MatchString(p) {
+			return whole()
+		}
+		clauses[i] = "`key` LIKE 'kv.memory." + likeEscaper.Replace(p) + "%'"
+	}
+	query := "SELECT SUBSTRING(`key`, 11) AS k, `value` AS v FROM config WHERE " + strings.Join(clauses, " OR ")
+
+	var rows []struct {
+		K string `json:"k"`
+		V string `json:"v"`
+	}
+	if err := r.RunJSON(&rows, "--readonly", "sql", "--json", query); err != nil {
+		if isStoreUnreachable(err) {
+			return nil, err
+		}
+		return whole()
+	}
+	if len(rows) == 0 {
+		var count []struct {
+			N int `json:"n"`
+		}
+		if err := r.RunJSON(&count, "--readonly", "sql", "--json", memoryRowCountQuery); err != nil {
+			if isStoreUnreachable(err) {
+				return nil, err
+			}
+			return whole()
+		}
+		if len(count) == 0 || count[0].N == 0 {
+			return whole()
+		}
+	}
+	out := make(map[string]any, len(rows))
+	for _, row := range rows {
+		out[row.K] = row.V
+	}
+	return out, nil
+}
+
+// memorySizesQuery lists every stored memory outside the applied: counter
+// namespace as its key (without the kv.memory. prefix) and the byte length of
+// its body. LENGTH counts bytes, as Go's len does. The applied: namespace is
+// excluded because both callers skip it as a role and no role's tiers contain
+// it; the counters are most of the rows.
+const memorySizesQuery = "SELECT SUBSTRING(`key`, 11) AS k, LENGTH(`value`) AS n FROM config WHERE `key` LIKE 'kv.memory.%' AND `key` NOT LIKE 'kv.memory.applied:%'"
+
+// memorySizesOf returns the byte length of each string body in raw.
+func memorySizesOf(raw map[string]any) map[string]int {
+	sizes := make(map[string]int, len(raw))
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			sizes[k] = len(s)
+		}
+	}
+	return sizes
+}
+
+// readMemorySizes returns every memory key mapped to its body's byte length,
+// for the verbs that enumerate roles and sum sizes but never print a body. One
+// bd sql call moves the keys and lengths, not the bodies.
+//
+// It falls back to the whole-store read, reduced to the same map, when the sql
+// call fails for a reason other than an unreachable store (embedded mode, a bd
+// without sql) and when the query returns no rows, which also covers a bd that
+// moved the kv.memory. row layout. An unreachable-store error is returned
+// unchanged after one call.
+func readMemorySizes(r cli.BDRunner) (map[string]int, error) {
+	var rows []struct {
+		K string `json:"k"`
+		N int    `json:"n"`
+	}
+	if err := r.RunJSON(&rows, "--readonly", "sql", "--json", memorySizesQuery); err != nil {
+		if isStoreUnreachable(err) {
+			return nil, err
+		}
+	} else if len(rows) > 0 {
+		sizes := make(map[string]int, len(rows))
+		for _, row := range rows {
+			sizes[row.K] = row.N
+		}
+		return sizes, nil
+	}
+	var raw map[string]any
+	if err := readMemoriesJSON(r, &raw); err != nil {
+		return nil, err
+	}
+	return memorySizesOf(raw), nil
 }
 
 // readConfigValue runs bd --readonly config get <key> with the same one-retry

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,6 +53,9 @@ func (f *learnFake) RunJSON(dst any, args ...string) error {
 	f.calls = append(f.calls, args)
 	if f.err != nil && f.failRunAt < 0 {
 		return f.err
+	}
+	if slices.Contains(args, "sql") {
+		return json.Unmarshal(storeSQLAnswer(args[len(args)-1], f.memories), dst)
 	}
 	b, _ := json.Marshal(f.memories)
 	return json.Unmarshal(b, dst)
@@ -205,22 +209,34 @@ func learnVerbCases(t *testing.T) []verbCase {
 
 var memRO = []string{"--readonly", "memories", "--json"}
 
+// scopedArgv is the argv readMemoriesByPrefix sends for prefixes (none of the
+// test prefixes contain a LIKE metacharacter).
+func scopedArgv(prefixes ...string) []string {
+	clauses := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		clauses[i] = "`key` LIKE 'kv.memory." + p + "%'"
+	}
+	return []string{"--readonly", "sql", "--json",
+		"SELECT SUBSTRING(`key`, 11) AS k, `value` AS v FROM config WHERE " + strings.Join(clauses, " OR ")}
+}
+
 // TestLearnVerbs_ArgvUnchangedWithoutCloudHome pins the exact bd argv each
 // routed verb sends when Learn == BD (cloud_home unset). These literals are
-// the argv the verbs sent before routing existed.
+// the argv the verbs sent before routing existed, except the memory reads,
+// which now name their key prefixes in one bd sql call.
 func TestLearnVerbs_ArgvUnchangedWithoutCloudHome(t *testing.T) {
 	want := map[string][][]string{
-		"learnings":      {memRO},
-		"recall":         {memRO},
-		"prime":          {memRO},
-		"roles":          {memRO},
+		"learnings":      {scopedArgv("dri:hot:", "dri:fresh:")},
+		"recall":         {scopedArgv("dri:")},
+		"prime":          {scopedArgv("user:")},
+		"roles":          {{"--readonly", "sql", "--json", memorySizesQuery}},
 		"memories-json":  {memRO},
-		"condense-check": {memRO},
-		"condense":       {memRO},
+		"condense-check": {scopedArgv("dri:")},
+		"condense":       {scopedArgv("dri:", "applied:dri:")},
 		"learn":          {{"remember", "--key=dri:hot:x", "body"}},
 		"forget":         {{"forget", "dri:hot:x"}},
-		"applied":        {memRO, nil}, // second call carries a timestamp; checked below
-		"fresh-drain":    {memRO, {"remember", "--key=dri:b", "B"}, {"forget", "dri:fresh:b"}},
+		"applied":        {scopedArgv("applied:dri:x"), nil}, // second call carries a timestamp; checked below
+		"fresh-drain":    {scopedArgv("dri:fresh:"), {"remember", "--key=dri:b", "B"}, {"forget", "dri:fresh:b"}},
 	}
 	for _, vc := range learnVerbCases(t) {
 		t.Run(vc.name, func(t *testing.T) {
@@ -236,9 +252,14 @@ func TestLearnVerbs_ArgvUnchangedWithoutCloudHome(t *testing.T) {
 			got := f.calls
 			exp := want[vc.name]
 			if vc.name == "applied" {
-				if len(got) != 2 || len(got[1]) != 3 || got[1][0] != "remember" || got[1][1] != "--key=applied:dri:x" ||
-					!strings.HasPrefix(got[1][2], `{"count":1,"last_applied":"`) {
+				// No applied row exists yet, so the scoped read is followed by the
+				// drift-guard count before the write.
+				if len(got) != 3 || len(got[2]) != 3 || got[2][0] != "remember" || got[2][1] != "--key=applied:dri:x" ||
+					!strings.HasPrefix(got[2][2], `{"count":1,"last_applied":"`) {
 					t.Fatalf("applied calls = %v", got)
+				}
+				if !reflect.DeepEqual(got[1], []string{"--readonly", "sql", "--json", memoryRowCountQuery}) {
+					t.Fatalf("applied drift-guard call = %v", got[1])
 				}
 				got = got[:1]
 				exp = exp[:1]
