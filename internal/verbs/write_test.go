@@ -1613,16 +1613,71 @@ func TestLearn_MissingSlug(t *testing.T) {
 	}
 }
 
-func TestLearn_MissingFile(t *testing.T) {
-	// File is required:""; enforced at parse time.
+func TestLearn_MissingSource(t *testing.T) {
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "planner", Slug: "slug"}).Run(ctx)
+	assertUsageError(t, err, "a body is required")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd calls, got %d", len(*calls))
+	}
+}
+
+func TestLearn_BothSources(t *testing.T) {
+	f := makeTempFile(t, "x")
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "planner", Slug: "slug", File: f, Body: "y"}).Run(ctx)
+	assertUsageError(t, err, "mutually exclusive")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd calls, got %d", len(*calls))
+	}
+}
+
+func TestLearn_InlineBody(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	if err := (&learnKong{Role: "planner", Slug: "foo", Body: "inline text\n"}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	args := (*calls)[0].args
+	if args[0] != "remember" || args[1] != "--key=planner:fresh:foo" || args[2] != "inline text" {
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestLearn_Stdin(t *testing.T) {
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}})
+	err := (&learnKong{Role: "planner", Slug: "hot:foo", File: "-", stdin: strings.NewReader("from stdin\n")}).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := (*calls)[0].args
+	if args[1] != "--key=planner:hot:foo" || args[2] != "from stdin" {
+		t.Errorf("args = %v", args)
+	}
+}
+
+func TestLearn_InlineBodyOverCap(t *testing.T) {
+	ctx, calls := newCtx(t, nil)
+	err := (&learnKong{Role: "planner", Slug: "foo", Body: strings.Repeat("a", 901)}).Run(ctx)
+	assertUsageError(t, err, "cap is 900 bytes")
+	if len(*calls) != 0 {
+		t.Fatalf("expected no bd calls, got %d", len(*calls))
+	}
+}
+
+func TestLearn_StdinOverCap(t *testing.T) {
+	ctx, _ := newCtx(t, nil)
+	err := (&learnKong{Role: "planner", Slug: "foo", File: "-", stdin: strings.NewReader(strings.Repeat("a", 901))}).Run(ctx)
+	assertUsageError(t, err, "cap is 900 bytes")
+}
+
+func TestLearn_BodyFlagParses(t *testing.T) {
 	p, err := cli.NewParser()
 	if err != nil {
 		t.Fatal(err)
 	}
 	RegisterWriteKong(p)
-	_, parseErr := p.Parse([]string{"learn", "planner", "slug"})
-	if parseErr == nil {
-		t.Fatal("expected parse error for missing --file")
+	if _, err := p.Parse([]string{"learn", "planner", "slug", "--body=hello"}); err != nil {
+		t.Fatalf("--body should parse: %v", err)
 	}
 }
 
