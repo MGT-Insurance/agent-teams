@@ -475,17 +475,24 @@ func uiTestVerdict(comments []uiTestComment) (c uiTestComment, runID string, ok 
 	return c, "", false
 }
 
+// uiIsJobAuthor reports whether a comment author is a live-test job. The
+// Dispatcher authors a run's comments as job:<job>, so a ui-test run speaks as
+// job:ui-test and an api-test run as job:api-test.
+func uiIsJobAuthor(author string) bool {
+	return author == "job:"+uiJobUI || author == "job:"+uiJobAPI
+}
+
 var ineligibleReasonRE = regexp.MustCompile(`(?i)no such job|job not found|catalog|unknown (job|type)`)
 
 // uiNoCatalogMarker is the Dispatcher log line for a repo with no ui-test job.
 const uiNoCatalogMarker = "resolve failed: job not found"
 
 // uiTestIneligible reports whether the repo has no ui-test catalog in the
-// Dispatcher: the newest job:ui-test comment shows a failed job resolve, or the
+// Dispatcher: the newest live-test job comment shows a failed job resolve, or the
 // newest comment starting rejected: or not started: matches the regex.
 func uiTestIneligible(comments []uiTestComment) (reason string, ok bool) {
 	for i := len(comments) - 1; i >= 0; i-- {
-		if comments[i].Author == "job:ui-test" {
+		if uiIsJobAuthor(comments[i].Author) {
 			if strings.Contains(comments[i].Text, uiNoCatalogMarker) {
 				return comments[i].Text, true
 			}

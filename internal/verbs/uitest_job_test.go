@@ -267,3 +267,47 @@ func TestLiveTest_RunToolsUIEchoMismatchIsError(t *testing.T) {
 		t.Errorf("stdout = %q", h.stdout.String())
 	}
 }
+
+// asJobAuthor re-authors every job: comment of h as author, the way Dispatcher
+// names an api-test run's comments job:api-test.
+func asJobAuthor(h *uiHarness, author string) {
+	for i := range h.comments {
+		if strings.HasPrefix(h.comments[i].Author, "job:") {
+			h.comments[i].Author = author
+		}
+	}
+}
+
+func TestLiveTest_WaitAPIRunCommentAuthoredJobAPITest(t *testing.T) {
+	h := typeHarness(t, uiAPIDesc, uiTranscriptJSON, "transcript.json")
+	asJobAuthor(h, "job:api-test")
+	out, err := h.wait(time.Minute)
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(out, "transcript.json")); err != nil || string(b) != uiTranscriptJSON {
+		t.Errorf("transcript = %q, %v", b, err)
+	}
+	links, found := uiParseShotLinks(h.comments, uiRunID)
+	if !found || len(links.Artifacts) != 1 || links.Artifacts[0].Name != "transcript.json" {
+		t.Errorf("links = %+v, found = %v", links, found)
+	}
+}
+
+func TestLiveTest_WaitUIRunCommentStillJobUITest(t *testing.T) {
+	h := typeHarness(t, eriKD2WDescription, uiTranscriptJSON, "01-home.png")
+	if _, err := h.wait(time.Minute); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+}
+
+func TestLiveTest_WaitNoCatalogMarkerOnJobAPITestIsIneligible(t *testing.T) {
+	h := newUIHarness(t, uiFullConfig)
+	h.polls = []uiTestBead{closedBead("failed")}
+	h.comments = []uiTestComment{
+		{Author: "job:api-test", CreatedAt: "2026-11-03T01:26:42Z", Text: "attempt 1: FAILED (exit 94)\n=== resolve job api-test\nresolve failed: job not found: api-test"},
+	}
+	if _, err := h.wait(time.Minute); exitOf(err) != uiExitIneligible {
+		t.Errorf("exit = %d, want 5 (%v)", exitOf(err), err)
+	}
+}

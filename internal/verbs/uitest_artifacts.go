@@ -69,25 +69,25 @@ func (r uiShotResult) satisfies(job string) bool {
 	return len(r.Paths) > 0 && r.ShotMissing == 0
 }
 
-// uiArtifact is one "artifact: <name> <url>" line of the job:ui-test comment.
+// uiArtifact is one "artifact: <name> <url>" line of the live-test job comment.
 type uiArtifact struct {
 	Name, URL string
 }
 
-// uiShotLinks is what the job:ui-test comment says about screenshots.
+// uiShotLinks is what the live-test job comment says about screenshots.
 type uiShotLinks struct {
 	Artifacts []uiArtifact
 	// Disabled is true for "screenshots: disabled (...)" (no signing secret).
 	Disabled bool
 }
 
-// uiParseShotLinks finds the newest job:ui-test comment that carries the line
+// uiParseShotLinks finds the newest live-test job comment (job:ui-test or job:api-test) that carries the line
 // "run: <runID>" and parses its screenshots: and artifact: lines. found is
 // false when no such comment exists.
 func uiParseShotLinks(comments []uiTestComment, runID string) (links uiShotLinks, found bool) {
 	for i := len(comments) - 1; i >= 0; i-- {
 		c := comments[i]
-		if c.Author != "job:ui-test" {
+		if !uiIsJobAuthor(c.Author) {
 			continue
 		}
 		lines := strings.Split(c.Text, "\n")
