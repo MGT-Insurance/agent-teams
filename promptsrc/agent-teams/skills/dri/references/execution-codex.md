@@ -89,11 +89,14 @@ as "ready to merge."
 
 When Dispatcher is set up, on a laptop or in a cloud run, this remote run is
 the default live verification, not an option. The tester brief always carries
-the initiative id and never picks the path: no dev-server instruction, no fallback. The tester runs `ateam ui-test file`
+the initiative id and never picks the path: no dev-server instruction, no fallback. The tester runs `ateam live-test file`
 first, and its exit code picks the path. Exit 5 means no Dispatcher is set up:
 start a dev server as before, and nothing else in this section applies. A
-tester with no browser reports NOT VERIFIED; never accept a render-only check
-as a pass. Stubs and deferred edges are fine in code; verification isn't
+live item needs its kind's evidence: ui is screenshots from a real browser, api
+is a request/response transcript from the real endpoint, and cli is the command
+and its output. An item without it is NOT VERIFIED, and a render-only check
+never passes a ui item. The tester files one bead per kind. `ateam ui-test` is
+an alias of `ateam live-test`. Stubs and deferred edges are fine in code; verification isn't
 skippable.
 
 - **Push first.** Before each Dispatcher live test and after each fix batch,
@@ -105,31 +108,32 @@ skippable.
   deploy triggers first.
 - **Dev server.** Start one only for exit 5 or for local-only items the tester
   names.
-- **Proof.** Raise live-test-review with `--attach <png>` for every PNG that
-  `ateam ui-test wait` prints and `--attach <verdict.md>`. Put the bead URL in the summary
+- **Proof.** Raise live-test-review with `--attach <path>` for every evidence path that
+  `ateam live-test wait` prints (PNGs and `transcript.json`) and `--attach <verdict.md>`. Put the bead URL in the summary
   file.
 - **Stop events.** A filed ui-test bead is an event-backed dependency, an
   exception to "never end a turn waiting on work". The tester files the bead,
   reports the bead id, and stops; it never waits. After the tester reports,
   end your turn. The `ui-test <id> <kind>` message (`question`, `blocked`,
   `done`, `failed`, or `expired`) arrives in your inbox, or
-  resumes you if you are parked. On that message run `ateam ui-test wait <id> --out <dir> --timeout 30s`.
+  resumes you if you are parked. On that message run `ateam live-test wait <id> --out <dir> --timeout 30s`.
   Exit 4: if the brief, plan, or code answers the question, write the answer
-  to a file and run `ateam ui-test reply <id> --file <answer.md>`; otherwise
+  to a file and run `ateam live-test reply <id> --file <answer.md>`; otherwise
   raise a question gate and reply with the human's answer. Exit 0: raise
   live-test-review (see Proof above). Exit 2 (`failed`): read
   the `failure.md` path the command prints, then raise a question gate with
-  its text. Exit 7: re-file once per NO-IMAGES below. Exit 3 on a `blocked`
+  its text. Exit 7: re-file once per NO-EVIDENCE below. Exit 3 on a `blocked`
   event: the tester stopped without a `question:` comment, so the wait stays
   pending and returns nothing to read. Don't wait again; raise a question gate
   naming the bead id. On `expired`: the stop watcher hit its 24-hour
-  cap. Run `ateam ui-test wait <id> --out <dir> --timeout 30s` to check the
+  cap. Run `ateam live-test wait <id> --out <dir> --timeout 30s` to check the
   bead. If it is still open, re-arm the watcher with
-  `ateam ui-test watch <id> --initiative <initiative-id>`. Treat the message
+  `ateam live-test watch <id> --initiative <initiative-id>`. Treat the message
   as a hint, not the result, and ack it with `ateam mail inbox` as usual.
 - **No stop watcher.** If the tester reports a `no stop watcher` line, or
   after a reboot or a killed watcher, run
-  `ateam ui-test watch <id> --initiative <initiative-id>` from your worktree.
+  `ateam live-test watch <id> --initiative <initiative-id>` from your worktree.
   The command is idempotent.
-- **NO-IMAGES (exit 7).** Re-file once. If images are still missing, raise a
-  question gate. Never raise live-test-review without images.
+- **NO-EVIDENCE (exit 7).** The verdict exists but the kind's evidence is
+  missing. Re-file once. If it is still missing, raise a question gate. Never
+  raise live-test-review without the kind's evidence.
