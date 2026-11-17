@@ -14,7 +14,7 @@ Cloud-boot restores saved work before the session starts. You don't restore it y
 Don't delete a wip branch.
 
 ## Live UI checks
-- Use the Dispatcher ui-test run tool (`ateam ui-test file`), not a local browser. Push the integration branch first, then brief the tester with the initiative id.
+- Use the Dispatcher ui-test run tool (`ateam live-test file`), not a local browser. Push the integration branch first, then brief the tester with the initiative id.
 - `--attach` isn't delivered from a cloud run. Put `screenshot: <ui-test bead id>` in the gate text, and the steward posts the image.
 - Don't start a ui-test watcher. The Dispatcher sends the `ui-test <id> <kind>` events.
 

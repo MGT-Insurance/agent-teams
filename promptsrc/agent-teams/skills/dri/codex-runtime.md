@@ -95,8 +95,9 @@ Follow [execution.md](references/execution.md). In short:
    Do not spawn `agent-teams-reviewer` here — it moves to Phase 5, after the
    live-test-review gate clears. Each tester brief carries the initiative id
    and never picks the path; the exit code of the tester's
-   `ateam ui-test file` does (5: you start a dev server; 6: you push). No
-   browser is NOT VERIFIED, never a render-only pass. See
+   `ateam live-test file` does (5: you start a dev server; 6: you push). An
+   item without its kind's evidence is NOT VERIFIED, and a render-only check
+   never passes a ui item. See
    [execution.md](references/execution.md), "Live verification via
    Dispatcher".
 5. The loop closes only when the complete loop-closing set is merged and a

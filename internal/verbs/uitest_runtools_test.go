@@ -209,8 +209,8 @@ func TestRunTools_WaitMissingScreenshotExit7(t *testing.T) {
 	h := newUIHarness(t, "")
 	inRun(t, srv)
 	out, err := h.rtWait(time.Minute)
-	if exitOf(err) != uiExitNoImages {
-		t.Fatalf("exit = %d, want %d (err %v)", exitOf(err), uiExitNoImages, err)
+	if exitOf(err) != uiExitNoEvidence {
+		t.Fatalf("exit = %d, want %d (err %v)", exitOf(err), uiExitNoEvidence, err)
 	}
 	verdict, _ := os.ReadFile(filepath.Join(out, "verdict.md"))
 	if !strings.Contains(string(verdict), "01-home.png http-404") {
@@ -245,7 +245,7 @@ func TestRunTools_WaitErrorsAreClear(t *testing.T) {
 		h := newUIHarness(t, "")
 		inRun(t, srv)
 		_, err := h.rtWait(time.Minute)
-		if err == nil || !strings.Contains(err.Error(), "ui-test wait: run-tools bead_get") || exitOf(err) != 1 {
+		if err == nil || !strings.Contains(err.Error(), "live-test wait: run-tools bead_get") || exitOf(err) != 1 {
 			t.Errorf("code %d: err = %v exit %d", code, err, exitOf(err))
 		}
 	}

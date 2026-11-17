@@ -19,15 +19,21 @@ import (
 	"github.com/mgt-insurance/agent-teams/internal/workspaceconfig"
 )
 
-// Exit codes of `ateam ui-test`. The numbers are frozen by the contract bead
-// agent-teams-fwhv.4; callers branch on them.
+// Exit codes of `ateam live-test` (alias `ui-test`). The numbers are frozen by
+// the contract; callers branch on them.
 const (
 	uiExitFailed     = 2 // bead closed without a verdict, or closed failed
 	uiExitPending    = 3 // timeout reached, bead still open
 	uiExitQuestion   = 4 // bead blocked on a question: comment
 	uiExitIneligible = 5 // feature off, non-GitHub origin, or Dispatcher rejected the repo
 	uiExitNotPushed  = 6 // HEAD is not on origin
-	uiExitNoImages   = 7 // verdict exists but screenshots are missing
+	uiExitNoEvidence = 7 // verdict exists but the kind's required evidence is missing
+)
+
+// Live-test job types, Dispatcher's job names. ui-test is the default.
+const (
+	uiJobUI  = "ui-test"
+	uiJobAPI = "api-test"
 )
 
 const (
@@ -41,18 +47,21 @@ const (
 	uiHeaderEnd = "---"
 )
 
-// RegisterUITestKong registers the `ui-test` parent verb onto p.
+// RegisterUITestKong registers the `live-test` parent verb onto p, and `ui-test`
+// as a hidden alias that runs the same subcommands. The wire name stays
+// ui-test: bead type, label, run-tools op, and stop text do not change.
 func RegisterUITestKong(p *cli.Parser) {
-	p.AddVerb("ui-test", "Optional: file a Dispatcher ui-test bead and wait for its verdict.", &uiTestCmd{})
+	p.AddVerb("live-test", "Optional: file a Dispatcher live test (UI or API) and wait for its verdict.", &uiTestCmd{})
+	p.AddHiddenVerb("ui-test", "Alias of live-test.", &uiTestCmd{})
 }
 
-// uiTestCmd is the kong parent struct for `ateam ui-test <subcommand>`. It has
+// uiTestCmd is the kong parent struct for `ateam live-test <subcommand>`. It has
 // no Run method: kong would run it for every subcommand (see mail_register.go).
 type uiTestCmd struct {
-	File  uiTestFileKong  `cmd:"" name:"file" help:"File a ui-test bead for a pushed branch in the Dispatcher's beads database; prints the bead id."`
-	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it (and screenshots) under --out."`
-	Watch uiTestWatchKong `cmd:"" name:"watch" help:"Watch a ui-test bead and mail its stop events (question, blocked, done, failed, expired) to the initiative."`
-	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a ui-test bead; prints '<id> <status>'."`
+	File  uiTestFileKong  `cmd:"" name:"file" help:"File a live-test bead (--job picks the UI or API job) for a pushed branch in the Dispatcher's beads database; prints the bead id."`
+	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it and its evidence (screenshots or transcript.json) under --out. Exit 7 means the job type's evidence is missing."`
+	Watch uiTestWatchKong `cmd:"" name:"watch" help:"Watch a live-test bead and mail its stop events (question, blocked, done, failed, expired) to the initiative."`
+	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a live-test bead; prints '<id> <status>'."`
 }
 
 // uiTestDeps are the seams that keep `ui-test` off the network and the clock
@@ -119,7 +128,7 @@ type uiTestSettings struct {
 func resolveUITestSettings(home string) (s uiTestSettings, ok bool, err error) {
 	beads, set, err := workspaceconfig.DispatcherBeads(home)
 	if err != nil {
-		return s, false, fmt.Errorf("ui-test: %w", err)
+		return s, false, fmt.Errorf("live-test: %w", err)
 	}
 	s.beadsDir = strings.TrimSpace(beads)
 	if !set || s.beadsDir == "" {
@@ -128,15 +137,15 @@ func resolveUITestSettings(home string) (s uiTestSettings, ok bool, err error) {
 	if s.actor = strings.TrimSpace(os.Getenv(dispatcherActorEnv)); s.actor == "" {
 		actor, set, err := workspaceconfig.DispatcherActor(home)
 		if err != nil {
-			return s, false, fmt.Errorf("ui-test: %w", err)
+			return s, false, fmt.Errorf("live-test: %w", err)
 		}
 		if s.actor = strings.TrimSpace(actor); !set || s.actor == "" {
-			return s, false, fmt.Errorf("ui-test: dispatcher_beads is set but dispatcher_actor is not set in %s/%s (or set $%s)",
+			return s, false, fmt.Errorf("live-test: dispatcher_beads is set but dispatcher_actor is not set in %s/%s (or set $%s)",
 				home, workspaceconfig.FileName, dispatcherActorEnv)
 		}
 	}
 	if strings.HasPrefix(s.actor, "agent:") {
-		return s, false, fmt.Errorf("ui-test: dispatcher actor %q is an agent actor, which the Dispatcher never autostarts; use your own account email", s.actor)
+		return s, false, fmt.Errorf("live-test: dispatcher actor %q is an agent actor, which the Dispatcher never autostarts; use your own account email", s.actor)
 	}
 	return s, true, nil
 }
@@ -176,17 +185,23 @@ func normalizeGitHubOrigin(origin string) (url, repo string, ok bool) {
 }
 
 // uiTestBeadBody composes the bead description: the routing header the
-// Dispatcher parses, a "---" line, then the items verbatim.
-func uiTestBeadBody(repoURL, branch, sha, scope, testUser, items string) string {
+// Dispatcher parses, a "---" line, then the items verbatim. job names the bead
+// type (ui-test or api-test); empty means ui-test.
+func uiTestBeadBody(repoURL, branch, sha, scope, testUser, job, items string) string {
+	if job == "" {
+		job = uiJobUI
+	}
 	lines := []string{
 		"repo: " + repoURL,
 		"branch: " + branch,
 		"sha: " + sha,
-		"type: ui-test",
+		"type: " + job,
+	}
+	lines = append(lines,
 		"agent: tester",
 		"fix: none",
-		"scope: " + scope,
-	}
+		"scope: "+scope,
+	)
 	if testUser != "" {
 		lines = append(lines, "test_user: "+testUser)
 	}
@@ -199,6 +214,7 @@ type uiTestFileKong struct {
 	Worktree   string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
 	Scope      string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
 	ItemsFile  string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
+	Job        string `name:"job" default:"ui-test" help:"Dispatcher job to file: ui-test (browser screenshots, default) or api-test (request/response transcript)."`
 	TestUser   string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
 	Title      string `name:"title" help:"Bead title suffix; defaults to the branch name."`
 	Initiative string `name:"initiative" help:"Initiative to mail the stop events to (local filing only); default: the owner of --worktree, else of the current directory."`
@@ -218,14 +234,18 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 			return err
 		}
 	}
+	job, err := c.job()
+	if err != nil {
+		return err
+	}
 
 	originOut, code, err := d.git(c.Worktree, "remote", "get-url", "origin")
 	if err != nil {
-		return fmt.Errorf("ui-test file: git: %w", err)
+		return fmt.Errorf("live-test file: git: %w", err)
 	}
 	repoURL, repo, ok := normalizeGitHubOrigin(originOut)
 	if code != 0 || !ok {
-		fmt.Fprintln(ctx.Stderr, "ui-test file: origin is not a GitHub repository; test locally")
+		fmt.Fprintln(ctx.Stderr, "live-test file: origin is not a GitHub repository; test locally")
 		return cli.Silent(uiExitIneligible)
 	}
 
@@ -234,53 +254,65 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 		return err
 	}
 	if _, code, err := d.git(c.Worktree, "fetch", "origin", branch); err != nil {
-		return fmt.Errorf("ui-test file: git fetch: %w", err)
+		return fmt.Errorf("live-test file: git fetch: %w", err)
 	} else if code != 0 {
-		fmt.Fprintf(ctx.Stderr, "ui-test file: branch %s is not on origin; push it first (git push -u origin %s)\n", branch, branch)
+		fmt.Fprintf(ctx.Stderr, "live-test file: branch %s is not on origin; push it first (git push -u origin %s)\n", branch, branch)
 		return cli.Silent(uiExitNotPushed)
 	}
 	_, code, err = d.git(c.Worktree, "merge-base", "--is-ancestor", sha, "origin/"+branch)
 	if err != nil {
-		return fmt.Errorf("ui-test file: git merge-base: %w", err)
+		return fmt.Errorf("live-test file: git merge-base: %w", err)
 	}
 	if code != 0 {
-		fmt.Fprintf(ctx.Stderr, "ui-test file: HEAD %s is not on origin/%s; push it first (git push origin %s)\n", sha, branch, branch)
+		fmt.Fprintf(ctx.Stderr, "live-test file: HEAD %s is not on origin/%s; push it first (git push origin %s)\n", sha, branch, branch)
 		return cli.Silent(uiExitNotPushed)
 	}
 
 	items, err := os.ReadFile(c.ItemsFile)
 	if err != nil {
 		// A plain error (exit 1): a usage error exits 2, which callers read as FAILED.
-		return fmt.Errorf("ui-test file: --items-file %q: %v", c.ItemsFile, err)
+		return fmt.Errorf("live-test file: --items-file %q: %v", c.ItemsFile, err)
 	}
 	title := c.Title
 	if title == "" {
 		title = branch
 	}
 	if inRun {
-		return c.fileViaRunTools(ctx, d, rt, branch, sha, string(items))
+		return c.fileViaRunTools(ctx, d, rt, job, branch, sha, string(items))
 	}
-	id, err := d.fileBead(settings.beadsDir, settings.actor, "ui-test: "+title,
-		[]string{"type:ui-test", "agent:tester", "repo:" + repo},
-		uiTestBeadBody(repoURL, branch, sha, c.Scope, c.TestUser, string(items)))
+	labels := []string{"type:" + job, "agent:tester", "repo:" + repo}
+	id, err := d.fileBead(settings.beadsDir, settings.actor, job+": "+title, labels,
+		uiTestBeadBody(repoURL, branch, sha, c.Scope, c.TestUser, job, string(items)))
 	if err != nil {
-		return fmt.Errorf("ui-test file: %w", err)
+		return fmt.Errorf("live-test file: %w", err)
 	}
 	fmt.Fprintln(ctx.Stdout, id)
 	startUITestWatch(ctx, d.watch.resolved(), id, c.Initiative, c.Worktree)
 	return nil
 }
 
+// job returns the validated --job; an empty value means ui-test. An unknown
+// value is a usage error.
+func (c *uiTestFileKong) job() (string, error) {
+	switch c.Job {
+	case "", uiJobUI:
+		return uiJobUI, nil
+	case uiJobAPI:
+		return uiJobAPI, nil
+	}
+	return "", cli.Usagef("live-test file: --job must be %s or %s, got %q", uiJobUI, uiJobAPI, c.Job)
+}
+
 // uiTestHead returns the current branch and full HEAD sha of worktree.
 func uiTestHead(d uiTestDeps, worktree string) (branch, sha string, err error) {
 	out, code, err := d.git(worktree, "branch", "--show-current")
 	if err != nil || code != 0 || strings.TrimSpace(out) == "" {
-		return "", "", fmt.Errorf("ui-test file: %s is not on a branch", worktree)
+		return "", "", fmt.Errorf("live-test file: %s is not on a branch", worktree)
 	}
 	branch = strings.TrimSpace(out)
 	out, code, err = d.git(worktree, "rev-parse", "HEAD")
 	if err != nil || code != 0 {
-		return "", "", fmt.Errorf("ui-test file: cannot resolve HEAD in %s", worktree)
+		return "", "", fmt.Errorf("live-test file: cannot resolve HEAD in %s", worktree)
 	}
 	return branch, strings.TrimSpace(out), nil
 }
@@ -443,17 +475,24 @@ func uiTestVerdict(comments []uiTestComment) (c uiTestComment, runID string, ok 
 	return c, "", false
 }
 
+// uiIsJobAuthor reports whether a comment author is a live-test job. The
+// Dispatcher authors a run's comments as job:<job>, so a ui-test run speaks as
+// job:ui-test and an api-test run as job:api-test.
+func uiIsJobAuthor(author string) bool {
+	return author == "job:"+uiJobUI || author == "job:"+uiJobAPI
+}
+
 var ineligibleReasonRE = regexp.MustCompile(`(?i)no such job|job not found|catalog|unknown (job|type)`)
 
 // uiNoCatalogMarker is the Dispatcher log line for a repo with no ui-test job.
 const uiNoCatalogMarker = "resolve failed: job not found"
 
 // uiTestIneligible reports whether the repo has no ui-test catalog in the
-// Dispatcher: the newest job:ui-test comment shows a failed job resolve, or the
+// Dispatcher: the newest live-test job comment shows a failed job resolve, or the
 // newest comment starting rejected: or not started: matches the regex.
 func uiTestIneligible(comments []uiTestComment) (reason string, ok bool) {
 	for i := len(comments) - 1; i >= 0; i-- {
-		if comments[i].Author == "job:ui-test" {
+		if uiIsJobAuthor(comments[i].Author) {
 			if strings.Contains(comments[i].Text, uiNoCatalogMarker) {
 				return comments[i].Text, true
 			}
@@ -489,8 +528,8 @@ func uiTestHeaderField(description, key string) string {
 
 // uiTestWaitKong implements `ateam ui-test wait`.
 type uiTestWaitKong struct {
-	ID      string        `arg:"" name:"bead-id" help:"The ui-test bead id printed by 'ui-test file'."`
-	Out     string        `name:"out" required:"" help:"Directory that receives verdict.md (and failure.md or screenshots/)."`
+	ID      string        `arg:"" name:"bead-id" help:"The live-test bead id printed by 'live-test file'."`
+	Out     string        `name:"out" required:"" help:"Directory that receives verdict.md (and failure.md, transcript.json, or screenshots/)."`
 	Timeout time.Duration `name:"timeout" default:"9m" help:"How long to wait for the verdict (max 9m30s). Exit 3 when it elapses."`
 
 	deps *uiTestDeps
@@ -499,7 +538,7 @@ type uiTestWaitKong struct {
 // Validate rejects an out-of-range --timeout before any bd call.
 func (c *uiTestWaitKong) Validate() error {
 	if c.Timeout <= 0 || c.Timeout > uiMaxTimeout {
-		return cli.Usagef("ui-test wait: --timeout must be greater than 0 and at most %s, got %s", uiMaxTimeout, c.Timeout)
+		return cli.Usagef("live-test wait: --timeout must be greater than 0 and at most %s, got %s", uiMaxTimeout, c.Timeout)
 	}
 	return nil
 }
@@ -519,11 +558,11 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 		}
 	}
 	if err := os.MkdirAll(c.Out, 0o755); err != nil {
-		return fmt.Errorf("ui-test wait: --out: %w", err)
+		return fmt.Errorf("live-test wait: --out: %w", err)
 	}
 	out, err := filepath.Abs(c.Out)
 	if err != nil {
-		return fmt.Errorf("ui-test wait: --out: %w", err)
+		return fmt.Errorf("live-test wait: --out: %w", err)
 	}
 
 	deadline := d.now().Add(c.Timeout)
@@ -537,7 +576,7 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 			comments, err = uiTestFetchComments(d, settings.beadsDir, c.ID)
 		}
 		if err != nil {
-			return fmt.Errorf("ui-test wait: %w", err)
+			return fmt.Errorf("live-test wait: %w", err)
 		}
 		switch bead.Status {
 		case "closed":
@@ -550,7 +589,7 @@ func (c *uiTestWaitKong) Run(ctx *cli.Context) error {
 		}
 		remaining := deadline.Sub(d.now())
 		if remaining <= 0 {
-			fmt.Fprintf(ctx.Stderr, "ui-test wait: bead %s is still %s; run the same command again\n", c.ID, bead.Status)
+			fmt.Fprintf(ctx.Stderr, "live-test wait: bead %s is still %s; run the same command again\n", c.ID, bead.Status)
 			return cli.Silent(uiExitPending)
 		}
 		d.sleep(min(uiPollInterval, remaining))
@@ -582,7 +621,7 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, 
 		return c.writeVerdict(ctx, d, rt, bead, comments, verdict, runID, out)
 	}
 	if reason, ok := uiTestIneligible(comments); ok {
-		fmt.Fprintf(ctx.Stderr, "ui-test wait: Dispatcher cannot run this repo (%s); test locally\n", firstLine(reason))
+		fmt.Fprintf(ctx.Stderr, "live-test wait: Dispatcher cannot run this repo (%s); test locally\n", firstLine(reason))
 		return cli.Silent(uiExitIneligible)
 	}
 	text := "bead " + c.ID + " closed without a verdict comment"
@@ -597,7 +636,7 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, 
 	}
 	path := filepath.Join(out, "failure.md")
 	if err := os.WriteFile(path, []byte(text+"\n"), 0o644); err != nil {
-		return fmt.Errorf("ui-test wait: %w", err)
+		return fmt.Errorf("live-test wait: %w", err)
 	}
 	fmt.Fprintln(ctx.Stdout, path)
 	return cli.Silent(uiExitFailed)
@@ -629,18 +668,32 @@ func uiRedactArtifactURLs(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-// writeVerdict downloads the run's screenshots, writes verdict.md, and prints
-// its path followed by one PNG path per line. Exit 0 only when at least one
-// screenshot was downloaded and none is missing; otherwise exit 7.
+// writeVerdict downloads the run's evidence (screenshots and transcript.json),
+// writes verdict.md, and prints its path followed by one evidence path per
+// line. The bead's type: picks the rule: ui-test needs at least one PNG and none
+// missing; api-test needs a transcript.json with at least one call. Otherwise
+// exit 7.
 func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, bead uiTestBead, comments []uiTestComment, verdict uiTestComment, runID, out string) error {
 	shots := uiDownloadShots(d, rt, comments, runID, out)
 	if shots.Err != nil {
-		return fmt.Errorf("ui-test wait: screenshots: %w", shots.Err)
+		return fmt.Errorf("live-test wait: evidence: %w", shots.Err)
 	}
+	job := uiTestHeaderField(bead.Description, "type")
+	if job == "" {
+		job = uiJobUI
+	}
+	evidence := shots.evidencePaths()
 	var b strings.Builder
 	fmt.Fprintf(&b, "bead: %s\nurl: %s%s\nrun: %s\nbranch: %s\nsha: %s\n",
 		bead.ID, uiBeadURLPrefix, bead.ID, runID,
 		uiTestHeaderField(bead.Description, "branch"), uiTestHeaderField(bead.Description, "sha"))
+	if job != uiJobUI {
+		b.WriteString("type: " + job + "\n")
+	}
+	b.WriteString("evidence:\n")
+	for _, p := range evidence {
+		b.WriteString(p + "\n")
+	}
 	b.WriteString("screenshots:\n")
 	for _, p := range shots.Paths {
 		b.WriteString(p + "\n")
@@ -655,14 +708,14 @@ func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, rt *uiRunT
 	}
 	path := filepath.Join(out, "verdict.md")
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		return fmt.Errorf("ui-test wait: %w", err)
+		return fmt.Errorf("live-test wait: %w", err)
 	}
 	fmt.Fprintln(ctx.Stdout, path)
-	for _, p := range shots.Paths {
+	for _, p := range evidence {
 		fmt.Fprintln(ctx.Stdout, p)
 	}
-	if len(shots.Missing) > 0 || len(shots.Paths) == 0 {
-		return cli.Silent(uiExitNoImages)
+	if !shots.satisfies(job) {
+		return cli.Silent(uiExitNoEvidence)
 	}
 	return nil
 }
@@ -674,7 +727,7 @@ func firstLine(s string) string {
 
 // uiTestReplyKong implements `ateam ui-test reply`.
 type uiTestReplyKong struct {
-	ID   string `arg:"" name:"bead-id" help:"The ui-test bead id the tester asked its question on."`
+	ID   string `arg:"" name:"bead-id" help:"The live-test bead id the tester asked its question on."`
 	Text string `name:"text" help:"The answer text. Use this or --file."`
 	File string `name:"file" help:"File holding the answer text. Use this or --text."`
 
@@ -684,7 +737,7 @@ type uiTestReplyKong struct {
 // Validate requires exactly one of --text and --file.
 func (c *uiTestReplyKong) Validate() error {
 	if (c.Text == "") == (c.File == "") {
-		return cli.Usagef("ui-test reply: pass exactly one of --text or --file")
+		return cli.Usagef("live-test reply: pass exactly one of --text or --file")
 	}
 	return nil
 }
@@ -716,13 +769,13 @@ func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
 		b, err := os.ReadFile(c.File)
 		if err != nil {
 			// A plain error (exit 1): a usage error exits 2, which callers read as FAILED.
-			return fmt.Errorf("ui-test reply: --file %q: %v", c.File, err)
+			return fmt.Errorf("live-test reply: --file %q: %v", c.File, err)
 		}
 		text = string(b)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return fmt.Errorf("ui-test reply: the answer text is empty")
+		return fmt.Errorf("live-test reply: the answer text is empty")
 	}
 	var status string
 	var err error
@@ -732,7 +785,7 @@ func (c *uiTestReplyKong) Run(ctx *cli.Context) error {
 		status, err = c.replyViaBD(d, settings, text)
 	}
 	if err != nil {
-		return fmt.Errorf("ui-test reply: %w", err)
+		return fmt.Errorf("live-test reply: %w", err)
 	}
 	fmt.Fprintf(ctx.Stdout, "%s %s\n", c.ID, status)
 	return nil
@@ -748,8 +801,8 @@ func (c *uiTestReplyKong) replyViaBD(d uiTestDeps, s uiTestSettings, text string
 	if bead.Status == "closed" {
 		return "", fmt.Errorf("bead %s is closed", c.ID)
 	}
-	if !slices.Contains(bead.Labels, "type:ui-test") {
-		return "", fmt.Errorf("%s is not a ui-test bead", c.ID)
+	if !slices.Contains(bead.Labels, "type:"+uiJobUI) && !slices.Contains(bead.Labels, "type:"+uiJobAPI) {
+		return "", fmt.Errorf("%s is not a ui-test or api-test bead", c.ID)
 	}
 	tmp, err := os.CreateTemp("", "ateam-ui-test-reply-*.txt")
 	if err != nil {

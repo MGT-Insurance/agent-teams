@@ -78,7 +78,7 @@ func TestError_Mapping(t *testing.T) {
 		want string
 	}{
 		{"ui_test_file", 401, ``, "run-tools ui_test_file: 401 not authorized; this run's job has no ui-test tool, or the run is finished"},
-		{"bead_get", 401, ``, "this run's job has no ui-test tool"},
+		{"bead_get", 401, ``, "this run's job has no ui-test or api-test tool"},
 		{"telegram_post", 401, ``, "run-tools telegram_post: 401 not authorized; this run's job has no telegram tool, or the run is finished"},
 		{"telegram_close", 401, ``, "this run's job has no telegram tool"},
 		{"page_publish", 401, ``, "run-tools page_publish: 401 not authorized; this run's job has no pages tool, or the run is finished"},
@@ -91,6 +91,25 @@ func TestError_Mapping(t *testing.T) {
 	for _, c := range cases {
 		if got := Error(c.op, c.code, []byte(c.body)); !strings.Contains(got.Error(), c.want) {
 			t.Errorf("%s %d: %q, want containing %q", c.op, c.code, got, c.want)
+		}
+	}
+}
+
+func TestErrorFor_NamesTheFiledJobType(t *testing.T) {
+	cases := []struct {
+		family string
+		code   int
+		body   string
+		want   string
+	}{
+		{FamilyAPITest, 401, ``, "run-tools ui_test_file: 401 not authorized; this run's job has no api-test tool, or the run is finished"},
+		{FamilyUITest, 401, ``, "this run's job has no ui-test tool"},
+		{FamilyAPITest, 409, ``, "409 api-test cap reached for this run, or budget refused"},
+		{FamilyAPITest, 409, `{"error":"cap 20"}`, "run-tools ui_test_file: 409 cap 20"},
+	}
+	for _, c := range cases {
+		if got := ErrorFor("ui_test_file", c.family, c.code, []byte(c.body)); !strings.Contains(got.Error(), c.want) {
+			t.Errorf("%s %d: %q, want containing %q", c.family, c.code, got, c.want)
 		}
 	}
 }

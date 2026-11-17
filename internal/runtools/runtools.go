@@ -61,7 +61,16 @@ func (c *Client) Request(body any) (*http.Request, error) {
 	return req, nil
 }
 
-// toolFamily names the tool a run-tools op needs, for the 401 text.
+// Live-test tool families. ui_test_file needs the grant of the job type it
+// files; bead_get, artifact, and bead_reply accept either grant.
+const (
+	FamilyUITest  = "ui-test"
+	FamilyAPITest = "api-test"
+	familyEither  = FamilyUITest + " or " + FamilyAPITest
+)
+
+// toolFamily names the tool a run-tools op needs, for the 401 text. A filing
+// call names its own type through Client.CallAs.
 func toolFamily(op string) string {
 	if strings.HasPrefix(op, "telegram_") {
 		return "telegram"
@@ -69,11 +78,24 @@ func toolFamily(op string) string {
 	if strings.HasPrefix(op, "page_") {
 		return "pages"
 	}
-	return "ui-test"
+	if op == "ui_test_file" {
+		return FamilyUITest
+	}
+	return familyEither
+}
+
+func isLiveTestFamily(family string) bool {
+	return family == FamilyUITest || family == FamilyAPITest || family == familyEither
 }
 
 // Error turns a non-200 response into a message that names the cause.
 func Error(op string, code int, body []byte) error {
+	return ErrorFor(op, toolFamily(op), code, body)
+}
+
+// ErrorFor is Error with the tool family the call needed, so a 401 names the
+// job type the call filed.
+func ErrorFor(op, family string, code int, body []byte) error {
 	var e struct {
 		Error string `json:"error"`
 	}
@@ -81,10 +103,10 @@ func Error(op string, code int, body []byte) error {
 	msg := strings.TrimSpace(e.Error)
 	switch {
 	case code == http.StatusUnauthorized:
-		return fmt.Errorf("run-tools %s: 401 not authorized; this run's job has no %s tool, or the run is finished", op, toolFamily(op))
-	case code == http.StatusConflict && toolFamily(op) == "ui-test":
+		return fmt.Errorf("run-tools %s: 401 not authorized; this run's job has no %s tool, or the run is finished", op, family)
+	case code == http.StatusConflict && isLiveTestFamily(family):
 		if msg == "" {
-			msg = "ui-test cap reached for this run, or budget refused"
+			msg = family + " cap reached for this run, or budget refused"
 		}
 		return fmt.Errorf("run-tools %s: 409 %s", op, msg)
 	}
@@ -97,6 +119,12 @@ func Error(op string, code int, body []byte) error {
 // Call posts body through do and returns the 200 response body. It retries up
 // to retries more times after a network error or a 5xx, and never after a 4xx.
 func (c *Client) Call(do Do, op string, body any, retries int) ([]byte, error) {
+	return c.CallAs(do, op, toolFamily(op), body, retries)
+}
+
+// CallAs is Call with the tool family the op needs, for an op whose grant
+// depends on its body (ui_test_file files either live-test job type).
+func (c *Client) CallAs(do Do, op, family string, body any, retries int) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= retries; attempt++ {
 		req, err := c.Request(body)
@@ -116,10 +144,10 @@ func (c *Client) Call(do Do, op string, body any, retries int) ([]byte, error) {
 		case resp.StatusCode == http.StatusOK:
 			return nil, fmt.Errorf("run-tools %s: read: %w", op, rerr)
 		case resp.StatusCode >= 500:
-			lastErr = Error(op, resp.StatusCode, data)
+			lastErr = ErrorFor(op, family, resp.StatusCode, data)
 			continue
 		}
-		return nil, Error(op, resp.StatusCode, data)
+		return nil, ErrorFor(op, family, resp.StatusCode, data)
 	}
 	return nil, lastErr
 }
