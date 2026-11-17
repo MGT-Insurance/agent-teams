@@ -99,7 +99,7 @@ func newCBEnv(t *testing.T) *cbEnv {
 			if e.closeAt != 0 && e.showN >= e.closeAt {
 				st = "closed"
 			}
-			raw, _ := json.Marshal([]bd.Issue{{ID: "at-ab12", Status: st, Description: e.desc, Labels: e.labels}})
+			raw, _ := json.Marshal([]bd.Issue{{ID: "at-ab12", Status: st, Description: e.desc, Labels: e.labels, Notes: strings.Join(e.notes, "\n")}})
 			return raw, nil, nil
 		case "update":
 			body, err := os.ReadFile(strings.TrimPrefix(args[2], "--body-file="))

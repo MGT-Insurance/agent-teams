@@ -359,6 +359,8 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 		fmt.Fprintf(ctx.Stderr, "WARNING: inbox-ring setup failed (continuing): %v\n", err)
 	}
 
+	restoreSummary := c.restoreWIP(ctx, id, cwd)
+
 	var sid string
 	args := []string{"new-session", "-d", "-s", cloudBootTmuxName, "-c", cwd,
 		"-e", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1", "--", "claude"}
@@ -415,7 +417,7 @@ func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	}
 
 	args = append(args, "--plugin-dir", pluginDir, "--disallowedTools", "AskUserQuestion")
-	args = append(args, driSessionArgs(prompt, driSystemPromptAppend, model, "", "dri", id, "")...)
+	args = append(args, driSessionArgs(prompt, driSystemPromptAppend+restoreSummary, model, "", "dri", id, "")...)
 	if err := c.Tmux(args...); err != nil {
 		return err
 	}
