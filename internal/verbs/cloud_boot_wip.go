@@ -113,7 +113,7 @@ func (c *cloudBootCommon) saveWIP(ctx *cli.Context, id, cwd string) {
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: save wip: out of time, skipping %s: %v\n", wt.Dir, err)
 			continue
 		}
-		if err := c.saveWorktreeWIP(bctx, ctx, git, used, id, wt); err != nil {
+		if err := c.saveWorktreeWIP(bctx, ctx, git, used, id, cwd, wt); err != nil {
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: save wip %s: %v\n", wt.Dir, err)
 		}
 	}
@@ -122,7 +122,28 @@ func (c *cloudBootCommon) saveWIP(ctx *cli.Context, id, cwd string) {
 // wipExcludeClaude keeps a Claude session's local settings out of the save.
 const wipExcludeClaude = ":(exclude).claude"
 
-func (c *cloudBootCommon) saveWorktreeWIP(bctx context.Context, ctx *cli.Context, git cloudGitFunc, used map[string]bool, id string, wt cloudWorktree) error {
+// Trailers on every wip tip record where the work came from, so a restart can
+// put it back. wipRunCheckout stands for the run checkout (the save's cwd),
+// whose path differs between sandboxes.
+const (
+	wipTrailerBranch   = "Ateam-Branch"
+	wipTrailerWorktree = "Ateam-Worktree"
+	wipRunCheckout     = "run-checkout"
+)
+
+// sameDir reports whether a and b name the same directory, resolving symlinks
+// when the paths exist.
+func sameDir(a, b string) bool {
+	if r, err := filepath.EvalSymlinks(a); err == nil {
+		a = r
+	}
+	if r, err := filepath.EvalSymlinks(b); err == nil {
+		b = r
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func (c *cloudBootCommon) saveWorktreeWIP(bctx context.Context, ctx *cli.Context, git cloudGitFunc, used map[string]bool, id, cwd string, wt cloudWorktree) error {
 	dirty, err := git(bctx, wt.Dir, "status", "--porcelain", "--", ".", wipExcludeClaude)
 	if err != nil {
 		return err
@@ -143,14 +164,24 @@ func (c *cloudBootCommon) saveWorktreeWIP(bctx context.Context, ctx *cli.Context
 		if err != nil {
 			return err
 		}
-		if staged != "" {
-			if _, err := git(bctx, wt.Dir, "-c", "user.name=ateam cloud-boot", "-c", "user.email=ateam@localhost",
-				"-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", cloudBootWIPMessage); err != nil {
-				return err
-			}
-		} else if unpushed == "" {
+		if staged == "" && unpushed == "" {
 			return nil
 		}
+	}
+	where := wt.Dir
+	if sameDir(wt.Dir, cwd) {
+		where = wipRunCheckout
+	}
+	// Always commit, even with nothing to stage, so every wip tip carries the
+	// trailers.
+	commit := []string{"-c", "user.name=ateam cloud-boot", "-c", "user.email=ateam@localhost",
+		"-c", "commit.gpgsign=false", "commit", "--no-verify", "--allow-empty", "-m", cloudBootWIPMessage}
+	if wt.Branch != "" {
+		commit = append(commit, "--trailer", wipTrailerBranch+": "+wt.Branch)
+	}
+	commit = append(commit, "--trailer", wipTrailerWorktree+": "+where)
+	if _, err := git(bctx, wt.Dir, commit...); err != nil {
+		return err
 	}
 	sha, err := git(bctx, wt.Dir, "rev-parse", "HEAD")
 	if err != nil {
