@@ -252,3 +252,18 @@ func TestLiveTest_AliasParsesSameCommandAndHelpListsLiveTest(t *testing.T) {
 		t.Errorf("help should list live-test only:\n%s", help)
 	}
 }
+
+func TestLiveTest_RunToolsUIEchoMismatchIsError(t *testing.T) {
+	srv := newC0Server(t, func(w http.ResponseWriter, _ map[string]any) {
+		writeJSON(w, 200, map[string]any{"id": "dsp-ui9", "url": "u", "created": true, "type": "api-test"})
+	})
+	h := newUIHarness(t, "")
+	inRun(t, srv)
+	err := h.fileJob("ui-test", "x")
+	if err == nil || !strings.Contains(err.Error(), "filed as api-test, not ui-test") {
+		t.Fatalf("err = %v", err)
+	}
+	if h.stdout.String() != "" {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+}

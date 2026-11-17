@@ -104,11 +104,19 @@ func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiR
 	if err := json.Unmarshal(data, &r); err != nil || r.ID == "" {
 		return fmt.Errorf("live-test file: run-tools ui_test_file: unexpected response")
 	}
-	// An older Dispatcher strips the unknown type key and files a ui-test bead.
+	// A current Dispatcher always echoes the effective type. An older one
+	// strips the unknown type key, echoes nothing, and files a ui-test bead.
 	if job != uiJobUI && r.Type != job {
+		filed := r.Type
+		if filed == "" {
+			filed = uiJobUI
+		}
 		fmt.Fprintf(ctx.Stderr, "Dispatcher does not support --job %s yet; test locally\n", job)
-		fmt.Fprintf(ctx.Stderr, "live-test file: bead %s was filed as ui-test, not %s; ignore its verdict\n", r.ID, job)
+		fmt.Fprintf(ctx.Stderr, "live-test file: bead %s was filed as %s, not %s; ignore its verdict\n", r.ID, filed, job)
 		return cli.Silent(uiExitIneligible)
+	}
+	if job == uiJobUI && r.Type != "" && r.Type != job {
+		return fmt.Errorf("live-test file: bead %s was filed as %s, not %s; ignore its verdict", r.ID, r.Type, job)
 	}
 	fmt.Fprintln(ctx.Stdout, r.ID)
 	if r.URL != "" {
