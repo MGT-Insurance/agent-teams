@@ -9,6 +9,7 @@ package verbs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +21,34 @@ import (
 
 type wipRestored struct{ Branch, Where, Ref, SHA string }
 
-type wipNeedsYou struct{ Label, Ref, SHA, Reason string }
+type wipNeedsYou struct{ Label, Ref, SHA, Reason, Advice string }
+
+// wipNeed is a reason a save was not restored plus what the model can do about
+// it. Errors that are not a wipNeed are git failures and carry no advice.
+type wipNeed struct{ reason, advice string }
+
+func (w *wipNeed) Error() string { return w.reason }
+
+// briefErr renders a git failure on one line of at most 200 characters.
+func briefErr(err error) string {
+	s, _, _ := strings.Cut(err.Error(), "\n")
+	if len(s) > 200 {
+		s = s[:200] + "..."
+	}
+	return s
+}
+
+// wipRestoredKey is the sandbox-local git config key that records the sha
+// restored for ref. The record lives in .git/config, is never pushed, and a
+// fresh sandbox has none.
+func wipRestoredKey(ref string) string { return "ateam.restored." + ref + ".sha" }
+
+// wipAlreadyRestored reports whether this sandbox already restored ref at sha.
+// It stays true after the model rebases or amends the restored branch.
+func (c *cloudBootCommon) wipAlreadyRestored(bctx context.Context, git cloudGitFunc, cwd, ref, sha string) bool {
+	got, err := git(bctx, cwd, "config", "--local", "--get", wipRestoredKey(ref))
+	return err == nil && got == sha
+}
 
 // restoreWIP restores every wip ref saved for initiative id into the sandbox
 // whose run checkout is cwd. Failures are logged to stderr and listed in the
@@ -52,19 +80,14 @@ func (c *cloudBootCommon) restoreWIP(ctx *cli.Context, id, cwd string) string {
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ref < refs[j].ref })
 
-	// Bring every origin branch and wip ref up to date so reachability and
-	// divergence checks see origin as it is now.
-	_, fetchErr := git(bctx, cwd, "fetch", "--no-tags", "origin",
-		"+refs/heads/*:refs/remotes/origin/*")
 	var restored []wipRestored
 	var needs []wipNeedsYou
 	for _, r := range refs {
 		if err := bctx.Err(); err != nil {
-			needs = append(needs, wipNeedsYou{r.ref, r.ref, short7(r.sha), "out of time: " + err.Error()})
+			needs = append(needs, wipNeedsYou{r.ref, r.ref, short7(r.sha), "out of time: " + err.Error(), ""})
 			continue
 		}
-		if fetchErr != nil {
-			needs = append(needs, wipNeedsYou{r.ref, r.ref, short7(r.sha), "fetch failed: " + fetchErr.Error()})
+		if c.wipAlreadyRestored(bctx, git, cwd, r.ref, r.sha) {
 			continue
 		}
 		done, n, err := c.restoreWIPRef(bctx, ctx, git, id, cwd, r.ref, r.sha)
@@ -75,7 +98,11 @@ func (c *cloudBootCommon) restoreWIP(ctx *cli.Context, id, cwd string) string {
 			if label == "" {
 				label = r.ref
 			}
-			needs = append(needs, wipNeedsYou{label, r.ref, short7(r.sha), err.Error()})
+			var need *wipNeed
+			if !errors.As(err, &need) {
+				need = &wipNeed{reason: briefErr(err)}
+			}
+			needs = append(needs, wipNeedsYou{label, r.ref, short7(r.sha), need.reason, need.advice})
 		case done != nil:
 			restored = append(restored, *done)
 		}
@@ -90,6 +117,9 @@ type wipRefNeeds struct{ Label string }
 // already present, and an error (the reason) when the model must handle it.
 func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, git cloudGitFunc, id, cwd, ref, sha string) (*wipRestored, wipRefNeeds, error) {
 	var n wipRefNeeds
+	if _, err := git(bctx, cwd, "fetch", "--no-tags", "origin", "+refs/heads/"+ref+":refs/remotes/origin/"+ref); err != nil {
+		return nil, n, err
+	}
 	trailer := func(key string) (string, error) {
 		v, err := git(bctx, cwd, "log", "-1", "--format=%(trailers:key="+key+",valueonly)", sha)
 		return strings.TrimSpace(v), err
@@ -99,13 +129,29 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 		return nil, n, err
 	}
 	if where == "" {
-		return nil, n, fmt.Errorf("saved before cloud-boot recorded where it came from (no %s trailer)", wipTrailerWorktree)
+		return nil, n, &wipNeed{
+			reason: fmt.Sprintf("saved before cloud-boot recorded where it came from (no %s trailer), so there is no restore record", wipTrailerWorktree),
+			advice: "Inspect " + ref + " (git log origin/" + ref + ") and bring over what you need.",
+		}
 	}
 	branch, err := trailer(wipTrailerBranch)
 	if err != nil {
 		return nil, n, err
 	}
 	n.Label = branch
+	divergedAdvice := "Merge or rebase it, or raise a gate."
+	byHand := "Inspect " + ref + " and bring over what you need."
+	if branch != "" {
+		remote, err := git(bctx, cwd, "ls-remote", "origin", "refs/heads/"+branch)
+		if err != nil {
+			return nil, n, err
+		}
+		if remote != "" {
+			if _, err := git(bctx, cwd, "fetch", "--no-tags", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
+				return nil, n, err
+			}
+		}
+	}
 
 	// Already pushed or merged: reachable from a non-wip origin branch.
 	heads, err := git(bctx, cwd, "for-each-ref", "--contains", sha, "--format=%(refname)", "refs/remotes/origin/")
@@ -124,12 +170,12 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 				return nil, n, nil
 			}
 			if _, err := git(bctx, cwd, "merge-base", "--is-ancestor", local, sha); err != nil {
-				return nil, n, fmt.Errorf("diverged from local %s", branch)
+				return nil, n, &wipNeed{reason: "diverged from local " + branch, advice: divergedAdvice}
 			}
 		}
 		if remote, err := git(bctx, cwd, "rev-parse", "--verify", "-q", "refs/remotes/origin/"+branch); err == nil && remote != "" {
 			if _, err := git(bctx, cwd, "merge-base", "--is-ancestor", remote, sha); err != nil {
-				return nil, n, fmt.Errorf("diverged from origin/%s", branch)
+				return nil, n, &wipNeed{reason: "diverged from origin/" + branch, advice: divergedAdvice}
 			}
 		}
 	}
@@ -137,12 +183,24 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 	var place string
 	if where == wipRunCheckout {
 		place = "the run checkout"
+		if branch == "" {
+			skip, err := detachGuard(bctx, git, cwd, sha, ref)
+			if err != nil {
+				return nil, n, err
+			}
+			if skip {
+				return nil, n, nil
+			}
+		}
 		dirty, err := git(bctx, cwd, "status", "--porcelain", "--", ".", wipExcludeClaude)
 		if err != nil {
 			return nil, n, err
 		}
 		if dirty != "" {
-			return nil, n, fmt.Errorf("the run checkout has uncommitted changes, so %s was not checked out", short7(sha))
+			return nil, n, &wipNeed{
+				reason: fmt.Sprintf("the run checkout has uncommitted changes, so %s was not checked out", short7(sha)),
+				advice: "Commit or stash that work, then check out " + ref + " by hand.",
+			}
 		}
 		args := []string{"checkout", "-B", branch, sha}
 		if branch == "" {
@@ -154,10 +212,15 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 	} else {
 		place = where
 		if !filepath.IsAbs(where) {
-			return nil, n, fmt.Errorf("recorded worktree path %q is not absolute", where)
+			return nil, n, &wipNeed{reason: fmt.Sprintf("recorded worktree path %q is not absolute", where), advice: byHand}
 		}
 		if entries, err := os.ReadDir(where); err == nil && len(entries) > 0 {
-			return nil, n, fmt.Errorf("%s already has content, so %s was not checked out there", where, short7(sha))
+			if branch == "" {
+				if skip, err := detachGuard(bctx, git, where, sha, ref); err == nil && skip {
+					return nil, n, nil
+				}
+			}
+			return nil, n, &wipNeed{reason: fmt.Sprintf("%s already has content, so %s was not checked out there", where, short7(sha)), advice: byHand}
 		}
 		args := []string{"worktree", "add", "-B", branch, where, sha}
 		if branch == "" {
@@ -168,6 +231,9 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 		}
 	}
 	fmt.Fprintf(ctx.Stderr, "cloud-boot: restored wip %s at %s into %s\n", ref, sha, place)
+	if _, err := git(bctx, cwd, "config", "--local", wipRestoredKey(ref), sha); err != nil {
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: restore wip %s: record: %v\n", ref, err)
+	}
 	if err := c.noteWIP(bctx, ctx, id, fmt.Sprintf("wip restored: %s at %s", ref, sha)); err != nil {
 		fmt.Fprintf(ctx.Stderr, "cloud-boot: restore wip %s: note: %v\n", ref, err)
 	}
@@ -175,6 +241,26 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 		branch = "(detached)"
 	}
 	return &wipRestored{Branch: branch, Where: place, Ref: ref, SHA: sha}, n, nil
+}
+
+// detachGuard decides whether a detached save may move dir's HEAD to sha. It
+// reports skip when dir's HEAD already contains sha, and an error when HEAD has
+// commits sha lacks, since detaching would leave them on no ref.
+func detachGuard(bctx context.Context, git cloudGitFunc, dir, sha, ref string) (skip bool, err error) {
+	head, err := git(bctx, dir, "rev-parse", "--verify", "-q", "HEAD")
+	if err != nil || head == "" {
+		return false, nil
+	}
+	if _, err := git(bctx, dir, "merge-base", "--is-ancestor", sha, head); err == nil {
+		return true, nil
+	}
+	if _, err := git(bctx, dir, "merge-base", "--is-ancestor", head, sha); err == nil {
+		return false, nil
+	}
+	return false, &wipNeed{
+		reason: fmt.Sprintf("HEAD in %s has commits that %s does not contain", dir, short7(sha)),
+		advice: "Merge or rebase it, or raise a gate. Inspect " + ref + " first.",
+	}
 }
 
 func short7(sha string) string { return sha[:min(7, len(sha))] }
@@ -192,7 +278,11 @@ func wipSummary(restored []wipRestored, needs []wipNeedsYou) string {
 	if len(needs) > 0 {
 		b.WriteString("\n\nNeeds you (cloud-boot did not touch these):\n")
 		for _, n := range needs {
-			fmt.Fprintf(&b, "- %s: %s %s %s. Merge or rebase it, or raise a gate.\n", n.Label, n.Ref, n.SHA, n.Reason)
+			fmt.Fprintf(&b, "- %s: %s %s %s.", n.Label, n.Ref, n.SHA, strings.TrimRight(n.Reason, "."))
+			if n.Advice != "" {
+				b.WriteString(" " + n.Advice)
+			}
+			b.WriteString("\n")
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")

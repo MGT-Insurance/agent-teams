@@ -306,6 +306,9 @@ func TestCloudBoot_RestartLeavesDivergedSaveForModel(t *testing.T) {
 	if !strings.Contains(prompt[i:], "track-d") {
 		t.Errorf("\"Needs you\" list does not name diverged branch track-d: %q", prompt[i:])
 	}
+	if !strings.Contains(prompt[i:], "Merge or rebase it") {
+		t.Errorf("diverged entry should advise merge or rebase: %q", prompt[i:])
+	}
 }
 
 // TestCloudBoot_RestartListsLegacyRefForModel: a wip ref saved before the
@@ -331,6 +334,9 @@ func TestCloudBoot_RestartListsLegacyRefForModel(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Restored at boot") {
 		t.Errorf("legacy ref was reported as restored: %q", prompt)
+	}
+	if !strings.Contains(prompt, "no restore record") || strings.Contains(prompt, "Merge or rebase") {
+		t.Errorf("legacy entry should say it has no restore record and not advise merge or rebase: %q", prompt)
 	}
 	if _, err := os.Stat(filepath.Join(e.cwd, "legacy.txt")); err == nil {
 		t.Error("legacy.txt was restored into the run checkout")
