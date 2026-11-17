@@ -307,3 +307,82 @@ func TestCloudBoot_RestartLeavesDivergedSaveForModel(t *testing.T) {
 		t.Errorf("\"Needs you\" list does not name diverged branch track-d: %q", prompt[i:])
 	}
 }
+
+// TestCloudBoot_RestartListsLegacyRefForModel: a wip ref saved before the
+// trailers existed has no recorded worktree, so it is listed, not restored.
+func TestCloudBoot_RestartListsLegacyRefForModel(t *testing.T) {
+	e := newCBEnv(t)
+	remote := wipRepo(t, e)
+	other := filepath.Join(t.TempDir(), "other")
+	gitT(t, t.TempDir(), "clone", remote, other)
+	writeFileT(t, filepath.Join(other, "legacy.txt"), "legacy\n")
+	gitT(t, other, "add", "-A")
+	gitT(t, other, "commit", "-m", "legacy wip, no trailers")
+	gitT(t, other, "push", "origin", "HEAD:refs/heads/wip/at-ab12/legacy")
+
+	failingLaunch(e, func() {})
+	if err := e.start(); err == nil {
+		t.Fatal("want the lead-gone error")
+	}
+	prompt := launchAppendPrompt(e)
+	i := strings.Index(prompt, "Needs you")
+	if i < 0 || !strings.Contains(prompt[i:], "wip/at-ab12/legacy") {
+		t.Errorf("\"Needs you\" list does not name the legacy ref: %q", prompt)
+	}
+	if strings.Contains(prompt, "Restored at boot") {
+		t.Errorf("legacy ref was reported as restored: %q", prompt)
+	}
+	if _, err := os.Stat(filepath.Join(e.cwd, "legacy.txt")); err == nil {
+		t.Error("legacy.txt was restored into the run checkout")
+	}
+}
+
+// TestCloudBoot_RestartSkipsSaveThatSandboxStillHas: a resumed sandbox whose
+// local branch already contains the saved tip gets no restore and no summary.
+func TestCloudBoot_RestartSkipsSaveThatSandboxStillHas(t *testing.T) {
+	e := newCBEnv(t)
+	wipRepo(t, e)
+	writeFileT(t, filepath.Join(e.cwd, "probe-wip.txt"), "attempt 1 work\n")
+	failingLaunch(e, func() {})
+	if err := e.start(); err == nil {
+		t.Fatal("attempt 1: want the lead-gone error")
+	}
+	e.notes = nil
+	failingLaunch(e, func() {})
+	if err := e.start(); err == nil {
+		t.Fatal("attempt 2: want the lead-gone error")
+	}
+	for _, n := range e.notes {
+		if strings.HasPrefix(strings.TrimSpace(n), "wip restored:") {
+			t.Errorf("note %q: a save the sandbox still has was restored", n)
+		}
+	}
+	if prompt := launchAppendPrompt(e); strings.Contains(prompt, "Restored at boot") || strings.Contains(prompt, "Needs you") {
+		t.Errorf("summary appended for a save already present: %q", prompt)
+	}
+}
+
+// TestCloudBoot_SaveRecordsTrailers: the wip tip names its branch and worktree,
+// and a clean worktree with an unpushed commit still gets a trailer commit.
+func TestCloudBoot_SaveRecordsTrailers(t *testing.T) {
+	e := newCBEnv(t)
+	remote := wipRepo(t, e)
+	wt := filepath.Join(t.TempDir(), "wt")
+	gitT(t, e.cwd, "worktree", "add", "-b", "track-t", wt)
+	writeFileT(t, filepath.Join(wt, "t.txt"), "t\n")
+	gitT(t, wt, "add", "-A")
+	gitT(t, wt, "commit", "-m", "committed, clean")
+	failingLaunch(e, func() {})
+	if err := e.start(); err == nil {
+		t.Fatal("want the lead-gone error")
+	}
+	tr := func(ref, key string) string {
+		return gitT(t, remote, "log", "-1", "--format=%(trailers:key="+key+",valueonly)", ref)
+	}
+	if got := tr("wip/at-ab12/track-t", "Ateam-Branch"); got != "track-t" {
+		t.Errorf("Ateam-Branch = %q, want track-t", got)
+	}
+	if got := tr("wip/at-ab12/track-t", "Ateam-Worktree"); !sameDir(got, wt) {
+		t.Errorf("Ateam-Worktree = %q, want %q", got, wt)
+	}
+}
