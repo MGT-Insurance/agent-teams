@@ -30,10 +30,10 @@ const (
 	uiExitNoEvidence = 7 // verdict exists but the kind's required evidence is missing
 )
 
-// Test kinds. ui is the default and is never written to the bead.
+// Live-test job types, Dispatcher's job names. ui-test is the default.
 const (
-	uiKindUI  = "ui"
-	uiKindAPI = "api"
+	uiJobUI  = "ui-test"
+	uiJobAPI = "api-test"
 )
 
 const (
@@ -51,15 +51,15 @@ const (
 // as a hidden alias that runs the same subcommands. The wire name stays
 // ui-test: bead type, label, run-tools op, and stop text do not change.
 func RegisterUITestKong(p *cli.Parser) {
-	p.AddVerb("live-test", "Optional: file a Dispatcher live test (ui or api) and wait for its verdict.", &uiTestCmd{})
+	p.AddVerb("live-test", "Optional: file a Dispatcher live test (UI or API) and wait for its verdict.", &uiTestCmd{})
 	p.AddHiddenVerb("ui-test", "Alias of live-test.", &uiTestCmd{})
 }
 
 // uiTestCmd is the kong parent struct for `ateam live-test <subcommand>`. It has
 // no Run method: kong would run it for every subcommand (see mail_register.go).
 type uiTestCmd struct {
-	File  uiTestFileKong  `cmd:"" name:"file" help:"File a live-test bead (--kind ui or api) for a pushed branch in the Dispatcher's beads database; prints the bead id."`
-	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it and its evidence (screenshots or transcript.json) under --out. Exit 7 means the kind's evidence is missing."`
+	File  uiTestFileKong  `cmd:"" name:"file" help:"File a live-test bead (--job picks the UI or API job) for a pushed branch in the Dispatcher's beads database; prints the bead id."`
+	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it and its evidence (screenshots or transcript.json) under --out. Exit 7 means the job type's evidence is missing."`
 	Watch uiTestWatchKong `cmd:"" name:"watch" help:"Watch a live-test bead and mail its stop events (question, blocked, done, failed, expired) to the initiative."`
 	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a live-test bead; prints '<id> <status>'."`
 }
@@ -185,17 +185,17 @@ func normalizeGitHubOrigin(origin string) (url, repo string, ok bool) {
 }
 
 // uiTestBeadBody composes the bead description: the routing header the
-// Dispatcher parses, a "---" line, then the items verbatim. kind ui (or empty)
-// adds no line, so a ui bead stays byte-identical.
-func uiTestBeadBody(repoURL, branch, sha, scope, testUser, kind, items string) string {
+// Dispatcher parses, a "---" line, then the items verbatim. job names the bead
+// type (ui-test or api-test); empty means ui-test.
+func uiTestBeadBody(repoURL, branch, sha, scope, testUser, job, items string) string {
+	if job == "" {
+		job = uiJobUI
+	}
 	lines := []string{
 		"repo: " + repoURL,
 		"branch: " + branch,
 		"sha: " + sha,
-		"type: ui-test",
-	}
-	if kind != "" && kind != uiKindUI {
-		lines = append(lines, "kind: "+kind)
+		"type: " + job,
 	}
 	lines = append(lines,
 		"agent: tester",
@@ -214,7 +214,7 @@ type uiTestFileKong struct {
 	Worktree   string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
 	Scope      string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
 	ItemsFile  string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
-	Kind       string `name:"kind" default:"ui" help:"What the run tests and which evidence counts: ui (browser screenshots, default) or api (request/response transcript)."`
+	Job        string `name:"job" default:"ui-test" help:"Dispatcher job to file: ui-test (browser screenshots, default) or api-test (request/response transcript)."`
 	TestUser   string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
 	Title      string `name:"title" help:"Bead title suffix; defaults to the branch name."`
 	Initiative string `name:"initiative" help:"Initiative to mail the stop events to (local filing only); default: the owner of --worktree, else of the current directory."`
@@ -234,7 +234,7 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 			return err
 		}
 	}
-	kind, err := c.kind()
+	job, err := c.job()
 	if err != nil {
 		return err
 	}
@@ -278,14 +278,11 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 		title = branch
 	}
 	if inRun {
-		return c.fileViaRunTools(ctx, d, rt, kind, branch, sha, string(items))
+		return c.fileViaRunTools(ctx, d, rt, job, branch, sha, string(items))
 	}
-	labels := []string{"type:ui-test", "agent:tester", "repo:" + repo}
-	if kind != uiKindUI {
-		labels = append(labels, "kind:"+kind)
-	}
-	id, err := d.fileBead(settings.beadsDir, settings.actor, "ui-test: "+title, labels,
-		uiTestBeadBody(repoURL, branch, sha, c.Scope, c.TestUser, kind, string(items)))
+	labels := []string{"type:" + job, "agent:tester", "repo:" + repo}
+	id, err := d.fileBead(settings.beadsDir, settings.actor, job+": "+title, labels,
+		uiTestBeadBody(repoURL, branch, sha, c.Scope, c.TestUser, job, string(items)))
 	if err != nil {
 		return fmt.Errorf("live-test file: %w", err)
 	}
@@ -294,16 +291,16 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 	return nil
 }
 
-// kind returns the validated --kind; an empty value means ui. An unknown value
-// is a usage error.
-func (c *uiTestFileKong) kind() (string, error) {
-	switch c.Kind {
-	case "", uiKindUI:
-		return uiKindUI, nil
-	case uiKindAPI:
-		return uiKindAPI, nil
+// job returns the validated --job; an empty value means ui-test. An unknown
+// value is a usage error.
+func (c *uiTestFileKong) job() (string, error) {
+	switch c.Job {
+	case "", uiJobUI:
+		return uiJobUI, nil
+	case uiJobAPI:
+		return uiJobAPI, nil
 	}
-	return "", cli.Usagef("live-test file: --kind must be %s or %s, got %q", uiKindUI, uiKindAPI, c.Kind)
+	return "", cli.Usagef("live-test file: --job must be %s or %s, got %q", uiJobUI, uiJobAPI, c.Job)
 }
 
 // uiTestHead returns the current branch and full HEAD sha of worktree.
@@ -666,24 +663,25 @@ func uiRedactArtifactURLs(text string) string {
 
 // writeVerdict downloads the run's evidence (screenshots and transcript.json),
 // writes verdict.md, and prints its path followed by one evidence path per
-// line. The bead's kind picks the rule: ui needs at least one PNG and none
-// missing; api needs a transcript.json with at least one call. Otherwise exit 7.
+// line. The bead's type: picks the rule: ui-test needs at least one PNG and none
+// missing; api-test needs a transcript.json with at least one call. Otherwise
+// exit 7.
 func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, bead uiTestBead, comments []uiTestComment, verdict uiTestComment, runID, out string) error {
 	shots := uiDownloadShots(d, rt, comments, runID, out)
 	if shots.Err != nil {
 		return fmt.Errorf("live-test wait: evidence: %w", shots.Err)
 	}
-	kind := uiTestHeaderField(bead.Description, "kind")
-	if kind == "" {
-		kind = uiKindUI
+	job := uiTestHeaderField(bead.Description, "type")
+	if job == "" {
+		job = uiJobUI
 	}
 	evidence := shots.evidencePaths()
 	var b strings.Builder
 	fmt.Fprintf(&b, "bead: %s\nurl: %s%s\nrun: %s\nbranch: %s\nsha: %s\n",
 		bead.ID, uiBeadURLPrefix, bead.ID, runID,
 		uiTestHeaderField(bead.Description, "branch"), uiTestHeaderField(bead.Description, "sha"))
-	if kind != uiKindUI {
-		b.WriteString("kind: " + kind + "\n")
+	if job != uiJobUI {
+		b.WriteString("type: " + job + "\n")
 	}
 	b.WriteString("evidence:\n")
 	for _, p := range evidence {
@@ -709,7 +707,7 @@ func (c *uiTestWaitKong) writeVerdict(ctx *cli.Context, d uiTestDeps, rt *uiRunT
 	for _, p := range evidence {
 		fmt.Fprintln(ctx.Stdout, p)
 	}
-	if !shots.satisfies(kind) {
+	if !shots.satisfies(job) {
 		return cli.Silent(uiExitNoEvidence)
 	}
 	return nil
@@ -796,8 +794,8 @@ func (c *uiTestReplyKong) replyViaBD(d uiTestDeps, s uiTestSettings, text string
 	if bead.Status == "closed" {
 		return "", fmt.Errorf("bead %s is closed", c.ID)
 	}
-	if !slices.Contains(bead.Labels, "type:ui-test") {
-		return "", fmt.Errorf("%s is not a ui-test bead", c.ID)
+	if !slices.Contains(bead.Labels, "type:"+uiJobUI) && !slices.Contains(bead.Labels, "type:"+uiJobAPI) {
+		return "", fmt.Errorf("%s is not a ui-test or api-test bead", c.ID)
 	}
 	tmp, err := os.CreateTemp("", "ateam-ui-test-reply-*.txt")
 	if err != nil {

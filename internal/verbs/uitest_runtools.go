@@ -38,7 +38,7 @@ type runToolsFileReq struct {
 	SHA      string `json:"sha"`
 	Scope    string `json:"scope"`
 	TestUser string `json:"test_user,omitempty"`
-	Kind     string `json:"kind,omitempty"`
+	Type     string `json:"type,omitempty"`
 	Title    string `json:"title,omitempty"`
 	Items    string `json:"items"`
 }
@@ -82,15 +82,16 @@ func (rt *uiRunTools) beadReply(d uiTestDeps, id, text string) (string, error) {
 	return r.Status, nil
 }
 
-// fileViaRunTools posts the ui_test_file op, sending kind only when it is not
-// ui and failing closed (exit 5) when the response does not echo it. It prints the bead id on stdout
+// fileViaRunTools posts the ui_test_file op, sending type only when it is not
+// ui-test and failing closed (exit 5) when the response does not echo the
+// type. It prints the bead id on stdout
 // and its url on stderr, so callers that capture stdout still get the id.
-func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, kind, branch, sha, items string) error {
+func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, job, branch, sha, items string) error {
 	req := runToolsFileReq{Op: "ui_test_file", Branch: branch, SHA: sha, Scope: c.Scope, TestUser: c.TestUser, Title: c.Title, Items: items}
-	if kind != uiKindUI {
-		req.Kind = kind
+	if job != uiJobUI {
+		req.Type = job
 	}
-	data, err := rt.call(d, "ui_test_file", req)
+	data, err := rt.CallAs(d.httpDo, "ui_test_file", job, req, 1)
 	if err != nil {
 		return fmt.Errorf("live-test file: %w", err)
 	}
@@ -98,15 +99,15 @@ func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiR
 		ID      string `json:"id"`
 		URL     string `json:"url"`
 		Created bool   `json:"created"`
-		Kind    string `json:"kind"`
+		Type    string `json:"type"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil || r.ID == "" {
 		return fmt.Errorf("live-test file: run-tools ui_test_file: unexpected response")
 	}
-	// An older Dispatcher strips the unknown kind key and files a ui bead.
-	if kind != uiKindUI && r.Kind != kind {
-		fmt.Fprintf(ctx.Stderr, "Dispatcher does not support --kind %s yet; test locally\n", kind)
-		fmt.Fprintf(ctx.Stderr, "live-test file: bead %s was filed without the kind and runs as ui; ignore its verdict\n", r.ID)
+	// An older Dispatcher strips the unknown type key and files a ui-test bead.
+	if job != uiJobUI && r.Type != job {
+		fmt.Fprintf(ctx.Stderr, "Dispatcher does not support --job %s yet; test locally\n", job)
+		fmt.Fprintf(ctx.Stderr, "live-test file: bead %s was filed as ui-test, not %s; ignore its verdict\n", r.ID, job)
 		return cli.Silent(uiExitIneligible)
 	}
 	fmt.Fprintln(ctx.Stdout, r.ID)

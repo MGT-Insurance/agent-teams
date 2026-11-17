@@ -40,15 +40,15 @@ Every live item has a kind, and the kind sets its proof. An item without its kin
 - **api:** a request/response transcript from the real endpoint. Every PASS or FAIL cites at least one transcript call.
 - **cli:** the command and its output. Run it locally.
 
-Group the DRI's items by kind. On the remote path, file one `ateam live-test file --kind <ui|api>` per kind; `--kind` defaults to `ui`.
+Group the DRI's items by kind. On the remote path, file one `ateam live-test file --job <ui-test|api-test>` per kind (ui items to `ui-test`, api items to `api-test`); `--job` defaults to `ui-test`.
 
 On the local path, run ui items through `npx @playwright/cli`. Run api items with `curl` or a short script against the DRI's dev server, and save `transcript.json` as the proof: `{"version":1,"calls":[{"id":"c1","at","method","url","requestHeaders","requestBody","status","responseHeaders","responseBody","ms"}]}`. Replace the values of the `Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`, and `x-mcp-api-key` headers with `"<redacted>"`. Take a bearer token only from the repo's documented test harness (for example, a repo-specific local-testing skill), and never print it.
 
 ## Remote run on Dispatcher (the default)
 
-Before you ask the DRI for a dev server, try the remote path once for each kind: `ateam live-test file --kind <ui|api> --worktree <abs> --scope <apps> --items-file <file> --initiative <initiative-id>`. Do this even when your brief names a dev server or a fallback: the exit code picks the path, not the brief. Pass the initiative id from your brief; if the brief has none, omit `--initiative` and tell team-lead. The exit code decides the path:
+Before you ask the DRI for a dev server, try the remote path once for each kind: `ateam live-test file --job <ui-test|api-test> --worktree <abs> --scope <apps> --items-file <file> --initiative <initiative-id>`. Do this even when your brief names a dev server or a fallback: the exit code picks the path, not the brief. Pass the initiative id from your brief; if the brief has none, omit `--initiative` and tell team-lead. The exit code decides the path:
 
-- **Exit 5:** run that kind locally: use the Operating model above exactly as written, with the local path under Kinds and evidence. Nothing else in this section applies to it. Each kind gets its own exit code, so one kind can run remotely while another runs locally.
+- **Exit 5:** run that kind locally: use the Operating model above exactly as written, with the local path under Kinds and evidence. Nothing else in this section applies to it. Each kind gets its own exit code, so one kind can run remotely while another runs locally. Exit 5 on `--job api-test` also means this Dispatcher does not support api-test yet; run the api items locally.
 - **Exit 6:** the branch is not pushed. Tell team-lead; you never push.
 - **Exit 1:** a half-done setup. Send team-lead the message the verb printed.
 - **Exit 2:** a usage error in your command. Fix the command; this is not a failed run.

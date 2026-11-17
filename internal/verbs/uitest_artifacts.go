@@ -59,11 +59,11 @@ func (r uiShotResult) evidencePaths() []string {
 	return append(paths, r.Paths...)
 }
 
-// satisfies reports whether the downloaded evidence meets kind's rule: api needs
-// a transcript with at least one call; ui (and an absent kind) needs at least
-// one PNG and no missing PNG.
-func (r uiShotResult) satisfies(kind string) bool {
-	if kind == uiKindAPI {
+// satisfies reports whether the downloaded evidence meets the job type's rule:
+// api-test needs a transcript with at least one call; ui-test (and an absent
+// type) needs at least one PNG and no missing PNG.
+func (r uiShotResult) satisfies(job string) bool {
+	if job == uiJobAPI {
 		return r.Transcript != "" && r.TranscriptCalls > 0
 	}
 	return len(r.Paths) > 0 && r.ShotMissing == 0

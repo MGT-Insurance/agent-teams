@@ -198,14 +198,16 @@ before. If you set `dispatcher_beads`, also set `dispatcher_actor` (or
 key.
 
 - `ateam live-test file --worktree <abs> --scope <apps> --items-file <path>
-  [--kind ui|api] [--test-user <email>] [--title <text>] [--initiative <id>]`
-  files a bead for the worktree's branch and prints the bead id. `--kind`
-  defaults to `ui`, which files the same bead as before. `--kind api` adds a
-  `kind: api` header line and a `kind:api` label, and the run proves its items
-  with a request/response transcript instead of screenshots. Any other value is
-  a usage error. In a cloud run, if the Dispatcher doesn't echo the kind, the
-  command exits 5 with `Dispatcher does not support --kind api yet; test
-  locally`. On a laptop, it then
+  [--job ui-test|api-test] [--test-user <email>] [--title <text>] [--initiative <id>]`
+  files a bead for the worktree's branch and prints the bead id. `--job` names
+  the Dispatcher job to file and defaults to `ui-test`, which files the same
+  bead as before. `--job api-test` files a bead with `type: api-test` and a
+  `type:api-test` label, and the run proves its items with a request/response
+  transcript instead of screenshots. Any other value is a usage error. In a
+  cloud run, the command sends the job as `type` and requires the Dispatcher to
+  echo it; if the echo is missing, it exits 5 with `Dispatcher does not support
+  --job api-test yet; test locally`. A cloud run needs the grant for the job
+  it files. On a laptop, the command then
   starts the stop watcher (see `watch` below) for the initiative named by
   `--initiative`, else the one that owns `--worktree`, and prints `watching
   <bead-id> for <initiative>` on stderr. The branch's HEAD must already be on
@@ -238,16 +240,17 @@ ends its turn, and the stop event (the Dispatcher's in a cloud run, the
 watcher's mail on a laptop) wakes it to run `wait`, then `reply` for a
 question or act on the verdict.
 
-A repository needs a ui-test catalog in the Dispatcher. Without one, the
+A repository needs a catalog for the job (ui-test or api-test) in the Dispatcher. Without one, the
 Dispatcher rejects the bead and `wait` exits 5, which means "test locally".
 
-Evidence rule, by the bead's kind. A `ui` run needs at least one PNG and no
-missing PNG. An `api` run needs a `transcript.json` with at least one call.
+Evidence rule, by the bead's `type:`. A `ui-test` run needs at least one PNG
+and no missing PNG. An `api-test` run needs a `transcript.json` with at least
+one call.
 
-Exit codes: 0 verdict with the kind's evidence downloaded, 2 failed, 3 still
+Exit codes: 0 verdict with the job type's evidence downloaded, 2 failed, 3 still
 pending (run the same command again), 4 the tester asked a question, 5
 ineligible or not configured, 6 not pushed, 7 NO-EVIDENCE: a verdict without
-the kind's required evidence (a link expired or failed, or the run stored
+the job type's required evidence (a link expired or failed, or the run stored
 none). On 7, `verdict.md` lists each missing artifact and the reason under
 `missing:`.
 

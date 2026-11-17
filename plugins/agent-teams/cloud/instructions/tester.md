@@ -5,7 +5,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped tester role; ne
 - `ateam` home is the hosted workspace. Use `ateam` and `bd` only for beads and mail.
 
 ## Live UI verification
-- Use the Dispatcher ui-test run tool, not a local browser. File with `ateam live-test file --initiative <initiative id>` (add `--kind api` for API items), send team-lead the bead id, and stop.
+- Use the Dispatcher ui-test run tool, not a local browser. File with `ateam live-test file --initiative <initiative id>` (add `--job api-test` for API items), send team-lead the bead id, and stop.
 - Never wait in the foreground and never run `ateam live-test wait`. The DRI receives the Dispatcher's `ui-test <id> <kind>` event and collects the verdict.
 - Don't start a long-lived dev server. The DRI owns server lifecycle.
 

@@ -621,7 +621,7 @@ func TestUITest_RegisteredWithFrozenFlags(t *testing.T) {
 	if got := kctx.Command(); got != "ui-test file" {
 		t.Errorf("command = %q", got)
 	}
-	kctx, err = parser.Parse([]string{"live-test", "file", "--worktree", "/wt", "--scope", "mithril", "--items-file", "/i.md", "--kind", "api"})
+	kctx, err = parser.Parse([]string{"live-test", "file", "--worktree", "/wt", "--scope", "mithril", "--items-file", "/i.md", "--job", "api-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,6 +712,16 @@ func TestUITestReply_BlockedBeadCommentsThenMovesToInProgress(t *testing.T) {
 	}
 }
 
+func TestUITestReply_AcceptsAPITestBead(t *testing.T) {
+	h, writes := replyLocal(t, uiBead("blocked", "type:api-test"), nil)
+	if err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "use alice", deps: h.deps}).Run(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(*writes) != 2 || h.stdout.String() != "dsp-ui1 in_progress\n" {
+		t.Errorf("writes = %v, stdout = %q", *writes, h.stdout.String())
+	}
+}
+
 func TestUITestReply_OpenAndInProgressBeadsOnlyComment(t *testing.T) {
 	for _, status := range []string{"open", "in_progress"} {
 		h, writes := replyLocal(t, uiBead(status, "type:ui-test"), nil)
@@ -745,8 +755,8 @@ func TestUITestReply_ClosedOrNonUITestBeadExits1WithoutWriting(t *testing.T) {
 		want string
 	}{
 		"closed":      {uiBead("closed", "type:ui-test"), "bead dsp-ui1 is closed"},
-		"not ui-test": {uiBead("blocked", "type:bug"), "dsp-ui1 is not a ui-test bead"},
-		"no labels":   {uiBead("blocked"), "dsp-ui1 is not a ui-test bead"},
+		"not ui-test": {uiBead("blocked", "type:bug"), "dsp-ui1 is not a ui-test or api-test bead"},
+		"no labels":   {uiBead("blocked"), "dsp-ui1 is not a ui-test or api-test bead"},
 	} {
 		h, writes := replyLocal(t, c.bead, nil)
 		err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
