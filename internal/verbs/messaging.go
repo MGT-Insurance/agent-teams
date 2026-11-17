@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -324,12 +325,18 @@ func (c *sendKong) sendStewardThroughOutbox(ctx *cli.Context) error {
 	return nil
 }
 
+// peerInitiativeID is the recipient id shape Dispatcher accepts for a peer mail op.
+var peerInitiativeID = regexp.MustCompile(`^[a-z][a-z0-9]*-[a-z0-9.]+$`)
+
 // sendPeerThroughOutbox sends mail from a cloud run to another cloud
 // initiative by appending a peer mail op to the run outbox. Every refusal
 // returns an error and writes nothing.
 func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	if c.RecipientID == os.Getenv("DSP_META_INITIATIVE") {
 		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent", c.RecipientID)
+	}
+	if !peerInitiativeID.MatchString(c.RecipientID) {
+		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent", c.RecipientID)
 	}
 	issue, err := bd.ShowIssue(ctx.BD, c.RecipientID)
 	if err != nil {
@@ -350,6 +357,9 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	text, err := os.ReadFile(c.File)
 	if err != nil {
 		return fmt.Errorf("ateam send: read %s: %w", c.File, err)
+	}
+	if len(text) == 0 {
+		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
 	}
 	if err := appendOutboxOp(newPeerMailOp(c.RecipientID, runBead, string(text))); err != nil {
 		return fmt.Errorf("ateam send: outbox: %w", err)

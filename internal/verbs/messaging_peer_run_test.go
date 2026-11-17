@@ -117,3 +117,26 @@ func TestSendRun_PeerReadErrorRefused(t *testing.T) {
 	}
 	assertNothingSent(t, e)
 }
+
+func TestSendRun_PeerEmptyBodyRefused(t *testing.T) {
+	e, _ := peerSendEnv(t, bd.Issue{ID: "at-peer1", Status: "open", Description: "where: run:dsp-peer9\n"})
+	err := sendPeer(e, "at-peer1", "")
+	if err == nil || !strings.Contains(err.Error(), "is empty; nothing sent") {
+		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}
+
+func TestSendRun_PeerInvalidIDRefused(t *testing.T) {
+	for _, id := range []string{"At-peer1", "peer1", "at-", "at-Peer", "at peer", "1at-x", "at-peer1\n"} {
+		e, bdCalls := peerSendEnv(t, bd.Issue{ID: id, Status: "open", Description: "where: run:dsp-peer9\n"})
+		err := sendPeer(e, id, "hi")
+		if err == nil || !strings.Contains(err.Error(), "is not a valid initiative id; nothing sent") {
+			t.Fatalf("id %q: err = %v", id, err)
+		}
+		if *bdCalls != 0 {
+			t.Errorf("id %q: %d bd calls; the id check runs before the read", id, *bdCalls)
+		}
+		assertNothingSent(t, e)
+	}
+}
