@@ -141,7 +141,7 @@ func uiWatchDedupKey(id, kind, question string, gen int) string {
 
 // uiTestWatchKong implements `ateam ui-test watch`.
 type uiTestWatchKong struct {
-	ID         string `arg:"" name:"bead-id" help:"The ui-test bead id printed by 'ui-test file'."`
+	ID         string `arg:"" name:"bead-id" help:"The live-test bead id printed by 'live-test file'."`
 	Initiative string `name:"initiative" help:"Initiative to mail the stop events to; default: the open initiative that owns the current directory."`
 	Child      bool   `name:"child" hidden:"" help:"Internal: run as the detached watcher."`
 

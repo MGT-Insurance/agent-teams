@@ -326,11 +326,11 @@ func TestUITest_BeadBodyGolden(t *testing.T) {
 	const items = "What to verify:\n1. Home loads. Screenshot it.\n"
 	want := "repo: https://github.com/acme/widgets.git\nbranch: feat-x\nsha: " + uiTestSHA +
 		"\ntype: ui-test\nagent: tester\nfix: none\nscope: mithril\n---\n" + items
-	if got := uiTestBeadBody("https://github.com/acme/widgets.git", "feat-x", uiTestSHA, "mithril", "", items); got != want {
+	if got := uiTestBeadBody("https://github.com/acme/widgets.git", "feat-x", uiTestSHA, "mithril", "", "", items); got != want {
 		t.Errorf("without test_user:\n%s\nwant:\n%s", got, want)
 	}
 	want = strings.Replace(want, "scope: mithril\n", "scope: mithril\ntest_user: qa@example.com\n", 1)
-	if got := uiTestBeadBody("https://github.com/acme/widgets.git", "feat-x", uiTestSHA, "mithril", "qa@example.com", items); got != want {
+	if got := uiTestBeadBody("https://github.com/acme/widgets.git", "feat-x", uiTestSHA, "mithril", "qa@example.com", "", items); got != want {
 		t.Errorf("with test_user:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -621,6 +621,13 @@ func TestUITest_RegisteredWithFrozenFlags(t *testing.T) {
 	if got := kctx.Command(); got != "ui-test file" {
 		t.Errorf("command = %q", got)
 	}
+	kctx, err = parser.Parse([]string{"live-test", "file", "--worktree", "/wt", "--scope", "mithril", "--items-file", "/i.md", "--kind", "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kctx.Command(); got != "live-test file" {
+		t.Errorf("command = %q", got)
+	}
 	kctx, err = parser.Parse([]string{"ui-test", "wait", "dsp-1", "--out", "/o", "--timeout", "2m"})
 	if err != nil {
 		t.Fatal(err)
@@ -743,7 +750,7 @@ func TestUITestReply_ClosedOrNonUITestBeadExits1WithoutWriting(t *testing.T) {
 	} {
 		h, writes := replyLocal(t, c.bead, nil)
 		err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
-		if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "ui-test reply: "+c.want) {
+		if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "live-test reply: "+c.want) {
 			t.Errorf("%s: err = %v (exit %d)", name, err, exitOf(err))
 		}
 		if len(*writes) != 0 {
@@ -789,7 +796,7 @@ func TestUITestReply_UpdateFailureReportsPostedAnswerAndDoesNotRepost(t *testing
 		return nil
 	})
 	err := (&uiTestReplyKong{ID: "dsp-ui1", Text: "x", deps: h.deps}).Run(h.ctx)
-	if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "ui-test reply: answer posted on dsp-ui1 but status move failed: boom") {
+	if exitOf(err) != 1 || err == nil || !strings.Contains(err.Error(), "live-test reply: answer posted on dsp-ui1 but status move failed: boom") {
 		t.Errorf("err = %v (exit %d)", err, exitOf(err))
 	}
 	comments := 0

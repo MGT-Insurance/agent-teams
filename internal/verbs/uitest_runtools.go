@@ -38,6 +38,7 @@ type runToolsFileReq struct {
 	SHA      string `json:"sha"`
 	Scope    string `json:"scope"`
 	TestUser string `json:"test_user,omitempty"`
+	Kind     string `json:"kind,omitempty"`
 	Title    string `json:"title,omitempty"`
 	Items    string `json:"items"`
 }
@@ -81,28 +82,39 @@ func (rt *uiRunTools) beadReply(d uiTestDeps, id, text string) (string, error) {
 	return r.Status, nil
 }
 
-// fileViaRunTools posts the ui_test_file op. It prints the bead id on stdout
+// fileViaRunTools posts the ui_test_file op, sending kind only when it is not
+// ui and failing closed (exit 5) when the response does not echo it. It prints the bead id on stdout
 // and its url on stderr, so callers that capture stdout still get the id.
-func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, branch, sha, items string) error {
+func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, kind, branch, sha, items string) error {
 	req := runToolsFileReq{Op: "ui_test_file", Branch: branch, SHA: sha, Scope: c.Scope, TestUser: c.TestUser, Title: c.Title, Items: items}
+	if kind != uiKindUI {
+		req.Kind = kind
+	}
 	data, err := rt.call(d, "ui_test_file", req)
 	if err != nil {
-		return fmt.Errorf("ui-test file: %w", err)
+		return fmt.Errorf("live-test file: %w", err)
 	}
 	var r struct {
 		ID      string `json:"id"`
 		URL     string `json:"url"`
 		Created bool   `json:"created"`
+		Kind    string `json:"kind"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil || r.ID == "" {
-		return fmt.Errorf("ui-test file: run-tools ui_test_file: unexpected response")
+		return fmt.Errorf("live-test file: run-tools ui_test_file: unexpected response")
+	}
+	// An older Dispatcher strips the unknown kind key and files a ui bead.
+	if kind != uiKindUI && r.Kind != kind {
+		fmt.Fprintf(ctx.Stderr, "Dispatcher does not support --kind %s yet; test locally\n", kind)
+		fmt.Fprintf(ctx.Stderr, "live-test file: bead %s was filed without the kind and runs as ui; ignore its verdict\n", r.ID)
+		return cli.Silent(uiExitIneligible)
 	}
 	fmt.Fprintln(ctx.Stdout, r.ID)
 	if r.URL != "" {
 		fmt.Fprintln(ctx.Stderr, r.URL)
 	}
 	if !r.Created {
-		fmt.Fprintf(ctx.Stderr, "ui-test file: reused open bead %s (same branch, sha, and items filed recently)\n", r.ID)
+		fmt.Fprintf(ctx.Stderr, "live-test file: reused open bead %s (same branch, sha, and items filed recently)\n", r.ID)
 	}
 	return nil
 }

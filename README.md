@@ -141,7 +141,7 @@ hands an initiative to the Dispatcher instead of creating a local worktree:
 - `dispatcher_beads` — a `bd` client directory bound to your main
   `beads_<user>` database, where `--cloud` files the run bead. The Dispatcher
   autostarts only run beads in that main database; a bead filed in an
-  Additional Database never starts. Optional: `ateam ui-test` also reads it,
+  Additional Database never starts. Optional: `ateam live-test` also reads it,
   and it is off when the key is unset.
 - `dispatcher_actor` — the account email that files the run bead. The
   `ATEAM_DISPATCHER_ACTOR` environment variable overrides it. Agent actors
@@ -188,40 +188,48 @@ and `--id-only`, plus every flag `--cloud` refuses.
 
 ### Optional: remote live testing with Dispatcher
 
-`ateam ui-test` lets a tester run a live UI test on the Dispatcher instead of
-on your machine. It is an add-on: it is off unless `dispatcher_beads` is set in
+`ateam live-test` lets a tester run a live test, UI or API, on the Dispatcher
+instead of on your machine. `ateam ui-test` still works as an alias for the same
+command. It is an add-on: it is off unless `dispatcher_beads` is set in
 `config.toml`. Without that key, both subcommands print `Dispatcher not
 configured; test locally` and exit 5, and the tester tests locally exactly as
 before. If you set `dispatcher_beads`, also set `dispatcher_actor` (or
 `ATEAM_DISPATCHER_ACTOR`); with the actor missing, the verbs exit 1 and name the
 key.
 
-- `ateam ui-test file --worktree <abs> --scope <apps> --items-file <path>
-  [--test-user <email>] [--title <text>] [--initiative <id>]` files a ui-test
-  bead for the worktree's branch and prints the bead id. On a laptop, it then
+- `ateam live-test file --worktree <abs> --scope <apps> --items-file <path>
+  [--kind ui|api] [--test-user <email>] [--title <text>] [--initiative <id>]`
+  files a bead for the worktree's branch and prints the bead id. `--kind`
+  defaults to `ui`, which files the same bead as before. `--kind api` adds a
+  `kind: api` header line and a `kind:api` label, and the run proves its items
+  with a request/response transcript instead of screenshots. Any other value is
+  a usage error. In a cloud run, if the Dispatcher doesn't echo the kind, the
+  command exits 5 with `Dispatcher does not support --kind api yet; test
+  locally`. On a laptop, it then
   starts the stop watcher (see `watch` below) for the initiative named by
   `--initiative`, else the one that owns `--worktree`, and prints `watching
   <bead-id> for <initiative>` on stderr. The branch's HEAD must already be on
   `origin` (exit 6 otherwise), and `origin` must be a GitHub repository (exit 5
   otherwise).
-- `ateam ui-test wait <bead-id> --out <dir> [--timeout <duration>]` reads the
+- `ateam live-test wait <bead-id> --out <dir> [--timeout <duration>]` reads the
   bead's state. It polls every 30 seconds for up to `--timeout` (default 9
   minutes, maximum 9 minutes 30 seconds) and writes `verdict.md` under
-  `--out`. It also downloads each screenshot from the signed links in the
-  Dispatcher's comment into `<out>/screenshots/`, and prints the `verdict.md`
-  path followed by one PNG path per line. The requests send no credentials:
+  `--out`. It also downloads each artifact from the signed links in the
+  Dispatcher's comment: screenshots into `<out>/screenshots/` and
+  `transcript.json` into `<out>`. It prints the `verdict.md` path followed by
+  one evidence path per line, and `verdict.md` lists them under `evidence:`. The requests send no credentials:
   the signature in the link is the credential, and `verdict.md` never copies a
   link. The tester never runs `wait`; the DRI runs it with a short `--timeout`
   after a stop event.
-- `ateam ui-test reply <bead-id> (--text <text> | --file <path>)` answers the
+- `ateam live-test reply <bead-id> (--text <text> | --file <path>)` answers the
   tester's question. In a cloud run it goes through the run's tool. On a
   laptop it posts an `answer: <text>` comment through `bd` as
   `dispatcher_actor` and, if the bead is `blocked`, moves it to `in_progress`.
-- `ateam ui-test watch <bead-id> [--initiative <id>]` watches a filed bead on
+- `ateam live-test watch <bead-id> [--initiative <id>]` watches a filed bead on
   a laptop and mails `ui-test <id> <kind>` to the initiative each time the
-  bead stops (`question`, `blocked`, `done`, or `failed`). `ui-test file`
+  bead stops (`question`, `blocked`, `done`, or `failed`). `live-test file`
   starts it automatically. After 24 hours it mails `expired` and exits. To
-  re-arm it after a reboot or a killed watcher, run `ateam ui-test watch
+  re-arm it after a reboot or a killed watcher, run `ateam live-test watch
   <bead-id>`; the command is idempotent. A cloud run gets these events from
   the Dispatcher instead.
 
@@ -233,11 +241,15 @@ question or act on the verdict.
 A repository needs a ui-test catalog in the Dispatcher. Without one, the
 Dispatcher rejects the bead and `wait` exits 5, which means "test locally".
 
-Exit codes: 0 verdict with every screenshot downloaded, 2 failed, 3 still
+Evidence rule, by the bead's kind. A `ui` run needs at least one PNG and no
+missing PNG. An `api` run needs a `transcript.json` with at least one call.
+
+Exit codes: 0 verdict with the kind's evidence downloaded, 2 failed, 3 still
 pending (run the same command again), 4 the tester asked a question, 5
-ineligible or not configured, 6 not pushed, 7 verdict without all of its
-screenshots (a link expired or failed, or the run stored none). On 7,
-`verdict.md` lists each missing screenshot and the reason under `missing:`.
+ineligible or not configured, 6 not pushed, 7 NO-EVIDENCE: a verdict without
+the kind's required evidence (a link expired or failed, or the run stored
+none). On 7, `verdict.md` lists each missing artifact and the reason under
+`missing:`.
 
 ### Optional: publish a page from a Dispatcher run
 

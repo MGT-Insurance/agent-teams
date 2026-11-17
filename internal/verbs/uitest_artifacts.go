@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -29,13 +30,43 @@ const (
 	shotNetwork         = "network"
 	shotNoLinks         = "no-links"
 	shotSigningDisabled = "signing-disabled"
+	shotBadTranscript   = "bad-transcript"
 )
 
-// uiShotResult is the outcome of the screenshot step.
+// uiTranscriptName is the artifact name of an api run's request/response record.
+const uiTranscriptName = "transcript.json"
+
+// uiShotResult is the outcome of the artifact step.
 type uiShotResult struct {
 	Paths   []string // absolute PNG paths, one per downloaded artifact
 	Missing []string // one "<name> <reason>" line per failure; never a URL
-	Err     error    // a local failure (cannot write under --out), not a link failure
+	// ShotMissing counts the Missing entries that are screenshots, which the ui
+	// evidence rule checks; a missing transcript does not fail a ui run.
+	ShotMissing int
+	// Transcript is the absolute path of the downloaded transcript.json, or "".
+	Transcript string
+	// TranscriptCalls is the number of calls in Transcript.
+	TranscriptCalls int
+	Err             error // a local failure (cannot write under --out), not a link failure
+}
+
+// evidencePaths lists every downloaded evidence file: the transcript, then the PNGs.
+func (r uiShotResult) evidencePaths() []string {
+	var paths []string
+	if r.Transcript != "" {
+		paths = append(paths, r.Transcript)
+	}
+	return append(paths, r.Paths...)
+}
+
+// satisfies reports whether the downloaded evidence meets kind's rule: api needs
+// a transcript with at least one call; ui (and an absent kind) needs at least
+// one PNG and no missing PNG.
+func (r uiShotResult) satisfies(kind string) bool {
+	if kind == uiKindAPI {
+		return r.Transcript != "" && r.TranscriptCalls > 0
+	}
+	return len(r.Paths) > 0 && r.ShotMissing == 0
 }
 
 // uiArtifact is one "artifact: <name> <url>" line of the job:ui-test comment.
@@ -129,8 +160,8 @@ func uiShotExpired(link string, now time.Time) bool {
 	return now.Unix() > exp
 }
 
-// uiDownloadShots fetches every artifact link for runID into
-// <out>/screenshots. The requests carry no Authorization header and no cookie:
+// uiDownloadShots fetches every artifact link for runID: PNGs into
+// <out>/screenshots and transcript.json into <out>. The requests carry no Authorization header and no cookie:
 // the signature in the URL is the credential.
 //
 // A non-nil rt fetches each artifact through the run-tools artifact op instead;
@@ -141,9 +172,11 @@ func uiDownloadShots(d uiTestDeps, rt *uiRunTools, comments []uiTestComment, run
 	switch {
 	case links.Disabled:
 		res.Missing = append(res.Missing, "screenshots "+shotSigningDisabled)
+		res.ShotMissing++
 		return res
 	case !found || len(links.Artifacts) == 0:
 		res.Missing = append(res.Missing, "screenshots "+shotNoLinks)
+		res.ShotMissing++
 		return res
 	}
 	dir := filepath.Join(out, "screenshots")
@@ -153,45 +186,71 @@ func uiDownloadShots(d uiTestDeps, rt *uiRunTools, comments []uiTestComment, run
 	}
 	used := map[string]bool{}
 	for _, a := range links.Artifacts {
-		file := uiShotFileName(a.Name, used)
+		isTranscript := path.Base(strings.ReplaceAll(a.Name, `\`, "/")) == uiTranscriptName
+		file, dest := uiTranscriptName, filepath.Join(out, uiTranscriptName)
+		if !isTranscript {
+			file = uiShotFileName(a.Name, used)
+			dest = filepath.Join(dir, file)
+		}
 		var data []byte
 		var reason string
 		if rt != nil {
-			data, reason = uiFetchPNG(d, func() (*http.Request, error) { return rt.artifactRequest(runID, a.Name) })
+			data, reason = uiFetchArtifact(d, !isTranscript, func() (*http.Request, error) { return rt.artifactRequest(runID, a.Name) })
 		} else {
 			if uiShotExpired(a.URL, d.now()) {
-				res.Missing = append(res.Missing, file+" "+shotExpired)
+				res.addMissing(file+" "+shotExpired, isTranscript)
 				continue
 			}
-			data, reason = uiFetchPNG(d, func() (*http.Request, error) { return http.NewRequest(http.MethodGet, a.URL, nil) })
+			data, reason = uiFetchArtifact(d, !isTranscript, func() (*http.Request, error) { return http.NewRequest(http.MethodGet, a.URL, nil) })
+		}
+		if reason == "" && isTranscript {
+			var tr struct {
+				Calls []json.RawMessage `json:"calls"`
+			}
+			if json.Unmarshal(data, &tr) != nil {
+				reason = shotBadTranscript
+			} else {
+				res.TranscriptCalls = len(tr.Calls)
+			}
 		}
 		if reason != "" {
-			res.Missing = append(res.Missing, file+" "+reason)
+			res.addMissing(file+" "+reason, isTranscript)
 			continue
 		}
-		dest := filepath.Join(dir, file)
 		if err := os.WriteFile(dest, data, 0o644); err != nil {
 			res.Err = err
 			return res
 		}
-		res.Paths = append(res.Paths, dest)
+		if isTranscript {
+			res.Transcript = dest
+		} else {
+			res.Paths = append(res.Paths, dest)
+		}
 	}
 	return res
 }
 
-// uiFetchPNG sends the request mk builds with one retry on a 5xx or a timeout. It returns the
-// PNG bytes, or a failure reason (http-<code>, not-png, too-large, network).
-// The reason never contains the URL.
-func uiFetchPNG(d uiTestDeps, mk func() (*http.Request, error)) (data []byte, reason string) {
+func (r *uiShotResult) addMissing(line string, transcript bool) {
+	r.Missing = append(r.Missing, line)
+	if !transcript {
+		r.ShotMissing++
+	}
+}
+
+// uiFetchArtifact sends the request mk builds with one retry on a 5xx or a
+// timeout. It returns the body, or a failure reason (http-<code>, not-png,
+// too-large, network). The reason never contains the URL. png requires an
+// image/png response; otherwise any content type is accepted.
+func uiFetchArtifact(d uiTestDeps, png bool, mk func() (*http.Request, error)) (data []byte, reason string) {
 	for attempt := 0; ; attempt++ {
-		data, reason, retry := uiFetchOnce(d, mk)
+		data, reason, retry := uiFetchOnce(d, png, mk)
 		if reason == "" || !retry || attempt == 1 {
 			return data, reason
 		}
 	}
 }
 
-func uiFetchOnce(d uiTestDeps, mk func() (*http.Request, error)) (data []byte, reason string, retry bool) {
+func uiFetchOnce(d uiTestDeps, png bool, mk func() (*http.Request, error)) (data []byte, reason string, retry bool) {
 	req, err := mk()
 	if err != nil {
 		return nil, shotNetwork, false
@@ -205,8 +264,10 @@ func uiFetchOnce(d uiTestDeps, mk func() (*http.Request, error)) (data []byte, r
 	if resp.StatusCode != http.StatusOK {
 		return nil, "http-" + strconv.Itoa(resp.StatusCode), resp.StatusCode >= 500
 	}
-	if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || mt != "image/png" {
-		return nil, shotNotPNG, false
+	if png {
+		if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || mt != "image/png" {
+			return nil, shotNotPNG, false
+		}
 	}
 	if resp.ContentLength > uiShotMaxBytes {
 		return nil, shotTooLarge, false
