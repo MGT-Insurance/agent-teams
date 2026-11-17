@@ -116,7 +116,7 @@ func TestListCallsBDArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 bd call, got %d", len(calls))
 	}
-	wantArgs := []string{"-C", "/ws", "list", "--status=open"}
+	wantArgs := []string{"-C", "/ws", "list", "--status=open", "--limit=0"}
 	for i, w := range wantArgs {
 		if i >= len(calls[0]) || calls[0][i] != w {
 			t.Errorf("bd args[%d] = %q, want %q (full: %v)", i, calls[0][i], w, calls[0])
@@ -159,7 +159,7 @@ func TestListJSONCallsBDArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 bd call, got %d", len(calls))
 	}
-	wantArgs := []string{"-C", "/ws", "list", "--status=open", "--json"}
+	wantArgs := []string{"-C", "/ws", "list", "--status=open", "--limit=0", "--json"}
 	for i, w := range wantArgs {
 		if i >= len(calls[0]) || calls[0][i] != w {
 			t.Errorf("bd args[%d] = %q, want %q (full: %v)", i, calls[0][i], w, calls[0])
@@ -531,7 +531,7 @@ func TestListJSONStatusFlagReachesBD(t *testing.T) {
 		if len(calls) != 1 {
 			t.Fatalf("tokens %v: expected 1 bd call, got %d", tc.tokens, len(calls))
 		}
-		want := []string{"-C", "/ws", "list", tc.want, "--json"}
+		want := []string{"-C", "/ws", "list", tc.want, "--limit=0", "--json"}
 		if len(calls[0]) != len(want) {
 			t.Fatalf("tokens %v: bd args = %v, want %v", tc.tokens, calls[0], want)
 		}

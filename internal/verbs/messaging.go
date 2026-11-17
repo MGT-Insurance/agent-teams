@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,9 @@ import (
 
 // whereHostPrefix is the ring-1 grammar of the where: line (docs/hosted-beads.md F6).
 const whereHostPrefix = "host:"
+
+// whereRunPrefix is the where: grammar of a cloud initiative: "run:<bead>".
+const whereRunPrefix = "run:"
 
 // toHostLabelPrefix is the label a hosted sender stamps on a message at create
 // with the recipient's host; the follower reads it from the journal row
@@ -96,6 +100,12 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 	// nothing is written to at and no doorbell is touched.
 	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID == StewardHandle {
 		return c.sendStewardThroughOutbox(ctx)
+	}
+
+	// Inside a run, mail to any other initiative goes through the run outbox
+	// when the recipient is a cloud initiative; the run cannot write to at.
+	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID != StewardHandle {
+		return c.sendPeerThroughOutbox(ctx)
 	}
 
 	sender := resolveSender(ctx, c.Sender)
@@ -312,6 +322,49 @@ func (c *sendKong) sendStewardThroughOutbox(ctx *cli.Context) error {
 		return fmt.Errorf("ateam send: outbox: %w", err)
 	}
 	fmt.Fprintln(ctx.Stdout, "sent to steward through the run outbox")
+	return nil
+}
+
+// peerInitiativeID is the recipient id shape Dispatcher accepts for a peer mail op.
+var peerInitiativeID = regexp.MustCompile(`^[a-z][a-z0-9]*-[a-z0-9.]+$`)
+
+// sendPeerThroughOutbox sends mail from a cloud run to another cloud
+// initiative by appending a peer mail op to the run outbox. Every refusal
+// returns an error and writes nothing.
+func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
+	if c.RecipientID == os.Getenv("DSP_META_INITIATIVE") {
+		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent", c.RecipientID)
+	}
+	if !peerInitiativeID.MatchString(c.RecipientID) {
+		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent", c.RecipientID)
+	}
+	issue, err := bd.ShowIssue(ctx.BD, c.RecipientID)
+	if err != nil {
+		return fmt.Errorf("ateam send: read recipient %s: %w; nothing sent", c.RecipientID, err)
+	}
+	if issue.Status == "closed" {
+		return fmt.Errorf("ateam send: %s is closed; nothing sent", c.RecipientID)
+	}
+	where := initiative.Of(issue).Where
+	runBead, ok := strings.CutPrefix(where, whereRunPrefix)
+	if !ok || runBead == "" {
+		shown := where
+		if shown == "" {
+			shown = "none"
+		}
+		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); mail between cloud and laptop initiatives is deferred (dsp-43n.17); nothing sent", c.RecipientID, shown)
+	}
+	text, err := os.ReadFile(c.File)
+	if err != nil {
+		return fmt.Errorf("ateam send: read %s: %w", c.File, err)
+	}
+	if len(text) == 0 {
+		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
+	}
+	if err := appendOutboxOp(newPeerMailOp(c.RecipientID, runBead, string(text))); err != nil {
+		return fmt.Errorf("ateam send: outbox: %w", err)
+	}
+	fmt.Fprintf(ctx.Stdout, "sent to %s through the run outbox (run %s)\n", c.RecipientID, runBead)
 	return nil
 }
 

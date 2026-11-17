@@ -95,6 +95,26 @@ func newMessageMailOp(id, text string) outboxMailOp {
 	}
 }
 
+// outboxPeerMailOp is the outbox line that asks the Dispatcher to comment on a
+// peer cloud initiative's run bead: {"op":"mail","to":...,"run":...,"body":...}.
+// The line never names the sender; the Dispatcher reads it from the run bead.
+// The field order is part of the Dispatcher contract.
+type outboxPeerMailOp struct {
+	Op   string `json:"op"`
+	To   string `json:"to"`
+	Run  string `json:"run"`
+	Body string `json:"body"`
+}
+
+// newPeerMailOp builds the peer mail op for recipient initiative to, whose run
+// bead is run. It truncates body to maxGateOutboxAskRunes runes.
+func newPeerMailOp(to, run, body string) outboxPeerMailOp {
+	if r := []rune(body); len(r) > maxGateOutboxAskRunes {
+		body = string(r[:maxGateOutboxAskRunes])
+	}
+	return outboxPeerMailOp{Op: "mail", To: to, Run: run, Body: body}
+}
+
 // outboxAckOp is the outbox line that acknowledges run messages:
 // {"op":"ack","seqs":[...]}.
 type outboxAckOp struct {

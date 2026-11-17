@@ -51,7 +51,7 @@ func (c *listKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam list: no context")
 	}
-	out, err := ctx.BD.Run("list", "--status=open")
+	out, err := ctx.BD.Run("list", "--status=open", "--limit=0")
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func (c *listJSONKong) Run(ctx *cli.Context) error {
 	if status == "" {
 		status = "open"
 	}
-	out, err := ctx.BD.Run("list", "--status="+status, "--json")
+	out, err := ctx.BD.Run("list", "--status="+status, "--limit=0", "--json")
 	if err != nil {
 		return err
 	}
