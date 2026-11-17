@@ -88,6 +88,7 @@ func (c *cloudBootCommon) restoreWIP(ctx *cli.Context, id, cwd string) string {
 			continue
 		}
 		if c.wipAlreadyRestored(bctx, git, cwd, r.ref, r.sha) {
+			wipSkipped(ctx, r.ref, "this sandbox already restored "+short7(r.sha))
 			continue
 		}
 		done, n, err := c.restoreWIPRef(bctx, ctx, git, id, cwd, r.ref, r.sha)
@@ -161,12 +162,14 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 	for _, h := range strings.Split(heads, "\n") {
 		h = strings.TrimSpace(h)
 		if h != "" && h != "refs/remotes/origin/HEAD" && !strings.HasPrefix(h, "refs/remotes/origin/wip/") {
+			wipSkipped(ctx, ref, short7(sha)+" is already on "+strings.TrimPrefix(h, "refs/remotes/"))
 			return nil, n, nil
 		}
 	}
 	if branch != "" {
 		if local, err := git(bctx, cwd, "rev-parse", "--verify", "-q", "refs/heads/"+branch); err == nil && local != "" {
 			if _, err := git(bctx, cwd, "merge-base", "--is-ancestor", sha, local); err == nil {
+				wipSkipped(ctx, ref, "local "+branch+" already contains "+short7(sha))
 				return nil, n, nil
 			}
 			if _, err := git(bctx, cwd, "merge-base", "--is-ancestor", local, sha); err != nil {
@@ -189,6 +192,7 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 				return nil, n, err
 			}
 			if skip {
+				wipSkipped(ctx, ref, "HEAD already contains "+short7(sha))
 				return nil, n, nil
 			}
 		}
@@ -217,6 +221,7 @@ func (c *cloudBootCommon) restoreWIPRef(bctx context.Context, ctx *cli.Context, 
 		if entries, err := os.ReadDir(where); err == nil && len(entries) > 0 {
 			if branch == "" {
 				if skip, err := detachGuard(bctx, git, where, sha, ref); err == nil && skip {
+					wipSkipped(ctx, ref, "HEAD in "+where+" already contains "+short7(sha))
 					return nil, n, nil
 				}
 			}
@@ -261,6 +266,12 @@ func detachGuard(bctx context.Context, git cloudGitFunc, dir, sha, ref string) (
 		reason: fmt.Sprintf("HEAD in %s has commits that %s does not contain", dir, short7(sha)),
 		advice: "Merge or rebase it, or raise a gate. Inspect " + ref + " first.",
 	}
+}
+
+// wipSkipped logs a ref that restore left alone because the work is already
+// present. It goes to stderr only, not the model's summary.
+func wipSkipped(ctx *cli.Context, ref, reason string) {
+	fmt.Fprintf(ctx.Stderr, "cloud-boot: restore skipped %s: %s\n", ref, reason)
 }
 
 func short7(sha string) string { return sha[:min(7, len(sha))] }
