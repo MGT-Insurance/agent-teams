@@ -21,7 +21,7 @@ var seedNamespaces = []string{"dri", "planner", "implementer", "tester", "review
 
 // seedExcludePrefixes are key prefixes that stay local even when their
 // namespace is in scope. steward:topics:<host> records are per-machine.
-var seedExcludePrefixes = []string{"steward:topics:"}
+var seedExcludePrefixes = []string{stewardTopicsKeyPrefix}
 
 // learningsSeedKong is the kong form of learnings-seed.
 type learningsSeedKong struct {
@@ -193,5 +193,5 @@ func writeSeedJSONL(lines []seedMemoryLine) (string, error) {
 
 // RegisterLearningsSeed wires learnings-seed into the parser.
 func RegisterLearningsSeed(p *cli.Parser) {
-	p.AddVerb("learnings-seed", "Copy local role and user learnings into the hosted learnings store (cloud_home); never overwrites.", &learningsSeedKong{})
+	p.AddVerb("learnings-seed", "Copy local role, user, and steward learnings (all tiers; per-machine steward:topics:<host> records stay local) into the hosted learnings store (cloud_home); never overwrites.", &learningsSeedKong{})
 }
