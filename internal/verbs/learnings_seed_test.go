@@ -83,7 +83,8 @@ func localMemories() map[string]string {
 		"implementer:hot:differs": "local version",
 		"000-prime-cap-sentinel":  "x",
 		"schema_version":          "7",
-		"steward:topic:1":         "s",
+		"steward:hot:s1":          "steward s1",
+		"steward:topics:host1":    "s",
 		"misc":                    "m",
 		"other:thing":             "o",
 	}
@@ -157,6 +158,7 @@ func TestSeedCopiesMissingKeysInOneImport(t *testing.T) {
 	want += `{"_type":"memory","key":"applied:implementer:c","value":"{\"count\":2}"}` + "\n"
 	want += `{"_type":"memory","key":"dri:hot:a","value":"dri a"}` + "\n"
 	want += `{"_type":"memory","key":"planner:fresh:b","value":"planner b <&> \"q\"\nline2"}` + "\n"
+	want += `{"_type":"memory","key":"steward:hot:s1","value":"steward s1"}` + "\n"
 	want += `{"_type":"memory","key":"tester:proj:d","value":"tester d"}` + "\n"
 	want += `{"_type":"memory","key":"user:pref","value":"user pref"}` + "\n"
 	if hosted.imported[0] != want {
@@ -166,7 +168,7 @@ func TestSeedCopiesMissingKeysInOneImport(t *testing.T) {
 	if hosted.mem["implementer:hot:differs"] != "hosted version" {
 		t.Fatal("hosted value was overwritten")
 	}
-	for _, k := range []string{"000-prime-cap-sentinel", "schema_version", "steward:topic:1", "misc", "other:thing"} {
+	for _, k := range []string{"000-prime-cap-sentinel", "schema_version", "steward:topics:host1", "misc", "other:thing"} {
 		if _, ok := hosted.mem[k]; ok {
 			t.Fatalf("out-of-scope key %q was written", k)
 		}
@@ -179,11 +181,12 @@ func TestSeedCopiesMissingKeysInOneImport(t *testing.T) {
 		"learnings-seed implementer: local 2 hosted 2 to-write 0 kept-differs 1\n",
 		"learnings-seed tester: local 1 hosted 0 to-write 1 kept-differs 0\n",
 		"learnings-seed reviewer: local 0 hosted 0 to-write 0 kept-differs 0\n",
+		"learnings-seed steward: local 1 hosted 0 to-write 1 kept-differs 0\n",
 		"learnings-seed user: local 1 hosted 0 to-write 1 kept-differs 0\n",
 		"learnings-seed applied: local 1 hosted 0 to-write 1 kept-differs 0\n",
 		"learnings-seed: kept hosted implementer:hot:differs (differs)\n",
-		"learnings-seed total: local 7 hosted 3 to-write 5 kept-differs 1\n",
-		"learnings-seed: imported 5 keys in ",
+		"learnings-seed total: local 8 hosted 3 to-write 6 kept-differs 1\n",
+		"learnings-seed: imported 6 keys in ",
 	} {
 		if !strings.Contains(got, w) {
 			t.Errorf("output missing %q\n%s", w, got)
@@ -201,7 +204,7 @@ func TestSeedCopiesMissingKeysInOneImport(t *testing.T) {
 	if hosted.importCalls() != 1 {
 		t.Fatalf("second run called import: %d", hosted.importCalls())
 	}
-	if !strings.Contains(out.String(), "learnings-seed total: local 7 hosted 8 to-write 0 kept-differs 1\n") {
+	if !strings.Contains(out.String(), "learnings-seed total: local 8 hosted 9 to-write 0 kept-differs 1\n") {
 		t.Errorf("second run output:\n%s", out.String())
 	}
 }
@@ -222,7 +225,7 @@ func TestSeedDryRunWritesNothing(t *testing.T) {
 			t.Errorf("line lacks [dry-run] prefix: %q", line)
 		}
 	}
-	if !strings.Contains(out.String(), "[dry-run] learnings-seed total: local 7 hosted 1 to-write 6 kept-differs 1\n") {
+	if !strings.Contains(out.String(), "[dry-run] learnings-seed total: local 8 hosted 1 to-write 7 kept-differs 1\n") {
 		t.Errorf("output:\n%s", out.String())
 	}
 }
@@ -320,7 +323,7 @@ func TestSeedEmbeddedIntegration(t *testing.T) {
 			got[k] = s
 		}
 	}
-	for _, k := range []string{"dri:hot:a", "planner:fresh:b", "implementer:cold:c", "tester:proj:d", "user:pref", "applied:implementer:c", "implementer:hot:multi"} {
+	for _, k := range []string{"dri:hot:a", "planner:fresh:b", "implementer:cold:c", "tester:proj:d", "user:pref", "applied:implementer:c", "implementer:hot:multi", "steward:hot:s1"} {
 		if got[k] != local[k] {
 			t.Errorf("key %s: hosted %q, want %q", k, got[k], local[k])
 		}
@@ -328,7 +331,7 @@ func TestSeedEmbeddedIntegration(t *testing.T) {
 	if got["implementer:hot:differs"] != "hosted version" {
 		t.Errorf("differing key overwritten: %q", got["implementer:hot:differs"])
 	}
-	for _, k := range []string{"000-prime-cap-sentinel", "schema_version", "steward:topic:1", "misc", "other:thing"} {
+	for _, k := range []string{"000-prime-cap-sentinel", "schema_version", "steward:topics:host1", "misc", "other:thing"} {
 		if _, ok := got[k]; ok {
 			t.Errorf("out-of-scope key %q copied", k)
 		}
