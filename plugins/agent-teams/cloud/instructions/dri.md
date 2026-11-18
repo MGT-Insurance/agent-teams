@@ -20,7 +20,7 @@ Don't delete a wip branch.
 
 ## Learnings
 - Learnings you write go to the hosted store. A laptop reads the same store when its config sets `cloud_home`.
-- Run the wind-down condense as usual. A lock in the hosted store keeps a laptop and a cloud run from condensing at the same time.
+- Condense right before you close the initiative, on every close path, including the merge close-out. Closing ends this run, so run `/agent-teams:condense` (no argument) after `ateam clear-gate` and before `ateam close`. It takes the shared lock in the hosted store and skips in seconds when no role has enough new learnings.
 
 ## Checks (midgard)
 - Give implementers and testers these rules. Use `pnpm lint:changed --typed` and `pnpm --filter <pkg> typecheck` once. Run tests with `pnpm vitest run <path> --no-file-parallelism`. Never run the full lint, typecheck, or suite.
