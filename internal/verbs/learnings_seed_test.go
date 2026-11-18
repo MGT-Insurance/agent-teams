@@ -176,16 +176,16 @@ func TestSeedCopiesMissingKeysInOneImport(t *testing.T) {
 
 	got := out.String()
 	for _, w := range []string{
-		"learnings-seed dri: local 1 hosted 0 to-write 1 kept-differs 0\n",
-		"learnings-seed planner: local 1 hosted 1 to-write 1 kept-differs 0\n",
-		"learnings-seed implementer: local 2 hosted 2 to-write 0 kept-differs 1\n",
-		"learnings-seed tester: local 1 hosted 0 to-write 1 kept-differs 0\n",
-		"learnings-seed reviewer: local 0 hosted 0 to-write 0 kept-differs 0\n",
-		"learnings-seed steward: local 1 hosted 0 to-write 1 kept-differs 0\n",
-		"learnings-seed user: local 1 hosted 0 to-write 1 kept-differs 0\n",
-		"learnings-seed applied: local 1 hosted 0 to-write 1 kept-differs 0\n",
+		"learnings-seed dri: local 1 hosted 0 to-write 1 kept-differs 0 kept-same-slug 0\n",
+		"learnings-seed planner: local 1 hosted 1 to-write 1 kept-differs 0 kept-same-slug 0\n",
+		"learnings-seed implementer: local 2 hosted 2 to-write 0 kept-differs 1 kept-same-slug 0\n",
+		"learnings-seed tester: local 1 hosted 0 to-write 1 kept-differs 0 kept-same-slug 0\n",
+		"learnings-seed reviewer: local 0 hosted 0 to-write 0 kept-differs 0 kept-same-slug 0\n",
+		"learnings-seed steward: local 1 hosted 0 to-write 1 kept-differs 0 kept-same-slug 0\n",
+		"learnings-seed user: local 1 hosted 0 to-write 1 kept-differs 0 kept-same-slug 0\n",
+		"learnings-seed applied: local 1 hosted 0 to-write 1 kept-differs 0 kept-same-slug 0\n",
 		"learnings-seed: kept hosted implementer:hot:differs (differs)\n",
-		"learnings-seed total: local 8 hosted 3 to-write 6 kept-differs 1\n",
+		"learnings-seed total: local 8 hosted 3 to-write 6 kept-differs 1 kept-same-slug 0\n",
 		"learnings-seed: imported 6 keys in ",
 	} {
 		if !strings.Contains(got, w) {
@@ -204,7 +204,7 @@ func TestSeedCopiesMissingKeysInOneImport(t *testing.T) {
 	if hosted.importCalls() != 1 {
 		t.Fatalf("second run called import: %d", hosted.importCalls())
 	}
-	if !strings.Contains(out.String(), "learnings-seed total: local 8 hosted 9 to-write 0 kept-differs 1\n") {
+	if !strings.Contains(out.String(), "learnings-seed total: local 8 hosted 9 to-write 0 kept-differs 1 kept-same-slug 0\n") {
 		t.Errorf("second run output:\n%s", out.String())
 	}
 }
@@ -225,7 +225,7 @@ func TestSeedDryRunWritesNothing(t *testing.T) {
 			t.Errorf("line lacks [dry-run] prefix: %q", line)
 		}
 	}
-	if !strings.Contains(out.String(), "[dry-run] learnings-seed total: local 8 hosted 1 to-write 7 kept-differs 1\n") {
+	if !strings.Contains(out.String(), "[dry-run] learnings-seed total: local 8 hosted 1 to-write 7 kept-differs 1 kept-same-slug 0\n") {
 		t.Errorf("output:\n%s", out.String())
 	}
 }
@@ -347,5 +347,47 @@ func TestSeedEmbeddedIntegration(t *testing.T) {
 	t.Logf("second run:\n%s", out)
 	if !strings.Contains(out.String(), "to-write 0") || !strings.Contains(out.String(), "imported 0 keys") {
 		t.Errorf("second run should write 0:\n%s", out)
+	}
+}
+
+func TestSeedSkipsSameRoleAndSlugUnderAnyTier(t *testing.T) {
+	local := &seedStore{mem: map[string]string{
+		"dri:hot:slug":     "pre-condense text",
+		"dri:fresh:other":  "no hosted counterpart",
+		"dri:fresh:viaht":  "hosted is hot",
+		"applied:dri:slug": `{"count":1}`,
+	}}
+	hosted := &seedStore{mem: map[string]string{
+		"dri:slug":          "condensed text",
+		"dri:hot:viaht":     "hot copy",
+		"applied:dri:slug2": `{"count":1}`,
+	}}
+	for _, dry := range []bool{true, false} {
+		ctx, out := seedCtx(t, "/somewhere/hosted", local, hosted)
+		if err := (&learningsSeedKong{DryRun: dry}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := out.String()
+		for _, w := range []string{
+			"learnings-seed dri: local 3 hosted 2 to-write 1 kept-differs 0 kept-same-slug 2\n",
+			"learnings-seed: kept hosted dri:slug (same slug as local dri:hot:slug)\n",
+			"learnings-seed: kept hosted dri:hot:viaht (same slug as local dri:fresh:viaht)\n",
+			"learnings-seed applied: local 1 hosted 1 to-write 1 kept-differs 0 kept-same-slug 0\n",
+		} {
+			if !strings.Contains(got, w) {
+				t.Errorf("dry=%v output missing %q\n%s", dry, w, got)
+			}
+		}
+	}
+	if hosted.importCalls() != 1 {
+		t.Fatalf("want 1 import (real run only), got %d", hosted.importCalls())
+	}
+	want := `{"_type":"memory","key":"applied:dri:slug","value":"{\"count\":1}"}` + "\n" +
+		`{"_type":"memory","key":"dri:fresh:other","value":"no hosted counterpart"}` + "\n"
+	if hosted.imported[0] != want {
+		t.Fatalf("import mismatch\n got: %q\nwant: %q", hosted.imported[0], want)
+	}
+	if hosted.mem["dri:slug"] != "condensed text" {
+		t.Fatal("hosted value overwritten")
 	}
 }

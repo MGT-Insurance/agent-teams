@@ -36,10 +36,12 @@ type seedMemoryLine struct {
 }
 
 // seedCounts holds the per-namespace tallies learnings-seed reports.
-type seedCounts struct{ local, hosted, toWrite, kept int }
+type seedCounts struct{ local, hosted, toWrite, kept, keptSlug int }
 
 // Run copies local role and user learnings that are absent from the hosted
 // learnings store into it, in one bd import. It never overwrites a hosted value.
+// A local key counts as present when the hosted store holds the same role and
+// slug under any tier (see seedIdentity).
 func (c *learningsSeedKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam learnings-seed: no context")
@@ -63,6 +65,25 @@ func (c *learningsSeedKong) Run(ctx *cli.Context) error {
 	}
 	if err := readMemoriesJSON(dst, &hosted); err != nil {
 		return learnReadFailure(ctx, "learnings-seed", err)
+	}
+
+	hostedByIdentity := map[string]string{}
+	var hostedKeys []string
+	for k := range hosted {
+		hostedKeys = append(hostedKeys, k)
+	}
+	sort.Strings(hostedKeys)
+	for _, k := range hostedKeys {
+		if _, ok := seedNamespace(k); !ok {
+			continue
+		}
+		if _, isStr := hosted[k].(string); !isStr {
+			continue
+		}
+		id := seedIdentity(k)
+		if _, seen := hostedByIdentity[id]; !seen {
+			hostedByIdentity[id] = k
+		}
 	}
 
 	counts := map[string]*seedCounts{}
@@ -102,6 +123,11 @@ func (c *learningsSeedKong) Run(ctx *cli.Context) error {
 		hv, present := hosted[k]
 		switch {
 		case !present:
+			if hk, same := hostedByIdentity[seedIdentity(k)]; same {
+				counts[ns].keptSlug++
+				keptLines = append(keptLines, fmt.Sprintf("%slearnings-seed: kept hosted %s (same slug as local %s)", prefix, hk, k))
+				continue
+			}
 			counts[ns].toWrite++
 			missing = append(missing, seedMemoryLine{Type: "memory", Key: k, Value: lv})
 		case hv != lv:
@@ -113,18 +139,19 @@ func (c *learningsSeedKong) Run(ctx *cli.Context) error {
 	var total seedCounts
 	for _, ns := range seedNamespaces {
 		n := counts[ns]
-		fmt.Fprintf(ctx.Stdout, "%slearnings-seed %s: local %d hosted %d to-write %d kept-differs %d\n",
-			prefix, ns, n.local, n.hosted, n.toWrite, n.kept)
+		fmt.Fprintf(ctx.Stdout, "%slearnings-seed %s: local %d hosted %d to-write %d kept-differs %d kept-same-slug %d\n",
+			prefix, ns, n.local, n.hosted, n.toWrite, n.kept, n.keptSlug)
 		total.local += n.local
 		total.hosted += n.hosted
 		total.toWrite += n.toWrite
 		total.kept += n.kept
+		total.keptSlug += n.keptSlug
 	}
 	for _, l := range keptLines {
 		fmt.Fprintln(ctx.Stdout, l)
 	}
-	fmt.Fprintf(ctx.Stdout, "%slearnings-seed total: local %d hosted %d to-write %d kept-differs %d\n",
-		prefix, total.local, total.hosted, total.toWrite, total.kept)
+	fmt.Fprintf(ctx.Stdout, "%slearnings-seed total: local %d hosted %d to-write %d kept-differs %d kept-same-slug %d\n",
+		prefix, total.local, total.hosted, total.toWrite, total.kept, total.keptSlug)
 
 	if c.DryRun {
 		fmt.Fprintf(ctx.Stdout, "[dry-run] learnings-seed: would import %d keys\n", len(missing))
@@ -168,6 +195,24 @@ func seedNamespace(k string) (string, bool) {
 	return "", false
 }
 
+// seedIdentity returns the role-and-slug identity of key k, ignoring the tier
+// segment. Role learnings are stored as <role>:hot:<slug>, <role>:fresh:<slug>,
+// or untiered <role>:<slug>, and the hosted condense pass rewrites tiered keys
+// to untiered ones, so the same learning appears under different full keys.
+// applied:<role>:<slug> records carry no tier segment and keep their full key.
+func seedIdentity(k string) string {
+	ns, rest, ok := strings.Cut(k, ":")
+	if !ok || ns == "applied" {
+		return k
+	}
+	if r, found := strings.CutPrefix(rest, "hot:"); found {
+		rest = r
+	} else if r, found := strings.CutPrefix(rest, "fresh:"); found {
+		rest = r
+	}
+	return ns + ":" + rest
+}
+
 // writeSeedJSONL writes one memory-only JSONL line per entry to a temp file and
 // returns its path.
 func writeSeedJSONL(lines []seedMemoryLine) (string, error) {
@@ -193,5 +238,5 @@ func writeSeedJSONL(lines []seedMemoryLine) (string, error) {
 
 // RegisterLearningsSeed wires learnings-seed into the parser.
 func RegisterLearningsSeed(p *cli.Parser) {
-	p.AddVerb("learnings-seed", "Copy local role, user, and steward learnings (all tiers; per-machine steward:topics:<host> records stay local) into the hosted learnings store (cloud_home); never overwrites.", &learningsSeedKong{})
+	p.AddVerb("learnings-seed", "Copy local role, user, and steward learnings (all tiers; per-machine steward:topics:<host> records stay local) into the hosted learnings store (cloud_home); never overwrites, and skips a key whose role and slug already exist hosted under any tier.", &learningsSeedKong{})
 }
