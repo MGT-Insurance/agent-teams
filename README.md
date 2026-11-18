@@ -292,8 +292,8 @@ unreachable, the verb reports `learnings store unreachable` and doesn't fall
 back to local data. Write verbs add `may not be saved; retry later`, and `learnings`
 and `prime` print a continue-without line and exit 0.
 
-`ateam learnings-seed [--dry-run]` copies local learnings to the hosted
-workspace one time. It copies only keys that the hosted store doesn't have, so
+`ateam learnings-seed [--dry-run]` copies local learnings, including steward learnings in all tiers, to the hosted
+workspace one time. Per-machine `steward:topics:<host>` records stay local. It copies only keys that the hosted store doesn't have, so
 running it again doesn't overwrite hosted edits. With `--dry-run`, it prints the
 per-namespace counts, the keys whose hosted value differs, and the number of
 keys it would import, and writes nothing.
