@@ -115,6 +115,10 @@ func freshDrainFailure(ctx *cli.Context, moved int, err error) error {
 	return err
 }
 
+// learnContinuingWithout is the part of the unreachable notice that tells the
+// reader no learnings were served.
+const learnContinuingWithout = "continuing WITHOUT"
+
 // learnServeUnreachable handles a failed read that serves an agent (learnings,
 // prime). When the hosted store is unreachable it prints the continue-without
 // line to stdout and reports true, so the caller exits 0.
@@ -122,6 +126,6 @@ func learnServeUnreachable(ctx *cli.Context, who string, err error) bool {
 	if !learnUnreachable(ctx, err) {
 		return false
 	}
-	fmt.Fprintf(ctx.Stdout, "[learnings store unreachable (%s): continuing WITHOUT %s learnings]\n", learnStoreName(ctx), who)
+	fmt.Fprintf(ctx.Stdout, "[learnings store unreachable (%s): "+learnContinuingWithout+" %s learnings]\n", learnStoreName(ctx), who)
 	return true
 }

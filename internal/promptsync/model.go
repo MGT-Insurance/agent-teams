@@ -21,6 +21,9 @@ const (
 	KindRole      Kind = "role"
 	KindSkill     Kind = "skill"
 	KindReference Kind = "reference"
+	// KindEmbed is a generated copy of a canonical input that a Go package
+	// embeds with go:embed (it cannot embed files outside its own directory).
+	KindEmbed Kind = "embed"
 )
 
 type Status string
@@ -29,6 +32,10 @@ const (
 	StatusPaired                Status = "paired"
 	StatusRuntimeOnly           Status = "runtime-only"
 	StatusTemporarilyUnmigrated Status = "temporarily-unmigrated"
+	// StatusRuntimeGenerated is a generated output with exactly one runtime
+	// counterpart: it renders from canonical inputs like a paired entry but
+	// needs no Codex twin.
+	StatusRuntimeGenerated Status = "runtime-generated"
 )
 
 type Encoding string
@@ -162,7 +169,7 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 			problems = append(problems, fmt.Sprintf("%s: invalid stable logical id %q", where, entry.ID))
 		}
 		switch entry.Kind {
-		case KindRole, KindSkill, KindReference:
+		case KindRole, KindSkill, KindReference, KindEmbed:
 		default:
 			problems = append(problems, fmt.Sprintf("%s (%s): unknown kind %q", entry.ID, where, entry.Kind))
 		}
@@ -174,6 +181,16 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 			}
 			if len(entry.Inputs) == 0 {
 				problems = append(problems, fmt.Sprintf("%s (%s): paired entry needs canonical inputs", entry.ID, where))
+			}
+		case StatusRuntimeGenerated:
+			if len(entry.Outputs) != 1 {
+				problems = append(problems, fmt.Sprintf("%s (%s): runtime-generated entry must have exactly one output", entry.ID, where))
+			}
+			if len(entry.Inputs) == 0 {
+				problems = append(problems, fmt.Sprintf("%s (%s): runtime-generated entry needs canonical inputs", entry.ID, where))
+			}
+			if strings.TrimSpace(entry.Reason) == "" {
+				problems = append(problems, fmt.Sprintf("%s (%s): runtime-generated entry needs a reason", entry.ID, where))
 			}
 		case StatusRuntimeOnly:
 			if len(entry.Outputs) != 1 {
@@ -226,7 +243,7 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 			} else {
 				outputs[output.Path] = entry.ID
 			}
-			if entry.Status == StatusPaired {
+			if entry.Status == StatusPaired || entry.Status == StatusRuntimeGenerated {
 				if len(output.Parts) == 0 {
 					problems = append(problems, fmt.Sprintf("%s (%s): generated output %s has no ordered parts", entry.ID, where, output.Path))
 				}
@@ -298,7 +315,7 @@ func validateEntries(entries []Entry, allowUnmigrated bool) error {
 				problems = append(problems, fmt.Sprintf("%s (%s): output %s can declare instruction_parts only for a paired Codex role", entry.ID, where, output.Path))
 			}
 			isSkillFile := entry.Kind == KindSkill && filepath.Base(output.Path) == "SKILL.md"
-			if entry.Status == StatusPaired && isSkillFile && output.SkillBudget == nil {
+			if (entry.Status == StatusPaired || entry.Status == StatusRuntimeGenerated) && isSkillFile && output.SkillBudget == nil {
 				problems = append(problems, fmt.Sprintf("%s (%s): generated SKILL.md %s needs skill_budget", entry.ID, where, output.Path))
 			}
 			if output.SkillBudget != nil && (!isSkillFile || output.SkillBudget.BaseDirectory == "" || output.SkillBudget.MinHeadroom < 0) {

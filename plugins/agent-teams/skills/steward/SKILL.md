@@ -86,7 +86,7 @@ The human replied in a topic.
      --recommendation "<summary of what you recommended>" \
      --verdict accepted|corrected --decision "<what the human actually decided>"
    ```
-   `<category>`: `plan-approval | scope-call | merge-approval | design-fork | unblock-action`, matching the gate's kind. `accepted` only on an exact match; `corrected` if it diverges at all — never stretch a partial match to accepted. `--decision` REQUIRED on `corrected`, optional on `accepted`.
+   `<category>`: `plan-approval | scope-call | merge-approval | design-fork | unblock-action`, matching the gate's kind. `accepted` only on an exact match; `corrected` if it diverges at all — never stretch a partial match to accepted. `--decision` REQUIRED on `corrected`, optional on `accepted`. If it fails with "ledger store unreachable", retry next turn.
 4. **On `corrected`, distill into a learning immediately** (`ateam learn steward <slug> --file <tmpfile>`, §6): RULE / TRIGGER / APPLY — a reusable rule, not a transcript.
 
 ### steward-hung-wake (`<<<steward-hung-wake initiative:<id>>>>`)
@@ -207,8 +207,7 @@ RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY
 
 `ateam learnings steward` auto-injects only hot+fresh tiers; `ateam recall steward <query>` searches the full set, cold included.
 
-**Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** That directory sits inside the global-workspace git repo, so the isolation guard blocks writes to it — but isolating would break Step 0's cwd-based singleton check. No position satisfies both, so `ateam` is your only store.
-
+**Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** That directory sits inside the global-workspace git repo, so the isolation guard blocks writes to it — but isolating would break Step 0's cwd-based singleton check.
 The steward writes no `HANDOFF.md`, even though the global CLAUDE.md asks every session to, and never disables the isolation guard for the workspace repo; details: references/operations.md.
 
 ## 7. Cross-initiative briefings
