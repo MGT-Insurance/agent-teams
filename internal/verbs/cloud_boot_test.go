@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,10 @@ func newCBEnv(t *testing.T) *cbEnv {
 		// Hermetic by default: no test touches a real git repo unless it opts in.
 		Git: func(context.Context, string, ...string) (string, error) {
 			return "", errors.New("git disabled in test")
+		},
+		// Hermetic by default: no test runs the real free or dmesg.
+		Diag: func(_ context.Context, name string, args ...string) (string, error) {
+			return "", errors.New("diag disabled in test")
 		},
 		Agents: func() ([]agentSession, error) {
 			i := e.pollN
@@ -837,4 +842,143 @@ func TestInstallCloudInstructions_FailedWriteKeepsPreviousFile(t *testing.T) {
 	if err != nil || string(got) != "old" {
 		t.Errorf("previous file = %q, %v; want it kept as \"old\"\nstderr: %s", got, err, errb.String())
 	}
+}
+
+func (e *cbEnv) lines(prefix string) []string {
+	var out []string
+	for _, l := range strings.Split(e.stderr(), "\n") {
+		if strings.HasPrefix(l, prefix) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func TestCloudBootLogsOnePollLinePerPollAndIdleParkExit(t *testing.T) {
+	e := newCBEnv(t)
+	e.common.IdlePolls = 2
+	pid := 2
+	mate := agentSession{SessionID: "mate", Status: "busy", PID: &pid, CWD: filepath.Join(e.cwd, "sub")}
+	e.polls = []func() []agentSession{
+		func() []agentSession { return []agentSession{lead("sid-1", "busy"), mate} },
+		func() []agentSession { return []agentSession{lead("sid-1", "idle")} },
+		func() []agentSession { return []agentSession{lead("sid-1", "idle")} },
+	}
+	wantExit(t, e.start(), cloudBootParkExit)
+	polls := e.lines("cloud-boot: poll ")
+	if len(polls) != 3 {
+		t.Fatalf("poll lines = %d, want 3:\n%s", len(polls), e.stderr())
+	}
+	for _, want := range []string{"t=1s", "lead=busy", "others_busy=true", "idle=0/2", "poll_errs=0/5",
+		"{pid=2 status=busy cwd=" + mate.CWD + " under_run=true}"} {
+		if !strings.Contains(polls[0], want) {
+			t.Errorf("poll 1 %q missing %q", polls[0], want)
+		}
+	}
+	if !strings.Contains(polls[2], "idle=2/2") || !strings.Contains(polls[2], "others_busy=false") || !strings.Contains(polls[2], "others=[]") {
+		t.Errorf("poll 3 = %q", polls[2])
+	}
+	exits := e.lines("cloud-boot: exit ")
+	if len(exits) != 1 || !strings.Contains(exits[0], "reason=idle-park") || !strings.Contains(exits[0], "idle=2/2") {
+		t.Errorf("exit lines = %q", exits)
+	}
+}
+
+func TestCloudBootLogsLeadMissingExitReason(t *testing.T) {
+	e := newCBEnv(t)
+	e.polls = []func() []agentSession{func() []agentSession { return nil }}
+	e.common.Tmux = func(args ...string) error {
+		e.tmux = append(e.tmux, args)
+		if args[0] == "has-session" {
+			return errors.New("no session")
+		}
+		return nil
+	}
+	if err := e.start(); err == nil {
+		t.Fatal("want error")
+	}
+	if p := e.lines("cloud-boot: poll "); len(p) != 1 || !strings.Contains(p[0], "lead=missing") {
+		t.Errorf("poll lines = %q", p)
+	}
+	if x := e.lines("cloud-boot: exit "); len(x) != 1 || !strings.Contains(x[0], "reason=lead-missing") || !strings.Contains(x[0], "tmux_session_gone=true") {
+		t.Errorf("exit lines = %q", x)
+	}
+}
+
+func TestCloudBootLogsPollErrorBudgetExitReason(t *testing.T) {
+	e := newCBEnv(t)
+	e.leadSeq("sid-1", "busy")
+	e.common.Agents = func() ([]agentSession, error) { return nil, errors.New("agents down") }
+	if err := e.start(); err == nil {
+		t.Fatal("want error")
+	}
+	if p := e.lines("cloud-boot: poll "); len(p) != 5 || !strings.Contains(p[4], "poll_errs=5/5") {
+		t.Errorf("poll lines = %q", p)
+	}
+	x := e.lines("cloud-boot: exit ")
+	if len(x) != 1 || !strings.Contains(x[0], "reason=poll-error-budget") || !strings.Contains(x[0], "poll_errs=6/5") || !strings.Contains(x[0], "agents down") {
+		t.Errorf("exit lines = %q", x)
+	}
+}
+
+func TestCloudBootLogsInitiativeClosedExitReason(t *testing.T) {
+	e := newCBEnv(t)
+	e.leadSeq("sid-1", "busy")
+	e.closeAt = 4
+	if err := e.start(); err != nil {
+		t.Fatal(err)
+	}
+	if x := e.lines("cloud-boot: exit "); len(x) != 1 || !strings.Contains(x[0], "reason=initiative-closed") || !strings.Contains(x[0], "initiative=at-ab12") {
+		t.Errorf("exit lines = %q", x)
+	}
+}
+
+func TestCloudBootResumeLogsFreeAndKernelLogTail(t *testing.T) {
+	e := newCBEnv(t)
+	seedResumeState(t)
+	e.leadSeq("sid-1", "busy")
+	e.closeAt = 3
+	var kern []string
+	for i := 1; i <= 40; i++ {
+		kern = append(kern, "kern line "+strconv.Itoa(i))
+	}
+	e.common.Diag = func(_ context.Context, name string, args ...string) (string, error) {
+		switch name {
+		case "free":
+			return "MEMFREE-MARKER", nil
+		case "dmesg":
+			return strings.Join(kern, "\n") + "\n", nil
+		}
+		return "", errors.New("unexpected " + name)
+	}
+	if err := e.resume(); err != nil {
+		t.Fatal(err)
+	}
+	out := e.stderr()
+	if !strings.Contains(out, "free -m\nMEMFREE-MARKER") || !strings.Contains(out, "kern line 40") ||
+		!strings.Contains(out, "kern line 11\n") || strings.Contains(out, "kern line 10\n") {
+		t.Errorf("diag output wrong:\n%s", out)
+	}
+}
+
+func TestCloudBootResumeDiagFailOpenAndStartSkipsIt(t *testing.T) {
+	e := newCBEnv(t)
+	seedResumeState(t)
+	e.leadSeq("sid-1", "busy")
+	e.closeAt = 3
+	if err := e.resume(); err != nil {
+		t.Fatalf("diag failure must not block boot: %v", err)
+	}
+	if !strings.Contains(e.stderr(), "kernel log unreadable, skipped") || !strings.Contains(e.stderr(), "free -m unavailable") {
+		t.Errorf("want skip notes:\n%s", e.stderr())
+	}
+
+	s := newCBEnv(t)
+	s.leadSeq("sid-1", "busy")
+	s.closeAt = 3
+	s.common.Diag = func(context.Context, string, ...string) (string, error) {
+		t.Error("start must not run diagnostics")
+		return "", nil
+	}
+	_ = s.start()
 }
