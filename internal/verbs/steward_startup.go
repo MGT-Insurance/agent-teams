@@ -16,8 +16,8 @@ import (
 const stewardStartupLimit = 60 * 1024
 
 // stewardSharedLedgerRules is the ledger rules text shared with the steward
-// skill. prompt-sync generates this copy from
-// promptsrc/agent-teams/skills/steward/shared-ledger.md (manifest entry
+// skill. prompt-sync generates this copy by joining the five
+// promptsrc/agent-teams/skills/steward/shared-ledger-*.md slices (manifest entry
 // embed.steward.shared-ledger), and `prompt-sync check` fails when they differ.
 //
 //go:embed embedded/steward_shared_ledger.md
@@ -25,7 +25,7 @@ var stewardSharedLedgerRules string
 
 // stewardRulesIntro leads the ledger rules section. It sits outside the shared
 // text because the shared slices keep the local skill's numbering and wording.
-const stewardRulesIntro = "These are the steward ledger rules shared by the local and cloud stewards; section and step numbers refer to the local skill."
+const stewardRulesIntro = "These are the steward ledger rules shared by the local and cloud stewards; the section and step numbers come from the local skill, so a cloud steward can ignore them."
 
 // stewardStartupKong is the kong struct for `ateam steward startup`.
 type stewardStartupKong struct{}
@@ -67,16 +67,18 @@ func captureStewardStats(ctx *cli.Context) (string, error) {
 }
 
 // captureStewardLearnings returns the output of `ateam learnings steward`. A
-// run that prints the "continuing WITHOUT" notice served no learnings, so it
-// is an error here.
+// run that reports the store unreachable served no learnings, so it is an
+// error here. The check uses serveLearnings' return value, not the output text,
+// so a learning body that mentions the notice does not fail startup.
 func captureStewardLearnings(ctx *cli.Context) (string, error) {
 	var out bytes.Buffer
 	inner := *ctx
 	inner.Stdout = &out
-	if err := runLearnings(&inner, "steward"); err != nil {
+	unreachable, err := serveLearnings(&inner, "steward")
+	if err != nil {
 		return "", fmt.Errorf("ateam steward startup: %w", err)
 	}
-	if strings.Contains(out.String(), learnContinuingWithout) {
+	if unreachable {
 		return "", fmt.Errorf("ateam steward startup: learnings store unreachable (%s)", learnStoreName(ctx))
 	}
 	return out.String(), nil

@@ -18,10 +18,11 @@ import (
 // memBD is an in-memory bd memory store: remember, import, memories, and the
 // scoped sql reads the verbs under test issue.
 type memBD struct {
-	mem      map[string]string
-	err      error // returned by every call when set
-	remember [][]string
-	imports  int
+	mem       map[string]string
+	err       error // returned by every call when set
+	remember  [][]string
+	imports   int
+	importErr error // returned by import only, after the call is counted
 }
 
 func newMemBD() *memBD { return &memBD{mem: map[string]string{}} }
@@ -39,6 +40,9 @@ func (m *memBD) Run(args ...string) (string, error) {
 		m.mem[key] = args[2]
 	case "import":
 		m.imports++
+		if m.importErr != nil {
+			return "", m.importErr
+		}
 		data, err := os.ReadFile(args[1])
 		if err != nil {
 			return "", err
@@ -306,6 +310,21 @@ func writeLedgerFile(t *testing.T, ctx *cli.Context, lines ...string) {
 	}
 	if err := os.WriteFile(StewardLedgerPath(ctx), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStewardLedgerSeed_FailedImportPrintsNoCount(t *testing.T) {
+	m := newMemBD()
+	ctx, out, _ := remoteLedgerCtx(t, m)
+	writeLedgerFile(t, ctx, `{"ts":"2026-01-03T03:04:05Z","category":"merge-approval","initiative":"at-2","recommendation":"r2","verdict":"corrected","decision":"no"}`)
+	m.importErr = errors.New("import failed")
+
+	err := (&stewardLedgerSeedKong{}).Run(ctx)
+	if err == nil || m.imports != 1 {
+		t.Fatalf("err %v, imports %d; want an import error after one attempt", err, m.imports)
+	}
+	if out.String() != "" {
+		t.Errorf("failed import printed %q; want no count line", out.String())
 	}
 }
 

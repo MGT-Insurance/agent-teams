@@ -601,6 +601,15 @@ func hasStringKeyWithPrefix(raw map[string]any, prefix string) bool {
 // HOT keys (prefix `role+":hot:"`) and FRESH keys (prefix `role+":fresh:"`).
 // Falls back to ALL `role:` keys when both sets are empty.
 func runLearnings(ctx *cli.Context, role string) error {
+	_, err := serveLearnings(ctx, role)
+	return err
+}
+
+// serveLearnings is runLearnings plus a report of whether the hosted store was
+// unreachable, in which case it printed the continue-without notice and served
+// no learnings. Callers that must not treat that notice as learnings use the
+// flag instead of searching the output text.
+func serveLearnings(ctx *cli.Context, role string) (unreachable bool, err error) {
 	hotPrefix := role + ":hot:"
 	freshPrefix := role + ":fresh:"
 	rolePrefix := role + ":"
@@ -610,18 +619,18 @@ func runLearnings(ctx *cli.Context, role string) error {
 	raw, err := readMemoriesByPrefix(learnBD(ctx), hotPrefix, freshPrefix)
 	if err != nil {
 		if learnServeUnreachable(ctx, role, err) {
-			return nil
+			return true, nil
 		}
-		return err
+		return false, err
 	}
 	if !hasStringKeyWithPrefix(raw, hotPrefix) && !hasStringKeyWithPrefix(raw, freshPrefix) {
 		// Neither tier exists: the all-role fallback below needs every
 		// role: key, so widen the scope with one more call.
 		if raw, err = readMemoriesByPrefix(learnBD(ctx), rolePrefix); err != nil {
 			if learnServeUnreachable(ctx, role, err) {
-				return nil
+				return true, nil
 			}
-			return err
+			return false, err
 		}
 	}
 
@@ -674,7 +683,7 @@ func runLearnings(ctx *cli.Context, role string) error {
 	}
 	if len(keys) == 0 {
 		fmt.Fprintf(ctx.Stdout, "[learnings %s: EMPTY]\n", role)
-		return nil
+		return false, nil
 	}
 
 	// Build the payload in a buffer first so the header/trailer can report its
@@ -700,7 +709,7 @@ func runLearnings(ctx *cli.Context, role string) error {
 	fmt.Fprintf(ctx.Stdout, "[learnings %s — read in full; do NOT pipe through head/tail or truncate; output ends at the matching trailer line]\n", stats)
 	fmt.Fprint(ctx.Stdout, payload.String())
 	fmt.Fprintf(ctx.Stdout, "[learnings %s]\n", stats)
-	return nil
+	return false, nil
 }
 
 // recallNearestCount caps how many near-miss keys are listed when a recall

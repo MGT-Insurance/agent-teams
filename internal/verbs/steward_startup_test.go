@@ -140,6 +140,18 @@ func TestStewardStartup_LearningsNoticeIsAnError(t *testing.T) {
 	}
 }
 
+func TestStewardStartup_LearningBodyMentioningNoticeStillStarts(t *testing.T) {
+	body := "RULE: when the store says [learnings store unreachable: " + learnContinuingWithout + " steward learnings], escalate."
+	_, run := startupCtx(t, body)
+	out, _, err := run()
+	if err != nil {
+		t.Fatalf("startup failed on a learning that quotes the notice: %v", err)
+	}
+	if !strings.Contains(out, body) {
+		t.Errorf("startup output does not contain the learning body:\n%s", out)
+	}
+}
+
 func TestStewardSharedLedgerIsSingleSourced(t *testing.T) {
 	const dir = "../../promptsrc/agent-teams/skills/steward/"
 	skill, err := os.ReadFile("../../plugins/agent-teams/skills/steward/SKILL.md")

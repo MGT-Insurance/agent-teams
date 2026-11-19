@@ -197,8 +197,9 @@ func (c *stewardLedgerSeedKong) Run(ctx *cli.Context) error {
 	if c.DryRun {
 		verb = "would write"
 	}
-	fmt.Fprintf(ctx.Stdout, "seed: %d %s, %d already present, %d malformed skipped\n", len(missing), verb, alreadyPresent, malformed)
+	summary := fmt.Sprintf("seed: %d %s, %d already present, %d malformed skipped\n", len(missing), verb, alreadyPresent, malformed)
 	if c.DryRun || len(missing) == 0 {
+		fmt.Fprint(ctx.Stdout, summary)
 		return nil
 	}
 
@@ -213,5 +214,7 @@ func (c *stewardLedgerSeedKong) Run(ctx *cli.Context) error {
 		}
 		return fmt.Errorf("ateam steward ledger seed: %w", err)
 	}
+	// A real run reports its count only after the import succeeds.
+	fmt.Fprint(ctx.Stdout, summary)
 	return nil
 }

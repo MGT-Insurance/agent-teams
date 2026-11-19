@@ -115,8 +115,8 @@ func freshDrainFailure(ctx *cli.Context, moved int, err error) error {
 	return err
 }
 
-// learnContinuingWithout is the part of the unreachable notice that
-// `ateam steward startup` looks for in the learnings output.
+// learnContinuingWithout is the part of the unreachable notice that tells the
+// reader no learnings were served.
 const learnContinuingWithout = "continuing WITHOUT"
 
 // learnServeUnreachable handles a failed read that serves an agent (learnings,
