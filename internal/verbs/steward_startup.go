@@ -25,7 +25,7 @@ var stewardSharedLedgerRules string
 
 // stewardRulesIntro leads the ledger rules section. It sits outside the shared
 // text because the shared slices keep the local skill's numbering and wording.
-const stewardRulesIntro = "These are the steward ledger rules shared by the local and cloud stewards; the section and step numbers come from the local skill, so a cloud steward can ignore them."
+const stewardRulesIntro = "These ledger rules are shared by the local and cloud stewards. Section numbers, step numbers, and § references come from the local skill; a cloud steward can ignore them, and the record step below is the steward-reply handler they point to."
 
 // stewardStartupKong is the kong struct for `ateam steward startup`.
 type stewardStartupKong struct{}

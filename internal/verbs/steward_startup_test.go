@@ -112,6 +112,24 @@ func TestStewardStartup_OverLimitFixturePrintsNothing(t *testing.T) {
 	}
 }
 
+func TestStewardStartup_RulesIntroIsPinned(t *testing.T) {
+	const want = "These ledger rules are shared by the local and cloud stewards. Section numbers, step numbers, and § references come from the local skill; a cloud steward can ignore them, and the record step below is the steward-reply handler they point to."
+	if stewardRulesIntro != want {
+		t.Errorf("stewardRulesIntro = %q, want %q", stewardRulesIntro, want)
+	}
+	_, run := startupCtx(t, "RULE: x.")
+	out, _, err := run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "## Ledger rules\n"+want+"\n\n") {
+		t.Errorf("startup output does not lead with the intro:\n%.300s", out)
+	}
+	if !strings.Contains(stewardSharedLedgerRules, "3. Record the verdict:") {
+		t.Error("the intro points at a record step the shared rules no longer contain")
+	}
+}
+
 func TestStewardStartup_UnreachableStorePrintsNothing(t *testing.T) {
 	m, run := startupCtx(t, "RULE: keep it whole.")
 	m.err = errors.New(unreachableMsg)
