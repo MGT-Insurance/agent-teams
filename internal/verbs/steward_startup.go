@@ -23,6 +23,10 @@ const stewardStartupLimit = 60 * 1024
 //go:embed embedded/steward_shared_ledger.md
 var stewardSharedLedgerRules string
 
+// stewardRulesIntro leads the ledger rules section. It sits outside the shared
+// text because the shared slices keep the local skill's numbering and wording.
+const stewardRulesIntro = "These are the steward ledger rules shared by the local and cloud stewards; section and step numbers refer to the local skill."
+
 // stewardStartupKong is the kong struct for `ateam steward startup`.
 type stewardStartupKong struct{}
 
@@ -43,7 +47,7 @@ func (c *stewardStartupKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	text, err := assembleStewardStartup(stewardSharedLedgerRules, stats, learnings)
+	text, err := assembleStewardStartup(stewardRulesIntro+"\n\n"+stewardSharedLedgerRules, stats, learnings)
 	if err != nil {
 		return err
 	}

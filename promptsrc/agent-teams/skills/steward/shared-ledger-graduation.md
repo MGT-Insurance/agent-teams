@@ -1,0 +1,1 @@
+- No confidence graduation: the ledger grants no autonomous authority — escalate every gate to the human regardless of ledger stats.

@@ -46,7 +46,7 @@ func TestStewardStartup_OrderAndByteIdenticalLearnings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := "## Ledger rules\n" + stewardSharedLedgerRules +
+	want := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules +
 		"\n## Ledger stats\n" + stats.String() +
 		"\n## Steward learnings\n" + learnings.String()
 	if got != want {
@@ -72,7 +72,7 @@ func startupSize(t *testing.T, n int) (int, error) {
 func TestStewardStartup_LimitIsInclusive(t *testing.T) {
 	// Find the body size that makes the output exactly the limit. The learnings
 	// header repeats the payload size, so its digit count shifts the total.
-	n := stewardStartupLimit - 1000
+	n := stewardStartupLimit - 4000
 	for i := 0; i < 5; i++ {
 		size, err := startupSize(t, n)
 		if err != nil {
@@ -141,18 +141,24 @@ func TestStewardStartup_LearningsNoticeIsAnError(t *testing.T) {
 }
 
 func TestStewardSharedLedgerIsSingleSourced(t *testing.T) {
-	source, err := os.ReadFile("../../promptsrc/agent-teams/skills/steward/shared-ledger.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stewardSharedLedgerRules != string(source) {
-		t.Error("embedded ledger rules differ from promptsrc shared-ledger.md; run prompt-sync write")
-	}
+	const dir = "../../promptsrc/agent-teams/skills/steward/"
 	skill, err := os.ReadFile("../../plugins/agent-teams/skills/steward/SKILL.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(skill), string(source)) {
-		t.Error("steward SKILL.md does not contain shared-ledger.md verbatim")
+	var joined []string
+	for _, name := range []string{"recall", "pending", "record", "discipline", "graduation"} {
+		slice, err := os.ReadFile(dir + "shared-ledger-" + name + ".md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(skill), string(slice)) {
+			t.Errorf("steward SKILL.md does not contain shared-ledger-%s.md verbatim", name)
+		}
+		joined = append(joined, string(slice))
+	}
+	// Slices are joined by one blank line; each ends in a newline.
+	if want := strings.Join(joined, "\n"); stewardSharedLedgerRules != want {
+		t.Errorf("embedded ledger rules differ from the promptsrc slices; run prompt-sync write\n got %q\nwant %q", stewardSharedLedgerRules, want)
 	}
 }
