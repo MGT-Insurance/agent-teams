@@ -16,6 +16,13 @@ strict drift check. The contract is in `docs/prompt-sync-contract.md`.
 - A singleton does not get a synthetic counterpart. Keep a runtime-specific
   skill or reference classified as runtime-only until a product decision adds
   a real counterpart. An unclassified singleton is drift and fails the check.
+- A runtime-specific output that also renders from fragments uses status
+  `runtime-generated`: one output, canonical inputs, and a reason, with no
+  counterpart required. The steward skill uses it so its ledger rules share one
+  fragment with `ateam steward startup`. A Go package can't `go:embed` a file
+  outside its directory, so a second `runtime-generated` entry of kind `embed`
+  writes the fragment to `internal/verbs/embedded/`, and the check fails if that
+  copy drifts.
 
 ## Render and check
 

@@ -31,10 +31,11 @@ func RegisterStewardKong(p *cli.Parser) {
 // and runs every node that has a Run method, so a Run here would fire on
 // every subcommand (same pattern as mailCmd in mail_register.go).
 type stewardCmd struct {
-	Init   stewardInitKong   `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
-	Start  stewardStartKong  `cmd:"" name:"start" help:"Init, then singleton/orphan-watcher pre-flight checks, then launch the Steward's background session."`
-	Ledger stewardLedgerCmd  `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
-	Remove stewardRemoveKong `cmd:"" name:"remove" help:"De-steward this machine: remove the session dir and doorbell (ledger/briefing kept unless --purge)."`
+	Init    stewardInitKong    `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
+	Start   stewardStartKong   `cmd:"" name:"start" help:"Init, then singleton/orphan-watcher pre-flight checks, then launch the Steward's background session."`
+	Ledger  stewardLedgerCmd   `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
+	Startup stewardStartupKong `cmd:"" name:"startup" help:"Print the steward's startup text: ledger rules, ledger stats, learnings. Prints all of it or nothing."`
+	Remove  stewardRemoveKong  `cmd:"" name:"remove" help:"De-steward this machine: remove the session dir and doorbell (ledger/briefing kept unless --purge)."`
 }
 
 // stewardLedgerCmd is the kong parent struct for `ateam steward ledger

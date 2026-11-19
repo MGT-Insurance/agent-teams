@@ -502,12 +502,32 @@
     {
       "id": "skill.steward",
       "kind": "skill",
-      "status": "runtime-only",
-      "reason": "Claude persistent-team stewardship and session control have no Codex counterpart skill requirement.",
+      "status": "runtime-generated",
+      "reason": "Claude persistent-team stewardship and session control have no Codex counterpart skill requirement; the ledger rules are shared with ateam steward startup.",
+      "inputs": [
+        {"id": "claude-head", "path": "promptsrc/agent-teams/skills/steward/claude-head.md"},
+        {"id": "shared-ledger", "path": "promptsrc/agent-teams/skills/steward/shared-ledger.md"},
+        {"id": "claude-tail", "path": "promptsrc/agent-teams/skills/steward/claude-tail.md"}
+      ],
       "outputs": [{
         "path": "plugins/agent-teams/skills/steward/SKILL.md",
         "format": "markdown",
+        "parts": ["claude-head", "shared-ledger", "claude-tail"],
         "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/steward", "min_headroom": 1000}
+      }]
+    },
+    {
+      "id": "embed.steward.shared-ledger",
+      "kind": "embed",
+      "status": "runtime-generated",
+      "reason": "Copy of the shared steward ledger rules that internal/verbs embeds with go:embed for ateam steward startup.",
+      "inputs": [
+        {"id": "shared-ledger", "path": "promptsrc/agent-teams/skills/steward/shared-ledger.md"}
+      ],
+      "outputs": [{
+        "path": "internal/verbs/embedded/steward_shared_ledger.md",
+        "format": "markdown",
+        "parts": ["shared-ledger"]
       }]
     },
     {

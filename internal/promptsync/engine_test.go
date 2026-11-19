@@ -569,3 +569,35 @@ func TestRuntimeOnlySkillBudgetIsMeasuredFromDisk(t *testing.T) {
 		t.Fatalf("skill_budget on a non-SKILL.md output error = %v", err)
 	}
 }
+
+func TestRuntimeGeneratedEntryValidation(t *testing.T) {
+	good := Entry{
+		ID:      "embed.fixture",
+		Kind:    KindEmbed,
+		Status:  StatusRuntimeGenerated,
+		Reason:  "embedded copy",
+		Inputs:  []Input{{ID: "part", Path: "promptsrc/agent-teams/skills/fixture/part.md"}},
+		Outputs: []Output{{Path: "internal/verbs/embedded/fixture.md", Format: FormatMarkdown, Parts: []string{"part"}}},
+	}
+	if err := validateEntries([]Entry{good}, false); err != nil {
+		t.Fatalf("valid runtime-generated entry rejected: %v", err)
+	}
+
+	noReason := good
+	noReason.Reason = ""
+	if err := validateEntries([]Entry{noReason}, false); err == nil || !strings.Contains(err.Error(), "needs a reason") {
+		t.Fatalf("missing reason error = %v", err)
+	}
+
+	noInputs := good
+	noInputs.Inputs = nil
+	if err := validateEntries([]Entry{noInputs}, false); err == nil || !strings.Contains(err.Error(), "needs canonical inputs") {
+		t.Fatalf("missing inputs error = %v", err)
+	}
+
+	wrongTree := good
+	wrongTree.Outputs = []Output{{Path: "internal/verbs/other/fixture.md", Format: FormatMarkdown, Parts: []string{"part"}}}
+	if err := validateEntries([]Entry{wrongTree}, false); err == nil || !strings.Contains(err.Error(), "not a role, SKILL.md, or skill-reference surface") {
+		t.Fatalf("unrecognized embed path error = %v", err)
+	}
+}
