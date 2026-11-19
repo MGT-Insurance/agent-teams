@@ -106,7 +106,7 @@ func TestUINeeds_WaitPassesPoolFullThroughWithExit8(t *testing.T) {
 		comments []uiTestComment
 	}{
 		"not started comment": {closedBead("failed"), []uiTestComment{{Author: "dispatcher", CreatedAt: "2026-11-02T13:49:40Z", Text: "not started: " + line}}},
-		"job comment":         {closedBead("failed"), []uiTestComment{{Author: "job:ui-test", CreatedAt: "2026-11-02T13:49:40Z", Text: line}}},
+		"job comment":         {closedBead("failed"), []uiTestComment{{Author: "job:ui-test", CreatedAt: "2026-11-02T13:49:40Z", Text: "not started: " + line}}},
 		"close reason only":   {closedBead("not started: " + line), nil},
 	}
 	for name, c := range cases {
@@ -123,6 +123,32 @@ func TestUINeeds_WaitPassesPoolFullThroughWithExit8(t *testing.T) {
 		data, rerr := os.ReadFile(filepath.Join(out, "failure.md"))
 		if rerr != nil || strings.TrimSpace(string(data)) != line {
 			t.Errorf("%s: failure.md = %q (%v)", name, data, rerr)
+		}
+	}
+}
+
+func TestUINeeds_WaitPoolFullOnlyFromTheNewestJobCommentOrCloseReason(t *testing.T) {
+	const line = "not started: POOL_FULL (1/1 leased)"
+	cases := map[string][]uiTestComment{
+		"older comment, newer failure": {
+			{Author: "dispatcher", CreatedAt: "2026-11-02T13:00:00Z", Text: line},
+			{Author: "job:ui-test", CreatedAt: "2026-11-02T13:30:00Z", Text: "run crashed: browser exited"},
+		},
+		"human comment quotes the text": {
+			{Author: "job:ui-test", CreatedAt: "2026-11-02T13:00:00Z", Text: "run crashed: browser exited"},
+			{Author: "eric", CreatedAt: "2026-11-02T13:30:00Z", Text: line},
+		},
+		"bare line without not started": {
+			{Author: "job:ui-test", CreatedAt: "2026-11-02T13:30:00Z", Text: "POOL_FULL (1/1 leased)"},
+		},
+	}
+	for name, comments := range cases {
+		h := newUIHarness(t, uiFullConfig)
+		h.polls = []uiTestBead{closedBead("failed")}
+		h.comments = comments
+		_, err := h.wait(time.Minute)
+		if exitOf(err) == uiExitPoolFull {
+			t.Errorf("%s: exit = %d, want any other failure", name, exitOf(err))
 		}
 	}
 }

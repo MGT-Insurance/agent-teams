@@ -701,22 +701,30 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, 
 // uiTestPoolFull returns the verbatim POOL_FULL line of a bead the Dispatcher
 // refused because every pool tenant was leased. Dispatcher raises it in
 // startRun, after the bead is filed, and records it as a "not started: <reason>"
-// comment (start-failure.ts) or in the close reason. The newest comment wins; a
-// leading "not started: " is stripped so the line reads as the contract text.
+// comment (start-failure.ts) or in the close reason. Only that exact text counts,
+// and only in the newest comment written by Dispatcher or a job, or in the close
+// reason, so an older comment or a person quoting the text cannot turn a later
+// failure into this outcome. The "not started: " prefix is stripped so the line
+// reads as the contract text.
 func uiTestPoolFull(bead uiTestBead, comments []uiTestComment) (string, bool) {
 	find := func(text string) (string, bool) {
 		for _, l := range strings.Split(text, "\n") {
-			l = strings.TrimSpace(l)
-			l = strings.TrimSpace(strings.TrimPrefix(l, "not started:"))
-			if strings.HasPrefix(l, uiPoolFullPrefix) {
-				return l, true
+			rest, ok := strings.CutPrefix(strings.TrimSpace(l), "not started:")
+			if !ok {
+				continue
+			}
+			if rest = strings.TrimSpace(rest); strings.HasPrefix(rest, uiPoolFullPrefix) {
+				return rest, true
 			}
 		}
 		return "", false
 	}
 	for i := len(comments) - 1; i >= 0; i-- {
-		if line, ok := find(comments[i].Text); ok {
-			return line, true
+		if a := comments[i].Author; a == "dispatcher" || strings.HasPrefix(a, "job:") {
+			if line, ok := find(comments[i].Text); ok {
+				return line, true
+			}
+			break
 		}
 	}
 	return find(bead.CloseReason)
