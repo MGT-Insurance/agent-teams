@@ -42,6 +42,8 @@ Every live item has a kind, and the kind sets its proof. An item without its kin
 
 Group the DRI's items by kind. On the remote path, file one `ateam live-test file --job <ui-test|api-test>` per kind (ui items to `ui-test`, api items to `api-test`); `--job` defaults to `ui-test`.
 
+Add `--needs socotra-tenant` to any item that writes to Socotra, so the run gets its own pool tenant instead of the shared main staging tenant. Add `--needs socotra-tenant,rating` for a `rate:true` item: `rating` alone exits 2. Pool tenants keep data from earlier runs, so never assert on an empty tenant. A call without `--needs` is unchanged. Exit 5 on a `--needs` call also means this Dispatcher does not support needs; run those items locally and ignore the bead it filed.
+
 On the local path, run ui items through `npx @playwright/cli`. Run api items with `curl` or a short script against the DRI's dev server, and save `transcript.json` as the proof: `{"version":1,"calls":[{"id":"c1","at","method","url","requestHeaders","requestBody","status","responseHeaders","responseBody","ms"}]}`. Replace the values of the `Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`, and `x-mcp-api-key` headers with `"<redacted>"`. Take a bearer token only from the repo's documented test harness (for example, a repo-specific local-testing skill), and never print it.
 
 ## Remote run on Dispatcher (the default)

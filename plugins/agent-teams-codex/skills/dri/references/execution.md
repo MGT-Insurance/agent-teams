@@ -186,7 +186,9 @@ skippable.
   raise a question gate and reply with the human's answer. Exit 0: raise
   live-test-review (see Proof above). Exit 2 (`failed`): read
   the `failure.md` path the command prints, then raise a question gate with
-  its text. Exit 7: re-file once per NO-EVIDENCE below. Exit 3 on a `blocked`
+  its text. Exit 7: re-file once per NO-EVIDENCE below. Exit 8 (pool full,
+  `POOL_FULL`): nothing ran; raise a question gate with the line the command
+  printed, and never re-file in a loop. Exit 3 on a `blocked`
   event: the tester stopped without a `question:` comment, so the wait stays
   pending and returns nothing to read. Don't wait again; raise a question gate
   naming the bead id. On `expired`: the stop watcher hit its 24-hour

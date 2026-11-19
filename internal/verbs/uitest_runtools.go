@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/runtools"
@@ -33,14 +35,15 @@ func (rt *uiRunTools) artifactRequest(runID, name string) (*http.Request, error)
 }
 
 type runToolsFileReq struct {
-	Op       string `json:"op"`
-	Branch   string `json:"branch"`
-	SHA      string `json:"sha"`
-	Scope    string `json:"scope"`
-	TestUser string `json:"test_user,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Items    string `json:"items"`
+	Op       string   `json:"op"`
+	Branch   string   `json:"branch"`
+	SHA      string   `json:"sha"`
+	Scope    string   `json:"scope"`
+	TestUser string   `json:"test_user,omitempty"`
+	Type     string   `json:"type,omitempty"`
+	Needs    []string `json:"needs,omitempty"`
+	Title    string   `json:"title,omitempty"`
+	Items    string   `json:"items"`
 }
 
 // call posts body and returns the 200 response body. It retries once on a
@@ -82,12 +85,25 @@ func (rt *uiRunTools) beadReply(d uiTestDeps, id, text string) (string, error) {
 	return r.Status, nil
 }
 
+// sameNeeds reports whether got holds exactly the values in want, in any order.
+func sameNeeds(want, got []string) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for _, w := range want {
+		if !slices.Contains(got, w) {
+			return false
+		}
+	}
+	return true
+}
+
 // fileViaRunTools posts the ui_test_file op, sending type only when it is not
 // ui-test and failing closed (exit 5) when the response does not echo the
 // type. It prints the bead id on stdout
 // and its url on stderr, so callers that capture stdout still get the id.
-func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, job, branch, sha, items string) error {
-	req := runToolsFileReq{Op: "ui_test_file", Branch: branch, SHA: sha, Scope: c.Scope, TestUser: c.TestUser, Title: c.Title, Items: items}
+func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, job string, needs []string, branch, sha, items string) error {
+	req := runToolsFileReq{Op: "ui_test_file", Branch: branch, SHA: sha, Scope: c.Scope, TestUser: c.TestUser, Title: c.Title, Items: items, Needs: needs}
 	if job != uiJobUI {
 		req.Type = job
 	}
@@ -96,10 +112,11 @@ func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiR
 		return fmt.Errorf("live-test file: %w", err)
 	}
 	var r struct {
-		ID      string `json:"id"`
-		URL     string `json:"url"`
-		Created bool   `json:"created"`
-		Type    string `json:"type"`
+		ID      string   `json:"id"`
+		URL     string   `json:"url"`
+		Created bool     `json:"created"`
+		Type    string   `json:"type"`
+		Needs   []string `json:"needs"`
 	}
 	if err := json.Unmarshal(data, &r); err != nil || r.ID == "" {
 		return fmt.Errorf("live-test file: run-tools ui_test_file: unexpected response")
@@ -117,6 +134,13 @@ func (c *uiTestFileKong) fileViaRunTools(ctx *cli.Context, d uiTestDeps, rt *uiR
 	}
 	if job == uiJobUI && r.Type != "" && r.Type != job {
 		return fmt.Errorf("live-test file: bead %s was filed as %s, not %s; ignore its verdict", r.ID, r.Type, job)
+	}
+	// A current Dispatcher echoes the needs it received. An older one strips
+	// the unknown key and runs the test on the shared main staging tenant.
+	if len(needs) > 0 && !sameNeeds(needs, r.Needs) {
+		fmt.Fprintf(ctx.Stderr, "Dispatcher does not support --needs %s yet; test locally\n", strings.Join(needs, ","))
+		fmt.Fprintf(ctx.Stderr, "live-test file: bead %s was filed without those needs; ignore its verdict\n", r.ID)
+		return cli.Silent(uiExitIneligible)
 	}
 	fmt.Fprintln(ctx.Stdout, r.ID)
 	if r.URL != "" {

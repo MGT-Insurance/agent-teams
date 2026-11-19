@@ -28,7 +28,12 @@ const (
 	uiExitIneligible = 5 // feature off, non-GitHub origin, or Dispatcher rejected the repo
 	uiExitNotPushed  = 6 // HEAD is not on origin
 	uiExitNoEvidence = 7 // verdict exists but the kind's required evidence is missing
+	uiExitPoolFull   = 8 // Dispatcher refused the run: every Socotra pool tenant is leased (POOL_FULL)
 )
+
+// uiPoolFullPrefix is the contract's POOL_FULL_PREFIX (Dispatcher
+// src/lib/socotra-pool.contract.ts). The full text is `POOL_FULL (<leased>/<cap> leased)`.
+const uiPoolFullPrefix = "POOL_FULL"
 
 // Live-test job types, Dispatcher's job names. ui-test is the default.
 const (
@@ -59,7 +64,7 @@ func RegisterUITestKong(p *cli.Parser) {
 // no Run method: kong would run it for every subcommand (see mail_register.go).
 type uiTestCmd struct {
 	File  uiTestFileKong  `cmd:"" name:"file" help:"File a live-test bead (--job picks the UI or API job) for a pushed branch in the Dispatcher's beads database; prints the bead id."`
-	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it and its evidence (screenshots or transcript.json) under --out. Exit 7 means the job type's evidence is missing."`
+	Wait  uiTestWaitKong  `cmd:"" name:"wait" help:"Wait up to --timeout for the bead's verdict, then write it and its evidence (screenshots or transcript.json) under --out. Exit 7 means the job type's evidence is missing. Exit 8 means the Socotra tenant pool is full: the POOL_FULL line is printed to stderr and written to failure.md; nothing ran, retry later."`
 	Watch uiTestWatchKong `cmd:"" name:"watch" help:"Watch a live-test bead and mail its stop events (question, blocked, done, failed, expired) to the initiative."`
 	Reply uiTestReplyKong `cmd:"" name:"reply" help:"Answer the tester's question on a live-test bead; prints '<id> <status>'."`
 }
@@ -188,6 +193,13 @@ func normalizeGitHubOrigin(origin string) (url, repo string, ok bool) {
 // Dispatcher parses, a "---" line, then the items verbatim. job names the bead
 // type (ui-test or api-test); empty means ui-test.
 func uiTestBeadBody(repoURL, branch, sha, scope, testUser, job, items string) string {
+	return uiTestBeadBodyNeeds(repoURL, branch, sha, scope, testUser, job, nil, items)
+}
+
+// uiTestBeadBodyNeeds is uiTestBeadBody with an optional "needs:" header line.
+// An empty needs adds no line, so the body is byte-identical to one filed
+// before --needs existed.
+func uiTestBeadBodyNeeds(repoURL, branch, sha, scope, testUser, job string, needs []string, items string) string {
 	if job == "" {
 		job = uiJobUI
 	}
@@ -205,19 +217,23 @@ func uiTestBeadBody(repoURL, branch, sha, scope, testUser, job, items string) st
 	if testUser != "" {
 		lines = append(lines, "test_user: "+testUser)
 	}
+	if len(needs) > 0 {
+		lines = append(lines, "needs: "+strings.Join(needs, ","))
+	}
 	lines = append(lines, uiHeaderEnd)
 	return strings.Join(lines, "\n") + "\n" + items
 }
 
 // uiTestFileKong implements `ateam ui-test file`.
 type uiTestFileKong struct {
-	Worktree   string `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
-	Scope      string `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
-	ItemsFile  string `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
-	Job        string `name:"job" default:"ui-test" help:"Dispatcher job to file: ui-test (browser screenshots, default) or api-test (request/response transcript)."`
-	TestUser   string `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
-	Title      string `name:"title" help:"Bead title suffix; defaults to the branch name."`
-	Initiative string `name:"initiative" help:"Initiative to mail the stop events to (local filing only); default: the owner of --worktree, else of the current directory."`
+	Worktree   string   `name:"worktree" required:"" help:"Absolute path of the worktree whose pushed HEAD is tested."`
+	Scope      string   `name:"scope" required:"" help:"Apps in scope, written to the bead's scope: line."`
+	ItemsFile  string   `name:"items-file" required:"" help:"File holding the items to verify, appended verbatim to the bead body."`
+	Job        string   `name:"job" default:"ui-test" help:"Dispatcher job to file: ui-test (browser screenshots, default) or api-test (request/response transcript)."`
+	TestUser   string   `name:"test-user" help:"Email of the test user, written to the bead's test_user: line."`
+	Needs      []string `name:"needs" sep:"," help:"Optional Dispatcher fixtures: socotra-tenant (lease a pool tenant) and rating (public app URL; requires socotra-tenant). Comma-separated. Exit 8 when the pool is full (POOL_FULL)."`
+	Title      string   `name:"title" help:"Bead title suffix; defaults to the branch name."`
+	Initiative string   `name:"initiative" help:"Initiative to mail the stop events to (local filing only); default: the owner of --worktree, else of the current directory."`
 
 	deps *uiTestDeps
 }
@@ -235,6 +251,10 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 		}
 	}
 	job, err := c.job()
+	if err != nil {
+		return err
+	}
+	needs, err := c.validNeeds()
 	if err != nil {
 		return err
 	}
@@ -278,11 +298,11 @@ func (c *uiTestFileKong) Run(ctx *cli.Context) error {
 		title = branch
 	}
 	if inRun {
-		return c.fileViaRunTools(ctx, d, rt, job, branch, sha, string(items))
+		return c.fileViaRunTools(ctx, d, rt, job, needs, branch, sha, string(items))
 	}
 	labels := []string{"type:" + job, "agent:tester", "repo:" + repo}
 	id, err := d.fileBead(settings.beadsDir, settings.actor, job+": "+title, labels,
-		uiTestBeadBody(repoURL, branch, sha, c.Scope, c.TestUser, job, string(items)))
+		uiTestBeadBodyNeeds(repoURL, branch, sha, c.Scope, c.TestUser, job, needs, string(items)))
 	if err != nil {
 		return fmt.Errorf("live-test file: %w", err)
 	}
@@ -301,6 +321,33 @@ func (c *uiTestFileKong) job() (string, error) {
 		return uiJobAPI, nil
 	}
 	return "", cli.Usagef("live-test file: --job must be %s or %s, got %q", uiJobUI, uiJobAPI, c.Job)
+}
+
+// Dispatcher test needs, copied from its contract (src/lib/test-kind.ts).
+const (
+	uiNeedTenant = "socotra-tenant"
+	uiNeedRating = "rating"
+	// uiNeedsRatingRefusal is Dispatcher's needsRefusal text for rating without socotra-tenant.
+	uiNeedsRatingRefusal = "needs rating requires needs socotra-tenant: without a leased tenant the test runs on the shared main staging tenant, is rated by main, and gets no public port"
+)
+
+// validNeeds returns the deduplicated --needs values in the order given. An
+// unknown value, or rating without socotra-tenant, is a usage error (exit 2).
+func (c *uiTestFileKong) validNeeds() ([]string, error) {
+	var needs []string
+	for _, n := range c.Needs {
+		n = strings.TrimSpace(n)
+		if n != uiNeedTenant && n != uiNeedRating {
+			return nil, cli.Usagef("live-test file: --needs must be %s or %s (comma-separated), got %q", uiNeedTenant, uiNeedRating, n)
+		}
+		if !slices.Contains(needs, n) {
+			needs = append(needs, n)
+		}
+	}
+	if slices.Contains(needs, uiNeedRating) && !slices.Contains(needs, uiNeedTenant) {
+		return nil, cli.Usagef("live-test file: %s", uiNeedsRatingRefusal)
+	}
+	return needs, nil
 }
 
 // uiTestHead returns the current branch and full HEAD sha of worktree.
@@ -620,6 +667,15 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, 
 	if hasVerdict && !uiTestClosedFailed(bead.CloseReason) {
 		return c.writeVerdict(ctx, d, rt, bead, comments, verdict, runID, out)
 	}
+	if line, ok := uiTestPoolFull(bead, comments); ok {
+		path := filepath.Join(out, "failure.md")
+		if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
+			return fmt.Errorf("live-test wait: %w", err)
+		}
+		fmt.Fprintln(ctx.Stdout, path)
+		fmt.Fprintln(ctx.Stderr, line)
+		return cli.Silent(uiExitPoolFull)
+	}
 	if reason, ok := uiTestIneligible(comments); ok {
 		fmt.Fprintf(ctx.Stderr, "live-test wait: Dispatcher cannot run this repo (%s); test locally\n", firstLine(reason))
 		return cli.Silent(uiExitIneligible)
@@ -640,6 +696,30 @@ func (c *uiTestWaitKong) finish(ctx *cli.Context, d uiTestDeps, rt *uiRunTools, 
 	}
 	fmt.Fprintln(ctx.Stdout, path)
 	return cli.Silent(uiExitFailed)
+}
+
+// uiTestPoolFull returns the verbatim POOL_FULL line of a bead the Dispatcher
+// refused because every pool tenant was leased. Dispatcher raises it in
+// startRun, after the bead is filed, and records it as a "not started: <reason>"
+// comment (start-failure.ts) or in the close reason. The newest comment wins; a
+// leading "not started: " is stripped so the line reads as the contract text.
+func uiTestPoolFull(bead uiTestBead, comments []uiTestComment) (string, bool) {
+	find := func(text string) (string, bool) {
+		for _, l := range strings.Split(text, "\n") {
+			l = strings.TrimSpace(l)
+			l = strings.TrimSpace(strings.TrimPrefix(l, "not started:"))
+			if strings.HasPrefix(l, uiPoolFullPrefix) {
+				return l, true
+			}
+		}
+		return "", false
+	}
+	for i := len(comments) - 1; i >= 0; i-- {
+		if line, ok := find(comments[i].Text); ok {
+			return line, true
+		}
+	}
+	return find(bead.CloseReason)
 }
 
 // uiTestClosedFailed reports whether the Dispatcher closed the bead as failed.
