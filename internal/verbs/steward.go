@@ -4,6 +4,7 @@
 package verbs
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -42,6 +43,7 @@ type stewardLedgerCmd struct {
 	Record stewardLedgerRecordKong `cmd:"" name:"record" help:"Append one decision to the Steward's ledger."`
 	Stats  stewardLedgerStatsKong  `cmd:"" name:"stats" help:"Report per-category accept/correct counts from the ledger."`
 	Recall stewardLedgerRecallKong `cmd:"" name:"recall" help:"Recall recent decisions for one category (most recent first)."`
+	Seed   stewardLedgerSeedKong   `cmd:"" name:"seed" help:"Copy the local ledger file into the hosted ledger store (cloud_home); never overwrites."`
 }
 
 // ── steward init ──────────────────────────────────────────────────────────────
@@ -482,7 +484,8 @@ type stewardLedgerRecordKong struct {
 // `enum:""` tags above — this path also fires when Run is called directly
 // in tests, bypassing kong parsing) — this is also where verdict=corrected
 // requiring --decision is enforced, via MarshalLine's call to Validate() —
-// and appends it as one JSONL line to StewardLedgerPath.
+// and stores it: one JSONL line in StewardLedgerPath, or one hosted memory when
+// the hosted ledger store is selected.
 func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward ledger record: nil context")
@@ -502,19 +505,8 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 		return cli.Usagef("ateam steward ledger record: %v", err)
 	}
 
-	ledgerPath := StewardLedgerPath(ctx)
-	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
-		return fmt.Errorf("ateam steward ledger record: create ledger dir: %w", err)
-	}
-
-	f, err := os.OpenFile(ledgerPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("ateam steward ledger record: open ledger: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(line); err != nil {
-		return fmt.Errorf("ateam steward ledger record: append: %w", err)
+	if err := newStewardLedgerStore(ctx).append(rec, bytes.TrimSuffix(line, []byte("\n"))); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(ctx.Stdout, "recorded: %s %s -> %s\n", rec.Category, rec.Initiative, rec.Verdict)
@@ -568,11 +560,11 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 
 	counts := make(map[StewardLedgerCategory]*stewardCategoryStats)
 
-	data, err := os.ReadFile(StewardLedgerPath(ctx))
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("ateam steward ledger stats: read ledger: %w", err)
+	ledgerLines, err := newStewardLedgerStore(ctx).lines("stats")
+	if err != nil {
+		return err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range ledgerLines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -678,13 +670,13 @@ func (c *stewardLedgerRecallKong) Run(ctx *cli.Context) error {
 		return cli.Usagef("ateam steward ledger recall: invalid category %q", c.Category)
 	}
 
-	data, err := os.ReadFile(StewardLedgerPath(ctx))
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("ateam steward ledger recall: read ledger: %w", err)
+	ledgerLines, err := newStewardLedgerStore(ctx).lines("recall")
+	if err != nil {
+		return err
 	}
 
 	var recs []StewardLedgerRecord
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range ledgerLines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
