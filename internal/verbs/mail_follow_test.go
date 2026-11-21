@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -26,7 +25,7 @@ func init() {
 	if dir == "" || len(os.Args) < 4 || os.Args[len(os.Args)-1] != "--child" {
 		return
 	}
-	sid, _ := syscall.Getsid(0)
+	sid := testGetsid()
 	stdin, _ := os.Stdin.Stat()
 	null, _ := os.Stat(os.DevNull)
 	_ = os.WriteFile(filepath.Join(dir, "child.txt"), []byte(strings.Join([]string{
