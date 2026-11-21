@@ -1159,15 +1159,17 @@ func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
 	sf := newSendFixture(t)
 	var sleptFor time.Duration
 	var respawnCalled bool
+	polls := 0
 	cmd := &sendKong{
 		RecipientID: "at-kong-recip",
 		File:        sf.file,
 		agentsFunc: func() ([]agentSession, error) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
 		},
-		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
-		sleeper:        func(d time.Duration) { sleptFor = d },
-		doorbellExists: func(string) bool { return false }, // gone: a turn consumed it
+		resumeFunc: func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
+		sleeper:    func(d time.Duration) { sleptFor += d },
+		// Consumed on the 3rd check: send must return then, not wait the full 30s.
+		doorbellExists: func(string) bool { polls++; return polls < 3 },
 		respawnFunc:    func(string) error { respawnCalled = true; return nil },
 	}
 
@@ -1178,8 +1180,8 @@ func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
 	if deafProbeWait != 30*time.Second {
 		t.Errorf("deafProbeWait = %v, want 30s", deafProbeWait)
 	}
-	if sleptFor != 30*time.Second {
-		t.Errorf("expected a 30s wait before the doorbell re-check, got %v", sleptFor)
+	if want := 3 * deafProbePoll; sleptFor != want {
+		t.Errorf("waited %v, want %v (return as soon as the doorbell is consumed)", sleptFor, want)
 	}
 	if respawnCalled {
 		t.Error("respawn should not be called when the doorbell was already consumed")
@@ -1192,6 +1194,7 @@ func TestSendKong_IdleSession_DoorbellConsumed_NoRespawn(t *testing.T) {
 func TestSendKong_IdleSession_DoorbellPresent_Respawns(t *testing.T) {
 	sf := newSendFixture(t)
 	var respawnedID string
+	var sleptFor time.Duration
 	cmd := &sendKong{
 		RecipientID: "at-kong-recip",
 		File:        sf.file,
@@ -1199,7 +1202,7 @@ func TestSendKong_IdleSession_DoorbellPresent_Respawns(t *testing.T) {
 			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "idle"}}, nil
 		},
 		resumeFunc:     func(_ *cli.Context, _, _, _ string) error { t.Fatal("resume should not be called"); return nil },
-		sleeper:        func(time.Duration) {},
+		sleeper:        func(d time.Duration) { sleptFor += d },
 		doorbellExists: func(string) bool { return true }, // still present: recipient is deaf
 		respawnFunc:    func(id string) error { respawnedID = id; return nil },
 	}
@@ -1210,6 +1213,9 @@ func TestSendKong_IdleSession_DoorbellPresent_Respawns(t *testing.T) {
 	}
 	if respawnedID != "abc12345" {
 		t.Errorf("respawn not called with correct short id; got %q", respawnedID)
+	}
+	if sleptFor != deafProbeWait {
+		t.Errorf("unconsumed doorbell waited %v, want the %v maximum", sleptFor, deafProbeWait)
 	}
 	if !strings.Contains(stdout.String(), "respawned abc12345") {
 		t.Errorf("stdout missing respawn notice: %s", stdout.String())
