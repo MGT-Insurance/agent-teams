@@ -142,7 +142,7 @@ func renderAll(config Config, entries []Entry) ([]renderedOutput, Report, error)
 	var report Report
 	var problems []string
 	for _, entry := range entries {
-		if entry.Status != StatusPaired {
+		if entry.Status != StatusPaired && entry.Status != StatusRuntimeGenerated {
 			for _, output := range entry.Outputs {
 				if output.SkillBudget == nil {
 					continue

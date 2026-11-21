@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,9 @@ type cloudBootCommon struct {
 	// Git runs git in dir and returns its stdout; nil falls back to the real
 	// git with a per-call timeout (see runGitBounded).
 	Git cloudGitFunc `kong:"-"`
+	// Diag runs a diagnostic command (free, dmesg) and returns its stdout; nil
+	// falls back to the real command with a timeout (see runDiagBounded).
+	Diag cloudDiagFunc `kong:"-"`
 }
 
 type cloudBootStartKong struct{ cloudBootCommon }
@@ -281,6 +285,9 @@ func (c *cloudBootCommon) boot(ctx *cli.Context, resume bool) error {
 
 func (c *cloudBootCommon) bootRun(ctx *cli.Context, resume bool) error {
 	c.deps()
+	if resume {
+		c.logResumeDiagnostics(ctx)
+	}
 
 	// Preconditions: fail before any bd write or tmux call.
 	bead, sup, ok := dispatcherRun()
@@ -562,17 +569,27 @@ func (c *cloudBootCommon) waitLeadIdle(ctx *cli.Context, sid string) {
 }
 
 func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error {
+	start := c.Now()
 	var elapsed time.Duration
 	idle := 0
 	pollErrs := 0
+	since := func() time.Duration { return c.Now().Sub(start).Round(time.Second) }
+	// exitLine states why the loop is ending, with the counters at that moment.
+	exitLine := func(reason, detail string) {
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: exit reason=%s t=%s idle=%d/%d poll_errs=%d/%d %s\n",
+			reason, since(), idle, c.IdlePolls, pollErrs, cloudBootMaxPollErrors, detail)
+	}
 	// pollFailed records a failed poll; it returns an error once the budget is spent.
 	pollFailed := func(what string, err error) error {
 		pollErrs++
 		idle = 0
 		if pollErrs > cloudBootMaxPollErrors {
+			exitLine("poll-error-budget", fmt.Sprintf("last=%q", fmt.Sprintf("%s: %v", what, err)))
 			return fmt.Errorf("%s: %d consecutive poll errors, last: %w", what, pollErrs, err)
 		}
 		fmt.Fprintf(ctx.Stderr, "cloud-boot: %s: %v (poll error %d/%d)\n", what, err, pollErrs, cloudBootMaxPollErrors)
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: poll t=%s lead=unknown others_busy=unknown idle=%d/%d poll_errs=%d/%d failed=%q\n",
+			since(), idle, c.IdlePolls, pollErrs, cloudBootMaxPollErrors, what)
 		return nil
 	}
 	for {
@@ -591,6 +608,7 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 			c.closeTopicFailOpen(ctx, iss)
 			_ = c.Tmux("kill-session", "-t", cloudBootTmuxName)
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: initiative %s closed\n", id)
+			exitLine("initiative-closed", "initiative="+id)
 			return nil
 		}
 
@@ -604,6 +622,7 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 		pollErrs = 0
 		var lead *agentSession
 		othersBusy := false
+		var others []string
 		for i := range sessions {
 			s := &sessions[i]
 			switch {
@@ -612,24 +631,40 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 			case s.PID != nil && s.Status == "busy" && cloudUnder(cwd, s.CWD):
 				othersBusy = true
 			}
+			if s.SessionID != sid {
+				pid := "none"
+				if s.PID != nil {
+					pid = strconv.Itoa(*s.PID)
+				}
+				others = append(others, fmt.Sprintf("{pid=%s status=%s cwd=%s under_run=%t}", pid, s.Status, s.CWD, cloudUnder(cwd, s.CWD)))
+			}
+		}
+		leadStatus := "missing"
+		if lead != nil {
+			leadStatus = lead.Status
 		}
 		if lead == nil {
-			if err := c.Tmux("has-session", "-t", cloudBootTmuxName); err != nil {
-				return fmt.Errorf("lead session %s exited while initiative %s is open", sid, id)
-			}
 			idle = 0
-			continue
-		}
-		if elapsed >= c.Grace && !othersBusy && (lead.Status == "idle" || lead.Status == "waiting") {
+		} else if elapsed >= c.Grace && !othersBusy && (lead.Status == "idle" || lead.Status == "waiting") {
 			idle++
 		} else {
 			idle = 0
+		}
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: poll t=%s lead=%s others_busy=%t idle=%d/%d poll_errs=%d/%d others=[%s]\n",
+			since(), leadStatus, othersBusy, idle, c.IdlePolls, pollErrs, cloudBootMaxPollErrors, strings.Join(others, " "))
+		if lead == nil {
+			if err := c.Tmux("has-session", "-t", cloudBootTmuxName); err != nil {
+				exitLine("lead-missing", fmt.Sprintf("lead=%s tmux_session_gone=true", sid))
+				return fmt.Errorf("lead session %s exited while initiative %s is open", sid, id)
+			}
+			continue
 		}
 		if idle >= c.IdlePolls {
 			if err := c.Tmux("kill-session", "-t", cloudBootTmuxName); err != nil {
 				fmt.Fprintf(ctx.Stderr, "cloud-boot: kill-session: %v\n", err)
 			}
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: %s idle, parking\n", id)
+			exitLine("idle-park", "lead="+leadStatus)
 			return cli.Silent(cloudBootParkExit)
 		}
 	}

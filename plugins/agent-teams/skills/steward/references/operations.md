@@ -81,6 +81,10 @@ Moved from SKILL.md §2 ("Every wake — scan"), unchanged. SKILL.md keeps a sho
 
 `ateam steward ledger record` REJECTS a `corrected` verdict submitted without `--decision` — the flag is required there and optional on `accepted`. The rejection is deliberate: a `corrected` row with no record of what the human actually decided is the one shape of ledger entry that teaches nothing.
 
+Where records live depends on the workspace. On a hosted workspace, or when `cloud_home` is set in `config.toml`, each record is one `stewardledger.*` memory in the hosted store, and `record`, `stats`, and `recall` read and write it. Otherwise records are lines in `<workspace>/steward/ledger.jsonl`. If the hosted store is unreachable, `record` fails with "may not be saved; retry later" and `stats` and `recall` fail rather than report an empty ledger. Nothing falls back to the file.
+
+`ateam steward ledger seed [--dry-run]` copies the local `ledger.jsonl` into the hosted store. It skips records already there, never overwrites, and never changes the file, so a second run writes nothing. Without a hosted store it fails with "no hosted ledger store (set cloud_home)".
+
 ## Disabling the Steward on a machine
 
 Gate->Steward routing (`notifyToSteward`) is guarded on `StewardSessionMarkerPath` existing: a machine with no marker sees every `ateam gate` behave exactly as it did before the Steward existed (labels + park + dashboard only, no mail, no doorbell). This is what keeps a steward-less machine from accumulating unread steward-message beads forever.

@@ -63,6 +63,14 @@ func Discover(root string) ([]Surface, error) {
 			return nil, fmt.Errorf("discover %s: %w", displayPath(root, skillRoot), err)
 		}
 	}
+	embedRoot := filepath.Join(root, filepath.FromSlash(embedTree))
+	if items, err := os.ReadDir(embedRoot); err == nil {
+		for _, item := range items {
+			if !item.IsDir() && strings.HasSuffix(item.Name(), ".md") {
+				surfaces = append(surfaces, Surface{Path: relativeSlash(root, filepath.Join(embedRoot, item.Name())), Kind: KindEmbed})
+			}
+		}
+	}
 	sort.Slice(surfaces, func(i, j int) bool { return surfaces[i].Path < surfaces[j].Path })
 	return surfaces, nil
 }
@@ -87,7 +95,7 @@ func validateCoverage(root string, entries []Entry, allowMissingGenerated bool) 
 				kind      Kind
 				id        string
 				generated bool
-			}{entry.Kind, entry.ID, entry.Status == StatusPaired}
+			}{entry.Kind, entry.ID, entry.Status == StatusPaired || entry.Status == StatusRuntimeGenerated}
 		}
 	}
 
@@ -122,7 +130,17 @@ func hasPathSegment(path, wanted string) bool {
 	return false
 }
 
+// embedTree holds generated copies of canonical prompt text that Go packages
+// embed with go:embed.
+const embedTree = "internal/verbs/embedded"
+
 func classifySurfacePath(path string) (Kind, string, Format, bool) {
+	if strings.HasPrefix(path, embedTree+"/") {
+		rel := strings.TrimPrefix(path, embedTree+"/")
+		if !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".md") {
+			return KindEmbed, "embed", FormatMarkdown, true
+		}
+	}
 	if strings.HasPrefix(path, "plugins/agent-teams/agents/") {
 		rel := strings.TrimPrefix(path, "plugins/agent-teams/agents/")
 		if !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".md") {
