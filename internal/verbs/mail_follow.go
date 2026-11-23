@@ -270,28 +270,87 @@ func (c *mailFollowKong) defaults(ctx *cli.Context) {
 	}
 }
 
-// follow runs the journal loop until run is cancelled: baseline, tail,
-// checkpoint, ring, backoff, truncation recovery.
+// follow runs the host journal loop: baseline, tail, checkpoint, ring,
+// backoff, truncation recovery. The loop itself is followJournal.
 func (c *mailFollowKong) follow(run context.Context, ctx *cli.Context) error {
 	c.defaults(ctx)
-	start := c.now()
-	seqPath := filepath.Join(ctx.Home, "mailbox", "host.seq")
+	return followJournal(run, followSpec{
+		seqPath:   filepath.Join(ctx.Home, "mailbox", "host.seq"),
+		runBD:     c.runBD,
+		headQuery: c.headQuery,
+		sleep:     c.sleep,
+		now:       c.now,
+		stderr:    ctx.Stderr,
+		logPrefix: "ateam mail follow",
+		onRow: func(row followRow, notBefore time.Time) {
+			if id, ok := c.ringTarget(ctx, row, notBefore); ok {
+				c.ring(ctx, id)
+			}
+		},
+		onTruncated: func(floor int64) {
+			// The pruned gap may hide mail for any initiative with a
+			// live watcher: ring each once, then resume (F8).
+			for _, id := range c.liveWatchers(ctx.Home) {
+				c.ring(ctx, id)
+			}
+		},
+	})
+}
 
-	cp, have := readFollowCheckpoint(seqPath)
-	// ringNotBefore is set only when the baseline query failed: rows older
-	// than the follower's start must not ring (F8 fallback).
-	var ringNotBefore time.Time
+// followSpec parameterizes followJournal for one consumer of the bd events
+// journal: the host follower (rings doorbells) and the cloud bridge (delivers
+// hosted mail).
+type followSpec struct {
+	// seqPath is the checkpoint file.
+	seqPath string
+	// runBD runs one `bd ... events tail` invocation, feeding stdout lines to
+	// onLine and returning stderr.
+	runBD func(ctx context.Context, args []string, onLine func(string)) (stderr string, err error)
+	// headQuery reads the journal head for the baseline.
+	headQuery func(query string) (string, error)
+	sleep     func(ctx context.Context, d time.Duration)
+	now       func() time.Time
+	stderr    io.Writer
+	// logPrefix starts every stderr line, before ": ".
+	logPrefix string
+	// onRow handles one journal row after the checkpoint check. notBefore is
+	// non-zero only when the baseline query failed and the loop replays from
+	// seq 0; consumers that ring or deliver by time must ignore older rows.
+	onRow func(row followRow, notBefore time.Time)
+	// onTruncated runs after a truncation moved the checkpoint to floor-1,
+	// before the checkpoint is written.
+	onTruncated func(floor int64)
+	// onStart, when set, runs once after the baseline is resolved and before
+	// the first tail.
+	onStart func()
+	// once makes one tail pass without --follow and returns.
+	once bool
+}
+
+// followJournal runs the journal loop until run is cancelled (or, for once,
+// until one pass ends): baseline, tail, checkpoint, backoff, truncation
+// recovery.
+func followJournal(run context.Context, sp followSpec) error {
+	start := sp.now()
+
+	cp, have := readFollowCheckpoint(sp.seqPath)
+	// notBefore is set only when the baseline query failed: rows older
+	// than the follower's start must not act (F8 fallback).
+	var notBefore time.Time
 	if !have {
-		if head, err := c.baselineHead(); err == nil {
+		if head, err := baselineHead(sp.headQuery); err == nil {
 			cp = head
-			if err := writeFollowCheckpoint(seqPath, cp); err != nil {
-				fmt.Fprintf(ctx.Stderr, "ateam mail follow: write checkpoint: %v\n", err)
+			if err := writeFollowCheckpoint(sp.seqPath, cp); err != nil {
+				fmt.Fprintf(sp.stderr, "%s: write checkpoint: %v\n", sp.logPrefix, err)
 			}
 		} else {
-			fmt.Fprintf(ctx.Stderr, "ateam mail follow: baseline query failed (%v); replaying from seq 0\n", err)
+			fmt.Fprintf(sp.stderr, "%s: baseline query failed (%v); replaying from seq 0\n", sp.logPrefix, err)
 			cp = 0
-			ringNotBefore = start.UTC().Truncate(time.Second)
+			notBefore = start.UTC().Truncate(time.Second)
 		}
+	}
+	if sp.onStart != nil {
+		sp.onStart()
 	}
 
 	backoff := followBackoffMin
@@ -301,23 +360,25 @@ func (c *mailFollowKong) follow(run context.Context, ctx *cli.Context) error {
 			var row followRow
 			if err := json.Unmarshal([]byte(line), &row); err != nil {
 				if strings.HasPrefix(line, `{"`) {
-					fmt.Fprintf(ctx.Stderr, "ateam mail follow: skipping unparseable journal line: %v\n", err)
+					fmt.Fprintf(sp.stderr, "%s: skipping unparseable journal line: %v\n", sp.logPrefix, err)
 				}
 				return
 			}
 			if row.Seq <= cp {
 				return
 			}
-			if id, ok := c.ringTarget(ctx, row, ringNotBefore); ok {
-				c.ring(ctx, id)
-			}
+			sp.onRow(row, notBefore)
 			cp = row.Seq
-			if err := writeFollowCheckpoint(seqPath, cp); err != nil {
-				fmt.Fprintf(ctx.Stderr, "ateam mail follow: write checkpoint: %v\n", err)
+			if err := writeFollowCheckpoint(sp.seqPath, cp); err != nil {
+				fmt.Fprintf(sp.stderr, "%s: write checkpoint: %v\n", sp.logPrefix, err)
 			}
 			gotRow = true
 		}
-		stderr, err := c.runBD(run, []string{"events", "tail", "--follow", "--json", "--since", strconv.FormatInt(cp, 10)}, onLine)
+		args := []string{"events", "tail", "--follow", "--json", "--since", strconv.FormatInt(cp, 10)}
+		if sp.once {
+			args = []string{"events", "tail", "--json", "--since", strconv.FormatInt(cp, 10)}
+		}
+		stderr, err := sp.runBD(run, args, onLine)
 		if run.Err() != nil {
 			return nil
 		}
@@ -327,20 +388,19 @@ func (c *mailFollowKong) follow(run context.Context, ctx *cli.Context) error {
 		if m := followTruncatedRe.FindStringSubmatch(stderr); strings.Contains(stderr, "events_journal_truncated") && m != nil {
 			floor, _ := strconv.ParseInt(m[1], 10, 64)
 			if floor > 0 {
-				// The pruned gap may hide mail for any initiative with a
-				// live watcher: ring each once, then resume (F8).
 				cp = floor - 1
-				for _, id := range c.liveWatchers(ctx.Home) {
-					c.ring(ctx, id)
-				}
-				if err := writeFollowCheckpoint(seqPath, cp); err != nil {
-					fmt.Fprintf(ctx.Stderr, "ateam mail follow: write checkpoint: %v\n", err)
+				sp.onTruncated(floor)
+				if err := writeFollowCheckpoint(sp.seqPath, cp); err != nil {
+					fmt.Fprintf(sp.stderr, "%s: write checkpoint: %v\n", sp.logPrefix, err)
 				}
 			}
-		} else {
-			fmt.Fprintf(ctx.Stderr, "ateam mail follow: bd events tail exited (%v); retrying in %s\n", followExitDetail(err, stderr), backoff)
+		} else if !sp.once {
+			fmt.Fprintf(sp.stderr, "%s: bd events tail exited (%v); retrying in %s\n", sp.logPrefix, followExitDetail(err, stderr), backoff)
 		}
-		c.sleep(run, backoff)
+		if sp.once {
+			return nil
+		}
+		sp.sleep(run, backoff)
 		if backoff *= 2; backoff > followBackoffMax {
 			backoff = followBackoffMax
 		}
@@ -439,8 +499,8 @@ func writeFollowPidfile(path string) error {
 	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644)
 }
 
-func (c *mailFollowKong) baselineHead() (int64, error) {
-	out, err := c.headQuery(followHeadQuery)
+func baselineHead(headQuery func(string) (string, error)) (int64, error) {
+	out, err := headQuery(followHeadQuery)
 	if err != nil {
 		return 0, err
 	}
@@ -496,7 +556,16 @@ func followExitDetail(err error, stderr string) string {
 // followExecBD runs `bd -C home <args>`, feeding each stdout line to onLine.
 // Cancelling ctx kills the child.
 func followExecBD(ctx context.Context, home string, args []string, onLine func(string)) (string, error) {
+	return followExecBDEnv(ctx, home, nil, args, onLine)
+}
+
+// followExecBDEnv is followExecBD with extra KEY=VALUE entries appended to the
+// child's environment. A nil env inherits the process environment unchanged.
+func followExecBDEnv(ctx context.Context, home string, env []string, args []string, onLine func(string)) (string, error) {
 	cmd := exec.CommandContext(ctx, "bd", append([]string{"-C", home}, args...)...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.WaitDelay = 2 * time.Second
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
