@@ -154,3 +154,67 @@ func TestSendRun_PeerInvalidIDRefused(t *testing.T) {
 		assertNothingSent(t, e)
 	}
 }
+
+// peerRunBeadEnv is a run inbox env whose bd show fails (a run bead id is not in
+// the initiatives DB) and whose bd list answers with list.
+func peerRunBeadEnv(t *testing.T, list []bd.Issue) *runInboxEnv {
+	t.Helper()
+	e := newRunInboxEnv(t, 0)
+	e.ctx.BD = &fakeBD{
+		runFn: func(...string) (string, error) { return "", os.ErrNotExist },
+		runJSONFn: func(dst any, args ...string) error {
+			raw, _ := json.Marshal(list)
+			return json.Unmarshal(raw, dst)
+		},
+	}
+	return e
+}
+
+func TestSendRun_PeerRunBeadResolvedToInitiative(t *testing.T) {
+	e := peerRunBeadEnv(t, []bd.Issue{
+		{ID: "at-other", Status: "open", Description: "where: run:eri-other\n"},
+		{ID: "at-ihu", Status: "open", Description: "where: run:eri-fqumy\n"},
+	})
+	if err := sendPeer(e, "eri-fqumy", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"op":"mail","to":"at-ihu","run":"eri-fqumy","body":"hi"}` + "\n"
+	if got := e.helperStdin(); got != want {
+		t.Errorf("outbox line:\n got %q\nwant %q", got, want)
+	}
+	wantOut := "resolved run bead eri-fqumy to initiative at-ihu; address peers by initiative id (like at-xxx), find them with: ateam list\n" +
+		"sent to at-ihu through the run outbox (run eri-fqumy)\n"
+	if got := e.stdout.String(); got != wantOut {
+		t.Errorf("stdout = %q, want %q", got, wantOut)
+	}
+}
+
+func TestSendRun_PeerRunBeadSeveralOpenRefused(t *testing.T) {
+	e := peerRunBeadEnv(t, []bd.Issue{
+		{ID: "at-a", Status: "open", Description: "where: run:eri-dup\n"},
+		{ID: "at-b", Status: "open", Description: "where: run:eri-dup\n"},
+	})
+	err := sendPeer(e, "eri-dup", "hi")
+	if err == nil || !strings.Contains(err.Error(), "at-a, at-b") || !strings.Contains(err.Error(), "initiative id (like at-xxx)") {
+		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}
+
+func TestSendRun_PeerRunBeadOnlyClosedRefused(t *testing.T) {
+	e := peerRunBeadEnv(t, []bd.Issue{{ID: "at-old", Status: "closed", Description: "where: run:eri-old\n"}})
+	err := sendPeer(e, "eri-old", "hi")
+	if err == nil || !strings.Contains(err.Error(), "at-old") || !strings.Contains(err.Error(), "closed") || !strings.Contains(err.Error(), "initiative id (like at-xxx)") {
+		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}
+
+func TestSendRun_PeerRunBeadNoMatchKeepsNotFound(t *testing.T) {
+	e := peerRunBeadEnv(t, []bd.Issue{{ID: "at-x", Status: "open", Description: "where: run:eri-x\n"}})
+	err := sendPeer(e, "eri-nope1", "hi")
+	if err == nil || !strings.Contains(err.Error(), "could not find initiative eri-nope1") || !strings.Contains(err.Error(), "ateam list; nothing sent") {
+		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}

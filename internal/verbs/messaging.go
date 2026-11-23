@@ -347,12 +347,23 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	if !peerInitiativeID.MatchString(c.RecipientID) {
 		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent (peers are addressed by initiative id, like at-xxx; list them with: ateam list)", c.RecipientID)
 	}
-	issue, err := bd.ShowIssue(ctx.BD, c.RecipientID)
+	to := c.RecipientID
+	var resolvedNote string
+	issue, err := bd.ShowIssue(ctx.BD, to)
 	if err != nil {
-		return fmt.Errorf("ateam send: could not find initiative %s (%w); the recipient must be an initiative id (like at-xxx), not a run bead or any other kind of id; list open initiatives with: ateam list; nothing sent", c.RecipientID, err)
+		var rerr error
+		issue, rerr = resolvePeerRunBead(ctx, to)
+		if rerr != nil {
+			return rerr
+		}
+		if issue.ID == "" {
+			return fmt.Errorf("ateam send: could not find initiative %s (%w); the recipient must be an initiative id (like at-xxx), not a run bead or any other kind of id; list open initiatives with: ateam list; nothing sent", to, err)
+		}
+		resolvedNote = fmt.Sprintf("resolved run bead %s to initiative %s; address peers by initiative id (like at-xxx), find them with: ateam list\n", to, issue.ID)
+		to = issue.ID
 	}
 	if issue.Status == "closed" {
-		return fmt.Errorf("ateam send: %s is closed; nothing sent", c.RecipientID)
+		return fmt.Errorf("ateam send: %s is closed; nothing sent", to)
 	}
 	where := initiative.Of(issue).Where
 	runBead, ok := strings.CutPrefix(where, whereRunPrefix)
@@ -361,7 +372,7 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 		if shown == "" {
 			shown = "none"
 		}
-		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); mail between cloud and laptop initiatives is deferred (dsp-43n.17); nothing sent", c.RecipientID, shown)
+		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); mail between cloud and laptop initiatives is deferred (dsp-43n.17); nothing sent", to, shown)
 	}
 	text, err := os.ReadFile(c.File)
 	if err != nil {
@@ -370,11 +381,47 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	if len(text) == 0 {
 		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
 	}
-	if err := appendOutboxOp(newPeerMailOp(c.RecipientID, runBead, string(text))); err != nil {
+	if err := appendOutboxOp(newPeerMailOp(to, runBead, string(text))); err != nil {
 		return fmt.Errorf("ateam send: outbox: %w", err)
 	}
-	fmt.Fprintf(ctx.Stdout, "sent to %s through the run outbox (run %s)\n", c.RecipientID, runBead)
+	fmt.Fprint(ctx.Stdout, resolvedNote)
+	fmt.Fprintf(ctx.Stdout, "sent to %s through the run outbox (run %s)\n", to, runBead)
 	return nil
+}
+
+// resolvePeerRunBead maps a run bead id to the one initiative whose where:
+// line is run:<id>. It returns a zero Issue and nil error when nothing matches
+// (or the list cannot be read), so the caller reports the not-found text. It
+// refuses when several open initiatives match or only a closed one does.
+func resolvePeerRunBead(ctx *cli.Context, id string) (bd.Issue, error) {
+	var all []bd.Issue
+	if err := ctx.BD.RunJSON(&all, "list", "--all", "--limit=0", "--json"); err != nil {
+		return bd.Issue{}, nil
+	}
+	var open, closed []bd.Issue
+	for _, iss := range all {
+		if initiative.Of(iss).Where != whereRunPrefix+id {
+			continue
+		}
+		if iss.Status == "closed" {
+			closed = append(closed, iss)
+		} else {
+			open = append(open, iss)
+		}
+	}
+	switch {
+	case len(open) == 1:
+		return open[0], nil
+	case len(open) > 1:
+		ids := make([]string, len(open))
+		for i, iss := range open {
+			ids[i] = iss.ID
+		}
+		return bd.Issue{}, fmt.Errorf("ateam send: run bead %s matches several open initiatives (%s); address the peer by its initiative id (like at-xxx), find it with: ateam list; nothing sent", id, strings.Join(ids, ", "))
+	case len(closed) > 0:
+		return bd.Issue{}, fmt.Errorf("ateam send: run bead %s belongs to initiative %s, which is closed; address a peer by an open initiative id (like at-xxx), find one with: ateam list; nothing sent", id, closed[0].ID)
+	}
+	return bd.Issue{}, nil
 }
 
 // createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
