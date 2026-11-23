@@ -49,7 +49,7 @@ func (c *sendKong) sendBridgeFromRun(ctx *cli.Context, cause error) error {
 		}
 		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", id)
 	}
-	fmt.Fprintln(ctx.Stdout, "queued for laptop pickup (bridge:laptop); a laptop relay delivers it within about 30s")
+	fmt.Fprintln(ctx.Stdout, "queued for laptop pickup (bridge:laptop); a laptop running `ateam relay` delivers it within seconds")
 	return nil
 }
 

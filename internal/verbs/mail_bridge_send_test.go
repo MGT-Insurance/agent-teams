@@ -75,7 +75,7 @@ func (b *bridgeSendEnv) assertNothingWritten() {
 	assertNothingSent(b.t, b.runInboxEnv)
 }
 
-const bridgeQueuedLine = "queued for laptop pickup (bridge:laptop); a laptop relay delivers it within about 30s\n"
+const bridgeQueuedLine = "queued for laptop pickup (bridge:laptop); a laptop running `ateam relay` delivers it within seconds\n"
 
 func TestBridgeSendLaptopRecipientCreatesBridgeBead(t *testing.T) {
 	b := newBridgeSendEnv(t)
