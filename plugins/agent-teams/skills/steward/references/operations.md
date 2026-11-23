@@ -118,7 +118,7 @@ Use `briefing` only when the message doesn't belong to one initiative. Otherwise
 
 ## Peer addressing: initiative ids
 
-Peers and the steward address initiatives by initiative id (the `at-…` id `ateam list` shows), never by run bead id (`DSP_BEAD`, the `run:<bead>` in a `where:` line, or a Dispatcher comment author). When you relay a peer handle to a DRI, give the initiative id. When a DRI reports a failed peer send ("could not find initiative"), tell it to run `ateam list` and resend to the initiative id itself, rather than re-sending on its behalf.
+Peers and the steward address initiatives by initiative id (the `at-…` id `ateam list` shows), never by run bead id (`DSP_BEAD`, the `run:<bead>` in a `where:` line, or a Dispatcher comment author). When you relay a peer handle to a DRI, give the initiative id. When a DRI reports a failed peer send ("could not find initiative"), tell it to run `ateam list` and resend to the initiative id itself, rather than re-sending on its behalf. The CLI auto-resolves a run bead id that matches exactly one open initiative, but the initiative id is preferred.
 
 ## No HANDOFF.md
 

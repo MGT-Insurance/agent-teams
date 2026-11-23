@@ -21,7 +21,7 @@ Cloud-boot restores saved work before the session starts. You don't restore it y
 Don't delete a wip branch.
 
 ## Peer DRIs
-- Your own initiative is `DSP_META_INITIATIVE`; your run bead is `DSP_BEAD`. Never address a peer by a run bead id.
+- Your own initiative is `DSP_META_INITIATIVE`; your run bead is `DSP_BEAD`. Address a peer by its initiative id; a run bead id is auto-resolved when it matches one open initiative, but don't rely on it.
 - Find peers with `ateam list`, then send with `ateam mail send <initiative-id> --file <f>`.
 - A failed send means nothing was sent. If it says "could not find initiative", run `ateam list` and resend to the right initiative id; don't guess other ids.
 
