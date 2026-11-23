@@ -1,8 +1,11 @@
 package verbs
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
+	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
 
@@ -11,12 +14,72 @@ import (
 // (cause is nil), and a peer send whose recipient is not in the hosted
 // workspace (cause is the bd.IsNotFound error from reading the recipient).
 //
-// Until the cloud-to-laptop track fills it in, it keeps the behavior from
-// before the hook existed: the peer path's read-recipient error, or the peer
-// path itself for a send to LocalStewardHandle.
+// It creates a message bead in the run's hosted home, labeled bridgeLabel in
+// the same create call. The laptop relay reads the bead through cloud_home and
+// delivers it. Every refusal returns an error and writes nothing.
 func (c *sendKong) sendBridgeFromRun(ctx *cli.Context, cause error) error {
-	if cause == nil {
-		return c.sendPeerThroughOutbox(ctx)
+	from := os.Getenv("DSP_META_INITIATIVE")
+	if from == "" {
+		return errors.New("ateam send: DSP_META_INITIATIVE is empty; cannot address the laptop from this run; nothing sent")
 	}
-	return fmt.Errorf("ateam send: read recipient %s: %w; nothing sent", c.RecipientID, cause)
+	if c.RecipientID == from {
+		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent", c.RecipientID)
+	}
+	if c.RecipientID != LocalStewardHandle && !peerInitiativeID.MatchString(c.RecipientID) {
+		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent", c.RecipientID)
+	}
+	text, err := os.ReadFile(c.File)
+	if err != nil {
+		return fmt.Errorf("ateam send: read %s: %w", c.File, err)
+	}
+	if len(text) == 0 {
+		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
+	}
+
+	id, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey)
+	if err != nil {
+		return fmt.Errorf("ateam send: dedup lookup: %w", err)
+	}
+	if hit {
+		fmt.Fprintf(ctx.Stdout, "message_id: %s (deduplicated)\n", id)
+	} else {
+		id, err = c.createBridgeMessage(ctx, from)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", id)
+	}
+	fmt.Fprintln(ctx.Stdout, "queued for laptop pickup (bridge:laptop); a laptop relay delivers it within about 30s")
+	return nil
+}
+
+// createBridgeMessage creates the hosted message bead and returns its id. The
+// bridge label rides on the create call because the laptop follower reads
+// labels from the journal's create row.
+func (c *sendKong) createBridgeMessage(ctx *cli.Context, from string) (string, error) {
+	args := []string{
+		"create",
+		"--type=message",
+		"--assignee=" + c.RecipientID,
+		"--notes=from: " + from,
+		"--labels=delivery:pending",
+		"--labels=" + bridgeLabel,
+		"--body-file=" + c.File,
+		"--title=message from " + from,
+		"--json",
+	}
+	if c.Thread != "" {
+		args = append(args, "--labels=thread:"+c.Thread)
+	}
+	if c.DedupKey != "" {
+		args = append(args, "--labels=dedup:"+c.DedupKey)
+	}
+	var issue bd.Issue
+	if err := ctx.BD.RunJSON(&issue, args...); err != nil {
+		return "", fmt.Errorf("ateam send: create bridge message bead: %w", err)
+	}
+	if issue.ID == "" {
+		return "", errors.New("ateam send: bd create returned no id")
+	}
+	return issue.ID, nil
 }
