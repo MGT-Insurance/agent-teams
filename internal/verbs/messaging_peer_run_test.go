@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,6 +215,43 @@ func TestSendRun_PeerRunBeadNoMatchKeepsNotFound(t *testing.T) {
 	e := peerRunBeadEnv(t, []bd.Issue{{ID: "at-x", Status: "open", Description: "where: run:eri-x\n"}})
 	err := sendPeer(e, "eri-nope1", "hi")
 	if err == nil || !strings.Contains(err.Error(), "could not find initiative eri-nope1") || !strings.Contains(err.Error(), "ateam list; nothing sent") {
+		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}
+
+func TestSendRun_PeerRunBeadOpenBeatsClosed(t *testing.T) {
+	e := peerRunBeadEnv(t, []bd.Issue{
+		{ID: "at-old", Status: "closed", Description: "where: run:eri-dup\n"},
+		{ID: "at-new", Status: "open", Description: "where: run:eri-dup\n"},
+	})
+	if err := sendPeer(e, "eri-dup", "hi"); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"op":"mail","to":"at-new","run":"eri-dup","body":"hi"}` + "\n"
+	if got := e.helperStdin(); got != want {
+		t.Errorf("outbox line:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestSendRun_PeerRunBeadResolvingToOwnInitiativeRefused(t *testing.T) {
+	e := peerRunBeadEnv(t, []bd.Issue{{ID: "at-mine", Status: "open", Description: "where: run:eri-mine\n"}})
+	t.Setenv("DSP_META_INITIATIVE", "at-mine")
+	err := sendPeer(e, "eri-mine", "hi")
+	if err == nil || !strings.Contains(err.Error(), "own initiative") || !strings.Contains(err.Error(), "initiative id (like at-xxx)") {
+		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}
+
+func TestSendRun_PeerRunBeadListFailureSurfaced(t *testing.T) {
+	e := newRunInboxEnv(t, 0)
+	e.ctx.BD = &fakeBD{
+		runFn:     func(...string) (string, error) { return "", os.ErrNotExist },
+		runJSONFn: func(any, ...string) error { return errors.New("dolt exploded") },
+	}
+	err := sendPeer(e, "eri-nope1", "hi")
+	if err == nil || !strings.Contains(err.Error(), "could not find initiative eri-nope1") || !strings.Contains(err.Error(), "ateam list") || !strings.Contains(err.Error(), "dolt exploded") {
 		t.Fatalf("err = %v", err)
 	}
 	assertNothingSent(t, e)
