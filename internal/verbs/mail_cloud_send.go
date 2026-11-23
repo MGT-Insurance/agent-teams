@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -38,9 +39,35 @@ const mailKeyPrefix = "mail-key: "
 // interpolate into the journal query.
 var authorUnsafe = regexp.MustCompile(`[^A-Za-z0-9._:@+-]`)
 
-// journalSeqDigit matches a sequence number in `bd sql` output. The column
-// header "seq" holds no digit, so a match means a row.
-var journalSeqDigit = regexp.MustCompile(`[0-9]`)
+// journalHeadQuery reads the newest events-journal sequence number.
+const journalHeadQuery = "select coalesce(max(seq),0) as head from bd_events_journal"
+
+// sqlRows parses `bd sql --json` output: an array of row objects.
+func sqlRows(out string) ([]map[string]any, error) {
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		return nil, fmt.Errorf("parse bd sql output: %w", err)
+	}
+	return rows, nil
+}
+
+// journalHead returns the head sequence number from journalHeadQuery output.
+func journalHead(out string) (int64, error) {
+	rows, err := sqlRows(out)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) != 1 {
+		return 0, fmt.Errorf("journal head query returned %d rows", len(rows))
+	}
+	switch v := rows[0]["head"].(type) {
+	case float64:
+		return int64(v), nil
+	case string:
+		return strconv.ParseInt(v, 10, 64)
+	}
+	return 0, fmt.Errorf("journal head query returned no head value")
+}
 
 // runBeadMetaInitiative returns the "meta-initiative:" value from a run bead
 // description header (the lines before the "---" separator).
@@ -88,7 +115,7 @@ func defaultCloudComment(dir, actor, runBead, file string) error {
 }
 
 func defaultCloudSQL(dir, query string) (string, error) {
-	cmd := exec.Command("bd", "-C", dir, "sql", query)
+	cmd := exec.Command("bd", "-C", dir, "sql", "--json", query)
 	cmd.Env = append(os.Environ(), runBeadEnv...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -197,17 +224,35 @@ func (c *sendKong) trySendToCloud(ctx *cli.Context, sender string) (handled bool
 	if err := tmp.Close(); err != nil {
 		return true, fmt.Errorf("ateam send: write temp file: %w", err)
 	}
+	var (
+		head    int64
+		headErr error
+	)
+	if headOut, err := cloudSendSQL(dispatcherBeads, journalHeadQuery); err != nil {
+		headErr = err
+	} else {
+		head, headErr = journalHead(headOut)
+	}
 	if err := cloudSendComment(dispatcherBeads, author, runBead, tmp.Name()); err != nil {
 		return true, fmt.Errorf("ateam send: comment on run bead %s in %s: %w; nothing sent", runBead, dispatcherBeads, err)
 	}
 
-	query := fmt.Sprintf("select seq from bd_events_journal where issue_id='%s' and op='comment' and actor='%s' order by seq desc limit 1", runBead, author)
+	if headErr != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam send: warning: comment written to run bead %s, but the events-journal head could not be read: %v\n", runBead, headErr)
+		fmt.Fprintf(ctx.Stdout, "sent to cloud initiative %s via run bead %s; Dispatcher delivers within about 60s\n", c.RecipientID, runBead)
+		return true, nil
+	}
+	query := fmt.Sprintf("select seq from bd_events_journal where seq > %d and issue_id='%s' and op='comment' and actor='%s' limit 1", head, runBead, author)
 	out, qerr := cloudSendSQL(dispatcherBeads, query)
+	var rows []map[string]any
+	if qerr == nil {
+		rows, qerr = sqlRows(out)
+	}
 	if qerr != nil {
 		fmt.Fprintf(ctx.Stderr, "ateam send: warning: comment written to run bead %s, but its events-journal check failed: %v\n", runBead, qerr)
 		return true, nil
 	}
-	if !journalSeqDigit.MatchString(out) {
+	if len(rows) == 0 {
 		return true, fmt.Errorf("ateam send: comment written to run bead %s without an events-journal row; Dispatcher will not deliver it", runBead)
 	}
 	fmt.Fprintf(ctx.Stdout, "sent to cloud initiative %s via run bead %s; Dispatcher delivers within about 60s\n", c.RecipientID, runBead)

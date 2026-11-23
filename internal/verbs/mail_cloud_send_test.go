@@ -37,8 +37,10 @@ type cloudSendEnv struct {
 	commentText   string
 	commentCalls  int
 	sqlQuery      string
-	sqlOut        string
+	sqlOut        string // rows JSON for the post-comment query
 	sqlErr        error
+	headOut       string
+	headErr       error
 	cloudHome     string
 	dispatcherDir string
 }
@@ -52,7 +54,8 @@ func newCloudSendEnv(t *testing.T, configure bool) *cloudSendEnv {
 		cloudInit:     issueJSON(bd.Issue{ID: testCloudInit, Status: "open", Description: "where: run:" + testRunBead}),
 		runBeadJSON:   issueJSON(bd.Issue{ID: testRunBead, Status: "open", Description: "type: ateam-dri\nmeta-initiative: " + testCloudInit + "\n---\nproblem"}),
 		comments:      "[]",
-		sqlOut:        "seq\n42\n",
+		sqlOut:        `[{"seq": 43}]`,
+		headOut:       `[{"head": 42}]`,
 		cloudHome:     t.TempDir(),
 		dispatcherDir: t.TempDir(),
 	}
@@ -106,6 +109,9 @@ func newCloudSendEnv(t *testing.T, configure bool) *cloudSendEnv {
 		return nil
 	}
 	cloudSendSQL = func(dir, query string) (string, error) {
+		if query == journalHeadQuery {
+			return e.headOut, e.headErr
+		}
 		e.sqlQuery = query
 		return e.sqlOut, e.sqlErr
 	}
@@ -266,10 +272,26 @@ func TestCloudSendCommentArgsEnvAuthorAndText(t *testing.T) {
 
 func TestCloudSendNoJournalRowErrors(t *testing.T) {
 	e := newCloudSendEnv(t, true)
-	e.sqlOut = "seq\n"
+	for _, empty := range []string{"[]", "(0 rows)\n"} {
+		e = newCloudSendEnv(t, true)
+		e.sqlOut = empty
+		handled, err := e.send(testCloudInit, "at-me1")
+		if empty == "[]" && (!handled || err == nil || !strings.Contains(err.Error(), "without an events-journal row")) {
+			t.Fatalf("got (%t, %v), want no-row error", handled, err)
+		}
+		if empty != "[]" && (!handled || err != nil || !strings.Contains(e.stderr.String(), "warning")) {
+			t.Fatalf("non-JSON output: got (%t, %v), want warning", handled, err)
+		}
+	}
+	if !strings.Contains(e.sqlQuery, "seq > 42") {
+		t.Errorf("query does not bound by the head: %q", e.sqlQuery)
+	}
+	// A failed head read only warns.
+	e = newCloudSendEnv(t, true)
+	e.headErr = errors.New("nohead")
 	handled, err := e.send(testCloudInit, "at-me1")
-	if !handled || err == nil || !strings.Contains(err.Error(), "without an events-journal row") {
-		t.Fatalf("got (%t, %v), want no-row error", handled, err)
+	if !handled || err != nil || !strings.Contains(e.stderr.String(), "head could not be read") || e.commentCalls != 1 {
+		t.Fatalf("head failure: got (%t, %v, stderr %q)", handled, err, e.stderr.String())
 	}
 	// A failed query leaves the comment in place and only warns.
 	e = newCloudSendEnv(t, true)
