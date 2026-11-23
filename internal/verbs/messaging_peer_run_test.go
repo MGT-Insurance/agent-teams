@@ -112,8 +112,22 @@ func TestSendRun_PeerReadErrorRefused(t *testing.T) {
 	e := newRunInboxEnv(t, 0)
 	e.ctx.BD = &fakeBD{runFn: func(...string) (string, error) { return "", os.ErrNotExist }}
 	err := sendPeer(e, "at-nope", "x")
-	if err == nil || !strings.Contains(err.Error(), "read recipient at-nope") || !strings.Contains(err.Error(), "nothing sent") {
+	if err == nil || !strings.Contains(err.Error(), "could not find initiative at-nope") || !strings.Contains(err.Error(), "initiative id (like at-xxx)") || !strings.Contains(err.Error(), "ateam list") || !strings.Contains(err.Error(), "nothing sent") {
 		t.Fatalf("err = %v", err)
+	}
+	assertNothingSent(t, e)
+}
+
+func TestSendRun_PeerOwnRunBeadRefused(t *testing.T) {
+	e, bdCalls := peerSendEnv(t, bd.Issue{ID: "dsp-run7", Status: "open", Description: "where: run:dsp-peer9\n"})
+	t.Setenv("DSP_BEAD", "dsp-run7")
+	t.Setenv("DSP_META_INITIATIVE", "at-mine")
+	err := sendPeer(e, "dsp-run7", "hi")
+	if err == nil || !strings.Contains(err.Error(), "is this run's own run bead") || !strings.Contains(err.Error(), "initiative id (like at-xxx)") || !strings.Contains(err.Error(), "at-mine") {
+		t.Fatalf("err = %v", err)
+	}
+	if *bdCalls != 0 {
+		t.Errorf("%d bd calls; want 0", *bdCalls)
 	}
 	assertNothingSent(t, e)
 }

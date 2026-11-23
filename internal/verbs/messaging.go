@@ -339,14 +339,17 @@ var peerInitiativeID = regexp.MustCompile(`^[a-z][a-z0-9]*-[a-z0-9.]+$`)
 // returns an error and writes nothing.
 func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	if c.RecipientID == os.Getenv("DSP_META_INITIATIVE") {
-		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent", c.RecipientID)
+		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent (peers are addressed by initiative id, like at-xxx; list them with: ateam list)", c.RecipientID)
+	}
+	if runBead, _, ok := dispatcherRun(); ok && c.RecipientID == runBead {
+		return fmt.Errorf("ateam send: %s is this run's own run bead; a peer is addressed by its initiative id (like at-xxx), and this run's initiative is %s; nothing sent", c.RecipientID, os.Getenv("DSP_META_INITIATIVE"))
 	}
 	if !peerInitiativeID.MatchString(c.RecipientID) {
-		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent", c.RecipientID)
+		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent (peers are addressed by initiative id, like at-xxx; list them with: ateam list)", c.RecipientID)
 	}
 	issue, err := bd.ShowIssue(ctx.BD, c.RecipientID)
 	if err != nil {
-		return fmt.Errorf("ateam send: read recipient %s: %w; nothing sent", c.RecipientID, err)
+		return fmt.Errorf("ateam send: could not find initiative %s (%w); the recipient must be an initiative id (like at-xxx), not a run bead or any other kind of id; list open initiatives with: ateam list; nothing sent", c.RecipientID, err)
 	}
 	if issue.Status == "closed" {
 		return fmt.Errorf("ateam send: %s is closed; nothing sent", c.RecipientID)
