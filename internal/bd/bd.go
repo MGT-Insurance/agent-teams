@@ -4,7 +4,9 @@ package bd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mgt-insurance/agent-teams/internal/procx"
@@ -120,9 +122,40 @@ func ShowIssue(r runner, id string) (Issue, error) {
 		return Issue{}, fmt.Errorf("bd show %s: unmarshal: %w (raw: %.200s)", id, err, out)
 	}
 	if len(issues) == 0 {
-		return Issue{}, fmt.Errorf("bd show %s: not found", id)
+		return Issue{}, fmt.Errorf("bd show %s: %w", id, errNotFound)
 	}
 	return issues[0], nil
+}
+
+// errNotFound is the cause ShowIssue wraps when bd returns no issue.
+var errNotFound = errors.New("not found")
+
+// notFoundShapes are the substrings bd prints on stderr when an id does not
+// exist: `bd show <id> --json` exits 1 with both.
+var notFoundShapes = []string{"no issues found matching"}
+
+var notFoundIssueRE = regexp.MustCompile(`Issue \S+ not found`)
+
+// IsNotFound reports whether err means the issue does not exist: ShowIssue's
+// not-found error, or bd's own "Issue <id> not found" and "no issues found
+// matching" output. Every other error, including a timeout, returns false.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errNotFound) {
+		return true
+	}
+	msg := err.Error()
+	if notFoundIssueRE.MatchString(msg) {
+		return true
+	}
+	for _, s := range notFoundShapes {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Issue represents the fields returned by `bd list --json` and `bd create --json`.
