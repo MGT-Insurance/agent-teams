@@ -50,6 +50,9 @@ func (c *sendKong) sendBridgeFromRun(ctx *cli.Context, cause error) error {
 		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", id)
 	}
 	fmt.Fprintln(ctx.Stdout, "queued for laptop pickup (bridge:laptop); a laptop running `ateam relay` delivers it within seconds")
+	if cause != nil {
+		fmt.Fprintf(ctx.Stdout, "WARNING: %s is not an initiative in this hosted workspace, so this was queued for a LAPTOP initiative. If no laptop initiative %s exists on the bridge, the message waits unread. For a cloud peer, address it by its initiative id (like at-xxx); find it with: ateam list\n", c.RecipientID, c.RecipientID)
+	}
 	return nil
 }
 

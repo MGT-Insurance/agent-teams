@@ -349,20 +349,42 @@ var peerInitiativeID = regexp.MustCompile(`^[a-z][a-z0-9]*-[a-z0-9.]+$`)
 // returns an error and writes nothing.
 func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	if c.RecipientID == os.Getenv("DSP_META_INITIATIVE") {
-		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent", c.RecipientID)
+		return fmt.Errorf("ateam send: %s is this run's own initiative; nothing sent (peers are addressed by initiative id, like at-xxx; list them with: ateam list)", c.RecipientID)
+	}
+	if runBead, _, ok := dispatcherRun(); ok && c.RecipientID == runBead {
+		return fmt.Errorf("ateam send: %s is this run's own run bead; a peer is addressed by its initiative id (like at-xxx), and this run's initiative is %s; nothing sent", c.RecipientID, os.Getenv("DSP_META_INITIATIVE"))
 	}
 	if !peerInitiativeID.MatchString(c.RecipientID) {
-		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent", c.RecipientID)
+		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent (peers are addressed by initiative id, like at-xxx; list them with: ateam list)", c.RecipientID)
 	}
-	issue, err := bd.ShowIssue(ctx.BD, c.RecipientID)
+	to := c.RecipientID
+	var resolvedNote string
+	issue, err := bd.ShowIssue(ctx.BD, to)
 	if err != nil {
-		if bd.IsNotFound(err) {
+		if !bd.IsNotFound(err) {
+			return fmt.Errorf("ateam send: read recipient %s: %w; nothing sent", c.RecipientID, err)
+		}
+		// Not an initiative id here. A run bead id resolves to its one open
+		// initiative; anything else is mail for a laptop initiative.
+		resolved, listErr, rerr := resolvePeerRunBead(ctx, to)
+		if rerr != nil {
+			return rerr
+		}
+		if resolved.ID == "" {
+			if listErr != nil {
+				return fmt.Errorf("ateam send: could not find initiative %s (%w) and could not list initiatives to resolve it as a run bead (%v); nothing sent; a cloud peer is addressed by its initiative id (like at-xxx), find it with: ateam list", to, err, listErr)
+			}
 			return c.sendBridgeFromRun(ctx, err)
 		}
-		return fmt.Errorf("ateam send: read recipient %s: %w; nothing sent", c.RecipientID, err)
+		issue = resolved
+		if issue.ID == os.Getenv("DSP_META_INITIATIVE") {
+			return fmt.Errorf("ateam send: run bead %s resolves to %s, this run's own initiative; a peer is addressed by its initiative id (like at-xxx), find peers with: ateam list; nothing sent", to, issue.ID)
+		}
+		resolvedNote = fmt.Sprintf("resolved run bead %s to initiative %s; address peers by initiative id (like at-xxx), find them with: ateam list\n", to, issue.ID)
+		to = issue.ID
 	}
 	if issue.Status == "closed" {
-		return fmt.Errorf("ateam send: %s is closed; nothing sent", c.RecipientID)
+		return fmt.Errorf("ateam send: %s is closed; nothing sent", to)
 	}
 	where := initiative.Of(issue).Where
 	runBead, ok := strings.CutPrefix(where, whereRunPrefix)
@@ -371,7 +393,7 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 		if shown == "" {
 			shown = "none"
 		}
-		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); a laptop initiative must not be registered in the hosted workspace; nothing sent", c.RecipientID, shown)
+		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); a laptop initiative must not be registered in the hosted workspace; nothing sent", to, shown)
 	}
 	text, err := os.ReadFile(c.File)
 	if err != nil {
@@ -380,11 +402,47 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	if len(text) == 0 {
 		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
 	}
-	if err := appendOutboxOp(newPeerMailOp(c.RecipientID, runBead, string(text))); err != nil {
+	if err := appendOutboxOp(newPeerMailOp(to, runBead, string(text))); err != nil {
 		return fmt.Errorf("ateam send: outbox: %w", err)
 	}
-	fmt.Fprintf(ctx.Stdout, "sent to %s through the run outbox (run %s)\n", c.RecipientID, runBead)
+	fmt.Fprint(ctx.Stdout, resolvedNote)
+	fmt.Fprintf(ctx.Stdout, "sent to %s through the run outbox (run %s)\n", to, runBead)
 	return nil
+}
+
+// resolvePeerRunBead maps a run bead id to the one initiative whose where:
+// line is run:<id>. It returns a zero Issue and nil error when nothing matches
+// so the caller reports the not-found text; a failed list is returned as the
+// second value so the caller can surface it. It refuses when several open initiatives match or only a closed one does.
+func resolvePeerRunBead(ctx *cli.Context, id string) (bd.Issue, error, error) {
+	var all []bd.Issue
+	if err := ctx.BD.RunJSON(&all, "list", "--all", "--limit=0", "--json"); err != nil {
+		return bd.Issue{}, err, nil
+	}
+	var open, closed []bd.Issue
+	for _, iss := range all {
+		if initiative.Of(iss).Where != whereRunPrefix+id {
+			continue
+		}
+		if iss.Status == "closed" {
+			closed = append(closed, iss)
+		} else {
+			open = append(open, iss)
+		}
+	}
+	switch {
+	case len(open) == 1:
+		return open[0], nil, nil
+	case len(open) > 1:
+		ids := make([]string, len(open))
+		for i, iss := range open {
+			ids[i] = iss.ID
+		}
+		return bd.Issue{}, nil, fmt.Errorf("ateam send: run bead %s matches several open initiatives (%s); address the peer by its initiative id (like at-xxx), find it with: ateam list; nothing sent", id, strings.Join(ids, ", "))
+	case len(closed) > 0:
+		return bd.Issue{}, nil, fmt.Errorf("ateam send: run bead %s belongs to initiative %s, which is closed; address a peer by an open initiative id (like at-xxx), find one with: ateam list; nothing sent", id, closed[0].ID)
+	}
+	return bd.Issue{}, nil, nil
 }
 
 // createOrDedupMessage implements CONTRACT 8st0.18 item 1a: on a dedup-key
