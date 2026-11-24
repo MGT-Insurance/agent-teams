@@ -92,7 +92,9 @@ func (c *sendKong) sendToCloudSteward(ctx *cli.Context, sender string) error {
 	if _, hosted := bd.HostedServer(ctx.Home); hosted {
 		return errors.New("ateam send: cloud-steward is reached from the laptop; this workspace is hosted; nothing sent")
 	}
-	if sender != StewardHandle {
+	// Gate on the steward session (the signal resolveSender uses for its default
+	// sender), not on the sender string: --sender is caller-supplied.
+	if cwd, err := os.Getwd(); err != nil || !isStewardSession(ctx, cwd) || sender != StewardHandle {
 		return errors.New("ateam send: only the laptop steward can mail cloud-steward; mail your steward instead; nothing sent")
 	}
 	if _, ok, err := bridgeCloudHome(ctx.Home); err != nil {

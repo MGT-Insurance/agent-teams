@@ -127,6 +127,12 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return c.sendStewardThroughOutbox(ctx)
 	}
 
+	// From a run, the cloud steward is addressed as "steward". "cloud-steward" is
+	// the laptop's handle for it and would misroute through the peer outbox.
+	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID == CloudStewardHandle {
+		return fmt.Errorf("ateam send: from a Dispatcher run the cloud steward is addressed as %q, not %q; nothing sent", StewardHandle, CloudStewardHandle)
+	}
+
 	// Inside a run, mail to the laptop steward goes to the bridge.
 	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID == LocalStewardHandle {
 		return c.sendBridgeFromRun(ctx, nil)

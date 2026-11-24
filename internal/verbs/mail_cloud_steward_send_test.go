@@ -11,6 +11,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 )
 
 // stewardSendEnv extends cloudSendEnv with fakes for the steward create path.
@@ -41,6 +42,7 @@ func newStewardSendEnv(t *testing.T) *stewardSendEnv {
 	}
 	old := cloudStewardCreate
 	t.Cleanup(func() { cloudStewardCreate = old })
+	e.enterStewardSession(t)
 	cloudStewardCreate = func(dir, actor, title, key, bodyFile string) (string, error) {
 		e.createCall++
 		e.createArgs = []string{dir, actor, title, key}
@@ -52,6 +54,20 @@ func newStewardSendEnv(t *testing.T) *stewardSendEnv {
 		return e.createID, e.createErr
 	}
 	return e
+}
+
+// enterStewardSession writes the steward session marker and changes into its
+// directory, so the send runs as the steward session.
+func (e *stewardSendEnv) enterStewardSession(t *testing.T) {
+	t.Helper()
+	marker := sentlog.StewardMarkerPath(e.ctx.Home)
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Dir(marker))
 }
 
 func (e *stewardSendEnv) sendSteward(sender string) error {
@@ -129,6 +145,17 @@ func TestCloudStewardSendRefusals(t *testing.T) {
 	t.Run("non-steward sender", func(t *testing.T) {
 		e := newStewardSendEnv(t)
 		err := e.sendSteward("at-me1")
+		if err == nil || !strings.Contains(err.Error(), "only the laptop steward can mail cloud-steward") {
+			t.Fatalf("err = %v", err)
+		}
+		if e.createCall != 0 {
+			t.Error("created a bead")
+		}
+	})
+	t.Run("steward sender from a non-steward session", func(t *testing.T) {
+		e := newStewardSendEnv(t)
+		t.Chdir(t.TempDir())
+		err := e.sendSteward(StewardHandle)
 		if err == nil || !strings.Contains(err.Error(), "only the laptop steward can mail cloud-steward") {
 			t.Fatalf("err = %v", err)
 		}

@@ -27,6 +27,34 @@ func TestRunRoutesLaptopStewardToCloudSteward(t *testing.T) {
 	}
 }
 
+func TestRunRefusesCloudStewardSenderFlagFromNonStewardSession(t *testing.T) {
+	t.Setenv("DSP_BEAD", "")
+	e := newStewardSendEnv(t)
+	t.Chdir(t.TempDir())
+	c := &sendKong{RecipientID: CloudStewardHandle, Sender: StewardHandle, File: e.file}
+	err := c.Run(e.ctx)
+	if err == nil || !strings.Contains(err.Error(), "only the laptop steward") {
+		t.Fatalf("err = %v", err)
+	}
+	if e.createCall != 0 {
+		t.Errorf("created %d mail beads, want 0", e.createCall)
+	}
+}
+
+func TestRunRefusesCloudStewardRecipientInsideRun(t *testing.T) {
+	e := newStewardSendEnv(t)
+	t.Setenv("DSP_BEAD", "run-1")
+	t.Setenv("DSP_BRANCH", "main")
+	c := &sendKong{RecipientID: CloudStewardHandle, File: e.file}
+	err := c.Run(e.ctx)
+	if err == nil || !strings.Contains(err.Error(), "nothing sent") || !strings.Contains(err.Error(), `"steward"`) {
+		t.Fatalf("err = %v", err)
+	}
+	if e.createCall != 0 || e.localCalls != 0 {
+		t.Errorf("created=%d localCalls=%d, want none", e.createCall, e.localCalls)
+	}
+}
+
 func TestRunRefusesCloudStewardFromNonStewardSender(t *testing.T) {
 	t.Setenv("DSP_BEAD", "")
 	e := newStewardSendEnv(t)

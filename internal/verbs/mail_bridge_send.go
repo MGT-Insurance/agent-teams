@@ -99,7 +99,9 @@ func (c *sendKong) queueBridgeMessage(ctx *cli.Context, from string) error {
 
 // sendBridgeFromCloudSteward is the hosted-steward-to-laptop hook of send. The
 // cloud steward calls ateam through cli_run with BEADS_ACTOR=agent:steward and
-// no Dispatcher run, so the actor is the only identity check. It queues a
+// no Dispatcher run, so the actor is the only identity check. That check trusts
+// BEADS_ACTOR as given, the same trust model as every other bd actor: any
+// process on the hosted workspace can set it. It queues a
 // bridge bead from CloudStewardHandle for the laptop steward.
 func (c *sendKong) sendBridgeFromCloudSteward(ctx *cli.Context) error {
 	if os.Getenv("BEADS_ACTOR") != cloudStewardAssignee {
