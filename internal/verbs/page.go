@@ -102,11 +102,11 @@ const pageMermaidLoader = `<script src="https://cdn.jsdelivr.net/npm/mermaid@11.
 	`if(s.getBoundingClientRect().width<v.width*0.65)s.style.minWidth=(v.width*0.65)+'px';});});});</script>`
 
 var (
-	pageCommentRe     = regexp.MustCompile(`(?s)<!--.*?-->`)
-	pageMermaidUseRe  = regexp.MustCompile(`(?i)class\s*=\s*["']mermaid["']`)
-	pageMermaidLoadRe = regexp.MustCompile(`(?is)<script[^>]*\bsrc\s*=[^>]*mermaid`)
-	pageHeadItemRe    = regexp.MustCompile(`(?is)^\s*(<!--.*?-->|<title[^>]*>.*?</title>|<meta\b[^>]*>|<style[^>]*>.*?</style>)`)
-	pageDocRe         = regexp.MustCompile(`(?i)<html|<!doctype`)
+	pageCommentRe    = regexp.MustCompile(`(?s)<!--.*?-->`)
+	pageMermaidUseRe = regexp.MustCompile(`(?i)class\s*=\s*["']mermaid["']`)
+	pageScriptRe     = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<script\b[^>]*>`)
+	pageHeadItemRe   = regexp.MustCompile(`(?is)^\s*(<!--.*?-->|<title[^>]*>.*?</title>|<meta\b[^>]*>|<style[^>]*>.*?</style>)`)
+	pageDocRe        = regexp.MustCompile(`(?i)^(<!doctype|<html)`)
 )
 
 // normalizePageHTML wraps a fragment in a document skeleton and adds the
@@ -114,7 +114,11 @@ var (
 // document that already loads Mermaid, or has no diagram, is returned
 // byte-identical.
 func normalizePageHTML(s string) string {
-	if !pageDocRe.MatchString(s) {
+	// A full document starts with a doctype or <html> once leading comments
+	// and whitespace are set aside; a literal "<html" inside a code sample
+	// does not make a fragment a document.
+	lead := strings.TrimLeft(pageCommentRe.ReplaceAllString(s, ""), " \t\r\n\uFEFF")
+	if !pageDocRe.MatchString(lead) {
 		var head strings.Builder
 		rest := s
 		for {
@@ -132,7 +136,7 @@ func normalizePageHTML(s string) string {
 	}
 	// The kit's usage comment mentions class="mermaid" as text; it is not a diagram.
 	visible := pageCommentRe.ReplaceAllString(s, "")
-	if pageMermaidUseRe.MatchString(visible) && !pageMermaidLoadRe.MatchString(visible) {
+	if pageMermaidUseRe.MatchString(visible) && !pageHasMermaidLoader(visible) {
 		if i := strings.LastIndex(strings.ToLower(s), "</body>"); i >= 0 {
 			s = s[:i] + pageMermaidLoader + s[i:]
 		} else {
@@ -140,6 +144,17 @@ func normalizePageHTML(s string) string {
 		}
 	}
 	return s
+}
+
+// pageHasMermaidLoader reports whether any <script> in s references Mermaid in
+// its tag (a src URL) or its body (an inline import).
+func pageHasMermaidLoader(s string) bool {
+	for _, m := range pageScriptRe.FindAllString(s, -1) {
+		if strings.Contains(strings.ToLower(m), "mermaid") {
+			return true
+		}
+	}
+	return false
 }
 
 // pageHTMLMax mirrors PAGE_HTML_MAX in the Dispatcher run-tools contract: the

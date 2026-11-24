@@ -346,6 +346,34 @@ func TestNormalizePageHTML_FullDocWithMermaidPassesThrough(t *testing.T) {
 	}
 }
 
+func TestNormalizePageHTML_FragmentWithHTMLInCodeSampleIsWrapped(t *testing.T) {
+	for _, frag := range []string{
+		"<title>T</title><pre>&lt;html&gt;</pre>",
+		"<title>T</title><pre><html lang=en></pre>",
+		"<p>use <!doctype html> first</p>",
+	} {
+		if got := normalizePageHTML(frag); !strings.HasPrefix(got, "<!doctype html><html lang=\"en\"><head>") {
+			t.Errorf("fragment not wrapped: %q -> %q", frag, got)
+		}
+	}
+	doc := "\xEF\xBB\xBF <!-- c -->\n<HTML lang=en><body>x</body></HTML>"
+	if got := normalizePageHTML(doc); got != doc {
+		t.Errorf("document with leading comment/BOM was changed: %q", got)
+	}
+}
+
+func TestNormalizePageHTML_InlineMermaidImportCountsAsLoader(t *testing.T) {
+	doc := `<!doctype html><html><body><pre class="mermaid">A-->B</pre>` +
+		`<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/+esm";mermaid.run()</script></body></html>`
+	if got := normalizePageHTML(doc); got != doc {
+		t.Errorf("second loader added:\n%s", got)
+	}
+	commented := `<title>T</title><pre class="mermaid">A-->B</pre><!-- <script src="mermaid.js"></script> -->`
+	if !strings.Contains(normalizePageHTML(commented), "mermaid@11.4.1") {
+		t.Error("a commented-out loader must not suppress the pinned loader")
+	}
+}
+
 func TestPagePublish_DryRunPrintsAndMakesNoHTTPCall(t *testing.T) {
 	t.Setenv("DSP_BEAD", "")
 	t.Setenv("DSP_API_URL", "")
