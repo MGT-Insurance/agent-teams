@@ -1,0 +1,173 @@
+<title>PLAN NAME</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!--
+  agent-teams plan page kit. Print it with `ateam page template`.
+  The planner and the DRI both start every plan page from this file, locally and in the cloud.
+
+  WHAT HELPS ERIC MOST: realistic examples first, diagrams and images next.
+
+  REQUIRED (keep these, short is fine):
+    1. <title> and <h1>: a two-to-four word name for the work.
+    2. Summary (.lead): two to five sentences at the top. What, why, and the shape of the approach.
+    3. Questions for Eric: one .q card each, with a recommended default. Mark a resolved one
+       class="q decided". With none open, keep the heading and say "No open questions."
+    4. Realistic example: at least one end-to-end example with REAL values from this codebase or
+       system. Show the real input, what happens, and the output or failure. Never a placeholder.
+       Where behavior changes, show before and after.
+    5. Beads: the bead ids the plan files, with one line each. Beads are authoritative; match them.
+    6. Revision log (.revlog): one row per publish, newest first, at the bottom. Never delete rows.
+
+  DIAGRAMS AND IMAGES: expected whenever they help. Use a flowchart for a path being changed,
+  a sequence diagram for a flow across processes or agents, a graph for architecture, and a
+  screenshot for UI. If the plan changes a mechanism and has no diagram, say why in one line
+  (<p class="nodiagram">No diagram: REASON</p>).
+
+  EVERYTHING ELSE IS OPTIONAL. Add sections in whatever order the plan needs.
+
+  PRIMITIVES (copy the markup):
+    Section:        <section><h2>Heading</h2> ... </section>
+    Question card:  <div class="q"><div class="tag">Open · Q1</div><p><strong>Question?</strong></p><p>Recommended default: ...</p></div>
+    Decided card:   <div class="q decided"><div class="tag">Decided · Q1</div><p>Ruling ...</p></div>
+    Example trace:  <div class="example"><div class="label">Input</div><pre>real input</pre><div class="label">What happens</div><ol><li>step</li></ol><div class="label">Output</div><pre>real output or error</pre></div>
+    Before/after:   <div class="cols"><div><div class="label">Before</div><pre>...</pre></div><div><div class="label">After</div><pre>...</pre></div></div>
+    Flowchart:      <figure><pre class="mermaid">flowchart LR
+                      A[Request] --&gt; B{Check} -- ok --&gt; C[Done]</pre><figcaption>What it shows.</figcaption></figure>
+    Sequence:       <figure><pre class="mermaid">sequenceDiagram
+                      participant D as DRI
+                      participant P as Planner
+                      D->>P: brief
+                      P--&gt;&gt;D: plan URL</pre><figcaption>What it shows.</figcaption></figure>
+    Architecture:   <figure><pre class="mermaid">graph TD
+                      CLI[ateam] --&gt; WS[(workspace)]</pre><figcaption>What it shows.</figcaption></figure>
+    Image:          <figure><img src="data:image/png;base64,..." alt="What the image shows"><figcaption>What it shows.</figcaption></figure>
+                    Get the markup with `ateam page image <file> --alt "..." --caption "..."`.
+                    Use inline data: URIs: a local screenshot has no host, the Artifact tool blocks
+                    image hosts, and both hosts accept data: URIs. A Dispatcher page holds at most
+                    900,000 characters in total, so keep images small (JPEG or WebP).
+    Callout:        <div class="callout">...</div>   or   <div class="callout warn">...</div>
+    Table:          <div class="scroll"><table><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table></div>
+    Code block:     <pre>...</pre>       Inline code: <code>...</code>
+    Status pill:    <span class="pill">blocked</span>  <span class="pill ok">done</span>  <span class="pill warn">risk</span>
+
+  RULES: keep the <style> block as is and change only the content. Do not add a Mermaid <script>:
+  the Artifact tool renders Mermaid natively, and `ateam page publish` adds the loader in a cloud run.
+  Do not use localStorage, fetch, or forms: the Dispatcher page sandbox blocks them.
+-->
+<style>
+/* Layout: one reading column; authors stack primitives in any order. */
+:root{
+  --bg:#f7f8fa; --surface:#ffffff; --fg:#1b1f27; --muted:#5b6474; --line:#dde1e8;
+  --accent:#2f5bd3; --accent-bg:#eaf0ff; --ask:#b26a00; --ask-bg:#fff6e5; --ok:#1d7a46; --ok-bg:#e8f6ee; --code-bg:#eef1f6;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-head: "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12151b; --surface:#1a1e26; --fg:#e4e8ef; --muted:#9aa3b2; --line:#2c3340;
+  --accent:#8fb0ff; --accent-bg:#1b2438; --ask:#ffc163; --ask-bg:#2b2416; --ok:#6fd39b; --ok-bg:#16281f; --code-bg:#222834; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12151b; --surface:#1a1e26; --fg:#e4e8ef; --muted:#9aa3b2; --line:#2c3340;
+  --accent:#8fb0ff; --accent-bg:#1b2438; --ask:#ffc163; --ask-bg:#2b2416; --ok:#6fd39b; --ok-bg:#16281f; --code-bg:#222834; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--font-body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+main{max-width:46rem;margin:0 auto;padding-block:1.5rem 4rem;display:flex;flex-direction:column;gap:2rem}
+header{display:flex;flex-direction:column;gap:.35rem}
+.eyebrow{font:600 .75rem/1.2 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+h1{font:600 1.75rem/1.2 var(--font-head);margin:0;text-wrap:balance}
+h2{font:600 1.2rem/1.3 var(--font-head);margin:0 0 .6rem;padding-bottom:.35rem;border-bottom:1px solid var(--line);text-wrap:balance}
+h3{font:600 1rem/1.3 var(--font-head);margin:1rem 0 .3rem}
+p,li{max-width:65ch} p{margin:.4rem 0} ul,ol{margin:.4rem 0;padding-left:1.25rem}
+a{color:var(--accent)}
+.lead{font-size:1.05rem}
+code{font:.88em var(--font-mono);background:var(--code-bg);padding:.05em .3em;border-radius:4px}
+.scroll{overflow-x:auto;min-width:0}
+table{border-collapse:collapse;width:100%;font-size:.9rem;font-variant-numeric:tabular-nums}
+th,td{border-bottom:1px solid var(--line);padding:.4rem .5rem;text-align:left;vertical-align:top}
+th{font:600 .75rem var(--font-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.q{background:var(--ask-bg);border-left:4px solid var(--ask);border-radius:6px;padding:.75rem 1rem;margin:.6rem 0}
+.q .tag{font:600 .72rem var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ask)}
+.q.decided{background:var(--ok-bg);border-left-color:var(--ok)}
+.q.decided .tag{color:var(--ok)}
+.q p{margin:.25rem 0}
+.example{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;display:flex;flex-direction:column;gap:.3rem;min-width:0}
+.example pre{margin:0}
+.callout{background:var(--accent-bg);border-radius:6px;padding:.75rem 1rem;margin:.6rem 0}
+.callout.warn{background:var(--ask-bg)}
+pre{font:.82rem/1.5 var(--font-mono);background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:.75rem;overflow-x:auto;margin:.5rem 0}
+pre.mermaid{background:var(--surface);text-align:center}
+figure{margin:.75rem 0;min-width:0} figcaption{font-size:.85rem;color:var(--muted);margin-top:.3rem}
+figure img{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+.nodiagram{font-size:.9rem;color:var(--muted)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:.75rem}
+.cols > *{min-width:0}
+.label{font:600 .72rem var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.pill{display:inline-block;font:600 .72rem var(--font-mono);padding:.05em .5em;border-radius:999px;background:var(--code-bg);color:var(--muted)}
+.pill.ok{background:var(--ok-bg);color:var(--ok)} .pill.warn{background:var(--ask-bg);color:var(--ask)}
+.revlog{font-size:.85rem;color:var(--muted)}
+.revlog h2{font-size:.95rem}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">INITIATIVE-ID · EPIC-ID · plan</div>
+  <h1>PLAN NAME</h1>
+</header>
+
+<section>
+  <p class="lead">WHAT is being built and WHY, then the shape of the approach.</p>
+</section>
+
+<section>
+  <h2>Questions for Eric</h2>
+  <div class="q">
+    <div class="tag">Open · Q1</div>
+    <p><strong>QUESTION?</strong></p>
+    <p>Recommended default: DEFAULT, because EVIDENCE.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Example</h2>
+  <div class="example">
+    <div class="label">Input</div>
+    <pre>REAL INPUT</pre>
+    <div class="label">What happens</div>
+    <ol><li>REAL STEP</li></ol>
+    <div class="label">Output</div>
+    <pre>REAL OUTPUT OR ERROR</pre>
+  </div>
+</section>
+
+<section>
+  <h2>How it works</h2>
+  <figure>
+    <pre class="mermaid">
+flowchart LR
+  A[Before] --> B[Change] --> C[After]
+    </pre>
+    <figcaption>What this diagram shows.</figcaption>
+  </figure>
+</section>
+
+<!-- Add any sections the plan needs here, built from the primitives above. -->
+
+<section>
+  <h2>Beads</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Bead</th><th>What</th><th>Depends on</th></tr></thead>
+    <tbody>
+      <tr><td><code>ID</code></td><td>TITLE</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section class="revlog">
+  <h2>Revision log</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Date</th><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>YYYY-MM-DD</td><td>First draft.</td><td>Plan-approval gate.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+</main>
