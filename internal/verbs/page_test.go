@@ -190,6 +190,15 @@ func TestPageTemplate_PrintsKitWithRequiredParts(t *testing.T) {
 	if strings.Contains(visible, "PRIMITIVES") || strings.Contains(visible, "EVERYTHING ELSE") || strings.Contains(visible, "participant P") {
 		t.Error("usage comment ends early; visible text leaks")
 	}
+	for _, c := range pageCommentRe.FindAllString(got, -1) {
+		body := strings.TrimSuffix(strings.TrimPrefix(c, "<!--"), "-->")
+		if strings.Contains(body, "-->") || strings.Contains(body, "--!>") {
+			t.Errorf("comment body contains a comment terminator: %.60q", body)
+		}
+	}
+	if first := pageCommentRe.FindString(got); !strings.Contains(first, "RULES:") {
+		t.Error("first comment does not reach the end of the usage text")
+	}
 }
 
 func TestPageTemplate_OutRefusesOverwriteWithoutForce(t *testing.T) {
