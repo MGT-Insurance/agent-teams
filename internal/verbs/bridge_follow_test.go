@@ -31,6 +31,7 @@ type bridgeHarness struct {
 	shows  map[string]string
 	list   string
 	sent   []bridgeDelivery
+	local  map[string]string // dedup key -> local message id already present
 
 	sendErr  error
 	closeErr error
@@ -99,12 +100,16 @@ func (h *bridgeHarness) follower() *bridgeFollower {
 			}
 			return assignee, true
 		},
-		deliver: func(_ *cli.Context, recipient, sender, body, key string) error {
+		deliver: func(_ *cli.Context, recipient, sender, body, key string) (string, error) {
 			if h.sendErr != nil {
-				return h.sendErr
+				return "", h.sendErr
 			}
 			h.sent = append(h.sent, bridgeDelivery{recipient, sender, body, key})
-			return nil
+			return "local-1", nil
+		},
+		localCopy: func(_ *cli.Context, _, key string) (string, bool, error) {
+			id, ok := h.local[key]
+			return id, ok, nil
 		},
 	}
 }
@@ -399,7 +404,7 @@ func TestMailBridgeOncePrintsCounts(t *testing.T) {
 	if err := (&mailBridgeKong{Once: true, follower: b}).Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != "delivered 1, left 0\n" {
+	if out.String() != "ateam bridge: delivered wisp-3 to at-local1 as local-1\ndelivered 1, left 0\n" {
 		t.Errorf("stdout = %q", out.String())
 	}
 }
@@ -538,5 +543,42 @@ func TestRelayTelegramNoCloudStartsNoBridge(t *testing.T) {
 	}
 	if ran.Load() != 0 {
 		t.Error("bridge ran with no cloud")
+	}
+}
+
+func TestBridgeCloseForcesHostedClose(t *testing.T) {
+	h := newBridgeHarness(t, true)
+	h.shows["wisp-11"] = bridgeIssueJSON("wisp-11", "open", "at-local1", bridgeLabel)
+	h.steps = []followStep{{lines: []string{bridgeRowJSON("11", "create", "message", bridgeLabel)}}}
+	if _, err := h.run(h.follower()); err != nil {
+		t.Fatal(err)
+	}
+	var closeArgs []string
+	for _, c := range h.cloud {
+		if c[0] == "close" {
+			closeArgs = c
+		}
+	}
+	if !strings.Contains(strings.Join(closeArgs, " "), "--force") {
+		t.Errorf("close args = %v, want --force", closeArgs)
+	}
+}
+
+// A message the recipient already read is closed locally; the repeat-send
+// check must still see it and only finish the hosted close-out.
+func TestBridgeExistingLocalCopyIsNotRedelivered(t *testing.T) {
+	h := newBridgeHarness(t, true)
+	h.local = map[string]string{bridgeDedupKey("wisp-11"): "local-9"}
+	h.shows["wisp-11"] = bridgeIssueJSON("wisp-11", "open", "at-local1", bridgeLabel)
+	h.steps = []followStep{{lines: []string{bridgeRowJSON("11", "create", "message", bridgeLabel)}}}
+	b := h.follower()
+	if _, err := h.run(b); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 0 || b.delivered != 0 {
+		t.Errorf("sent %d delivered %d; want no new delivery", len(h.sent), b.delivered)
+	}
+	if h.cloudCalls("close") != 1 || h.cloudCalls("label") != 2 {
+		t.Errorf("close-out calls: close %d label %d; want 1 and 2", h.cloudCalls("close"), h.cloudCalls("label"))
 	}
 }

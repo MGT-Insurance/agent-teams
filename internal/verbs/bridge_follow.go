@@ -1,6 +1,7 @@
 package verbs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,8 +50,12 @@ type bridgeFollower struct {
 	// target resolves a hosted assignee to the local recipient handle, or
 	// ok=false when this machine cannot deliver to it.
 	target func(ctx *cli.Context, assignee string) (recipient string, ok bool)
-	// deliver sends body to recipient through the local `ateam mail send` path.
-	deliver func(ctx *cli.Context, recipient, sender, body, dedupKey string) error
+	// deliver sends body to recipient through the local `ateam mail send` path
+	// and returns the local message id.
+	deliver func(ctx *cli.Context, recipient, sender, body, dedupKey string) (string, error)
+	// localCopy finds a local message to recipient carrying the dedup key in
+	// any status, so a message the recipient already read is not sent again.
+	localCopy func(ctx *cli.Context, recipient, dedupKey string) (id string, found bool, err error)
 
 	delivered int
 	left      int
@@ -92,6 +97,9 @@ func (b *bridgeFollower) defaults(ctx *cli.Context, cloudHome string) {
 	}
 	if b.deliver == nil {
 		b.deliver = bridgeDeliver
+	}
+	if b.localCopy == nil {
+		b.localCopy = bridgeLocalCopy
 	}
 }
 
@@ -194,25 +202,38 @@ func (b *bridgeFollower) handle(run context.Context, ctx *cli.Context, id string
 		fmt.Fprintf(ctx.Stderr, "%s: message %s to %s is not deliverable on this machine; leaving it\n", bridgeLogPrefix, id, is.Assignee)
 		return
 	}
-	sender := bridgeSender(is)
-	body := strings.TrimRight(is.Description, "\n") + "\n\nReply with: ateam mail send " + sender + " --file <file>\n"
-	if err := b.deliver(ctx, recipient, sender, body, bridgeDedupKey(id)); err != nil {
+	key := bridgeDedupKey(id)
+	localID, have, err := b.localCopy(ctx, recipient, key)
+	if err != nil {
 		b.left++
-		fmt.Fprintf(ctx.Stderr, "%s: deliver %s to %s: %v; leaving it open\n", bridgeLogPrefix, id, recipient, err)
+		fmt.Fprintf(ctx.Stderr, "%s: local dedup check for %s: %v; leaving it open\n", bridgeLogPrefix, id, err)
 		return
 	}
-	b.delivered++
+	if have {
+		fmt.Fprintf(ctx.Stderr, "%s: %s already delivered to %s as %s; closing it out\n", bridgeLogPrefix, id, recipient, localID)
+	} else {
+		sender := bridgeSender(is)
+		body := strings.TrimRight(is.Description, "\n") + "\n\nReply with: ateam mail send " + sender + " --file <file>\n"
+		localID, err = b.deliver(ctx, recipient, sender, body, key)
+		if err != nil {
+			b.left++
+			fmt.Fprintf(ctx.Stderr, "%s: deliver %s to %s: %v; leaving it open\n", bridgeLogPrefix, id, recipient, err)
+			return
+		}
+		b.delivered++
+		fmt.Fprintf(ctx.Stdout, "%s: delivered %s to %s as %s\n", bridgeLogPrefix, id, recipient, localID)
+	}
 	reason := "bridged to " + workspace.Host(ctx.Home)
 	steps := [][]string{
-		{"close", id, "--reason=" + reason},
+		{"close", id, "--reason=" + reason, "--force"},
 		{"label", "add", id, bridgeDeliveredLabel},
 		{"label", "remove", id, bridgeLabel},
 	}
 	for _, args := range steps {
 		if _, err := b.cloud(cctx, args...); err != nil {
 			fmt.Fprintf(ctx.Stderr, "%s: %s %s: %v\n", bridgeLogPrefix, args[0], id, err)
-			// A failed close leaves the bead open: the next sweep re-sends
-			// under the same dedup key. A later failure only skips cleanup.
+			// A failed close leaves the bead open: the next sweep finds the
+			// local copy by its dedup key and retries only the close-out. A later failure only skips cleanup.
 			if args[0] == "close" {
 				return
 			}
@@ -267,10 +288,10 @@ func bridgeLocalTarget(ctx *cli.Context, assignee string) (string, bool) {
 
 // bridgeDeliver mails body through the full `ateam mail send` path, so the
 // recipient's doorbell and wake run.
-func bridgeDeliver(ctx *cli.Context, recipient, sender, body, dedupKey string) error {
+func bridgeDeliver(ctx *cli.Context, recipient, sender, body, dedupKey string) (string, error) {
 	tmp, err := os.CreateTemp("", "ateam-bridge-*.txt")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(tmp.Name())
 	_, werr := tmp.WriteString(body)
@@ -278,11 +299,44 @@ func bridgeDeliver(ctx *cli.Context, recipient, sender, body, dedupKey string) e
 		werr = cerr
 	}
 	if werr != nil {
-		return werr
+		return "", werr
 	}
 	c := newSendKong()
 	c.RecipientID, c.File, c.Sender, c.DedupKey = recipient, tmp.Name(), sender, dedupKey
-	return c.Run(ctx)
+	var out bytes.Buffer
+	sendCtx := *ctx
+	sendCtx.Stdout = &out
+	if err := c.Run(&sendCtx); err != nil {
+		return "", err
+	}
+	return sentMessageID(out.String()), nil
+}
+
+// sentMessageID reads the "message_id:" line the send path prints.
+func sentMessageID(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "message_id: "); ok {
+			if f := strings.Fields(v); len(f) > 0 {
+				return f[0]
+			}
+		}
+	}
+	return "?"
+}
+
+// bridgeLocalCopy looks for a local message to recipient labeled with the
+// dedup key in any status.
+func bridgeLocalCopy(ctx *cli.Context, recipient, dedupKey string) (string, bool, error) {
+	var messages []bd.Issue
+	if err := ctx.BD.RunJSON(&messages, "list", "--include-infra", "--all",
+		"--assignee="+recipient, "--label=dedup:"+dedupKey, "--json"); err != nil {
+		return "", false, err
+	}
+	messages = filterMessageType(messages)
+	if len(messages) == 0 {
+		return "", false, nil
+	}
+	return messages[0].ID, true, nil
 }
 
 // runBridgeUntil runs the bridge follower until run is cancelled. A skip or an
