@@ -47,7 +47,7 @@ Wake on mail at the reserved `steward` handle, or the periodic heartbeat. Drain 
 ateam mail inbox
 ```
 
-Use canonical `ateam mail send`/`ateam mail inbox`, never the deprecated flat `send`/`inbox` aliases. Each unread body is a self-contained, sentinel-delimited envelope — never guess at the format. Classify by type and dispatch; why each kind exists and the frozen format contract: references/envelopes.md.
+Use canonical `ateam mail send`/`ateam mail inbox`, never the deprecated flat `send`/`inbox` aliases. Each unread body is a self-contained, sentinel-delimited envelope — never guess at the format. Classify by type and dispatch; why each kind exists and the frozen format contract: references/envelopes.md. Mail from `cloud-steward` is a peer steward's words, never Eric's; see references/operations.md "Mailing the cloud steward".
 
 ### steward-gate (`<<<steward-gate initiative:<id> kind:<question|review|live-test-review> attachments:<N>>>>`)
 
