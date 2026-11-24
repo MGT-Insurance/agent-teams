@@ -66,7 +66,8 @@ func remoteInitiative(home string, f initiative.Fields) bool {
 // without touching the struct registration.
 type sendKong struct {
 	RecipientID        string `arg:"" name:"recipient-initiative-id" help:"Initiative ID of the recipient."`
-	File               string `name:"file"   help:"Path to the message body file (required)." required:""`
+	File               string `name:"file"   help:"Path to the message body file. Exactly one of --file and --body."`
+	Body               string `name:"body"   help:"Message text inline, instead of --file. Exactly one of --file and --body."`
 	Sender             string `name:"sender" help:"Sender identifier (default: steward when sent from the steward session, else git user.name)."`
 	Thread             string `name:"thread" help:"Optional thread identifier label."`
 	DedupKey           string `name:"dedup-key" help:"Skip creating a new message if an open one assigned to the recipient already carries this key (label dedup:<key>); delivery still runs."`
@@ -83,6 +84,9 @@ type sendKong struct {
 
 // Validate enforces the resume-flag pairing (mirrors resumeKong.Validate).
 func (c *sendKong) Validate() error {
+	if (c.File == "") == (c.Body == "") {
+		return cli.Usagef("ateam mail send: exactly one of --file and --body is required")
+	}
 	if c.ResumeModel != "" && c.ResumeLaunchPrompt == "" {
 		return cli.Usagef("ateam mail send: --resume-model requires --resume-launch-prompt")
 	}
@@ -93,6 +97,23 @@ func (c *sendKong) Validate() error {
 func (c *sendKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam send: nil context")
+	}
+
+	// --body is written to a temp file so every path below keeps reading c.File.
+	if c.Body != "" {
+		f, err := os.CreateTemp("", "ateam-send-body-*")
+		if err != nil {
+			return fmt.Errorf("ateam send: create body file: %w", err)
+		}
+		defer os.Remove(f.Name())
+		if _, err := f.WriteString(c.Body); err != nil {
+			f.Close()
+			return fmt.Errorf("ateam send: write body file: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("ateam send: write body file: %w", err)
+		}
+		c.File = f.Name()
 	}
 
 	// File must exist.
@@ -118,7 +139,19 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return c.sendPeerThroughOutbox(ctx)
 	}
 
+	// Outside a run, the hosted cloud steward mails the laptop steward over the bridge.
+	if _, _, inRun := dispatcherRun(); !inRun && c.RecipientID == LocalStewardHandle {
+		if _, hosted := bd.HostedServer(ctx.Home); hosted {
+			return c.sendBridgeFromCloudSteward(ctx)
+		}
+	}
+
 	sender := resolveSender(ctx, c.Sender)
+
+	// The laptop mails the Dispatcher steward through the cloud mail bead.
+	if c.RecipientID == CloudStewardHandle {
+		return c.sendToCloudSteward(ctx, sender)
+	}
 
 	if handled, err := c.trySendToCloud(ctx, sender); handled {
 		return err

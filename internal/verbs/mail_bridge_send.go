@@ -86,3 +86,9 @@ func (c *sendKong) createBridgeMessage(ctx *cli.Context, from string) (string, e
 	}
 	return issue.ID, nil
 }
+
+// sendBridgeFromCloudSteward is the hosted-steward-to-laptop hook of send. It
+// is a stub until the cloud-steward bridge bead replaces it.
+func (c *sendKong) sendBridgeFromCloudSteward(ctx *cli.Context) error {
+	return errors.New("ateam send: bridge mail from the cloud steward is not built yet; nothing sent")
+}

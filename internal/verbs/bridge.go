@@ -75,3 +75,29 @@ func laptopMailKey(host, sender string, body []byte) string {
 	h.Write(body)
 	return "laptop:" + host + ":" + hex.EncodeToString(h.Sum(nil))[:12]
 }
+
+// CloudStewardHandle is the laptop-side address of the Dispatcher steward agent.
+const CloudStewardHandle = "cloud-steward"
+
+// cloudStewardAssignee is the assignee of a mail bead the Dispatcher wakes the
+// steward agent for: the Dispatcher wake prefix "agent:" plus the agent name.
+const cloudStewardAssignee = "agent:steward"
+
+// stewardMessageKind is the kind: header of a steward-to-steward mail body.
+const stewardMessageKind = "steward-message"
+
+// mailKeyLabelPrefix prefixes the label on a Dispatcher mail bead that carries
+// the mail key, used for the cloudDedupWindow dedup window.
+const mailKeyLabelPrefix = "mail-key:"
+
+// cloudStewardMailTitle returns the title of a mail bead from the sender.
+func cloudStewardMailTitle(from string) string {
+	return from + ": message"
+}
+
+// cloudStewardMailBody formats a steward-to-steward mail body. The mail-key
+// line lets a retry detect that the mail already exists.
+func cloudStewardMailBody(from, body, key string) string {
+	return "from: " + from + "\nkind: " + stewardMessageKind + "\n---\n" + body +
+		"\n\nReply with: ateam mail send " + from + " --body <text>\nmail-key: " + key
+}

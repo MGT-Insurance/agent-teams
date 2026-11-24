@@ -113,3 +113,21 @@ func TestBridgeDedupKey(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestCloudStewardContractNames(t *testing.T) {
+	if CloudStewardHandle != "cloud-steward" || cloudStewardAssignee != "agent:steward" ||
+		stewardMessageKind != "steward-message" || mailKeyLabelPrefix != "mail-key:" {
+		t.Fatal("frozen cloud-steward names changed")
+	}
+	if got := cloudStewardMailTitle(LocalStewardHandle); got != "local-steward: message" {
+		t.Fatalf("title = %q", got)
+	}
+}
+
+func TestCloudStewardMailBodyExact(t *testing.T) {
+	got := cloudStewardMailBody("local-steward", "hello", "laptop:h:abc")
+	want := "from: local-steward\nkind: steward-message\n---\nhello\n\nReply with: ateam mail send local-steward --body <text>\nmail-key: laptop:h:abc"
+	if got != want {
+		t.Fatalf("body = %q\nwant %q", got, want)
+	}
+}
