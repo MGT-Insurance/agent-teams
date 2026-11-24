@@ -2,12 +2,15 @@ package verbs
 
 import (
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -30,6 +33,7 @@ func RegisterPageKong(p *cli.Parser) {
 // Run method: kong would run it for every subcommand (see mail_register.go).
 type pageCmd struct {
 	Template pageTemplateKong `cmd:"" name:"template" help:"Print the shared plan-page kit (HTML); works anywhere. --out writes it to a file."`
+	Image    pageImageKong    `cmd:"" name:"image" help:"Print a <figure> snippet that embeds an image file as a data: URI; works anywhere."`
 	Publish  pagePublishKong  `cmd:"" name:"publish" help:"Publish an HTML file as a Dispatcher page (cloud run only); prints the page URL."`
 }
 
@@ -132,6 +136,66 @@ func normalizePageHTML(s string) string {
 	return s
 }
 
+// pageHTMLMax mirrors PAGE_HTML_MAX in the Dispatcher run-tools contract: the
+// most characters (UTF-16 code units, as zod counts them) one page may hold.
+const pageHTMLMax = 900_000
+
+// pageSizeError returns an error naming the limit when s is over it.
+func pageSizeError(s string) error {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++
+		}
+	}
+	if n <= pageHTMLMax {
+		return nil
+	}
+	return fmt.Errorf("page publish: page is %d characters; a Dispatcher page holds at most %d. Re-export images as smaller JPEG or WebP, or drop some.", n, pageHTMLMax)
+}
+
+// pageImageMax is the largest image file `page image` embeds, in bytes.
+const pageImageMax = 300_000
+
+// pageImageKong implements `ateam page image`.
+type pageImageKong struct {
+	File    string `arg:"" name:"file" help:"The image file (png, jpeg, gif, webp, or svg)."`
+	Alt     string `name:"alt" help:"Alt text describing the image (required)."`
+	Caption string `name:"caption" help:"Optional figure caption."`
+}
+
+// Run prints a <figure> snippet that embeds the image as a data: URI.
+func (c *pageImageKong) Run(ctx *cli.Context) error {
+	if strings.TrimSpace(c.Alt) == "" {
+		return fmt.Errorf("page image: --alt is required")
+	}
+	b, err := os.ReadFile(c.File)
+	if err != nil {
+		return fmt.Errorf("page image: %v", err)
+	}
+	if len(b) > pageImageMax {
+		return fmt.Errorf("page image: %s is %d bytes; the limit is %d. Downscale it or convert it to JPEG or WebP.", c.File, len(b), pageImageMax)
+	}
+	mime := http.DetectContentType(b)
+	if strings.EqualFold(filepath.Ext(c.File), ".svg") {
+		mime = "image/svg+xml"
+	}
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml":
+	default:
+		return fmt.Errorf("page image: %s looks like %s; use png, jpeg, gif, webp, or svg", c.File, mime)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, `<figure><img src="data:%s;base64,%s" alt="%s">`, mime, base64.StdEncoding.EncodeToString(b), html.EscapeString(c.Alt))
+	if c.Caption != "" {
+		fmt.Fprintf(&sb, "<figcaption>%s</figcaption>", html.EscapeString(c.Caption))
+	}
+	sb.WriteString("</figure>\n")
+	_, err = fmt.Fprint(ctx.Stdout, sb.String())
+	return err
+}
+
 // pageIDFromURL returns the last path segment of a page URL, or ref itself
 // when it is a bare id.
 func pageIDFromURL(ref string) string {
@@ -153,21 +217,30 @@ func (c *pagePublishKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("page publish: %v", err)
 	}
-	html := normalizePageHTML(string(b))
+	page := normalizePageHTML(string(b))
+	sizeErr := pageSizeError(page)
 	if c.DryRun {
-		_, err := fmt.Fprint(ctx.Stdout, html)
-		return err
+		if _, err := fmt.Fprint(ctx.Stdout, page); err != nil {
+			return err
+		}
+		if sizeErr != nil {
+			fmt.Fprintln(ctx.Stderr, "warning: "+sizeErr.Error())
+		}
+		return nil
 	}
 	client, ok := runtools.FromEnv()
 	if !ok {
 		fmt.Fprintln(ctx.Stderr, pageNotInRunMsg)
 		return cli.Silent(pageExitNotInRun)
 	}
+	if sizeErr != nil {
+		return sizeErr
+	}
 	do := c.httpDo
 	if do == nil {
 		do = http.DefaultClient.Do
 	}
-	req := pagePublishReq{Op: "page_publish", HTML: html, Title: c.Title}
+	req := pagePublishReq{Op: "page_publish", HTML: page, Title: c.Title}
 	if c.URL != "" {
 		if req.Page = pageIDFromURL(c.URL); req.Page == "" {
 			return fmt.Errorf("page publish: --url %q has no page id", c.URL)

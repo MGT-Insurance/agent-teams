@@ -2,6 +2,7 @@ package verbs
 
 import (
 	"bytes"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"os"
@@ -176,7 +177,7 @@ func TestPageTemplate_PrintsKitWithRequiredParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"<title>", `class="lead"`, "Questions for Eric", "<h2>Beads</h2>", `class="revlog"`, "<h1>"} {
+	for _, want := range []string{"<title>", "<h1>", `class="lead"`, "Questions for Eric", `class="example"`, "<h2>Beads</h2>", `class="revlog"`, "sequenceDiagram", "figure img"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("template missing %q", want)
 		}
@@ -186,7 +187,7 @@ func TestPageTemplate_PrintsKitWithRequiredParts(t *testing.T) {
 		t.Error("template markup contains a <script>")
 	}
 	// A stray "-->" inside the usage comment would end it early and render the rest as text.
-	if strings.Contains(visible, "PRIMITIVES") || strings.Contains(visible, "EVERYTHING ELSE") {
+	if strings.Contains(visible, "PRIMITIVES") || strings.Contains(visible, "EVERYTHING ELSE") || strings.Contains(visible, "participant P") {
 		t.Error("usage comment ends early; visible text leaks")
 	}
 }
@@ -239,9 +240,84 @@ func TestNormalizePageHTML_MermaidLoaderOnlyWhenNeeded(t *testing.T) {
 	if strings.Contains(normalizePageHTML(`<title>T</title><!-- <pre class="mermaid"> --><p>x</p>`), "mermaid@") {
 		t.Error("loader injected for a commented-out example")
 	}
-	// The kit itself has no diagram.
-	if strings.Contains(normalizePageHTML(planPageTemplate), "mermaid@") {
-		t.Error("loader injected for the unfilled kit")
+}
+
+func TestPagePublish_SizeGuard(t *testing.T) {
+	pageInRun(t)
+	// A full document is posted unchanged, so the page length is exactly the file length.
+	const head, tail = "<html><body>", "</body></html>"
+	fill := func(n int) string { return head + strings.Repeat("a", n-len(head)-len(tail)) + tail }
+	calls := 0
+	do := func(*http.Request) (*http.Response, error) {
+		calls++
+		return pageResp(200, `{"id":"a","url":"https://d.example/pages/a","version":1,"created":true}`), nil
+	}
+	if _, err := pageRunFile(t, &pagePublishKong{httpDo: do}, fill(pageHTMLMax)); err != nil || calls != 1 {
+		t.Fatalf("exactly %d should post: err=%v calls=%d", pageHTMLMax, err, calls)
+	}
+	_, err := pageRunFile(t, &pagePublishKong{httpDo: do}, fill(pageHTMLMax+1))
+	if err == nil || !strings.Contains(err.Error(), "900000") || calls != 1 {
+		t.Fatalf("over the limit: err=%v calls=%d", err, calls)
+	}
+	// Dry-run still prints, then warns on stderr and exits 0.
+	f := filepath.Join(t.TempDir(), "big.html")
+	if werr := os.WriteFile(f, []byte(fill(pageHTMLMax+1)), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+	var out, errb bytes.Buffer
+	if err := (&pagePublishKong{File: f, DryRun: true}).Run(&cli.Context{Stdout: &out, Stderr: &errb}); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != pageHTMLMax+1 || !strings.Contains(errb.String(), "warning: page publish: page is") {
+		t.Errorf("stdout=%d bytes stderr=%q", out.Len(), errb.String())
+	}
+}
+
+func pageImageRun(t *testing.T, name string, data []byte, alt, caption string) (string, error) {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(f, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := (&pageImageKong{File: f, Alt: alt, Caption: caption}).Run(&cli.Context{Stdout: &out, Stderr: &bytes.Buffer{}})
+	return out.String(), err
+}
+
+var (
+	pagePNG  = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00")
+	pageJPEG = []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+)
+
+func TestPageImage_PNGSnippetRoundTripsAndEscapes(t *testing.T) {
+	out, err := pageImageRun(t, "a.png", pagePNG, `a "b" <c>`, "x & y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = `<figure><img src="data:image/png;base64,`
+	if !strings.HasPrefix(out, prefix) {
+		t.Fatalf("out = %q", out)
+	}
+	b64 := out[len(prefix):strings.Index(out, `"`+` alt=`)]
+	if dec, derr := base64.StdEncoding.DecodeString(b64); derr != nil || !bytes.Equal(dec, pagePNG) {
+		t.Errorf("decoded bytes differ: %v", derr)
+	}
+	if !strings.Contains(out, `alt="a &#34;b&#34; &lt;c&gt;"`) || !strings.Contains(out, "<figcaption>x &amp; y</figcaption></figure>") {
+		t.Errorf("alt/caption not escaped: %q", out)
+	}
+}
+
+func TestPageImage_JPEGDetectedAndGuards(t *testing.T) {
+	out, err := pageImageRun(t, "a.bin", pageJPEG, "alt", "")
+	if err != nil || !strings.Contains(out, "data:image/jpeg;base64,") || strings.Contains(out, "figcaption") {
+		t.Errorf("jpeg: out=%q err=%v", out, err)
+	}
+	if _, err := pageImageRun(t, "a.png", pagePNG, "", ""); err == nil || !strings.Contains(err.Error(), "--alt") {
+		t.Errorf("missing alt: err=%v", err)
+	}
+	big := append(append([]byte{}, pagePNG...), make([]byte, pageImageMax)...)
+	if _, err := pageImageRun(t, "big.png", big, "alt", ""); err == nil || !strings.Contains(err.Error(), "300000") {
+		t.Errorf("oversize: err=%v", err)
 	}
 }
 
