@@ -236,6 +236,15 @@ func TestNormalizePageHTML_WrapsFragment(t *testing.T) {
 	}
 }
 
+func TestNormalizePageHTML_MermaidLoaderHasScrollFloor(t *testing.T) {
+	got := normalizePageHTML(`<title>T</title><pre class="mermaid">flowchart TD; A-->B</pre>`)
+	for _, want := range []string{"mermaid@11.4.1", "startOnLoad:false", "mermaid.run()", "style.minWidth=(v.width*0.65)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("loader missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestNormalizePageHTML_MermaidLoaderOnlyWhenNeeded(t *testing.T) {
 	frag := `<title>T</title><figure><pre class="mermaid">flowchart LR; A-->B</pre></figure>`
 	got := normalizePageHTML(frag)
