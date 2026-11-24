@@ -2347,3 +2347,62 @@ func TestResolveInboxRecipientRuntime_OneOpenList(t *testing.T) {
 		})
 	}
 }
+
+func TestSendKong_FileOrBodyValidate(t *testing.T) {
+	cases := []struct {
+		name       string
+		file, body string
+		wantErr    bool
+	}{
+		{"file only", "f", "", false},
+		{"body only", "", "b", false},
+		{"both", "f", "b", true},
+		{"neither", "", "", true},
+	}
+	for _, tc := range cases {
+		err := (&sendKong{File: tc.file, Body: tc.body}).Validate()
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+func TestSendKong_BodyReachesMessageBead(t *testing.T) {
+	sf := newSendFixture(t)
+	const text = "line one\n  indented \"quoted\"\n"
+	var bodyFile, got string
+	cmd := &sendKong{
+		RecipientID: "at-kong-recip",
+		Body:        text,
+		Sender:      "test-sender",
+		agentsFunc: func() ([]agentSession, error) {
+			return []agentSession{{ID: "abc12345", CWD: sf.recipientWt, Status: "busy"}}, nil
+		},
+		doorbellExists: func(string) bool { return true },
+	}
+	fbd := sf.fakeBD("at-kong-recip", "at-kong-msg1")
+	inner := fbd.runJSONFn
+	fbd.runJSONFn = func(dst any, args ...string) error {
+		for _, a := range args {
+			if p, ok := strings.CutPrefix(a, "--body-file="); ok {
+				bodyFile = p
+				b, err := os.ReadFile(p)
+				if err != nil {
+					t.Fatalf("read body file: %v", err)
+				}
+				got = string(b)
+			}
+		}
+		return inner(dst, args...)
+	}
+	ctx, _, _ := makeCtx(fbd, sf.home)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got != text {
+		t.Fatalf("body = %q, want %q", got, text)
+	}
+	if _, err := os.Stat(bodyFile); !os.IsNotExist(err) {
+		t.Errorf("temp body file not removed: %v", err)
+	}
+}
