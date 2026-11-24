@@ -6,6 +6,8 @@ Every initiative owns a project-repository root epic. Every contract, implementa
 
 Standby is active only when `standby: true` exists and neither description nor notes contains `standby: released`. When active, raise the exact QUESTION gate `Standby — waiting for direction` and park before clarify. Direction records `standby: released`, clears the gate, and then enters the normal lifecycle. Never write `standby: false`.
 
+`peer: <initiative-id>` is an optional repeatable line. It names an initiative that a steward paired with this one, and `ateam peer link` writes it. A DRI reads it and never writes it.
+
 Opening a PR does not close an initiative. Record it on the `pr` rail, note delivery, leave the initiative open in `awaiting-merge`, and close only after merge or explicit human closure.
 
 # Initiative registry

@@ -21,9 +21,10 @@ Cloud-boot restores saved work before the session starts. You don't restore it y
 Don't delete a wip branch.
 
 ## Peer DRIs
-- Your own initiative is `DSP_META_INITIATIVE`; your run bead is `DSP_BEAD`. Address a peer by its initiative id; a run bead id is auto-resolved when it matches one open initiative, but don't rely on it.
-- Find peers with `ateam list`, then send with `ateam mail send <initiative-id> --file <f>`.
-- A failed send means nothing was sent. If it says "could not find initiative", or prints a WARNING that the mail was queued for a laptop initiative (the mail waits unread if no such laptop initiative exists), run `ateam list` and resend to the right initiative id; don't guess other ids.
+- Your initiative is `DSP_META_INITIATIVE`; your run bead is `DSP_BEAD`. Address peers by initiative id; a run bead id works only if it matches one.
+- Peers are the `peer:` lines in `ateam show $DSP_META_INITIATIVE`; don't edit them. A laptop peer is never in `ateam list` here; use its `peer:` id.
+- `ateam mail send <peer-id> --file <f>` sends. For a `peer:` id, the "queued for a laptop initiative" WARNING is expected.
+- "could not find initiative" means nothing was sent. Resend to a `peer:` id (`ateam list` shows a cloud peer's id). For a laptop initiative with no `peer:` line, mail `local-steward` with both ids.
 
 ## Live UI checks
 - Use the Dispatcher ui-test run tool (`ateam live-test file`), not a local browser. Push the integration branch first, then brief the tester with the initiative id.
