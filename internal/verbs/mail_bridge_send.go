@@ -28,28 +28,9 @@ func (c *sendKong) sendBridgeFromRun(ctx *cli.Context, cause error) error {
 	if c.RecipientID != LocalStewardHandle && !peerInitiativeID.MatchString(c.RecipientID) {
 		return fmt.Errorf("ateam send: %q is not a valid initiative id; nothing sent", c.RecipientID)
 	}
-	text, err := os.ReadFile(c.File)
-	if err != nil {
-		return fmt.Errorf("ateam send: read %s: %w", c.File, err)
+	if err := c.queueBridgeMessage(ctx, from); err != nil {
+		return err
 	}
-	if len(text) == 0 {
-		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
-	}
-
-	id, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey)
-	if err != nil {
-		return fmt.Errorf("ateam send: dedup lookup: %w", err)
-	}
-	if hit {
-		fmt.Fprintf(ctx.Stdout, "message_id: %s (deduplicated)\n", id)
-	} else {
-		id, err = c.createBridgeMessage(ctx, from)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", id)
-	}
-	fmt.Fprintln(ctx.Stdout, "queued for laptop pickup (bridge:laptop); a laptop running `ateam relay` delivers it within seconds")
 	if cause != nil {
 		fmt.Fprintf(ctx.Stdout, "WARNING: %s is not an initiative in this hosted workspace, so this was queued for a LAPTOP initiative. If no laptop initiative %s exists on the bridge, the message waits unread. For a cloud peer, address it by its initiative id (like at-xxx); find it with: ateam list\n", c.RecipientID, c.RecipientID)
 	}
@@ -87,8 +68,42 @@ func (c *sendKong) createBridgeMessage(ctx *cli.Context, from string) (string, e
 	return issue.ID, nil
 }
 
-// sendBridgeFromCloudSteward is the hosted-steward-to-laptop hook of send. It
-// is a stub until the cloud-steward bridge bead replaces it.
+// queueBridgeMessage reads the message file, applies the dedup window, creates
+// the bridge bead when there is no hit, and prints the message_id and queued
+// lines. Both bridge senders share it.
+func (c *sendKong) queueBridgeMessage(ctx *cli.Context, from string) error {
+	text, err := os.ReadFile(c.File)
+	if err != nil {
+		return fmt.Errorf("ateam send: read %s: %w", c.File, err)
+	}
+	if len(text) == 0 {
+		return fmt.Errorf("ateam send: %s is empty; nothing sent", c.File)
+	}
+
+	id, hit, err := openMailWithDedupKey(ctx, c.RecipientID, c.DedupKey)
+	if err != nil {
+		return fmt.Errorf("ateam send: dedup lookup: %w", err)
+	}
+	if hit {
+		fmt.Fprintf(ctx.Stdout, "message_id: %s (deduplicated)\n", id)
+	} else {
+		id, err = c.createBridgeMessage(ctx, from)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(ctx.Stdout, "message_id: %s\n", id)
+	}
+	fmt.Fprintln(ctx.Stdout, "queued for laptop pickup (bridge:laptop); a laptop running `ateam relay` delivers it within seconds")
+	return nil
+}
+
+// sendBridgeFromCloudSteward is the hosted-steward-to-laptop hook of send. The
+// cloud steward calls ateam through cli_run with BEADS_ACTOR=agent:steward and
+// no Dispatcher run, so the actor is the only identity check. It queues a
+// bridge bead from CloudStewardHandle for the laptop steward.
 func (c *sendKong) sendBridgeFromCloudSteward(ctx *cli.Context) error {
-	return errors.New("ateam send: bridge mail from the cloud steward is not built yet; nothing sent")
+	if os.Getenv("BEADS_ACTOR") != cloudStewardAssignee {
+		return errors.New("ateam send: local-steward is reachable from a cloud run or the cloud steward only; nothing sent")
+	}
+	return c.queueBridgeMessage(ctx, CloudStewardHandle)
 }

@@ -215,3 +215,65 @@ func TestBridgeSendShowTransientErrorStillRefuses(t *testing.T) {
 	}
 	b.assertNothingWritten()
 }
+
+// sendSteward calls the cloud-steward hook directly: the run env sets DSP_BEAD,
+// so Run would take the in-run branch.
+func (b *bridgeSendEnv) sendSteward(k *sendKong, body string) error {
+	file := filepath.Join(b.t.TempDir(), "msg.md")
+	if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+		b.t.Fatal(err)
+	}
+	k.File = file
+	return k.sendBridgeFromCloudSteward(b.ctx)
+}
+
+func TestBridgeSendFromCloudStewardCreatesBridgeBead(t *testing.T) {
+	t.Setenv("BEADS_ACTOR", "agent:steward")
+	b := newBridgeSendEnv(t)
+	k := &sendKong{RecipientID: LocalStewardHandle}
+	if err := b.sendSteward(k, "hello laptop steward"); err != nil {
+		t.Fatal(err)
+	}
+	cr := b.creates()
+	if len(cr) != 1 {
+		t.Fatalf("create calls = %d, want 1", len(cr))
+	}
+	for _, want := range []string{
+		"--type=message",
+		"--assignee=local-steward",
+		"--notes=from: cloud-steward",
+		"--labels=delivery:pending",
+		"--labels=bridge:laptop",
+		"--body-file=" + k.File,
+		"--title=message from cloud-steward",
+	} {
+		if !slices.Contains(cr[0], want) {
+			t.Errorf("create args missing %q: %v", want, cr[0])
+		}
+	}
+	if got := b.stdout.String(); got != "message_id: dsp-new1\n"+bridgeQueuedLine {
+		t.Errorf("stdout = %q", got)
+	}
+}
+
+func TestBridgeSendFromCloudStewardRefusesOtherActors(t *testing.T) {
+	for _, actor := range []string{"", "agent:other", "steward"} {
+		t.Setenv("BEADS_ACTOR", actor)
+		b := newBridgeSendEnv(t)
+		err := b.sendSteward(&sendKong{RecipientID: LocalStewardHandle}, "hi")
+		if err == nil || !strings.Contains(err.Error(), "cloud run or the cloud steward only") {
+			t.Errorf("actor %q: err = %v", actor, err)
+		}
+		b.assertNothingWritten()
+	}
+}
+
+func TestBridgeSendFromCloudStewardRefusesEmptyBody(t *testing.T) {
+	t.Setenv("BEADS_ACTOR", "agent:steward")
+	b := newBridgeSendEnv(t)
+	err := b.sendSteward(&sendKong{RecipientID: LocalStewardHandle}, "")
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("err = %v", err)
+	}
+	b.assertNothingWritten()
+}

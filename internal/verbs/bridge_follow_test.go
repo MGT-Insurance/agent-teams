@@ -666,3 +666,23 @@ func TestBridgeCloudCallsGetSeparateDeadlines(t *testing.T) {
 		}
 	}
 }
+
+func TestBridgeCloudStewardMessageRepliesToCloudSteward(t *testing.T) {
+	h := newBridgeHarness(t, true)
+	h.shows["wisp-11"] = `[{"id":"wisp-11","status":"open","assignee":"local-steward","title":"message from cloud-steward","notes":"from: cloud-steward","description":"hello laptop steward","labels":["` + bridgeLabel + `"]}]`
+	h.steps = []followStep{{lines: []string{bridgeRowJSON("11", "create", "message", bridgeLabel, "delivery:pending")}}}
+
+	if _, err := h.run(h.follower()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 1 {
+		t.Fatalf("deliveries = %d, want 1", len(h.sent))
+	}
+	d := h.sent[0]
+	if d.sender != CloudStewardHandle {
+		t.Errorf("sender = %q, want %q", d.sender, CloudStewardHandle)
+	}
+	if !strings.HasSuffix(d.body, "Reply with: ateam mail send cloud-steward --file <file>\n") {
+		t.Errorf("body = %q", d.body)
+	}
+}
