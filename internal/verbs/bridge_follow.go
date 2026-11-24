@@ -228,6 +228,7 @@ func (b *bridgeFollower) handle(run context.Context, ctx *cli.Context, id string
 		{"close", id, "--reason=" + reason, "--force"},
 		{"label", "add", id, bridgeDeliveredLabel},
 		{"label", "remove", id, bridgeLabel},
+		{"label", "remove", id, "delivery:pending"},
 	}
 	for _, args := range steps {
 		if _, err := b.cloud(cctx, args...); err != nil {

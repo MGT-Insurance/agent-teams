@@ -105,6 +105,10 @@ func (h *bridgeHarness) follower() *bridgeFollower {
 				return "", h.sendErr
 			}
 			h.sent = append(h.sent, bridgeDelivery{recipient, sender, body, key})
+			if h.local == nil {
+				h.local = map[string]string{}
+			}
+			h.local[key] = "local-1"
 			return "local-1", nil
 		},
 		localCopy: func(_ *cli.Context, _, key string) (string, bool, error) {
@@ -182,9 +186,13 @@ func TestBridgeMatchingCreateDeliversAndCloses(t *testing.T) {
 		verbs = append(verbs, strings.Join(c[:min(len(c), 3)], " "))
 	}
 	want := []string{"list --include-infra --type=message", "show wisp-11 --json", "close wisp-11 --reason=bridged to laptop-a",
-		"label add wisp-11", "label remove wisp-11"}
+		"label add wisp-11", "label remove wisp-11", "label remove wisp-11"}
 	if strings.Join(verbs, "|") != strings.Join(want, "|") {
 		t.Errorf("cloud calls = %q, want %q", verbs, want)
+	}
+	last := h.cloud[len(h.cloud)-1]
+	if strings.Join(last, " ") != "label remove wisp-11 delivery:pending" {
+		t.Errorf("last close-out step = %v, want delivery:pending removal", last)
 	}
 	if h.seqFile("bridge.seq") != "11" {
 		t.Errorf("bridge.seq = %q, want 11", h.seqFile("bridge.seq"))
@@ -294,7 +302,7 @@ func TestBridgeDeliveryFailureLeavesBeadOpen(t *testing.T) {
 	}
 }
 
-func TestBridgeCloseFailureSkipsLabelsAndSweepResendsSameKey(t *testing.T) {
+func TestBridgeCloseFailureThenRerunFindsLocalCopyAndOnlyClosesOut(t *testing.T) {
 	h := newBridgeHarness(t, true)
 	h.closeErr = errors.New("hosted down")
 	h.shows["wisp-11"] = bridgeIssueJSON("wisp-11", "open", "at-local1", bridgeLabel)
@@ -302,17 +310,25 @@ func TestBridgeCloseFailureSkipsLabelsAndSweepResendsSameKey(t *testing.T) {
 	if _, err := h.run(h.follower()); err != nil {
 		t.Fatal(err)
 	}
+	if len(h.sent) != 1 {
+		t.Fatalf("first pass deliveries = %d, want 1", len(h.sent))
+	}
 	if h.cloudCalls("label") != 0 {
 		t.Error("labels changed although close failed")
 	}
-	// The next start sweeps the still-open bead and re-sends under the same key.
+	// The next start sweeps the still-open bead, finds the local copy by its
+	// dedup key, and retries only the close-out.
 	h.list = h.shows["wisp-11"]
+	h.closeErr = nil
 	h.cloud, h.steps = nil, nil
 	if _, err := h.run(h.follower()); err != nil {
 		t.Fatal(err)
 	}
-	if len(h.sent) != 2 || h.sent[0].key != h.sent[1].key {
-		t.Errorf("sent = %+v, want two sends with one key", h.sent)
+	if len(h.sent) != 1 {
+		t.Errorf("deliveries after rerun = %d, want still 1", len(h.sent))
+	}
+	if h.cloudCalls("close") != 1 || h.cloudCalls("label") != 3 {
+		t.Errorf("rerun close-out calls: close %d label %d; want 1 and 3", h.cloudCalls("close"), h.cloudCalls("label"))
 	}
 }
 
@@ -578,7 +594,7 @@ func TestBridgeExistingLocalCopyIsNotRedelivered(t *testing.T) {
 	if len(h.sent) != 0 || b.delivered != 0 {
 		t.Errorf("sent %d delivered %d; want no new delivery", len(h.sent), b.delivered)
 	}
-	if h.cloudCalls("close") != 1 || h.cloudCalls("label") != 2 {
-		t.Errorf("close-out calls: close %d label %d; want 1 and 2", h.cloudCalls("close"), h.cloudCalls("label"))
+	if h.cloudCalls("close") != 1 || h.cloudCalls("label") != 3 {
+		t.Errorf("close-out calls: close %d label %d; want 1 and 3", h.cloudCalls("close"), h.cloudCalls("label"))
 	}
 }
