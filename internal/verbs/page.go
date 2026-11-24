@@ -93,7 +93,13 @@ func (c *pageTemplateKong) Run(ctx *cli.Context) error {
 }
 
 const pageMermaidLoader = `<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>` +
-	`<script>mermaid.initialize({startOnLoad:true,theme:window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'default'});</script>`
+	`<script>mermaid.initialize({startOnLoad:false,theme:window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'default'});` +
+	// After rendering, a diagram that Mermaid shrank below 0.6 of its natural
+	// width gets a floor of 0.6 so it scrolls in its box instead of going illegible.
+	`window.addEventListener('load',function(){mermaid.run().then(function(){` +
+	`document.querySelectorAll('pre.mermaid svg').forEach(function(s){` +
+	`var v=s.viewBox&&s.viewBox.baseVal;if(!v||!v.width)return;` +
+	`if(s.getBoundingClientRect().width<v.width*0.6)s.style.minWidth=(v.width*0.6)+'px';});});});</script>`
 
 var (
 	pageCommentRe     = regexp.MustCompile(`(?s)<!--.*?-->`)

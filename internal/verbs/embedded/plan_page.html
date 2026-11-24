@@ -22,7 +22,10 @@
   screenshot for UI. If the plan changes a mechanism and has no diagram, say why in one line
   (<p class="nodiagram">No diagram: REASON</p>).
   Eric reads plans on a phone: use `flowchart TD` (top-down) for more than about four nodes, and
-  keep node labels short. A wide diagram scrolls sideways inside its own box instead of shrinking.
+  keep node labels short. In a cloud run, `ateam page publish` makes a diagram that would shrink
+  below 60% of its natural width scroll inside its box instead. On the laptop the Artifact tool
+  renders Mermaid itself and adds no such floor, so only this TD guidance applies: keep wide
+  diagrams top-down.
 
   EVERYTHING ELSE IS OPTIONAL. Add sections in whatever order the plan needs.
 
@@ -96,11 +99,7 @@ th{font:600 .75rem var(--font-mono);letter-spacing:.04em;text-transform:uppercas
 .callout{background:var(--accent-bg);border-radius:6px;padding:.75rem 1rem;margin:.6rem 0}
 .callout.warn{background:var(--ask-bg)}
 pre{font:.82rem/1.5 var(--font-mono);background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:.75rem;overflow-x:auto;margin:.5rem 0}
-pre.mermaid{background:var(--surface);text-align:center;overflow-x:auto}
-/* Mermaid sizes the svg to 100% width, so a wide diagram shrinks to unreadable text on a phone.
-   On a narrow screen give the svg a floor width so it scrolls inside its own box instead. */
-@media (max-width:600px){pre.mermaid svg{min-width:720px}}
-figure{margin:.75rem 0;min-width:0} figcaption{font-size:.85rem;color:var(--muted);margin-top:.3rem}
+pre.mermaid{background:var(--surface);text-align:center;overflow-x:auto}figure{margin:.75rem 0;min-width:0} figcaption{font-size:.85rem;color:var(--muted);margin-top:.3rem}
 figure img{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
 .nodiagram{font-size:.9rem;color:var(--muted)}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:.75rem}
