@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -81,8 +82,9 @@ func newCloudSendEnv(t *testing.T, configure bool) *cloudSendEnv {
 		Stderr: e.stderr,
 	}
 
-	oldBD, oldComment, oldSQL := cloudSendBD, cloudSendComment, cloudSendSQL
-	t.Cleanup(func() { cloudSendBD, cloudSendComment, cloudSendSQL = oldBD, oldComment, oldSQL })
+	oldBD, oldComment, oldSQL, oldNow := cloudSendBD, cloudSendComment, cloudSendSQL, cloudSendNow
+	t.Cleanup(func() { cloudSendBD, cloudSendComment, cloudSendSQL, cloudSendNow = oldBD, oldComment, oldSQL, oldNow })
+	cloudSendNow = func() time.Time { return testCloudNow }
 	cloudSendBD = func(h string) cli.BDRunner {
 		e.cloudBDHomes = append(e.cloudBDHomes, h)
 		return &fakeBD{runFn: func(args ...string) (string, error) {
@@ -302,11 +304,20 @@ func TestCloudSendNoJournalRowErrors(t *testing.T) {
 	}
 }
 
+var testCloudNow = time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC)
+
+func (e *cloudSendEnv) commentsWithKey(age time.Duration) {
+	key := laptopMailKey(hostForTest(e), "at-me1", []byte("hello cloud"))
+	raw, _ := json.Marshal([]map[string]string{{
+		"text":       cloudCommentText("at-me1", "hello cloud", key),
+		"created_at": testCloudNow.Add(-age).Format(time.RFC3339),
+	}})
+	e.comments = string(raw)
+}
+
 func TestCloudSendRetryWithSameKeyIsNoop(t *testing.T) {
 	e := newCloudSendEnv(t, true)
-	key := laptopMailKey(hostForTest(e), "at-me1", []byte("hello cloud"))
-	raw, _ := json.Marshal([]map[string]string{{"text": cloudCommentText("at-me1", "hello cloud", key)}})
-	e.comments = string(raw)
+	e.commentsWithKey(time.Minute)
 	handled, err := e.send(testCloudInit, "at-me1")
 	if !handled || err != nil {
 		t.Fatalf("got (%t, %v), want (true, nil)", handled, err)
@@ -316,6 +327,32 @@ func TestCloudSendRetryWithSameKeyIsNoop(t *testing.T) {
 	}
 	if !strings.Contains(e.stdout.String(), "already delivered") {
 		t.Errorf("stdout = %q", e.stdout.String())
+	}
+}
+
+func TestCloudSendSameTextOutsideWindowIsSentAgain(t *testing.T) {
+	e := newCloudSendEnv(t, true)
+	e.commentsWithKey(cloudDedupWindow + time.Minute)
+	handled, err := e.send(testCloudInit, "at-me1")
+	if !handled || err != nil {
+		t.Fatalf("got (%t, %v), want (true, nil)", handled, err)
+	}
+	if e.commentCalls != 1 {
+		t.Errorf("comment calls = %d, want 1: a match older than the window is a deliberate resend", e.commentCalls)
+	}
+}
+
+func TestCloudSendBadCloudHomeConfigWarnsAndSendsLocally(t *testing.T) {
+	e := newCloudSendEnv(t, false)
+	if err := os.WriteFile(filepath.Join(e.ctx.Home, "config.toml"), []byte("cloud_home = [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handled, err := e.send(testCloudInit, "at-me1")
+	if handled || err != nil {
+		t.Fatalf("got (%t, %v), want (false, nil)", handled, err)
+	}
+	if !strings.Contains(e.stderr.String(), "cloud_home config") {
+		t.Errorf("stderr = %q, want a cloud_home warning", e.stderr.String())
 	}
 }
 

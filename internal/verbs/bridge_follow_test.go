@@ -598,3 +598,71 @@ func TestBridgeExistingLocalCopyIsNotRedelivered(t *testing.T) {
 		t.Errorf("close-out calls: close %d label %d; want 1 and 3", h.cloudCalls("close"), h.cloudCalls("label"))
 	}
 }
+
+// A live row whose delivery fails is retried by the periodic sweep, with no
+// restart and no further journal row.
+func TestBridgePeriodicSweepRetriesFailedLiveDelivery(t *testing.T) {
+	old := bridgeSweepEvery
+	bridgeSweepEvery = 5 * time.Millisecond
+	t.Cleanup(func() { bridgeSweepEvery = old })
+
+	h := newBridgeHarness(t, true)
+	h.shows["wisp-11"] = bridgeIssueJSON("wisp-11", "open", "at-local1", bridgeLabel)
+	h.list = h.shows["wisp-11"]
+	b := h.follower()
+	var attempts atomic.Int32
+	okSend := b.deliver
+	delivered := make(chan struct{})
+	b.deliver = func(c *cli.Context, recipient, sender, body, key string) (string, error) {
+		if attempts.Add(1) == 1 {
+			return "", errors.New("mailbox busy")
+		}
+		id, err := okSend(c, recipient, sender, body, key)
+		close(delivered)
+		return id, err
+	}
+	run, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.runBD = func(rc context.Context, _ []string, onLine func(string)) (string, error) {
+		onLine(bridgeRowJSON("11", "create", "message", bridgeLabel))
+		select {
+		case <-delivered:
+		case <-time.After(5 * time.Second):
+		}
+		cancel()
+		return "", os.ErrClosed
+	}
+	if _, err := runBridge(run, h.cliCtx(), b); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.sent) != 1 || attempts.Load() != 2 {
+		t.Errorf("sent %d, attempts %d; want 1 delivery on the second attempt", len(h.sent), attempts.Load())
+	}
+}
+
+// Each cloud call gets its own timeout: a slow earlier call does not shorten
+// the budget of the close-out.
+func TestBridgeCloudCallsGetSeparateDeadlines(t *testing.T) {
+	h := newBridgeHarness(t, true)
+	h.shows["wisp-11"] = bridgeIssueJSON("wisp-11", "open", "at-local1", bridgeLabel)
+	h.steps = []followStep{{lines: []string{bridgeRowJSON("11", "create", "message", bridgeLabel)}}}
+	b := h.follower()
+	inner := b.cloud
+	var deadlines []time.Time
+	b.cloud = func(c context.Context, args ...string) (string, error) {
+		d, _ := c.Deadline()
+		deadlines = append(deadlines, d)
+		return inner(c, args...)
+	}
+	if _, err := h.run(b); err != nil {
+		t.Fatal(err)
+	}
+	if len(deadlines) < 3 {
+		t.Fatalf("cloud calls = %d", len(deadlines))
+	}
+	for i := 1; i < len(deadlines); i++ {
+		if !deadlines[i].After(deadlines[i-1]) {
+			t.Errorf("call %d deadline %v not later than call %d deadline %v", i, deadlines[i], i-1, deadlines[i-1])
+		}
+	}
+}

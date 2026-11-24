@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -30,7 +31,12 @@ var (
 	cloudSendBD      cloudBDFunc      = defaultCloudBD
 	cloudSendComment cloudCommentFunc = defaultCloudComment
 	cloudSendSQL     cloudSQLFunc     = defaultCloudSQL
+	cloudSendNow                      = time.Now
 )
+
+// cloudDedupWindow is how long after a laptop-to-cloud comment an identical
+// send counts as a repeat of it. Older matches are a deliberate resend.
+const cloudDedupWindow = 10 * time.Minute
 
 // mailKeyPrefix starts the last line of a laptop-to-cloud comment.
 const mailKeyPrefix = "mail-key: "
@@ -84,11 +90,14 @@ func runBeadMetaInitiative(desc string) string {
 	return ""
 }
 
-// commentCarriesKey reports whether any comment in the `bd comments --json`
-// output ends with the line "mail-key: <key>".
-func commentCarriesKey(out, key string) bool {
+// commentCarriesKey reports whether a comment in the `bd comments --json`
+// output ends with the line "mail-key: <key>" and was created within
+// cloudDedupWindow of now. A comment whose created_at does not parse counts as
+// recent, so an unreadable timestamp never causes a duplicate.
+func commentCarriesKey(out, key string, now time.Time) bool {
 	var comments []struct {
-		Text string `json:"text"`
+		Text      string `json:"text"`
+		CreatedAt string `json:"created_at"`
 	}
 	if err := json.Unmarshal([]byte(out), &comments); err != nil {
 		return false
@@ -96,9 +105,13 @@ func commentCarriesKey(out, key string) bool {
 	want := mailKeyPrefix + key
 	for _, c := range comments {
 		lines := strings.Split(strings.TrimRight(c.Text, "\r\n "), "\n")
-		if strings.TrimSpace(lines[len(lines)-1]) == want {
-			return true
+		if strings.TrimSpace(lines[len(lines)-1]) != want {
+			continue
 		}
+		if at, err := time.Parse(time.RFC3339, c.CreatedAt); err == nil && now.Sub(at) > cloudDedupWindow {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -140,7 +153,11 @@ func (c *sendKong) trySendToCloud(ctx *cli.Context, sender string) (handled bool
 		return false, nil
 	}
 	cloudHome, ok, err := bridgeCloudHome(ctx.Home)
-	if err != nil || !ok {
+	if err != nil {
+		fmt.Fprintf(ctx.Stderr, "ateam send: cloud_home config: %v; sending locally\n", err)
+		return false, nil
+	}
+	if !ok {
 		return false, nil
 	}
 
@@ -206,7 +223,7 @@ func (c *sendKong) trySendToCloud(ctx *cli.Context, sender string) (handled bool
 		host, _ = os.Hostname()
 	}
 	key := laptopMailKey(host, sender, body)
-	if out, err := dispatcher.Run("comments", runBead, "--json"); err == nil && commentCarriesKey(out, key) {
+	if out, err := dispatcher.Run("comments", runBead, "--json"); err == nil && commentCarriesKey(out, key, cloudSendNow()) {
 		fmt.Fprintf(ctx.Stdout, "already delivered to cloud initiative %s via run bead %s\n", c.RecipientID, runBead)
 		return true, nil
 	}

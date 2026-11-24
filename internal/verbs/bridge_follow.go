@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +30,10 @@ const (
 	// bridgeCallTimeout bounds each non-streaming bd call against cloud_home.
 	bridgeCallTimeout = 30 * time.Second
 )
+
+// bridgeSweepEvery is how often follow mode reruns the catch-up sweep, so a
+// failed delivery or close-out is retried without a restart. Tests shorten it.
+var bridgeSweepEvery = 5 * time.Minute
 
 // bridgeRunner runs one bd command against cloud_home, bounded by ctx.
 // (*bd.Client).RunContext satisfies it.
@@ -57,8 +62,18 @@ type bridgeFollower struct {
 	// any status, so a message the recipient already read is not sent again.
 	localCopy func(ctx *cli.Context, recipient, dedupKey string) (id string, found bool, err error)
 
+	// mu serializes handle and sweep: the journal loop and the periodic sweep
+	// run on separate goroutines.
+	mu        sync.Mutex
 	delivered int
 	left      int
+}
+
+// call runs one bd command against cloud_home with its own timeout.
+func (b *bridgeFollower) call(run context.Context, args ...string) (string, error) {
+	cctx, cancel := context.WithTimeout(run, bridgeCallTimeout)
+	defer cancel()
+	return b.cloud(cctx, args...)
 }
 
 // bridgeSkip reports why a pass ended without running: no cloud setup, or
@@ -128,6 +143,24 @@ func runBridge(run context.Context, ctx *cli.Context, b *bridgeFollower) (bridge
 	}
 	defer release()
 
+	if !b.once {
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			t := time.NewTicker(bridgeSweepEvery)
+			defer t.Stop()
+			for {
+				select {
+				case <-run.Done():
+					return
+				case <-t.C:
+					b.sweep(run, ctx)
+				}
+			}
+		}()
+		defer func() { <-sweepDone }()
+	}
+
 	return "", followJournal(run, followSpec{
 		seqPath:   filepath.Join(mailbox, "bridge.seq"),
 		runBD:     b.runBD,
@@ -143,6 +176,8 @@ func runBridge(run context.Context, ctx *cli.Context, b *bridgeFollower) (bridge
 			}
 			for _, l := range row.Issue.Labels {
 				if l == bridgeLabel {
+					b.mu.Lock()
+					defer b.mu.Unlock()
 					b.handle(run, ctx, row.IssueID)
 					return
 				}
@@ -156,9 +191,9 @@ func runBridge(run context.Context, ctx *cli.Context, b *bridgeFollower) (bridge
 // sweep delivers every open bridge:laptop message in cloud_home. It catches
 // mail sent while the laptop was off or while delivery was failing.
 func (b *bridgeFollower) sweep(run context.Context, ctx *cli.Context) {
-	cctx, cancel := context.WithTimeout(run, bridgeCallTimeout)
-	defer cancel()
-	out, err := b.cloud(cctx, "list", "--include-infra", "--type=message", "--label="+bridgeLabel, "--status=open", "--json")
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out, err := b.call(run, "list", "--include-infra", "--type=message", "--label="+bridgeLabel, "--status=open", "--json")
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "%s: catch-up sweep failed: %v\n", bridgeLogPrefix, err)
 		return
@@ -180,9 +215,7 @@ func (b *bridgeFollower) sweep(run context.Context, ctx *cli.Context) {
 // close it in cloud_home. A failure at any step is logged and leaves the bead
 // open for the next sweep.
 func (b *bridgeFollower) handle(run context.Context, ctx *cli.Context, id string) {
-	cctx, cancel := context.WithTimeout(run, bridgeCallTimeout)
-	defer cancel()
-	out, err := b.cloud(cctx, "show", id, "--json")
+	out, err := b.call(run, "show", id, "--json")
 	if err != nil {
 		fmt.Fprintf(ctx.Stderr, "%s: show %s: %v\n", bridgeLogPrefix, id, err)
 		return
@@ -231,7 +264,7 @@ func (b *bridgeFollower) handle(run context.Context, ctx *cli.Context, id string
 		{"label", "remove", id, "delivery:pending"},
 	}
 	for _, args := range steps {
-		if _, err := b.cloud(cctx, args...); err != nil {
+		if _, err := b.call(run, args...); err != nil {
 			fmt.Fprintf(ctx.Stderr, "%s: %s %s: %v\n", bridgeLogPrefix, args[0], id, err)
 			// A failed close leaves the bead open: the next sweep finds the
 			// local copy by its dedup key and retries only the close-out. A later failure only skips cleanup.
