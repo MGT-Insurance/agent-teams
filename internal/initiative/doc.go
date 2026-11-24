@@ -65,12 +65,14 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models thirteen fields (AMENDED for agent-teams-ssib: "pr" joined
+// [Fields] models fourteen fields (AMENDED for at-pqslq: "peer" joined the
+// multi-valued rail as [Fields.Peers] — the ids of the initiatives this one is
+// paired with, written by [WithPeer] and removed by [WithoutPeer]; AMENDED for agent-teams-ssib: "pr" joined
 // the multi-valued rail alongside "session" and "track-worktree" — see
 // [Fields.PRs] and [WithPR]; AMENDED again for ring 1 hosted beads: the
 // single-valued "where" key joined as [Fields.Where], grammar and remote rule
 // in docs/hosted-beads.md F6). The live registry carries at least THIRTEEN
-// canonical keys beyond those thirteen: pr-number, pr-repo, and pr-url —
+// canonical keys beyond those fourteen: pr-number, pr-repo, and pr-url —
 // written not by Go code but by an LLM following a skill's instructions,
 // which then parses those same keys back out of `ateam show`. A skill file
 // can therefore introduce a new canonical key without one line of Go
@@ -112,11 +114,15 @@
 //     line. The one exception is [WithWhere] and [WithWorktree], which
 //     rewrite the value of the first existing line for their single-valued
 //     key in place and leave every other line byte-identical; when no such
-//     line exists they append like the others.
+//     line exists they append like the others. The second exception is
+//     [WithoutPeer] (AMENDED for at-pqslq): it deletes only whole lines that
+//     are exactly "peer: <id>" for the given id, with the line's trailing
+//     newline, and leaves every other byte identical. No other writer may
+//     delete lines.
 //   - A future migration off this description format (e.g. to bd labels)
 //     must carry every canonical key found in the raw text, not merely the
 //     ones that happen to have a Fields member. A migration that moves only
-//     the thirteen modeled fields drops unmodeled keys (e.g. the pr-* trio) on
+//     the fourteen modeled fields drops unmodeled keys (e.g. the pr-* trio) on
 //     the floor.
 //
 // # Package surface
@@ -127,6 +133,7 @@
 //	    Sessions []string
 //	    Tracks   []string
 //	    PRs      []string
+//	    Peers    []string
 //	    Where    string
 //	}
 //
@@ -138,6 +145,8 @@
 //	func WithWhere(iss bd.Issue, value string) (WritePlan, error)   // replaces the first "where" line in place, else appends
 //	func WithWorktree(iss bd.Issue, path string) (WritePlan, error) // replaces the first "worktree" line in place, else appends
 //	func WithPR(iss bd.Issue, url string) (WritePlan, error)
+//	func WithPeer(iss bd.Issue, peerID string) (WritePlan, error)    // appends "peer: <id>"; idempotent; rejects empty, edge whitespace, line break, own id
+//	func WithoutPeer(iss bd.Issue, peerID string) (WritePlan, error) // deletes only whole "peer: <id>" lines; idempotent; same input errors
 //
 //	type WritePlan struct {
 //	    Description string
@@ -172,7 +181,7 @@
 // (agent-teams-ully.12). `ateam list-json` calls it and attaches the result to
 // every element as a "fields" object; the dashboard reads that object.
 //
-// [JSONFields] is deliberately NOT a projection of the thirteen [Fields] members.
+// [JSONFields] is deliberately NOT a projection of the fourteen [Fields] members.
 // Doing that would drop every unmodeled canonical key at a read seam, which
 // item 3 forbids. Instead it emits the canonical LINE key verbatim for every
 // matched line, so the wire shape does not depend on which keys Go models: the

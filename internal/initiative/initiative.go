@@ -29,6 +29,12 @@ type Fields struct {
 	// initiative has opened. Same URL shape, different key, different
 	// initiative kind — no collision.
 	PRs []string
+	// Peers is every "peer: <initiative-id>" line's value, in registration
+	// order — the other initiatives this one is paired with (at-pqslq). The
+	// value is another initiative's id; the pairing is symmetric by
+	// convention (each side lists the other) but this package does not
+	// enforce that.
+	Peers []string
 	// Where is the "where: <value>" line: which host runs this initiative.
 	// Ring-1 grammar is "host:<Host()>"; "run:<bead>" is reserved for ring 2
 	// and not interpreted (docs/hosted-beads.md, F6). Single-valued,
@@ -55,7 +61,7 @@ type Collision struct {
 
 // singleValuedKeys lists every canonical key backed by a single-valued
 // Fields member (i.e. excluding the multi-valued "session",
-// "track-worktree", and "pr" keys). New does not iterate this slice — it
+// "track-worktree", "pr", and "peer" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
 var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where"}
@@ -63,7 +69,7 @@ var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team",
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
 // single-valued.
-var multiValuedKeys = []string{"session", "track-worktree", "pr"}
+var multiValuedKeys = []string{"session", "track-worktree", "pr", "peer"}
 
 // multiValued reports whether key accumulates instead of first-wins.
 func multiValued(key string) bool {
@@ -177,10 +183,11 @@ func first(lines map[string][]string, key string) string {
 
 // Of parses iss's routing fields per the frozen rule. Single-valued keys
 // (problem, repo, worktree, branch, team, mode, runtime, epic, standby) are
-// first-occurrence-wins; the multi-valued session, track-worktree, and pr
-// keys accumulate into Sessions, Tracks, and PRs in registration order.
+// first-occurrence-wins; the multi-valued session, track-worktree, pr,
+// and peer keys accumulate into Sessions, Tracks, PRs, and Peers in
+// registration order.
 //
-// Of is the TYPED projection of all, and models thirteen keys only — an
+// Of is the TYPED projection of all, and models fourteen keys only — an
 // initiative carrying an unmodeled canonical key (e.g. pr-url) has no Fields
 // member to hold it, so a caller that needs every stored key wants
 // JSONFields instead (package doc comment, frozen item 3).
@@ -203,6 +210,7 @@ func Of(iss bd.Issue) Fields {
 		Sessions: lines["session"],
 		Tracks:   lines["track-worktree"],
 		PRs:      lines["pr"],
+		Peers:    lines["peer"],
 		Where:    first(lines, "where"),
 	}
 }
@@ -274,6 +282,7 @@ func New(f Fields) (WritePlan, error) {
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
+		{"peer", f.Peers},
 	}
 	for _, fv := range fields {
 		for _, v := range fv.values {
@@ -313,6 +322,9 @@ func New(f Fields) (WritePlan, error) {
 	}
 	for _, u := range f.PRs {
 		write("pr", u)
+	}
+	for _, p := range f.Peers {
+		write("peer", p)
 	}
 	return WritePlan{Description: b.String()}, nil
 }
@@ -626,6 +638,83 @@ func WithPR(iss bd.Issue, url string) (WritePlan, error) {
 		}
 	}
 	return WritePlan{Description: appendLine(iss.Description, "pr", stored)}, nil
+}
+
+// checkPeerID validates peerID for WithPeer and WithoutPeer, which share one
+// input contract: non-empty, no line break, no leading or trailing whitespace
+// (the same structural reasons as WithPR), and not iss's own id. It does not
+// validate the id's shape — that is the caller's job, like WithPR's URL.
+func checkPeerID(fn string, iss bd.Issue, peerID string) error {
+	if peerID == "" {
+		return fmt.Errorf("initiative.%s: peerID must not be empty", fn)
+	}
+	if strings.ContainsAny(peerID, "\r\n") {
+		return fmt.Errorf("initiative.%s: peerID must not contain a line break: %q", fn, peerID)
+	}
+	if hasEdgeWhitespace(peerID) {
+		return fmt.Errorf("initiative.%s: peerID must not have leading or trailing whitespace: %q", fn, peerID)
+	}
+	if peerID == iss.ID {
+		return fmt.Errorf("initiative.%s: peerID must not be the initiative's own id: %q", fn, peerID)
+	}
+	return nil
+}
+
+// WithPeer returns the WritePlan that pairs iss with the initiative peerID by
+// appending a "peer: <peerID>" line below iss's entire current description
+// (append-only, package doc comment frozen item 4). It is idempotent: if
+// Of(iss).Peers already contains peerID by exact string match, the returned
+// WritePlan.Description is iss.Description, unchanged.
+//
+// It returns an error for an empty peerID, a peerID with a line break or
+// leading or trailing whitespace, or a peerID equal to iss.ID. It does not
+// validate the id's shape.
+func WithPeer(iss bd.Issue, peerID string) (WritePlan, error) {
+	if err := checkPeerID("WithPeer", iss, peerID); err != nil {
+		return WritePlan{}, err
+	}
+	if slices.Contains(Of(iss).Peers, peerID) {
+		return WritePlan{Description: iss.Description}, nil
+	}
+	return WritePlan{Description: appendLine(iss.Description, "peer", peerID)}, nil
+}
+
+// WithoutPeer returns the WritePlan that unpairs iss from peerID by deleting
+// every line of iss.Description that is exactly "peer: <peerID>" (whole line,
+// column 0, nothing else on it; a trailing "\r" of a CRLF line break counts
+// as part of the line break), together with that line's trailing newline.
+// Every other byte stays identical, including other peer lines and any line
+// that merely contains the text. It is idempotent: with no matching line the
+// returned WritePlan.Description is iss.Description, unchanged.
+//
+// WithoutPeer is the second named exception to append-only (package doc
+// comment, frozen item 4); no other writer may delete lines. Input errors are
+// the same as WithPeer's.
+func WithoutPeer(iss bd.Issue, peerID string) (WritePlan, error) {
+	if err := checkPeerID("WithoutPeer", iss, peerID); err != nil {
+		return WritePlan{}, err
+	}
+	target := "peer: " + peerID
+	lines := strings.Split(iss.Description, "\n")
+	last := len(lines) - 1
+	kept := make([]string, 0, len(lines))
+	removed := false
+	for i, line := range lines {
+		if line == target || line == target+"\r" {
+			removed = true
+			if i == last {
+				// No trailing newline followed this line; keep the newline
+				// that ended the previous line.
+				kept = append(kept, "")
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !removed {
+		return WritePlan{Description: iss.Description}, nil
+	}
+	return WritePlan{Description: strings.Join(kept, "\n")}, nil
 }
 
 // singleValued returns the set of single-valued canonical keys f currently

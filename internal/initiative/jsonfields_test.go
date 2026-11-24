@@ -341,3 +341,13 @@ func TestNewRejectsWhereLineBreak(t *testing.T) {
 		t.Error("want error for where value with a line break")
 	}
 }
+
+func TestJSONFieldsPeerIsAnArrayInOrderAndOmittedWhenAbsent(t *testing.T) {
+	got := initiative.JSONFields(issue("peer: at-b\nrepo: /r\npeer: at-a\n"))["peer"]
+	if want := []string{"at-b", "at-a"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("peer = %#v, want %#v", got, want)
+	}
+	if _, present := initiative.JSONFields(issue("repo: /r\n"))["peer"]; present {
+		t.Error("peer must be omitted when no line exists")
+	}
+}

@@ -766,3 +766,82 @@ func TestNew_RejectsLineBreakInValue(t *testing.T) {
 		t.Fatal("New: got nil error, want a rejection for a newline embedded in Problem")
 	}
 }
+
+func TestOf_PeersAccumulateInOrderAndAreNilWhenAbsent(t *testing.T) {
+	got := initiative.Of(bd.Issue{Description: "peer: at-b\nrepo: /r\npeer: at-a\n"}).Peers
+	if want := []string{"at-b", "at-a"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Peers = %#v, want %#v", got, want)
+	}
+	if got := initiative.Of(bd.Issue{Description: "repo: /r\n"}).Peers; got != nil {
+		t.Errorf("Peers = %#v, want nil", got)
+	}
+}
+
+func TestNew_PeersRoundTrip(t *testing.T) {
+	plan, err := initiative.New(initiative.Fields{Problem: "p", PRs: []string{"https://github.com/o/r/pull/1"}, Peers: []string{"at-a", "at-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "problem: p\npr: https://github.com/o/r/pull/1\npeer: at-a\npeer: at-b\n"; plan.Description != want {
+		t.Errorf("Description = %q, want %q", plan.Description, want)
+	}
+	if got := initiative.Of(bd.Issue{Description: plan.Description}).Peers; !reflect.DeepEqual(got, []string{"at-a", "at-b"}) {
+		t.Errorf("Peers = %#v", got)
+	}
+	if _, err := initiative.New(initiative.Fields{Peers: []string{"at-a\nrepo: /x"}}); err == nil {
+		t.Error("want error for a peer value with a line break")
+	}
+}
+
+func TestWithPeer_AppendsByteIdenticalAndIsIdempotent(t *testing.T) {
+	iss := bd.Issue{ID: "at-self", Description: "repo: /r\n\nprose\npeer: at-a\n"}
+	plan, err := initiative.WithPeer(iss, "at-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := iss.Description + "peer: at-b\n"; plan.Description != want {
+		t.Errorf("Description = %q, want %q", plan.Description, want)
+	}
+	again, err := initiative.WithPeer(iss, "at-a")
+	if err != nil || again.Description != iss.Description {
+		t.Errorf("repeat id: Description = %q, err = %v; want unchanged, nil", again.Description, err)
+	}
+}
+
+func TestWithPeer_RejectsBadInput(t *testing.T) {
+	iss := bd.Issue{ID: "at-self", Description: "repo: /r\n"}
+	for name, id := range map[string]string{
+		"empty": "", "leading space": " at-a", "trailing tab": "at-a\t",
+		"line break": "at-a\nrepo: /x", "own id": "at-self",
+	} {
+		if _, err := initiative.WithPeer(iss, id); err == nil {
+			t.Errorf("%s: WithPeer want error", name)
+		}
+		if _, err := initiative.WithoutPeer(iss, id); err == nil {
+			t.Errorf("%s: WithoutPeer want error", name)
+		}
+	}
+}
+
+func TestWithoutPeer_RemovesOnlyExactLines(t *testing.T) {
+	desc := "repo: /r\npeer: at-a\npeer: at-ax\npeer: at-b\nnote peer: at-a\n peer: at-a\npeer: at-a\nend"
+	plan, err := initiative.WithoutPeer(bd.Issue{ID: "at-self", Description: desc}, "at-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "repo: /r\npeer: at-ax\npeer: at-b\nnote peer: at-a\n peer: at-a\nend"; plan.Description != want {
+		t.Errorf("Description = %q, want %q", plan.Description, want)
+	}
+}
+
+func TestWithoutPeer_LastLineWithoutNewlineAndNoOp(t *testing.T) {
+	iss := bd.Issue{ID: "at-self", Description: "repo: /r\npeer: at-a"}
+	plan, err := initiative.WithoutPeer(iss, "at-a")
+	if err != nil || plan.Description != "repo: /r\n" {
+		t.Errorf("Description = %q, err = %v; want %q", plan.Description, err, "repo: /r\n")
+	}
+	none, err := initiative.WithoutPeer(iss, "at-zzz")
+	if err != nil || none.Description != iss.Description {
+		t.Errorf("missing line: Description = %q, err = %v; want unchanged, nil", none.Description, err)
+	}
+}
