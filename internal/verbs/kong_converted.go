@@ -1821,6 +1821,7 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterSpawnCheckKong(p)
 	RegisterPreflightKong(p)
 	RegisterPRKong(p)
+	RegisterPeerKong(p)
 	RegisterCloudBootKong(p)
 	RegisterUITestKong(p)
 	RegisterPageKong(p)
