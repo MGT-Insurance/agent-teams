@@ -21,6 +21,8 @@
   a sequence diagram for a flow across processes or agents, a graph for architecture, and a
   screenshot for UI. If the plan changes a mechanism and has no diagram, say why in one line
   (<p class="nodiagram">No diagram: REASON</p>).
+  Eric reads plans on a phone: use `flowchart TD` (top-down) for more than about four nodes, and
+  keep node labels short. A wide diagram scrolls sideways inside its own box instead of shrinking.
 
   EVERYTHING ELSE IS OPTIONAL. Add sections in whatever order the plan needs.
 
@@ -30,7 +32,7 @@
     Decided card:   <div class="q decided"><div class="tag">Decided · Q1</div><p>Ruling ...</p></div>
     Example trace:  <div class="example"><div class="label">Input</div><pre>real input</pre><div class="label">What happens</div><ol><li>step</li></ol><div class="label">Output</div><pre>real output or error</pre></div>
     Before/after:   <div class="cols"><div><div class="label">Before</div><pre>...</pre></div><div><div class="label">After</div><pre>...</pre></div></div>
-    Flowchart:      <figure><pre class="mermaid">flowchart LR
+    Flowchart:      <figure><pre class="mermaid">flowchart TD
                       A[Request] --&gt; B{Check} -- ok --&gt; C[Done]</pre><figcaption>What it shows.</figcaption></figure>
     Sequence:       <figure><pre class="mermaid">sequenceDiagram
                       participant D as DRI
@@ -94,7 +96,10 @@ th{font:600 .75rem var(--font-mono);letter-spacing:.04em;text-transform:uppercas
 .callout{background:var(--accent-bg);border-radius:6px;padding:.75rem 1rem;margin:.6rem 0}
 .callout.warn{background:var(--ask-bg)}
 pre{font:.82rem/1.5 var(--font-mono);background:var(--code-bg);border:1px solid var(--line);border-radius:6px;padding:.75rem;overflow-x:auto;margin:.5rem 0}
-pre.mermaid{background:var(--surface);text-align:center}
+pre.mermaid{background:var(--surface);text-align:center;overflow-x:auto}
+/* Mermaid sizes the svg to 100% width, so a wide diagram shrinks to unreadable text on a phone.
+   On a narrow screen give the svg a floor width so it scrolls inside its own box instead. */
+@media (max-width:600px){pre.mermaid svg{min-width:720px}}
 figure{margin:.75rem 0;min-width:0} figcaption{font-size:.85rem;color:var(--muted);margin-top:.3rem}
 figure img{display:block;max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
 .nodiagram{font-size:.9rem;color:var(--muted)}
@@ -142,7 +147,7 @@ figure img{display:block;max-width:100%;height:auto;border:1px solid var(--line)
   <h2>How it works</h2>
   <figure>
     <pre class="mermaid">
-flowchart LR
+flowchart TD
   A[Before] --> B[Change] --> C[After]
     </pre>
     <figcaption>What this diagram shows.</figcaption>
