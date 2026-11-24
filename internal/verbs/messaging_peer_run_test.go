@@ -101,7 +101,7 @@ func TestSendRun_PeerLaptopInitiativeRefused(t *testing.T) {
 		e, _ := peerSendEnv(t, bd.Issue{ID: "at-peer1", Status: "open", Description: tc.desc})
 		err := sendPeer(e, "at-peer1", "x")
 		if err == nil || !strings.Contains(err.Error(), "is not a cloud initiative ("+tc.shown) ||
-			!strings.Contains(err.Error(), "(dsp-43n.17); nothing sent") {
+			!strings.Contains(err.Error(), "a laptop initiative must not be registered in the hosted workspace; nothing sent") {
 			t.Fatalf("desc %q: err = %v", tc.desc, err)
 		}
 		assertNothingSent(t, e)

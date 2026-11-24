@@ -106,13 +106,23 @@ func (c *sendKong) Run(ctx *cli.Context) error {
 		return c.sendStewardThroughOutbox(ctx)
 	}
 
+	// Inside a run, mail to the laptop steward goes to the bridge.
+	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID == LocalStewardHandle {
+		return c.sendBridgeFromRun(ctx, nil)
+	}
+
 	// Inside a run, mail to any other initiative goes through the run outbox
-	// when the recipient is a cloud initiative; the run cannot write to at.
+	// when the recipient is a cloud initiative; the run cannot write to the
+	// laptop workspace (db "at"), only to its hosted home.
 	if _, _, inRun := dispatcherRun(); inRun && c.RecipientID != StewardHandle {
 		return c.sendPeerThroughOutbox(ctx)
 	}
 
 	sender := resolveSender(ctx, c.Sender)
+
+	if handled, err := c.trySendToCloud(ctx, sender); handled {
+		return err
+	}
 
 	// On a hosted workspace the recipient is read BEFORE the message is created
 	// so its host can be stamped on the create row (docs/hosted-beads.md F7).
@@ -346,6 +356,9 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 	}
 	issue, err := bd.ShowIssue(ctx.BD, c.RecipientID)
 	if err != nil {
+		if bd.IsNotFound(err) {
+			return c.sendBridgeFromRun(ctx, err)
+		}
 		return fmt.Errorf("ateam send: read recipient %s: %w; nothing sent", c.RecipientID, err)
 	}
 	if issue.Status == "closed" {
@@ -358,7 +371,7 @@ func (c *sendKong) sendPeerThroughOutbox(ctx *cli.Context) error {
 		if shown == "" {
 			shown = "none"
 		}
-		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); mail between cloud and laptop initiatives is deferred (dsp-43n.17); nothing sent", c.RecipientID, shown)
+		return fmt.Errorf("ateam send: %s is not a cloud initiative (where: %s); a laptop initiative must not be registered in the hosted workspace; nothing sent", c.RecipientID, shown)
 	}
 	text, err := os.ReadFile(c.File)
 	if err != nil {
