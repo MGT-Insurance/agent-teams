@@ -109,8 +109,9 @@ func TestBridgeSendLaptopRecipientCreatesBridgeBead(t *testing.T) {
 			t.Errorf("label applied in a separate call: %v", c)
 		}
 	}
-	if want := "message_id: dsp-new1\n" + bridgeQueuedLine; b.stdout.String() != want {
-		t.Errorf("stdout = %q, want %q", b.stdout.String(), want)
+	if got := b.stdout.String(); !strings.HasPrefix(got, "message_id: dsp-new1\n"+bridgeQueuedLine) ||
+		!strings.Contains(got, "WARNING") || !strings.Contains(got, "waits unread") || !strings.Contains(got, "ateam list") {
+		t.Errorf("stdout = %q", got)
 	}
 	if b.helperStdin() != "" {
 		t.Errorf("outbox line written: %q", b.helperStdin())
