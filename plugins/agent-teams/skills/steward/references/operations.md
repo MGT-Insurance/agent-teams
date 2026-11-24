@@ -120,6 +120,16 @@ Use `briefing` only when the message doesn't belong to one initiative. Otherwise
 
 Peers and the steward address initiatives by initiative id (the `at-…` id `ateam list` shows), never by run bead id (`DSP_BEAD`, the `run:<bead>` in a `where:` line, or a Dispatcher comment author). When you relay a peer handle to a DRI, give the initiative id. When a DRI reports a failed peer send ("could not find initiative") or a "queued for a laptop initiative" WARNING on a cloud peer, tell it to run `ateam list` and resend to the initiative id itself, rather than re-sending on its behalf. The CLI auto-resolves a run bead id that matches exactly one open initiative, but the initiative id is preferred.
 
+## Pairing DRIs
+
+A cloud DRI cannot list laptop initiatives, so you tell it which one it works with by pairing the two. Pairing writes a `peer: <id>` line on each initiative and mails both DRIs.
+
+- Pair only when Eric asks you to, or when a DRI asks for its counterpart and names both initiative ids. Never infer a pairing from similar titles, shared repos, or timing.
+- Run it on this laptop: `ateam peer link <initiative-a> <initiative-b>`. Both ids are initiative ids, in either order. It refuses to run from a hosted workspace.
+- The command is idempotent. A re-run repairs a failed notify or a lost line and doesn't mail a duplicate.
+- A cloud initiative that has not booted has no run to mail. The command says so and exits 0; that DRI reads its `peer:` lines from `ateam show` when it starts.
+- Report each pairing in the next briefing.
+
 ## No HANDOFF.md
 
 Moved from SKILL.md §6, unchanged.

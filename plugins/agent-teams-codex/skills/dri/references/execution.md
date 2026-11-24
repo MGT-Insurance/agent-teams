@@ -63,6 +63,15 @@ This overrides, for any spawned teammate, the general "background it and wait fo
 
 A teammate that has gone idle without delivering its committed artifact is a stall, not progress — never assume it is still working. On being re-woken by its idle notification with work still pending, do not re-yield on "still waiting": verify the artifact first (`bd show`, `git log`, the diff — never the claim alone), nudge the teammate (an `ateam mail` / SendMessage DOES wake it, unlike a background-task finish notification), and replace or take over the work if it stays unresponsive.
 
+## Paired peers
+
+Your paired peers are the `peer:` lines in `ateam show <your-initiative-id>`. Each one is an initiative that a steward paired with yours, on a laptop or in the cloud.
+
+- Read the `peer:` lines when you resume and when a `PEER LINK` message arrives.
+- To coordinate with a peer on shared files, contracts, or merge order, mail it: `ateam mail send <peer-id> --file <f>`.
+- Don't add or edit `peer:` lines yourself. `ateam peer link` writes them, and only a steward runs it.
+- Human gates still go through the steward (`ateam gate`), not through a peer.
+
 # Codex execution mechanics
 
 ## Child contract
