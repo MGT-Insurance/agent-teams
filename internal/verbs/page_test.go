@@ -157,3 +157,129 @@ func TestPagePublish_Registered(t *testing.T) {
 func pageResp(code int, body string) *http.Response {
 	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body))}
 }
+
+func pageRunFile(t *testing.T, cmd *pagePublishKong, html string) (stdout string, err error) {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "p.html")
+	if werr := os.WriteFile(f, []byte(html), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+	cmd.File = f
+	var out, errb bytes.Buffer
+	err = cmd.Run(&cli.Context{Home: t.TempDir(), Stdout: &out, Stderr: &errb})
+	return out.String(), err
+}
+
+func TestPageTemplate_PrintsKitWithRequiredParts(t *testing.T) {
+	var out bytes.Buffer
+	if err := (&pageTemplateKong{}).Run(&cli.Context{Stdout: &out, Stderr: &bytes.Buffer{}}); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"<title>", `class="lead"`, "Questions for Eric", "<h2>Beads</h2>", `class="revlog"`, "<h1>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("template missing %q", want)
+		}
+	}
+	visible := pageCommentRe.ReplaceAllString(got, "")
+	if strings.Contains(visible, "<script") {
+		t.Error("template markup contains a <script>")
+	}
+	// A stray "-->" inside the usage comment would end it early and render the rest as text.
+	if strings.Contains(visible, "PRIMITIVES") || strings.Contains(visible, "EVERYTHING ELSE") {
+		t.Error("usage comment ends early; visible text leaks")
+	}
+}
+
+func TestPageTemplate_OutRefusesOverwriteWithoutForce(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "plan.html")
+	ctx := &cli.Context{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if err := (&pageTemplateKong{Out: f}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&pageTemplateKong{Out: f}).Run(ctx); err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("err = %v, want overwrite refusal", err)
+	}
+	if b, _ := os.ReadFile(f); string(b) != "mine" {
+		t.Errorf("file was overwritten: %q", b)
+	}
+	if err := (&pageTemplateKong{Out: f, Force: true}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(f); string(b) != planPageTemplate {
+		t.Error("--force did not write the kit")
+	}
+}
+
+func TestNormalizePageHTML_WrapsFragment(t *testing.T) {
+	got := normalizePageHTML("<title>T</title>\n<style>p{}</style>\n<main>hi</main>\n")
+	for _, want := range []string{"<!doctype html><html lang=\"en\"><head>", "viewport-fit=cover", "<title>T</title>\n<style>p{}</style>\n</head><body>\n<main>hi</main>", "</body></html>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "mermaid") {
+		t.Error("loader injected without a diagram")
+	}
+}
+
+func TestNormalizePageHTML_MermaidLoaderOnlyWhenNeeded(t *testing.T) {
+	frag := `<title>T</title><figure><pre class="mermaid">flowchart LR; A-->B</pre></figure>`
+	got := normalizePageHTML(frag)
+	if strings.Count(got, "mermaid@11.4.1") != 1 || !strings.Contains(got, "</script></body></html>") {
+		t.Errorf("loader not injected once before </body>: %s", got)
+	}
+	if again := normalizePageHTML(got); again != got {
+		t.Error("normalize is not idempotent")
+	}
+	// Usage text inside a comment is not a diagram.
+	if strings.Contains(normalizePageHTML(`<title>T</title><!-- <pre class="mermaid"> --><p>x</p>`), "mermaid@") {
+		t.Error("loader injected for a commented-out example")
+	}
+	// The kit itself has no diagram.
+	if strings.Contains(normalizePageHTML(planPageTemplate), "mermaid@") {
+		t.Error("loader injected for the unfilled kit")
+	}
+}
+
+func TestNormalizePageHTML_FullDocWithMermaidPassesThrough(t *testing.T) {
+	doc := `<!doctype html><html><body><pre class="mermaid">A-->B</pre><script src="https://x/mermaid.min.js"></script></body></html>`
+	if got := normalizePageHTML(doc); got != doc {
+		t.Errorf("changed:\n%s", got)
+	}
+}
+
+func TestPagePublish_DryRunPrintsAndMakesNoHTTPCall(t *testing.T) {
+	t.Setenv("DSP_BEAD", "")
+	t.Setenv("DSP_API_URL", "")
+	cmd := &pagePublishKong{DryRun: true, httpDo: func(*http.Request) (*http.Response, error) {
+		t.Error("network used in --dry-run")
+		return nil, nil
+	}}
+	out, err := pageRunFile(t, cmd, `<title>T</title><pre class="mermaid">A-->B</pre>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "<!doctype html>") || !strings.Contains(out, "mermaid@11.4.1") {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestPagePublish_BodyCarriesNormalizedHTML(t *testing.T) {
+	pageInRun(t)
+	var body string
+	cmd := &pagePublishKong{httpDo: func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		return pageResp(200, `{"id":"a","url":"https://d.example/pages/a","version":1,"created":true}`), nil
+	}}
+	if _, err := pageRunFile(t, cmd, "<title>T</title><main>x</main>"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, "<!doctype html><html lang=") {
+		t.Errorf("body not normalized: %s", body)
+	}
+}
