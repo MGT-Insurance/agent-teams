@@ -1825,4 +1825,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterUITestKong(p)
 	RegisterPageKong(p)
 	RegisterLearningsSeed(p)
+	RegisterPoKong(p)
 }

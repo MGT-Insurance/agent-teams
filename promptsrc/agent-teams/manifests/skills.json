@@ -525,6 +525,21 @@
       }]
     },
     {
+      "id": "skill.po",
+      "kind": "skill",
+      "status": "runtime-generated",
+      "reason": "Claude-hosted product-owner persona skill (frozen contract: internal/po/doc.go); it has no Codex counterpart skill requirement.",
+      "inputs": [
+        {"id": "claude-skill", "path": "promptsrc/agent-teams/skills/po/SKILL.md"}
+      ],
+      "outputs": [{
+        "path": "plugins/agent-teams/skills/po/SKILL.md",
+        "format": "markdown",
+        "parts": ["claude-skill"],
+        "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/po", "min_headroom": 1000}
+      }]
+    },
+    {
       "id": "embed.steward.shared-ledger",
       "kind": "embed",
       "status": "runtime-generated",
