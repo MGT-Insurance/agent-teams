@@ -269,10 +269,10 @@ Commands:
     (cloud_home); never overwrites, and skips a key whose role and slug already
     exist hosted under any tier.
 
-  autonomy grant <id>
+  autonomy grant <id> [flags]
     Grant autonomy (steward only, on Eric's own message).
 
-  autonomy revoke <id>
+  autonomy revoke <id> [flags]
     Revoke autonomy (steward only).
 
   autonomy show <id>
