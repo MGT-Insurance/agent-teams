@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func sample(t *testing.T) string {
@@ -78,5 +79,78 @@ func TestViolations(t *testing.T) {
 				t.Fatalf("rules = %q, want %q (%+v)", rules(v), c.rule, v)
 			}
 		})
+	}
+}
+
+func checkWithTimeout(t *testing.T, src string) []Violation {
+	t.Helper()
+	done := make(chan []Violation, 1)
+	go func() {
+		_, v := CheckCharter([]byte(src))
+		done <- v
+	}()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(3 * time.Second):
+		t.Fatalf("CheckCharter hung on %q", src)
+		return nil
+	}
+}
+
+func TestMalformedFlowDoesNotHang(t *testing.T) {
+	for _, repos := range []string{"[a, }]", "[: ]", "{a: 1, ]}", "[a, ]]"} {
+		v := checkWithTimeout(t, "---\narea: x\nrepos: "+repos+"\n---\n")
+		if len(v) != 1 || v[0].Rule != RuleParse {
+			t.Errorf("repos %s: want one parse violation, got %+v", repos, v)
+		}
+	}
+}
+
+func TestEmptyFlowMapValueStillParses(t *testing.T) {
+	src := strings.Replace(sample(t), `target: {op: "<=", value: 5}`, `target: {op: "<=", value: 5, note: }`, 1)
+	if _, v := CheckCharter([]byte(src)); len(v) != 0 {
+		t.Fatalf("violations: %+v", v)
+	}
+}
+
+func TestNestedDecodeErrorsSurface(t *testing.T) {
+	for name, repl := range map[string][2]string{
+		"signals list":     {"    signals: [quote-p95]\n", "    signals: [[a], b]\n"},
+		"match not map":    {"    match:\n      words: [bind]", "    match: oops"},
+		"signal id nest":   {"  - id: quote-p95\n", "  - id: [x]\n"},
+		"target not map":   {"    target: {op: \"<=\", value: 5}", "    target: 5"},
+		"match words nest": {"      words: [bind]", "      words: [[bind]]"},
+	} {
+		src := strings.Replace(sample(t), repl[0], repl[1], 1)
+		if src == sample(t) {
+			t.Fatalf("%s: replacement did not apply", name)
+		}
+		v := checkWithTimeout(t, src)
+		if len(v) != 1 || v[0].Rule != RuleParse {
+			t.Errorf("%s: want parse violation, got %+v", name, v)
+		}
+	}
+}
+
+func TestSignalAndAreaRules(t *testing.T) {
+	cases := map[string][3]string{
+		RuleSignalSource: {"source: datadog", "source: grafana", RuleSignalSource},
+		RuleTargetOp:     {`op: "<="`, `op: "=="`, RuleTargetOp},
+		RuleTargetValue:  {"value: 5}", "value: .nan}", RuleTargetValue},
+		"inf":            {"value: 5}", "value: .inf}", RuleTargetValue},
+		RuleAreaInvalid:  {"area: quoting", "area: hot", RuleAreaInvalid},
+	}
+	for name, c := range cases {
+		src := strings.Replace(sample(t), c[0], c[1], 1)
+		if name == "inf" {
+			src = strings.Replace(sample(t), c[0], "value: Inf}", 1)
+		}
+		if name == RuleTargetValue {
+			src = strings.Replace(sample(t), c[0], "value: NaN}", 1)
+		}
+		if got := rules(checkWithTimeout(t, src)); got != c[2] {
+			t.Errorf("%s: rules=%q want %q", name, got, c[2])
+		}
 	}
 }

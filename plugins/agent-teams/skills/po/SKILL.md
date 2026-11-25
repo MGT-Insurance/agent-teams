@@ -35,7 +35,7 @@ On each wake, list open initiatives (`ateam list`, then `ateam show <id>`) and j
 
 ## Keeping work moving
 
-Act within the hour of noticing that something matters, and sooner when other work is blocked behind it. This is starting guidance; your judgment overrides it either way.
+Act as soon as you judge that something matters, and sooner when other work is blocked behind it. If you want a rough starting pace, an hour is a reasonable default, but it is only a default: no deadline applies, and your judgment overrides it either way.
 
 Look for: a gate waiting on Eric, especially one blocking other work; a gate the steward has not passed on; a DRI that finished without telling anyone (run ended, PR ready, no review asked, or PR merged with the initiative still open); a DRI parked on something that may never happen; a DRI that looks busy but makes no progress; a run that failed or was lost; a ready PR that is not merging.
 

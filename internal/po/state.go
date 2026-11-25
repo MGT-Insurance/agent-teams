@@ -37,10 +37,29 @@ var (
 	idRe   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
+// reservedAreas are the learnings tier names. A key po:<tier>:<slug> is a real
+// learning of the shared "po" role (for example po:hot:view), so no PO area may
+// take one of these names or its state keys would collide with learnings.
+var reservedAreas = map[string]bool{"hot": true, "fresh": true, "cold": true, "archived": true}
+
+// ValidateArea checks that area is kebab-case and not a reserved tier name.
+func ValidateArea(area string) error {
+	if !areaRe.MatchString(area) {
+		return fmt.Errorf("invalid area %q: want kebab-case", area)
+	}
+	if reservedAreas[area] {
+		return fmt.Errorf("invalid area %q: reserved (learnings tier name)", area)
+	}
+	return nil
+}
+
+// IsReservedArea reports whether name is a learnings tier word.
+func IsReservedArea(name string) bool { return reservedAreas[name] }
+
 // KeyPrefix returns "po:<area>:", the prefix of every key a PO owns.
 func KeyPrefix(area string) (string, error) {
-	if !areaRe.MatchString(area) {
-		return "", fmt.Errorf("invalid area %q: want kebab-case", area)
+	if err := ValidateArea(area); err != nil {
+		return "", err
 	}
 	return "po:" + area + ":", nil
 }

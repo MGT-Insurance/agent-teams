@@ -22,8 +22,9 @@ func isPOStateKey(k string) bool {
 	if !ok {
 		return false
 	}
-	_, suffix, ok := strings.Cut(rest, ":")
-	return ok && po.KindOf(suffix) != ""
+	area, suffix, ok := strings.Cut(rest, ":")
+	// A tier word in the area slot (po:hot:view) is a real learning, not state.
+	return ok && !po.IsReservedArea(area) && po.KindOf(suffix) != ""
 }
 
 // dropPOStateKeys removes every PO state key from raw.
