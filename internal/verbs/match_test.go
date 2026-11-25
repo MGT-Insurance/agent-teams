@@ -445,8 +445,31 @@ func TestResolveInitiativeRepoDisabled(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("resolve-initiative repo-disabled: got %q, want empty", stdout)
 	}
+	want := "resolve-initiative: reason=repo-disabled initiative=at-111 repo=" + repoDir
+	if strings.TrimSpace(stderr) != want {
+		t.Errorf("resolve-initiative repo-disabled: stderr %q, want %q", stderr, want)
+	}
+}
+
+// TestResolveInitiativeCloudURLRepoResolves is the at-dol shape: a cloud
+// initiative's "repo:" is a URL. repoconfig.Enabled finds no marker file under
+// a URL and used to drop the match; the hook path now uses EnabledForSession,
+// which counts a URL repo as enabled.
+func TestResolveInitiativeCloudURLRepoResolves(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cloud", Title: "Cloud", Description: "repo: https://github.com/o/r\nbranch: b\nmode: cloud\nruntime: claude\nworktree: /vercel/job/repo\nsession: sess-c\n"},
+	}
+	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{"/vercel/job/repo", "--session-id", "sess-c"})
+	if code != 0 || strings.TrimSpace(stdout) != "at-cloud" {
+		t.Errorf("exit %d stdout %q, want 0 and at-cloud", code, stdout)
+	}
 	if stderr != "" {
-		t.Errorf("resolve-initiative repo-disabled: unexpected stderr %q — hooks must stay silent", stderr)
+		t.Errorf("unexpected stderr %q for a resolved match", stderr)
+	}
+	// A cwd that matches no worktree still resolves by the session tie.
+	stdout, _, code = runVerb(t, "resolve-initiative", issues, []string{"/elsewhere", "--session-id", "sess-c"})
+	if code != 0 || strings.TrimSpace(stdout) != "at-cloud" {
+		t.Errorf("session-only: exit %d stdout %q, want at-cloud", code, stdout)
 	}
 }
 
@@ -514,8 +537,8 @@ func TestResolveInitiativeBDError(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("resolve-initiative bd-error: got %q, want empty", stdout)
 	}
-	if stderr != "" {
-		t.Errorf("resolve-initiative bd-error: unexpected stderr %q — hooks must fail soft", stderr)
+	if !strings.Contains(stderr, "resolve-initiative: reason=bd-error path=/any/path") {
+		t.Errorf("resolve-initiative bd-error: stderr %q missing reason line", stderr)
 	}
 }
 

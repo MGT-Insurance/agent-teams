@@ -76,6 +76,9 @@ else
   scan_cache_key="$session_id_flag"
   match_id=$(printf '%s\n' "$scan_out" | sed -n 's/^id: //p')
   if [ -z "$match_id" ]; then
+    scan_drop_note=""
+    [ -n "$scan_err_file" ] && scan_drop_note=$(head -c 400 "$scan_err_file" 2>/dev/null | tr '\n' ' ' || true)
+    hook_log_note "note" "hook-scan-empty pwd=$PWD session=${session_id_flag:-none} stderr=${scan_drop_note:-none}"
     rm -f "$scan_err_file" 2>/dev/null || true
     HOOK_EXIT_REASON="no-open-match"
     exit 0

@@ -27,12 +27,44 @@ const FileName = ".agent-teams"
 // repoRoot: true only when repoRoot/FileName exists and is not marked
 // "disabled: true". A missing or unreadable file means disabled — the same
 // effect as a present file carrying "disabled: true".
+//
+// Enabled treats a URL as a path, so it reports false for a cloud initiative
+// (whose "repo:" is a URL). That is deliberate for the senders and routers
+// (ateam send, route-pr-event, resume, dispatch): they would otherwise run a
+// local resume of a cloud run, so a cloud initiative stays off for them until
+// those paths treat it as not local. Use Enabled there. A hook running inside
+// the live session uses EnabledForSession.
 func Enabled(repoRoot string) bool {
 	data, err := os.ReadFile(filepath.Join(repoRoot, FileName))
 	if err != nil {
 		return false
 	}
 	return !disabled(string(data))
+}
+
+// EnabledForSession is Enabled for code that runs inside the live session
+// itself, namely the wake hooks (resolve-initiative, hook-scan). A repo that
+// is a URL (https://, http://, git@, ssh://) counts as enabled: a cloud
+// initiative records its repo as a URL, no marker file can sit at that value,
+// and the session is already running, so there is nothing to opt in to. Any
+// other value is judged exactly as Enabled judges it.
+//
+// Do not use it in send, route, resume or dispatch. Turning a cloud
+// initiative on there would start local resumes of a cloud run; use Enabled.
+func EnabledForSession(repo string) bool {
+	if isURL(repo) {
+		return true
+	}
+	return Enabled(repo)
+}
+
+func isURL(repo string) bool {
+	for _, prefix := range []string{"https://", "http://", "ssh://", "git@"} {
+		if strings.HasPrefix(repo, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // disabled reports whether content carries a "disabled: true" line. The key

@@ -112,7 +112,8 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 	// same one the full path applies.
 	if haveCache && cached.Trusted && cached.fresh(now) && cached.Unread == 0 &&
 		!hookScanDoorbellPresent(ctx, cached.ID) {
-		if cached.Repo != "" && !repoconfig.Enabled(cached.Repo) {
+		if cached.Repo != "" && !repoconfig.EnabledForSession(cached.Repo) {
+			logHookDrop(ctx, "hook-scan", "repo-disabled", cached.ID, cached.Repo)
 			return nil
 		}
 		fmt.Fprintf(ctx.Stdout, "id: %s\nunread: %d\n", cached.ID, inboxN)
@@ -182,11 +183,12 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		Trusted:   !hookScanDoorbellPresent(ctx, id),
 	}
 
-	if repo != "" && !repoconfig.Enabled(repo) {
+	if repo != "" && !repoconfig.EnabledForSession(repo) {
 		// Unread was not counted, so the entry must not be trusted: mail sent
 		// while disabled has no doorbell, and re-enabling must rescan.
 		entry.Trusted = false
 		writeHookScanCache(ctx, cacheKey, entry)
+		logHookDrop(ctx, "hook-scan", "repo-disabled", id, repo)
 		return nil
 	}
 
