@@ -874,9 +874,6 @@ type StewardLedgerRecord struct {
 	// Reviews is the record key of an earlier self decision this record
 	// reviews (rm8). The verdict of a review is accepted or corrected.
 	Reviews string `json:"reviews,omitempty"`
-	// Autonomy is the autonomy source ref when the steward decided
-	// autonomously (rm8): the record is autonomous:<ref>.
-	Autonomy string `json:"autonomy,omitempty"`
 }
 
 // Validate reports whether r has all required fields set and recognized
@@ -910,9 +907,6 @@ func (r StewardLedgerRecord) ValidateFor(persona string) error {
 	}
 	if r.Reviews != "" && strings.ContainsAny(r.Reviews, " \t\r\n") {
 		return fmt.Errorf("steward ledger record: reviews key %q must not contain whitespace", r.Reviews)
-	}
-	if strings.ContainsAny(r.Autonomy, " \t\r\n") {
-		return fmt.Errorf("steward ledger record: autonomy ref %q must not contain whitespace", r.Autonomy)
 	}
 	return nil
 }

@@ -413,7 +413,7 @@ func TestStewardLedgerRows_DoNotChangeLearningsOutputs(t *testing.T) {
 	}
 }
 
-// ── rm8: self decisions, reviews, autonomy ───────────────────────────────────
+// ── rm8: self decisions, reviews ───────────────────────────────────
 
 // selfLedgerCtxs runs a case against the local file store and the hosted store.
 func selfLedgerCtxs(t *testing.T, fn func(t *testing.T, ctx *cli.Context, out *bytes.Buffer)) {
@@ -442,7 +442,7 @@ func recordSelf(t *testing.T, ctx *cli.Context, out *bytes.Buffer, cmd stewardLe
 
 func TestStewardLedgerSelf_ListsThenShowsReviewed_LocalAndHosted(t *testing.T) {
 	selfLedgerCtxs(t, func(t *testing.T, ctx *cli.Context, out *bytes.Buffer) {
-		key, err := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "at-1", Verdict: "self-approved", Autonomy: "tg-42"})
+		key, err := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "at-1", Verdict: "self-approved"})
 		if err != nil || key == "" {
 			t.Fatalf("self record: key=%q err=%v", key, err)
 		}
@@ -450,7 +450,7 @@ func TestStewardLedgerSelf_ListsThenShowsReviewed_LocalAndHosted(t *testing.T) {
 		if err := (&stewardLedgerSelfKong{Since: "1h"}).Run(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if !regexp.MustCompile(`^\S+  intake  initiative=at-1  verdict=self-approved  reviews=-  autonomy=tg-42\n$`).MatchString(out.String()) {
+		if !regexp.MustCompile(`^\S+  intake  initiative=at-1  verdict=self-approved  reviews=-\n$`).MatchString(out.String()) {
 			t.Errorf("self line: %q", out.String())
 		}
 		if _, err := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "at-1", Verdict: "corrected", Decision: "should have denied", Reviews: key}); err != nil {
@@ -510,7 +510,6 @@ func TestStewardLedgerStats_SplitCounts(t *testing.T) {
 	selfLedgerCtxs(t, func(t *testing.T, ctx *cli.Context, out *bytes.Buffer) {
 		k1, _ := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "a", Verdict: "self-approved"})
 		k2, _ := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "b", Verdict: "self-denied"})
-		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "c", Verdict: "self-approved", Autonomy: "ref"})
 		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "d", Verdict: "accepted"})
 		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "a", Verdict: "accepted", Reviews: k1})
 		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "b", Verdict: "corrected", Decision: "x", Reviews: k2})
@@ -522,7 +521,7 @@ func TestStewardLedgerStats_SplitCounts(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 {
 			t.Fatalf("%v %s", err, out.String())
 		}
-		want := stewardCategoryStats{Category: "intake", Total: 4, Accepted: 1, AcceptRate: 1, SelfApproved: 2, SelfDenied: 1, Autonomous: 1, Reviewed: 2, ReviewCorrected: 1}
+		want := stewardCategoryStats{Category: "intake", Total: 3, Accepted: 1, AcceptRate: 1, SelfApproved: 1, SelfDenied: 1, Reviewed: 2, ReviewCorrected: 1}
 		if rows[0] != want {
 			t.Errorf("stats = %+v, want %+v", rows[0], want)
 		}
@@ -534,7 +533,7 @@ func TestStewardLedger_LegacyLinesParseUnchanged(t *testing.T) {
 	legacy := `{"ts":"2026-01-02T03:04:05Z","category":"plan-approval","initiative":"old-1","recommendation":"r","verdict":"corrected","decision":"d"}`
 	writeLedgerFile(t, ctx, legacy)
 	rec, err := ParseStewardLedgerRecord([]byte(legacy))
-	if err != nil || rec.Reviews != "" || rec.Autonomy != "" {
+	if err != nil || rec.Reviews != "" {
 		t.Fatalf("legacy parse: %+v %v", rec, err)
 	}
 	if err := (&stewardLedgerStatsKong{JSON: true}).Run(ctx); err != nil {
@@ -562,5 +561,22 @@ func TestStewardLedgerStats_SplitTableDashForNoHumanVerdicts(t *testing.T) {
 	}
 	if !strings.Contains(strings.Split(out, "\n")[3], "50%") {
 		t.Errorf("plan row should show 50%%:\n%s", out)
+	}
+}
+
+// A stored record from the removed autonomy feature still parses, its extra
+// field is ignored, and it lists/counts as an ordinary record.
+func TestStewardLedger_LegacyAutonomyFieldIgnored(t *testing.T) {
+	ctx, out, _ := makeCtx(noBDCalls{t}, t.TempDir())
+	legacy := `{"ts":"2026-01-02T03:04:05Z","category":"intake","initiative":"old-1","recommendation":"r","verdict":"self-approved","autonomy":"tg-42"}`
+	writeLedgerFile(t, ctx, legacy)
+	if _, err := ParseStewardLedgerRecord([]byte(legacy)); err != nil {
+		t.Fatalf("legacy autonomy record: %v", err)
+	}
+	if err := (&stewardLedgerSelfKong{Since: "100000h"}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "2026-01-02T03:04:05Z  intake  initiative=old-1  verdict=self-approved  reviews=-" {
+		t.Errorf("self line: %q", got)
 	}
 }

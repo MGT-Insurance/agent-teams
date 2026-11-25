@@ -149,12 +149,13 @@ initiative fields and PR list; the line shapes above are frozen.)
 - Verdicts: `self-approved`, `self-denied`.
 - Categories: `intake`, `live-test-review`, `po-question`. (`plan-feedback`
   and `pr-fit` belong to at-18j.)
-- Flags: `--reviews <record key>`, `--autonomy <ref>` (an autonomous decision, recorded as `autonomous:<ref>`).
+- Flag: `--reviews <record key>`. Records from the removed autonomy feature
+  may still carry an `autonomy` field; it is ignored.
 - Verb `ateam steward ledger self --since <duration|RFC3339>` lists the
   steward's self-decisions since then, one line each:
 
 ```
-<RFC3339>  <category>  initiative=<id>  verdict=<verdict>  reviews=<record key or ->  autonomy=<ref or ->
+<RFC3339>  <category>  initiative=<id>  verdict=<verdict>  reviews=<record key or ->
 ```
 
 ## 9. Trust rule

@@ -481,7 +481,6 @@ type stewardLedgerRecordKong struct {
 	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected,self-approved,self-denied" help:"Outcome: accepted or corrected (the human's), self-approved or self-denied (the steward's own call without Eric)."`
 	Decision       string `name:"decision" help:"What the human actually decided (REQUIRED when verdict=corrected)."`
 	Reviews        string `name:"reviews" help:"Record key of an earlier self decision this record reviews (verdict must be accepted or corrected)."`
-	Autonomy       string `name:"autonomy" help:"Source ref of an autonomous decision: marks the record autonomous:<ref>."`
 	Persona        string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
 }
 
@@ -505,7 +504,6 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 		Verdict:        StewardLedgerVerdict(c.Verdict),
 		Decision:       c.Decision,
 		Reviews:        stewardLedgerNormalizeKey(c.Reviews),
-		Autonomy:       c.Autonomy,
 	}
 
 	persona := ledgerPersonaOrDefault(c.Persona)
@@ -577,7 +575,6 @@ type stewardCategoryStats struct {
 	// without self decisions reports exactly as before.
 	SelfApproved    int `json:"self_approved,omitempty"`
 	SelfDenied      int `json:"self_denied,omitempty"`
-	Autonomous      int `json:"autonomous,omitempty"`
 	Reviewed        int `json:"reviewed,omitempty"`
 	ReviewCorrected int `json:"review_corrected,omitempty"`
 }
@@ -642,22 +639,15 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 			counts[rec.Category] = s
 		}
 		s.Total++
-		if rec.Autonomy != "" {
-			s.Autonomous++
-		}
 		switch rec.Verdict {
 		case StewardLedgerVerdictSelfApproved:
 			s.SelfApproved++
 		case StewardLedgerVerdictSelfDenied:
 			s.SelfDenied++
 		case StewardLedgerVerdictAccepted:
-			if rec.Autonomy == "" {
-				s.Accepted++
-			}
+			s.Accepted++
 		case StewardLedgerVerdictCorrected:
-			if rec.Autonomy == "" {
-				s.Corrected++
-			}
+			s.Corrected++
 		}
 		if rec.Verdict.IsSelf() {
 			if rs := reviews[k.Key]; len(rs) > 0 {
@@ -716,7 +706,7 @@ func writeStewardStatsTable(ctx *cli.Context, rows []stewardCategoryStats) error
 	w := tabwriter.NewWriter(ctx.Stdout, 0, 0, 2, ' ', 0)
 	split := false
 	for _, r := range rows {
-		if r.SelfApproved+r.SelfDenied+r.Autonomous+r.Reviewed > 0 {
+		if r.SelfApproved+r.SelfDenied+r.Reviewed > 0 {
 			split = true
 		}
 	}
@@ -728,14 +718,14 @@ func writeStewardStatsTable(ctx *cli.Context, rows []stewardCategoryStats) error
 		}
 		return w.Flush()
 	}
-	fmt.Fprintln(w, "CATEGORY\tTOTAL\tACCEPTED\tCORRECTED\tACCEPT RATE\tSELF-APPROVED\tSELF-DENIED\tAUTONOMOUS\tREVIEWED\tREVIEW-CORRECTED")
-	fmt.Fprintln(w, "--------\t-----\t--------\t---------\t-----------\t-------------\t-----------\t----------\t--------\t----------------")
+	fmt.Fprintln(w, "CATEGORY\tTOTAL\tACCEPTED\tCORRECTED\tACCEPT RATE\tSELF-APPROVED\tSELF-DENIED\tREVIEWED\tREVIEW-CORRECTED")
+	fmt.Fprintln(w, "--------\t-----\t--------\t---------\t-----------\t-------------\t-----------\t--------\t----------------")
 	for _, r := range rows {
 		rate := "-"
 		if r.Accepted+r.Corrected > 0 {
 			rate = fmt.Sprintf("%.0f%%", r.AcceptRate*100)
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\n", r.Category, r.Total, r.Accepted, r.Corrected, rate, r.SelfApproved, r.SelfDenied, r.Autonomous, r.Reviewed, r.ReviewCorrected)
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\n", r.Category, r.Total, r.Accepted, r.Corrected, rate, r.SelfApproved, r.SelfDenied, r.Reviewed, r.ReviewCorrected)
 	}
 	return w.Flush()
 }
@@ -871,7 +861,7 @@ type stewardLedgerSelfRow struct {
 
 // Run lists the self decisions since --since, oldest first, plus the reviews of
 // them. Each line is
-// "<RFC3339>  <category>  initiative=<id>  verdict=<verdict>  reviews=<key or ->  autonomy=<ref or ->".
+// "<RFC3339>  <category>  initiative=<id>  verdict=<verdict>  reviews=<key or ->".
 func (c *stewardLedgerSelfKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward ledger self: nil context")
@@ -893,7 +883,7 @@ func (c *stewardLedgerSelfKong) Run(ctx *cli.Context) error {
 	var rows []stewardLedgerSelfRow
 	for _, k := range all {
 		r := k.Rec
-		if !(r.Verdict.IsSelf() || r.Reviews != "" || r.Autonomy != "") || r.Timestamp.Before(since) {
+		if !(r.Verdict.IsSelf() || r.Reviews != "") || r.Timestamp.Before(since) {
 			continue
 		}
 		row := stewardLedgerSelfRow{Key: k.Key, StewardLedgerRecord: r}
@@ -926,8 +916,8 @@ func (c *stewardLedgerSelfKong) Run(ctx *cli.Context) error {
 		return v
 	}
 	for _, r := range rows {
-		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  verdict=%s  reviews=%s  autonomy=%s\n",
-			r.Timestamp.Format(time.RFC3339), r.Category, r.Initiative, r.Verdict, dash(r.Reviews), dash(r.Autonomy))
+		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  verdict=%s  reviews=%s\n",
+			r.Timestamp.Format(time.RFC3339), r.Category, r.Initiative, r.Verdict, dash(r.Reviews))
 	}
 	return nil
 }
