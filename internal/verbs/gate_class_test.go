@@ -1,7 +1,9 @@
 package verbs
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -151,5 +153,66 @@ func TestGateClass_LabelInvisibleToGateReaders(t *testing.T) {
 	l := []string{"human", "gate-class:plan"}
 	if hasGateKind(l, "gate:question") || hasGateKind(l, "gate:review") || hasGateKind(l, "gate:live-test-review") || anyGateLabelRemains(l) || len(perPRGateLabels(l)) != 0 || hasHumanAnyGateLabel(l) {
 		t.Error("gate-class label matched a gate reader")
+	}
+}
+
+// A failing class-label update must not fail the gate: the mail is still
+// filed, with no class line (fails closed), and a warning goes to stderr.
+func TestGateClass_LabelFailureDoesNotFailGate(t *testing.T) {
+	defer clearMailClass("at-f1")
+	sup := gcRun(t)
+	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, issueResp(t, "at-f1", "origin: outsider\n"), {err: errors.New("boom")}})
+	f := makeTempFile(t, "q")
+	if err := (&gateKong{ID: "at-f1", File: f, Kind: "question", Plan: true}).Run(ctx); err != nil {
+		t.Fatalf("gate must not fail: %v", err)
+	}
+	lines := outboxLines(t, sup)
+	if len(lines) != 1 {
+		t.Fatalf("outbox lines = %d, want 1", len(lines))
+	}
+	if body := decodeMail(t, lines[0])["body"]; strings.Contains(body, "class:") {
+		t.Errorf("body has a class line after a failed label: %q", body)
+	}
+	if !strings.Contains(ctx.Stderr.(*bytes.Buffer).String(), "warning") {
+		t.Errorf("stderr = %q, want a warning", ctx.Stderr.(*bytes.Buffer).String())
+	}
+}
+
+// An explicit --class with a failing in-run show warns on stderr, still labels,
+// and writes no class mail line.
+func TestGateClass_ShowFailureWithExplicitClassWarns(t *testing.T) {
+	defer clearMailClass("at-f2")
+	sup := gcRun(t)
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, {err: errors.New("no show")}, {stdout: "ok"}})
+	f := makeTempFile(t, "q")
+	if err := (&gateKong{ID: "at-f2", File: f, Kind: "question", Class: "design-fork"}).Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if !strings.Contains(ctx.Stderr.(*bytes.Buffer).String(), "warning") {
+		t.Errorf("stderr = %q, want a warning", ctx.Stderr.(*bytes.Buffer).String())
+	}
+	if got := (*calls)[2].args; !reflect.DeepEqual(got, []string{"update", "at-f2", "--add-label", "gate-class:design-fork"}) {
+		t.Errorf("label call = %v", got)
+	}
+	if body := decodeMail(t, outboxLines(t, sup)[0])["body"]; strings.Contains(body, "class:") {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// Exact sequence for a non-outsider in-run gate whose show returns no origin:
+// the gate update then the read-only show, and no label write.
+func TestGateClass_NonOutsiderInRunExactSequence(t *testing.T) {
+	defer clearMailClass("at-n2")
+	gcRun(t)
+	ctx, calls := newCtx(t, []fakeResp{{stdout: "ok"}, issueResp(t, "at-n2", "repo: x\n")})
+	f := makeTempFile(t, "q")
+	if err := (&gateKong{ID: "at-n2", File: f, Kind: "review"}).Run(ctx); err != nil {
+		t.Fatalf("gate: %v", err)
+	}
+	if len(*calls) != 2 || (*calls)[0].args[0] != "update" || !reflect.DeepEqual((*calls)[1].args, []string{"show", "at-n2", "--json"}) {
+		t.Fatalf("calls = %v, want exactly update then show", *calls)
+	}
+	if s := ctx.Stderr.(*bytes.Buffer).String(); s != "" {
+		t.Errorf("stderr = %q", s)
 	}
 }

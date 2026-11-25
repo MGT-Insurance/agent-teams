@@ -4,6 +4,7 @@
 package verbs
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 
@@ -96,7 +97,10 @@ func (g *gateClassAfterGate) Run(args ...string) (string, error) {
 		return out, err
 	}
 	g.done = true
-	return out, g.apply()
+	// The class work is best-effort: the gate's own update already set
+	// "human", so a failure here must never stop the mail from being filed.
+	g.apply()
+	return out, nil
 }
 
 // isGateLabelUpdate reports whether args is the gate's `bd update <id> ...
@@ -113,15 +117,19 @@ func isGateLabelUpdate(args []string) bool {
 	return false
 }
 
-func (g *gateClassAfterGate) apply() error {
+// apply never fails the gate: on any error it warns to stderr and returns with
+// no class registered, so the mail carries no "class:" line (the steward then
+// escalates to the human: fail closed).
+func (g *gateClassAfterGate) apply() {
 	c := g.gate
 	special := false
 	if g.inRun {
 		iss, err := bd.ShowIssue(g.inner, c.ID)
 		if err != nil {
 			if c.Class == "" {
-				return nil // cannot tell: behave as a non-outsider gate
+				return // cannot tell: behave as a non-outsider gate
 			}
+			fmt.Fprintf(g.ctx.Stderr, "ateam gate: warning: could not read %s to detect an outsider request (%v); the gate mail will carry no class line\n", c.ID, err)
 		} else {
 			f := initiative.Of(iss)
 			special = f.Origin == initiative.OriginOutsider
@@ -129,13 +137,15 @@ func (g *gateClassAfterGate) apply() error {
 	}
 	class := resolveGateClass(c.Class, c.Kind, c.Plan)
 	if class == "" || (c.Class == "" && !special) {
-		return nil
+		return
+	}
+	if _, err := g.inner.Run("update", c.ID, "--add-label", gateClassLabelPrefix+class); err != nil {
+		fmt.Fprintf(g.ctx.Stderr, "ateam gate: warning: could not add the %s%s label to %s (%v); the gate mail will carry no class line\n", gateClassLabelPrefix, class, c.ID, err)
+		return
 	}
 	if special {
 		setGateMailClass(c.ID, class)
 	}
-	_, err := g.inner.Run("update", c.ID, "--add-label", gateClassLabelPrefix+class)
-	return err
 }
 
 // gateClassClear arranges for clear-gate to drop gate-class:* labels without
