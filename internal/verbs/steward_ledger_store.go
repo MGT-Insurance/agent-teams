@@ -281,3 +281,72 @@ func (c *stewardLedgerSeedKong) Run(ctx *cli.Context) error {
 	fmt.Fprint(ctx.Stdout, summary)
 	return nil
 }
+
+// ── record keys and keyed reads (rm8) ────────────────────────────────────────
+
+// stewardLedgerRecordKey returns rec's key, the same in the local and hosted
+// stores: the record's unix-nanosecond timestamp and four hex digits of the
+// hash of its JSON. The hosted memory key is the persona's prefix plus this
+// key. --reviews takes this key (with or without the hosted prefix).
+func stewardLedgerRecordKey(rec StewardLedgerRecord) string {
+	value, _ := json.Marshal(rec)
+	return stewardLedgerKeyWithPrefix("", rec, string(value))
+}
+
+// stewardLedgerNormalizeKey strips a hosted key prefix a caller may have
+// copied along with the key.
+func stewardLedgerNormalizeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if strings.HasPrefix(key, stewardLedgerKeyPrefix) {
+		return strings.TrimPrefix(key, stewardLedgerKeyPrefix)
+	}
+	if strings.HasPrefix(key, po.LedgerPrefix) {
+		if i := strings.LastIndex(key, "."); i >= 0 {
+			return key[i+1:]
+		}
+	}
+	return key
+}
+
+// stewardLedgerKeyed is a parsed record with its key.
+type stewardLedgerKeyed struct {
+	Key string
+	Rec StewardLedgerRecord
+}
+
+// readStewardLedgerRecords reads and parses every record in store, oldest
+// first, warning on stderr for each malformed line. Lines written before the
+// rm8 fields existed parse unchanged.
+func readStewardLedgerRecords(ctx *cli.Context, store stewardLedgerStore, persona, verb string) ([]stewardLedgerKeyed, error) {
+	lines, err := store.lines(verb)
+	if err != nil {
+		return nil, err
+	}
+	var out []stewardLedgerKeyed
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		rec, err := ParseStewardLedgerRecordFor(persona, []byte(line))
+		if err != nil {
+			fmt.Fprintf(ctx.Stderr, "ateam steward ledger %s: warning: skipping malformed line: %v\n", verb, err)
+			continue
+		}
+		out = append(out, stewardLedgerKeyed{Key: stewardLedgerRecordKey(rec), Rec: rec})
+	}
+	return out, nil
+}
+
+// stewardLedgerReviews maps a self decision's key to the reviews of it, oldest
+// first.
+func stewardLedgerReviews(recs []stewardLedgerKeyed) map[string][]StewardLedgerRecord {
+	out := map[string][]StewardLedgerRecord{}
+	for _, k := range recs {
+		if k.Rec.Reviews != "" {
+			target := stewardLedgerNormalizeKey(k.Rec.Reviews)
+			out[target] = append(out[target], k.Rec)
+		}
+	}
+	return out
+}

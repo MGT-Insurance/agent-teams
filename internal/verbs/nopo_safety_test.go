@@ -116,8 +116,18 @@ func TestNoPO_GateLocalAndDispatcherRun(t *testing.T) {
 			if got := ctx.Stderr.(*bytes.Buffer).String(); got != "" {
 				t.Errorf("stderr = %q, want empty", got)
 			}
-			if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0].args, wantUpdate) {
-				t.Errorf("bd calls = %v, want exactly %v", *calls, wantUpdate)
+			// rm8 T2: inside a run, one read-only `bd show` follows the gate
+			// update so an outsider gate can be told apart; the update itself
+			// is unchanged.
+			wantCalls := 1
+			if inRun {
+				wantCalls = 2
+			}
+			if len(*calls) != wantCalls || !reflect.DeepEqual((*calls)[0].args, wantUpdate) {
+				t.Errorf("bd calls = %v, want %v first of %d", *calls, wantUpdate, wantCalls)
+			}
+			if inRun && !reflect.DeepEqual((*calls)[1].args, []string{"show", "at-9", "--json"}) {
+				t.Errorf("second call = %v, want the read-only show", (*calls)[1].args)
 			}
 			for _, c := range *calls {
 				if noPOHasMarker(strings.Join(c.args, " ")) {
@@ -452,11 +462,14 @@ func TestNoPO_StewardStartupOutput(t *testing.T) {
 		"[learnings steward: 1 entries, 45 chars, hot 1 fresh 0 — read in full; do NOT pipe through head/tail or truncate; output ends at the matching trailer line]\n" +
 		"steward:hot:ledger-rule\nRULE: keep it whole.\n" +
 		"[learnings steward: 1 entries, 45 chars, hot 1 fresh 0]\n"
-	wantHead := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules
+	wantHead := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules +
+		"\n## Outsider rules\n" + stewardOutsiderRules
 	if got != wantHead+wantTail {
 		t.Errorf("startup output differs.\n got tail: %q\nwant tail: %q", got[max(0, len(got)-400):], wantTail)
 	}
-	if strings.Contains(got, "poledger") || strings.Contains(got, "## PO") || strings.Contains(got, "po-") {
+	if strings.Contains(got, "poledger") || strings.Contains(got, "## PO") || strings.Contains(strings.ReplaceAll(got, "po-question", ""), "po-") {
+		// "po-question" is the frozen rm8 ledger category (docs/outsider-requests.md
+		// section 8), not a PO-ledger leak.
 		t.Errorf("startup output mentions POs")
 	}
 	noPOAssertStoreClean(t, m)

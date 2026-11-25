@@ -329,6 +329,11 @@ type gateKong struct {
 	// unaffected either way — it stays bare and initiative-scoped by design.
 	PR string `name:"pr" help:"Full PR URL to scope the gate to one PR (per-PR label); omitted sets the bare, initiative-scoped gate (legacy)."`
 
+	// Class names the gate's class for outsider handling
+	// (docs/outsider-requests.md, "Gate class"). Implemented by rm8 T2
+	// (gate_class.go).
+	Class string `name:"class" enum:",plan,scope,design-fork" default:"" help:"Gate class override: plan, scope, or design-fork. Writes the gate-class:<class> label (docs/outsider-requests.md)."`
+
 	// notify is called after labels are set to route the ask to the Steward
 	// (see notifyToSteward, steward_route.go). Best-effort: a failure warns
 	// to stderr but does not fail the gate. nil means skip (zero-value
@@ -433,6 +438,9 @@ const maxGateNoteArgBytes = 64 * 1024
 func (c *gateKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam gate: no context")
+	}
+	if err := gateClassApply(ctx, c); err != nil {
+		return err
 	}
 
 	noteFile := c.File
@@ -622,6 +630,9 @@ type clearGateKong struct {
 func (c *clearGateKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam clear-gate: no context")
+	}
+	if err := gateClassClear(ctx, c); err != nil {
+		return err
 	}
 	if c.File != "" {
 		if _, err := os.Stat(c.File); err != nil {

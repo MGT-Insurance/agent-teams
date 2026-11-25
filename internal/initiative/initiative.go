@@ -34,6 +34,24 @@ type Fields struct {
 	// and not interpreted (docs/hosted-beads.md, F6). Single-valued,
 	// first-wins; "" when absent.
 	Where string
+	// Origin is the "origin: <value>" line. "outsider" is the only accepted
+	// value: the initiative was requested by an agent outside this account
+	// (docs/outsider-requests.md). "" when absent. Single-valued, first-wins.
+	Origin string
+	// Requester is the "requester: <owner-handle>/<agent-name>" line:
+	// lowercase kebab tokens, exactly one slash. "" when absent.
+	Requester string
+	// Request is the "request: <bead id>" line: the request bead's id in the
+	// steward owner's account. "" when absent.
+	Request string
+	// StewardApproves is the "steward-approves: <class list>" line parsed into
+	// its classes, in line order. The line is a comma list over the closed set
+	// GateClasses. Nil when absent.
+	StewardApproves []string
+	// Linear is the "linear: <issue key>" line: the request's Linear issue
+	// key, written only by `dispatch --register-only --linear`. No whitespace.
+	// "" when absent. Single-valued, first-wins.
+	Linear string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -58,7 +76,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "steward-approves", "linear"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -204,6 +222,12 @@ func Of(iss bd.Issue) Fields {
 		Tracks:   lines["track-worktree"],
 		PRs:      lines["pr"],
 		Where:    first(lines, "where"),
+
+		Origin:          first(lines, "origin"),
+		Requester:       first(lines, "requester"),
+		Request:         first(lines, "request"),
+		StewardApproves: splitClasses(first(lines, "steward-approves")),
+		Linear:          first(lines, "linear"),
 	}
 }
 
@@ -271,6 +295,11 @@ func New(f Fields) (WritePlan, error) {
 		{"runtime", []string{f.Runtime}},
 		{"epic", []string{f.Epic}},
 		{"where", []string{f.Where}},
+		{"origin", []string{f.Origin}},
+		{"requester", []string{f.Requester}},
+		{"request", []string{f.Request}},
+		{"steward-approves", f.StewardApproves},
+		{"linear", []string{f.Linear}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
@@ -281,6 +310,10 @@ func New(f Fields) (WritePlan, error) {
 				return WritePlan{}, fmt.Errorf("initiative.New: %s value must not contain a line break: %q", fv.key, v)
 			}
 		}
+	}
+
+	if err := validateOutsiderFields(f); err != nil {
+		return WritePlan{}, err
 	}
 
 	var b strings.Builder
@@ -305,6 +338,11 @@ func New(f Fields) (WritePlan, error) {
 	write("runtime", f.Runtime)
 	write("epic", f.Epic)
 	write("where", f.Where)
+	write("origin", f.Origin)
+	write("requester", f.Requester)
+	write("request", f.Request)
+	write("steward-approves", strings.Join(f.StewardApproves, ","))
+	write("linear", f.Linear)
 	for _, s := range f.Sessions {
 		write("session", s)
 	}

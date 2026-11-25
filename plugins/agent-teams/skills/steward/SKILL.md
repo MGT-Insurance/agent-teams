@@ -22,7 +22,7 @@ Dispatching hands work to a DRI that then owns it — never a license to plan, i
 
 **DRI-to-DRI peer coordination is expected and does not route through you.** Two DRIs coordinating directly (rebase now, I own file X, I merged the shared contract) is not briefing material — except when it materially changes an initiative's design or direction, which DRIs surface to you. Your authority over human decisions (§3) is untouched. When you hop out to a DRI's own session, prefer native `SendMessage` to their live local session (discovered via `ListAgents`) first, falling back to `ateam mail send <initiative-id>` when they're not a live local peer.
 
-`ateam` is on PATH — call it as bare `ateam` everywhere this document shows `ateam`.
+`ateam` is on PATH; call it bare.
 
 ## 1. Startup
 
@@ -68,7 +68,7 @@ A DRI parked on a gate. Steps 1-4 are the question/review decision-escalation fl
    ateam notify <id> --document <document-path> --file <basename-file>  # per document
    ateam notify <id> --file     <body-file>                             # body, last
    ```
-   `--file` is required on every call and becomes that send's caption, so each attachment gets its own tiny caption file (just its basename) — not the proof body repeated N times. No enrichment, recommendation, or ledger entry. Testers and the DRI never call Telegram directly — you're the only relay. No-steward case: waits like any other gate (references/envelopes.md).
+   `--file` is required on every call and becomes that send's caption, so each attachment gets its own tiny caption file (just its basename) — not the proof body repeated N times. No enrichment, recommendation, or ledger entry. Only you relay to Telegram; the no-steward case is in references/envelopes.md.
 
 ### steward-reply (`<<<steward-reply initiative:<id>>>>`)
 
@@ -87,11 +87,13 @@ The human replied in a topic.
      --verdict accepted|corrected --decision "<what the human actually decided>"
    ```
    `<category>`: `plan-approval | scope-call | merge-approval | design-fork | unblock-action`, matching the gate's kind. `accepted` only on an exact match; `corrected` if it diverges at all — never stretch a partial match to accepted. `--decision` REQUIRED on `corrected`, optional on `accepted`. If it fails with "ledger store unreachable", retry next turn.
+
+A self-decision (`--verdict self-approved|self-denied`, categories `intake`, `live-test-review`, `po-question`) is recorded when you make it. If the human later corrects it, record again with `--reviews <record key of the self-decision> --verdict corrected --decision "<what he decided>"`; the correction counts as a review.
 4. **On `corrected`, distill into a learning immediately** (`ateam learn steward <slug> --file <tmpfile>`, §6): RULE / TRIGGER / APPLY — a reusable rule, not a transcript.
 
 ### steward-hung-wake (`<<<steward-hung-wake initiative:<id>>>>`)
 
-A MECHANICAL wake from the relay's hung-tick — NOT a reply from the human. Do NOT interpret it against a pending recommendation, route anything back into the initiative, or write a ledger verdict. Proceed to the every-wake scan below, which surfaces this hung initiative and escalates it normally.
+A MECHANICAL wake from the relay's hung-tick — NOT a reply from the human. Do NOT interpret it against a pending recommendation, route anything back into the initiative, or write a ledger verdict. Proceed to the every-wake scan below.
 
 ### steward-direct (`<<<steward-direct>>>` or `<<<steward-direct reply-to:<ref>>>>`)
 
@@ -104,11 +106,11 @@ A direct message from the human, outside any initiative. A 1:1 DM carries `reply
 
 ### steward-briefing-reply (`<<<steward-briefing-reply>>>`)
 
-A human reply posted in the Briefings topic. Why the ack is never optional: references/envelopes.md.
+A human reply posted in the Briefings topic. Ack is never optional: references/envelopes.md.
 
 1. No initiative id attached. Interpret against recent briefing context (last posted via `ateam notify briefing`) and `ateam execution-status`.
 2. Post ONE briefing-ack (T-ACK) into Briefings (`ateam notify briefing --file <reply-file>`) — a routing confirmation, even when step 3 also routes the substance elsewhere.
-3. If the reply names a specific initiative, route the substance there instead of duplicating it in Briefings — `ateam mail send <id>` or `ateam notify <id>` — and shrink the ack to a pointer ("routed to <initiative>"). Use `ateam notify direct --to general` for an aside, not cross-initiative material.
+3. If the reply names a specific initiative, route the substance there instead of duplicating it in Briefings — `ateam mail send <id>` or `ateam notify <id>` — and shrink the ack to a pointer ("routed to <initiative>").
 
 ### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
 
@@ -119,10 +121,10 @@ A message in a Telegram topic whose owning initiative is CLOSED in beads. Why th
 
 ### steward-unrouted (`<<<steward-unrouted thread:<ref> reason:<reason>>>>`)
 
-The relay's last-resort catch-all — a reply the router couldn't place at all. Why, and the multi-machine caveat: references/envelopes.md.
+The relay's last-resort catch-all — a reply the router couldn't place at all. Why: references/envelopes.md.
 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") — if `Reason`/`Body` make the target obvious, act directly (`ateam mail send <id>` or `ateam notify <id>`).
-2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), including `Reason` and enough of `Body` to identify it.
+2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), with `Reason` and enough `Body` to identify it.
 3. Multi-machine: a reply that looks like it belongs to another machine's topic is sync lag, not yours — stay silent or minimal.
 
 ### Every wake, regardless of inbox contents — scan
@@ -137,7 +139,7 @@ claude agents --all --json
 
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry (full per-classification bullets: references/operations.md):
 
-- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
+- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`). Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it.
 - **DEAD `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
 - **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — follow the matching bullets in references/operations.md. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
 
@@ -156,6 +158,8 @@ The **Do NOT** list at the top of this file is absolute: a recommendation is a s
 ## 4. Ledger discipline
 
 One record per escalated decision, written at verdict time — when the human's reply comes back, never at recommendation time. Categories, verdict rules, and the command: §2's steward-reply handler. Nothing else reaches the ledger: a direct chat, a briefing reply, a closed-initiative message, and an unrouted message are not gated decisions.
+
+A correction of one of your own self-decisions (a summary reply, or any later message from the human) is a review of that decision: record it with `--reviews <record key>` as in §2's recording step, never as a new gate. Outsider-request rules: the `## Outsider rules` section of `ateam steward startup`.
 
 ## 5. Conversation style with the human
 
@@ -178,7 +182,7 @@ After four hours with no message, post one briefing line: what's running, and gr
 
 **Plan-document URL.** Reproduce a plan-page URL VERBATIM on its own line — never summarized, markdown-wrapped, or truncated (why: references/message-style.md). An ADDITION, never a replacement — must still let him decide without opening it.
 
-Disclosure: a mistake that changed the work gets one plain line — no apology, no retrospective. The learning capture (§6) doesn't substitute for telling him, nor the reverse.
+Disclosure: a mistake that changed the work gets one plain line — no apology, no retrospective.
 
 | Kind | Trigger | The human must | Budget | Required first line | Banned |
 |---|---|---|---|---|---|
@@ -193,6 +197,8 @@ Disclosure: a mistake that changed the work gets one plain line — no apology, 
 
 A ninth kind, `topic-open`, is machine-authored, not Steward prose: references/message-style.md. Worked before/after specimens per kind, same file.
 
+Outsider requests: the `## Outsider rules` section of `ateam steward startup` binds you; follow them as written.
+
 ## 6. Memory
 
 Contribute role learnings as they form — the Steward never winds down:
@@ -205,10 +211,7 @@ RULE (the transferable learning, one sentence) / TRIGGER (when it fires) / APPLY
 
 **Highest-value moment: when the human CORRECTS a recommendation** — §2's steward-reply handler requires this on every `corrected` verdict.
 
-`ateam learnings steward` auto-injects only hot+fresh tiers; `ateam recall steward <query>` searches the full set, cold included.
-
-**Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** That directory sits inside the global-workspace git repo, so the isolation guard blocks writes to it — but isolating would break Step 0's cwd-based singleton check.
-The steward writes no `HANDOFF.md`, even though the global CLAUDE.md asks every session to, and never disables the isolation guard for the workspace repo; details: references/operations.md.
+**Everything durable goes through `ateam` — registry notes, the ledger, and learnings. Do NOT write files in your session directory.** The isolation guard blocks writes there, and isolating would break Step 0's cwd-based singleton check. Write no `HANDOFF.md` and never disable the guard; details: references/operations.md.
 
 ## 7. Cross-initiative briefings
 

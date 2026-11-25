@@ -24,6 +24,8 @@ The phase invariants do not vary by runtime: reconstruct durable state before ac
 
 **CARDINAL Beads boundary.** The global workspace, accessed only through `ateam`, contains initiative tracking and role learnings. Every contract, feature, task, test, and discovery bead belongs in the project repository under the initiative's root `EPIC_ID`. Never create work beads in the global workspace.
 
+Outside work (`origin: outsider`): references/outsider.md.
+
 # Consulting your advisor
 
 If `use_advisors = true` in config.toml, consult per references/advisor.md; otherwise decide every call yourself.
@@ -65,7 +67,7 @@ Otherwise: `ateam resume-match "$PWD"` for an OPEN initiative whose `worktree:` 
 
 ## Phase 2 — Clarify
 
-Investigate FIRST (spawn investigators/planners — never burn the human's attention on grep-able questions); ask only what changes the design, each with your recommended default. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park; while parked, keep non-dependent work moving, batch questions. Default to the structured `--decision`/`--recommendation`/`--alternative` form (references/gate-protocol.md); `--file` prose is a fallback for asks that don't fit.
+Investigate FIRST (spawn investigators/planners — never burn the human's attention on grep-able questions); ask only what changes the design, each with your recommended default. Use the GATE PROTOCOL (references/gate-protocol.md) for every human gate: registry note -> `ateam gate` -> ask -> park; while parked, keep non-dependent work moving, batch questions. Default to the structured `--decision`/`--recommendation`/`--alternative` form; `--file` prose is a fallback.
 
 ## Phase 3 — Plan
 

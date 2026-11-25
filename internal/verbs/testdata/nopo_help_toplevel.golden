@@ -201,13 +201,16 @@ Commands:
   steward ledger recall <category> [flags]
     Recall recent decisions for one category (most recent first).
 
+  steward ledger self --since=STRING [flags]
+    List the steward's self-decisions since a time, with their reviews.
+
   steward ledger seed [flags]
     Copy the local ledger file into the hosted ledger store (cloud_home);
     never overwrites.
 
   steward startup
-    Print the steward's startup text: ledger rules, ledger stats, learnings.
-    Prints all of it or nothing.
+    Print the steward's startup text: ledger rules, ledger stats, outsider
+    rules, learnings. Prints all of it or nothing.
 
   steward remove [flags]
     De-steward this machine: remove the session dir and doorbell
@@ -229,6 +232,10 @@ Commands:
 
   pr add <initiative-id> <pr-url>
     Record a GitHub PR URL on an initiative's pr rail.
+
+  pr context <initiative-id> [flags]
+    Print the multi-PR context block for an initiative
+    (docs/outsider-requests.md).
 
   cloud-boot start [flags]
     Adopt the run's initiative, launch the DRI under tmux, and park (exit 75)
