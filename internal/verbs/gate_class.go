@@ -6,7 +6,6 @@ package verbs
 import (
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
@@ -68,9 +67,8 @@ func resolveGateClass(explicit, kind string, plan bool) string {
 // (the call that adds "human") the class is applied. That keeps the gate's own
 // bd call sequence unchanged; the class work appends calls at the end. A gate
 // outside a Dispatcher run with no --class does nothing. The "gate-class:"
-// label is written when --class is given or the initiative is an outsider or
-// has active autonomy; the "class:" mail line only for the latter two, and
-// only inside a Dispatcher run (it lives in the outbox mail).
+// label is written when --class is given or the initiative is an outsider;
+// the "class:" mail line only for an outsider, and only inside a Dispatcher run (it lives in the outbox mail).
 func gateClassApply(ctx *cli.Context, c *gateKong) error {
 	_, _, inRun := dispatcherRun()
 	if c.Class == "" && !inRun {
@@ -126,8 +124,7 @@ func (g *gateClassAfterGate) apply() error {
 			}
 		} else {
 			f := initiative.Of(iss)
-			_, _, auto := initiative.ActiveAutonomy(f, time.Now().UTC())
-			special = f.Origin == initiative.OriginOutsider || auto
+			special = f.Origin == initiative.OriginOutsider
 		}
 	}
 	class := resolveGateClass(c.Class, c.Kind, c.Plan)

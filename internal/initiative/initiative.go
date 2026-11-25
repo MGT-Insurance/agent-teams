@@ -48,9 +48,6 @@ type Fields struct {
 	// its classes, in line order. The line is a comma list over the closed set
 	// GateClasses. Nil when absent.
 	StewardApproves []string
-	// Autonomy is the raw "autonomy: <value>" line, MUTABLE (see WithAutonomy)
-	// and read through ActiveAutonomy. "" when absent.
-	Autonomy string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -75,7 +72,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "steward-approves", "autonomy"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "steward-approves"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -226,7 +223,6 @@ func Of(iss bd.Issue) Fields {
 		Requester:       first(lines, "requester"),
 		Request:         first(lines, "request"),
 		StewardApproves: splitClasses(first(lines, "steward-approves")),
-		Autonomy:        first(lines, "autonomy"),
 	}
 }
 
@@ -298,7 +294,6 @@ func New(f Fields) (WritePlan, error) {
 		{"requester", []string{f.Requester}},
 		{"request", []string{f.Request}},
 		{"steward-approves", f.StewardApproves},
-		{"autonomy", []string{f.Autonomy}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
@@ -341,7 +336,6 @@ func New(f Fields) (WritePlan, error) {
 	write("requester", f.Requester)
 	write("request", f.Request)
 	write("steward-approves", strings.Join(f.StewardApproves, ","))
-	write("autonomy", f.Autonomy)
 	for _, s := range f.Sessions {
 		write("session", s)
 	}
@@ -441,20 +435,6 @@ func WithTrack(iss bd.Issue, path string) (WritePlan, error) {
 // contract.
 func WithWhere(iss bd.Issue, value string) (WritePlan, error) {
 	return withSingleValued(iss, "where", value)
-}
-
-// WithAutonomy returns the WritePlan that sets iss's single-valued, MUTABLE
-// "autonomy" field to value, replacing the first existing autonomy line in
-// place (every other line byte-identical) or appending when absent, exactly
-// like WithWhere. value must be one of the two frozen grammars (see
-// ParseAutonomy); anything else is rejected here so a malformed line is never
-// written. Only `ateam autonomy grant|revoke` may call this
-// (docs/outsider-requests.md, the autonomy trust rule).
-func WithAutonomy(iss bd.Issue, value string) (WritePlan, error) {
-	if _, err := ParseAutonomy(value); err != nil {
-		return WritePlan{}, fmt.Errorf("initiative: autonomy value invalid: %w", err)
-	}
-	return withSingleValued(iss, "autonomy", value)
 }
 
 // WithWorktree returns the WritePlan that sets iss's single-valued "worktree"

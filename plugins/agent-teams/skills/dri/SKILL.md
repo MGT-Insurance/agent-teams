@@ -24,7 +24,7 @@ The phase invariants do not vary by runtime: reconstruct durable state before ac
 
 **CARDINAL Beads boundary.** The global workspace, accessed only through `ateam`, contains initiative tracking and role learnings. Every contract, feature, task, test, and discovery bead belongs in the project repository under the initiative's root `EPIC_ID`. Never create work beads in the global workspace.
 
-Outside work (`origin: outsider`): references/outsider.md. Delegated autonomy: references/autonomy.md.
+Outside work (`origin: outsider`): references/outsider.md.
 
 # Consulting your advisor
 

@@ -65,11 +65,10 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models eighteen fields (AMENDED for agent-teams-lrj, outsider
-// requests and autonomy: the single-valued "origin", "requester", "request",
-// and "steward-approves" keys and the single-valued MUTABLE "autonomy" key
-// joined as [Fields.Origin], [Fields.Requester], [Fields.Request],
-// [Fields.StewardApproves], and [Fields.Autonomy]; grammar, closed class set,
+// [Fields] models seventeen fields (AMENDED for agent-teams-lrj, outsider
+// requests: the single-valued "origin", "requester", "request",
+// and "steward-approves" keys joined as [Fields.Origin], [Fields.Requester],
+// [Fields.Request], and [Fields.StewardApproves]; grammar, closed class set,
 // and trust rule in docs/outsider-requests.md; AMENDED earlier (the thirteen) for agent-teams-ssib: "pr" joined
 // the multi-valued rail alongside "session" and "track-worktree" — see
 // [Fields.PRs] and [WithPR]; AMENDED again for ring 1 hosted beads: the
@@ -117,10 +116,7 @@
 //     line. The one exception is [WithWhere] and [WithWorktree], which
 //     rewrite the value of the first existing line for their single-valued
 //     key in place and leave every other line byte-identical; when no such
-//     line exists they append like the others. [WithAutonomy] joins them as
-//     the third in-place rewriter ("autonomy" is MUTABLE: grant, expiry and
-//     revocation all rewrite that one line); it rejects any value that is not
-//     one of the two frozen grammars.
+//     line exists they append like the others.
 //   - A future migration off this description format (e.g. to bd labels)
 //     must carry every canonical key found in the raw text, not merely the
 //     ones that happen to have a Fields member. A migration that moves only
@@ -136,7 +132,7 @@
 //	    Tracks   []string
 //	    PRs      []string
 //	    Where    string
-//	    Origin, Requester, Request, Autonomy string
+//	    Origin, Requester, Request string
 //	    StewardApproves []string
 //	}
 //
@@ -148,8 +144,6 @@
 //	func WithWhere(iss bd.Issue, value string) (WritePlan, error)   // replaces the first "where" line in place, else appends
 //	func WithWorktree(iss bd.Issue, path string) (WritePlan, error) // replaces the first "worktree" line in place, else appends
 //	func WithPR(iss bd.Issue, url string) (WritePlan, error)
-//	func WithAutonomy(iss bd.Issue, value string) (WritePlan, error) // replaces the first "autonomy" line in place, else appends
-//	func ActiveAutonomy(f Fields, now time.Time) (gates []string, ref string, ok bool)
 //
 //	type WritePlan struct {
 //	    Description string

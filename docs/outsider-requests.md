@@ -1,4 +1,4 @@
-# Outsider requests and steward autonomy: frozen contract (rm8 C0)
+# Outsider requests: frozen contract (rm8 C0)
 
 Owner bead: agent-teams-lrj.1. Epic: agent-teams-lrj. Plan: the approved rm8
 plan (option B, new opt-in Dispatcher peer tools). Every rm8 track (T1 to T7,
@@ -22,10 +22,9 @@ initiative without them reads exactly as before.
 | `requester` | `<owner-handle>/<agent-name>`: lowercase kebab tokens, exactly one slash. |
 | `request` | the request bead's id in Eric's account. |
 | `steward-approves` | comma list over the CLOSED class set `plan, scope, design-fork, live-test, delivery`. |
-| `autonomy` | MUTABLE. See section 9. Written only by `initiative.WithAutonomy`. |
 
-`initiative.New` rejects an unknown origin, a malformed requester, a class
-outside the closed set, and a malformed autonomy value. `initiative.Of` never
+`initiative.New` rejects an unknown origin, a malformed requester and a class
+outside the closed set. `initiative.Of` never
 rejects stored data.
 
 ## 2. Peer request and reply mail
@@ -127,7 +126,7 @@ initiative fields and PR list; the line shapes above are frozen.)
 ## 7. Gate class
 
 - The mail line `class: <class>` is written ONLY when the initiative has
-  `origin: outsider` OR an active autonomy line. Gate mail for every other
+  `origin: outsider`. Gate mail for every other
   initiative stays byte-identical to today.
 - The label `gate-class:<class>` is written whenever `--class` is given
   (`ateam gate --class plan|scope|design-fork`).
@@ -148,30 +147,13 @@ initiative fields and PR list; the line shapes above are frozen.)
 <RFC3339>  <category>  initiative=<id>  verdict=<verdict>  reviews=<record key or ->  autonomy=<ref or ->
 ```
 
-## 9. Autonomy
+## 9. Trust rule
 
-Active line:
-`autonomy: gates=<class list>; until=<RFC3339 UTC>; by=eric; via=steward; ref=<source ref>`
-Revoked line: `autonomy: revoked <RFC3339 UTC>; ref=<source ref>`
-
-`initiative.ActiveAutonomy(fields, now)` returns the classes and ref only for
-an active line: revoked, expired, malformed, or `until` more than 72h after
-now is inactive. The classes come from the closed set in section 1.
-
-Trust rule:
-
-- Only `ateam autonomy grant|revoke` writes the line.
-- It refuses when `DSP_BEAD` is set (any Dispatcher run: DRIs, POs).
-- It refuses when `BEADS_ACTOR` starts with `peer:`, or starts with `agent:`
-  and is not `agent:steward`.
-- The steward grants only on Eric's own message (chat or Telegram author
-  Eric), never on bead, peer, PO, or DRI text.
 - The DRI treats a gate comment as an answer only when the initiative is
-  outsider (or autonomy is active), the gate's class is listed, the writer is
-  `agent:steward`, and the approval prefix from section 3 is present. A
-  `peer:` writer is always advice.
+  outsider, the gate's class is listed, the writer is `agent:steward`, and the
+  approval prefix from section 3 is present. A `peer:` writer is always advice.
 
-## 10. Hard limits (autonomy and outsider alike)
+## 10. Hard limits
 
 Never raise the cap. Never widen repo or path scope. Never merge outside
 Eric's normal bar. A delivery approval is not a merge.
@@ -179,9 +161,7 @@ Eric's normal bar. A delivery approval is not a merge.
 ## 11. Front-loaded stubs (C0)
 
 Each returns `not implemented (<bead>)` until its track lands:
-`gate --class` (T2, `gate_class.go`), `clear-gate --autonomy` (T7,
-`autonomy.go`), `ateam autonomy` (T7, `autonomy_kong.go`), `ateam pr context`
-(T6, `pr_context.go`). `clear-gate` also calls `gateClassClear`, a no-op until
-T2. `ateam steward startup` prints `## Outsider rules` (T4) and `## Autonomy
-rules` (T7) after the ledger rules. The manifest has `reference.dri.outsider`
-(T5) and `reference.dri.autonomy` (T7). `prompt-sync write` runs in J.
+`gate --class` (T2, `gate_class.go`), `ateam pr context` (T6,
+`pr_context.go`). `clear-gate` also calls `gateClassClear`, a no-op until
+T2. `ateam steward startup` prints `## Outsider rules` (T4) after the ledger
+rules. The manifest has `reference.dri.outsider` (T5). `prompt-sync write` runs in J.

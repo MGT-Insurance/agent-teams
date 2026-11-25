@@ -14,11 +14,7 @@ func TestRm8Stubs_RegisteredInParser(t *testing.T) {
 	}
 	RegisterAllKong(p)
 	for _, args := range [][]string{
-		{"autonomy", "grant", "at-1"},
-		{"autonomy", "revoke", "at-1"},
-		{"autonomy", "show", "at-1"},
 		{"pr", "context", "at-1"},
-		{"clear-gate", "at-1", "--autonomy", "ref"},
 		{"gate", "at-1", "--decision", "d", "--class", "design-fork"},
 	} {
 		if _, err := p.Parse(args); err != nil {

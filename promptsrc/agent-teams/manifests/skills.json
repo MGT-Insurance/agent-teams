@@ -384,33 +384,6 @@
       ]
     },
     {
-      "id": "reference.dri.autonomy",
-      "kind": "reference",
-      "status": "paired",
-      "inputs": [
-        {
-          "id": "shared",
-          "path": "promptsrc/agent-teams/skills/dri/references/autonomy-shared.md"
-        }
-      ],
-      "outputs": [
-        {
-          "path": "plugins/agent-teams/skills/dri/references/autonomy.md",
-          "format": "markdown",
-          "parts": [
-            "shared"
-          ]
-        },
-        {
-          "path": "plugins/agent-teams-codex/skills/dri/references/autonomy.md",
-          "format": "markdown",
-          "parts": [
-            "shared"
-          ]
-        }
-      ]
-    },
-    {
       "id": "reference.dri.advisor",
       "kind": "reference",
       "status": "runtime-only",
@@ -620,13 +593,6 @@
       "status": "runtime-only",
       "reason": "Hand-authored steward outsider rules that internal/verbs embeds with go:embed for ateam steward startup; not generated from promptsrc.",
       "outputs": [{"path": "internal/verbs/embedded/steward_outsider_rules.md", "format": "markdown"}]
-    },
-    {
-      "id": "embed.steward.autonomy",
-      "kind": "embed",
-      "status": "runtime-only",
-      "reason": "Hand-authored steward autonomy rules that internal/verbs embeds with go:embed for ateam steward startup; not generated from promptsrc.",
-      "outputs": [{"path": "internal/verbs/embedded/steward_autonomy_rules.md", "format": "markdown"}]
     },
     {
       "id": "reference.steward.envelopes",

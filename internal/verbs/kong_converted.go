@@ -329,7 +329,7 @@ type gateKong struct {
 	// unaffected either way — it stays bare and initiative-scoped by design.
 	PR string `name:"pr" help:"Full PR URL to scope the gate to one PR (per-PR label); omitted sets the bare, initiative-scoped gate (legacy)."`
 
-	// Class names the gate's class for outsider/autonomy handling
+	// Class names the gate's class for outsider handling
 	// (docs/outsider-requests.md, "Gate class"). Implemented by rm8 T2
 	// (gate_class.go); until then a given --class errors.
 	Class string `name:"class" enum:",plan,scope,design-fork" default:"" help:"Gate class override: plan, scope, or design-fork. Writes the gate-class:<class> label (docs/outsider-requests.md)."`
@@ -624,22 +624,12 @@ type clearGateKong struct {
 	// clear they depend on; --pr is surgical (one PR only), bare is total
 	// (every PR).
 	PR string `name:"pr" help:"Full PR URL to scope the clear to one PR's gate; omitted clears every gate/handoff label on the initiative, bare and per-PR (unconditional)."`
-
-	// Autonomy is the autonomy grant ref the steward cites when clearing a
-	// gate on its own authority (docs/outsider-requests.md, "Autonomy").
-	// Implemented by rm8 T7 (autonomy.go); until then a given --autonomy errors.
-	Autonomy string `name:"autonomy" help:"Autonomy grant ref this clear is made under (steward only; docs/outsider-requests.md)."`
 }
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 func (c *clearGateKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam clear-gate: no context")
-	}
-	if c.Autonomy != "" {
-		if err := clearGateAutonomyCheck(ctx, c); err != nil {
-			return err
-		}
 	}
 	if err := gateClassClear(ctx, c); err != nil {
 		return err
@@ -1848,5 +1838,4 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterPageKong(p)
 	RegisterLearningsSeed(p)
 	RegisterPoKong(p)
-	RegisterAutonomyKong(p)
 }

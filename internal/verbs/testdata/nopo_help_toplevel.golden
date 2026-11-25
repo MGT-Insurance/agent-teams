@@ -269,13 +269,4 @@ Commands:
     (cloud_home); never overwrites, and skips a key whose role and slug already
     exist hosted under any tier.
 
-  autonomy grant <id> [flags]
-    Grant autonomy (steward only, on Eric's own message).
-
-  autonomy revoke <id> [flags]
-    Revoke autonomy (steward only).
-
-  autonomy show <id>
-    Show an initiative's autonomy line and whether it is active.
-
 Run "ateam <command> --help" for more information on a command.

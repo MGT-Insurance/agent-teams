@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 )
@@ -69,22 +68,7 @@ func TestGateClass_OutsiderPlanGateMailAndLabel(t *testing.T) {
 	}
 }
 
-func TestGateClass_ActiveAutonomyGetsClass(t *testing.T) {
-	defer clearMailClass("at-a1")
-	sup := gcRun(t)
-	until := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	desc := "autonomy: gates=scope; until=" + until + "; by=eric; via=steward; ref=tg:1\n"
-	ctx, _ := newCtx(t, []fakeResp{{stdout: "ok"}, issueResp(t, "at-a1", desc), {stdout: "ok"}})
-	f := makeTempFile(t, "q")
-	if err := (&gateKong{ID: "at-a1", File: f, Kind: "question"}).Run(ctx); err != nil {
-		t.Fatalf("gate: %v", err)
-	}
-	if b := decodeMail(t, outboxLines(t, sup)[0])["body"]; !strings.Contains(b, "kind: question\nclass: scope\n---\n") {
-		t.Errorf("body = %q", b)
-	}
-}
-
-// Non-outsider, no autonomy: mail body and labels equal the pre-rm8 form. The
+// Non-outsider: mail body and labels equal the pre-rm8 form. The
 // only extra bd call is the read-only initiative show after the gate update,
 // inside a Dispatcher run.
 func TestGateClass_NonOutsiderByteIdentical(t *testing.T) {
