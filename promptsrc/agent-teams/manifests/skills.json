@@ -530,12 +530,14 @@
       "status": "runtime-generated",
       "reason": "Claude-hosted product-owner persona skill (frozen contract: internal/po/doc.go); it has no Codex counterpart skill requirement.",
       "inputs": [
-        {"id": "claude-skill", "path": "promptsrc/agent-teams/skills/po/SKILL.md"}
+        {"id": "claude-skill", "path": "promptsrc/agent-teams/skills/po/SKILL.md"},
+        {"id": "shared-message-style", "path": "promptsrc/agent-teams/skills/steward/shared-message-style.md"},
+        {"id": "shared-ledger-persona", "path": "promptsrc/agent-teams/skills/steward/shared-ledger-persona.md"}
       ],
       "outputs": [{
         "path": "plugins/agent-teams/skills/po/SKILL.md",
         "format": "markdown",
-        "parts": ["claude-skill"],
+        "parts": ["claude-skill", "shared-message-style", "shared-ledger-persona"],
         "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/po", "min_headroom": 1000}
       }]
     },

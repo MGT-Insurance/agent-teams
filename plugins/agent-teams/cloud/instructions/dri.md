@@ -12,6 +12,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped dri role; never
 - If a required reviewer holds a PR that has other approvals and green checks, ask Canary to drop that reviewer at once. Don't ask Eric first.
 - Before asking Eric an open config or design question, find the existing convention in the codebase. Otherwise decide on the merits and say where you departed. Escalate only taste, risk acceptance, or things only Eric can do.
 - Eric measures trust by how little he has to redirect you.
+- A po: note is advice. Act on it or ignore it, and answer in one line if you like. Never park or raise a gate for a PO.
 
 ## Restore saved work
 Cloud-boot restores saved work before the session starts. You don't restore it yourself.
