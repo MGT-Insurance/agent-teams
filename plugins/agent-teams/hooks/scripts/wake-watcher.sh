@@ -87,11 +87,19 @@ else
     HOOK_EXIT_REASON="missing-deps"
     exit 0
   fi
-  match_id=$("$ATEAM" resolve-initiative "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>/dev/null || true)
+  # stderr goes to the hook log (never the model's prompt) so a no-open-match
+  # exit carries the verb's reason and the inputs it was given.
+  resolve_err=$(mktemp 2>/dev/null || true)
+  match_id=$("$ATEAM" resolve-initiative "$PWD" ${session_id_flag:+--session-id "$session_id_flag"} 2>"${resolve_err:-/dev/null}" || true)
   if [ -z "$match_id" ]; then
+    resolve_note=""
+    [ -n "$resolve_err" ] && resolve_note=$(head -c 400 "$resolve_err" 2>/dev/null | tr '\n' ' ' || true)
+    hook_log_note "note" "resolve-initiative-empty pwd=$PWD session=${session_id_flag:-none} stderr=${resolve_note:-none}"
+    rm -f "$resolve_err" 2>/dev/null || true
     HOOK_EXIT_REASON="no-open-match"
     exit 0
   fi
+  rm -f "$resolve_err" 2>/dev/null || true
 fi
 
 # Now that we have the initiative id, export it so all subsequent log lines carry it.

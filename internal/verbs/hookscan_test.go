@@ -268,8 +268,9 @@ func TestHookScanRepoDisabledSuppressed(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("stdout %q, want empty (repo disabled)", stdout)
 	}
-	if stderr != "" {
-		t.Errorf("unexpected stderr %q", stderr)
+	want := "hook-scan: reason=repo-disabled initiative=at-111 repo=" + repoDir
+	if strings.TrimSpace(stderr) != want {
+		t.Errorf("stderr %q, want %q", stderr, want)
 	}
 }
 

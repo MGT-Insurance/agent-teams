@@ -480,6 +480,9 @@ func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
 
 	issues, err := listOpenIssues(ctx, false)
 	if err != nil {
+		// Still exit 0 with no stdout (a bd failure is "no match" to the hook),
+		// but say why on stderr so the hook log can show it.
+		fmt.Fprintf(ctx.Stderr, "resolve-initiative: reason=bd-error path=%s session=%s err=%v\n", c.Path, c.SessionID, err)
 		return nil
 	}
 
@@ -495,10 +498,18 @@ func (c *resolveInitiativeKong) Run(ctx *cli.Context) error {
 	}
 
 	if repo := initiative.Of(*match).Repo; repo != "" && !repoconfig.Enabled(repo) {
+		logHookDrop(ctx, "resolve-initiative", "repo-disabled", match.ID, repo)
 		return nil
 	}
 	fmt.Fprintln(ctx.Stdout, match.ID)
 	return nil
+}
+
+// logHookDrop writes the one stderr line a hook verb emits when it found an
+// initiative and then dropped it, so a silent no-open-match in the hook log
+// carries its reason. Stdout and the exit code are unchanged.
+func logHookDrop(ctx *cli.Context, verb, reason, id, repo string) {
+	fmt.Fprintf(ctx.Stderr, "%s: reason=%s initiative=%s repo=%s\n", verb, reason, id, repo)
 }
 
 // resumeMatchClosedKong is the kong-converted form of resumeMatchClosedCommand.

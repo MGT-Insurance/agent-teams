@@ -445,8 +445,25 @@ func TestResolveInitiativeRepoDisabled(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("resolve-initiative repo-disabled: got %q, want empty", stdout)
 	}
-	if stderr != "" {
-		t.Errorf("resolve-initiative repo-disabled: unexpected stderr %q — hooks must stay silent", stderr)
+	want := "resolve-initiative: reason=repo-disabled initiative=at-111 repo=" + repoDir
+	if strings.TrimSpace(stderr) != want {
+		t.Errorf("resolve-initiative repo-disabled: stderr %q, want %q", stderr, want)
+	}
+}
+
+// TestResolveInitiativeCloudURLRepoDropReason pins the at-dol observation: a
+// cloud initiative's "repo:" is a URL, repoconfig.Enabled finds no marker
+// file under it, and the match is dropped. The drop must name its reason.
+func TestResolveInitiativeCloudURLRepoDropReason(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cloud", Title: "Cloud", Description: "repo: https://github.com/o/r\nbranch: b\nmode: cloud\nruntime: claude\nworktree: /vercel/job/repo\nsession: sess-c\n"},
+	}
+	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{"/vercel/job/repo", "--session-id", "sess-c"})
+	if code != 0 || strings.TrimSpace(stdout) != "" {
+		t.Errorf("exit %d stdout %q, want 0 and empty", code, stdout)
+	}
+	if !strings.Contains(stderr, "reason=repo-disabled initiative=at-cloud repo=https://github.com/o/r") {
+		t.Errorf("stderr %q does not name the repo-disabled drop", stderr)
 	}
 }
 
@@ -514,8 +531,8 @@ func TestResolveInitiativeBDError(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Errorf("resolve-initiative bd-error: got %q, want empty", stdout)
 	}
-	if stderr != "" {
-		t.Errorf("resolve-initiative bd-error: unexpected stderr %q — hooks must fail soft", stderr)
+	if !strings.Contains(stderr, "resolve-initiative: reason=bd-error path=/any/path") {
+		t.Errorf("resolve-initiative bd-error: stderr %q missing reason line", stderr)
 	}
 }
 

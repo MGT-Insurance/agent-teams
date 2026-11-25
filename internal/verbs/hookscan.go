@@ -113,6 +113,7 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 	if haveCache && cached.Trusted && cached.fresh(now) && cached.Unread == 0 &&
 		!hookScanDoorbellPresent(ctx, cached.ID) {
 		if cached.Repo != "" && !repoconfig.Enabled(cached.Repo) {
+			logHookDrop(ctx, "hook-scan", "repo-disabled", cached.ID, cached.Repo)
 			return nil
 		}
 		fmt.Fprintf(ctx.Stdout, "id: %s\nunread: %d\n", cached.ID, inboxN)
@@ -187,6 +188,7 @@ func (c *hookScanKong) Run(ctx *cli.Context) error {
 		// while disabled has no doorbell, and re-enabling must rescan.
 		entry.Trusted = false
 		writeHookScanCache(ctx, cacheKey, entry)
+		logHookDrop(ctx, "hook-scan", "repo-disabled", id, repo)
 		return nil
 	}
 
