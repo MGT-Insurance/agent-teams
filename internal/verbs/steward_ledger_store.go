@@ -12,6 +12,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/po"
 )
 
 // stewardLedgerKeyPrefix starts every hosted ledger memory key. The keys carry
@@ -45,12 +46,60 @@ func hostedStewardLedger(ctx *cli.Context) (client cli.BDRunner, store string, o
 	return learnBD(ctx), host, true
 }
 
-// newStewardLedgerStore selects the ledger store for ctx.
+// newStewardLedgerStore selects the steward's ledger store for ctx.
 func newStewardLedgerStore(ctx *cli.Context) stewardLedgerStore {
-	if client, store, ok := hostedStewardLedger(ctx); ok {
-		return &hostedLedgerStore{client: client, store: store}
+	store, _ := newPersonaLedgerStore(ctx, StewardLedgerPersonaSteward)
+	return store
+}
+
+// stewardLedgerPOPersonaPrefix starts every PO persona name; the rest is the
+// PO's kebab-case area.
+const stewardLedgerPOPersonaPrefix = "po-"
+
+// stewardLedgerAreaOK reports whether area is non-empty kebab-case
+// (lowercase letters and digits joined by single hyphens).
+func stewardLedgerAreaOK(area string) bool {
+	if area == "" || strings.HasPrefix(area, "-") || strings.HasSuffix(area, "-") || strings.Contains(area, "--") {
+		return false
 	}
-	return &fileLedgerStore{path: StewardLedgerPath(ctx)}
+	for _, r := range area {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// stewardLedgerPersonaKeyPrefix returns the hosted key prefix for persona:
+// "stewardledger." for the steward, "poledger.<area>." for po-<area>. It
+// errors on any other persona name.
+func stewardLedgerPersonaKeyPrefix(persona string) (string, error) {
+	if persona == StewardLedgerPersonaSteward {
+		return stewardLedgerKeyPrefix, nil
+	}
+	if area, ok := strings.CutPrefix(persona, stewardLedgerPOPersonaPrefix); ok && stewardLedgerAreaOK(area) {
+		return po.LedgerPrefix + area + ".", nil
+	}
+	return "", fmt.Errorf("invalid persona %q (want steward or po-<area>)", persona)
+}
+
+// newPersonaLedgerStore selects the ledger store for persona on ctx. The
+// steward persona gets the steward's store unchanged; a po-<area> persona gets
+// its own file (ledger-po-<area>.jsonl beside the steward's) or its own
+// poledger.<area>. key prefix, so the two never read each other's rows.
+func newPersonaLedgerStore(ctx *cli.Context, persona string) (stewardLedgerStore, error) {
+	prefix, err := stewardLedgerPersonaKeyPrefix(persona)
+	if err != nil {
+		return nil, err
+	}
+	if client, store, ok := hostedStewardLedger(ctx); ok {
+		return &hostedLedgerStore{client: client, store: store, prefix: prefix}, nil
+	}
+	path := StewardLedgerPath(ctx)
+	if persona != StewardLedgerPersonaSteward {
+		path = filepath.Join(StewardHome(ctx), "ledger-"+persona+".jsonl")
+	}
+	return &fileLedgerStore{path: path}, nil
 }
 
 // fileLedgerStore keeps the ledger in one JSONL file.
@@ -83,18 +132,32 @@ func (s *fileLedgerStore) lines(verb string) ([]string, error) {
 type hostedLedgerStore struct {
 	client cli.BDRunner
 	store  string
+	// prefix is the key prefix of this persona's rows; empty means the
+	// steward's (stewardLedgerKeyPrefix).
+	prefix string
+}
+
+func (s *hostedLedgerStore) keyPrefix() string {
+	if s.prefix == "" {
+		return stewardLedgerKeyPrefix
+	}
+	return s.prefix
 }
 
 // stewardLedgerKey returns the hosted memory key for a record with timestamp
 // ts (unix nanoseconds) and JSON value.
 func stewardLedgerKey(rec StewardLedgerRecord, value string) string {
+	return stewardLedgerKeyWithPrefix(stewardLedgerKeyPrefix, rec, value)
+}
+
+func stewardLedgerKeyWithPrefix(prefix string, rec StewardLedgerRecord, value string) string {
 	sum := sha256.Sum256([]byte(value))
-	return fmt.Sprintf("%s%019d-%s", stewardLedgerKeyPrefix, rec.Timestamp.UnixNano(), hex.EncodeToString(sum[:])[:4])
+	return fmt.Sprintf("%s%019d-%s", prefix, rec.Timestamp.UnixNano(), hex.EncodeToString(sum[:])[:4])
 }
 
 func (s *hostedLedgerStore) append(rec StewardLedgerRecord, line []byte) error {
 	value := string(line)
-	if _, err := s.client.Run("remember", "--key="+stewardLedgerKey(rec, value), value); err != nil {
+	if _, err := s.client.Run("remember", "--key="+stewardLedgerKeyWithPrefix(s.keyPrefix(), rec, value), value); err != nil {
 		if isStoreUnreachable(err) {
 			return fmt.Errorf("ateam steward ledger record: ledger store unreachable (%s): may not be saved; retry later", s.store)
 		}
@@ -105,7 +168,7 @@ func (s *hostedLedgerStore) append(rec StewardLedgerRecord, line []byte) error {
 
 // rows returns the ledger memories keyed by memory key.
 func (s *hostedLedgerStore) rows(verb string) (map[string]string, error) {
-	raw, err := readMemoriesByPrefix(s.client, stewardLedgerKeyPrefix)
+	raw, err := readMemoriesByPrefix(s.client, s.keyPrefix())
 	if err != nil {
 		if isStoreUnreachable(err) {
 			return nil, fmt.Errorf("ateam steward ledger %s: ledger store unreachable (%s)", verb, s.store)
@@ -114,7 +177,7 @@ func (s *hostedLedgerStore) rows(verb string) (map[string]string, error) {
 	}
 	out := map[string]string{}
 	for k, v := range raw {
-		if sv, ok := v.(string); ok && strings.HasPrefix(k, stewardLedgerKeyPrefix) {
+		if sv, ok := v.(string); ok && strings.HasPrefix(k, s.keyPrefix()) {
 			out[k] = sv
 		}
 	}
