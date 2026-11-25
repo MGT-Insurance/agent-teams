@@ -525,6 +525,23 @@
       }]
     },
     {
+      "id": "skill.po",
+      "kind": "skill",
+      "status": "runtime-generated",
+      "reason": "Claude-hosted product-owner persona skill (frozen contract: internal/po/doc.go); it has no Codex counterpart skill requirement.",
+      "inputs": [
+        {"id": "claude-skill", "path": "promptsrc/agent-teams/skills/po/SKILL.md"},
+        {"id": "shared-message-style", "path": "promptsrc/agent-teams/skills/steward/shared-message-style.md"},
+        {"id": "shared-ledger-persona", "path": "promptsrc/agent-teams/skills/steward/shared-ledger-persona.md"}
+      ],
+      "outputs": [{
+        "path": "plugins/agent-teams/skills/po/SKILL.md",
+        "format": "markdown",
+        "parts": ["claude-skill", "shared-message-style", "shared-ledger-persona"],
+        "skill_budget": {"base_directory": "/Users/example/.claude/plugins/cache/agent-teams/agent-teams/skills/po", "min_headroom": 1000}
+      }]
+    },
+    {
       "id": "embed.steward.shared-ledger",
       "kind": "embed",
       "status": "runtime-generated",
@@ -570,6 +587,27 @@
       "status": "runtime-only",
       "reason": "Reference supports only the Claude steward workflow.",
       "outputs": [{"path": "plugins/agent-teams/skills/steward/references/operations.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.po.plans-and-prs",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude product-owner persona.",
+      "outputs": [{"path": "plugins/agent-teams/skills/po/references/plans-and-prs.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.po.vision",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude product-owner persona.",
+      "outputs": [{"path": "plugins/agent-teams/skills/po/references/vision.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.po.proposals",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude product-owner persona.",
+      "outputs": [{"path": "plugins/agent-teams/skills/po/references/proposals.md", "format": "markdown"}]
     },
     {
       "id": "reference.steward.pr-reviews",
