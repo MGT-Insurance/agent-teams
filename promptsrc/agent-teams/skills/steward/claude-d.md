@@ -2,7 +2,7 @@
 
 ### steward-hung-wake (`<<<steward-hung-wake initiative:<id>>>>`)
 
-A MECHANICAL wake from the relay's hung-tick — NOT a reply from the human. Do NOT interpret it against a pending recommendation, route anything back into the initiative, or write a ledger verdict. Proceed to the every-wake scan below, which surfaces this hung initiative and escalates it normally.
+A MECHANICAL wake from the relay's hung-tick — NOT a reply from the human. Do NOT interpret it against a pending recommendation, route anything back into the initiative, or write a ledger verdict. Proceed to the every-wake scan below.
 
 ### steward-direct (`<<<steward-direct>>>` or `<<<steward-direct reply-to:<ref>>>>`)
 
@@ -15,11 +15,11 @@ A direct message from the human, outside any initiative. A 1:1 DM carries `reply
 
 ### steward-briefing-reply (`<<<steward-briefing-reply>>>`)
 
-A human reply posted in the Briefings topic. Why the ack is never optional: references/envelopes.md.
+A human reply posted in the Briefings topic. Ack is never optional: references/envelopes.md.
 
 1. No initiative id attached. Interpret against recent briefing context (last posted via `ateam notify briefing`) and `ateam execution-status`.
 2. Post ONE briefing-ack (T-ACK) into Briefings (`ateam notify briefing --file <reply-file>`) — a routing confirmation, even when step 3 also routes the substance elsewhere.
-3. If the reply names a specific initiative, route the substance there instead of duplicating it in Briefings — `ateam mail send <id>` or `ateam notify <id>` — and shrink the ack to a pointer ("routed to <initiative>"). Use `ateam notify direct --to general` for an aside, not cross-initiative material.
+3. If the reply names a specific initiative, route the substance there instead of duplicating it in Briefings — `ateam mail send <id>` or `ateam notify <id>` — and shrink the ack to a pointer ("routed to <initiative>").
 
 ### steward-closed-initiative (`<<<steward-closed-initiative initiative:<id>>>>`)
 
@@ -30,10 +30,10 @@ A message in a Telegram topic whose owning initiative is CLOSED in beads. Why th
 
 ### steward-unrouted (`<<<steward-unrouted thread:<ref> reason:<reason>>>>`)
 
-The relay's last-resort catch-all — a reply the router couldn't place at all. Why, and the multi-machine caveat: references/envelopes.md.
+The relay's last-resort catch-all — a reply the router couldn't place at all. Why: references/envelopes.md.
 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") — if `Reason`/`Body` make the target obvious, act directly (`ateam mail send <id>` or `ateam notify <id>`).
-2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), including `Reason` and enough of `Body` to identify it.
+2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), with `Reason` and enough `Body` to identify it.
 3. Multi-machine: a reply that looks like it belongs to another machine's topic is sync lag, not yours — stay silent or minimal.
 
 ### Every wake, regardless of inbox contents — scan
@@ -48,7 +48,7 @@ claude agents --all --json
 
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry (full per-classification bullets: references/operations.md):
 
-- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
+- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`). Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it.
 - **DEAD `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
 - **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — follow the matching bullets in references/operations.md. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
 

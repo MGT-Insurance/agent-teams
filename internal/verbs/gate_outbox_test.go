@@ -138,8 +138,14 @@ func TestGateOutbox_FailureIsNonFatal(t *testing.T) {
 			if err := (&gateKong{ID: "at-2", File: f, Kind: "question"}).Run(ctx); err != nil {
 				t.Fatalf("gate must succeed despite outbox failure: %v", err)
 			}
-			if len(*calls) != 1 {
-				t.Errorf("bd update calls = %d, want 1", len(*calls))
+			updates := 0
+			for _, c := range *calls {
+				if c.args[0] == "update" {
+					updates++
+				}
+			}
+			if updates != 1 {
+				t.Errorf("bd update calls = %d, want 1", updates)
 			}
 			if !strings.Contains(ctx.Stderr.(interface{ String() string }).String(), "ateam gate: warning:") {
 				t.Errorf("expected warning on stderr")

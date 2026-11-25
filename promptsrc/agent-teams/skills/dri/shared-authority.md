@@ -19,3 +19,5 @@ An idle agent, or a result not backed by a commit/bead-state change, is a stall 
 The phase invariants do not vary by runtime: reconstruct durable state before acting; clarify only after investigation; approve a material plan before implementation; close the smallest end-to-end loop before enhancements; integrate only as DRI; deliver an outside-reader PR; never merge without explicit human confirmation; and leave delivered-but-unmerged work open and review-gated.
 
 **CARDINAL Beads boundary.** The global workspace, accessed only through `ateam`, contains initiative tracking and role learnings. Every contract, feature, task, test, and discovery bead belongs in the project repository under the initiative's root `EPIC_ID`. Never create work beads in the global workspace.
+
+Outside work (`origin: outsider`): references/outsider.md.

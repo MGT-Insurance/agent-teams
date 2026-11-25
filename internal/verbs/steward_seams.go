@@ -777,6 +777,11 @@ const (
 	StewardLedgerCategoryMergeApproval StewardLedgerCategory = "merge-approval"
 	StewardLedgerCategoryDesignFork    StewardLedgerCategory = "design-fork"
 	StewardLedgerCategoryUnblockAction StewardLedgerCategory = "unblock-action"
+	// rm8 (docs/outsider-requests.md section 8): outsider intake calls,
+	// live-test review calls, and questions the steward asks a PO.
+	StewardLedgerCategoryIntake         StewardLedgerCategory = "intake"
+	StewardLedgerCategoryLiveTestReview StewardLedgerCategory = "live-test-review"
+	StewardLedgerCategoryPOQuestion     StewardLedgerCategory = "po-question"
 )
 
 // Valid reports whether c is a recognized StewardLedgerCategory.
@@ -784,7 +789,8 @@ func (c StewardLedgerCategory) Valid() bool {
 	switch c {
 	case StewardLedgerCategoryPlanApproval, StewardLedgerCategoryScopeCall,
 		StewardLedgerCategoryMergeApproval, StewardLedgerCategoryDesignFork,
-		StewardLedgerCategoryUnblockAction:
+		StewardLedgerCategoryUnblockAction, StewardLedgerCategoryIntake,
+		StewardLedgerCategoryLiveTestReview, StewardLedgerCategoryPOQuestion:
 		return true
 	}
 	return false
@@ -829,17 +835,26 @@ func (c StewardLedgerCategory) ValidFor(persona string) bool {
 	return persona != StewardLedgerPersonaSteward && c.IsPO()
 }
 
-// StewardLedgerVerdict enumerates the two outcomes of a Steward decision.
+// StewardLedgerVerdict enumerates the outcomes of a Steward decision: the
+// human's verdict on a recommendation (accepted, corrected) or the steward's
+// own call made without Eric (self-approved, self-denied).
 type StewardLedgerVerdict string
 
 const (
-	StewardLedgerVerdictAccepted  StewardLedgerVerdict = "accepted"
-	StewardLedgerVerdictCorrected StewardLedgerVerdict = "corrected"
+	StewardLedgerVerdictAccepted     StewardLedgerVerdict = "accepted"
+	StewardLedgerVerdictCorrected    StewardLedgerVerdict = "corrected"
+	StewardLedgerVerdictSelfApproved StewardLedgerVerdict = "self-approved"
+	StewardLedgerVerdictSelfDenied   StewardLedgerVerdict = "self-denied"
 )
 
 // Valid reports whether v is a recognized StewardLedgerVerdict.
 func (v StewardLedgerVerdict) Valid() bool {
-	return v == StewardLedgerVerdictAccepted || v == StewardLedgerVerdictCorrected
+	return v == StewardLedgerVerdictAccepted || v == StewardLedgerVerdictCorrected || v.IsSelf()
+}
+
+// IsSelf reports whether v is a decision the steward made without Eric.
+func (v StewardLedgerVerdict) IsSelf() bool {
+	return v == StewardLedgerVerdictSelfApproved || v == StewardLedgerVerdictSelfDenied
 }
 
 // StewardLedgerRecord is one decision event appended as a single JSON line to
@@ -856,6 +871,9 @@ type StewardLedgerRecord struct {
 	// ledger lines written before this field existed backward-compatible —
 	// they unmarshal with Decision == "".
 	Decision string `json:"decision,omitempty"`
+	// Reviews is the record key of an earlier self decision this record
+	// reviews (rm8). The verdict of a review is accepted or corrected.
+	Reviews string `json:"reviews,omitempty"`
 }
 
 // Validate reports whether r has all required fields set and recognized
@@ -883,6 +901,12 @@ func (r StewardLedgerRecord) ValidateFor(persona string) error {
 	}
 	if r.Verdict == StewardLedgerVerdictCorrected && r.Decision == "" {
 		return fmt.Errorf("steward ledger record: verdict=corrected requires --decision (what the human actually decided)")
+	}
+	if r.Reviews != "" && r.Verdict != StewardLedgerVerdictAccepted && r.Verdict != StewardLedgerVerdictCorrected {
+		return fmt.Errorf("steward ledger record: --reviews needs verdict accepted or corrected, got %q", r.Verdict)
+	}
+	if r.Reviews != "" && strings.ContainsAny(r.Reviews, " \t\r\n") {
+		return fmt.Errorf("steward ledger record: reviews key %q must not contain whitespace", r.Reviews)
 	}
 	return nil
 }
