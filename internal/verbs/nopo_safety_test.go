@@ -116,8 +116,18 @@ func TestNoPO_GateLocalAndDispatcherRun(t *testing.T) {
 			if got := ctx.Stderr.(*bytes.Buffer).String(); got != "" {
 				t.Errorf("stderr = %q, want empty", got)
 			}
-			if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0].args, wantUpdate) {
-				t.Errorf("bd calls = %v, want exactly %v", *calls, wantUpdate)
+			// rm8 T2: inside a run, one read-only `bd show` follows the gate
+			// update so an outsider gate can be told apart; the update itself
+			// is unchanged.
+			wantCalls := 1
+			if inRun {
+				wantCalls = 2
+			}
+			if len(*calls) != wantCalls || !reflect.DeepEqual((*calls)[0].args, wantUpdate) {
+				t.Errorf("bd calls = %v, want %v first of %d", *calls, wantUpdate, wantCalls)
+			}
+			if inRun && !reflect.DeepEqual((*calls)[1].args, []string{"show", "at-9", "--json"}) {
+				t.Errorf("second call = %v, want the read-only show", (*calls)[1].args)
 			}
 			for _, c := range *calls {
 				if noPOHasMarker(strings.Join(c.args, " ")) {

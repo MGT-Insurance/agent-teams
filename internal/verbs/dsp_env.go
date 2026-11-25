@@ -68,7 +68,7 @@ type outboxMailOp struct {
 }
 
 // newGateMailOp builds the mail op for a gate on initiative id. The body
-// carries no agent: header. It truncates ask to maxGateOutboxAskRunes runes.
+// carries no agent: header; a "class:" line follows "kind:" only for an outsider or autonomy initiative (gateClassApply). It truncates ask to maxGateOutboxAskRunes runes.
 func newGateMailOp(id, kind, ask string) outboxMailOp {
 	if r := []rune(ask); len(r) > maxGateOutboxAskRunes {
 		ask = string(r[:maxGateOutboxAskRunes])
@@ -77,7 +77,7 @@ func newGateMailOp(id, kind, ask string) outboxMailOp {
 		Op:    "file",
 		Type:  "mail",
 		Title: id + ": " + kind + " gate",
-		Body:  "initiative: " + id + "\nkind: " + kind + "\n---\n" + ask,
+		Body:  "initiative: " + id + "\nkind: " + kind + "\n" + gateMailClassLine(id) + "---\n" + ask,
 	}
 }
 

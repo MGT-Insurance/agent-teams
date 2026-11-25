@@ -439,10 +439,8 @@ func (c *gateKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam gate: no context")
 	}
-	if c.Class != "" {
-		if err := gateClassApply(ctx, c); err != nil {
-			return err
-		}
+	if err := gateClassApply(ctx, c); err != nil {
+		return err
 	}
 
 	noteFile := c.File
