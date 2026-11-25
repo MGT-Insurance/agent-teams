@@ -76,6 +76,8 @@ func (c *condenseCheckKong) Run(ctx *cli.Context) error {
 		}
 	}
 
+	dropPOStateKeys(sizes)
+
 	roles := c.roles(sizes)
 	results := make([]condenseCheckRoleResult, 0, len(roles))
 	for _, role := range roles {

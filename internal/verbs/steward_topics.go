@@ -82,7 +82,7 @@ func isKnownStewardTopic(ctx *cli.Context, threadRef string) bool {
 
 	known := false
 	for key, v := range raw {
-		if !strings.HasPrefix(key, stewardTopicsKeyPrefix) {
+		if !strings.HasPrefix(key, stewardTopicsKeyPrefix) || isPOStateKey(key) {
 			continue
 		}
 		value, ok := v.(string)

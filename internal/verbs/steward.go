@@ -473,11 +473,12 @@ func countUnreadStewardMessages(ctx *cli.Context) (int, error) {
 // rejects an unrecognized value at parse time (exit 2), same as gateKong's
 // Kind and lockKong's Action elsewhere in this package.
 type stewardLedgerRecordKong struct {
-	Category       string `name:"category" required:"" enum:"plan-approval,scope-call,merge-approval,design-fork,unblock-action" help:"Decision category (plan-approval|scope-call|merge-approval|design-fork|unblock-action)."`
+	Category       string `name:"category" required:"" enum:"plan-approval,scope-call,merge-approval,design-fork,unblock-action,nudge,impact-call,new-work,bold-proposal,overlap-call,charter-change,claim,plan-feedback,pr-fit" help:"Decision category (plan-approval|scope-call|merge-approval|design-fork|unblock-action; PO categories need --persona po-<area>)."`
 	Initiative     string `name:"initiative" required:"" help:"Initiative id the decision concerns."`
 	Recommendation string `name:"recommendation" required:"" help:"What the Steward recommended."`
 	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected" help:"Outcome: accepted or corrected."`
 	Decision       string `name:"decision" help:"What the human actually decided (REQUIRED when verdict=corrected)."`
+	Persona        string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
 }
 
 // Run builds a StewardLedgerRecord, validates it against the contract's
@@ -501,12 +502,17 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 		Decision:       c.Decision,
 	}
 
-	line, err := rec.MarshalLine()
+	persona := ledgerPersonaOrDefault(c.Persona)
+	store, err := newPersonaLedgerStore(ctx, persona)
+	if err != nil {
+		return cli.Usagef("ateam steward ledger record: %v", err)
+	}
+	line, err := rec.MarshalLineFor(persona)
 	if err != nil {
 		return cli.Usagef("ateam steward ledger record: %v", err)
 	}
 
-	if err := newStewardLedgerStore(ctx).append(rec, bytes.TrimSuffix(line, []byte("\n"))); err != nil {
+	if err := store.append(rec, bytes.TrimSuffix(line, []byte("\n"))); err != nil {
 		return err
 	}
 
@@ -526,6 +532,7 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 type stewardLedgerStatsKong struct {
 	Category string `name:"category" help:"Restrict to one category (default: all)."`
 	JSON     bool   `name:"json" help:"Output stats as JSON."`
+	Persona  string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
 }
 
 // stewardCategoryStats is one aggregated row emitted by `steward ledger stats`.
@@ -547,6 +554,15 @@ var stewardLedgerCategoryOrder = []StewardLedgerCategory{
 	StewardLedgerCategoryUnblockAction,
 }
 
+// ledgerPersonaOrDefault maps the empty persona (a direct-Run test call that
+// bypasses kong's default tag) to the steward.
+func ledgerPersonaOrDefault(p string) string {
+	if p == "" {
+		return StewardLedgerPersonaSteward
+	}
+	return p
+}
+
 // Run reads StewardLedgerPath and reports per-category accepted/corrected
 // counts and accept rate. A missing ledger (Steward never recorded a
 // decision yet) is not an error — it reports zero rows. Malformed lines are
@@ -555,13 +571,18 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward ledger stats: nil context")
 	}
-	if c.Category != "" && !StewardLedgerCategory(c.Category).Valid() {
+	persona := ledgerPersonaOrDefault(c.Persona)
+	store, err := newPersonaLedgerStore(ctx, persona)
+	if err != nil {
+		return cli.Usagef("ateam steward ledger stats: %v", err)
+	}
+	if c.Category != "" && !StewardLedgerCategory(c.Category).ValidFor(persona) {
 		return cli.Usagef("ateam steward ledger stats: invalid category %q", c.Category)
 	}
 
 	counts := make(map[StewardLedgerCategory]*stewardCategoryStats)
 
-	ledgerLines, err := newStewardLedgerStore(ctx).lines("stats")
+	ledgerLines, err := store.lines("stats")
 	if err != nil {
 		return err
 	}
@@ -570,7 +591,7 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 		if line == "" {
 			continue
 		}
-		rec, err := ParseStewardLedgerRecord([]byte(line))
+		rec, err := ParseStewardLedgerRecordFor(persona, []byte(line))
 		if err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam steward ledger stats: warning: skipping malformed line: %v\n", err)
 			continue
@@ -600,7 +621,11 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 		}
 		rows = append(rows, finalizeStewardStats(*s))
 	} else {
-		for _, cat := range stewardLedgerCategoryOrder {
+		order := stewardLedgerCategoryOrder
+		if persona != StewardLedgerPersonaSteward {
+			order = append(append([]StewardLedgerCategory{}, order...), StewardLedgerPOCategories...)
+		}
+		for _, cat := range order {
 			if s, ok := counts[cat]; ok {
 				rows = append(rows, finalizeStewardStats(*s))
 			}
@@ -657,6 +682,7 @@ type stewardLedgerRecallKong struct {
 	Category string `arg:"" name:"category" required:"" help:"Decision category to recall (plan-approval|scope-call|merge-approval|design-fork|unblock-action)."`
 	Limit    int    `name:"limit" default:"10" help:"Max records to return (most recent first)."`
 	JSON     bool   `name:"json" help:"Output records as JSON."`
+	Persona  string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
 }
 
 // Run reads StewardLedgerPath, filters to c.Category, orders most-recent-
@@ -667,11 +693,16 @@ func (c *stewardLedgerRecallKong) Run(ctx *cli.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ateam steward ledger recall: nil context")
 	}
-	if !StewardLedgerCategory(c.Category).Valid() {
+	persona := ledgerPersonaOrDefault(c.Persona)
+	store, err := newPersonaLedgerStore(ctx, persona)
+	if err != nil {
+		return cli.Usagef("ateam steward ledger recall: %v", err)
+	}
+	if !StewardLedgerCategory(c.Category).ValidFor(persona) {
 		return cli.Usagef("ateam steward ledger recall: invalid category %q", c.Category)
 	}
 
-	ledgerLines, err := newStewardLedgerStore(ctx).lines("recall")
+	ledgerLines, err := store.lines("recall")
 	if err != nil {
 		return err
 	}
@@ -682,7 +713,7 @@ func (c *stewardLedgerRecallKong) Run(ctx *cli.Context) error {
 		if line == "" {
 			continue
 		}
-		rec, err := ParseStewardLedgerRecord([]byte(line))
+		rec, err := ParseStewardLedgerRecordFor(persona, []byte(line))
 		if err != nil {
 			fmt.Fprintf(ctx.Stderr, "ateam steward ledger recall: warning: skipping malformed line: %v\n", err)
 			continue
