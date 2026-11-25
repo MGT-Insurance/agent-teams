@@ -274,6 +274,21 @@ func TestHookScanRepoDisabledSuppressed(t *testing.T) {
 	}
 }
 
+// TestHookScanCloudURLRepoResolves is the at-dol shape for inbox-drain's
+// hook-scan: a URL repo no longer drops the match.
+func TestHookScanCloudURLRepoResolves(t *testing.T) {
+	issues := []bd.Issue{
+		{ID: "at-cloud", Title: "Cloud", Description: "repo: https://github.com/o/r\nbranch: b\nmode: cloud\nruntime: claude\nworktree: /vercel/job/repo\nsession: sess-c\n"},
+	}
+	stdout, stderr, code := runHookScan(t, issues, []string{"/vercel/job/repo", "--session-id", "sess-c"})
+	if code != 0 || !strings.Contains(stdout, "id: at-cloud") {
+		t.Errorf("exit %d stdout %q, want id: at-cloud", code, stdout)
+	}
+	if strings.Contains(stderr, "repo-disabled") {
+		t.Errorf("stderr %q reports a drop for a URL repo", stderr)
+	}
+}
+
 // TestHookScanSessionFirstHitFromNonMatchingCwd is the hook-scan half of ring
 // .4 (at-1k234): a session tied to an initiative via "session: <id>" resolves
 // that initiative — and its unread count — even when the path being scanned

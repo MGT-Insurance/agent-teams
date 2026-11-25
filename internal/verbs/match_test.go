@@ -451,19 +451,25 @@ func TestResolveInitiativeRepoDisabled(t *testing.T) {
 	}
 }
 
-// TestResolveInitiativeCloudURLRepoDropReason pins the at-dol observation: a
-// cloud initiative's "repo:" is a URL, repoconfig.Enabled finds no marker
-// file under it, and the match is dropped. The drop must name its reason.
-func TestResolveInitiativeCloudURLRepoDropReason(t *testing.T) {
+// TestResolveInitiativeCloudURLRepoResolves is the at-dol shape: a cloud
+// initiative's "repo:" is a URL. repoconfig.Enabled finds no marker file under
+// a URL and used to drop the match; the hook path now uses EnabledForSession,
+// which counts a URL repo as enabled.
+func TestResolveInitiativeCloudURLRepoResolves(t *testing.T) {
 	issues := []bd.Issue{
 		{ID: "at-cloud", Title: "Cloud", Description: "repo: https://github.com/o/r\nbranch: b\nmode: cloud\nruntime: claude\nworktree: /vercel/job/repo\nsession: sess-c\n"},
 	}
 	stdout, stderr, code := runVerb(t, "resolve-initiative", issues, []string{"/vercel/job/repo", "--session-id", "sess-c"})
-	if code != 0 || strings.TrimSpace(stdout) != "" {
-		t.Errorf("exit %d stdout %q, want 0 and empty", code, stdout)
+	if code != 0 || strings.TrimSpace(stdout) != "at-cloud" {
+		t.Errorf("exit %d stdout %q, want 0 and at-cloud", code, stdout)
 	}
-	if !strings.Contains(stderr, "reason=repo-disabled initiative=at-cloud repo=https://github.com/o/r") {
-		t.Errorf("stderr %q does not name the repo-disabled drop", stderr)
+	if stderr != "" {
+		t.Errorf("unexpected stderr %q for a resolved match", stderr)
+	}
+	// A cwd that matches no worktree still resolves by the session tie.
+	stdout, _, code = runVerb(t, "resolve-initiative", issues, []string{"/elsewhere", "--session-id", "sess-c"})
+	if code != 0 || strings.TrimSpace(stdout) != "at-cloud" {
+		t.Errorf("session-only: exit %d stdout %q, want at-cloud", code, stdout)
 	}
 }
 

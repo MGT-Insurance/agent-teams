@@ -83,3 +83,36 @@ func TestEnabled_ExtraWhitespaceAroundValueTrimmed(t *testing.T) {
 		t.Error("Enabled() = true for 'disabled:   true  ', want false — value should be trimmed before comparison")
 	}
 }
+
+func TestEnabledForSession_URLForms(t *testing.T) {
+	for _, repo := range []string{
+		"https://github.com/o/r",
+		"http://example.com/o/r",
+		"git@github.com:o/r.git",
+		"ssh://git@github.com/o/r.git",
+	} {
+		if !EnabledForSession(repo) {
+			t.Errorf("EnabledForSession(%q) = false, want true", repo)
+		}
+		if Enabled(repo) {
+			t.Errorf("Enabled(%q) = true, want false (senders and routers keep a cloud initiative off)", repo)
+		}
+	}
+}
+
+func TestEnabledForSession_LocalPathMatchesEnabled(t *testing.T) {
+	missing := t.TempDir()
+	if EnabledForSession(missing) {
+		t.Error("EnabledForSession() = true for a local path with no .agent-teams, want false")
+	}
+	disabledDir := t.TempDir()
+	writeMarker(t, disabledDir, "disabled: true\n")
+	if EnabledForSession(disabledDir) {
+		t.Error("EnabledForSession() = true for 'disabled: true', want false")
+	}
+	enabledDir := t.TempDir()
+	writeMarker(t, enabledDir, "")
+	if !EnabledForSession(enabledDir) {
+		t.Error("EnabledForSession() = false for a local path with a marker file, want true")
+	}
+}
