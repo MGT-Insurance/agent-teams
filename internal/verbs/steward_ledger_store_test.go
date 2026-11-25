@@ -412,3 +412,135 @@ func TestStewardLedgerRows_DoNotChangeLearningsOutputs(t *testing.T) {
 		t.Errorf("ledger rows changed learnings output:\nwithout:\n%s\nwith:\n%s", without, with)
 	}
 }
+
+// ── rm8: self decisions, reviews, autonomy ───────────────────────────────────
+
+// selfLedgerCtxs runs a case against the local file store and the hosted store.
+func selfLedgerCtxs(t *testing.T, fn func(t *testing.T, ctx *cli.Context, out *bytes.Buffer)) {
+	t.Run("local", func(t *testing.T) {
+		ctx, out, _ := makeCtx(noBDCalls{t}, t.TempDir())
+		fn(t, ctx, out)
+	})
+	t.Run("hosted", func(t *testing.T) {
+		ctx, out, _ := hostedLedgerCtx(t, newMemBD())
+		fn(t, ctx, out)
+	})
+}
+
+var recordedKey = regexp.MustCompile(`key=(\S+)`)
+
+func recordSelf(t *testing.T, ctx *cli.Context, out *bytes.Buffer, cmd stewardLedgerRecordKong) (string, error) {
+	t.Helper()
+	out.Reset()
+	cmd.Recommendation = "rec"
+	err := cmd.Run(ctx)
+	if m := recordedKey.FindStringSubmatch(out.String()); m != nil {
+		return m[1], err
+	}
+	return "", err
+}
+
+func TestStewardLedgerSelf_ListsThenShowsReviewed_LocalAndHosted(t *testing.T) {
+	selfLedgerCtxs(t, func(t *testing.T, ctx *cli.Context, out *bytes.Buffer) {
+		key, err := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "at-1", Verdict: "self-approved", Autonomy: "tg-42"})
+		if err != nil || key == "" {
+			t.Fatalf("self record: key=%q err=%v", key, err)
+		}
+		out.Reset()
+		if err := (&stewardLedgerSelfKong{Since: "1h"}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`^\S+  intake  initiative=at-1  verdict=self-approved  reviews=-  autonomy=tg-42\n$`).MatchString(out.String()) {
+			t.Errorf("self line: %q", out.String())
+		}
+		if _, err := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "at-1", Verdict: "corrected", Decision: "should have denied", Reviews: key}); err != nil {
+			t.Fatalf("review: %v", err)
+		}
+		out.Reset()
+		(&stewardLedgerSelfKong{Since: "1h", JSON: true}).Run(ctx)
+		var rows []stewardLedgerSelfRow
+		if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 2 {
+			t.Fatalf("json: %v %s", err, out.String())
+		}
+		if rows[0].ReviewState != "corrected" || rows[1].Reviews != key {
+			t.Errorf("review state not shown: %+v", rows)
+		}
+		out.Reset()
+		(&stewardLedgerSelfKong{Since: "1h"}).Run(ctx)
+		if !strings.Contains(out.String(), "reviews="+key) {
+			t.Errorf("review line missing key: %q", out.String())
+		}
+		out.Reset()
+		if err := (&stewardLedgerSelfKong{Since: "2999-01-01T00:00:00Z"}).Run(ctx); err != nil || !strings.Contains(out.String(), "no ledger entries") {
+			t.Errorf("future since: %v %q", err, out.String())
+		}
+		if err := (&stewardLedgerSelfKong{Since: "bogus"}).Run(ctx); err == nil {
+			t.Error("bogus since accepted")
+		}
+	})
+}
+
+func TestStewardLedgerRecord_ReviewsRefusals(t *testing.T) {
+	selfLedgerCtxs(t, func(t *testing.T, ctx *cli.Context, out *bytes.Buffer) {
+		key, _ := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "po-question", Initiative: "at-2", Verdict: "self-denied"})
+		_, human := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "scope-call", Initiative: "at-2", Verdict: "accepted"})
+		if human != nil {
+			t.Fatal(human)
+		}
+		for name, c := range map[string]stewardLedgerRecordKong{
+			"corrected without decision": {Category: "po-question", Initiative: "at-2", Verdict: "corrected", Reviews: key},
+			"unknown key":                {Category: "po-question", Initiative: "at-2", Verdict: "accepted", Reviews: "0000000000000000001-abcd"},
+			"self verdict reviews":       {Category: "po-question", Initiative: "at-2", Verdict: "self-approved", Reviews: key},
+		} {
+			if _, err := recordSelf(t, ctx, out, c); err == nil {
+				t.Errorf("%s: accepted", name)
+			}
+		}
+		rows, _ := readStewardLedgerRecords(ctx, newStewardLedgerStore(ctx), StewardLedgerPersonaSteward, "t")
+		if len(rows) != 2 {
+			t.Fatalf("refused records were stored: %d", len(rows))
+		}
+		if _, err := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "scope-call", Initiative: "at-2", Verdict: "accepted", Reviews: rows[1].Key}); err == nil {
+			t.Error("review of a human-verdict record accepted")
+		}
+	})
+}
+
+func TestStewardLedgerStats_SplitCounts(t *testing.T) {
+	selfLedgerCtxs(t, func(t *testing.T, ctx *cli.Context, out *bytes.Buffer) {
+		k1, _ := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "a", Verdict: "self-approved"})
+		k2, _ := recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "b", Verdict: "self-denied"})
+		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "c", Verdict: "self-approved", Autonomy: "ref"})
+		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "d", Verdict: "accepted"})
+		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "a", Verdict: "accepted", Reviews: k1})
+		recordSelf(t, ctx, out, stewardLedgerRecordKong{Category: "intake", Initiative: "b", Verdict: "corrected", Decision: "x", Reviews: k2})
+		out.Reset()
+		if err := (&stewardLedgerStatsKong{JSON: true}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var rows []stewardCategoryStats
+		if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 1 {
+			t.Fatalf("%v %s", err, out.String())
+		}
+		want := stewardCategoryStats{Category: "intake", Total: 4, Accepted: 1, AcceptRate: 1, SelfApproved: 2, SelfDenied: 1, Autonomous: 1, Reviewed: 2, ReviewCorrected: 1}
+		if rows[0] != want {
+			t.Errorf("stats = %+v, want %+v", rows[0], want)
+		}
+	})
+}
+
+func TestStewardLedger_LegacyLinesParseUnchanged(t *testing.T) {
+	ctx, out, _ := makeCtx(noBDCalls{t}, t.TempDir())
+	legacy := `{"ts":"2026-01-02T03:04:05Z","category":"plan-approval","initiative":"old-1","recommendation":"r","verdict":"corrected","decision":"d"}`
+	writeLedgerFile(t, ctx, legacy)
+	rec, err := ParseStewardLedgerRecord([]byte(legacy))
+	if err != nil || rec.Reviews != "" || rec.Autonomy != "" {
+		t.Fatalf("legacy parse: %+v %v", rec, err)
+	}
+	if err := (&stewardLedgerStatsKong{JSON: true}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(out.String()); got != `[{"category":"plan-approval","total":1,"accepted":0,"corrected":1,"accept_rate":0}]` {
+		t.Errorf("legacy stats changed: %s", got)
+	}
+}

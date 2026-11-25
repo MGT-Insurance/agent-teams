@@ -197,6 +197,9 @@ Commands:
   steward ledger recall <category> [flags]
     Recall recent decisions for one category (most recent first).
 
+  steward ledger self --since=STRING [flags]
+    List the steward's self-decisions since a time, with their reviews.
+
   steward ledger seed [flags]
     Copy the local ledger file into the hosted ledger store (cloud_home);
     never overwrites.
