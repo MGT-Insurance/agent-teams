@@ -1,0 +1,265 @@
+Usage: ateam <command>
+
+agent-teams workspace CLI
+
+Flags:
+  -h, --help    Show context-sensitive help.
+
+Commands:
+  reopen <id>
+    Reopen a closed initiative.
+
+  register --title=STRING --file=STRING
+    Register a new initiative from a body file.
+
+  note --file=STRING <id>
+    Add a note to an initiative.
+
+  gate <id> [flags]
+    Add a gate (human-review request) to an initiative.
+
+  clear-gate <id> [flags]
+    Clear the human-review gate on an initiative.
+
+  handoff <id> [flags]
+    Declare (or clear) that the human is done looking at an initiative; it's on
+    the team for external review.
+
+  learn <role> <slug> [flags]
+    Store a memory for a role.
+
+  close <id> [flags]
+    Close an initiative.
+
+  pull [flags]
+    Pull the remote beads database (dolt pull).
+
+  sync
+    Pull then push the beads database (bounded non-ff retry).
+
+  forget <role> <slug>
+    Delete a role memory by key.
+
+  applied <role> <slug>
+    Record an applied-signal for a role's learning (bumps count + last_applied).
+
+  condense <role>
+    Emit a structured memory packet for a role.
+
+  fresh-drain <role>
+    Drain fresh: memories to cold for a role.
+
+  update-description --file=STRING <id>
+    Update an initiative's description from a file.
+
+  condense-lock <action>
+    Acquire or release the advisory condense lock.
+
+  condense-check [<role>] [flags]
+    Compute the condense fire/skip verdict for one role or all roles
+    (read-only).
+
+  cost <initiative-id> [flags]
+    Report estimated token cost for an initiative.
+
+  ws
+    Print the workspace home path.
+
+  list
+    List open initiatives.
+
+  list-json [flags]
+    List initiatives as JSON, each with its parsed routing fields.
+
+  human-list
+    List gated beads awaiting human input.
+
+  show <id>
+    Show details for an initiative.
+
+  learnings <role>
+    Print role memories (hot+fresh, or all).
+
+  instructions <role>
+    Print a role's machine-local human-authored instructions file, if any.
+
+  recall <role> <query>
+    Search role memories by tokenized query, ranked by matched terms.
+
+  prime
+    Print cross-project user preferences.
+
+  roles
+    List role namespaces present in workspace memories.
+
+  memories-json
+    List all role memories as JSON with tier + applied signal.
+
+  audit
+    Audit global workspace for leaked work beads.
+
+  resume-match <worktree-path>
+    Find the open initiative whose worktree is EXACTLY this path (no ancestor
+    matching).
+
+  resume-match-closed <worktree-path>
+    Find the most-recently-closed initiative whose worktree is EXACTLY this path
+    (no ancestor matching).
+
+  resolve-initiative <path> [flags]
+    Find the open initiative owning this path, ancestor-or-self (the worktree
+    root or any subdirectory of it).
+
+  hook-scan [<path>] [flags]
+    Resolve a path to its owning initiative and report unread mail, from one
+    Dolt open.
+
+  new-initiative <directory> [<dri-arg> ...]
+    Spawn a background DRI session in <directory>.
+
+  dispatch --problem=STRING [flags]
+    Create a worktree, register an initiative, and optionally launch a DRI
+    session.
+
+  resume [<id>] [flags]
+    Re-launch a background DRI session for an existing initiative.
+
+  runtime check <runtime> [flags]
+    Check whether a runtime is available.
+
+  runtime open <runtime>
+    Open a runtime's native session view.
+
+  setup codex [flags]
+    Install and verify Codex-specific agent-teams components.
+
+  worktree-setup [<wtPath>]
+    Run repo-specific worktree-setup hook for the given worktree.
+
+  mail send --file=STRING <recipient-initiative-id> [flags]
+    Send a message to a recipient initiative.
+
+  mail inbox [flags]
+    Read and consume unread messages for this initiative.
+
+  mail list [flags]
+    List recent cross-initiative mail (all statuses, including closed).
+
+  mail close <id>
+    Close a message bead.
+
+  mail purge [flags]
+    Permanently delete old closed message beads.
+
+  mail follow [flags]
+    On a hosted workspace, start the per-host follower that rings local
+    initiatives' doorbells from the events journal.
+
+  route-pr-event --repo=STRING --pr-number=INT --head-branch=STRING --transition=PR-TRANSITION --body-file=STRING [flags]
+    Route a PR event to an owning initiative.
+
+  execution-status
+    Emit JSON array of open initiatives with execution state.
+
+  hung-scan
+    Emit JSON array of open initiatives classified for hung-session detection.
+
+  watchers
+    Show watcher state for all open initiatives.
+
+  reap-orphans
+    Stop background sessions whose worktree cwd no longer exists.
+
+  reap [<target>] [flags]
+    Tear down closed review sessions past grace (scan mode, what pr-shepherd
+    calls every tick) or one target right now (one-off mode); see reap-orphans
+    for stop-only cwd-missing cleanup.
+
+  notify --file=STRING <id> [flags]
+    Send a message to a human via the configured transport.
+
+  relay
+    Long-poll the configured transport and relay human replies to the Steward.
+
+  steward init
+    Create the Steward session directory and marker file.
+
+  steward start [flags]
+    Init, then singleton/orphan-watcher pre-flight checks, then launch the
+    Steward's background session.
+
+  steward ledger record --category=STRING --initiative=STRING --recommendation=STRING --verdict=STRING [flags]
+    Append one decision to the Steward's ledger.
+
+  steward ledger stats [flags]
+    Report per-category accept/correct counts from the ledger.
+
+  steward ledger recall <category> [flags]
+    Recall recent decisions for one category (most recent first).
+
+  steward ledger seed [flags]
+    Copy the local ledger file into the hosted ledger store (cloud_home);
+    never overwrites.
+
+  steward startup
+    Print the steward's startup text: ledger rules, ledger stats, learnings.
+    Prints all of it or nothing.
+
+  steward remove [flags]
+    De-steward this machine: remove the session dir and doorbell
+    (ledger/briefing kept unless --purge).
+
+  tie-session [<initiative-id>] [flags]
+    Tie this session's id to its initiative (self-registration).
+
+  sent [flags]
+    Read back the audit log of messages sent to the human (who sent what, when).
+
+  spawn-check [flags]
+    Witness whether a named teammate spawn actually attached its role definition
+    (reads the harness's own subagent sidecar).
+
+  preflight [flags]
+    Launch a live probe session and verify the agent-teams role/model/spawn
+    plumbing end to end.
+
+  pr add <initiative-id> <pr-url>
+    Record a GitHub PR URL on an initiative's pr rail.
+
+  cloud-boot start [flags]
+    Adopt the run's initiative, launch the DRI under tmux, and park (exit 75)
+    when it goes idle.
+
+  cloud-boot resume [flags]
+    Relaunch the parked DRI session with the Dispatcher wake event as its
+    prompt.
+
+  live-test file --worktree=STRING --scope=STRING --items-file=STRING [flags]
+    File a live-test bead (--job picks the UI or API job) for a pushed branch in
+    the Dispatcher's beads database; prints the bead id.
+
+  live-test wait --out=STRING <bead-id> [flags]
+    Wait up to --timeout for the bead's verdict, then write it and its evidence
+    (screenshots or transcript.json) under --out. Exit 7 means the job type's
+    evidence is missing. Exit 8 means the Socotra tenant pool is full: the
+    POOL_FULL line is printed to stderr and written to failure.md; nothing ran,
+    retry later.
+
+  live-test watch <bead-id> [flags]
+    Watch a live-test bead and mail its stop events (question, blocked, done,
+    failed, expired) to the initiative.
+
+  live-test reply <bead-id> [flags]
+    Answer the tester's question on a live-test bead; prints '<id> <status>'.
+
+  page publish <file> [flags]
+    Publish an HTML file as a Dispatcher page (cloud run only); prints the page
+    URL.
+
+  learnings-seed [flags]
+    Copy local role, user, and steward learnings (all tiers; per-machine
+    steward:topics:<host> records stay local) into the hosted learnings store
+    (cloud_home); never overwrites, and skips a key whose role and slug already
+    exist hosted under any tier.
+
+Run "ateam <command> --help" for more information on a command.
