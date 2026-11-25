@@ -604,6 +604,23 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 			since(), idle, c.IdlePolls, pollErrs, cloudBootMaxPollErrors, what)
 		return nil
 	}
+	// stallPark parks the run when the files show no progress for c.Stall. The
+	// clock reads transcripts and task output, so it does not depend on the
+	// agents listing and runs on every poll path.
+	stallPark := func(leadStatus string) error {
+		now := c.Now()
+		clock.refresh(now, func() cloudActivity { return c.Activity(cwd, sid) })
+		silent := clock.silent(now)
+		if silent <= c.Stall {
+			return nil
+		}
+		if err := c.Tmux("kill-session", "-t", cloudBootTmuxName); err != nil {
+			fmt.Fprintf(ctx.Stderr, "cloud-boot: kill-session: %v\n", err)
+		}
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: %s silent %s, parking\n", id, silent)
+		exitLine("stall-park", fmt.Sprintf("lead=%s silent=%s", leadStatus, silent))
+		return cli.Silent(cloudBootParkExit)
+	}
 	for {
 		c.Sleep(c.Poll)
 		elapsed += c.Poll
@@ -612,6 +629,9 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 		if err != nil {
 			if perr := pollFailed("bd show "+id, err); perr != nil {
 				return perr
+			}
+			if err := stallPark("unknown"); err != nil {
+				return err
 			}
 			continue
 		}
@@ -628,6 +648,9 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 		if err != nil {
 			if perr := pollFailed("claude agents", err); perr != nil {
 				return perr
+			}
+			if err := stallPark("unknown"); err != nil {
+				return err
 			}
 			continue
 		}
@@ -672,6 +695,9 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 				exitLine("lead-missing", fmt.Sprintf("lead=%s tmux_session_gone=true", sid))
 				return fmt.Errorf("lead session %s exited while initiative %s is open", sid, id)
 			}
+			if err := stallPark(leadStatus); err != nil {
+				return err
+			}
 			continue
 		}
 		if idle >= c.IdlePolls {
@@ -684,13 +710,8 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 		}
 		// Stall park: status and othersBusy are ignored, so an orphan background
 		// process that keeps the lead "busy" cannot hold the run open.
-		if silent := clock.silent(now); silent > c.Stall {
-			if err := c.Tmux("kill-session", "-t", cloudBootTmuxName); err != nil {
-				fmt.Fprintf(ctx.Stderr, "cloud-boot: kill-session: %v\n", err)
-			}
-			fmt.Fprintf(ctx.Stderr, "cloud-boot: %s silent %s, parking\n", id, silent)
-			exitLine("stall-park", fmt.Sprintf("lead=%s silent=%s", leadStatus, silent))
-			return cli.Silent(cloudBootParkExit)
+		if err := stallPark(leadStatus); err != nil {
+			return err
 		}
 	}
 }
