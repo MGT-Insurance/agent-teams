@@ -420,7 +420,11 @@ func TestNoPO_StewardLedgerDefaultCategoryEnum(t *testing.T) {
 	if !ok {
 		t.Fatal("no Category field")
 	}
-	if got := f.Tag.Get("enum"); got != "plan-approval,scope-call,merge-approval,design-fork,unblock-action" {
+	// The five steward categories stay first and unchanged; PO categories are only appended
+	// (kong must list them) and are refused under the default steward persona
+	// (see steward_ledger_persona_test.go).
+	const stewardFive = "plan-approval,scope-call,merge-approval,design-fork,unblock-action"
+	if got := f.Tag.Get("enum"); got != stewardFive && !strings.HasPrefix(got, stewardFive+",") {
 		t.Errorf("category enum = %q", got)
 	}
 }
