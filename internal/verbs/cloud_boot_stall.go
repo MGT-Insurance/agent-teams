@@ -64,7 +64,10 @@ func defaultCloudActivity(cwd, sid string) cloudActivity {
 }
 
 // newestTranscriptRecord returns the timestamp of the last content-typed
-// record in the final cloudBootTranscriptTailBytes of path, or zero.
+// record in the final cloudBootTranscriptTailBytes of path, or zero. When the
+// tail holds no complete record because the last record is larger than the
+// window, it returns the file's mtime: the file was written, and the size
+// shows the writer is a working session.
 func newestTranscriptRecord(path string) time.Time {
 	f, err := os.Open(path)
 	if err != nil {
@@ -98,6 +101,10 @@ func newestTranscriptRecord(path string) time.Time {
 		}
 		return ts
 	}
+	if off > 0 {
+		// The window ends inside one oversized record, so nothing parsed.
+		return fi.ModTime()
+	}
 	return time.Time{}
 }
 
@@ -120,13 +127,20 @@ func newStallClock(start time.Time, stall time.Duration) *stallClock {
 }
 
 // refresh re-reads activity when at least interval has passed since the last
-// read.
+// read. Each field keeps the newer of the old and new reading, so a transient
+// zero (a file that is briefly unreadable) never moves the clock backward.
 func (s *stallClock) refresh(now time.Time, read func() cloudActivity) {
 	if now.Sub(s.lastEval) < s.interval {
 		return
 	}
 	s.lastEval = now
-	s.act = read()
+	got := read()
+	if got.Transcript.After(s.act.Transcript) {
+		s.act.Transcript = got.Transcript
+	}
+	if got.TaskOutput.After(s.act.TaskOutput) {
+		s.act.TaskOutput = got.TaskOutput
+	}
 }
 
 func (s *stallClock) progress() time.Time {
