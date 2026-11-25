@@ -124,3 +124,14 @@ func TestValidation(t *testing.T) {
 		t.Error("invalid input wrote")
 	}
 }
+
+func TestReservedTierAreasRejected(t *testing.T) {
+	for _, a := range []string{"hot", "fresh", "cold", "archived"} {
+		if _, err := KeyPrefix(a); err == nil {
+			t.Errorf("area %q should be rejected", a)
+		}
+	}
+	if _, err := KeyPrefix("hotel"); err != nil {
+		t.Errorf("hotel is a fine area: %v", err)
+	}
+}

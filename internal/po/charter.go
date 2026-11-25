@@ -2,6 +2,7 @@ package po
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -20,6 +21,10 @@ const (
 	RuleIDDuplicate  = "id-duplicate"
 	RuleBacklogKey   = "backlog-key"
 	RuleIDRequired   = "id-required"
+	RuleAreaInvalid  = "area-invalid"
+	RuleSignalSource = "signal-source"
+	RuleTargetOp     = "target-op"
+	RuleTargetValue  = "target-value"
 )
 
 // backlogKeys are top-level front matter keys that make a charter a task
@@ -28,6 +33,8 @@ var backlogKeys = map[string]bool{
 	"backlog": true, "tasks": true, "task_list": true, "tasklist": true,
 	"todo": true, "todos": true, "task_backlog": true, "work_items": true,
 }
+
+var signalSources = map[string]bool{"warehouse": true, "datadog": true, "linear": true, "langfuse": true, "vercel": true}
 
 // ParseCharter parses a charter markdown file (YAML front matter then prose)
 // into a Charter. The second result lists the top-level front matter keys in
@@ -67,6 +74,9 @@ func Validate(c *Charter, topKeys []string) []Violation {
 	var v []Violation
 	add := func(rule, f string, a ...any) { v = append(v, Violation{rule, fmt.Sprintf(f, a...)}) }
 
+	if err := ValidateArea(c.Area); err != nil {
+		add(RuleAreaInvalid, "%v", err)
+	}
 	if len(c.Goals) == 0 {
 		add(RuleGoalRequired, "charter has no goals; at least one goal is required")
 	}
@@ -103,6 +113,19 @@ func Validate(c *Charter, topKeys []string) []Violation {
 	dup("feature", fi)
 	dup("goal", gi)
 	dup("signal", si)
+	for _, s := range c.Signals {
+		if !signalSources[s.Source] {
+			add(RuleSignalSource, "signal %q source %q: want warehouse, datadog, linear, langfuse or vercel", s.ID, s.Source)
+		}
+		if s.Target != nil {
+			if s.Target.Op != ">=" && s.Target.Op != "<=" {
+				add(RuleTargetOp, "signal %q target op %q: want >= or <=", s.ID, s.Target.Op)
+			}
+			if math.IsNaN(s.Target.Value) || math.IsInf(s.Target.Value, 0) {
+				add(RuleTargetValue, "signal %q target value must be a finite number", s.ID)
+			}
+		}
+	}
 	for _, g := range c.Goals {
 		for _, id := range g.Signals {
 			if !sigs[id] {
@@ -138,49 +161,65 @@ func frontMatter(s string) (string, error) {
 func decodeCharter(m *ymap) (*Charter, error) {
 	var c Charter
 	var err error
-	str := func(dst *string, key string) {
-		if err != nil {
-			return
+	// Every field read records the first error; none is silently dropped.
+	str := func(y *ymap, key string) string {
+		v, e := y.str(key)
+		if err == nil {
+			err = e
 		}
-		*dst, err = m.str(key)
+		return v
 	}
-	str(&c.Area, "area")
-	str(&c.Mission, "mission")
-	if err != nil {
-		return nil, err
+	list := func(y *ymap, key string) []string {
+		v, e := y.strList(key)
+		if err == nil {
+			err = e
+		}
+		return v
 	}
-	if c.Repos, err = m.strList("repos"); err != nil {
-		return nil, err
+	sub := func(y *ymap, key string) *ymap {
+		switch v := y.m[key].(type) {
+		case nil:
+			return nil
+		case *ymap:
+			return v
+		}
+		if err == nil {
+			err = fmt.Errorf("%q must be a mapping", key)
+		}
+		return nil
 	}
+	c.Area = str(m, "area")
+	c.Mission = str(m, "mission")
+	c.Repos = list(m, "repos")
 	for _, e := range m.maps("features", &err) {
 		var f Feature
-		f.ID, _ = e.str("id")
-		f.Name, _ = e.str("name")
-		if mm, ok := e.m["match"].(*ymap); ok {
-			f.Match.Words, _ = mm.strList("words")
-			f.Match.Repos, _ = mm.strList("repos")
-			f.Match.Paths, _ = mm.strList("paths")
-			f.Match.Services, _ = mm.strList("services")
+		f.ID = str(e, "id")
+		f.Name = str(e, "name")
+		if mm := sub(e, "match"); mm != nil {
+			f.Match.Words = list(mm, "words")
+			f.Match.Repos = list(mm, "repos")
+			f.Match.Paths = list(mm, "paths")
+			f.Match.Services = list(mm, "services")
 		}
 		c.Features = append(c.Features, f)
 	}
 	for _, e := range m.maps("goals", &err) {
 		var g Goal
-		g.ID, _ = e.str("id")
-		g.Title, _ = e.str("title")
-		g.Done, _ = e.str("done")
-		g.Signals, _ = e.strList("signals")
+		g.ID = str(e, "id")
+		g.Title = str(e, "title")
+		g.Done = str(e, "done")
+		g.Signals = list(e, "signals")
 		c.Goals = append(c.Goals, g)
 	}
 	for _, e := range m.maps("signals", &err) {
 		var s Signal
-		s.ID, _ = e.str("id")
-		s.Title, _ = e.str("title")
-		s.Source, _ = e.str("source")
-		s.Query, _ = e.str("query")
-		if t, ok := e.m["target"].(*ymap); ok {
-			op, _ := t.str("op")
-			val, _ := t.str("value")
+		s.ID = str(e, "id")
+		s.Title = str(e, "title")
+		s.Source = str(e, "source")
+		s.Query = str(e, "query")
+		if t := sub(e, "target"); t != nil {
+			op := str(t, "op")
+			val := str(t, "value")
 			f, perr := strconv.ParseFloat(val, 64)
 			if perr != nil {
 				return nil, fmt.Errorf("signal %q target value %q is not a number", s.ID, val)
@@ -191,16 +230,13 @@ func decodeCharter(m *ymap) (*Charter, error) {
 	}
 	for _, e := range m.maps("fences", &err) {
 		var f Fence
-		f.What, _ = e.str("what")
-		f.Reason, _ = e.str("reason")
+		f.What = str(e, "what")
+		f.Reason = str(e, "reason")
 		c.Fences = append(c.Fences, f)
 	}
-	if err != nil {
-		return nil, err
-	}
-	if r, ok := m.m["reach"].(*ymap); ok {
-		c.Reach.TopicTitle, _ = r.str("topic_title")
-		if sv, _ := r.str("summary"); sv != "" {
+	if r := sub(m, "reach"); r != nil {
+		c.Reach.TopicTitle = str(r, "topic_title")
+		if sv := str(r, "summary"); sv != "" {
 			switch strings.ToLower(sv) {
 			case "true", "yes":
 				c.Reach.Summary = true
@@ -209,6 +245,9 @@ func decodeCharter(m *ymap) (*Charter, error) {
 				return nil, fmt.Errorf("reach.summary %q is not a boolean", sv)
 			}
 		}
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &c, nil
 }
@@ -551,9 +590,14 @@ func parseFlow(s string, no int) (any, string, error) {
 		if rest == "" || rest[0] != ':' {
 			return nil, "", fmt.Errorf("line %d: expected ':' in flow mapping", no+1)
 		}
-		v, rest, err := parseFlow(rest[1:], no)
-		if err != nil {
-			return nil, "", err
+		var v any = ""
+		if t := strings.TrimLeft(rest[1:], " "); t != "" && t[0] != ',' && t[0] != '}' {
+			v, rest, err = parseFlow(t, no)
+			if err != nil {
+				return nil, "", err
+			}
+		} else {
+			rest = t
 		}
 		ks, _ := k.(string)
 		y.keys = append(y.keys, ks)
@@ -589,6 +633,10 @@ func flowScalar(s string, no int) (any, string, error) {
 			end = i
 			break
 		}
+	}
+	if end == 0 {
+		// No progress is possible; callers would loop forever on this.
+		return nil, "", fmt.Errorf("line %d: unexpected %q in flow value", no+1, s[:1])
 	}
 	return strings.TrimSpace(s[:end]), s[end:], nil
 }

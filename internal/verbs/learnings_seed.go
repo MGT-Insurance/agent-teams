@@ -177,6 +177,9 @@ func (c *learningsSeedKong) Run(ctx *cli.Context) error {
 
 // seedNamespace returns the in-scope namespace of key k.
 func seedNamespace(k string) (string, bool) {
+	if isPOStateKey(k) {
+		return "", false
+	}
 	for _, p := range seedExcludePrefixes {
 		if strings.HasPrefix(k, p) {
 			return "", false

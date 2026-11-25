@@ -136,7 +136,7 @@ Commands:
   worktree-setup [<wtPath>]
     Run repo-specific worktree-setup hook for the given worktree.
 
-  mail send --file=STRING <recipient-initiative-id> [flags]
+  mail send <recipient-initiative-id> [flags]
     Send a message to a recipient initiative.
 
   mail inbox [flags]
@@ -154,6 +154,10 @@ Commands:
   mail follow [flags]
     On a hosted workspace, start the per-host follower that rings local
     initiatives' doorbells from the events journal.
+
+  mail bridge [flags]
+    Deliver hosted bridge:laptop mail from cloud_home to this machine (--once
+    for one pass).
 
   route-pr-event --repo=STRING --pr-number=INT --head-branch=STRING --transition=PR-TRANSITION --body-file=STRING [flags]
     Route a PR event to an owning initiative.
@@ -258,6 +262,14 @@ Commands:
 
   live-test reply <bead-id> [flags]
     Answer the tester's question on a live-test bead; prints '<id> <status>'.
+
+  page template [flags]
+    Print the shared plan-page kit (HTML); works anywhere. --out writes it to a
+    file.
+
+  page image <file> [flags]
+    Print a <figure> snippet that embeds an image file as a data: URI; works
+    anywhere.
 
   page publish <file> [flags]
     Publish an HTML file as a Dispatcher page (cloud run only); prints the page

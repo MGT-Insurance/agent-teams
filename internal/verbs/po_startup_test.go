@@ -134,7 +134,7 @@ func TestPoStartup_BadArea(t *testing.T) {
 func TestPoStateKeysAreNotLearnings(t *testing.T) {
 	m := newMemBD()
 	m.mem["po:quoting:view"] = "STATE-VIEW"
-	m.mem["po:hot:view"] = "STATE-VIEW-AREA-HOT"
+	m.mem["po:hot:view"] = "LEARNING-HOT-VIEW" // tier word, not an area: a real learning
 	m.mem["po:quoting:claim:at-1"] = "STATE-CLAIM"
 	for _, withLearning := range []bool{false, true} {
 		if withLearning {
@@ -144,14 +144,17 @@ func TestPoStateKeysAreNotLearnings(t *testing.T) {
 		if err := runLearnings(ctx, "po"); err != nil {
 			t.Fatal(err)
 		}
+		if !strings.Contains(out.String(), "LEARNING-HOT-VIEW") {
+			t.Errorf("learning po:hot:view hidden by the guard: %s", out.String())
+		}
 		if strings.Contains(out.String(), "STATE-") {
 			t.Errorf("learnings served state (learning=%v): %s", withLearning, out.String())
 		}
 		ctx, out, _ = hostedLedgerCtx(t, m)
-		if err := runRecall(ctx, "po", "STATE view claim"); err != nil {
+		if err := runRecall(ctx, "po", "VIEW STATE claim"); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(out.String(), "STATE-") || strings.Contains(out.String(), "po:quoting") {
+		if strings.Contains(out.String(), "STATE-") || strings.Contains(out.String(), "po:quoting") || !strings.Contains(out.String(), "LEARNING-HOT-VIEW") {
 			t.Errorf("recall matched state: %s", out.String())
 		}
 	}
