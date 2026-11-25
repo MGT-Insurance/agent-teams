@@ -236,3 +236,26 @@ func TestIssue_EphemeralUnmarshal(t *testing.T) {
 		}
 	}
 }
+
+func TestIsNotFoundMatchesShowAndStderrShapes(t *testing.T) {
+	r := &fakeRunner{runFn: func(...string) (string, error) { return "[]", nil }}
+	_, showErr := bd.ShowIssue(r, "at-zzzzz")
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"ShowIssue empty array", showErr, true},
+		{"wrapped ShowIssue error", fmt.Errorf("outer: %w", showErr), true},
+		{"bd stderr Issue not found", errors.New("bd show at-zzzzz --json: exit status 1\nError: Issue at-zzzzz not found"), true},
+		{"bd JSON no issues found", errors.New("bd show at-zzzzz --json: exit status 1\n{\"error\":\"no issues found matching the provided IDs\"}"), true},
+		{"timeout", fmt.Errorf("bd show x --json: %w", context.DeadlineExceeded), false},
+		{"other exit", errors.New("bd show x --json: exit status 1\nError: database locked"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := bd.IsNotFound(tc.err); got != tc.want {
+			t.Errorf("%s: IsNotFound = %t, want %t (err %v)", tc.name, got, tc.want, tc.err)
+		}
+	}
+}

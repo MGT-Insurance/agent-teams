@@ -264,6 +264,24 @@ publish: not in a Dispatcher run; use the Artifact tool` and exits 5. Any
 signed-in Dispatcher user can view the page. To update a page in place, pass its
 URL or id with `--url`; stderr reports `created v1` or `updated v<N>`.
 
+Before it posts, `publish` normalizes the file. A fragment (no `<html` or
+`<!doctype`) gets a document skeleton. A page with a `class="mermaid"` diagram
+and no Mermaid script gets a pinned Mermaid loader. A full document that already
+loads Mermaid is posted unchanged. `--dry-run` prints the normalized HTML and
+exits without a network call, and it works outside a run. A Dispatcher page
+holds at most 900000 characters, so `publish` refuses a larger normalized page
+before posting; `--dry-run` prints the page and warns on stderr instead.
+
+`ateam page image <file> --alt <text> [--caption <text>]` prints a `<figure>`
+snippet that embeds a png, jpeg, gif, webp, or svg file as a `data:` URI. It
+requires `--alt`, refuses a file over 300000 bytes, and works anywhere. Paste the
+snippet into the page.
+
+`ateam page template [--out <file>] [--force]` prints the shared plan-page kit:
+styled primitives plus the required parts of a plan page. It works anywhere,
+inside or outside a run. With `--out`, it writes the kit to a file and refuses
+to overwrite an existing file unless you pass `--force`.
+
 ### Inside a Dispatcher run
 
 On a Dispatcher VM, the Dispatcher starts `ateam cloud-boot start` (first

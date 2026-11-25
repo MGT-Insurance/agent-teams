@@ -24,6 +24,7 @@ type mailCmd struct {
 	Close  mailCloseKong  `cmd:"" name:"close" help:"Close a message bead."`
 	Purge  mailPurgeKong  `cmd:"" name:"purge" help:"Permanently delete old closed message beads."`
 	Follow mailFollowKong `cmd:"" name:"follow" help:"On a hosted workspace, start the per-host follower that rings local initiatives' doorbells from the events journal."`
+	Bridge mailBridgeKong `cmd:"" name:"bridge" help:"Deliver hosted bridge:laptop mail from cloud_home to this machine (--once for one pass)."`
 }
 
 // ── hidden deprecated aliases ────────────────────────────────────────────────

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
@@ -197,7 +199,14 @@ type relayKong struct {
 	// cloudOwned skips replies in cloud-owned topics (relay_cloud_owned.go,
 	// which states the removal condition). Nil means "never owned".
 	cloudOwned relayCloudOwnedFunc `kong:"-"`
+
+	// bridgeRun runs the cloud bridge follower until run is cancelled. Nil
+	// means runBridgeUntil.
+	bridgeRun relayBridgeFunc `kong:"-"`
 }
+
+// relayBridgeFunc runs the cloud bridge follower until run is cancelled.
+type relayBridgeFunc func(ctx *cli.Context, run context.Context)
 
 // Run satisfies the kong runner interface; ctx is injected via kong.Bind.
 //
@@ -210,9 +219,21 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 
 	home := workspace.Home()
 
+	_, bridgeOn, bridgeErr := bridgeCloudHome(ctx.Home)
+	if bridgeErr != nil {
+		fmt.Fprintf(ctx.Stderr, "%s: %v\n", bridgeLogPrefix, bridgeErr)
+	}
+	bridgeRun := c.bridgeRun
+	if bridgeRun == nil {
+		bridgeRun = runBridgeUntil
+	}
+
 	if !c.enabled(home) {
-		fmt.Fprintln(ctx.Stdout, "messaging not configured; relay is a no-op")
-		return nil
+		if !bridgeOn {
+			fmt.Fprintln(ctx.Stdout, "messaging not configured; relay is a no-op")
+			return nil
+		}
+		return c.runBridgeOnly(ctx, bridgeRun)
 	}
 
 	// Singleton guard (agent-teams-25c5.2): one bot token permits exactly one
@@ -269,9 +290,42 @@ func (c *relayKong) Run(ctx *cli.Context) error {
 		<-done
 	}()
 
+	if bridgeOn {
+		bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+		bridgeDone := make(chan struct{})
+		go func() {
+			defer close(bridgeDone)
+			bridgeRun(ctx, bridgeCtx)
+		}()
+		defer func() {
+			bridgeCancel()
+			<-bridgeDone
+		}()
+	}
+
 	return t.Receive(func(reply transport.Reply) error {
 		return c.handleReply(ctx, reply)
 	})
+}
+
+// runBridgeOnly runs the cloud bridge follower without a transport, for a
+// machine that has cloud_home but no Telegram. It takes the same singleton
+// lock as the full relay and runs until SIGINT or SIGTERM.
+func (c *relayKong) runBridgeOnly(ctx *cli.Context, bridgeRun relayBridgeFunc) error {
+	lock, incumbent, err := acquireRelayLock(ctx)
+	if err != nil {
+		if errors.Is(err, errRelayLockHeld) {
+			return fmt.Errorf("ateam relay: refusing to start: another relay is already running (pid %d, pidfile %s)", incumbent, relayPidfilePath(ctx))
+		}
+		return fmt.Errorf("ateam relay: acquire singleton lock: %w", err)
+	}
+	defer lock.Release()
+
+	transport.Logf(ctx.Stderr, 0, "starting bridge-only relay (no transport)")
+	run, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	bridgeRun(ctx, run)
+	return nil
 }
 
 // handleReply routes one inbound human reply. Returns nil always (log-and-skip
