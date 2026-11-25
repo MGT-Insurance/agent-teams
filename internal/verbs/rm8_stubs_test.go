@@ -1,22 +1,11 @@
 package verbs
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/alecthomas/kong"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 )
-
-// TestRm8Stubs_FlagsParseAndErrorWithBeadID proves the front-loaded rm8 seams
-// (agent-teams-lrj.1) parse and report which bead owns them.
-func TestRm8Stubs_FlagsParseAndErrorWithBeadID(t *testing.T) {
-	ctx, _ := newCtx(t, nil)
-
-	if err := (&prContextKong{InitiativeID: "at-1"}).Run(ctx); err == nil || !strings.Contains(err.Error(), "agent-teams-lrj.7") {
-		t.Errorf("pr context: err = %v", err)
-	}
-}
 
 func TestRm8Stubs_RegisteredInParser(t *testing.T) {
 	p, err := cli.NewParser(kong.Exit(func(int) {}))
@@ -25,8 +14,8 @@ func TestRm8Stubs_RegisteredInParser(t *testing.T) {
 	}
 	RegisterAllKong(p)
 	for _, args := range [][]string{
-		{"autonomy", "grant", "at-1", "--gates", "plan", "--until", "8h", "--ref", "r"},
-		{"autonomy", "revoke", "at-1", "--ref", "r"},
+		{"autonomy", "grant", "at-1"},
+		{"autonomy", "revoke", "at-1"},
 		{"autonomy", "show", "at-1"},
 		{"pr", "context", "at-1"},
 		{"clear-gate", "at-1", "--autonomy", "ref"},

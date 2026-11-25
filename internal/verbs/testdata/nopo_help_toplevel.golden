@@ -229,7 +229,7 @@ Commands:
   pr add <initiative-id> <pr-url>
     Record a GitHub PR URL on an initiative's pr rail.
 
-  pr context <initiative-id>
+  pr context <initiative-id> [flags]
     Print the multi-PR context block for an initiative
     (docs/outsider-requests.md).
 

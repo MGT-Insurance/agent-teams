@@ -21,9 +21,6 @@ var autonomyNow = time.Now
 // initiative: it needs no grant line, only steward-approves.
 const outsiderAutonomyRef = "outsider"
 
-// gateClassLabelPrefix is the label T2 writes on an open gate.
-const gateClassLabelPrefix = "gate-class:"
-
 // clearGateAutonomyCheck verifies that --autonomy <ref> is honored for the open
 // gate before clear-gate proceeds. Called by clearGateKong.Run only when
 // --autonomy is given. It succeeds only when:
