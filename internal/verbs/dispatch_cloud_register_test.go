@@ -404,7 +404,6 @@ func outsiderFlags(c *dispatchKong) {
 	c.Origin = "outsider"
 	c.Requester = "alice/helper-bot"
 	c.Request = "at-req1"
-	c.StewardApproves = "plan,scope"
 }
 
 func TestRegisterOnly_OutsiderFlags(t *testing.T) {
@@ -417,8 +416,7 @@ func TestRegisterOnly_OutsiderFlags(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	f := initiative.Of(bd.Issue{Description: h.createBody})
-	if f.Origin != "outsider" || f.Requester != "alice/helper-bot" || f.Request != "at-req1" ||
-		strings.Join(f.StewardApproves, ",") != "plan,scope" {
+	if f.Origin != "outsider" || f.Requester != "alice/helper-bot" || f.Request != "at-req1" {
 		t.Errorf("fields = %+v\nbody=%q", f, h.createBody)
 	}
 	var parsed map[string]string
@@ -448,15 +446,13 @@ func TestRegisterOnly_OutsiderLinear(t *testing.T) {
 func TestRegisterOnly_OutsiderFlagRefusals(t *testing.T) {
 	cases := map[string]func(*dispatchKong){
 		"bad requester":       func(c *dispatchKong) { c.Requester = "Alice" },
-		"unknown class":       func(c *dispatchKong) { c.StewardApproves = "plan,merge" },
 		"bad origin":          func(c *dispatchKong) { c.Origin = "insider" },
 		"missing request":     func(c *dispatchKong) { c.Request = "" },
-		"missing approves":    func(c *dispatchKong) { c.StewardApproves = "" },
 		"without register":    func(c *dispatchKong) { c.RegisterOnly = false; c.RepoURL = "" },
 		"requester no origin": func(c *dispatchKong) { c.Origin = "" },
 		"linear whitespace":   func(c *dispatchKong) { c.Linear = "ENG 12" },
 		"linear no outsider": func(c *dispatchKong) {
-			c.Origin, c.Requester, c.Request, c.StewardApproves = "", "", "", ""
+			c.Origin, c.Requester, c.Request = "", "", ""
 			c.Linear = "ENG-12"
 		},
 	}
