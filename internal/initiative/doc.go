@@ -65,7 +65,11 @@
 //
 // # Frozen item 3 — the field set is NOT closed
 //
-// [Fields] models thirteen fields (AMENDED for agent-teams-ssib: "pr" joined
+// [Fields] models eighteen fields (AMENDED for agent-teams-lrj, outsider
+// requests: the single-valued "origin", "requester", "request",
+// "steward-approves", and "linear" keys joined as [Fields.Origin], [Fields.Requester],
+// [Fields.Request], [Fields.StewardApproves], and [Fields.Linear]; grammar, closed class set,
+// and trust rule in docs/outsider-requests.md; AMENDED earlier (the thirteen) for agent-teams-ssib: "pr" joined
 // the multi-valued rail alongside "session" and "track-worktree" — see
 // [Fields.PRs] and [WithPR]; AMENDED again for ring 1 hosted beads: the
 // single-valued "where" key joined as [Fields.Where], grammar and remote rule
@@ -128,6 +132,9 @@
 //	    Tracks   []string
 //	    PRs      []string
 //	    Where    string
+//	    Origin, Requester, Request string
+//	    StewardApproves []string
+//	    Linear string
 //	}
 //
 //	func Of(iss bd.Issue) Fields                        // READ SEAM (typed)

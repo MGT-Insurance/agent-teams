@@ -47,6 +47,7 @@ func TestStewardStartup_OrderAndByteIdenticalLearnings(t *testing.T) {
 	}
 
 	want := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules +
+		"\n## Outsider rules\n" + stewardOutsiderRules +
 		"\n## Ledger stats\n" + stats.String() +
 		"\n## Steward learnings\n" + learnings.String()
 	if got != want {
@@ -72,7 +73,7 @@ func startupSize(t *testing.T, n int) (int, error) {
 func TestStewardStartup_LimitIsInclusive(t *testing.T) {
 	// Find the body size that makes the output exactly the limit. The learnings
 	// header repeats the payload size, so its digit count shifts the total.
-	n := stewardStartupLimit - 4000
+	n := stewardStartupLimit - 20000
 	for i := 0; i < 5; i++ {
 		size, err := startupSize(t, n)
 		if err != nil {

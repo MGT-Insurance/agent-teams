@@ -23,7 +23,8 @@ func RegisterPRKong(p *cli.Parser) {
 // kong runs every node with a Run method from the selected leaf up through its
 // parents, so a Run here would fire on every subcommand (see mail_register.go).
 type prCmd struct {
-	Add prAddKong `cmd:"" name:"add" help:"Record a GitHub PR URL on an initiative's pr rail."`
+	Add     prAddKong     `cmd:"" name:"add" help:"Record a GitHub PR URL on an initiative's pr rail."`
+	Context prContextKong `cmd:"" name:"context" help:"Print the multi-PR context block for an initiative (docs/outsider-requests.md)."`
 }
 
 // prAddKong implements `ateam pr add <initiative-id> <pr-url>` — the

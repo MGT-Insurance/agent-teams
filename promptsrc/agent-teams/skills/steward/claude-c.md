@@ -9,7 +9,7 @@
    ateam notify <id> --document <document-path> --file <basename-file>  # per document
    ateam notify <id> --file     <body-file>                             # body, last
    ```
-   `--file` is required on every call and becomes that send's caption, so each attachment gets its own tiny caption file (just its basename) — not the proof body repeated N times. No enrichment, recommendation, or ledger entry. Testers and the DRI never call Telegram directly — you're the only relay. No-steward case: waits like any other gate (references/envelopes.md).
+   `--file` is required on every call and becomes that send's caption, so each attachment gets its own tiny caption file (just its basename) — not the proof body repeated N times. No enrichment, recommendation, or ledger entry. Only you relay to Telegram; the no-steward case is in references/envelopes.md.
 
 ### steward-reply (`<<<steward-reply initiative:<id>>>>`)
 
