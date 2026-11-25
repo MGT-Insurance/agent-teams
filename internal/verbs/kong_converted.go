@@ -1522,6 +1522,7 @@ func (c *condenseKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return learnReadFailure(ctx, "condense", err)
 	}
+	dropPOStateKeys(raw)
 
 	var keys []string
 	for k, v := range raw {
@@ -1825,4 +1826,5 @@ func RegisterAllKong(p *cli.Parser) {
 	RegisterUITestKong(p)
 	RegisterPageKong(p)
 	RegisterLearningsSeed(p)
+	RegisterPoKong(p)
 }

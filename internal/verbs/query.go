@@ -623,6 +623,7 @@ func serveLearnings(ctx *cli.Context, role string) (unreachable bool, err error)
 		}
 		return false, err
 	}
+	dropPOStateKeys(raw)
 	if !hasStringKeyWithPrefix(raw, hotPrefix) && !hasStringKeyWithPrefix(raw, freshPrefix) {
 		// Neither tier exists: the all-role fallback below needs every
 		// role: key, so widen the scope with one more call.
@@ -632,6 +633,7 @@ func serveLearnings(ctx *cli.Context, role string) (unreachable bool, err error)
 			}
 			return false, err
 		}
+		dropPOStateKeys(raw)
 	}
 
 	// Collect hot, fresh, and all-role keys in one pass.
@@ -739,6 +741,7 @@ func runRecall(ctx *cli.Context, role, query string) error {
 	if err != nil {
 		return learnReadFailure(ctx, "recall", err)
 	}
+	dropPOStateKeys(raw)
 
 	type scoredKey struct {
 		key   string
@@ -881,6 +884,7 @@ func runRoles(ctx *cli.Context) error {
 	if err != nil {
 		return learnReadFailure(ctx, "roles", err)
 	}
+	dropPOStateKeys(sizes)
 
 	seen := make(map[string]struct{})
 	for k := range sizes {
@@ -938,6 +942,7 @@ func runMemoriesJSON(ctx *cli.Context) error {
 	if err := readMemoriesJSON(learnBD(ctx), &raw); err != nil {
 		return learnReadFailure(ctx, "memories-json", err)
 	}
+	dropPOStateKeys(raw)
 
 	var keys []string
 	for k, v := range raw {
