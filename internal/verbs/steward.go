@@ -35,7 +35,7 @@ type stewardCmd struct {
 	Init    stewardInitKong    `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
 	Start   stewardStartKong   `cmd:"" name:"start" help:"Init, then singleton/orphan-watcher pre-flight checks, then launch the Steward's background session."`
 	Ledger  stewardLedgerCmd   `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
-	Startup stewardStartupKong `cmd:"" name:"startup" help:"Print the steward's startup text: ledger rules, ledger stats, learnings. Prints all of it or nothing."`
+	Startup stewardStartupKong `cmd:"" name:"startup" help:"Print the steward's startup text: ledger rules, ledger stats, outsider rules, learnings. Prints all of it or nothing."`
 	Remove  stewardRemoveKong  `cmd:"" name:"remove" help:"De-steward this machine: remove the session dir and doorbell (ledger/briefing kept unless --purge)."`
 }
 
@@ -481,7 +481,7 @@ type stewardLedgerRecordKong struct {
 	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected,self-approved,self-denied" help:"Outcome: accepted or corrected (the human's), self-approved or self-denied (the steward's own call without Eric)."`
 	Decision       string `name:"decision" help:"What the human actually decided (REQUIRED when verdict=corrected)."`
 	Reviews        string `name:"reviews" help:"Record key of an earlier self decision this record reviews (verdict must be accepted or corrected)."`
-	Autonomy       string `name:"autonomy" help:"Autonomy source ref: marks the record autonomous:<ref> (decided under Eric's autonomy grant)."`
+	Autonomy       string `name:"autonomy" help:"Source ref of an autonomous decision: marks the record autonomous:<ref>."`
 	Persona        string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
 }
 
@@ -731,7 +731,11 @@ func writeStewardStatsTable(ctx *cli.Context, rows []stewardCategoryStats) error
 	fmt.Fprintln(w, "CATEGORY\tTOTAL\tACCEPTED\tCORRECTED\tACCEPT RATE\tSELF-APPROVED\tSELF-DENIED\tAUTONOMOUS\tREVIEWED\tREVIEW-CORRECTED")
 	fmt.Fprintln(w, "--------\t-----\t--------\t---------\t-----------\t-------------\t-----------\t----------\t--------\t----------------")
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%.0f%%\t%d\t%d\t%d\t%d\t%d\n", r.Category, r.Total, r.Accepted, r.Corrected, r.AcceptRate*100, r.SelfApproved, r.SelfDenied, r.Autonomous, r.Reviewed, r.ReviewCorrected)
+		rate := "-"
+		if r.Accepted+r.Corrected > 0 {
+			rate = fmt.Sprintf("%.0f%%", r.AcceptRate*100)
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\n", r.Category, r.Total, r.Accepted, r.Corrected, rate, r.SelfApproved, r.SelfDenied, r.Autonomous, r.Reviewed, r.ReviewCorrected)
 	}
 	return w.Flush()
 }

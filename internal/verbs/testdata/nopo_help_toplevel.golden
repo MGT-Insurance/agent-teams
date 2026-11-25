@@ -205,8 +205,8 @@ Commands:
     never overwrites.
 
   steward startup
-    Print the steward's startup text: ledger rules, ledger stats, learnings.
-    Prints all of it or nothing.
+    Print the steward's startup text: ledger rules, ledger stats, outsider
+    rules, learnings. Prints all of it or nothing.
 
   steward remove [flags]
     De-steward this machine: remove the session dir and doorbell

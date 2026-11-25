@@ -331,7 +331,7 @@ type gateKong struct {
 
 	// Class names the gate's class for outsider handling
 	// (docs/outsider-requests.md, "Gate class"). Implemented by rm8 T2
-	// (gate_class.go); until then a given --class errors.
+	// (gate_class.go).
 	Class string `name:"class" enum:",plan,scope,design-fork" default:"" help:"Gate class override: plan, scope, or design-fork. Writes the gate-class:<class> label (docs/outsider-requests.md)."`
 
 	// notify is called after labels are set to route the ask to the Steward

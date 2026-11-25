@@ -22,6 +22,7 @@ initiative without them reads exactly as before.
 | `requester` | `<owner-handle>/<agent-name>`: lowercase kebab tokens, exactly one slash. |
 | `request` | the request bead's id in Eric's account. |
 | `steward-approves` | comma list over the CLOSED class set `plan, scope, design-fork, live-test, delivery`. |
+| `linear` | optional: the request's Linear issue key, no whitespace. Written only by `dispatch --register-only --linear <key>` (valid only with the four outsider flags). |
 
 `initiative.New` rejects an unknown origin, a malformed requester and a class
 outside the closed set. `initiative.Of` never
@@ -64,7 +65,6 @@ Steward to requester:
 Steward gate approval comments on a run (the DRI trust rule, section 9):
 
 - `steward: approval (outsider rules, not Eric's words):`
-- `steward: approval (autonomous, on Eric's behalf, not Eric's words):`
 
 Steward close-out mail to the requester:
 
@@ -104,7 +104,7 @@ place, the DRI drops him: on Canary repos with the PR comment
 to remove a reviewer.
 
 Multi-PR context block, at the top of each PR body between the markers,
-printed byte-for-byte by `ateam pr context <initiative>`:
+printed by `ateam pr context <initiative> [--pr <url>] [--merge-order <ref,ref,...>]`:
 
 ```
 <!-- a-team-context -->
@@ -117,8 +117,18 @@ Review: @jbarneson is required. PO comments are advice.
 ```
 
 `<request-ref>` is `on Linear <key>` when the request carries a `linear:`
-header, else `<request bead id>`. With a single PR the `The other PR` sentence
-and the `Merge order:` line are omitted. The DRI writes it when it opens a PR
+header (recorded as the `linear` initiative field, section 1), else `<request bead id>`.
+With a single PR the `The other PR` sentence and the `Merge order:` line are omitted.
+
+AMENDED (rm8 fixes): the `Merge order:` line is printed ONLY when
+`--merge-order` is given (and there is more than one PR). The DRI decides the
+order; record order is never used. Each entry must be the exact
+`<owner>/<repo>#<number>` of a recorded PR, listed at most once, else a usage
+error. The `Plan:` line is printed only when a plan-gate ask block carries a
+URL, so it can be absent too; the DRI checks both lines before pasting. With
+more than two PRs the sentence is `The other PRs (#<n>, #<n>, ...): <summary>;
+<summary>.` (one sentence, others in recorded order), where two PRs keep the
+`The other PR (#<number>): <other-summary>.` shape above. The DRI writes it when it opens a PR
 and rewrites it on every open PR when another PR for the request opens or
 merges. (Slot sources not fixed by the plan are T6's to wire from the
 initiative fields and PR list; the line shapes above are frozen.)
@@ -139,7 +149,7 @@ initiative fields and PR list; the line shapes above are frozen.)
 - Verdicts: `self-approved`, `self-denied`.
 - Categories: `intake`, `live-test-review`, `po-question`. (`plan-feedback`
   and `pr-fit` belong to at-18j.)
-- Flags: `--reviews <record key>`, `--autonomy <ref>`.
+- Flags: `--reviews <record key>`, `--autonomy <ref>` (an autonomous decision, recorded as `autonomous:<ref>`).
 - Verb `ateam steward ledger self --since <duration|RFC3339>` lists the
   steward's self-decisions since then, one line each:
 
@@ -158,10 +168,8 @@ initiative fields and PR list; the line shapes above are frozen.)
 Never raise the cap. Never widen repo or path scope. Never merge outside
 Eric's normal bar. A delivery approval is not a merge.
 
-## 11. Front-loaded stubs (C0)
+## 11. Where it lives
 
-Each returns `not implemented (<bead>)` until its track lands:
-`gate --class` (T2, `gate_class.go`), `ateam pr context` (T6,
-`pr_context.go`). `clear-gate` also calls `gateClassClear`, a no-op until
-T2. `ateam steward startup` prints `## Outsider rules` (T4) after the ledger
-rules. The manifest has `reference.dri.outsider` (T5). `prompt-sync write` runs in J.
+`gate --class` and `clear-gate` class cleanup: `gate_class.go`. `ateam pr
+context`: `pr_context.go`. `ateam steward startup` prints `## Outsider rules`
+after the ledger rules. The manifest has `reference.dri.outsider`.

@@ -544,3 +544,23 @@ func TestStewardLedger_LegacyLinesParseUnchanged(t *testing.T) {
 		t.Errorf("legacy stats changed: %s", got)
 	}
 }
+
+// A category with no human verdicts shows "-" for ACCEPT RATE in the split
+// table; the legacy table keeps its percent.
+func TestStewardLedgerStats_SplitTableDashForNoHumanVerdicts(t *testing.T) {
+	ctx, stdout, _ := makeCtx(&fakeBD{}, t.TempDir())
+	rows := []stewardCategoryStats{
+		{Category: "intake", Total: 2, SelfApproved: 2},
+		{Category: "plan", Total: 2, Accepted: 1, Corrected: 1, AcceptRate: 0.5},
+	}
+	if err := writeStewardStatsTable(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "intake") || strings.Contains(strings.Split(out, "\n")[2], "0%") {
+		t.Errorf("intake row should show -:\n%s", out)
+	}
+	if !strings.Contains(strings.Split(out, "\n")[3], "50%") {
+		t.Errorf("plan row should show 50%%:\n%s", out)
+	}
+}
