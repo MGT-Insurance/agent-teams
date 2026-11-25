@@ -35,6 +35,7 @@ import (
 
 	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
+	"github.com/mgt-insurance/agent-teams/internal/po"
 	"github.com/mgt-insurance/agent-teams/internal/sentlog"
 )
 
@@ -789,6 +790,45 @@ func (c StewardLedgerCategory) Valid() bool {
 	return false
 }
 
+// Ledger personas. The steward persona keeps today's ledger; "po-<area>"
+// personas record to their own per-PO ledger and may also use the PO
+// categories below.
+const StewardLedgerPersonaSteward = "steward"
+
+// StewardLedgerPOCategories lists the categories only a PO persona may
+// record, in display order. They mirror the constants in internal/po.
+var StewardLedgerPOCategories = []StewardLedgerCategory{
+	StewardLedgerCategory(po.CatNudge),
+	StewardLedgerCategory(po.CatImpactCall),
+	StewardLedgerCategory(po.CatNewWork),
+	StewardLedgerCategory(po.CatBoldProposal),
+	StewardLedgerCategory(po.CatOverlapCall),
+	StewardLedgerCategory(po.CatCharterChg),
+	StewardLedgerCategory(po.CatClaim),
+	StewardLedgerCategory(po.CatPlanFeedback),
+	StewardLedgerCategory(po.CatPRFit),
+}
+
+// IsPO reports whether c is one of the PO-only categories.
+func (c StewardLedgerCategory) IsPO() bool {
+	for _, p := range StewardLedgerPOCategories {
+		if c == p {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidFor reports whether c is recognized under persona. The steward persona
+// accepts exactly the steward categories (Valid); any other persona also
+// accepts the PO categories.
+func (c StewardLedgerCategory) ValidFor(persona string) bool {
+	if c.Valid() {
+		return true
+	}
+	return persona != StewardLedgerPersonaSteward && c.IsPO()
+}
+
 // StewardLedgerVerdict enumerates the two outcomes of a Steward decision.
 type StewardLedgerVerdict string
 
@@ -821,10 +861,15 @@ type StewardLedgerRecord struct {
 // Validate reports whether r has all required fields set and recognized
 // enum values.
 func (r StewardLedgerRecord) Validate() error {
+	return r.ValidateFor(StewardLedgerPersonaSteward)
+}
+
+// ValidateFor is Validate for a ledger persona (see StewardLedgerCategory.ValidFor).
+func (r StewardLedgerRecord) ValidateFor(persona string) error {
 	if r.Timestamp.IsZero() {
 		return fmt.Errorf("steward ledger record: ts is zero")
 	}
-	if !r.Category.Valid() {
+	if !r.Category.ValidFor(persona) {
 		return fmt.Errorf("steward ledger record: invalid category %q", r.Category)
 	}
 	if r.Initiative == "" {
@@ -845,7 +890,12 @@ func (r StewardLedgerRecord) Validate() error {
 // MarshalLine validates r, then renders it as a single JSONL line (a JSON
 // object followed by "\n") ready to append to StewardLedgerPath.
 func (r StewardLedgerRecord) MarshalLine() ([]byte, error) {
-	if err := r.Validate(); err != nil {
+	return r.MarshalLineFor(StewardLedgerPersonaSteward)
+}
+
+// MarshalLineFor is MarshalLine for a ledger persona.
+func (r StewardLedgerRecord) MarshalLineFor(persona string) ([]byte, error) {
+	if err := r.ValidateFor(persona); err != nil {
 		return nil, err
 	}
 	data, err := json.Marshal(r)
@@ -858,11 +908,16 @@ func (r StewardLedgerRecord) MarshalLine() ([]byte, error) {
 // ParseStewardLedgerRecord unmarshals a single JSONL line (with or without
 // its trailing newline) into a StewardLedgerRecord and validates it.
 func ParseStewardLedgerRecord(line []byte) (StewardLedgerRecord, error) {
+	return ParseStewardLedgerRecordFor(StewardLedgerPersonaSteward, line)
+}
+
+// ParseStewardLedgerRecordFor is ParseStewardLedgerRecord for a ledger persona.
+func ParseStewardLedgerRecordFor(persona string, line []byte) (StewardLedgerRecord, error) {
 	var r StewardLedgerRecord
 	if err := json.Unmarshal(line, &r); err != nil {
 		return StewardLedgerRecord{}, fmt.Errorf("steward ledger record: unmarshal: %w", err)
 	}
-	if err := r.Validate(); err != nil {
+	if err := r.ValidateFor(persona); err != nil {
 		return StewardLedgerRecord{}, err
 	}
 	return r, nil
