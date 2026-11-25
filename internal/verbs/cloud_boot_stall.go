@@ -15,7 +15,7 @@ import (
 const (
 	// cloudBootDefaultStall is how long the lead may write nothing before
 	// cloud-boot parks the run (contract dsp-7gr.2, item 2).
-	cloudBootDefaultStall = 90 * time.Minute
+	cloudBootDefaultStall = 5 * time.Minute
 	// cloudBootStallEvalMax bounds how often pollLoop re-reads the transcripts
 	// and task-output files.
 	cloudBootStallEvalMax = 5 * time.Minute

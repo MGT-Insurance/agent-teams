@@ -53,7 +53,7 @@ type cloudBootCommon struct {
 	Poll       time.Duration `name:"poll" default:"15s" help:"Interval between idle checks."`
 	IdlePolls  int           `name:"idle-polls" default:"3" help:"Consecutive idle polls before parking."`
 	Grace      time.Duration `name:"grace" default:"60s" help:"No park decision before this much time has passed."`
-	Stall      time.Duration `name:"stall" default:"90m" env:"ATEAM_CLOUD_BOOT_STALL" help:"Park when the lead writes no transcript or background-task output for this long, whatever its status."`
+	Stall      time.Duration `name:"stall" default:"5m" env:"ATEAM_CLOUD_BOOT_STALL" help:"Park when the lead writes no transcript or background-task output for this long, whatever its status."`
 
 	// Activity reads the lead's newest transcript record and background-task
 	// output mtime; nil falls back to the real files (see defaultCloudActivity).
