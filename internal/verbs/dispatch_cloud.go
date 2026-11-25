@@ -456,6 +456,33 @@ type registerOnlyResult struct {
 	Branch     string `json:"branch"`
 	Team       string `json:"team"`
 	Mode       string `json:"mode"`
+	// Origin and Requester appear only for an outsider registration, so the
+	// line is byte-identical without the outsider flags.
+	Origin    string `json:"origin,omitempty"`
+	Requester string `json:"requester,omitempty"`
+}
+
+// outsiderProbeFields returns Fields carrying only the outsider flags plus
+// placeholder required fields, so Validate can run initiative.New's checks.
+func (c *dispatchKong) outsiderProbeFields() initiative.Fields {
+	f := initiative.Fields{Problem: "probe", Repo: "probe", Branch: "probe", Team: "probe", Mode: "cloud", Runtime: "claude"}
+	c.applyOutsider(&f)
+	return f
+}
+
+func (c *dispatchKong) applyOutsider(f *initiative.Fields) {
+	if c.Origin == "" {
+		return
+	}
+	f.Origin = c.Origin
+	f.Requester = c.Requester
+	f.Request = c.Request
+	f.Linear = c.Linear
+	for _, cl := range strings.Split(c.StewardApproves, ",") {
+		if cl = strings.TrimSpace(cl); cl != "" {
+			f.StewardApproves = append(f.StewardApproves, cl)
+		}
+	}
 }
 
 // resolveRegisterOnlyHome returns the hosted workspace a register-only
@@ -506,14 +533,16 @@ func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
 	}
 
 	team := gitutil.Slugify(repoName) + "-" + slug
-	plan, err := initiative.New(initiative.Fields{
+	fields := initiative.Fields{
 		Problem: c.Problem,
 		Repo:    repoURL,
 		Branch:  slug,
 		Team:    team,
 		Mode:    "cloud",
 		Runtime: "claude",
-	})
+	}
+	c.applyOutsider(&fields)
+	plan, err := initiative.New(fields)
 	if err != nil {
 		return cli.Usagef("dispatch: %v", err)
 	}
@@ -552,6 +581,7 @@ func (c *dispatchKong) runCloudRegisterOnly(ctx *cli.Context) error {
 
 	line, err := json.Marshal(registerOnlyResult{
 		Initiative: issue.ID, Repo: repoURL, Branch: slug, Team: team, Mode: "cloud",
+		Origin: c.Origin, Requester: c.Requester,
 	})
 	if err != nil {
 		return fmt.Errorf("dispatch: %w", err)

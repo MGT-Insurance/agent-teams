@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -34,7 +35,7 @@ type stewardCmd struct {
 	Init    stewardInitKong    `cmd:"" name:"init" help:"Create the Steward session directory and marker file."`
 	Start   stewardStartKong   `cmd:"" name:"start" help:"Init, then singleton/orphan-watcher pre-flight checks, then launch the Steward's background session."`
 	Ledger  stewardLedgerCmd   `cmd:"" name:"ledger" help:"Record and report Steward decisions."`
-	Startup stewardStartupKong `cmd:"" name:"startup" help:"Print the steward's startup text: ledger rules, ledger stats, learnings. Prints all of it or nothing."`
+	Startup stewardStartupKong `cmd:"" name:"startup" help:"Print the steward's startup text: ledger rules, ledger stats, outsider rules, learnings. Prints all of it or nothing."`
 	Remove  stewardRemoveKong  `cmd:"" name:"remove" help:"De-steward this machine: remove the session dir and doorbell (ledger/briefing kept unless --purge)."`
 }
 
@@ -44,6 +45,7 @@ type stewardLedgerCmd struct {
 	Record stewardLedgerRecordKong `cmd:"" name:"record" help:"Append one decision to the Steward's ledger."`
 	Stats  stewardLedgerStatsKong  `cmd:"" name:"stats" help:"Report per-category accept/correct counts from the ledger."`
 	Recall stewardLedgerRecallKong `cmd:"" name:"recall" help:"Recall recent decisions for one category (most recent first)."`
+	Self   stewardLedgerSelfKong   `cmd:"" name:"self" help:"List the steward's self-decisions since a time, with their reviews."`
 	Seed   stewardLedgerSeedKong   `cmd:"" name:"seed" help:"Copy the local ledger file into the hosted ledger store (cloud_home); never overwrites."`
 }
 
@@ -473,11 +475,12 @@ func countUnreadStewardMessages(ctx *cli.Context) (int, error) {
 // rejects an unrecognized value at parse time (exit 2), same as gateKong's
 // Kind and lockKong's Action elsewhere in this package.
 type stewardLedgerRecordKong struct {
-	Category       string `name:"category" required:"" enum:"plan-approval,scope-call,merge-approval,design-fork,unblock-action,nudge,impact-call,new-work,bold-proposal,overlap-call,charter-change,claim,plan-feedback,pr-fit" help:"Decision category (plan-approval|scope-call|merge-approval|design-fork|unblock-action; PO categories need --persona po-<area>)."`
+	Category       string `name:"category" required:"" enum:"plan-approval,scope-call,merge-approval,design-fork,unblock-action,intake,live-test-review,po-question,nudge,impact-call,new-work,bold-proposal,overlap-call,charter-change,claim,plan-feedback,pr-fit" help:"Decision category (plan-approval|scope-call|merge-approval|design-fork|unblock-action; PO categories need --persona po-<area>)."`
 	Initiative     string `name:"initiative" required:"" help:"Initiative id the decision concerns."`
 	Recommendation string `name:"recommendation" required:"" help:"What the Steward recommended."`
-	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected" help:"Outcome: accepted or corrected."`
+	Verdict        string `name:"verdict" required:"" enum:"accepted,corrected,self-approved,self-denied" help:"Outcome: accepted or corrected (the human's), self-approved or self-denied (the steward's own call without Eric)."`
 	Decision       string `name:"decision" help:"What the human actually decided (REQUIRED when verdict=corrected)."`
+	Reviews        string `name:"reviews" help:"Record key of an earlier self decision this record reviews (verdict must be accepted or corrected)."`
 	Persona        string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
 }
 
@@ -500,6 +503,7 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 		Recommendation: c.Recommendation,
 		Verdict:        StewardLedgerVerdict(c.Verdict),
 		Decision:       c.Decision,
+		Reviews:        stewardLedgerNormalizeKey(c.Reviews),
 	}
 
 	persona := ledgerPersonaOrDefault(c.Persona)
@@ -511,11 +515,34 @@ func (c *stewardLedgerRecordKong) Run(ctx *cli.Context) error {
 	if err != nil {
 		return cli.Usagef("ateam steward ledger record: %v", err)
 	}
+	if rec.Reviews != "" {
+		existing, err := readStewardLedgerRecords(ctx, store, persona, "record")
+		if err != nil {
+			return err
+		}
+		var target *StewardLedgerRecord
+		for i := range existing {
+			if existing[i].Key == rec.Reviews {
+				target = &existing[i].Rec
+				break
+			}
+		}
+		if target == nil {
+			return cli.Usagef("ateam steward ledger record: --reviews %q matches no record in the ledger", c.Reviews)
+		}
+		if !target.Verdict.IsSelf() {
+			return cli.Usagef("ateam steward ledger record: --reviews %q is a %s record, not a self decision", c.Reviews, target.Verdict)
+		}
+	}
 
 	if err := store.append(rec, bytes.TrimSuffix(line, []byte("\n"))); err != nil {
 		return err
 	}
 
+	if rec.Verdict.IsSelf() {
+		fmt.Fprintf(ctx.Stdout, "recorded: %s %s -> %s key=%s\n", rec.Category, rec.Initiative, rec.Verdict, stewardLedgerRecordKey(rec))
+		return nil
+	}
 	fmt.Fprintf(ctx.Stdout, "recorded: %s %s -> %s\n", rec.Category, rec.Initiative, rec.Verdict)
 	return nil
 }
@@ -542,6 +569,14 @@ type stewardCategoryStats struct {
 	Accepted   int     `json:"accepted"`
 	Corrected  int     `json:"corrected"`
 	AcceptRate float64 `json:"accept_rate"`
+	// rm8 split counts. Total counts every non-review record; Accepted and
+	// Corrected count only the human's verdicts on the steward's
+	// recommendations. The rest are omitted from JSON when zero, so a ledger
+	// without self decisions reports exactly as before.
+	SelfApproved    int `json:"self_approved,omitempty"`
+	SelfDenied      int `json:"self_denied,omitempty"`
+	Reviewed        int `json:"reviewed,omitempty"`
+	ReviewCorrected int `json:"review_corrected,omitempty"`
 }
 
 // stewardLedgerCategoryOrder is the fixed display order for stats rows,
@@ -552,6 +587,9 @@ var stewardLedgerCategoryOrder = []StewardLedgerCategory{
 	StewardLedgerCategoryMergeApproval,
 	StewardLedgerCategoryDesignFork,
 	StewardLedgerCategoryUnblockAction,
+	StewardLedgerCategoryIntake,
+	StewardLedgerCategoryLiveTestReview,
+	StewardLedgerCategoryPOQuestion,
 }
 
 // ledgerPersonaOrDefault maps the empty persona (a direct-Run test call that
@@ -582,19 +620,15 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 
 	counts := make(map[StewardLedgerCategory]*stewardCategoryStats)
 
-	ledgerLines, err := store.lines("stats")
+	all, err := readStewardLedgerRecords(ctx, store, persona, "stats")
 	if err != nil {
 		return err
 	}
-	for _, line := range ledgerLines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		rec, err := ParseStewardLedgerRecordFor(persona, []byte(line))
-		if err != nil {
-			fmt.Fprintf(ctx.Stderr, "ateam steward ledger stats: warning: skipping malformed line: %v\n", err)
-			continue
+	reviews := stewardLedgerReviews(all)
+	for _, k := range all {
+		rec := k.Rec
+		if rec.Reviews != "" {
+			continue // a review of a self decision, counted on that decision
 		}
 		if c.Category != "" && string(rec.Category) != c.Category {
 			continue
@@ -606,10 +640,22 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 		}
 		s.Total++
 		switch rec.Verdict {
+		case StewardLedgerVerdictSelfApproved:
+			s.SelfApproved++
+		case StewardLedgerVerdictSelfDenied:
+			s.SelfDenied++
 		case StewardLedgerVerdictAccepted:
 			s.Accepted++
 		case StewardLedgerVerdictCorrected:
 			s.Corrected++
+		}
+		if rec.Verdict.IsSelf() {
+			if rs := reviews[k.Key]; len(rs) > 0 {
+				s.Reviewed++
+				if rs[len(rs)-1].Verdict == StewardLedgerVerdictCorrected {
+					s.ReviewCorrected++
+				}
+			}
 		}
 	}
 
@@ -649,8 +695,8 @@ func (c *stewardLedgerStatsKong) Run(ctx *cli.Context) error {
 // finalizeStewardStats computes AcceptRate for s (left 0 when Total is 0,
 // avoiding a divide-by-zero NaN).
 func finalizeStewardStats(s stewardCategoryStats) stewardCategoryStats {
-	if s.Total > 0 {
-		s.AcceptRate = float64(s.Accepted) / float64(s.Total)
+	if human := s.Accepted + s.Corrected; human > 0 {
+		s.AcceptRate = float64(s.Accepted) / float64(human)
 	}
 	return s
 }
@@ -658,10 +704,28 @@ func finalizeStewardStats(s stewardCategoryStats) stewardCategoryStats {
 // writeStewardStatsTable renders rows as a tab-aligned human-readable table.
 func writeStewardStatsTable(ctx *cli.Context, rows []stewardCategoryStats) error {
 	w := tabwriter.NewWriter(ctx.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "CATEGORY\tTOTAL\tACCEPTED\tCORRECTED\tACCEPT RATE")
-	fmt.Fprintln(w, "--------\t-----\t--------\t---------\t-----------")
+	split := false
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%.0f%%\n", r.Category, r.Total, r.Accepted, r.Corrected, r.AcceptRate*100)
+		if r.SelfApproved+r.SelfDenied+r.Reviewed > 0 {
+			split = true
+		}
+	}
+	if !split {
+		fmt.Fprintln(w, "CATEGORY\tTOTAL\tACCEPTED\tCORRECTED\tACCEPT RATE")
+		fmt.Fprintln(w, "--------\t-----\t--------\t---------\t-----------")
+		for _, r := range rows {
+			fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%.0f%%\n", r.Category, r.Total, r.Accepted, r.Corrected, r.AcceptRate*100)
+		}
+		return w.Flush()
+	}
+	fmt.Fprintln(w, "CATEGORY\tTOTAL\tACCEPTED\tCORRECTED\tACCEPT RATE\tSELF-APPROVED\tSELF-DENIED\tREVIEWED\tREVIEW-CORRECTED")
+	fmt.Fprintln(w, "--------\t-----\t--------\t---------\t-----------\t-------------\t-----------\t--------\t----------------")
+	for _, r := range rows {
+		rate := "-"
+		if r.Accepted+r.Corrected > 0 {
+			rate = fmt.Sprintf("%.0f%%", r.AcceptRate*100)
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\n", r.Category, r.Total, r.Accepted, r.Corrected, rate, r.SelfApproved, r.SelfDenied, r.Reviewed, r.ReviewCorrected)
 	}
 	return w.Flush()
 }
@@ -757,6 +821,103 @@ func (c *stewardLedgerRecallKong) Run(ctx *cli.Context) error {
 			fmt.Fprintf(ctx.Stdout, "  decision: %s\n", r.Decision)
 		}
 		fmt.Fprintln(ctx.Stdout)
+	}
+	return nil
+}
+
+// ── steward ledger self ──────────────────────────────────────────────────────
+
+// stewardLedgerSelfKong is the kong struct for `ateam steward ledger self`.
+type stewardLedgerSelfKong struct {
+	Since   string `name:"since" required:"" help:"List self-decisions since this time: a duration (24h, 7d) or an RFC3339 timestamp."`
+	JSON    bool   `name:"json" help:"Output as JSON, with each record's key and review state."`
+	Persona string `name:"persona" default:"steward" help:"Ledger persona: steward (default) or po-<area>."`
+}
+
+// parseStewardLedgerSince resolves a duration (a Go duration or Nd days) back
+// from now, or an RFC3339 timestamp.
+func parseStewardLedgerSince(v string, now time.Time) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		if n, err := strconv.Atoi(days); err == nil && n >= 0 {
+			return now.AddDate(0, 0, -n), nil
+		}
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+		return now.Add(-d), nil
+	}
+	return time.Time{}, fmt.Errorf("invalid --since %q (want a duration like 24h or 7d, or an RFC3339 time)", v)
+}
+
+// stewardLedgerSelfRow is one --json row of `ledger self`.
+type stewardLedgerSelfRow struct {
+	Key         string `json:"key"`
+	ReviewState string `json:"review_state,omitempty"`
+	StewardLedgerRecord
+}
+
+// Run lists the self decisions since --since, oldest first, plus the reviews of
+// them. Each line is
+// "<RFC3339>  <category>  initiative=<id>  verdict=<verdict>  reviews=<key or ->".
+func (c *stewardLedgerSelfKong) Run(ctx *cli.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ateam steward ledger self: nil context")
+	}
+	since, err := parseStewardLedgerSince(c.Since, time.Now().UTC())
+	if err != nil {
+		return cli.Usagef("ateam steward ledger self: %v", err)
+	}
+	persona := ledgerPersonaOrDefault(c.Persona)
+	store, err := newPersonaLedgerStore(ctx, persona)
+	if err != nil {
+		return cli.Usagef("ateam steward ledger self: %v", err)
+	}
+	all, err := readStewardLedgerRecords(ctx, store, persona, "self")
+	if err != nil {
+		return err
+	}
+	reviews := stewardLedgerReviews(all)
+	var rows []stewardLedgerSelfRow
+	for _, k := range all {
+		r := k.Rec
+		if !(r.Verdict.IsSelf() || r.Reviews != "") || r.Timestamp.Before(since) {
+			continue
+		}
+		row := stewardLedgerSelfRow{Key: k.Key, StewardLedgerRecord: r}
+		if r.Verdict.IsSelf() {
+			row.ReviewState = "unreviewed"
+			if rs := reviews[k.Key]; len(rs) > 0 {
+				row.ReviewState = string(rs[len(rs)-1].Verdict)
+			}
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Timestamp.Before(rows[j].Timestamp) })
+
+	if c.JSON {
+		if rows == nil {
+			rows = []stewardLedgerSelfRow{}
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(rows)
+	}
+	if len(rows) == 0 {
+		fmt.Fprintln(ctx.Stdout, "no ledger entries")
+		return nil
+	}
+	dash := func(v string) string {
+		if v == "" {
+			return "-"
+		}
+		return v
+	}
+	for _, r := range rows {
+		fmt.Fprintf(ctx.Stdout, "%s  %s  initiative=%s  verdict=%s  reviews=%s\n",
+			r.Timestamp.Format(time.RFC3339), r.Category, r.Initiative, r.Verdict, dash(r.Reviews))
 	}
 	return nil
 }

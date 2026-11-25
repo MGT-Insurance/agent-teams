@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alecthomas/kong"
+	"github.com/mgt-insurance/agent-teams/internal/bd"
 	"github.com/mgt-insurance/agent-teams/internal/cli"
 	"github.com/mgt-insurance/agent-teams/internal/initiative"
 )
@@ -396,5 +397,80 @@ func TestRegisterOnly_EmptyIDWritesNothingToStdout(t *testing.T) {
 	}
 	if got := h.stdout.String(); got != "" {
 		t.Errorf("stdout = %q, want empty", got)
+	}
+}
+
+func outsiderFlags(c *dispatchKong) {
+	c.Origin = "outsider"
+	c.Requester = "alice/helper-bot"
+	c.Request = "at-req1"
+	c.StewardApproves = "plan,scope"
+}
+
+func TestRegisterOnly_OutsiderFlags(t *testing.T) {
+	h := registerOnlyHarness(t, registerOnlyConfig)
+	outsiderFlags(h.cmd)
+	if err := h.cmd.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if err := h.cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	f := initiative.Of(bd.Issue{Description: h.createBody})
+	if f.Origin != "outsider" || f.Requester != "alice/helper-bot" || f.Request != "at-req1" ||
+		strings.Join(f.StewardApproves, ",") != "plan,scope" {
+		t.Errorf("fields = %+v\nbody=%q", f, h.createBody)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(h.stdout.String()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed["origin"] != "outsider" || parsed["requester"] != "alice/helper-bot" || len(parsed) != 7 {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+}
+
+func TestRegisterOnly_OutsiderLinear(t *testing.T) {
+	h := registerOnlyHarness(t, registerOnlyConfig)
+	outsiderFlags(h.cmd)
+	h.cmd.Linear = "ENG-12"
+	if err := h.cmd.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if err := h.cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if f := initiative.Of(bd.Issue{Description: h.createBody}); f.Linear != "ENG-12" {
+		t.Errorf("linear = %q\nbody=%q", f.Linear, h.createBody)
+	}
+}
+
+func TestRegisterOnly_OutsiderFlagRefusals(t *testing.T) {
+	cases := map[string]func(*dispatchKong){
+		"bad requester":       func(c *dispatchKong) { c.Requester = "Alice" },
+		"unknown class":       func(c *dispatchKong) { c.StewardApproves = "plan,merge" },
+		"bad origin":          func(c *dispatchKong) { c.Origin = "insider" },
+		"missing request":     func(c *dispatchKong) { c.Request = "" },
+		"missing approves":    func(c *dispatchKong) { c.StewardApproves = "" },
+		"without register":    func(c *dispatchKong) { c.RegisterOnly = false; c.RepoURL = "" },
+		"requester no origin": func(c *dispatchKong) { c.Origin = "" },
+		"linear whitespace":   func(c *dispatchKong) { c.Linear = "ENG 12" },
+		"linear no outsider": func(c *dispatchKong) {
+			c.Origin, c.Requester, c.Request, c.StewardApproves = "", "", "", ""
+			c.Linear = "ENG-12"
+		},
+	}
+	for name, edit := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := registerOnlyHarness(t, registerOnlyConfig)
+			outsiderFlags(h.cmd)
+			edit(h.cmd)
+			if err := h.cmd.Validate(); !isUsage(err) {
+				t.Fatalf("Validate = %v, want usage error", err)
+			}
+			if len(h.cloudCalls) != 0 {
+				t.Errorf("bd used on a refused invocation: %v", h.cloudCalls)
+			}
+		})
 	}
 }
