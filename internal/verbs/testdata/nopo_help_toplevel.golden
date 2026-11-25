@@ -226,6 +226,10 @@ Commands:
   pr add <initiative-id> <pr-url>
     Record a GitHub PR URL on an initiative's pr rail.
 
+  pr context <initiative-id>
+    Print the multi-PR context block for an initiative
+    (docs/outsider-requests.md).
+
   cloud-boot start [flags]
     Adopt the run's initiative, launch the DRI under tmux, and park (exit 75)
     when it goes idle.
@@ -261,5 +265,14 @@ Commands:
     steward:topics:<host> records stay local) into the hosted learnings store
     (cloud_home); never overwrites, and skips a key whose role and slug already
     exist hosted under any tier.
+
+  autonomy grant <id>
+    Grant autonomy (steward only, on Eric's own message).
+
+  autonomy revoke <id>
+    Revoke autonomy (steward only).
+
+  autonomy show <id>
+    Show an initiative's autonomy line and whether it is active.
 
 Run "ateam <command> --help" for more information on a command.

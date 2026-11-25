@@ -47,6 +47,8 @@ func TestStewardStartup_OrderAndByteIdenticalLearnings(t *testing.T) {
 	}
 
 	want := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules +
+		"\n## Outsider rules\n" + stewardOutsiderRules +
+		"\n## Autonomy rules\n" + stewardAutonomyRules +
 		"\n## Ledger stats\n" + stats.String() +
 		"\n## Steward learnings\n" + learnings.String()
 	if got != want {

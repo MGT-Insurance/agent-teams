@@ -452,7 +452,9 @@ func TestNoPO_StewardStartupOutput(t *testing.T) {
 		"[learnings steward: 1 entries, 45 chars, hot 1 fresh 0 — read in full; do NOT pipe through head/tail or truncate; output ends at the matching trailer line]\n" +
 		"steward:hot:ledger-rule\nRULE: keep it whole.\n" +
 		"[learnings steward: 1 entries, 45 chars, hot 1 fresh 0]\n"
-	wantHead := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules
+	wantHead := "## Ledger rules\n" + stewardRulesIntro + "\n\n" + stewardSharedLedgerRules +
+		"\n## Outsider rules\n" + stewardOutsiderRules +
+		"\n## Autonomy rules\n" + stewardAutonomyRules
 	if got != wantHead+wantTail {
 		t.Errorf("startup output differs.\n got tail: %q\nwant tail: %q", got[max(0, len(got)-400):], wantTail)
 	}
