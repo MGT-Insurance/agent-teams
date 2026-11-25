@@ -21,7 +21,7 @@ If the reviewer is silent: @-mention him on the PR, then formally re-request rev
 
 ## Context block
 
-`ateam pr context <initiative>` prints the block for the top of each PR body, between the `<!-- a-team-context -->` markers. Paste it byte-for-byte when you open a PR. When another PR for the request opens or merges, rewrite the block on every open PR.
+`ateam pr context <initiative>` prints the block for the top of each PR body, between the `<!-- a-team-context -->` markers. You decide the merge order and state it with `--merge-order <owner/repo#n,...>`; without it the `Merge order:` line is absent. The `Plan:` line can be absent too (a prose-form plan gate has no URL). Check the output for both lines before pasting it byte-for-byte when you open a PR. When another PR for the request opens or merges, rewrite the block on every open PR.
 
 ## Closing
 

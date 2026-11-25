@@ -30,10 +30,11 @@ A message in a Telegram topic whose owning initiative is CLOSED in beads. Why th
 
 ### steward-unrouted (`<<<steward-unrouted thread:<ref> reason:<reason>>>>`)
 
-The relay's last-resort catch-all — a reply the router couldn't place at all. Why, and the multi-machine caveat: references/envelopes.md.
+The relay's last-resort catch-all — a reply the router couldn't place at all. Why: references/envelopes.md.
 
 1. Read `Reason` (e.g. "ambiguous: 3 open initiatives", "bd query error: ...") — if `Reason`/`Body` make the target obvious, act directly (`ateam mail send <id>` or `ateam notify <id>`).
 2. Otherwise, tell the human you saw an unroutable message and ask for clarification (`ateam notify direct --to general --file <msg-file>`), with `Reason` and enough `Body` to identify it.
+3. Multi-machine: a reply that looks like it belongs to another machine's topic is sync lag, not yours — stay silent or minimal.
 
 ### Every wake, regardless of inbox contents — scan
 
@@ -47,7 +48,7 @@ claude agents --all --json
 
 `ateam hung-scan` emits one JSON entry per open initiative, classified `WORKING` / `AWAITING-HUMAN` / `DEAD` / `STUCK` — ground truth, not an eyeballed nudge. Full field list: references/operations.md. Per entry (full per-classification bullets: references/operations.md):
 
-- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`); judgment call, never autonomous. Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it; there is no autonomous revive.
+- **STUCK `hung:true`**, or **DEAD `cwd_present:true`, `dead_hung:true`** — escalate a DIGESTED §5 hung-escalation message to the initiative's OWN topic (`ateam notify <id> --file <msg-file>`). Record the reply under `unblock-action`. DEAD also wakes you mechanically at 15 min; recommend `claude respawn <shortid>` vs. leave-it.
 - **DEAD `cwd_present:false`** — orphan. Only autonomous cleanup: `ateam reap-orphans`.
 - **WORKING `wp_trip_eligible:true`**, or **`mode:interactive`** — follow the matching bullets in references/operations.md. Anything else (STUCK under threshold, AWAITING-HUMAN, WORKING without `wp_trip_eligible`) — no action.
 
