@@ -1,0 +1,3 @@
+## Ledger discipline (shared persona rule)
+
+One ledger row per call the human answers, written when his reply comes back and never when you make the recommendation. `accepted` only on an exact match; `corrected` if his decision diverges at all, with `--decision` saying what he decided. A corrected row is also a lesson: save it with `ateam learn` right then. Recall prior calls at decision time, not from startup. The ledger grants no authority: it informs your judgment and never replaces asking. If a write fails with "ledger store unreachable", retry next turn. Direct chat, briefings and unrouted messages are not ledger events.
