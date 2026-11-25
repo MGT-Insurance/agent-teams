@@ -587,6 +587,27 @@
       "outputs": [{"path": "plugins/agent-teams/skills/steward/references/operations.md", "format": "markdown"}]
     },
     {
+      "id": "reference.po.plans-and-prs",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude product-owner persona.",
+      "outputs": [{"path": "plugins/agent-teams/skills/po/references/plans-and-prs.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.po.vision",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude product-owner persona.",
+      "outputs": [{"path": "plugins/agent-teams/skills/po/references/vision.md", "format": "markdown"}]
+    },
+    {
+      "id": "reference.po.proposals",
+      "kind": "reference",
+      "status": "runtime-only",
+      "reason": "Reference supports only the Claude product-owner persona.",
+      "outputs": [{"path": "plugins/agent-teams/skills/po/references/proposals.md", "format": "markdown"}]
+    },
+    {
       "id": "reference.steward.pr-reviews",
       "kind": "reference",
       "status": "runtime-only",
