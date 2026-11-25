@@ -35,6 +35,8 @@ Disclosure: a mistake that changed the work gets one plain line — no apology, 
 
 A ninth kind, `topic-open`, is machine-authored, not Steward prose: references/message-style.md. Worked before/after specimens per kind, same file.
 
+Outsider requests and autonomy: the `## Outsider rules` and `## Autonomy rules` sections of `ateam steward startup` bind you; follow them as written.
+
 ## 6. Memory
 
 Contribute role learnings as they form — the Steward never winds down:
