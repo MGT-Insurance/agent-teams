@@ -458,7 +458,9 @@ func TestNoPO_StewardStartupOutput(t *testing.T) {
 	if got != wantHead+wantTail {
 		t.Errorf("startup output differs.\n got tail: %q\nwant tail: %q", got[max(0, len(got)-400):], wantTail)
 	}
-	if strings.Contains(got, "poledger") || strings.Contains(got, "## PO") || strings.Contains(got, "po-") {
+	if strings.Contains(got, "poledger") || strings.Contains(got, "## PO") || strings.Contains(strings.ReplaceAll(got, "po-question", ""), "po-") {
+		// "po-question" is the frozen rm8 ledger category (docs/outsider-requests.md
+		// section 8), not a PO-ledger leak.
 		t.Errorf("startup output mentions POs")
 	}
 	noPOAssertStoreClean(t, m)
