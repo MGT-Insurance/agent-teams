@@ -23,7 +23,7 @@ func TestPRContext_TwoPRsOutsider(t *testing.T) {
 		"origin: outsider\nrequester: joe/po-claims\nrequest: bd-9\nlinear: ENG-12\n" +
 		"pr: https://github.com/o/r/pull/1\npr: https://github.com/o/r/pull/2\n",
 		Notes: "<<<ateam-ask\ndecision: Approve plan: x\nrecommendation: y\nalternative: z\ncontext: https://dispatcher.example/pages/abc\n>>>"}
-	got, err := runPRContext(t, issue, &prContextKong{})
+	got, err := runPRContext(t, issue, &prContextKong{MergeOrder: "o/r#1,o/r#2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ Review: @jbarneson is required. PO comments are advice.
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want1+"\n"+want2)
 	}
 
-	one, err := runPRContext(t, issue, &prContextKong{PR: "https://github.com/o/r/pull/2"})
+	one, err := runPRContext(t, issue, &prContextKong{PR: "https://github.com/o/r/pull/2", MergeOrder: "o/r#1,o/r#2"})
 	if err != nil || one != want2 {
 		t.Fatalf("--pr: err=%v got:\n%s", err, one)
 	}
@@ -88,5 +88,31 @@ func TestPRContext_LatestPlanURLWins(t *testing.T) {
 	}
 	if got := latestPlanURL(""); got != "" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPRContext_NoMergeOrderLineUnlessGiven(t *testing.T) {
+	issue := bd.Issue{ID: "at-x", Description: prCtxBase + "pr: https://github.com/o/r/pull/1\npr: https://github.com/o/r/pull/2\n"}
+	got, err := runPRContext(t, issue, &prContextKong{})
+	if err != nil || strings.Contains(got, "Merge order") {
+		t.Fatalf("err=%v got:\n%s", err, got)
+	}
+	for _, bad := range []string{"o/r#1,o/r#9", "o/r#1,o/r#1", "https://github.com/o/r/pull/1"} {
+		if _, err := runPRContext(t, issue, &prContextKong{MergeOrder: bad}); err == nil {
+			t.Fatalf("expected usage error for --merge-order %q", bad)
+		}
+	}
+}
+
+func TestPRContext_ThreePRsOtherPRsSentence(t *testing.T) {
+	issue := bd.Issue{ID: "at-x", Description: prCtxBase +
+		"pr: https://github.com/a/x/pull/1\npr: https://github.com/b/y/pull/2\npr: https://github.com/c/z/pull/3\n"}
+	got, err := runPRContext(t, issue, &prContextKong{PR: "https://github.com/b/y/pull/2", MergeOrder: "c/z#3,a/x#1,b/y#2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "<!-- a-team-context -->\nPart 2 of 3.\nThis PR: b/y#2. The other PRs (#1, #3): a/x#1; c/z#3.\nMerge order: c/z#3 then a/x#1 then b/y#2\n<!-- /a-team-context -->\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
 }

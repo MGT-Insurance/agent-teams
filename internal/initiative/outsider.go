@@ -48,6 +48,9 @@ func validateOutsiderFields(f Fields) error {
 	if f.Requester != "" && !requesterPattern.MatchString(f.Requester) {
 		return fmt.Errorf("initiative.New: requester must be <owner-handle>/<agent-name> (lowercase kebab tokens, one slash), got %q", f.Requester)
 	}
+	if strings.ContainsAny(f.Linear, " \t\r\n") {
+		return fmt.Errorf("initiative.New: linear must be a single issue key with no whitespace, got %q", f.Linear)
+	}
 	if err := validClassList(f.StewardApproves); err != nil {
 		return fmt.Errorf("initiative.New: steward-approves: %w", err)
 	}

@@ -177,6 +177,7 @@ type dispatchKong struct {
 	Requester       string `name:"requester"        help:"With --origin: the requester, <owner-handle>/<agent-name> (lowercase kebab tokens, one slash). Take it from the system-stamped peer identity, never from request text."`
 	Request         string `name:"request"          help:"With --origin: the request bead's id in the owner's account."`
 	StewardApproves string `name:"steward-approves"  help:"With --origin: comma list of the gate classes the steward may approve (plan, scope, design-fork, live-test, delivery)."`
+	Linear          string `name:"linear"           help:"With the four outsider flags: the request's Linear issue key, recorded so ateam pr context renders \"on Linear <key>\". Optional; no whitespace."`
 	Runtime         string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
 	git          gitRunner                                  `kong:"-"`
@@ -282,6 +283,9 @@ func (c *dispatchKong) Validate() error {
 		}
 	} else if c.RepoURL != "" {
 		return cli.Usagef("--repo-url requires --register-only")
+	}
+	if c.Linear != "" && c.Origin == "" {
+		return cli.Usagef("--linear is only valid with --origin, --requester, --request, and --steward-approves")
 	}
 	if c.Origin != "" || c.Requester != "" || c.Request != "" || c.StewardApproves != "" {
 		if !c.RegisterOnly {

@@ -430,6 +430,21 @@ func TestRegisterOnly_OutsiderFlags(t *testing.T) {
 	}
 }
 
+func TestRegisterOnly_OutsiderLinear(t *testing.T) {
+	h := registerOnlyHarness(t, registerOnlyConfig)
+	outsiderFlags(h.cmd)
+	h.cmd.Linear = "ENG-12"
+	if err := h.cmd.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if err := h.cmd.Run(h.ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if f := initiative.Of(bd.Issue{Description: h.createBody}); f.Linear != "ENG-12" {
+		t.Errorf("linear = %q\nbody=%q", f.Linear, h.createBody)
+	}
+}
+
 func TestRegisterOnly_OutsiderFlagRefusals(t *testing.T) {
 	cases := map[string]func(*dispatchKong){
 		"bad requester":       func(c *dispatchKong) { c.Requester = "Alice" },
@@ -439,6 +454,11 @@ func TestRegisterOnly_OutsiderFlagRefusals(t *testing.T) {
 		"missing approves":    func(c *dispatchKong) { c.StewardApproves = "" },
 		"without register":    func(c *dispatchKong) { c.RegisterOnly = false; c.RepoURL = "" },
 		"requester no origin": func(c *dispatchKong) { c.Origin = "" },
+		"linear whitespace":   func(c *dispatchKong) { c.Linear = "ENG 12" },
+		"linear no outsider": func(c *dispatchKong) {
+			c.Origin, c.Requester, c.Request, c.StewardApproves = "", "", "", ""
+			c.Linear = "ENG-12"
+		},
 	}
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {

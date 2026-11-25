@@ -477,6 +477,7 @@ func (c *dispatchKong) applyOutsider(f *initiative.Fields) {
 	f.Origin = c.Origin
 	f.Requester = c.Requester
 	f.Request = c.Request
+	f.Linear = c.Linear
 	for _, cl := range strings.Split(c.StewardApproves, ",") {
 		if cl = strings.TrimSpace(cl); cl != "" {
 			f.StewardApproves = append(f.StewardApproves, cl)

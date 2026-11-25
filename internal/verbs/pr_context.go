@@ -19,6 +19,7 @@ import (
 type prContextKong struct {
 	InitiativeID string `arg:"" name:"initiative-id" help:"Initiative ID whose PR list the context block is built from."`
 	PR           string `name:"pr" help:"Print only the block for this PR (a PR recorded on the initiative). Default: one block per recorded PR, separated by a blank line."`
+	MergeOrder   string `name:"merge-order" help:"Comma list of recorded PRs as <owner>/<repo>#<number>, in the order they merge. The DRI decides it; the Merge order line is printed only when this is given and the initiative has more than one PR."`
 }
 
 const (
@@ -28,9 +29,6 @@ const (
 )
 
 var (
-	// prContextLinearRE reads an optional "linear: <issue key>" line from the
-	// initiative description (the request's linear header, docs section 2).
-	prContextLinearRE = regexp.MustCompile(`(?m)^linear:[ \t]+(\S+)[ \t]*$`)
 	prContextURLRE    = regexp.MustCompile(`https://\S+`)
 	prContextClassRE  = regexp.MustCompile(`(?m)^class:[ \t]*plan[ \t]*$`)
 	prContextDecision = regexp.MustCompile(`(?m)^decision:[ \t]*(.*)$`)
@@ -71,10 +69,31 @@ func (c *prContextKong) Run(ctx *cli.Context) error {
 		}
 	}
 
+	var order []string
+	if c.MergeOrder != "" {
+		known := map[string]bool{}
+		for _, p := range prs {
+			s, _ := prRefAndNumber(p)
+			known[s] = true
+		}
+		seen := map[string]bool{}
+		for _, r := range strings.Split(c.MergeOrder, ",") {
+			r = strings.TrimSpace(r)
+			if !known[r] {
+				return cli.Usagef("ateam pr context: --merge-order entry %q is not a PR recorded on %s as <owner>/<repo>#<number>", r, c.InitiativeID)
+			}
+			if seen[r] {
+				return cli.Usagef("ateam pr context: --merge-order lists %q twice", r)
+			}
+			seen[r] = true
+			order = append(order, r)
+		}
+	}
+
 	planURL := latestPlanURL(issue.Notes)
 	ref := f.Request
-	if m := prContextLinearRE.FindStringSubmatch(issue.Description); m != nil {
-		ref = "on Linear " + m[1]
+	if f.Linear != "" {
+		ref = "on Linear " + f.Linear
 	}
 
 	var blocks []string
@@ -82,7 +101,7 @@ func (c *prContextKong) Run(ctx *cli.Context) error {
 		if only >= 0 && i != only {
 			continue
 		}
-		blocks = append(blocks, buildPRContextBlock(prs, i, outsider, ref, f.Requester, planURL))
+		blocks = append(blocks, buildPRContextBlock(prs, i, outsider, ref, f.Requester, planURL, order))
 	}
 	fmt.Fprint(ctx.Stdout, strings.Join(blocks, "\n"))
 	return nil
@@ -99,7 +118,7 @@ func prRefAndNumber(url string) (summary, number string) {
 
 // buildPRContextBlock renders the frozen block for prs[k]. Every line ends
 // with a newline.
-func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, planURL string) string {
+func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, planURL string, order []string) string {
 	n := len(prs)
 	var b strings.Builder
 	b.WriteString(prContextOpen + "\n")
@@ -110,25 +129,24 @@ func buildPRContextBlock(prs []string, k int, outsider bool, ref, requester, pla
 	}
 	this, _ := prRefAndNumber(prs[k])
 	fmt.Fprintf(&b, "This PR: %s.", this)
-	first := true
-	var order []string
+	var others, nums []string
 	for i, p := range prs {
-		s, num := prRefAndNumber(p)
-		order = append(order, s)
 		if i == k {
 			continue
 		}
-		if first {
-			fmt.Fprintf(&b, " The other PR (#%s): %s.\n", num, s)
-			first = false
-		} else {
-			fmt.Fprintf(&b, "The other PR (#%s): %s.\n", num, s)
-		}
+		s, num := prRefAndNumber(p)
+		others = append(others, s)
+		nums = append(nums, "#"+num)
 	}
-	if first {
+	switch len(others) {
+	case 0:
 		b.WriteString("\n")
+	case 1:
+		fmt.Fprintf(&b, " The other PR (%s): %s.\n", nums[0], others[0])
+	default:
+		fmt.Fprintf(&b, " The other PRs (%s): %s.\n", strings.Join(nums, ", "), strings.Join(others, "; "))
 	}
-	if n > 1 {
+	if n > 1 && len(order) > 0 {
 		b.WriteString("Merge order: " + strings.Join(order, " then ") + "\n")
 	}
 	if planURL != "" {

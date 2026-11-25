@@ -48,6 +48,10 @@ type Fields struct {
 	// its classes, in line order. The line is a comma list over the closed set
 	// GateClasses. Nil when absent.
 	StewardApproves []string
+	// Linear is the "linear: <issue key>" line: the request's Linear issue
+	// key, written only by `dispatch --register-only --linear`. No whitespace.
+	// "" when absent. Single-valued, first-wins.
+	Linear string
 }
 
 // WritePlan is the result of composing or extending a description. Today
@@ -72,7 +76,7 @@ type Collision struct {
 // "track-worktree", and "pr" keys). New does not iterate this slice — it
 // writes each field individually in its own fixed order — so this is a set,
 // not an ordering claim.
-var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "steward-approves"}
+var singleValuedKeys = []string{"problem", "repo", "worktree", "branch", "team", "mode", "runtime", "standby", "epic", "where", "origin", "requester", "request", "steward-approves", "linear"}
 
 // multiValuedKeys lists the canonical keys that accumulate rather than
 // first-wins (frozen item 1). Every other key — modeled or not — is
@@ -223,6 +227,7 @@ func Of(iss bd.Issue) Fields {
 		Requester:       first(lines, "requester"),
 		Request:         first(lines, "request"),
 		StewardApproves: splitClasses(first(lines, "steward-approves")),
+		Linear:          first(lines, "linear"),
 	}
 }
 
@@ -294,6 +299,7 @@ func New(f Fields) (WritePlan, error) {
 		{"requester", []string{f.Requester}},
 		{"request", []string{f.Request}},
 		{"steward-approves", f.StewardApproves},
+		{"linear", []string{f.Linear}},
 		{"session", f.Sessions},
 		{"track-worktree", f.Tracks},
 		{"pr", f.PRs},
@@ -336,6 +342,7 @@ func New(f Fields) (WritePlan, error) {
 	write("requester", f.Requester)
 	write("request", f.Request)
 	write("steward-approves", strings.Join(f.StewardApproves, ","))
+	write("linear", f.Linear)
 	for _, s := range f.Sessions {
 		write("session", s)
 	}
