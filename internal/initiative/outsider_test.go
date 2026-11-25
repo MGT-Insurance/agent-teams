@@ -11,7 +11,7 @@ import (
 func TestOutsiderFieldsRoundTrip(t *testing.T) {
 	f := initiative.Fields{
 		Problem: "p", Repo: "/r", Origin: "outsider", Requester: "joe/canary",
-		Request: "at-q7k2", StewardApproves: []string{"plan", "delivery"},
+		Request: "at-q7k2",
 	}
 	plan, err := initiative.New(f)
 	if err != nil {
@@ -23,7 +23,7 @@ func TestOutsiderFieldsRoundTrip(t *testing.T) {
 		t.Errorf("Of = %+v, want %+v", got, f)
 	}
 	jf := initiative.JSONFields(iss)
-	for k, v := range map[string]string{"origin": "outsider", "requester": "joe/canary", "request": "at-q7k2", "steward-approves": "plan,delivery", "pr-url": "https://x/y"} {
+	for k, v := range map[string]string{"origin": "outsider", "requester": "joe/canary", "request": "at-q7k2", "pr-url": "https://x/y"} {
 		if jf[k] != v {
 			t.Errorf("JSONFields[%s] = %v, want %q", k, jf[k], v)
 		}
@@ -36,7 +36,11 @@ func TestNewRejectsBadOutsiderFields(t *testing.T) {
 		{Requester: "Joe/canary"},
 		{Requester: "joe"},
 		{Requester: "a/b/c"},
-		{StewardApproves: []string{"merge"}},
+		{Requester: "eric.lloyd/.steward"},
+		{Requester: "eric..lloyd/steward"},
+		{Requester: "eric.lloyd/steward."},
+		{Requester: "-eric/steward"},
+		{Requester: "eric/st-.eward"},
 		{Request: "a\nb"},
 	} {
 		if _, err := initiative.New(f); err == nil {
@@ -54,7 +58,23 @@ func TestOldInitiativeReadsUnchanged(t *testing.T) {
 		t.Errorf("golden: %q, want %q", plan.Description, want)
 	}
 	f := initiative.Of(bd.Issue{Description: plan.Description})
-	if f.Origin != "" || f.Requester != "" || f.Request != "" || f.StewardApproves != nil {
+	if f.Origin != "" || f.Requester != "" || f.Request != "" {
 		t.Errorf("new fields not zero: %+v", f)
+	}
+}
+
+func TestDottedRequesterAccepted(t *testing.T) {
+	for _, r := range []string{"eric.lloyd/steward", "joe.b/scout-2", "joe/canary"} {
+		if _, err := initiative.New(initiative.Fields{Problem: "p", Repo: "/r", Requester: r}); err != nil {
+			t.Errorf("requester %q: %v", r, err)
+		}
+	}
+}
+
+func TestLegacyStewardApprovesLineIgnored(t *testing.T) {
+	iss := bd.Issue{Description: "problem: p\nrepo: /r\norigin: outsider\nsteward-approves: plan,delivery\n"}
+	f := initiative.Of(iss)
+	if f.Problem != "p" || f.Origin != "outsider" {
+		t.Errorf("Of = %+v", f)
 	}
 }

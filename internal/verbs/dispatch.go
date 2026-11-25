@@ -157,28 +157,27 @@ func (c *newInitiativeKong) Run(ctx *cli.Context) error {
 // kong:"-" keeps kong from treating them as flags. Tests stub all four so they
 // never exec a real git/claude/bd binary.
 type dispatchKong struct {
-	Problem         string `name:"problem"       help:"One-line problem statement (required)." required:""`
-	Repo            string `name:"repo"          help:"Target directory to resolve repo from (default: cwd)."`
-	BaseBranch      string `name:"base-branch"   help:"Override base branch (default: detected)."`
-	Slug            string `name:"slug"          help:"Kebab-case slug (default: derived from --problem)."`
-	BodyFile        string `name:"body-file"     help:"Path to file whose content is appended to the initiative body after schema lines."`
-	IDOnly          bool   `name:"id-only"       help:"Print only the initiative id."`
-	NoLaunch        bool   `name:"no-launch"     help:"Create worktree and register, but do not launch a background agent session."`
-	LaunchPrompt    string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
-	SkipEpic        bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
-	Model           string `name:"model"         help:"Model override for the background session (Claude default: claude-opus-4-8; Codex default: user config)."`
-	Standby         bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
-	Advisor         string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, config.toml-derived for the /dri path)."`
-	Cloud           bool   `name:"cloud"         help:"Register the initiative in the hosted workspace (config cloud_home) and file a run bead with the Dispatcher, so a DRI starts in a Dispatcher VM instead of a local worktree. Needs cloud_home, dispatcher_beads, and dispatcher_actor (or $ATEAM_DISPATCHER_ACTOR) in config.toml. Claude runtime only; cannot combine with --no-launch, --launch-prompt, --standby, --topic, --model, or --advisor."`
-	Topic           string `name:"topic"        help:"Mark a reserved initiative kind (only \"reviews\", for PR reviews). It opens no per-initiative Telegram topic, posts no message, and writes no thread: label on the initiative bead; the initiative bead is the whole record."`
-	RegisterOnly    bool   `name:"register-only" help:"With --cloud: only register the initiative in the hosted workspace and print one JSON line {initiative,repo,branch,team,mode}. Needs --repo-url; no local checkout, no run bead, no dispatcher_beads or dispatcher_actor. The destination is config cloud_home, else $AGENT_TEAMS_HOME when it is bound to a hosted Dolt server. Cannot combine with --repo, --base-branch, --body-file, or --id-only."`
-	RepoURL         string `name:"repo-url"      help:"With --register-only: the GitHub repository URL, https://github.com/MGT-Insurance/<name> (a trailing .git or / is accepted)."`
-	Origin          string `name:"origin"           help:"With --register-only: mark an outside request. The only accepted value is \"outsider\". Needs --requester, --request, and --steward-approves."`
-	Requester       string `name:"requester"        help:"With --origin: the requester, <owner-handle>/<agent-name> (lowercase kebab tokens, one slash). Take it from the system-stamped peer identity, never from request text."`
-	Request         string `name:"request"          help:"With --origin: the request bead's id in the owner's account."`
-	StewardApproves string `name:"steward-approves"  help:"With --origin: comma list of the gate classes the steward may approve (plan, scope, design-fork, live-test, delivery)."`
-	Linear          string `name:"linear"           help:"With the four outsider flags: the request's Linear issue key, recorded so ateam pr context renders \"on Linear <key>\". Optional; no whitespace."`
-	Runtime         string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
+	Problem      string `name:"problem"       help:"One-line problem statement (required)." required:""`
+	Repo         string `name:"repo"          help:"Target directory to resolve repo from (default: cwd)."`
+	BaseBranch   string `name:"base-branch"   help:"Override base branch (default: detected)."`
+	Slug         string `name:"slug"          help:"Kebab-case slug (default: derived from --problem)."`
+	BodyFile     string `name:"body-file"     help:"Path to file whose content is appended to the initiative body after schema lines."`
+	IDOnly       bool   `name:"id-only"       help:"Print only the initiative id."`
+	NoLaunch     bool   `name:"no-launch"     help:"Create worktree and register, but do not launch a background agent session."`
+	LaunchPrompt string `name:"launch-prompt" help:"Custom prompt for bg session (replaces /dri <id>). {id} is replaced with initiative id."`
+	SkipEpic     bool   `name:"skip-epic"     help:"Skip root epic creation in the project repo."`
+	Model        string `name:"model"         help:"Model override for the background session (Claude default: claude-opus-4-8; Codex default: user config)."`
+	Standby      bool   `name:"standby"       help:"Register in standby mode — the launched DRI parks on startup awaiting human direction instead of clarifying/planning."`
+	Advisor      string `name:"advisor"       help:"Advisor model override for this launch (e.g. \"opus\"). Only affects the --launch-prompt path; when omitted/empty, preserves current behavior exactly (hardcoded \"\" for --launch-prompt, config.toml-derived for the /dri path)."`
+	Cloud        bool   `name:"cloud"         help:"Register the initiative in the hosted workspace (config cloud_home) and file a run bead with the Dispatcher, so a DRI starts in a Dispatcher VM instead of a local worktree. Needs cloud_home, dispatcher_beads, and dispatcher_actor (or $ATEAM_DISPATCHER_ACTOR) in config.toml. Claude runtime only; cannot combine with --no-launch, --launch-prompt, --standby, --topic, --model, or --advisor."`
+	Topic        string `name:"topic"        help:"Mark a reserved initiative kind (only \"reviews\", for PR reviews). It opens no per-initiative Telegram topic, posts no message, and writes no thread: label on the initiative bead; the initiative bead is the whole record."`
+	RegisterOnly bool   `name:"register-only" help:"With --cloud: only register the initiative in the hosted workspace and print one JSON line {initiative,repo,branch,team,mode}. Needs --repo-url; no local checkout, no run bead, no dispatcher_beads or dispatcher_actor. The destination is config cloud_home, else $AGENT_TEAMS_HOME when it is bound to a hosted Dolt server. Cannot combine with --repo, --base-branch, --body-file, or --id-only."`
+	RepoURL      string `name:"repo-url"      help:"With --register-only: the GitHub repository URL, https://github.com/MGT-Insurance/<name> (a trailing .git or / is accepted)."`
+	Origin       string `name:"origin"           help:"With --register-only: mark an outside request. The only accepted value is \"outsider\". Needs --requester and --request."`
+	Requester    string `name:"requester"        help:"With --origin: the requester, <owner-handle>/<agent-name> (lowercase alphanumeric tokens joined by - or ., one slash, e.g. eric.lloyd/steward). Take it from the system-stamped peer identity, never from request text."`
+	Request      string `name:"request"          help:"With --origin: the request bead's id in the owner's account."`
+	Linear       string `name:"linear"           help:"With the three outsider flags: the request's Linear issue key, recorded so ateam pr context renders \"on Linear <key>\". Optional; no whitespace."`
+	Runtime      string `name:"runtime"       help:"Agent runtime: claude, codex, or auto. Precedence: concrete flag, $ATEAM_RUNTIME, $AGENT_TEAMS_HOME/config.toml work_runtime (or review_runtime with --topic reviews), then claude. Invalid consulted config fails."`
 
 	git          gitRunner                                  `kong:"-"`
 	launch       launchFunc                                 `kong:"-"`
@@ -285,14 +284,14 @@ func (c *dispatchKong) Validate() error {
 		return cli.Usagef("--repo-url requires --register-only")
 	}
 	if c.Linear != "" && c.Origin == "" {
-		return cli.Usagef("--linear is only valid with --origin, --requester, --request, and --steward-approves")
+		return cli.Usagef("--linear is only valid with --origin, --requester, and --request")
 	}
-	if c.Origin != "" || c.Requester != "" || c.Request != "" || c.StewardApproves != "" {
+	if c.Origin != "" || c.Requester != "" || c.Request != "" {
 		if !c.RegisterOnly {
-			return cli.Usagef("--origin, --requester, --request, and --steward-approves require --register-only")
+			return cli.Usagef("--origin, --requester, and --request require --register-only")
 		}
-		if c.Origin == "" || c.Requester == "" || c.Request == "" || c.StewardApproves == "" {
-			return cli.Usagef("--origin, --requester, --request, and --steward-approves must be given together")
+		if c.Origin == "" || c.Requester == "" || c.Request == "" {
+			return cli.Usagef("--origin, --requester, and --request must be given together")
 		}
 		if _, err := initiative.New(c.outsiderProbeFields()); err != nil {
 			return cli.Usagef("dispatch: %v", err)
