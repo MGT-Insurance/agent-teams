@@ -53,6 +53,11 @@ type cloudBootCommon struct {
 	Poll       time.Duration `name:"poll" default:"15s" help:"Interval between idle checks."`
 	IdlePolls  int           `name:"idle-polls" default:"3" help:"Consecutive idle polls before parking."`
 	Grace      time.Duration `name:"grace" default:"60s" help:"No park decision before this much time has passed."`
+	Stall      time.Duration `name:"stall" default:"90m" env:"ATEAM_CLOUD_BOOT_STALL" help:"Park when the lead writes no transcript or background-task output for this long, whatever its status."`
+
+	// Activity reads the lead's newest transcript record and background-task
+	// output mtime; nil falls back to the real files (see defaultCloudActivity).
+	Activity func(cwd, sid string) cloudActivity `kong:"-"`
 
 	Tmux       func(args ...string) error        `kong:"-"`
 	Agents     func() ([]agentSession, error)    `kong:"-"`
@@ -110,6 +115,12 @@ func (c *cloudBootCommon) deps() {
 	}
 	if c.Sleep == nil {
 		c.Sleep = time.Sleep
+	}
+	if c.Stall <= 0 {
+		c.Stall = cloudBootDefaultStall
+	}
+	if c.Activity == nil {
+		c.Activity = defaultCloudActivity
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -570,6 +581,7 @@ func (c *cloudBootCommon) waitLeadIdle(ctx *cli.Context, sid string) {
 
 func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error {
 	start := c.Now()
+	clock := newStallClock(start, c.Stall)
 	var elapsed time.Duration
 	idle := 0
 	pollErrs := 0
@@ -650,8 +662,11 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 		} else {
 			idle = 0
 		}
-		fmt.Fprintf(ctx.Stderr, "cloud-boot: poll t=%s lead=%s others_busy=%t idle=%d/%d poll_errs=%d/%d others=[%s]\n",
-			since(), leadStatus, othersBusy, idle, c.IdlePolls, pollErrs, cloudBootMaxPollErrors, strings.Join(others, " "))
+		now := c.Now()
+		clock.refresh(now, func() cloudActivity { return c.Activity(cwd, sid) })
+		fmt.Fprintf(ctx.Stderr, "cloud-boot: poll t=%s lead=%s others_busy=%t idle=%d/%d poll_errs=%d/%d silent=%s task_out_age=%s others=[%s]\n",
+			since(), leadStatus, othersBusy, idle, c.IdlePolls, pollErrs, cloudBootMaxPollErrors,
+			clock.silent(now), clock.taskOutAge(now), strings.Join(others, " "))
 		if lead == nil {
 			if err := c.Tmux("has-session", "-t", cloudBootTmuxName); err != nil {
 				exitLine("lead-missing", fmt.Sprintf("lead=%s tmux_session_gone=true", sid))
@@ -665,6 +680,16 @@ func (c *cloudBootCommon) pollLoop(ctx *cli.Context, id, sid, cwd string) error 
 			}
 			fmt.Fprintf(ctx.Stderr, "cloud-boot: %s idle, parking\n", id)
 			exitLine("idle-park", "lead="+leadStatus)
+			return cli.Silent(cloudBootParkExit)
+		}
+		// Stall park: status and othersBusy are ignored, so an orphan background
+		// process that keeps the lead "busy" cannot hold the run open.
+		if silent := clock.silent(now); silent > c.Stall {
+			if err := c.Tmux("kill-session", "-t", cloudBootTmuxName); err != nil {
+				fmt.Fprintf(ctx.Stderr, "cloud-boot: kill-session: %v\n", err)
+			}
+			fmt.Fprintf(ctx.Stderr, "cloud-boot: %s silent %s, parking\n", id, silent)
+			exitLine("stall-park", fmt.Sprintf("lead=%s silent=%s", leadStatus, silent))
 			return cli.Silent(cloudBootParkExit)
 		}
 	}
