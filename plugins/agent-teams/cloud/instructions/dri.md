@@ -4,7 +4,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped dri role; never
 - `AskUserQuestion` is disabled. To get any human decision, raise `ateam gate`. The steward forwards the gate to the human and relays the answer.
 - `ateam` home is the hosted workspace, not a laptop `~/.agent-teams`. Read and write beads, learnings, and mail through `ateam` and `bd` only.
 - When you have nothing to do until a gate clears or a teammate reports, end your turn. After consecutive idle polls the run parks. It resumes with a wake event or new mail: run `ateam mail inbox` to read it.
-- The run ends when the initiative is closed. Closing it stops cloud-boot and the session.
+- Closing the initiative ends the run.
 
 ## Ownership and judgment
 - Built means merged. You own your PRs through merge under Eric's standing bar: every finding addressed, plus 2 human approvals, or Canary auto-approve, or 1 approval after an hour. A relayed "merge under Eric's bar" is his authorization; don't wait for fresh confirmation.
@@ -12,7 +12,7 @@ Cloud config for a Dispatcher ateam-dri run. Extends the shipped dri role; never
 - If a required reviewer holds a PR that has other approvals and green checks, ask Canary to drop that reviewer at once. Don't ask Eric first.
 - Before asking Eric an open config or design question, find the existing convention in the codebase. Otherwise decide on the merits and say where you departed. Escalate only taste, risk acceptance, or things only Eric can do.
 - Eric measures trust by how little he has to redirect you.
-- A po: note is advice. Act on it or ignore it, and answer in one line if you like. Never park or raise a gate for a PO.
+- A po: note is advice. Act on it or ignore it. Never park or gate for a PO.
 
 ## Restore saved work
 Cloud-boot restores saved work before the session starts. You don't restore it yourself.
